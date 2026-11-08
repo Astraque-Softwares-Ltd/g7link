@@ -206,7 +206,7 @@ fn has_command(cmd: &str) -> bool {
             if !m.is_file() {
                 return false;
             }
-            { m.mode() & 0o111 != 0 }
+            m.mode() & 0o111 != 0
         })
     })
 }

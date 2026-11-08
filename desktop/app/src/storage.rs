@@ -79,7 +79,7 @@ mod imp {
         if !path.exists() {
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
         }
-        { win::shell::open_folder(&path) }
+        win::shell::open_folder(&path)
     }
 
     pub(crate) fn base_sync_dir() -> Option<PathBuf> {

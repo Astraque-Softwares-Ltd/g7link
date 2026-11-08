@@ -980,7 +980,7 @@ mod tests {
 
     #[test]
     fn the_stream_says_which_colors() {
-        let units = access_units(include_bytes!("../win/testdata/bt601-full.h264"));
+        let units = access_units(include_bytes!("testdata/bt601-full.h264"));
         let mut decoder = Decoder::new_for_codec("h264").unwrap();
         let pictures: Vec<Picture> =
             units.iter().enumerate().flat_map(|(i, u)| decoder.decode(u, i as u64).unwrap()).collect();
@@ -1018,12 +1018,12 @@ mod tests {
 
     #[test]
     fn the_gpu_decodes_the_same_h264_pictures_as_software() {
-        gpu_matches_software("h264", &access_units(include_bytes!("../win/testdata/testsrc.h264")));
+        gpu_matches_software("h264", &access_units(include_bytes!("testdata/testsrc.h264")));
     }
 
     #[test]
     fn the_gpu_decodes_the_same_h265_pictures_as_software() {
-        let stream = include_bytes!("../win/testdata/testsrc.h265");
+        let stream = include_bytes!("testdata/testsrc.h265");
         let starts: Vec<usize> =
             (0..stream.len()).filter(|&i| stream[i..].starts_with(&[0, 0, 0, 1, 0x46])).collect();
         let units: Vec<&[u8]> = starts
@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn a_stream_decodes_picture_by_picture() {
-        let stream = include_bytes!("../win/testdata/testsrc.h264");
+        let stream = include_bytes!("testdata/testsrc.h264");
         let units = access_units(stream);
         assert_eq!(units.len(), 10);
         let mut decoder = Decoder::new_for_codec("h264").unwrap();

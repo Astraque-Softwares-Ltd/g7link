@@ -860,8 +860,6 @@ pub fn start_poller() {
 mod tests {
     use super::*;
 
-    #[test]
-
     fn entry(rel_path: &str, size: u64, modified_ms: i64) -> SyncEntry {
         SyncEntry { rel_path: rel_path.into(), size, modified_ms }
     }

@@ -174,7 +174,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("ContinuityCamera", "Take a photo on %1…"), // desktop/app/src/continuity_camera.rs
     QT_TRANSLATE_NOOP("CoreHost", "Dropped %1 queued item(s) for %2 (device unpaired)."), // desktop/app/src/core_host.rs
     QT_TRANSLATE_NOOP("Deck", "Alt + Tab"), // desktop/app/src/bridge/deck.rs
-    QT_TRANSLATE_NOOP("Deck", "Application path must end with .exe or .lnk."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Choose a key for the shortcut."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Choose an application (.exe or .lnk) on this PC."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Enter a command to run on this PC."), // desktop/app/src/deck.rs
@@ -209,7 +208,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "Connecting to %1…"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "G7 Link can't show its icon in the top bar"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "G7 Link is in the top bar"), // desktop/app/src/linux/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "G7 Link isn't allowed through Windows Firewall"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "G7 Link isn't allowed through the firewall"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "GNOME shows app icons there only with the AppIndicator extension. Install it (gnome-shell-extension-appindicator) and turn it on in Extensions."), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Install fuse3 to browse your phone's files in your file manager."), // desktop/app/src/linux/doctor.rs
@@ -227,7 +225,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "On USB"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On Vivo / OriginOS / Funtouch: open Settings → Battery → Background power consumption management → G7 Link and choose Unrestricted, and allow Autostart."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On Xiaomi / HyperOS / MIUI: open Settings → Apps → Manage apps → G7 Link, turn on Autostart, and set Battery saver to No restrictions."), // desktop/app/src/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "On public networks Windows keeps other devices from finding this PC. If it's your home or work network, set it to Private."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On public networks the firewall keeps other devices from finding this PC. If it's your home or work network, open network settings and set its firewall zone to Home or Trusted."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On this network"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Phone as webcam is ready"), // desktop/app/src/linux/doctor.rs
@@ -235,7 +232,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "Phone storage can open in your file manager"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Phone storage needs one more step"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Showing this PC's screen needs one more step"), // desktop/app/src/linux/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "Someone chose not to allow it when Windows asked. Allow it, and your phone can connect."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Sound is ready"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "The firewall blocks G7 Link"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "The firewall is off for this network"), // desktop/app/src/doctor.rs
@@ -247,9 +243,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "This usually takes a few seconds."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "VPNs often keep devices on your network from reaching this PC. If your phone can't connect, try turning it off."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "While away"), // desktop/app/src/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "Windows Firewall blocks G7 Link"), // desktop/app/src/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "Windows Firewall is off for this network"), // desktop/app/src/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "Windows Firewall lets your phone connect"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Your phone can control this PC"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Your phone can show this PC's screen"), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Your phone can't control this PC yet"), // desktop/app/src/linux/doctor.rs
@@ -364,13 +357,10 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Mirror", "Mirror screenshot"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Mirroring is turned off for this phone."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Recording from %1, saved in Downloads/G7Link"), // desktop/app/src/mirror.rs
-    QT_TRANSLATE_NOOP("Mirror", "Recording from %1, saved in Downloads\\G7Link"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Saved %1"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Saved %1 to Downloads/G7Link."), // desktop/app/src/mirror.rs
-    QT_TRANSLATE_NOOP("Mirror", "Saved %1 to Downloads\\G7Link."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Screenshot copied to clipboard."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Screenshot from %1, saved in Downloads/G7Link"), // desktop/app/src/mirror.rs
-    QT_TRANSLATE_NOOP("Mirror", "Screenshot from %1, saved in Downloads\\G7Link"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Sending %1 files…"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Sending %1…"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Set up Wireless debugging in G7 Link on the phone to open its apps here."), // desktop/app/src/mirror.rs
@@ -382,7 +372,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Mirror", "This PC can't decode the phone's video."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "This phone's app doesn't share its screen yet. Update G7 Link on the phone."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Wait for the screen to appear first."), // desktop/app/src/mirror.rs
-    QT_TRANSLATE_NOOP("Mp4", "No video frames were recorded yet."), // desktop/app/src/win/mp4.rs
     QT_TRANSLATE_NOOP("Notifications", "Code copied"), // desktop/app/src/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Copy code"), // desktop/app/src/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Dismissed %1 from %2"), // desktop/app/src/bridge/notifications.rs
@@ -451,23 +440,11 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("SendTo", "Sent to %1"), // desktop/app/src/send_to.rs
     QT_TRANSLATE_NOOP("SendTo", "The transfer didn't go through."), // desktop/app/src/send_to.rs
     QT_TRANSLATE_NOOP("SendTo", "Waiting for %1…"), // desktop/app/src/send_to.rs
-    QT_TRANSLATE_NOOP("Setup", "Choose a folder on a drive inside this PC, not a USB or network drive."), // desktop/app/src/win/install_dir.rs
-    QT_TRANSLATE_NOOP("Setup", "Choose a folder on one of this PC's drives."), // desktop/app/src/win/install_dir.rs
     QT_TRANSLATE_NOOP("Setup", "Couldn't start setup: %1"), // desktop/app/src/setup.rs
     QT_TRANSLATE_NOOP("Setup", "Couldn't uninstall G7 Link: %1"), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "Setup can't use that folder. Choose another one."), // desktop/app/src/win/install_dir.rs
     QT_TRANSLATE_NOOP("Setup", "Setup is taking too long. Try again after restarting the PC."), // desktop/app/src/setup.rs
     QT_TRANSLATE_NOOP("Setup", "Setup stopped with code %1."), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "That drive can't keep the app's files safe (it isn't NTFS). Choose another drive."), // desktop/app/src/win/install_dir.rs
-    QT_TRANSLATE_NOOP("Setup", "That folder's path is too long. Choose one closer to the top of a drive."), // desktop/app/src/win/install_dir.rs
-    QT_TRANSLATE_NOOP("Setup", "The uninstaller is missing. Reinstall G7 Link, then uninstall it."), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "There's a file named %1 there. Choose another place."), // desktop/app/src/win/install_dir.rs
-    QT_TRANSLATE_NOOP("Setup", "There's already a %1 folder there with files in it. Choose another place."), // desktop/app/src/win/install_dir.rs
     QT_TRANSLATE_NOOP("Setup", "Uninstall stopped with code %1."), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "Updates here will ask for your permission each time."), // desktop/app/src/bridge/setup.rs
-    QT_TRANSLATE_NOOP("Storage", "%1's files aren't shared with this PC"), // desktop/app/src/storage.rs
-    QT_TRANSLATE_NOOP("Storage", "On the phone, allow All files access for G7 Link."), // desktop/app/src/storage.rs
-    QT_TRANSLATE_NOOP("Storage", "On the phone, turn on Browse this phone's storage in File Explorer in G7 Link."), // desktop/app/src/storage.rs
     QT_TRANSLATE_NOOP("Timeline", "App window #%1"), // desktop/app/src/i18n.rs
     QT_TRANSLATE_NOOP("Timeline", "Clip (removed from clipboard history)"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Copied image"), // desktop/app/src/bridge/timeline.rs
