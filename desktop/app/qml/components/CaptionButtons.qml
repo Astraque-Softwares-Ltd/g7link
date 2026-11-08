@@ -10,7 +10,7 @@ import app.g7link
 Row {
     id: buttons
     required property NativeWindow window
-    readonly property bool maximized: window.visibility === Window.Maximized
+    readonly property bool maximized: window.visibility === Window.Maximized || window.visibility === Window.FullScreen
 
     visible: Qt.platform.os !== "osx"
     width: visible ? implicitWidth : 0

@@ -30,6 +30,10 @@ Window {
     // A phone-shaped window the first time a picture arrives (portrait or
     // landscape), within the screen, or restored to where the user left it.
     readonly property size frame: video.frameSize
+
+    function toggleFullScreen() {
+        win.visibility = win.visibility === Window.FullScreen ? Window.AutomaticVisibility : Window.FullScreen
+    }
     property bool sized: false
     property bool readyForResize: false
 
@@ -40,7 +44,8 @@ Window {
         onTriggered: {
             if (!win.info.app || !win.sized)
                 return
-            Mirror.saveGeometry(win.mirrorKey, win.x, win.y, win.width, win.height)
+            if (win.visibility !== Window.FullScreen)
+                Mirror.saveGeometry(win.mirrorKey, win.x, win.y, win.width, win.height)
             if (win.phase === "showing")
                 Mirror.resize(win.mirrorKey, win.width, win.height)
         }
@@ -51,7 +56,7 @@ Window {
         interval: 300
         repeat: false
         onTriggered: {
-            if (win.info.app && win.sized)
+            if (win.info.app && win.sized && win.visibility !== Window.FullScreen)
                 Mirror.saveGeometry(win.mirrorKey, win.x, win.y, win.width, win.height)
         }
     }
@@ -238,6 +243,11 @@ Window {
         // The keyboard: shortcuts for screenshots and recording work even
         // without remote control; text and navigation keys go to the phone.
         Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_F11) {
+                win.toggleFullScreen()
+                event.accepted = true
+                return
+            }
             if (win.phase !== "showing")
                 return
             if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_C) {
@@ -369,6 +379,12 @@ Window {
             anchors.centerIn: parent
             spacing: 2
 
+            IconButton {
+                iconPath: win.visibility === Window.FullScreen ? Icons.fullscreenExit : Icons.fullscreen
+                iconColor: "white"
+                label: win.visibility === Window.FullScreen ? qsTr("Leave full screen (F11)") : qsTr("Full screen (F11)")
+                onClicked: win.toggleFullScreen()
+            }
             IconButton {
                 id: copyShotBtn
                 iconPath: Icons.copy
