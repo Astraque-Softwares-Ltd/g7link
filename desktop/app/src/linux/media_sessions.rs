@@ -576,6 +576,7 @@ fn is_excluded_player(name: &str) -> bool {
     let lower = name.trim().to_ascii_lowercase();
     lower.is_empty()
         || lower == "g7link"
+        || lower == "g7 link"
         || lower == "playerctld"
         || lower.starts_with("g7link.")
         || lower.ends_with(".g7link")

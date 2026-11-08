@@ -84,7 +84,8 @@ fn has_desktop_session() -> bool {
 
 fn is_g7link_title(title: &str) -> bool {
     let trimmed = title.trim();
-    trimmed.is_empty() || trimmed.get(..10).is_some_and(|prefix| prefix.eq_ignore_ascii_case("g7link"))
+    let lower = trimmed.to_ascii_lowercase();
+    trimmed.is_empty() || lower.starts_with("g7link") || lower.starts_with("g7 link")
 }
 
 fn parse_window_handle(raw: &str) -> Option<isize> {

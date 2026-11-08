@@ -1683,7 +1683,7 @@ async fn clipboard_history_tracks_text_and_images_and_excludes_otps() {
     assert!(phone_hist[1].incoming);
 
     // Search, pin, copy again, delete, and clear all.
-    assert_eq!(pc.node.clipboard_history(Some("g7link")).len(), 1);
+    assert_eq!(pc.node.clipboard_history(Some("astraque")).len(), 1);
     let text_id = pc_hist[1].id.clone();
     let img_id = pc_hist[0].id.clone();
     assert!(pc.node.pin_clipboard_history(&text_id, true));

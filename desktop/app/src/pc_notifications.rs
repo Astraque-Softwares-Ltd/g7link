@@ -53,6 +53,7 @@ pub fn is_blocked_self_source(app_name: &str) -> bool {
     let lower = app_name.trim().to_lowercase();
     lower.is_empty()
         || lower.contains("g7link")
+        || lower.contains("g7 link")
         || lower == "notify-send"
         || lower == "org.freedesktop.notifications"
 }

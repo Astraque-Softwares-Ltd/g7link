@@ -82,7 +82,7 @@ pub fn find_v4l2loopback_in_sysfs(sysfs_root: &Path, dev_root: &Path) -> Option<
                 continue;
             };
             let lower = card_name.to_ascii_lowercase();
-            if lower.contains("g7link") {
+            if lower.contains("g7link") || lower.contains("g7 link") {
                 candidates.push((0, dev_name, dev_node));
             } else if lower.contains("dummy video device") || lower.contains("v4l2loopback") {
                 candidates.push((1, dev_name, dev_node));
