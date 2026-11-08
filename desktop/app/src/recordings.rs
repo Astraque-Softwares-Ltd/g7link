@@ -15,25 +15,7 @@ use std::{
 };
 
 use g7link_core::{RecordingMarker, Transfer, TransferState};
-#[cfg(windows)]
-use windows::{
-    Win32::{
-        Media::MediaFoundation::{
-            IMFAttributes, IMFMediaType, IMFSample, IMFSourceReader, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
-            MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
-            MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_SOURCE_READER_FIRST_AUDIO_STREAM,
-            MF_SOURCE_READERF_ENDOFSTREAM, MF_TRANSCODE_CONTAINERTYPE, MFAudioFormat_FLAC, MFAudioFormat_MP3,
-            MFAudioFormat_PCM, MFCreateAttributes, MFCreateMediaType, MFCreateSinkWriterFromURL,
-            MFCreateSourceReaderFromURL, MFMediaType_Audio, MFT_ENUM_FLAG_ALL, MFTranscodeContainerType_MP3,
-            MFTranscodeGetAudioOutputAvailableTypes,
-        },
-        System::SystemInformation::GetLocalTime,
-    },
-    core::{HSTRING, Interface},
-};
 
-#[cfg(windows)]
-use crate::win::h264::ensure_mf_started;
 use crate::{
     core_host,
     settings::{RecordingFormat, Settings},
@@ -109,14 +91,7 @@ pub fn format_recording_stem(year: u16, month: u16, day: u16, hour: u16, minute:
 }
 
 /// Base name for a recording saved right now, in local time.
-#[cfg(windows)]
-pub fn current_recording_stem() -> String {
-    // SAFETY: GetLocalTime always succeeds and writes a SYSTEMTIME struct.
-    let st = unsafe { GetLocalTime() };
-    format_recording_stem(st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute)
-}
 
-#[cfg(not(windows))]
 pub fn current_recording_stem() -> String {
     // SAFETY: `libc::time` and `libc::localtime_r` are thread-safe POSIX calls
     // operating on stack-allocated `time_t` and `tm` values.
@@ -269,7 +244,6 @@ fn move_file(src: &Path, dest: &Path) -> std::io::Result<()> {
 /// ffmpeg arguments that convert `src` into `dest` in `format`. The paths
 /// are arguments of their own (never parsed by a shell), and a relative path
 /// starting with `-` gets `./` so ffmpeg can't take it for an option.
-#[cfg(target_os = "linux")]
 pub(crate) fn ffmpeg_args(src: &Path, dest: &Path, format: RecordingFormat) -> Vec<std::ffi::OsString> {
     fn not_an_option(path: &Path) -> std::ffi::OsString {
         if path.to_string_lossy().starts_with('-') { Path::new(".").join(path).into() } else { path.into() }
@@ -291,7 +265,6 @@ pub(crate) fn ffmpeg_args(src: &Path, dest: &Path, format: RecordingFormat) -> V
 /// Converts `src` (`.m4a`) to `dest` in `format` on Linux, using in-process
 /// `libavcodec` + pure-Rust WAV/FLAC + `libmp3lame` first and falling back to
 /// the `ffmpeg` CLI only if needed.
-#[cfg(target_os = "linux")]
 pub fn convert_audio(src: &Path, dest: &Path, format: RecordingFormat) -> std::io::Result<()> {
     if matches!(format, RecordingFormat::M4a) {
         fs::copy(src, dest)?;
@@ -316,14 +289,14 @@ pub fn convert_audio(src: &Path, dest: &Path, format: RecordingFormat) -> std::i
     if status.success() { Ok(()) } else { Err(std::io::Error::other(format!("ffmpeg exited with {status}"))) }
 }
 
-#[cfg(all(target_os = "linux", linux_ffmpeg_video))]
+#[cfg(linux_ffmpeg_video)]
 struct DemuxedM4a {
     sample_rate: u32,
     asc: [u8; 2],
     frames: Vec<Vec<u8>>,
 }
 
-#[cfg(all(target_os = "linux", linux_ffmpeg_video))]
+#[cfg(linux_ffmpeg_video)]
 fn default_aac_lc_asc(sample_rate: u32, channels: u8) -> [u8; 2] {
     let freq_idx: u8 = match sample_rate {
         96_000 => 0,
@@ -347,7 +320,7 @@ fn default_aac_lc_asc(sample_rate: u32, channels: u8) -> [u8; 2] {
     [b0, b1]
 }
 
-#[cfg(all(target_os = "linux", linux_ffmpeg_video))]
+#[cfg(linux_ffmpeg_video)]
 fn demux_m4a_aac(bytes: &[u8]) -> Option<DemuxedM4a> {
     #[derive(Default)]
     struct TrackTables {
@@ -548,7 +521,7 @@ fn demux_m4a_aac(bytes: &[u8]) -> Option<DemuxedM4a> {
     Some(DemuxedM4a { sample_rate, asc, frames })
 }
 
-#[cfg(all(target_os = "linux", linux_ffmpeg_video))]
+#[cfg(linux_ffmpeg_video)]
 unsafe extern "C" {
     fn g7link_video_aac_decoder_create(
         error: *mut std::ffi::c_char,
@@ -573,7 +546,7 @@ unsafe extern "C" {
     ) -> std::ffi::c_int;
 }
 
-#[cfg(all(target_os = "linux", linux_ffmpeg_video))]
+#[cfg(linux_ffmpeg_video)]
 fn decode_m4a_to_pcm_s16le(m4a_bytes: &[u8]) -> Option<(u32, u8, Vec<i16>)> {
     let demuxed = demux_m4a_aac(m4a_bytes)?;
 
@@ -672,12 +645,11 @@ fn decode_m4a_to_pcm_s16le(m4a_bytes: &[u8]) -> Option<(u32, u8, Vec<i16>)> {
     }
 }
 
-#[cfg(all(target_os = "linux", not(linux_ffmpeg_video)))]
+#[cfg(not(linux_ffmpeg_video))]
 fn decode_m4a_to_pcm_s16le(_m4a_bytes: &[u8]) -> Option<(u32, u8, Vec<i16>)> {
     None
 }
 
-#[cfg(target_os = "linux")]
 fn encode_wav_s16le(sample_rate: u32, channels: u8, samples: &[i16]) -> Vec<u8> {
     let ch = u16::from(channels.clamp(1, 2));
     let block_align = ch * 2;
@@ -702,7 +674,6 @@ fn encode_wav_s16le(sample_rate: u32, channels: u8, samples: &[i16]) -> Vec<u8> 
     wav
 }
 
-#[cfg(target_os = "linux")]
 fn encode_flac_verbatim(sample_rate: u32, channels: u8, samples: &[i16]) -> Vec<u8> {
     fn crc8_flac(data: &[u8]) -> u8 {
         let mut crc = 0u8;
@@ -803,7 +774,6 @@ fn encode_flac_verbatim(sample_rate: u32, channels: u8, samples: &[i16]) -> Vec<
     out
 }
 
-#[cfg(target_os = "linux")]
 struct LameApi {
     lame_init: unsafe extern "C" fn() -> *mut std::ffi::c_void,
     lame_set_in_samplerate: unsafe extern "C" fn(*mut std::ffi::c_void, std::ffi::c_int) -> std::ffi::c_int,
@@ -831,7 +801,6 @@ struct LameApi {
     lame_close: unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int,
 }
 
-#[cfg(target_os = "linux")]
 fn lame_api() -> Option<&'static LameApi> {
     static API: std::sync::OnceLock<Option<LameApi>> = std::sync::OnceLock::new();
     API.get_or_init(|| unsafe {
@@ -865,7 +834,6 @@ fn lame_api() -> Option<&'static LameApi> {
     .as_ref()
 }
 
-#[cfg(target_os = "linux")]
 fn encode_mp3_with_lame(sample_rate: u32, channels: u8, samples: &[i16]) -> Option<Vec<u8>> {
     let api = lame_api()?;
     let ch = channels.clamp(1, 2) as usize;
@@ -936,7 +904,6 @@ fn encode_mp3_with_lame(sample_rate: u32, channels: u8, samples: &[i16]) -> Opti
     }
 }
 
-#[cfg(target_os = "linux")]
 fn convert_audio_in_process(src: &Path, dest: &Path, format: RecordingFormat) -> Option<()> {
     let m4a_bytes = fs::read(src).ok()?;
     let (sample_rate, channels, samples) = decode_m4a_to_pcm_s16le(&m4a_bytes)?;
@@ -949,211 +916,10 @@ fn convert_audio_in_process(src: &Path, dest: &Path, format: RecordingFormat) ->
     fs::write(dest, out_bytes).ok()
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn convert_audio(_src: &Path, _dest: &Path, _format: RecordingFormat) -> Result<(), String> {
-    Err("audio conversion via Media Foundation is only supported on Windows".into())
-}
 
-#[cfg(windows)]
-/// Converts `src` (`.m4a`) to `dest` in `format` (`Mp3`, `Wav`, or `Flac`)
-/// using Windows Media Foundation.
-pub fn convert_audio(src: &Path, dest: &Path, format: RecordingFormat) -> windows::core::Result<()> {
-    ensure_mf_started()?;
-    let stream_idx = MF_SOURCE_READER_FIRST_AUDIO_STREAM.0 as u32;
 
-    // SAFETY: Media Foundation COM interfaces with owned parameters.
-    unsafe {
-        let reader: IMFSourceReader = MFCreateSourceReaderFromURL(&HSTRING::from(src.as_os_str()), None)?;
-        let pcm_req: IMFMediaType = MFCreateMediaType()?;
-        pcm_req.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
-        pcm_req.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_PCM)?;
-        pcm_req.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
-        reader.SetCurrentMediaType(stream_idx, None, &pcm_req)?;
 
-        let pcm_type: IMFMediaType = reader.GetCurrentMediaType(stream_idx)?;
-        let sample_rate = pcm_type.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND)?;
-        let channels = pcm_type.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS)?;
 
-        match format {
-            RecordingFormat::M4a => {
-                fs::copy(src, dest).map_err(|e| {
-                    windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(
-                        e.raw_os_error().unwrap_or(1) as u32,
-                    ))
-                })?;
-                Ok(())
-            }
-            RecordingFormat::Wav => write_decoded_wav(&reader, stream_idx, sample_rate, channels, dest),
-            RecordingFormat::Mp3 => {
-                transcode_with_sink_writer(&reader, stream_idx, &pcm_type, sample_rate, channels, dest, true)
-            }
-            RecordingFormat::Flac => {
-                transcode_with_sink_writer(&reader, stream_idx, &pcm_type, sample_rate, channels, dest, false)
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-unsafe fn write_decoded_wav(
-    reader: &IMFSourceReader,
-    stream_idx: u32,
-    sample_rate: u32,
-    channels: u32,
-    dest: &Path,
-) -> windows::core::Result<()> {
-    let mut pcm_bytes = Vec::new();
-    loop {
-        let mut flags = 0u32;
-        let mut sample: Option<IMFSample> = None;
-        // SAFETY: valid out-pointers for ReadSample.
-        unsafe {
-            reader.ReadSample(stream_idx, 0, None, Some(&mut flags), None, Some(&mut sample))?;
-        }
-        if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
-            break;
-        }
-        if let Some(sample) = sample {
-            // SAFETY: buffer is locked while copied and unlocked immediately.
-            unsafe {
-                let buffer = sample.ConvertToContiguousBuffer()?;
-                let mut ptr = std::ptr::null_mut();
-                let mut len = 0u32;
-                buffer.Lock(&mut ptr, None, Some(&mut len))?;
-                if !ptr.is_null() && len > 0 {
-                    pcm_bytes.extend_from_slice(std::slice::from_raw_parts(ptr, len as usize));
-                }
-                buffer.Unlock()?;
-            }
-        }
-    }
-
-    let ch = u16::try_from(channels.clamp(1, 2)).unwrap_or(1);
-    let block_align = ch * 2;
-    let byte_rate = sample_rate * u32::from(block_align);
-    let data_len = u32::try_from(pcm_bytes.len()).unwrap_or(u32::MAX);
-    let mut wav = Vec::with_capacity(44 + pcm_bytes.len());
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&36u32.saturating_add(data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&ch.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&byte_rate.to_le_bytes());
-    wav.extend_from_slice(&block_align.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    wav.extend_from_slice(&pcm_bytes);
-
-    fs::write(dest, wav).map_err(|_| windows::core::Error::from_thread())
-}
-
-#[cfg(windows)]
-unsafe fn transcode_with_sink_writer(
-    reader: &IMFSourceReader,
-    stream_idx: u32,
-    pcm_type: &IMFMediaType,
-    sample_rate: u32,
-    channels: u32,
-    dest: &Path,
-    mp3: bool,
-) -> windows::core::Result<()> {
-    let subtype = if mp3 { MFAudioFormat_MP3 } else { MFAudioFormat_FLAC };
-    // SAFETY: Media Foundation sink writer setup and sample loop.
-    unsafe {
-        let out_type = choose_encoder_output_type(&subtype, sample_rate, channels, mp3)?;
-        let mut attrs: Option<IMFAttributes> = None;
-        if mp3 {
-            MFCreateAttributes(&mut attrs, 1)?;
-            if let Some(a) = &attrs {
-                a.SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MP3)?;
-            }
-        }
-        let writer = MFCreateSinkWriterFromURL(&HSTRING::from(dest.as_os_str()), None, attrs.as_ref())?;
-        let out_stream = writer.AddStream(&out_type)?;
-        writer.SetInputMediaType(out_stream, pcm_type, None)?;
-        writer.BeginWriting()?;
-
-        loop {
-            let mut flags = 0u32;
-            let mut timestamp = 0i64;
-            let mut sample: Option<IMFSample> = None;
-            reader.ReadSample(
-                stream_idx,
-                0,
-                None,
-                Some(&mut flags),
-                Some(&mut timestamp),
-                Some(&mut sample),
-            )?;
-            if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32) != 0 {
-                break;
-            }
-            if let Some(sample) = sample {
-                let _ = sample.SetSampleTime(timestamp);
-                writer.WriteSample(out_stream, &sample)?;
-            }
-        }
-        writer.Finalize()?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-unsafe fn choose_encoder_output_type(
-    subtype: &windows::core::GUID,
-    sample_rate: u32,
-    channels: u32,
-    mp3: bool,
-) -> windows::core::Result<IMFMediaType> {
-    // SAFETY: queries Media Foundation's registered audio encoder output types.
-    unsafe {
-        if let Ok(collection) =
-            MFTranscodeGetAudioOutputAvailableTypes(subtype, MFT_ENUM_FLAG_ALL.0 as u32, None)
-        {
-            let count = collection.GetElementCount().unwrap_or(0);
-            let mut best: Option<(IMFMediaType, u32)> = None;
-            for i in 0..count {
-                let Ok(unk) = collection.GetElement(i) else { continue };
-                let Ok(mt) = unk.cast::<IMFMediaType>() else { continue };
-                let Ok(sr) = mt.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND) else { continue };
-                let Ok(ch) = mt.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS) else { continue };
-                if sr != sample_rate || ch != channels {
-                    continue;
-                }
-                if !mp3
-                    && let Ok(bits) = mt.GetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE)
-                    && bits != 16
-                {
-                    continue;
-                }
-                let byterate = mt.GetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND).unwrap_or(16_000);
-                // Prefer ~128 kbps (16000 B/s) for MP3.
-                let dist = byterate.abs_diff(16_000);
-                if best.as_ref().is_none_or(|(_, best_dist)| dist < *best_dist) {
-                    best = Some((mt, dist));
-                }
-            }
-            if let Some((chosen, _)) = best {
-                return Ok(chosen);
-            }
-        }
-
-        let mt: IMFMediaType = MFCreateMediaType()?;
-        mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
-        mt.SetGUID(&MF_MT_SUBTYPE, subtype)?;
-        mt.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, sample_rate)?;
-        mt.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, channels)?;
-        if mp3 {
-            mt.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16_000)?;
-        } else {
-            mt.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
-        }
-        Ok(mt)
-    }
-}
 
 /// Handles a completed incoming voice recording transfer off the UI thread:
 /// moves/converts the file into the Recordings folder, writes markers when
@@ -1478,7 +1244,6 @@ mod tests {
         assert!(stem.starts_with("Recording "));
         assert_eq!(stem_from_phone(&format!("{stem}.m4a")).as_deref(), Some(stem.as_str()));
 
-        #[cfg(target_os = "linux")]
         {
             let args = ffmpeg_args(
                 Path::new("-odd name!.m4a"),
@@ -1497,7 +1262,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn media_foundation_converts_m4a_to_m4a_mp3_wav_and_flac_with_markers() {
         let dir = tempfile::tempdir().unwrap();
@@ -1545,7 +1309,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(target_os = "linux", linux_ffmpeg_video))]
+    #[cfg(linux_ffmpeg_video)]
     #[test]
     fn in_process_audio_conversion_works_without_ffmpeg() {
         let dir = tempfile::tempdir().unwrap();

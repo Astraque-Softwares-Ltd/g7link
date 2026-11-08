@@ -551,7 +551,7 @@ pub fn screenshot_file(window: Window) {
     let base_name = local_timestamp_filename("Screenshot", "png");
     let dir = core_host::downloads_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        let subdir = if cfg!(windows) { "Downloads\\G7Link" } else { "Downloads/G7Link" };
+        let subdir = "Downloads/G7Link";
         tracing::warn!(error = %e, "can't create {subdir}");
         set_notice(window, "Couldn't save screenshot");
         show_message(tr!("Mirror", "The screenshot couldn't be saved."));
@@ -580,11 +580,7 @@ pub fn screenshot_file(window: Window) {
     }
     let device_name =
         core_host::host().hub.read(|s| s.name_of(&window.device)).unwrap_or_else(|| "your phone".into());
-    let toast_body = if cfg!(windows) {
-        tr!("Mirror", "Screenshot from %1, saved in Downloads\\G7Link", device_name)
-    } else {
-        tr!("Mirror", "Screenshot from %1, saved in Downloads/G7Link", device_name)
-    };
+    let toast_body = tr!("Mirror", "Screenshot from %1, saved in Downloads/G7Link", device_name);
     toast::show(Toast {
         device: TOAST_GROUP.into(),
         key: path.to_string_lossy().into_owned(),
@@ -600,11 +596,7 @@ pub fn screenshot_file(window: Window) {
         call: false,
     });
     set_notice(window, tr!("Mirror", "Saved %1", file_name));
-    let saved_msg = if cfg!(windows) {
-        tr!("Mirror", "Saved %1 to Downloads\\G7Link.", file_name)
-    } else {
-        tr!("Mirror", "Saved %1 to Downloads/G7Link.", file_name)
-    };
+    let saved_msg = tr!("Mirror", "Saved %1 to Downloads/G7Link.", file_name);
     show_message(saved_msg);
 }
 
@@ -645,7 +637,7 @@ pub fn toggle_recording(window: Window) {
     let base_name = local_timestamp_filename("Mirror", "mp4");
     let dir = core_host::downloads_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        let subdir = if cfg!(windows) { "Downloads\\G7Link" } else { "Downloads/G7Link" };
+        let subdir = "Downloads/G7Link";
         tracing::warn!(error = %e, "can't create {subdir}");
         set_notice(window, "Couldn't start recording");
         show_message(tr!("Mirror", "Couldn't start recording."));
@@ -733,11 +725,7 @@ pub fn stop_recording(window: Window) {
                     .hub
                     .read(|s| s.name_of(&window.device))
                     .unwrap_or_else(|| "your phone".into());
-                let toast_body = if cfg!(windows) {
-                    tr!("Mirror", "Recording from %1, saved in Downloads\\G7Link", device_name)
-                } else {
-                    tr!("Mirror", "Recording from %1, saved in Downloads/G7Link", device_name)
-                };
+                let toast_body = tr!("Mirror", "Recording from %1, saved in Downloads/G7Link", device_name);
                 toast::show(Toast {
                     device: TOAST_GROUP.into(),
                     key: path.to_string_lossy().into_owned(),
@@ -756,11 +744,7 @@ pub fn stop_recording(window: Window) {
                     call: false,
                 });
                 set_notice(window, tr!("Mirror", "Saved %1", file_name));
-                let saved_msg = if cfg!(windows) {
-                    tr!("Mirror", "Saved %1 to Downloads\\G7Link.", file_name)
-                } else {
-                    tr!("Mirror", "Saved %1 to Downloads/G7Link.", file_name)
-                };
+                let saved_msg = tr!("Mirror", "Saved %1 to Downloads/G7Link.", file_name);
                 show_message(saved_msg);
             }
             Ok(Err(msg)) => {
@@ -1541,14 +1525,7 @@ pub(crate) fn parse_dropped_file_urls(raw_urls: &[String]) -> (Option<Window>, V
             .map(|p| String::from(&p))
             .filter(|p| !p.is_empty())
             .or_else(|| {
-                if cfg!(windows) {
-                    trimmed
-                        .strip_prefix("file:///")
-                        .or_else(|| trimmed.strip_prefix("file://"))
-                        .map(|s| s.replace('/', "\\"))
-                } else {
-                    trimmed.strip_prefix("file://").map(str::to_owned)
-                }
+                trimmed.strip_prefix("file://").map(str::to_owned)
             });
         let pb = PathBuf::from(local.as_deref().unwrap_or(trimmed));
         if pb.exists() {
@@ -1708,101 +1685,9 @@ pub fn normalize_gamepad_state(raw: GamepadState) -> GamepadState {
     }
 }
 
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn poll_xinput_gamepad() -> Option<GamepadState> {
-    use windows::Win32::UI::Input::XboxController::{XINPUT_STATE, XInputGetState};
-    for user_index in 0..4u32 {
-        let mut xstate = XINPUT_STATE::default();
-        // SAFETY: xstate is a valid stack-allocated XINPUT_STATE for slot 0..3.
-        if unsafe { XInputGetState(user_index, &mut xstate) } == 0 {
-            let gp = xstate.Gamepad;
-            return Some(normalize_gamepad_state(GamepadState {
-                buttons: gp.wButtons.0,
-                lx: gp.sThumbLX,
-                ly: gp.sThumbLY,
-                rx: gp.sThumbRX,
-                ry: gp.sThumbRY,
-                lt: gp.bLeftTrigger,
-                rt: gp.bRightTrigger,
-            }));
-        }
-    }
-    None
-}
 
-#[cfg(windows)]
-fn poll_winrt_gamepad() -> Option<GamepadState> {
-    use windows::Gaming::Input::{Gamepad, GamepadButtons};
-    let gamepads = Gamepad::Gamepads().ok()?;
-    if gamepads.Size().ok()? == 0 {
-        return None;
-    }
-    let pad = gamepads.GetAt(0).ok()?;
-    let reading = pad.GetCurrentReading().ok()?;
-    let b = reading.Buttons;
-    let mut buttons = 0u16;
-    if (b & GamepadButtons::DPadUp) != GamepadButtons::None {
-        buttons |= 0x0001;
-    }
-    if (b & GamepadButtons::DPadDown) != GamepadButtons::None {
-        buttons |= 0x0002;
-    }
-    if (b & GamepadButtons::DPadLeft) != GamepadButtons::None {
-        buttons |= 0x0004;
-    }
-    if (b & GamepadButtons::DPadRight) != GamepadButtons::None {
-        buttons |= 0x0008;
-    }
-    if (b & GamepadButtons::Menu) != GamepadButtons::None {
-        buttons |= 0x0010;
-    }
-    if (b & GamepadButtons::View) != GamepadButtons::None {
-        buttons |= 0x0020;
-    }
-    if (b & GamepadButtons::LeftThumbstick) != GamepadButtons::None {
-        buttons |= 0x0040;
-    }
-    if (b & GamepadButtons::RightThumbstick) != GamepadButtons::None {
-        buttons |= 0x0080;
-    }
-    if (b & GamepadButtons::LeftShoulder) != GamepadButtons::None {
-        buttons |= 0x0100;
-    }
-    if (b & GamepadButtons::RightShoulder) != GamepadButtons::None {
-        buttons |= 0x0200;
-    }
-    if (b & GamepadButtons::A) != GamepadButtons::None {
-        buttons |= 0x1000;
-    }
-    if (b & GamepadButtons::B) != GamepadButtons::None {
-        buttons |= 0x2000;
-    }
-    if (b & GamepadButtons::X) != GamepadButtons::None {
-        buttons |= 0x4000;
-    }
-    if (b & GamepadButtons::Y) != GamepadButtons::None {
-        buttons |= 0x8000;
-    }
-    let scale_axis = |v: f64| -> i16 { (v.clamp(-1.0, 1.0) * f64::from(i16::MAX)).round() as i16 };
-    let scale_trigger = |v: f64| -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 };
-    Some(normalize_gamepad_state(GamepadState {
-        buttons,
-        lx: scale_axis(reading.LeftThumbstickX),
-        ly: scale_axis(reading.LeftThumbstickY),
-        rx: scale_axis(reading.RightThumbstickX),
-        ry: scale_axis(reading.RightThumbstickY),
-        lt: scale_trigger(reading.LeftTrigger),
-        rt: scale_trigger(reading.RightTrigger),
-    }))
-}
 
-#[cfg(windows)]
-fn poll_gamepad() -> Option<GamepadState> {
-    poll_xinput_gamepad().or_else(poll_winrt_gamepad)
-}
 
-#[cfg(target_os = "linux")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct JsEvent {
@@ -1812,7 +1697,6 @@ struct JsEvent {
     number: u8,
 }
 
-#[cfg(target_os = "linux")]
 fn apply_js_event(state: &mut GamepadState, ev: JsEvent) {
     let kind = ev.type_ & !0x80; // Mask out JS_EVENT_INIT (0x80).
     match kind {
@@ -1879,20 +1763,17 @@ fn apply_js_event(state: &mut GamepadState, ev: JsEvent) {
     }
 }
 
-#[cfg(target_os = "linux")]
 struct LinuxGamepadPoller {
     fd: std::ffi::c_int,
     state: GamepadState,
 }
 
-#[cfg(target_os = "linux")]
 impl Default for LinuxGamepadPoller {
     fn default() -> Self {
         Self { fd: -1, state: GamepadState::default() }
     }
 }
 
-#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 fn poll_gamepad() -> Option<GamepadState> {
     static POLLER: Mutex<LinuxGamepadPoller> = Mutex::new(LinuxGamepadPoller {
@@ -1946,10 +1827,6 @@ fn poll_gamepad() -> Option<GamepadState> {
     Some(normalize_gamepad_state(poller.state))
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-fn poll_gamepad() -> Option<GamepadState> {
-    None
-}
 
 fn ensure_gamepad_loop() {
     static RUNNING: AtomicBool = AtomicBool::new(false);
@@ -2625,7 +2502,6 @@ mod tests {
         assert!(saved_apps(dir.path(), &phone).is_none());
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn linux_js_event_updates_buttons_and_axes() {
         use super::{JsEvent, apply_js_event};

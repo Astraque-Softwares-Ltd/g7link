@@ -48,7 +48,6 @@ fn select_translation_dir(exe_dir: &Path) -> PathBuf {
     if has_qm_files(exe_dir) {
         return exe_dir.to_path_buf();
     }
-    #[cfg(target_os = "linux")]
     {
         if let Some(rel_share) = exe_dir.parent().map(|p| p.join("share").join("g7link"))
             && has_qm_files(&rel_share)

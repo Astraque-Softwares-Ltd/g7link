@@ -18,7 +18,6 @@ pub fn write_png(path: &Path, size: u32) -> Result<()> {
     }
     let bitmap = Bitmap { width: size, height: size, bgra };
     let png = encode_png(&bitmap)?;
-    #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -43,12 +42,5 @@ pub fn write_png(path: &Path, size: u32) -> Result<()> {
             .open(path)?;
         file.write_all(&png)?;
         Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        fs::write(path, png)
     }
 }

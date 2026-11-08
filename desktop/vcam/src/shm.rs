@@ -10,21 +10,6 @@ use std::sync::{
 
 use ab_glyph::{Font, FontRef, GlyphId, PxScale, ScaleFont, point};
 
-#[cfg(windows)]
-use windows::{
-    Win32::{
-        Foundation::{CloseHandle, HANDLE, HLOCAL, INVALID_HANDLE_VALUE, LocalFree},
-        Security::{
-            Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
-            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-        },
-        System::Memory::{
-            CreateFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
-            OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
-        },
-    },
-    core::{PCWSTR, w},
-};
 
 /// The mapping the camera and the app share. The camera's media source runs
 /// inside Windows' Frame Server service, in another session than the app, so
@@ -35,14 +20,10 @@ pub const DEFAULT_MAPPING_NAME: &str = "Global\\G7LinkVcamFrame_v2";
 /// created (the media source running in-process, as in tests).
 pub const LOCAL_MAPPING_NAME: &str = "Local\\G7LinkVcamFrame_v2";
 /// Wide-string mapping name for local v2 virtual camera frame transport.
-#[cfg(windows)]
-pub const MAPPING_NAME: PCWSTR = w!("Local\\G7LinkVirtualCamera_v2");
 
 /// Who may use the global mapping: the system, the Frame Server's
 /// LocalService account and administrators fully, signed-in (interactive)
 /// users read and write (the app), nobody else.
-#[cfg(windows)]
-const GLOBAL_SDDL: PCWSTR = w!("D:P(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;BA)(A;;GRGW;;;IU)");
 
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
@@ -79,15 +60,8 @@ struct CachedLiveFrame {
 }
 
 /// Shared-memory mapping handle and view. Safe to share across threads.
-#[cfg(windows)]
-pub struct SharedFrameMapping {
-    handle: HANDLE,
-    view: MEMORY_MAPPED_VIEW_ADDRESS,
-    last_read: Mutex<Option<CachedLiveFrame>>,
-}
 
 /// Shared-memory mapping file descriptor and mapped view on Unix (`/dev/shm`).
-#[cfg(unix)]
 pub struct SharedFrameMapping {
     fd: std::os::fd::OwnedFd,
     view: *mut std::ffi::c_void,
@@ -101,21 +75,13 @@ unsafe impl Send for SharedFrameMapping {}
 #[allow(unsafe_code)]
 unsafe impl Sync for SharedFrameMapping {}
 
-#[cfg(windows)]
-impl std::fmt::Debug for SharedFrameMapping {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SharedFrameMapping").field("view", &self.view.Value).finish()
-    }
-}
 
-#[cfg(unix)]
 impl std::fmt::Debug for SharedFrameMapping {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedFrameMapping").field("view", &self.view).finish()
     }
 }
 
-#[cfg(unix)]
 #[allow(unsafe_code)]
 fn unix_shm_path(name: &str) -> std::path::PathBuf {
     use std::os::unix::fs::MetadataExt;
@@ -142,188 +108,7 @@ fn unix_shm_path(name: &str) -> std::path::PathBuf {
     base.join(file_name)
 }
 
-#[cfg(windows)]
-impl SharedFrameMapping {
-    pub(crate) fn control_failed(&self) -> bool {
-        self.header()._pad.load(Ordering::Acquire) != 0
-    }
 
-    pub(crate) fn fail_control(&self) {
-        self.header()._pad.store(1, Ordering::Release);
-    }
-    pub(crate) fn fail_control_code(&self, code: i32) {
-        self.header()._pad.store(code as u32, Ordering::Release);
-    }
-
-    pub(crate) fn control_code(&self) -> i32 {
-        self.header()._pad.load(Ordering::Acquire) as i32
-    }
-
-    #[cfg(test)]
-    pub(crate) fn control_stats(&self) -> (u32, u32) {
-        (self.header().height.load(Ordering::Relaxed), self.header().stride.load(Ordering::Relaxed))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn count_gpu_sample(&self) {
-        self.header().height.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn count_download(&self) {
-        self.header().stride.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Binary control messages use their own mapping name, never the RGB mapping.
-    /// A busy writer is distinct from idle so GPU readers can retain a snapshot.
-    #[allow(unsafe_code)]
-    pub(crate) fn read_control(&self) -> Option<(u64, Vec<u8>)> {
-        let h = self.header();
-        for _ in 0..3 {
-            let seq = h.seq.load(Ordering::Acquire);
-            if seq & 1 != 0 {
-                continue;
-            }
-            if h.active.load(Ordering::Acquire) == 0 {
-                return Some((seq, Vec::new()));
-            }
-            let len = h.width.load(Ordering::Relaxed) as usize;
-            if len > 256 {
-                return Some((seq, Vec::new()));
-            }
-            let bytes = unsafe { std::slice::from_raw_parts(self.payload_ptr(), len) }.to_vec();
-            std::sync::atomic::fence(Ordering::Acquire);
-            if seq == h.seq.load(Ordering::Acquire) {
-                return Some((seq, bytes));
-            }
-        }
-        None
-    }
-
-    #[allow(unsafe_code)]
-    pub(crate) fn write_control(&self, bytes: &[u8]) {
-        assert!(bytes.len() <= 256);
-        let h = self.header();
-        let seq = h.seq.load(Ordering::Relaxed) | 1;
-        h.seq.store(seq, Ordering::Release);
-        std::sync::atomic::fence(Ordering::AcqRel);
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.payload_ptr(), bytes.len());
-        }
-        h.width.store(bytes.len() as u32, Ordering::Relaxed);
-        h.active.store(1, Ordering::Relaxed);
-        h.seq.store(seq.wrapping_add(1), Ordering::Release);
-    }
-
-    /// Opens or creates the shared-memory frame mapping with `name` (a
-    /// `Global\` name gets [`GLOBAL_SDDL`]'s permissions).
-    #[allow(unsafe_code)]
-    pub fn open_or_create(name: &str) -> windows::core::Result<Self> {
-        Self::create_sized(name, TOTAL_MAPPING_BYTES)
-    }
-    pub(crate) fn open_or_create_control(name: &str) -> windows::core::Result<Self> {
-        Self::create_sized(name, HEADER_BYTES + 256)
-    }
-    #[allow(unsafe_code)]
-    fn create_sized(name: &str, bytes: usize) -> windows::core::Result<Self> {
-        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut sd = PSECURITY_DESCRIPTOR::default();
-        if name.starts_with("Global\\") {
-            // SAFETY: a constant SDDL string; the descriptor is freed below.
-            unsafe {
-                ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    GLOBAL_SDDL,
-                    SDDL_REVISION_1,
-                    &mut sd,
-                    None,
-                )?;
-            }
-        }
-        let attrs = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: sd.0,
-            bInheritHandle: false.into(),
-        };
-        // SAFETY: `CreateFileMappingW` with `INVALID_HANDLE_VALUE` creates or opens
-        // a pagefile-backed named mapping of `TOTAL_MAPPING_BYTES` bytes; `attrs`
-        // and the descriptor it points to outlive the call.
-        let handle = unsafe {
-            let handle = CreateFileMappingW(
-                INVALID_HANDLE_VALUE,
-                (!sd.0.is_null()).then_some(&raw const attrs),
-                PAGE_READWRITE,
-                0,
-                bytes as u32,
-                PCWSTR(wide.as_ptr()),
-            );
-            if !sd.0.is_null() {
-                let _ = LocalFree(Some(HLOCAL(sd.0)));
-            }
-            handle?
-        };
-        Self::map(handle, bytes)
-    }
-
-    /// For the camera's media source: the global mapping, or the caller's
-    /// session's when it may not create global objects (in-process tests).
-    pub fn for_camera(name: &str) -> windows::core::Result<Self> {
-        if name == DEFAULT_MAPPING_NAME {
-            Self::open_or_create(DEFAULT_MAPPING_NAME).or_else(|_| Self::open_or_create(LOCAL_MAPPING_NAME))
-        } else {
-            Self::open_or_create(name)
-        }
-    }
-
-    /// Opens an existing mapping (the app joining the camera's global one).
-    #[allow(unsafe_code)]
-    pub fn open_existing(name: &str) -> windows::core::Result<Self> {
-        Self::open_sized(name, TOTAL_MAPPING_BYTES)
-    }
-    pub(crate) fn open_existing_control(name: &str) -> windows::core::Result<Self> {
-        Self::open_sized(name, HEADER_BYTES + 256)
-    }
-    #[allow(unsafe_code)]
-    fn open_sized(name: &str, bytes: usize) -> windows::core::Result<Self> {
-        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY: opens a named mapping by a NUL-terminated name.
-        let handle =
-            unsafe { OpenFileMappingW((FILE_MAP_READ | FILE_MAP_WRITE).0, false, PCWSTR(wide.as_ptr()))? };
-        Self::map(handle, bytes)
-    }
-
-    #[allow(unsafe_code)]
-    fn map(handle: HANDLE, bytes: usize) -> windows::core::Result<Self> {
-        // SAFETY: maps the whole section, which is `TOTAL_MAPPING_BYTES` long
-        // whichever side created it (both use the same size).
-        unsafe {
-            // Read and write only: that's all the app is granted on the global one.
-            let view = MapViewOfFile(handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, bytes);
-            if view.Value.is_null() {
-                let err = windows::core::Error::from_thread();
-                let _ = CloseHandle(handle);
-                return Err(err);
-            }
-            let mapping = Self { handle, view, last_read: Mutex::new(None) };
-            mapping.ensure_initialized();
-            Ok(mapping)
-        }
-    }
-
-    #[allow(unsafe_code)]
-    fn header(&self) -> &SharedHeader {
-        // SAFETY: `self.view.Value` points to a valid mapping of `TOTAL_MAPPING_BYTES`
-        // aligned to page boundaries (>= 64 bytes).
-        unsafe { &*(self.view.Value as *const SharedHeader) }
-    }
-
-    #[allow(unsafe_code)]
-    fn payload_ptr(&self) -> *mut u8 {
-        // SAFETY: `HEADER_BYTES` is within `TOTAL_MAPPING_BYTES`.
-        unsafe { (self.view.Value as *mut u8).add(HEADER_BYTES) }
-    }
-}
-
-#[cfg(unix)]
 impl SharedFrameMapping {
     /// Opens or creates the shared-memory frame mapping with `name` in
     /// `$XDG_RUNTIME_DIR` or `/dev/shm` with `0600` owner-only permissions.
@@ -593,13 +378,6 @@ impl SharedFrameMapping {
 impl Drop for SharedFrameMapping {
     #[allow(unsafe_code)]
     fn drop(&mut self) {
-        #[cfg(windows)]
-        // SAFETY: paired with `MapViewOfFile` and `CreateFileMappingW`.
-        unsafe {
-            let _ = UnmapViewOfFile(self.view);
-            let _ = CloseHandle(self.handle);
-        }
-        #[cfg(unix)]
         // SAFETY: paired with `libc::mmap(TOTAL_MAPPING_BYTES)`. `self.fd` is closed by `OwnedFd::drop`.
         unsafe {
             let _ = libc::munmap(self.view, TOTAL_MAPPING_BYTES);
@@ -1186,7 +964,6 @@ mod tests {
         assert!(LOCAL_MAPPING_NAME.ends_with("_v2"));
     }
 
-    #[cfg(unix)]
     #[test]
     #[allow(unsafe_code)]
     fn unix_shm_enforces_owner_only_permissions_and_uid_scope() {

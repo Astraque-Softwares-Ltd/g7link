@@ -400,13 +400,6 @@ fn join_phone_path(folder: &str, rel_path: &str) -> String {
     }
 }
 
-/// Whether a phone file can be saved here under the same name. Windows
-/// refuses `:`, reserved names such as `CON`, and trailing dots or spaces, and
-/// `C:x` would even resolve to a path on drive C outside the sync folder.
-fn storable_here(name: &str) -> bool {
-    !cfg!(windows) || g7link_core::storable_name(name) == name
-}
-
 /// A phone folder's files, and whether all of its subfolders could be read.
 async fn list_phone_entries(
     node: &Node,
@@ -432,7 +425,6 @@ async fn list_phone_entries(
             if entry.name.starts_with('.')
                 || entry.name.ends_with(".g7link.part")
                 || entry.name.contains(" (conflict-")
-                || !storable_here(&entry.name)
             {
                 continue;
             }
@@ -869,16 +861,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(windows)]
-    fn phone_names_windows_cannot_store_are_skipped() {
-        assert!(storable_here("IMG_001.jpg"));
-        assert!(storable_here("Trip 2026"));
-        assert!(!storable_here("C:evil.txt"));
-        assert!(!storable_here("notes.txt:stream"));
-        assert!(!storable_here("CON"));
-        assert!(!storable_here("aux.txt"));
-        assert!(!storable_here("trailing."));
-    }
 
     fn entry(rel_path: &str, size: u64, modified_ms: i64) -> SyncEntry {
         SyncEntry { rel_path: rel_path.into(), size, modified_ms }

@@ -197,7 +197,6 @@ fn has_command(cmd: &str) -> bool {
     if cmd.is_empty() || cmd.contains('/') || cmd.contains('\0') {
         return false;
     }
-    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let extra = [Path::new("/usr/sbin"), Path::new("/sbin"), Path::new("/usr/bin"), Path::new("/bin")];
@@ -207,13 +206,8 @@ fn has_command(cmd: &str) -> bool {
             if !m.is_file() {
                 return false;
             }
-            #[cfg(unix)]
             {
                 m.mode() & 0o111 != 0
-            }
-            #[cfg(not(unix))]
-            {
-                true
             }
         })
     })

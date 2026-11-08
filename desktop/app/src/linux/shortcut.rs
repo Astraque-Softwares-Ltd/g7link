@@ -57,7 +57,6 @@ fn sanitize_exec_args(s: &str) -> String {
 }
 
 fn write_file_nofollow(path: &Path, content: &str, mode: u32) -> Result<()> {
-    #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -71,11 +70,6 @@ fn write_file_nofollow(path: &Path, content: &str, mode: u32) -> Result<()> {
         file.write_all(content.as_bytes())?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
         Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = mode;
-        std::fs::write(path, content)
     }
 }
 
@@ -553,7 +547,6 @@ mod tests {
         assert!(kio_p2.exists());
         assert!(act_p1.exists());
 
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let nautilus_mode = std::fs::metadata(&nautilus_p1).unwrap().permissions().mode();

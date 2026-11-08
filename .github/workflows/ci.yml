@@ -62,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v7
       - name: Install the pinned Rust toolchain
@@ -94,158 +94,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
     steps:
       - run: echo "Only docs changed; nothing to build or test."
-
-  # The Windows app's lints and tests, and its release build and installer,
-  # run side by side: each takes about as long as the other.
-  desktop-checks:
-    name: Windows app (x64) checks
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the pinned Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          cache: true
-          # Qt 6.12's repository layout needs a current aqtinstall.
-          aqtsource: git+https://github.com/miurahr/aqtinstall.git
-      - name: Clippy
-        run: cargo clippy --locked -p g7link-desktop -p g7link-vcam -p s1-qt-rust --all-targets -- -D warnings
-      - name: Tests
-        run: cargo test --locked -p g7link-desktop -p g7link-vcam
-      - name: QML tests
-        shell: pwsh
-        run: ./scripts/qml-tests.ps1
-
-  desktop:
-    name: Windows app (x64)
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the pinned Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          cache: true
-          # Qt 6.12's repository layout needs a current aqtinstall.
-          aqtsource: git+https://github.com/miurahr/aqtinstall.git
-      - name: Release build
-        run: cargo build --locked --release -p g7link-desktop -p g7link-vcam
-      - name: Install NSIS
-        shell: pwsh
-        run: ./scripts/install-nsis.ps1
-      - name: Installer
-        shell: pwsh
-        run: ./scripts/package.ps1 -SkipBuild
-      - name: Open the main window, with no QML warnings
-        shell: pwsh
-        run: ./scripts/ui-check.ps1
-      - name: Install, run and uninstall it
-        shell: pwsh
-        run: ./scripts/smoke-installer.ps1
-      - uses: actions/upload-artifact@v7
-        with:
-          name: g7link-windows-x64
-          path: target/package/*-setup.exe
-          retention-days: 14
-
-  desktop-arm64:
-    name: Windows app (ARM64 cross build)
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the pinned Rust toolchain and the ARM64 target
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          rustup target add aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Qt (ARM64, with the x64 host tools)
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_arm64_cross_compiled
-          cache: true
-          aqtsource: git+https://github.com/miurahr/aqtinstall.git
-      - name: Install NSIS
-        shell: pwsh
-        run: ./scripts/install-nsis.ps1
-      - name: Build and Package
-        shell: pwsh
-        run: ./scripts/package.ps1 -Arch arm64
-      - uses: actions/upload-artifact@v7
-        with:
-          name: g7link-windows-arm64
-          path: target/package/*-setup.exe
-          retention-days: 14
-
-  desktop-macos:
-    name: macOS app
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the pinned Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: mac
-          target: desktop
-          arch: clang_64
-          cache: true
-          aqtsource: git+https://github.com/miurahr/aqtinstall.git
-      - name: Clippy
-        run: cargo clippy --locked -p g7link-desktop --all-targets -- -D warnings
-      - name: Tests
-        run: cargo test --locked -p g7link-desktop
-
-  desktop-macos-release:
-    name: macOS app (release build)
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install the pinned Rust toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: mac
-          target: desktop
-          arch: clang_64
-          cache: true
-          aqtsource: git+https://github.com/miurahr/aqtinstall.git
-      - name: Release build
-        run: cargo build --locked --release -p g7link-desktop
 
   desktop-linux:
     name: Linux app (x64)
@@ -289,7 +140,7 @@ jobs:
           cache: true
           aqtsource: git+https://github.com/miurahr/aqtinstall.git
       - name: Clippy
-        run: cargo clippy --locked -p g7link-desktop -p g7link-vcam -p s1-qt-rust --all-targets -- -D warnings
+        run: cargo clippy --locked -p g7link-desktop -p g7link-vcam --all-targets -- -D warnings
       - name: Tests
         run: cargo test --locked -p g7link-desktop -p g7link-vcam
       - name: Video adapter fallback

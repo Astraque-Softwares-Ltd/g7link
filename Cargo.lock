@@ -2443,7 +2443,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "windows",
 ]
 
 [[package]]
@@ -2478,7 +2477,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "windows",
 ]
 
 [[package]]
@@ -2511,9 +2509,6 @@ dependencies = [
  "tracing-subscriber",
  "wayland-client",
  "wayland-protocols",
- "windows",
- "windows-collections",
- "windows-core",
  "zbus",
 ]
 
@@ -2553,8 +2548,6 @@ dependencies = [
  "ab_glyph",
  "embed-resource",
  "libc",
- "windows",
- "windows-core",
 ]
 
 [[package]]
@@ -3549,17 +3542,6 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
-name = "s1-qt-rust"
-version = "0.0.0"
-dependencies = [
- "cxx",
- "cxx-qt",
- "cxx-qt-build",
- "cxx-qt-lib",
- "windows",
-]
 
 [[package]]
 name = "same-file"

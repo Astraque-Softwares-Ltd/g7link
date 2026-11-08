@@ -50,7 +50,6 @@ pub fn is_elevated() -> bool {
 }
 
 fn has_pkexec() -> bool {
-    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
 
     let path_var = std::env::var_os("PATH").unwrap_or_default();
@@ -61,13 +60,8 @@ fn has_pkexec() -> bool {
             if !m.is_file() {
                 return false;
             }
-            #[cfg(unix)]
             {
                 m.mode() & 0o111 != 0
-            }
-            #[cfg(not(unix))]
-            {
-                true
             }
         })
     })

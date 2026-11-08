@@ -2051,13 +2051,6 @@ impl qobject::AppController {
                 .map(|p| String::from(&p))
                 .filter(|p| !p.is_empty())
                 .or_else(|| {
-                    #[cfg(windows)]
-                    {
-                        raw.strip_prefix("file:///")
-                            .or_else(|| raw.strip_prefix("file://"))
-                            .map(|s| s.replace('/', "\\"))
-                    }
-                    #[cfg(not(windows))]
                     {
                         raw.strip_prefix("file://").map(str::to_owned)
                     }

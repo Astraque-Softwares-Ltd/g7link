@@ -119,7 +119,7 @@ fn default_true() -> bool {
 }
 
 fn default_close_to_tray() -> bool {
-    !cfg!(target_os = "macos")
+    true
 }
 
 fn default_webcam_camera() -> String {
@@ -225,7 +225,6 @@ pub fn forward_pc_notifications_to_phone() -> bool {
 
 pub fn set_forward_pc_notifications_to_phone(on: bool) {
     FORWARD_PC_NOTIFICATIONS.store(on, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(target_os = "linux")]
     if on {
         crate::pc_notifications::start_listener();
     }
@@ -749,10 +748,6 @@ impl Settings {
             self.window_x = None;
             self.window_y = None;
         }
-        #[cfg(target_os = "macos")]
-        {
-            self.close_to_tray = false;
-        }
         self
     }
 
@@ -857,14 +852,12 @@ impl Settings {
 pub(crate) fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
     let file = options.open(path)?;
     // The mode above only applies to a new file; an older one keeps its own.
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -889,7 +882,6 @@ mod tests {
         assert!(answered.star_prompt_done);
     }
 
-    #[cfg(unix)]
     #[test]
     fn settings_and_token_files_are_private() {
         use std::os::unix::fs::PermissionsExt;

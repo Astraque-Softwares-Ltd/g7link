@@ -177,7 +177,6 @@ fn open_private_temp_file(path: &Path) -> std::io::Result<File> {
     {
         fs::create_dir_all(parent)?;
     }
-    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         fs::OpenOptions::new()
@@ -188,10 +187,6 @@ fn open_private_temp_file(path: &Path) -> std::io::Result<File> {
             .custom_flags(libc::O_NOFOLLOW)
             .mode(0o600)
             .open(path)
-    }
-    #[cfg(not(unix))]
-    {
-        fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)
     }
 }
 

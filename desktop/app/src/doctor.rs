@@ -58,10 +58,8 @@ pub struct Facts {
     /// Paired devices: link and discovery diagnostics.
     pub devices: Vec<DeviceFact>,
     /// Optional helper tools missing from `PATH` on Linux.
-    #[cfg(target_os = "linux")]
     pub missing_tools: Vec<&'static str>,
     /// Linux-specific system readiness checks: `(id, title, ok, detail, fix)`.
-    #[cfg(target_os = "linux")]
     pub linux_checks: Vec<(String, String, bool, String, Option<&'static str>)>,
 }
 
@@ -96,9 +94,7 @@ pub fn gather() -> Facts {
         networks,
         firewall,
         devices,
-        #[cfg(target_os = "linux")]
         missing_tools: windows_checks::missing_tools(),
-        #[cfg(target_os = "linux")]
         linux_checks: windows_checks::linux_checks(),
     }
 }
@@ -223,17 +219,10 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
         checks.push(check("network", Outcome::Ok, title, "", None));
     }
     if let Some((name, _)) = facts.networks.iter().find(|(_, trusted)| !trusted) {
-        #[cfg(target_os = "linux")]
         let profile_detail = tr!(
             "Doctor",
             "On public networks the firewall keeps other devices from finding this PC. If it's your home or work \
              network, open network settings and set its firewall zone to Home or Trusted."
-        );
-        #[cfg(not(target_os = "linux"))]
-        let profile_detail = tr!(
-            "Doctor",
-            "On public networks Windows keeps other devices from finding this PC. If it's your home or work \
-             network, set it to Private."
         );
         checks.push(check(
             "profile",
@@ -248,14 +237,10 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
     match facts.firewall {
         None => {}
         Some(f) if !f.on => {
-            #[cfg(target_os = "linux")]
             let title = tr!("Doctor", "The firewall is off for this network");
-            #[cfg(not(target_os = "linux"))]
-            let title = tr!("Doctor", "Windows Firewall is off for this network");
             checks.push(check("firewall", Outcome::Ok, title, "", None));
         }
         Some(f) if f.blocked => {
-            #[cfg(target_os = "linux")]
             let (title, detail) = (
                 tr!("Doctor", "The firewall blocks G7 Link"),
                 tr!(
@@ -263,21 +248,10 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
                     "A firewall rule blocks incoming G7 Link connections. Allow it, and your phone can connect."
                 ),
             );
-            #[cfg(not(target_os = "linux"))]
-            let (title, detail) = (
-                tr!("Doctor", "Windows Firewall blocks G7 Link"),
-                tr!(
-                    "Doctor",
-                    "Someone chose not to allow it when Windows asked. Allow it, and your phone can connect."
-                ),
-            );
             checks.push(check("firewall", Outcome::Fail, title, detail, Some("firewall")));
         }
         Some(f) if !f.allowed => {
-            #[cfg(target_os = "linux")]
             let title = tr!("Doctor", "G7 Link isn't allowed through the firewall");
-            #[cfg(not(target_os = "linux"))]
-            let title = tr!("Doctor", "G7 Link isn't allowed through Windows Firewall");
             checks.push(check(
                 "firewall",
                 Outcome::Warn,
@@ -287,10 +261,7 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
             ));
         }
         Some(_) => {
-            #[cfg(target_os = "linux")]
             let title = tr!("Doctor", "The firewall lets your phone connect");
-            #[cfg(not(target_os = "linux"))]
-            let title = tr!("Doctor", "Windows Firewall lets your phone connect");
             checks.push(check("firewall", Outcome::Ok, title, "", None));
         }
     }
@@ -306,7 +277,6 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
         ));
     }
 
-    #[cfg(target_os = "linux")]
     if !facts.missing_tools.is_empty() {
         let list = facts.missing_tools.join(", ");
         checks.push(check(
@@ -320,7 +290,6 @@ pub fn diagnose(facts: &Facts, now_secs: i64) -> Vec<Check> {
         ));
     }
 
-    #[cfg(target_os = "linux")]
     for (id, title, ok, detail, fix) in &facts.linux_checks {
         checks.push(check(
             id,
@@ -490,10 +459,7 @@ pub fn fix(id: &str) -> bool {
             true
         }
         "firewall-settings" => windows_checks::open_firewall_settings(),
-        #[cfg(target_os = "linux")]
         "network-settings" => windows_checks::open_network_settings(),
-        #[cfg(not(target_os = "linux"))]
-        "network-settings" => crate::win::shell::open_url("ms-settings:network-status").is_ok(),
         "reconnect" => {
             if let Some(node) = core_host::node() {
                 core_host::spawn(async move { node.refresh().await });
@@ -527,9 +493,7 @@ mod tests {
             networks: vec![("Home".into(), true)],
             firewall: Some(windows_checks::Firewall { on: true, allowed: true, blocked: false }),
             devices: vec![device_fact("Pixel", LinkState::Online { path: ConnectionPath::Lan, rtt_ms: 4 })],
-            #[cfg(target_os = "linux")]
             missing_tools: Vec::new(),
-            #[cfg(target_os = "linux")]
             linux_checks: Vec::new(),
         }
     }
@@ -687,7 +651,6 @@ mod tests {
         assert_eq!(ago(3 * 86400), "3 days ago");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn includes_linux_readiness_checks_and_platform_titles() {
         let mut f = facts();

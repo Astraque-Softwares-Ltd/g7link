@@ -25,8 +25,6 @@
 //! update didn't go through.
 
 use crate::i18n::tr;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
@@ -96,10 +94,6 @@ pub const SERVICE_ARG: &str = "--update-service";
 const QUIET_FOR: Duration = Duration::from_secs(10 * 60);
 /// While an update waits for a quiet moment, how often to look for one.
 const LOOK_FOR_QUIET: Duration = Duration::from_secs(5 * 60);
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-#[cfg(windows)]
-const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 static AUTO: AtomicBool = AtomicBool::new(true);
 static AUTO_INSTALL: AtomicBool = AtomicBool::new(true);
@@ -139,37 +133,13 @@ pub fn set_channel(channel: Channel) {
 }
 
 /// Where the app tells the update task which channel to follow.
-#[cfg(windows)]
-fn service_channel_file() -> PathBuf {
-    staging_dir().with_file_name("update-channel")
-}
 
-#[cfg(windows)]
-fn write_service_channel(channel: Channel) {
-    let path = service_channel_file();
-    if std::fs::read_to_string(&path).ok().and_then(|c| Channel::parse(&c)) == Some(channel) {
-        return;
-    }
-    let written = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, channel.as_str()));
-    if let Err(e) = written {
-        tracing::warn!(error = %e, "the update task won't know the channel");
-    }
-}
 
-#[cfg(not(windows))]
 fn write_service_channel(_channel: Channel) {}
 
 /// The channel for the update task: any user may set it, and it only picks
 /// between this repository's own builds, which the task checks as always.
-#[cfg(windows)]
-fn read_service_channel() -> Option<Channel> {
-    Channel::parse(&std::fs::read_to_string(service_channel_file()).ok()?)
-}
 
-#[cfg(not(windows))]
 fn read_service_channel() -> Option<Channel> {
     None
 }
@@ -405,45 +375,28 @@ fn is_installer_name(name: &str, suffix: &str) -> bool {
 }
 
 /// The files this install takes, best first.
-#[cfg(windows)]
-fn install_suffixes() -> &'static [&'static str] {
-    std::slice::from_ref(&INSTALLER_SUFFIX)
-}
 
-#[cfg(target_os = "linux")]
 fn install_suffixes() -> &'static [&'static str] {
     linux_suffixes(detect_linux_install_kind())
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-fn install_suffixes() -> &'static [&'static str] {
-    &[]
-}
 
-#[cfg(windows)]
-const INSTALLER_SUFFIX: &str =
-    if cfg!(target_arch = "aarch64") { "-arm64-setup.exe" } else { "-x64-setup.exe" };
 
 // Each kind of install only takes its own kind of file: a .deb installed
 // under a running AppImage, say, leaves the AppImage as old as it was (and
 // the update is offered again), and a tarball beside a package is a second
 // copy in /opt.
-#[cfg(target_os = "linux")]
 const APPIMAGE_SUFFIXES: &[&str] =
     if cfg!(target_arch = "aarch64") { &["-aarch64.AppImage"] } else { &["-x86_64.AppImage"] };
 
-#[cfg(target_os = "linux")]
 const DEB_SUFFIXES: &[&str] = if cfg!(target_arch = "aarch64") { &["_arm64.deb"] } else { &["_amd64.deb"] };
 
-#[cfg(target_os = "linux")]
 const TARBALL_SUFFIXES: &[&str] =
     if cfg!(target_arch = "aarch64") { &["-linux-aarch64.tar.gz"] } else { &["-linux-x86_64.tar.gz"] };
 
-#[cfg(target_os = "linux")]
 const RPM_SUFFIXES: &[&str] =
     if cfg!(target_arch = "aarch64") { &[".aarch64.rpm"] } else { &[".x86_64.rpm"] };
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LinuxInstallKind {
     AppImage,
@@ -452,7 +405,6 @@ enum LinuxInstallKind {
     Tarball,
 }
 
-#[cfg(target_os = "linux")]
 fn detect_linux_install_kind() -> LinuxInstallKind {
     if std::env::var_os("APPIMAGE").is_some() {
         return LinuxInstallKind::AppImage;
@@ -476,7 +428,6 @@ fn detect_linux_install_kind() -> LinuxInstallKind {
 }
 
 /// Whether the `g7link` RPM package is installed.
-#[cfg(target_os = "linux")]
 fn rpm_installed() -> bool {
     std::process::Command::new("rpm")
         .args(["-q", "--quiet", "g7link"])
@@ -489,29 +440,18 @@ fn rpm_installed() -> bool {
 
 /// The release as an update, if it's a newer published one with an
 /// installer for this architecture and its sums.
-#[cfg(windows)]
-fn newer_release(release: Release, current: &str) -> Option<Update> {
-    newer_release_for(release, current, INSTALLER_SUFFIX)
-}
 
-#[cfg(target_os = "linux")]
 fn newer_release(release: Release, current: &str) -> Option<Update> {
     newer_release_linux_kind(release, current, detect_linux_install_kind())
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-fn newer_release(_release: Release, _current: &str) -> Option<Update> {
-    None
-}
 
-#[cfg(target_os = "linux")]
 #[cfg_attr(not(test), allow(dead_code))]
 fn newer_release_linux(release: Release, current: &str, is_appimage: bool) -> Option<Update> {
     let kind = if is_appimage { LinuxInstallKind::AppImage } else { LinuxInstallKind::Deb };
     newer_release_linux_kind(release, current, kind)
 }
 
-#[cfg(target_os = "linux")]
 fn linux_suffixes(kind: LinuxInstallKind) -> &'static [&'static str] {
     match kind {
         LinuxInstallKind::AppImage => APPIMAGE_SUFFIXES,
@@ -521,12 +461,10 @@ fn linux_suffixes(kind: LinuxInstallKind) -> &'static [&'static str] {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn newer_release_linux_kind(release: Release, current: &str, kind: LinuxInstallKind) -> Option<Update> {
     linux_suffixes(kind).iter().find_map(|suffix| newer_release_for(release.clone(), current, suffix))
 }
 
-#[cfg_attr(not(any(windows, target_os = "linux", test)), allow(dead_code))]
 fn newer_release_for(release: Release, current: &str, suffix: &str) -> Option<Update> {
     if release.draft || release.prerelease {
         return None;
@@ -587,18 +525,7 @@ fn quiet() -> bool {
 }
 
 /// Whether the installer registered [`TASK`] on this PC.
-#[cfg(windows)]
-fn task_registered() -> bool {
-    std::process::Command::new("schtasks.exe")
-        .args(["/Query", "/TN", TASK])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
 
-#[cfg(not(windows))]
 fn task_registered() -> bool {
     false
 }
@@ -665,24 +592,13 @@ impl std::fmt::Display for StageError {
 /// Where the app leaves a downloaded installer for the task:
 /// `%ProgramData%\G7Link\updates`. Anyone may write here; the task only
 /// runs a copy that matches the release's own sums.
-#[cfg(windows)]
-fn staging_dir() -> PathBuf {
-    std::env::var_os("ProgramData")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-        .join("G7Link")
-        .join("updates")
-}
 
-#[cfg(not(windows))]
 #[allow(unsafe_code)]
 fn current_euid() -> u32 {
     // SAFETY: geteuid takes no arguments and cannot fail.
     unsafe { libc::geteuid() }
 }
 
-#[cfg(not(windows))]
 fn staging_dir() -> PathBuf {
     if let Some(base) = dirs::cache_dir().filter(|p| p.is_absolute()) {
         base.join("g7link").join("updates")
@@ -723,7 +639,6 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 pub fn stage(update: &Update, progress: impl FnMut(u64, u64)) -> Result<PathBuf, StageError> {
     let expected = expected_hash(update)?;
     let dir = staging_dir();
-    #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         std::fs::DirBuilder::new()
@@ -736,10 +651,6 @@ pub fn stage(update: &Update, progress: impl FnMut(u64, u64)) -> Result<PathBuf,
         if meta.file_type().is_symlink() || !meta.is_dir() || meta.uid() != euid {
             return Err(StageError::Disk("untrusted staging directory".into()));
         }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        std::fs::create_dir_all(&dir).map_err(|e| StageError::Disk(e.to_string()))?;
     }
     let path = dir.join(&update.installer_name);
     let part = dir.join(format!("{}.part", update.installer_name));
@@ -778,8 +689,6 @@ fn install_with_task(shown: bool) -> Result<(), String> {
     spawn_relauncher(&exe, env!("CARGO_PKG_VERSION"), shown)?;
     let mut cmd = std::process::Command::new("schtasks.exe");
     cmd.args(["/Run", "/TN", TASK]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
     let started = cmd.status().map_err(|e| e.to_string())?;
     if !started.success() {
         return Err(format!("schtasks /Run: {started}"));
@@ -793,38 +702,11 @@ fn install_with_task(shown: bool) -> Result<(), String> {
 /// than `version`, the one running now, is installed and the installer has
 /// finished, then opens the app again. Not a particular new version: the task
 /// installs the latest, which can be newer than the one this copy knew about.
-#[cfg(windows)]
-fn spawn_relauncher(exe: &Path, version: &str, shown: bool) -> Result<(), String> {
-    // Both come from this program (its own path, and a version the release
-    // check already parsed); checked again so they can't break out of the
-    // script's quotes.
-    let exe =
-        exe.to_str().filter(|e| !e.contains('\'') && !e.contains('\n')).ok_or("unusual install path")?;
-    if !version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')) {
-        return Err("unusual version".into());
-    }
-    let arguments = if shown { UPDATED_ARG.to_owned() } else { format!("--minimized {UPDATED_ARG}") };
-    let script = relauncher_script(exe, version, &arguments);
-    hidden_powershell(&script).spawn().map(|_| ()).map_err(|e| format!("relauncher: {e}"))
-}
 
 /// PowerShell running `script` with no window, and still running after this app
 /// quits. Not `DETACHED_PROCESS`: without a console PowerShell exits at once,
 /// reporting success, and never runs the script.
-#[cfg(windows)]
-fn hidden_powershell(script: &str) -> std::process::Command {
-    let encoded: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let mut cmd = std::process::Command::new("powershell.exe");
-    cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand"])
-        .arg(data_encoding::BASE64.encode(&encoded))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd
-}
 
-#[cfg(not(windows))]
 fn spawn_relauncher(exe: &Path, version: &str, shown: bool) -> Result<(), String> {
     let exe =
         exe.to_str().filter(|e| !e.contains('\'') && !e.contains('\n')).ok_or("unusual install path")?;
@@ -845,7 +727,7 @@ fn spawn_relauncher(exe: &Path, version: &str, shown: bool) -> Result<(), String
         .map_err(|e| format!("relauncher: {e}"))
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[allow(dead_code)]
 fn relauncher_script(exe: &str, version: &str, arguments: &str) -> String {
     let start = if arguments.is_empty() {
         format!("Start-Process -FilePath '{exe}'")
@@ -919,14 +801,6 @@ pub fn run_service() -> ExitCode {
         }
     };
     // Not waited for: the installer replaces this program, which must not be running.
-    #[cfg(windows)]
-    let spawned = {
-        let mut cmd = std::process::Command::new(&path);
-        cmd.arg("/S");
-        cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
-        cmd.spawn()
-    };
-    #[cfg(not(windows))]
     let spawned = {
         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
         if name.ends_with(".deb") {
@@ -998,26 +872,7 @@ fn remove_old_service_dirs(parent: &Path) {
     }
 }
 
-#[cfg(windows)]
-fn service_dir() -> std::io::Result<PathBuf> {
-    let windows =
-        std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let system_temp = windows.join("SystemTemp");
-    // Older Windows: the SYSTEM account's temp folder, whose subfolders users
-    // can't change either.
-    let parent = if system_temp.is_dir() { system_temp } else { std::env::temp_dir() };
-    remove_old_service_dirs(&parent);
-    let mut random = [0u8; 8];
-    if !crate::win::secure_random(&mut random) {
-        return Err(std::io::Error::other("no secure random source"));
-    }
-    let name = format!("g7link-update-{}", random.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    let dir = parent.join(name);
-    std::fs::create_dir(&dir)?;
-    Ok(dir)
-}
 
-#[cfg(not(windows))]
 fn service_dir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let parent = PathBuf::from("/var/cache");
@@ -1057,37 +912,11 @@ fn download_verified(update: &Update, dir: &Path) -> Result<PathBuf, String> {
 /// The installer with Windows' administrator prompt (no update task): a
 /// fresh copy of the download in this user's temp folder, checked again, so
 /// what runs is what was checked.
-#[cfg(windows)]
-fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
-    let failed = |e: String| {
-        tracing::warn!(error = e, "update failed");
-        tr!("Updater", "The update couldn't be started. Try again.")
-    };
-    let expected = expected_hash(update).map_err(|e| e.for_user())?;
-    let dir = std::env::temp_dir().join("G7Link update");
-    let path: PathBuf = dir.join(&update.installer_name);
-    std::fs::create_dir_all(&dir)
-        .and_then(|()| match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        })
-        .and_then(|()| std::fs::copy(staged, &path).map(|_| ()))
-        .map_err(|e| failed(e.to_string()))?;
-    if sha256_file(&path).map_err(|e| failed(e.to_string()))? != expected {
-        let _ = std::fs::remove_file(&path);
-        return Err(StageError::Damaged.for_user());
-    }
-    // Silent, then opens the new version (/RUN); Windows asks for
-    // permission first. The installer closes this copy itself.
-    crate::win::shell::run(&path, "/S /RUN").map_err(failed)?;
-    Ok(())
-}
 
 /// Root-executed shell script that copies a user-staged `.deb` into a
 /// root-owned `0700` directory (`/var/cache/g7link-update`), verifies its
 /// SHA-256 digest as root on the root-owned copy, and only then runs
 /// `dpkg -i`. Prevents TOCTOU replacement in the user-writable cache directory.
-#[cfg(target_os = "linux")]
 const PRIVILEGED_DEB_INSTALL_SCRIPT: &str = "\
 dir=\"/var/cache/g7link-update\"\n\
 rm -rf -- \"$dir\"\n\
@@ -1100,14 +929,12 @@ apt-get install -y -- \"$dst\" || dpkg -i -- \"$dst\"\n";
 
 /// Installs the RPM in `$1` with whichever package manager the system has.
 /// Its SHA-256 is checked before this runs; release RPMs aren't GPG-signed.
-#[cfg(not(windows))]
 const RPM_INSTALL_COMMAND: &str = "\
 if command -v dnf >/dev/null 2>&1; then dnf install -y --nogpgcheck -- \"$1\"; \
 elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive --no-gpg-checks install -- \"$1\"; \
 else rpm -U --replacepkgs -- \"$1\"; fi";
 
 /// The `.rpm` counterpart of [`PRIVILEGED_DEB_INSTALL_SCRIPT`].
-#[cfg(target_os = "linux")]
 const PRIVILEGED_RPM_INSTALL_SCRIPT: &str = "\
 dir=\"/var/cache/g7link-update\"\n\
 rm -rf -- \"$dir\"\n\
@@ -1121,7 +948,6 @@ if command -v dnf >/dev/null 2>&1; then dnf install -y --nogpgcheck -- \"$1\"; \
 elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive --no-gpg-checks install -- \"$1\"; \
 else rpm -U --replacepkgs -- \"$1\"; fi\n";
 
-#[cfg(target_os = "linux")]
 const PRIVILEGED_TAR_INSTALL_SCRIPT: &str = "\
 dir=\"/var/cache/g7link-update\"\n\
 rm -rf -- \"$dir\"\n\
@@ -1137,7 +963,6 @@ set -- \"$dir\"/G7Link-*/install.sh\n\
 /// Starts the new version once this one has quit. If that can't be arranged
 /// the app stays open (it would otherwise just disappear) and says the update
 /// is in place.
-#[cfg(target_os = "linux")]
 fn relaunch_after_install(exe: &Path, version: &str) -> Result<(), String> {
     spawn_relauncher(exe, version, true).map_err(|e| {
         tracing::warn!(error = e, "installed, but can't start the new version");
@@ -1145,7 +970,6 @@ fn relaunch_after_install(exe: &Path, version: &str) -> Result<(), String> {
     })
 }
 
-#[cfg(target_os = "linux")]
 fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
@@ -1265,10 +1089,6 @@ fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-fn install_with_prompt(_update: &Update, _staged: &Path) -> Result<(), String> {
-    Err("Updates are not supported on this platform.".into())
-}
 
 /// The flag the relauncher passes to the new version.
 pub const UPDATED_ARG: &str = "--updated";
@@ -1406,16 +1226,6 @@ mod tests {
     }
 
     /// Really starts it, because the way it's started decides if the script runs.
-    #[cfg(windows)]
-    #[test]
-    fn the_relauncher_really_runs_its_script() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("ran");
-        let script = format!("Set-Content -LiteralPath '{}' -Value ran", marker.display());
-        let mut child = hidden_powershell(&script).spawn().unwrap();
-        child.wait().unwrap();
-        assert!(marker.exists(), "PowerShell exited without running the script");
-    }
 
     #[test]
     fn the_relauncher_waits_for_another_version_then_opens_the_app() {
@@ -1521,7 +1331,6 @@ mod tests {
                 "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/deb-amd64"
             )
         );
-        #[cfg(target_os = "linux")]
         {
             let picked_appimage = newer_release_linux(release("v9.0.0"), "0.0.1", true).unwrap();
             assert!(picked_appimage.installer_name.ends_with(".AppImage"));

@@ -3,57 +3,19 @@
 //! Encodes H.264 or HEVC using Media Foundation on Windows and FFmpeg or OpenH264
 //! on Linux, and handles remote touch, keyboard, and pointer input.
 
-#[cfg(any(windows, target_os = "linux"))]
 mod imp {
 
     #![allow(unsafe_code)]
 
-    #[cfg(windows)]
-    use std::mem::{ManuallyDrop, size_of};
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     };
-    #[cfg(any(windows, target_os = "linux"))]
     use std::time::{Duration, Instant};
 
     use g7link_core::{DeviceId, KeyMod, MirrorInput, MirrorStart, mirror_keys};
-    #[cfg(any(windows, target_os = "linux"))]
     use g7link_core::{MirrorConfig, MirrorSend, PacketKind};
-    #[cfg(windows)]
-    use windows::Win32::{
-        Foundation::{E_INVALIDARG, E_NOTIMPL, ERROR_TIMEOUT, POINT, RECT},
-        Graphics::Gdi::{
-            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DESKTOPHORZRES,
-            DESKTOPVERTRES, DeleteDC, DeleteObject, GetDC, GetDIBits, GetDeviceCaps, HALFTONE, ReleaseDC,
-            SRCCOPY, SelectObject, SetStretchBltMode, StretchBlt,
-        },
-        Media::MediaFoundation::{
-            CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame,
-            CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate, IMFAsyncCallback, IMFAsyncCallback_Impl,
-            IMFAsyncResult, IMFAttributes, IMFMediaBuffer, IMFMediaEventGenerator, IMFMediaType, IMFSample,
-            IMFTransform, MEError, METransformHaveOutput, METransformNeedInput, MF_E_NOTACCEPTING,
-            MF_E_OPERATION_CANCELLED, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
-            MF_LOW_LATENCY, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-            MF_MT_MAJOR_TYPE, MF_MT_MPEG_SEQUENCE_HEADER, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE,
-            MF_TRANSFORM_ASYNC, MF_TRANSFORM_ASYNC_UNLOCK, MFCreateAttributes, MFCreateMediaType,
-            MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSampleExtension_CleanPoint,
-            MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_ADAPTER_LUID, MFT_ENUM_FLAG_ASYNCMFT,
-            MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_LOCALMFT, MFT_ENUM_FLAG_SORTANDFILTER,
-            MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-            MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
-            MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnum2, MFVideoFormat_H264,
-            MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoInterlace_Progressive,
-        },
-        System::{Com::CoTaskMemFree, Variant::VARIANT},
-        UI::WindowsAndMessaging::{
-            CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetSystemMetrics, SM_CXSCREEN,
-            SM_CYSCREEN,
-        },
-    };
 
-    #[cfg(windows)]
-    use crate::win::h264::{ensure_mf_started, video_adapters};
     use crate::{core_host, win};
 
     struct ActiveSession {
@@ -68,16 +30,13 @@ mod imp {
 
     /// How long Play on phone looks for the player's window before streaming
     /// the screen instead.
-    #[cfg(any(windows, target_os = "linux"))]
     const FIND_WINDOW: Duration = Duration::from_secs(5);
 
     /// The lowest bitrate the stream backs off to on a slow link (encoders
     /// go no lower).
-    #[cfg(any(windows, target_os = "linux"))]
     const MIN_BITRATE: u32 = 500_000;
 
     /// What a sharing session sent in the last stats window.
-    #[cfg(any(windows, target_os = "linux"))]
     #[derive(Default)]
     struct Stats {
         frames: u64,
@@ -101,11 +60,6 @@ mod imp {
     ///
     /// Linux needs an H.264 encoder and either X11 or the ScreenCast portal with PipeWire.
     pub fn is_capture_available() -> bool {
-        #[cfg(windows)]
-        {
-            true
-        }
-        #[cfg(target_os = "linux")]
         {
             let can_encode = openh264_enc_api().is_some();
             #[cfg(linux_ffmpeg_video)]
@@ -360,599 +314,38 @@ mod imp {
         }
     }
 
-    #[cfg(windows)]
-    fn video_encoder_activations(
-        output_subtype: windows::core::GUID,
-        adapter: Option<u64>,
-    ) -> windows::core::Result<Vec<IMFActivate>> {
-        let input_info =
-            MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
-        let output_info =
-            MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: output_subtype };
-        let flags = if adapter.is_some() {
-            MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER
-        } else {
-            MFT_ENUM_FLAG_SYNCMFT
-                | MFT_ENUM_FLAG_ASYNCMFT
-                | MFT_ENUM_FLAG_LOCALMFT
-                | MFT_ENUM_FLAG_SORTANDFILTER
-        };
-        let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
-        let mut count = 0u32;
-        // SAFETY: MFTEnum2 returns a CoTaskMemAlloc array; take each interface before freeing it.
-        unsafe {
-            let mut attributes: Option<IMFAttributes> = None;
-            if let Some(adapter) = adapter {
-                MFCreateAttributes(&mut attributes, 1)?;
-                attributes
-                    .as_ref()
-                    .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?
-                    .SetBlob(&MFT_ENUM_ADAPTER_LUID, &adapter.to_le_bytes())?;
-            }
-            MFTEnum2(
-                MFT_CATEGORY_VIDEO_ENCODER,
-                flags,
-                Some(&input_info),
-                Some(&output_info),
-                attributes.as_ref(),
-                &mut activates,
-                &mut count,
-            )?;
-            let mut candidates = Vec::new();
-            if !activates.is_null() {
-                let entries = std::slice::from_raw_parts_mut(activates, count as usize);
-                for entry in entries {
-                    if let Some(activation) = entry.take() {
-                        candidates.push(activation);
-                    }
-                }
-                CoTaskMemFree(Some(activates.cast()));
-            }
-            Ok(candidates)
-        }
-    }
 
-    #[cfg(windows)]
-    fn create_video_encoder(
-        subtype: windows::core::GUID,
-        configure: impl FnMut(IMFTransform) -> windows::core::Result<ScreenEncoder>,
-    ) -> windows::core::Result<ScreenEncoder> {
-        let mut candidates = Vec::new();
-        if let Ok(adapters) = video_adapters() {
-            for adapter in adapters {
-                match video_encoder_activations(subtype, Some(adapter.luid)) {
-                    Ok(found) => candidates.extend(found),
-                    Err(error) => {
-                        tracing::debug!(%error, adapter = adapter.luid, "GPU encoder enumeration failed")
-                    }
-                }
-            }
-        }
-        match video_encoder_activations(subtype, None) {
-            Ok(found) => candidates.extend(found),
-            Err(error) if candidates.is_empty() => return Err(error),
-            Err(error) => tracing::debug!(%error, "Software encoder enumeration failed"),
-        }
-        try_video_encoders(candidates, configure)
-    }
 
-    #[cfg(windows)]
-    fn try_video_encoders(
-        candidates: Vec<IMFActivate>,
-        mut configure: impl FnMut(IMFTransform) -> windows::core::Result<ScreenEncoder>,
-    ) -> windows::core::Result<ScreenEncoder> {
-        let mut last_error = windows::core::Error::from(E_INVALIDARG);
-        let mut candidates = candidates.into_iter();
-        while let Some(activation) = candidates.next() {
-            // SAFETY: each activation owns an encoder; fully configure it before selecting it.
-            let result = unsafe { activation.ActivateObject::<IMFTransform>() }.and_then(&mut configure);
-            match result {
-                Ok(mut encoder) => {
-                    encoder.alternatives = candidates.collect();
-                    return Ok(encoder);
-                }
-                Err(error) => {
-                    tracing::debug!(%error, "Video encoder candidate unavailable");
-                    last_error = error;
-                    // SAFETY: this failed candidate will not be used again.
-                    let _ = unsafe { activation.ShutdownObject() };
-                }
-            }
-        }
-        Err(last_error)
-    }
 
-    #[cfg(windows)]
-    #[windows::core::implement(IMFAsyncCallback)]
-    struct EncoderEventCallback {
-        cookie: u32,
-        sender: std::sync::mpsc::Sender<windows::core::Result<u32>>,
-    }
 
-    #[cfg(windows)]
-    impl IMFAsyncCallback_Impl for EncoderEventCallback_Impl {
-        fn GetParameters(&self, _: *mut u32, _: *mut u32) -> windows::core::Result<()> {
-            Err(E_NOTIMPL.into())
-        }
 
-        fn Invoke(&self, result: windows::core::Ref<IMFAsyncResult>) -> windows::core::Result<()> {
-            // SAFETY: the global interface table marshals the generator into this callback's apartment.
-            let event = unsafe {
-                global_interface_table().and_then(|table| {
-                    let mut raw = std::ptr::null_mut();
-                    table.GetInterfaceFromGlobal(
-                        self.cookie,
-                        &<IMFMediaEventGenerator as windows::core::Interface>::IID,
-                        &mut raw,
-                    )?;
-                    let generator = <IMFMediaEventGenerator as windows::core::Interface>::from_raw(raw);
-                    result.ok().and_then(|result| generator.EndGetEvent(result)).and_then(|event| {
-                        let kind = event.GetType()?;
-                        if kind == MEError.0 as u32 {
-                            event.GetStatus()?.ok()?;
-                        }
-                        Ok(kind)
-                    })
-                })
-            };
-            let _ = self.sender.send(event);
-            Ok(())
-        }
-    }
 
-    #[cfg(windows)]
-    unsafe fn global_interface_table()
-    -> windows::core::Result<windows::Win32::System::Com::IGlobalInterfaceTable> {
-        use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
-        const CLSID_STD_GLOBAL_INTERFACE_TABLE: windows::core::GUID =
-            windows::core::GUID::from_u128(0x00000323_0000_0000_c000_000000000046);
-        unsafe { CoCreateInstance(&CLSID_STD_GLOBAL_INTERFACE_TABLE, None, CLSCTX_INPROC_SERVER) }
-    }
 
-    #[cfg(windows)]
-    struct EncoderEvents {
-        generator: IMFMediaEventGenerator,
-        table: windows::Win32::System::Com::IGlobalInterfaceTable,
-        cookie: u32,
-        callback: IMFAsyncCallback,
-        receiver: std::sync::mpsc::Receiver<windows::core::Result<u32>>,
-        pending: bool,
-    }
 
-    #[cfg(windows)]
-    impl EncoderEvents {
-        fn new(generator: IMFMediaEventGenerator) -> windows::core::Result<Self> {
-            // SAFETY: registers the interface so the callback can retrieve it in its own apartment.
-            let table = unsafe { global_interface_table()? };
-            let cookie = unsafe {
-                table.RegisterInterfaceInGlobal(
-                    &generator,
-                    &<IMFMediaEventGenerator as windows::core::Interface>::IID,
-                )?
-            };
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let callback = EncoderEventCallback { cookie, sender }.into();
-            Ok(Self { generator, table, cookie, callback, receiver, pending: false })
-        }
 
-        fn receive(&mut self, timeout: Duration) -> windows::core::Result<Option<u32>> {
-            if !self.pending {
-                // SAFETY: only one event request is pending at a time.
-                unsafe { self.generator.BeginGetEvent(&self.callback, None)? };
-                self.pending = true;
-            }
-            match self.receiver.recv_timeout(timeout) {
-                Ok(event) => {
-                    self.pending = false;
-                    event.map(Some)
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(E_INVALIDARG.into()),
-            }
-        }
-    }
 
-    #[cfg(windows)]
-    impl Drop for EncoderEvents {
-        fn drop(&mut self) {
-            // SAFETY: this cookie is owned by this registration and is revoked once.
-            let _ = unsafe { self.table.RevokeInterfaceFromGlobal(self.cookie) };
-        }
-    }
 
-    #[cfg(windows)]
-    pub(crate) struct ScreenEncoder {
-        codec: String,
-        transform: IMFTransform,
-        async_events: Option<EncoderEvents>,
-        pending_input: u32,
-        pending_output: u32,
-        /// The encoder's settings interface, when it has one: keyframes on demand and live
-        /// bitrate changes without rebuilding the encoder.
-        codec_api: Option<ICodecAPI>,
-        width: u32,
-        height: u32,
-        provides_samples: bool,
-        output_size: u32,
-        seq_header: Vec<u8>,
-        sent_first_frame: bool,
-        alternatives: Vec<IMFActivate>,
-    }
 
-    #[cfg(windows)]
-    impl Drop for ScreenEncoder {
-        fn drop(&mut self) {
-            // SAFETY: flushes and ends streaming on the MFT before drop.
-            unsafe {
-                let _ = self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
-                let _ = self.transform.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
-            }
-        }
-    }
 
-    #[cfg(windows)]
-    impl ScreenEncoder {
-        pub(crate) fn new_for_codec(
-            codec: &str,
-            width: u32,
-            height: u32,
-            fps: u32,
-            bitrate: u32,
-        ) -> windows::core::Result<Self> {
-            ensure_mf_started()?;
-            let subtype = match codec {
-                "h264" => MFVideoFormat_H264,
-                "h265" => MFVideoFormat_HEVC,
-                _ => return Err(windows::core::Error::from(E_INVALIDARG)),
-            };
-            create_video_encoder(subtype, |transform| {
-                Self::from_transform(codec, transform, width, height, fps, bitrate)
-            })
-        }
-
-        fn from_transform(
-            codec: &str,
-            transform: IMFTransform,
-            width: u32,
-            height: u32,
-            fps: u32,
-            bitrate: u32,
-        ) -> windows::core::Result<Self> {
-            // SAFETY: Media Foundation COM calls with valid parameters.
-            unsafe {
-                let subtype = match codec {
-                    "h264" => MFVideoFormat_H264,
-                    "h265" => MFVideoFormat_HEVC,
-                    _ => return Err(windows::core::Error::from(E_INVALIDARG)),
-                };
-                let attributes = transform.GetAttributes().ok();
-                let is_async = attributes
-                    .as_ref()
-                    .is_some_and(|attrs| attrs.GetUINT32(&MF_TRANSFORM_ASYNC).is_ok_and(|value| value != 0));
-                if is_async {
-                    attributes
-                        .as_ref()
-                        .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?
-                        .SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)?;
-                }
-                if let Some(attrs) = attributes.as_ref() {
-                    let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
-                }
-
-                let out_type: IMFMediaType = MFCreateMediaType()?;
-                out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-                out_type.SetGUID(&MF_MT_SUBTYPE, &subtype)?;
-                if codec == "h264" {
-                    let _ = out_type.SetUINT32(
-                        &windows::Win32::Media::MediaFoundation::MF_MT_MPEG2_PROFILE,
-                        windows::Win32::Media::MediaFoundation::eAVEncH264VProfile_Base.0 as u32,
-                    );
-                } else {
-                    let _ = out_type.SetUINT32(
-                        &windows::Win32::Media::MediaFoundation::MF_MT_MPEG2_PROFILE,
-                        windows::Win32::Media::MediaFoundation::eAVEncH265VProfile_Main_420_8.0 as u32,
-                    );
-                }
-                out_type.SetUINT32(&MF_MT_AVG_BITRATE, bitrate.clamp(500_000, 20_000_000))?;
-                out_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-                out_type.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(width) << 32) | u64::from(height))?;
-                out_type.SetUINT64(&MF_MT_FRAME_RATE, (u64::from(fps.max(1)) << 32) | 1)?;
-                out_type.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1)?;
-                transform.SetOutputType(0, Some(&out_type), 0)?;
-
-                let in_type: IMFMediaType = MFCreateMediaType()?;
-                in_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-                in_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
-                in_type.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-                in_type.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(width) << 32) | u64::from(height))?;
-                in_type.SetUINT64(&MF_MT_FRAME_RATE, (u64::from(fps.max(1)) << 32) | 1)?;
-                in_type.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1)?;
-                transform.SetInputType(0, Some(&in_type), 0)?;
-
-                let mut seq_header = Vec::new();
-                if let Ok(cur_out) = transform.GetOutputCurrentType(0)
-                    && let Ok(len) = cur_out.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER)
-                    && len > 0
-                {
-                    let mut buf = vec![0u8; len as usize];
-                    if cur_out.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, None).is_ok() {
-                        seq_header = buf;
-                    }
-                }
-
-                let info = transform.GetOutputStreamInfo(0)?;
-                let provides_samples = (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32)) != 0;
-                let output_size = info.cbSize.max(256 * 1024);
-
-                // Periodic keyframes allow recovery after packet loss without restarting the encoder.
-                let codec_api: Option<ICodecAPI> = windows::core::Interface::cast(&transform).ok();
-                let async_events = if is_async {
-                    Some(EncoderEvents::new(windows::core::Interface::cast(&transform)?)?)
-                } else {
-                    None
-                };
-                if let Some(api) = codec_api.as_ref() {
-                    let _ = api.SetValue(&CODECAPI_AVLowLatencyMode, &VARIANT::from(true));
-                    let _ = api.SetValue(&CODECAPI_AVEncMPVGOPSize, &VARIANT::from(fps.max(1) * 2));
-                }
-
-                transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
-                transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
-
-                Ok(Self {
-                    codec: codec.to_owned(),
-                    transform,
-                    async_events,
-                    pending_input: 0,
-                    pending_output: 0,
-                    codec_api,
-                    width,
-                    height,
-                    provides_samples,
-                    output_size,
-                    seq_header,
-                    sent_first_frame: false,
-                    alternatives: Vec::new(),
-                })
-            }
-        }
-
-        fn next_encoder(&mut self, codec: &str, width: u32, height: u32, fps: u32, bitrate: u32) -> bool {
-            let candidates = std::mem::take(&mut self.alternatives);
-            match try_video_encoders(candidates, |transform| {
-                Self::from_transform(codec, transform, width, height, fps, bitrate)
-            }) {
-                Ok(encoder) => {
-                    *self = encoder;
-                    true
-                }
-                Err(_) => false,
-            }
-        }
-
-        /// Asks for the next frame to be a keyframe. False when the encoder can't, so the
-        /// caller must rebuild it instead.
-        pub(crate) fn request_keyframe(&self) -> bool {
-            // SAFETY: ICodecAPI::SetValue with a valid GUID and VARIANT.
-            self.codec_api.as_ref().is_some_and(|api| {
-                unsafe { api.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32)) }.is_ok()
-            })
-        }
-
-        /// Changes the target bitrate in place. False when the encoder can't.
-        pub(crate) fn set_bitrate(&self, bitrate: u32) -> bool {
-            // SAFETY: ICodecAPI::SetValue with a valid GUID and VARIANT.
-            self.codec_api.as_ref().is_some_and(|api| {
-                unsafe { api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &VARIANT::from(bitrate)) }.is_ok()
-            })
-        }
-
-        /// Feeds one NV12 frame (`width * height * 3 / 2` bytes) and drains encoded
-        /// Annex-B H.264 or H.265 access units `(is_keyframe, bytes)`.
-        pub(crate) fn encode(
-            &mut self,
-            nv12: &[u8],
-            hns: i64,
-            dur_hns: i64,
-            stop: &AtomicBool,
-        ) -> windows::core::Result<Vec<(bool, Vec<u8>)>> {
-            let expected = (self.width as usize) * (self.height as usize) * 3 / 2;
-            if nv12.len() < expected {
-                return Ok(Vec::new());
-            }
-            self.wait_for_async_event(METransformNeedInput.0 as u32, stop)?;
-            // SAFETY: Media Foundation sample creation and MFT ProcessInput/ProcessOutput.
-            unsafe {
-                let sample = make_sample(&nv12[..expected], hns, dur_hns)?;
-                let mut out = Vec::new();
-                match self.transform.ProcessInput(0, &sample, 0) {
-                    Ok(()) => {
-                        self.wait_for_async_event(METransformHaveOutput.0 as u32, stop)?;
-                        self.drain(&mut out)?;
-                    }
-                    Err(e) if e.code() == MF_E_NOTACCEPTING => {
-                        self.wait_for_async_event(METransformHaveOutput.0 as u32, stop)?;
-                        self.drain(&mut out)?;
-                        self.wait_for_async_event(METransformNeedInput.0 as u32, stop)?;
-                        self.transform.ProcessInput(0, &sample, 0)?;
-                        self.wait_for_async_event(METransformHaveOutput.0 as u32, stop)?;
-                        self.drain(&mut out)?;
-                    }
-                    Err(e) => return Err(e),
-                }
-                Ok(out)
-            }
-        }
-
-        fn wait_for_async_event(&mut self, expected: u32, stop: &AtomicBool) -> windows::core::Result<()> {
-            let Some(events) = self.async_events.as_mut() else {
-                return Ok(());
-            };
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    return Err(windows::core::Error::from(MF_E_OPERATION_CANCELLED));
-                }
-                let pending = if expected == METransformNeedInput.0 as u32 {
-                    &mut self.pending_input
-                } else {
-                    &mut self.pending_output
-                };
-                if *pending > 0 {
-                    *pending -= 1;
-                    return Ok(());
-                }
-                if Instant::now() >= deadline {
-                    return Err(windows::core::Error::from(ERROR_TIMEOUT.to_hresult()));
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let Some(kind) = events.receive(remaining.min(Duration::from_millis(20)))? else {
-                    continue;
-                };
-                if kind == METransformNeedInput.0 as u32 {
-                    self.pending_input += 1;
-                } else if kind == METransformHaveOutput.0 as u32 {
-                    self.pending_output += 1;
-                }
-            }
-        }
-
-        unsafe fn drain(&mut self, out: &mut Vec<(bool, Vec<u8>)>) -> windows::core::Result<()> {
-            loop {
-                // SAFETY: MFT output draining with allocated or MFT-provided sample.
-                unsafe {
-                    let allocated = if self.provides_samples {
-                        None
-                    } else {
-                        let s: IMFSample = MFCreateSample()?;
-                        let b: IMFMediaBuffer = MFCreateMemoryBuffer(self.output_size)?;
-                        s.AddBuffer(&b)?;
-                        Some(s)
-                    };
-                    let mut data = MFT_OUTPUT_DATA_BUFFER {
-                        dwStreamID: 0,
-                        pSample: ManuallyDrop::new(allocated),
-                        dwStatus: 0,
-                        pEvents: ManuallyDrop::new(None),
-                    };
-                    let mut status = 0u32;
-                    let res = self.transform.ProcessOutput(0, std::slice::from_mut(&mut data), &mut status);
-                    let sample = ManuallyDrop::take(&mut data.pSample);
-                    let _ = ManuallyDrop::take(&mut data.pEvents);
-
-                    match res {
-                        Ok(()) => {
-                            if let Some(sample) = sample {
-                                let clean = sample
-                                    .GetUINT32(&MFSampleExtension_CleanPoint)
-                                    .map(|v| v != 0)
-                                    .unwrap_or(false);
-                                let buf: IMFMediaBuffer = sample.ConvertToContiguousBuffer()?;
-                                let mut ptr = std::ptr::null_mut();
-                                let mut len = 0u32;
-                                buf.Lock(&mut ptr, None, Some(&mut len))?;
-                                let slice = std::slice::from_raw_parts(ptr, len as usize);
-                                let is_idr = !self.sent_first_frame
-                                    || clean
-                                    || match self.codec.as_str() {
-                                        "h265" => has_h265_irap(slice),
-                                        _ => has_h264_idr(slice),
-                                    };
-                                let mut bytes = Vec::new();
-                                let has_parameters = match self.codec.as_str() {
-                                    "h265" => has_h265_parameters(slice),
-                                    _ => has_h264_sps(slice),
-                                };
-                                if is_idr && !has_parameters {
-                                    if self.seq_header.is_empty()
-                                        && let Ok(cur_out) = self.transform.GetOutputCurrentType(0)
-                                        && let Ok(hdr_len) = cur_out.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER)
-                                        && hdr_len > 0
-                                    {
-                                        let mut hdr = vec![0u8; hdr_len as usize];
-                                        if cur_out
-                                            .GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut hdr, None)
-                                            .is_ok()
-                                        {
-                                            self.seq_header = hdr;
-                                        }
-                                    }
-                                    if !self.seq_header.is_empty() {
-                                        bytes.extend_from_slice(&self.seq_header);
-                                    }
-                                }
-                                bytes.extend_from_slice(slice);
-                                buf.Unlock()?;
-                                if !bytes.is_empty() {
-                                    self.sent_first_frame = true;
-                                    out.push((is_idr, bytes));
-                                }
-                            }
-                            // Each METransformHaveOutput event permits one ProcessOutput call.
-                            if self.async_events.is_some() {
-                                return Ok(());
-                            }
-                        }
-                        Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(()),
-                        Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
-                            if let Ok(cur_out) = self.transform.GetOutputAvailableType(0, 0) {
-                                self.transform.SetOutputType(0, Some(&cur_out), 0)?;
-                                if let Ok(len) = cur_out.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER)
-                                    && len > 0
-                                {
-                                    let mut buf = vec![0u8; len as usize];
-                                    if cur_out.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut buf, None).is_ok() {
-                                        self.seq_header = buf;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    unsafe fn make_sample(bytes: &[u8], hns: i64, dur_hns: i64) -> windows::core::Result<IMFSample> {
-        // SAFETY: allocates an IMFMediaBuffer of `bytes.len()` and copies `bytes` into it.
-        unsafe {
-            let buf: IMFMediaBuffer = MFCreateMemoryBuffer(bytes.len() as u32)?;
-            let mut dst = std::ptr::null_mut();
-            buf.Lock(&mut dst, None, None)?;
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
-            buf.Unlock()?;
-            buf.SetCurrentLength(bytes.len() as u32)?;
-            let sample: IMFSample = MFCreateSample()?;
-            sample.AddBuffer(&buf)?;
-            sample.SetSampleTime(hns)?;
-            sample.SetSampleDuration(dur_hns.max(1))?;
-            Ok(sample)
-        }
-    }
-
-    #[cfg(any(windows, target_os = "linux"))]
     fn has_h264_idr(data: &[u8]) -> bool {
         data.windows(4).any(|w| w[..3] == [0, 0, 1] && (w[3] & 0x1f) == 5)
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
     fn has_h264_sps(data: &[u8]) -> bool {
         data.windows(4).any(|w| w[..3] == [0, 0, 1] && (w[3] & 0x1f) == 7)
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     fn hevc_nal_types(data: &[u8]) -> impl Iterator<Item = u8> + '_ {
         data.windows(4).filter_map(|w| (w[..3] == [0, 0, 1]).then_some((w[3] >> 1) & 0x3f))
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     fn has_h265_irap(data: &[u8]) -> bool {
         hevc_nal_types(data).any(|kind| (16..=21).contains(&kind))
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     fn has_h265_parameters(data: &[u8]) -> bool {
         let mut vps = false;
         let mut sps = false;
@@ -968,7 +361,6 @@ mod imp {
         vps && sps && pps
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     struct SEncParamBase {
         i_usage_type: std::ffi::c_int, // 0 = CAMERA_VIDEO_REAL_TIME
@@ -979,7 +371,6 @@ mod imp {
         f_max_frame_rate: f32,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     struct SSourcePicture {
         i_color_format: std::ffi::c_int, // 23 = videoFormatI420
@@ -993,7 +384,6 @@ mod imp {
         b_psnr_v: bool,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct SLayerBSInfoV20 {
@@ -1008,7 +398,6 @@ mod imp {
         p_bs_buf: *mut u8,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct SLayerBSInfo {
@@ -1024,7 +413,6 @@ mod imp {
         r_psnr: [f32; 3],
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct SFrameBSInfoV20 {
@@ -1035,7 +423,6 @@ mod imp {
         ui_time_stamp: i64,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     #[derive(Clone, Copy)]
     struct SFrameBSInfo {
@@ -1051,21 +438,18 @@ mod imp {
     /// `SLayerBSInfoV20` layout despite reporting `u_minor == 4`. Zero-initializing
     /// this union before `EncodeFrame` lets us inspect whether `v23.e_frame_type`
     /// (at byte 7176, past the end of `SFrameBSInfoV20`) was populated.
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     union FrameBSInfo {
         v20: SFrameBSInfoV20,
         v23: SFrameBSInfo,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     struct SBitrateInfo {
         i_layer: std::ffi::c_int, // 4 = SPATIAL_LAYER_ALL, 0 = SPATIAL_LAYER_0
         i_bitrate: std::ffi::c_int,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     struct OpenH264Version {
         u_major: u32,
@@ -1074,20 +458,17 @@ mod imp {
         u_reserved: u32,
     }
 
-    #[cfg(target_os = "linux")]
     struct OpenH264EncApi {
         minor: u32,
         create_encoder: unsafe extern "C" fn(*mut *mut std::ffi::c_void) -> std::ffi::c_int,
         destroy_encoder: unsafe extern "C" fn(*mut std::ffi::c_void),
     }
 
-    #[cfg(target_os = "linux")]
     unsafe fn dl_sym<T: Copy>(lib: *mut std::ffi::c_void, name: &std::ffi::CStr) -> Option<T> {
         let raw = unsafe { libc::dlsym(lib, name.as_ptr()) };
         if raw.is_null() { None } else { Some(unsafe { std::mem::transmute_copy(&raw) }) }
     }
 
-    #[cfg(target_os = "linux")]
     fn openh264_enc_api() -> Option<&'static OpenH264EncApi> {
         static API: std::sync::OnceLock<Option<OpenH264EncApi>> = std::sync::OnceLock::new();
         API.get_or_init(|| unsafe {
@@ -1122,7 +503,6 @@ mod imp {
         .as_ref()
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) struct OpenH264Encoder {
         encoder: *mut std::ffi::c_void,
         width: u32,
@@ -1132,7 +512,6 @@ mod imp {
         sent_first_frame: bool,
     }
 
-    #[cfg(target_os = "linux")]
     impl Drop for OpenH264Encoder {
         fn drop(&mut self) {
             if !self.encoder.is_null() {
@@ -1149,7 +528,6 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
     impl OpenH264Encoder {
         pub(crate) fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self, String> {
             let api = openh264_enc_api().ok_or_else(|| "libopenh264 encoder unavailable".to_owned())?;
@@ -1402,14 +780,12 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
     pub(crate) enum ScreenEncoder {
         OpenH264(OpenH264Encoder),
         #[cfg(linux_ffmpeg_video)]
         Hardware(crate::win::video_encoder::Encoder),
     }
 
-    #[cfg(target_os = "linux")]
     impl ScreenEncoder {
         pub(crate) fn new_for_codec(
             codec: &str,
@@ -1479,18 +855,7 @@ mod imp {
         }
     }
 
-    #[cfg(windows)]
-    fn new_pc_encoder(
-        codec: &str,
-        width: u32,
-        height: u32,
-        fps: u32,
-        bitrate: u32,
-    ) -> Result<ScreenEncoder, String> {
-        ScreenEncoder::new_for_codec(codec, width, height, fps, bitrate).map_err(|error| error.to_string())
-    }
 
-    #[cfg(target_os = "linux")]
     fn new_pc_encoder(
         codec: &str,
         width: u32,
@@ -1501,7 +866,6 @@ mod imp {
         ScreenEncoder::new_for_codec(codec, width, height, fps, bitrate)
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
     fn new_pc_encoder_with_fallback(
         codec: &mut String,
         width: u32,
@@ -1520,131 +884,12 @@ mod imp {
         }
     }
 
-    #[cfg(windows)]
-    fn primary_screen_dimensions() -> (u32, u32) {
-        // SAFETY: Win32 GDI device context and system metrics calls with balanced ReleaseDC.
-        unsafe {
-            let hdc = GetDC(None);
-            let pw = if !hdc.is_invalid() { GetDeviceCaps(Some(hdc), DESKTOPHORZRES) } else { 0 };
-            let ph = if !hdc.is_invalid() { GetDeviceCaps(Some(hdc), DESKTOPVERTRES) } else { 0 };
-            if !hdc.is_invalid() {
-                let _ = ReleaseDC(None, hdc);
-            }
-            (
-                if pw > 0 { pw as u32 } else { GetSystemMetrics(SM_CXSCREEN).max(640) as u32 },
-                if ph > 0 { ph as u32 } else { GetSystemMetrics(SM_CYSCREEN).max(480) as u32 },
-            )
-        }
-    }
 
     /// Captures the primary desktop monitor into `bgra` scaled to `(dst_w, dst_h)`,
     /// with the pointer, and returns the current physical screen dimensions
     /// `(src_w, src_h)`. With `region` (physical screen pixels), captures only
     /// that, without the pointer (Play on phone), and returns its size.
-    #[cfg(windows)]
-    fn capture_screen(
-        region: Option<RECT>,
-        dst_w: u32,
-        dst_h: u32,
-        bgra: &mut Vec<u8>,
-    ) -> Option<(u32, u32)> {
-        // SAFETY: Win32 GDI device context and bitmap calls with balanced cleanup.
-        unsafe {
-            let hdc_screen = GetDC(None);
-            if hdc_screen.is_invalid() {
-                return None;
-            }
-            let (src_x, src_y, src_w, src_h) = match region {
-                Some(r) => {
-                    (r.left, r.top, (r.right - r.left).max(1) as u32, (r.bottom - r.top).max(1) as u32)
-                }
-                None => {
-                    let phys_w = GetDeviceCaps(Some(hdc_screen), DESKTOPHORZRES);
-                    let phys_h = GetDeviceCaps(Some(hdc_screen), DESKTOPVERTRES);
-                    let w = if phys_w > 0 { phys_w } else { GetSystemMetrics(SM_CXSCREEN) }.max(1) as u32;
-                    let h = if phys_h > 0 { phys_h } else { GetSystemMetrics(SM_CYSCREEN) }.max(1) as u32;
-                    (0, 0, w, h)
-                }
-            };
 
-            let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
-            if hdc_mem.is_invalid() {
-                let _ = ReleaseDC(None, hdc_screen);
-                return None;
-            }
-            let hbm = CreateCompatibleBitmap(hdc_screen, dst_w as i32, dst_h as i32);
-            if hbm.is_invalid() {
-                let _ = DeleteDC(hdc_mem);
-                let _ = ReleaseDC(None, hdc_screen);
-                return None;
-            }
-            let old = SelectObject(hdc_mem, hbm.into());
-            let _ = SetStretchBltMode(hdc_mem, HALFTONE);
-            let ok = StretchBlt(
-                hdc_mem,
-                0,
-                0,
-                dst_w as i32,
-                dst_h as i32,
-                Some(hdc_screen),
-                src_x,
-                src_y,
-                src_w as i32,
-                src_h as i32,
-                SRCCOPY,
-            )
-            .as_bool();
-
-            // Draw the mouse cursor at its scaled position so the phone user sees where they point.
-            let mut ci = CURSORINFO {
-                cbSize: size_of::<CURSORINFO>() as u32,
-                flags: Default::default(),
-                hCursor: Default::default(),
-                ptScreenPos: POINT::default(),
-            };
-            if region.is_none() && GetCursorInfo(&mut ci).is_ok() && (ci.flags.0 & CURSOR_SHOWING.0) != 0 {
-                let cx = ((ci.ptScreenPos.x as i64) * (dst_w as i64) / (src_w as i64)) as i32;
-                let cy = ((ci.ptScreenPos.y as i64) * (dst_h as i64) / (src_h as i64)) as i32;
-                let _ = DrawIconEx(hdc_mem, cx, cy, ci.hCursor.into(), 0, 0, 0, None, DI_NORMAL);
-            }
-
-            let needed = (dst_w as usize) * (dst_h as usize) * 4;
-            bgra.resize(needed, 0);
-
-            let mut bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: dst_w as i32,
-                    biHeight: -(dst_h as i32), // Top-down DIB.
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    biSizeImage: needed as u32,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            let lines = GetDIBits(
-                hdc_mem,
-                hbm,
-                0,
-                dst_h,
-                Some(bgra.as_mut_ptr().cast()),
-                &mut bmi,
-                windows::Win32::Graphics::Gdi::DIB_RGB_COLORS,
-            );
-
-            let _ = SelectObject(hdc_mem, old);
-            let _ = DeleteObject(hbm.into());
-            let _ = DeleteDC(hdc_mem);
-            let _ = ReleaseDC(None, hdc_screen);
-
-            if ok && lines > 0 { Some((src_w, src_h)) } else { None }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     struct XWindowAttributes {
         x: std::ffi::c_int,
@@ -1672,7 +917,6 @@ mod imp {
         screen: *mut std::ffi::c_void,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     struct XImageFuncs {
         create_image: *mut std::ffi::c_void,
@@ -1683,7 +927,6 @@ mod imp {
         add_pixel: *mut std::ffi::c_void,
     }
 
-    #[cfg(target_os = "linux")]
     #[repr(C)]
     struct XImage {
         width: std::ffi::c_int,
@@ -1705,7 +948,6 @@ mod imp {
         f: XImageFuncs,
     }
 
-    #[cfg(target_os = "linux")]
     struct X11Api {
         open_display: unsafe extern "C" fn(*const std::ffi::c_char) -> *mut std::ffi::c_void,
         default_root_window: unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_ulong,
@@ -1739,7 +981,6 @@ mod imp {
         free: unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int,
     }
 
-    #[cfg(target_os = "linux")]
     fn x11_api() -> Option<&'static X11Api> {
         static API: std::sync::OnceLock<Option<X11Api>> = std::sync::OnceLock::new();
         API.get_or_init(|| unsafe {
@@ -1767,10 +1008,8 @@ mod imp {
         .as_ref()
     }
 
-    #[cfg(target_os = "linux")]
     struct ThreadX11Display(*mut std::ffi::c_void);
 
-    #[cfg(target_os = "linux")]
     impl Drop for ThreadX11Display {
         fn drop(&mut self) {
             if !self.0.is_null()
@@ -1783,7 +1022,6 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn with_x11_display<R>(f: impl FnOnce(&X11Api, *mut std::ffi::c_void) -> Option<R>) -> Option<R> {
         std::thread_local! {
             static DISPLAY: std::cell::RefCell<Option<ThreadX11Display>> = const { std::cell::RefCell::new(None) };
@@ -1802,7 +1040,6 @@ mod imp {
         })
     }
 
-    #[cfg(target_os = "linux")]
     fn primary_screen_dimensions() -> (u32, u32) {
         with_x11_display(|api, dpy| unsafe {
             let root = (api.default_root_window)(dpy);
@@ -1817,7 +1054,6 @@ mod imp {
         .unwrap_or((1920, 1080))
     }
 
-    #[cfg(target_os = "linux")]
     fn draw_cursor_pointer(bgra: &mut [u8], dst_w: u32, dst_h: u32, cx: i32, cy: i32) {
         // 12x16 arrow cursor bitmap (1 = black border, 2 = white fill).
         const CURSOR: [[u8; 10]; 14] = [
@@ -1859,7 +1095,6 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn has_executable(name: &str) -> bool {
         let Some(path_var) = std::env::var_os("PATH") else {
             return false;
@@ -1869,7 +1104,6 @@ mod imp {
 
     /// Whether gst-launch and its PipeWire source are installed (gstreamer1.0-tools
     /// and gstreamer1.0-pipewire on Debian and Ubuntu), which Wayland capture uses.
-    #[cfg(target_os = "linux")]
     pub(crate) fn pipewire_capture_installed() -> bool {
         has_executable("gst-launch-1.0")
             && std::process::Command::new("gst-inspect-1.0")
@@ -1881,7 +1115,6 @@ mod imp {
                 .is_ok_and(|s| s.success())
     }
 
-    #[cfg(target_os = "linux")]
     fn is_wayland_screencast_available() -> bool {
         if std::env::var_os("WAYLAND_DISPLAY").is_none() {
             return false;
@@ -1905,7 +1138,6 @@ mod imp {
         })
     }
 
-    #[cfg(target_os = "linux")]
     struct WaylandScreenCaster {
         _conn: zbus::blocking::Connection,
         /// The PipeWire connection the portal opened for us; the stream is
@@ -1921,7 +1153,6 @@ mod imp {
         latest_frame: Arc<Mutex<Option<Vec<u8>>>>,
     }
 
-    #[cfg(target_os = "linux")]
     impl Drop for WaylandScreenCaster {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
@@ -1931,7 +1162,6 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn wait_portal_response(
         iter: &mut zbus::blocking::MessageIterator,
         expected_path: &str,
@@ -1951,7 +1181,6 @@ mod imp {
         None
     }
 
-    #[cfg(target_os = "linux")]
     impl WaylandScreenCaster {
         #[allow(clippy::type_complexity)]
         fn negotiate_portal() -> Option<(zbus::blocking::Connection, std::os::fd::OwnedFd, u32, u32, u32)> {
@@ -2198,18 +1427,15 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "linux")]
     static WAYLAND_CASTER: Mutex<Option<WaylandScreenCaster>> = Mutex::new(None);
 
     /// Where the ScreenCast portal's restore token is kept, so later sessions
     /// reuse the screen the user chose instead of asking again.
-    #[cfg(target_os = "linux")]
     fn restore_token_path() -> std::path::PathBuf {
         core_host::host().data_dir.join("screencast-restore-token")
     }
 
     /// A token that's gone or unusable just means the portal asks again.
-    #[cfg(target_os = "linux")]
     fn read_restore_token(path: &std::path::Path) -> Option<String> {
         let token = std::fs::read_to_string(path).ok()?;
         let token = token.trim();
@@ -2217,7 +1443,6 @@ mod imp {
     }
 
     /// Only this user may read it: it lets this app see the screen without asking.
-    #[cfg(target_os = "linux")]
     fn save_restore_token(path: &std::path::Path, token: &str) -> std::io::Result<()> {
         use std::{io::Write, os::unix::fs::OpenOptionsExt};
         let tmp = path.with_extension("tmp");
@@ -2230,7 +1455,6 @@ mod imp {
 
     /// gst-launch arguments: read stream `node_id` through the portal's
     /// PipeWire connection (fd 3) and write raw BGRx frames to stdout.
-    #[cfg(target_os = "linux")]
     pub(crate) fn pipeline_args(node_id: u32, dst_w: u32, dst_h: u32) -> Vec<String> {
         [
             "-q".to_owned(),
@@ -2251,7 +1475,6 @@ mod imp {
         .into()
     }
 
-    #[cfg(target_os = "linux")]
     fn capture_screen_wayland(dst_w: u32, dst_h: u32, bgra: &mut Vec<u8>) -> Option<(u32, u32)> {
         if !is_wayland_screencast_available() {
             return None;
@@ -2270,12 +1493,10 @@ mod imp {
         res
     }
 
-    #[cfg(target_os = "linux")]
     fn stop_wayland_screencast() {
         *WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    #[cfg(target_os = "linux")]
     fn capture_screen(
         region: Option<crate::win::browser::RECT>,
         dst_w: u32,
@@ -2392,7 +1613,6 @@ mod imp {
         })
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
     fn run_capture_loop(
         peer: DeviceId,
         options: MirrorStart,
@@ -2618,7 +1838,7 @@ mod imp {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
-                        #[cfg(any(windows, linux_ffmpeg_video))]
+                        #[cfg(linux_ffmpeg_video)]
                         if enc.next_encoder(&codec, dst_w, dst_h, fps, bitrate) {
                             tracing::warn!(error = %e, codec, "Video encoding failed; trying another encoder");
                             stats.rebuilds += 1;
@@ -2658,7 +1878,6 @@ mod imp {
         }
 
         // Only when no newer session took over: the screencast is shared.
-        #[cfg(target_os = "linux")]
         if ACTIVE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2749,7 +1968,6 @@ mod imp {
 
     #[cfg(test)]
     mod tests {
-        #[cfg(target_os = "linux")]
         #[test]
         fn the_screen_choice_survives_a_restart_privately() {
             use std::os::unix::fs::PermissionsExt;
@@ -2767,45 +1985,7 @@ mod imp {
 
         use super::*;
 
-        #[cfg(windows)]
-        #[test]
-        fn encoder_failures_advance_to_the_next_candidate() {
-            ensure_mf_started().unwrap();
-            let first = video_encoder_activations(MFVideoFormat_H264, None).unwrap().remove(0);
-            let second = video_encoder_activations(MFVideoFormat_H264, None).unwrap().remove(0);
-            let third = video_encoder_activations(MFVideoFormat_H264, None).unwrap().remove(0);
-            let mut attempts = 0;
-            let mut encoder = try_video_encoders(vec![first, second, third], |transform| {
-                attempts += 1;
-                if attempts == 1 {
-                    return Err(windows::core::Error::from(E_INVALIDARG));
-                }
-                ScreenEncoder::from_transform("h264", transform, 320, 240, 30, 2_000_000)
-            })
-            .unwrap();
-            assert_eq!(attempts, 2);
-            let input = vec![128; 320 * 240 * 3 / 2];
-            let stop = AtomicBool::new(false);
-            let mut packets = 0;
-            for i in 0..8 {
-                packets += encoder.encode(&input, i * 333_333, 333_333, &stop).unwrap().len();
-            }
-            assert!(packets > 0);
-            assert!(encoder.next_encoder("h264", 320, 240, 30, 2_000_000));
-            let mut keys = 0;
-            for i in 0..8 {
-                keys += encoder
-                    .encode(&input, i * 333_333, 333_333, &stop)
-                    .unwrap()
-                    .iter()
-                    .filter(|(keyframe, _)| *keyframe)
-                    .count();
-            }
-            assert!(keys > 0, "a replacement encoder starts with a keyframe");
-            assert!(!encoder.next_encoder("h264", 320, 240, 30, 2_000_000));
-        }
 
-        #[cfg(target_os = "linux")]
         #[test]
         fn wayland_capture_reads_the_stream_through_the_portal_connection() {
             let args = pipeline_args(57, 1280, 720);
@@ -2841,31 +2021,6 @@ mod imp {
             assert!(!has_h265_parameters(&idr));
         }
 
-        #[cfg(windows)]
-        #[test]
-        fn async_encoder_waits_time_out_and_honor_cancellation() {
-            let mut encoder = match ScreenEncoder::new_for_codec("h265", 1280, 720, 30, 2_000_000) {
-                Ok(encoder) if encoder.async_events.is_some() => encoder,
-                _ => {
-                    eprintln!("No asynchronous HEVC encoder available");
-                    return;
-                }
-            };
-            let stop = AtomicBool::new(false);
-            let cancelled = std::thread::scope(|scope| {
-                scope.spawn(|| {
-                    std::thread::sleep(Duration::from_millis(50));
-                    stop.store(true, Ordering::Relaxed);
-                });
-                encoder.wait_for_async_event(METransformHaveOutput.0 as u32, &stop).unwrap_err()
-            });
-            assert_eq!(cancelled.code(), MF_E_OPERATION_CANCELLED);
-
-            stop.store(false, Ordering::Relaxed);
-            // No frame has been submitted, so an output event cannot arrive.
-            let timeout = encoder.wait_for_async_event(METransformHaveOutput.0 as u32, &stop).unwrap_err();
-            assert_eq!(timeout.code(), ERROR_TIMEOUT.to_hresult());
-        }
 
         #[test]
         fn hevc_encoder_round_trips_when_available() {
@@ -2906,7 +2061,6 @@ mod imp {
             assert!(decoded_picture, "decoder must reconstruct an H.265 picture");
         }
 
-        #[cfg(any(windows, target_os = "linux"))]
         #[test]
         fn encodes_nv12_frames_and_decodes_back() {
             let (w, h) = target_dimensions(1920, 1080, 1280);
@@ -2948,38 +2102,10 @@ mod imp {
         /// With a Chromium browser showing a video on a page whose title has
         /// `G7LINK_TEST_TAB` in it, in view: captures just the video, as
         /// Play on phone does.
-        #[cfg(windows)]
-        #[test]
-        #[ignore = "needs a browser tab titled G7LINK_TEST_TAB"]
-        fn captures_a_browsers_video() {
-            use crate::win::browser::{Automation, window_for};
-            let wanted = std::env::var("G7LINK_TEST_TAB").expect("G7LINK_TEST_TAB");
-            // SAFETY: COM for this test's thread.
-            let _ = unsafe {
-                windows::Win32::System::Com::CoInitializeEx(
-                    None,
-                    windows::Win32::System::Com::COINIT_MULTITHREADED,
-                )
-            };
-            crate::win::browser::use_physical_pixels();
-            let window = window_for("Chrome", &wanted).expect("the test tab's window");
-            let rect = Automation::new().unwrap().video_rect(&window).expect("the video");
-            let (sw, sh) = ((rect.right - rect.left) as u32, (rect.bottom - rect.top) as u32);
-            let (w, h) = target_dimensions(sw, sh, 1280);
-            let mut bgra = Vec::new();
-            assert_eq!(capture_screen(Some(rect), w, h, &mut bgra), Some((sw, sh)));
-            let distinct: std::collections::HashSet<&[u8; 4]> = bgra.as_chunks::<4>().0.iter().collect();
-            eprintln!("{rect:?} as {w}x{h}: {} colors", distinct.len());
-            assert!(distinct.len() > 50, "a moving test pattern, not a blank");
-        }
 
-        #[cfg(any(windows, target_os = "linux"))]
         #[test]
         fn keyframes_come_on_request_without_rebuilding_the_encoder() {
             let (w, h) = target_dimensions(1280, 720, 1280);
-            #[cfg(windows)]
-            let mut enc = new_pc_encoder("h264", w, h, 30, 2_000_000).expect("ScreenEncoder");
-            #[cfg(target_os = "linux")]
             let mut enc =
                 ScreenEncoder::OpenH264(OpenH264Encoder::new(w, h, 30, 2_000_000).expect("OpenH264"));
             let mut nv12 = Vec::new();
@@ -3002,39 +2128,5 @@ mod imp {
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-mod imp {
-    #![allow(dead_code)]
-
-    use g7link_core::{DeviceId, MirrorInput, MirrorStart, NodeEvent};
-
-    pub fn active_peer() -> Option<DeviceId> {
-        None
-    }
-
-    pub fn is_active() -> bool {
-        false
-    }
-
-    pub fn is_watching() -> bool {
-        false
-    }
-
-    pub fn stop_watching() {}
-
-    pub fn start(_peer: DeviceId, _options: MirrorStart) {}
-
-    pub fn stop_for(_peer: &DeviceId) {}
-
-    pub fn stop_all() {}
-
-    pub fn request_keyframe(_peer: &DeviceId) {}
-
-    pub fn handle_input(_peer: &DeviceId, _session: u32, _input: MirrorInput) {}
-
-    pub fn on_event(_event: &NodeEvent) {}
-
-    pub fn set_mute_while_watched(_on: bool) {}
-}
 
 pub use imp::*;

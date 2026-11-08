@@ -3,7 +3,6 @@
 //! connected phones when `forward_pc_notifications_to_phone` is enabled in
 //! Settings (default `false`, privacy-first).
 
-#[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
@@ -15,7 +14,6 @@ use g7link_core::Notification;
 use crate::{core_host, settings};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-#[cfg(target_os = "linux")]
 static LISTENER_STARTED: OnceLock<()> = OnceLock::new();
 
 /// Builds a sanitized [`Notification`] representing a PC notification.
@@ -48,7 +46,6 @@ pub fn build_pc_notification(
 
 /// Returns `true` when the notification originated from G7 Link itself or a
 /// blocked system self-source so we never create a forwarding loop.
-#[cfg(any(target_os = "linux", test))]
 pub fn is_blocked_self_source(app_name: &str) -> bool {
     let lower = app_name.trim().to_lowercase();
     lower.is_empty()
@@ -60,7 +57,6 @@ pub fn is_blocked_self_source(app_name: &str) -> bool {
 
 /// Forwards a captured PC notification if it is not from a blocked self-source,
 /// has non-empty content, and `forward_pc_notifications_to_phone` is enabled.
-#[cfg(any(target_os = "linux", test))]
 pub fn forward_pc_toast(app_name: &str, title: &str, text: &str) -> bool {
     if is_blocked_self_source(app_name) {
         return false;
@@ -98,7 +94,6 @@ pub fn forward_to_phones(app_name: &str, title: &str, text: &str) -> bool {
 
 /// Deserializes a Freedesktop `org.freedesktop.Notifications.Notify` D-Bus method call
 /// message into `(app_name, summary, body)`, preserving multi-line notification bodies.
-#[cfg(target_os = "linux")]
 pub fn extract_notify_call(msg: &zbus::message::Message) -> Option<(String, String, String)> {
     let header = msg.header();
     if header.message_type() != zbus::message::Type::MethodCall {
@@ -137,7 +132,6 @@ pub fn extract_notify_call(msg: &zbus::message::Message) -> Option<(String, Stri
 }
 
 /// Starts a background listener for desktop notifications on Linux via `zbus`.
-#[cfg(target_os = "linux")]
 pub fn start_listener() {
     LISTENER_STARTED.get_or_init(|| {
         if !cfg!(test) {
@@ -146,7 +140,6 @@ pub fn start_listener() {
     });
 }
 
-#[cfg(target_os = "linux")]
 fn dbus_monitor_loop() {
     use std::time::Duration;
 
@@ -235,7 +228,6 @@ mod tests {
         assert!(!forward_pc_toast("Firefox", "   ", ""));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn extract_notify_call_preserves_multiline_body() {
         let hints: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =

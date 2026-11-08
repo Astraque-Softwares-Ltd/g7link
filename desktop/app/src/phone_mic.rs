@@ -68,7 +68,6 @@ pub fn phase() -> Phase {
 
 /// Reads the chosen output from the settings.
 pub fn init(settings: &crate::settings::Settings) {
-    #[cfg(target_os = "linux")]
     let _ = std::thread::Builder::new()
         .name("vmic-cleanup".into())
         .spawn(crate::win::vmic::cleanup_stale_sources);
@@ -131,13 +130,9 @@ pub fn chosen_output() -> Option<String> {
 const CABLES: &[&str] =
     &["cable input", "vb-audio", "voicemeeter input", "virtual cable", "virtual microphone"];
 
-#[cfg(target_os = "linux")]
 pub const VIRTUAL_MIC_ID: &str = "g7link:virtual_mic";
-#[cfg(target_os = "linux")]
 pub const VIRTUAL_MIC_NAME: &str = "G7 Link Phone Mic (Virtual Microphone, Stereo)";
-#[cfg(target_os = "linux")]
 pub const VIRTUAL_MIC_MONO_ID: &str = "g7link:virtual_mic_mono";
-#[cfg(target_os = "linux")]
 pub const VIRTUAL_MIC_MONO_NAME: &str = "G7 Link Phone Mic (Virtual Microphone, Mono)";
 
 /// The output to play into: the one chosen, while it's there; else a
@@ -161,7 +156,6 @@ pub fn is_cable(name: &str) -> bool {
 pub fn outputs() -> (Vec<AudioOutputDevice>, Option<String>) {
     #[allow(unused_mut)]
     let mut devices = crate::win::audio::output_devices();
-    #[cfg(target_os = "linux")]
     if crate::win::vmic::is_available() {
         if !devices.iter().any(|d| d.id == VIRTUAL_MIC_MONO_ID) {
             devices.insert(
@@ -292,11 +286,9 @@ fn after(phase: Phase, event: &NodeEvent) -> Phase {
 /// Where a phone's microphone goes: [`Platform::mic_sink`](g7link_core::Platform::mic_sink).
 pub fn sink(peer: &DeviceId) -> Option<Arc<dyn MicSink>> {
     let sink = Arc::new(Sink {
-        #[cfg(target_os = "linux")]
         peer: *peer,
         player: Mutex::new(None),
         config: Mutex::new(None),
-        #[cfg(target_os = "linux")]
         vmic: Mutex::new(None),
     });
     let _ = peer;
@@ -305,12 +297,10 @@ pub fn sink(peer: &DeviceId) -> Option<Arc<dyn MicSink>> {
 }
 
 struct Sink {
-    #[cfg(target_os = "linux")]
     peer: DeviceId,
     player: Mutex<Option<Player>>,
     /// The stream's format, to start again on another output.
     config: Mutex<Option<MirrorAudioConfig>>,
-    #[cfg(target_os = "linux")]
     vmic: Mutex<Option<crate::win::vmic::VirtualMic>>,
 }
 
@@ -319,7 +309,6 @@ impl Sink {
     fn restart(&self) {
         let Some(config) = self.config.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
         let (_, output) = outputs();
-        #[cfg(target_os = "linux")]
         if matches!(output.as_deref(), Some(VIRTUAL_MIC_ID | VIRTUAL_MIC_MONO_ID)) {
             self.player.lock().unwrap_or_else(|e| e.into_inner()).take();
             let out_channels = if output.as_deref() == Some(VIRTUAL_MIC_MONO_ID) { 1 } else { 2 };
@@ -339,7 +328,6 @@ impl Sink {
                 }
             }
         }
-        #[cfg(target_os = "linux")]
         self.vmic.lock().unwrap_or_else(|e| e.into_inner()).take();
         match Player::start_on(output, config.rate, u16::from(config.channels)) {
             Ok(player) => *self.player.lock().unwrap_or_else(|e| e.into_inner()) = Some(player),
@@ -355,7 +343,6 @@ impl MicSink for Sink {
     }
 
     fn audio(&self, _time_us: u64, mut data: Vec<u8>) {
-        #[cfg(target_os = "linux")]
         if let Some(vmic) = self.vmic.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             amplify(&mut data, gain());
             let _ = vmic.push_pcm(&data);
@@ -369,7 +356,6 @@ impl MicSink for Sink {
 
     fn ended(&self) {
         *self.config.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        #[cfg(target_os = "linux")]
         self.vmic.lock().unwrap_or_else(|e| e.into_inner()).take();
         self.player.lock().unwrap_or_else(|e| e.into_inner()).take();
     }

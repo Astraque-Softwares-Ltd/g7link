@@ -386,9 +386,6 @@ fn mapping() -> Option<Arc<SharedFrameMapping>> {
         let due = s.global_tried.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1));
         if !s.mapping_global && due {
             s.global_tried = Some(std::time::Instant::now());
-            #[cfg(windows)]
-            let global_res = SharedFrameMapping::open_existing(DEFAULT_MAPPING_NAME);
-            #[cfg(not(windows))]
             let global_res = SharedFrameMapping::open_or_create(DEFAULT_MAPPING_NAME);
             if let Ok(global) = global_res {
                 tracing::debug!("joined the virtual camera's frame mapping");
@@ -410,9 +407,6 @@ fn idle_mapping() -> Option<Arc<SharedFrameMapping>> {
         let due = s.global_tried.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1));
         if !s.mapping_global && due {
             s.global_tried = Some(std::time::Instant::now());
-            #[cfg(windows)]
-            let global_res = SharedFrameMapping::open_existing(DEFAULT_MAPPING_NAME);
-            #[cfg(not(windows))]
             let global_res = SharedFrameMapping::open_or_create(DEFAULT_MAPPING_NAME);
             if let Ok(global) = global_res {
                 tracing::debug!("joined the virtual camera's frame mapping");
@@ -700,21 +694,6 @@ fn mirror_bgrx_in_place(bgrx: &mut [u8], width: u32, height: u32) {
     }
 }
 
-#[cfg(windows)]
-pub fn supports_hevc() -> bool {
-    static SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SUPPORTED.get_or_init(|| match Decoder::new_gpu("h265") {
-        Ok(decoder) => {
-            let supported = decoder.on_gpu();
-            tracing::info!(supported, "HEVC decoder probe");
-            supported
-        }
-        Err(error) => {
-            tracing::info!(%error, "HEVC decoder unavailable");
-            false
-        }
-    })
-}
 
 fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
     let mut decoder = match Decoder::new_gpu("h264") {
@@ -740,10 +719,6 @@ fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
     let mut need_keyframe = true;
     let mut local_mapping = mapping();
     let mut last_mapping_check = Instant::now();
-    #[cfg(windows)]
-    let mut gpu_publisher = g7link_vcam::gpu::GpuPublisher::new();
-    #[cfg(windows)]
-    let mut shared_transport = false;
 
     while let Ok(item) = items.recv() {
         match item {
@@ -772,9 +747,6 @@ fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
                     continue;
                 }
                 need_keyframe = false;
-                #[cfg(windows)]
-                let decoded = decoder.decode_frames(&data, time_us);
-                #[cfg(not(windows))]
                 let decoded = decoder.decode(&data, time_us);
                 let pictures = match decoded {
                     Ok(pictures) => pictures,
@@ -794,51 +766,10 @@ fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
                     }
                     let flip = mirror();
                     let preview = PREVIEW_ACTIVE.load(Ordering::Relaxed);
-                    #[cfg(not(windows))]
                     let published = false;
-                    #[cfg(windows)]
-                    let published = if !flip {
-                        match picture.gpu_surface() {
-                            Ok(Some((texture, index))) => match gpu_publisher.publish(
-                                &texture,
-                                index,
-                                &picture.sample,
-                                (src_w, src_h),
-                                picture.colors.bt601,
-                                picture.colors.full_range,
-                            ) {
-                                Ok(published) => published,
-                                Err(error) => {
-                                    tracing::warn!(%error,"GPU webcam sharing unavailable; using CPU frames");
-                                    gpu_publisher.disable();
-                                    false
-                                }
-                            },
-                            _ => false,
-                        }
-                    } else {
-                        false
-                    };
-                    #[cfg(windows)]
-                    if shared_transport != published {
-                        tracing::info!(shared_textures = published, "webcam transport changed");
-                        shared_transport = published;
-                    }
                     if published && !preview {
                         continue;
                     }
-                    #[cfg(windows)]
-                    let cpu_picture = match decoder.read_frame(picture) {
-                        Ok(picture) => picture,
-                        Err(error) => {
-                            tracing::warn!(%error,"webcam frame readback failed");
-                            need_keyframe = true;
-                            keyframe_please();
-                            continue;
-                        }
-                    };
-                    #[cfg(windows)]
-                    let picture = &cpu_picture;
                     let mut bgrx = to_bgrx(picture, w, h);
                     if flip {
                         mirror_bgrx_in_place(&mut bgrx, src_w, src_h);
@@ -853,10 +784,6 @@ fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
                     }
                     // Publish the CPU fallback before deselecting the previous
                     // GPU frame so a transport switch cannot expose an idle gap.
-                    #[cfg(windows)]
-                    if !published {
-                        gpu_publisher.idle();
-                    }
                     if preview {
                         ffi::video_frame(PREVIEW_STREAM, src_w, src_h, &bgrx);
                     }
@@ -866,8 +793,6 @@ fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
         }
     }
 
-    #[cfg(windows)]
-    drop(gpu_publisher);
     state(|s| {
         if matches!(s.phase, Phase::Streaming { device: d, .. } if d == device) {
             s.phase = Phase::Idle;

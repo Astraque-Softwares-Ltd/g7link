@@ -106,58 +106,6 @@ fn fonts_qrc() -> PathBuf {
     out
 }
 
-/// Icon sizes in the .exe: what Explorer, the taskbar and Start ask for at
-/// 100–200% scale.
-const ICON_SIZES: &[u32] = &[16, 20, 24, 32, 40, 48, 64, 256];
-
-/// An .ico file with the mark at every size, as 32-bit bitmaps (alpha used,
-/// AND mask empty).
-fn icon_file() -> Vec<u8> {
-    let images: Vec<Vec<u8>> = ICON_SIZES
-        .iter()
-        .map(|&size| {
-            let rgba = mark::render(size as usize);
-            let mask_row = size.div_ceil(32) * 4;
-            let mut image = Vec::new();
-            // BITMAPINFOHEADER; the height counts the color and mask halves.
-            for field in [40, size, size * 2] {
-                image.extend_from_slice(&field.to_le_bytes());
-            }
-            image.extend_from_slice(&1u16.to_le_bytes());
-            image.extend_from_slice(&32u16.to_le_bytes());
-            image.extend_from_slice(&[0; 24]);
-            // Bottom-up BGRA rows.
-            for row in rgba.chunks_exact(size as usize * 4).rev() {
-                for p in row.as_chunks::<4>().0 {
-                    image.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
-                }
-            }
-            image.resize(image.len() + (mask_row * size) as usize, 0);
-            image
-        })
-        .collect();
-    let count = u16::try_from(images.len()).expect("a few sizes");
-    let mut ico = Vec::new();
-    for field in [0u16, 1, count] {
-        ico.extend_from_slice(&field.to_le_bytes());
-    }
-    let mut offset = 6 + 16 * images.len();
-    for (&size, image) in ICON_SIZES.iter().zip(&images) {
-        // 256 is written as 0.
-        let side = u8::try_from(size).unwrap_or(0);
-        ico.extend_from_slice(&[side, side, 0, 0]);
-        ico.extend_from_slice(&1u16.to_le_bytes());
-        ico.extend_from_slice(&32u16.to_le_bytes());
-        ico.extend_from_slice(&u32::try_from(image.len()).expect("small").to_le_bytes());
-        ico.extend_from_slice(&u32::try_from(offset).expect("small").to_le_bytes());
-        offset += image.len();
-    }
-    for image in images {
-        ico.extend_from_slice(&image);
-    }
-    ico
-}
-
 /// Fragment shaders, served under `qrc:/shaders/`.
 const SHADERS: &[&str] = &["glassrim.frag", "hive.frag"];
 
@@ -191,54 +139,6 @@ fn shaders_qrc() -> PathBuf {
     let qrc_path = out.join("shaders.qrc");
     write_if_changed(&qrc_path, qrc);
     qrc_path
-}
-
-/// The .exe's icon and version information (what Explorer, shortcuts and
-/// Task Manager show).
-fn windows_resources() {
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let ico = out.join("g7link.ico");
-    write_if_changed(&ico, icon_file());
-    let version = std::env::var("CARGO_PKG_VERSION").expect("version");
-    let numbers: Vec<&str> = version.split(['.', '-', '+']).take(3).collect();
-    let numeric = format!("{},0", numbers.join(","));
-    // No #include: numeric constants keep rc.exe off the SDK headers.
-    // IDI_ICON1 is the name Qt looks for to give its windows their class icon. With
-    // any other, they get the generic one, and the taskbar can show that at launch.
-    // 0x40004 is VOS_NT_WINDOWS32, 0x1 is VFT_APP.
-    let rc = format!(
-        r#"IDI_ICON1 ICON "{ico}"
-1 VERSIONINFO
-FILEVERSION {numeric}
-PRODUCTVERSION {numeric}
-FILEOS 0x40004
-FILETYPE 0x1
-BEGIN
-  BLOCK "StringFileInfo"
-  BEGIN
-    BLOCK "040904B0"
-    BEGIN
-      VALUE "CompanyName", "The NectarLink contributors"
-      VALUE "FileDescription", "G7 Link"
-      VALUE "FileVersion", "{version}"
-      VALUE "InternalName", "g7link-desktop"
-      VALUE "LegalCopyright", "GPL-3.0-or-later"
-      VALUE "OriginalFilename", "g7link-desktop.exe"
-      VALUE "ProductName", "G7 Link"
-      VALUE "ProductVersion", "{version}"
-    END
-  END
-  BLOCK "VarFileInfo"
-  BEGIN
-    VALUE "Translation", 0x409, 1200
-  END
-END
-"#,
-        ico = ico.display().to_string().replace('\\', "/"),
-    );
-    let rc_path = out.join("g7link.rc");
-    write_if_changed(&rc_path, rc);
-    embed_resource::compile(&rc_path, embed_resource::NONE).manifest_required().expect("compile resources");
 }
 
 fn find_lrelease() -> Option<PathBuf> {
@@ -364,9 +264,6 @@ fn main() {
     for qml in QML.iter().chain(QML_SINGLETONS.iter()) {
         println!("cargo:rerun-if-changed={qml}");
     }
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        windows_resources();
-    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         compile_translations();
     }
@@ -410,25 +307,9 @@ fn main() {
         ])
         .build();
 
-    // The C++ window code calls DWM, Shell property store, and user32 directly on Windows.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        println!("cargo:rustc-link-lib=dwmapi");
-        println!("cargo:rustc-link-lib=ole32");
-        println!("cargo:rustc-link-lib=shell32");
-        println!("cargo:rustc-link-lib=user32");
-    } else if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        println!("cargo:rustc-link-lib=Qt6Quick");
-        println!("cargo:rustc-link-lib=Qt6Widgets");
-        println!(
-            "cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib:$ORIGIN/../lib/g7link/lib"
-        );
-    } else if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        println!("cargo:rustc-link-lib=framework=AppKit");
-        println!("cargo:rustc-link-lib=framework=CoreGraphics");
-        println!("cargo:rustc-link-lib=framework=CoreAudio");
-        println!("cargo:rustc-link-lib=framework=AudioToolbox");
-        println!("cargo:rustc-link-lib=framework=IOKit");
-    }
+    println!("cargo:rustc-link-lib=Qt6Quick");
+    println!("cargo:rustc-link-lib=Qt6Widgets");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib:$ORIGIN/../lib/g7link");
     println!("cargo:rerun-if-changed=cpp/app_helpers.h");
     println!("cargo:rerun-if-changed=cpp/app_helpers.cpp");
     println!("cargo:rerun-if-changed=cpp/native_window.h");

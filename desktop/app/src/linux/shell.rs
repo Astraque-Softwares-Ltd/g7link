@@ -149,12 +149,7 @@ pub fn is_url_scheme_registered(scheme: &str) -> bool {
 /// Percent-encodes a filesystem path for use in `file://` URIs and FreeDesktop
 /// `.trashinfo` `Path=` entries (preserving `/` and unreserved URI bytes).
 pub(crate) fn percent_encode_path(path: &Path) -> String {
-    #[cfg(unix)]
     let bytes: &[u8] = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
-    #[cfg(not(unix))]
-    let owned = path.to_string_lossy().into_owned().into_bytes();
-    #[cfg(not(unix))]
-    let bytes: &[u8] = &owned;
 
     let mut out = String::with_capacity(bytes.len());
     for &b in bytes {
@@ -372,14 +367,9 @@ fn decode_file_uri(uri: &str) -> Option<PathBuf> {
             i += 1;
         }
     }
-    #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
         Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
-    }
-    #[cfg(not(unix))]
-    {
-        String::from_utf8(out).ok().map(PathBuf::from)
     }
 }
 
@@ -704,7 +694,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else if file_type.is_symlink() {
             let link_target = fs::read_link(&src_path)?;
-            #[cfg(unix)]
             std::os::unix::fs::symlink(&link_target, &dst_path)?;
         } else {
             fs::copy(&src_path, &dst_path)?;
@@ -723,7 +712,6 @@ fn move_across_filesystems(src: &Path, dst: &Path) -> std::io::Result<()> {
         fs::remove_dir_all(src)
     } else if meta.file_type().is_symlink() {
         let link_target = fs::read_link(src)?;
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&link_target, dst)?;
         if let Err(e) = fs::remove_file(src) {
             let _ = fs::remove_file(dst);
@@ -781,7 +769,6 @@ fn recycle_file_in(trash_dir: &Path, path: &Path) -> Result<(), String> {
 
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create_new(true);
-        #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);

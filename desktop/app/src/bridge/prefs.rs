@@ -412,7 +412,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().set_amoled(settings.amoled);
         self.as_mut().set_backdrop(settings.backdrop);
         self.as_mut().set_comb_motion(settings.comb_motion);
-        let close_to_tray = if cfg!(target_os = "macos") { false } else { settings.close_to_tray };
+        let close_to_tray = settings.close_to_tray;
         self.as_mut().set_close_to_tray(close_to_tray);
         self.as_mut().set_auto_clipboard(settings.auto_clipboard);
         crate::clipboard::set_auto_send(settings.auto_clipboard);
@@ -516,13 +516,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().on_comb_motion_changed(|p| p.save()).release();
         self.as_mut()
             .on_close_to_tray_changed(|p| {
-                #[cfg(target_os = "macos")]
-                let mut p = p;
-                #[cfg(target_os = "macos")]
-                if p.close_to_tray {
-                    p.as_mut().set_close_to_tray(false);
-                    return;
-                }
                 p.save();
             })
             .release();
@@ -1137,7 +1130,7 @@ impl qobject::Preferences {
             amoled: p.amoled,
             backdrop: p.backdrop,
             comb_motion: p.comb_motion,
-            close_to_tray: if cfg!(target_os = "macos") { false } else { p.close_to_tray },
+            close_to_tray: p.close_to_tray,
             auto_clipboard: p.auto_clipboard,
             clipboard_history: p.clipboard_history,
             suggest_clipboard_actions: p.suggest_clipboard_actions,
@@ -1273,8 +1266,6 @@ fn folder_from_url(url: &QString) -> Option<PathBuf> {
     if trimmed.is_empty() {
         return None;
     }
-    #[cfg(windows)]
-    let trimmed = trimmed.replace('/', "\\");
     Some(PathBuf::from(trimmed))
 }
 
@@ -1282,17 +1273,6 @@ fn folder_from_url(url: &QString) -> Option<PathBuf> {
 mod tests {
     use super::new_rule_id;
 
-    #[cfg(windows)]
-    #[test]
-    fn a_chosen_folder_reads_as_a_windows_path() {
-        use super::folder_from_url;
-        use cxx_qt_lib::QString;
-        let path = |url: &str| folder_from_url(&QString::from(url)).map(|p| p.to_string_lossy().into_owned());
-        assert_eq!(path("file:///C:/Users/me/Phone%20sync").as_deref(), Some(r"C:\Users\me\Phone sync"));
-        assert_eq!(path("file://server/share/photos").as_deref(), Some(r"\\server\share\photos"));
-        assert_eq!(path("D:/plain").as_deref(), Some(r"D:\plain"));
-        assert_eq!(path("  "), None);
-    }
 
     #[test]
     fn a_new_rule_never_gets_an_id_in_use() {

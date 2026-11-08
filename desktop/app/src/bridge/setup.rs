@@ -143,14 +143,6 @@ impl cxx_qt::Initialize for qobject::Setup {
                 // A first install adds it; otherwise it stays as the user left it.
                 self.as_mut().set_desktop_shortcut(kind == "fresh" || setup::has_desktop_shortcut());
                 // An installed copy is updated where it is.
-                #[cfg(windows)]
-                {
-                    let dir = installed
-                        .as_ref()
-                        .map_or_else(crate::win::install_dir::default_dir, |i| i.dir.clone());
-                    self.as_mut().set_install_dir(QString::from(&dir.display().to_string()));
-                    self.as_mut().set_can_choose_dir(kind == "fresh");
-                }
                 self.as_mut().set_mode(QString::from("install"));
             }
         }
@@ -162,7 +154,7 @@ impl cxx_qt::Initialize for qobject::Setup {
                 self.as_mut().set_dark(theme == "dark");
             }
             if let Ok(kind) = std::env::var("G7LINK_SETUP_KIND") {
-                self.as_mut().set_can_choose_dir(cfg!(windows) && kind == "fresh");
+                self.as_mut().set_can_choose_dir(false && kind == "fresh");
                 self.as_mut().set_kind(QString::from(&kind));
                 self.as_mut().set_installed_version(QString::from("0.1.0"));
             }
@@ -247,39 +239,6 @@ impl qobject::Setup {
         let Some(chosen) = cxx_qt_lib::QUrl::from(url).to_local_file().map(|p| String::from(&p)) else {
             return;
         };
-        #[cfg(windows)]
-        {
-            use crate::win::install_dir;
-            let chosen = PathBuf::from(chosen.replace('/', "\\"));
-            let default = install_dir::default_dir();
-            // Program Files: back to the installer's own default.
-            let result = if install_dir::target_dir(&chosen).as_os_str().eq_ignore_ascii_case(&default) {
-                Ok(None)
-            } else {
-                install_dir::check(&chosen).map(Some)
-            };
-            match result {
-                Ok(placement) => {
-                    let dir = placement.as_ref().map_or(&default, |p| &p.dir);
-                    self.as_mut().set_install_dir(QString::from(&dir.display().to_string()));
-                    self.as_mut().set_dir_refused(false);
-                    self.as_mut().set_dir_note(if placement.as_ref().is_none_or(|p| p.admin_only) {
-                        QString::default()
-                    } else {
-                        QString::from(&crate::i18n::tr!(
-                            "Setup",
-                            "Updates here will ask for your permission each time."
-                        ))
-                    });
-                    *PLACEMENT.lock().unwrap_or_else(|e| e.into_inner()) = placement;
-                }
-                Err(reason) => {
-                    self.as_mut().set_dir_refused(true);
-                    self.as_mut().set_dir_note(QString::from(&reason));
-                }
-            }
-        }
-        #[cfg(not(windows))]
         let _ = (self.as_mut(), chosen);
     }
 

@@ -42,7 +42,6 @@ pub fn write_snapshot_file(data_dir: &Path, state: &WidgetState) -> io::Result<(
     let path = state_snapshot_path(data_dir);
     let json = serde_json::to_vec_pretty(state).map_err(io::Error::other)?;
 
-    #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -82,10 +81,6 @@ pub fn write_snapshot_file(data_dir: &Path, state: &WidgetState) -> io::Result<(
             return Err(e);
         }
         Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        fs::write(path, json)
     }
 }
 
@@ -342,7 +337,6 @@ mod tests {
         let loaded = read_snapshot_file(dir.path());
         assert_eq!(loaded, state);
 
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(state_snapshot_path(dir.path())).unwrap().permissions().mode();

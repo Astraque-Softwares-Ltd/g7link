@@ -4,7 +4,6 @@
 //! the phone in its app and the PC pauses; anything else the phone watches
 //! streamed from the PC, which keeps playing it.
 
-#[cfg(any(windows, target_os = "linux"))]
 mod imp {
 
     #![allow(unsafe_code)]
@@ -19,13 +18,7 @@ mod imp {
     };
 
     use g7link_core::{DeviceId, Error, FeatureState, LinkState, MediaAction, PlayOnPhone};
-    #[cfg(windows)]
-    use windows::Win32::{
-        Foundation::{HWND, RECT},
-        System::Com::{COINIT_MULTITHREADED, CoInitializeEx},
-    };
 
-    #[cfg(target_os = "linux")]
     use crate::win::browser::{HWND, RECT};
     use crate::{
         bridge::app::{describe, show_message},
@@ -153,9 +146,6 @@ mod imp {
             return show_message(tr!("PlayOnPhone", "Connect your phone to play on it."));
         };
         let spawned = std::thread::Builder::new().name("play-on-phone".into()).spawn(move || {
-            #[cfg(windows)]
-            // SAFETY: COM for this short-lived thread (UI Automation).
-            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
             let (title, position) = now_playing(&player);
             let window = browser::window_for(&player, &title);
             // A video file in a desktop player: the phone plays the file itself.
@@ -282,9 +272,6 @@ mod imp {
             let stop = Arc::new(AtomicBool::new(false));
             let (found, stopped, player) = (place.clone(), stop.clone(), player.to_owned());
             let spawned = std::thread::Builder::new().name("play-on-phone-follow".into()).spawn(move || {
-                #[cfg(windows)]
-                // SAFETY: COM for this thread, which ends with the watching.
-                let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
                 // Places in the pixels the capture uses.
                 browser::use_physical_pixels();
                 let automation = Automation::new().ok();
@@ -376,44 +363,5 @@ mod imp {
     }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-mod imp {
-    #![allow(dead_code)]
-
-    use g7link_core::DeviceId;
-
-    pub fn phone() -> Option<(DeviceId, String)> {
-        None
-    }
-
-    pub fn watchable() -> Option<String> {
-        None
-    }
-
-    pub fn state() -> &'static str {
-        "idle"
-    }
-
-    pub fn set_on(_on: bool) {}
-
-    pub fn play(_player: String) {}
-
-    pub struct Watched;
-
-    #[derive(Debug, Clone, Copy)]
-    pub struct Place {
-        pub window: isize,
-    }
-
-    impl Watched {
-        pub fn follow(_player: &str) -> Watched {
-            Watched
-        }
-
-        pub fn place(&self) -> Option<Place> {
-            None
-        }
-    }
-}
 
 pub use imp::*;

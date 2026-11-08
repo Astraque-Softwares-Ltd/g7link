@@ -4,7 +4,7 @@
 //! shortcut to every file opened lately (the Recent folder), and the
 //! player's title or its window's names the file.
 
-#![cfg_attr(not(windows), allow(dead_code))]
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
@@ -64,7 +64,6 @@ pub(crate) fn pick<'a>(titles: &[&str], recent: &'a [String]) -> Option<&'a Stri
     best.map(|(_, name)| name)
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn percent_decode_str(input: &str) -> String {
     let unescaped =
         input.replace("&amp;", "&").replace("&apos;", "'").replace("&#39;", "'").replace("&quot;", "\"");
@@ -89,7 +88,6 @@ fn percent_decode_str(input: &str) -> String {
 
 /// Resolves a `file://` URI (with percent-encoding and optional XML entity escaping)
 /// into a local filesystem [`PathBuf`].
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn decode_file_uri(uri: &str) -> Option<PathBuf> {
     let trimmed = uri.trim().trim_matches('\'').trim_matches('"').trim();
     let after_scheme = trimmed.strip_prefix("file://")?;
@@ -101,7 +99,6 @@ pub(crate) fn decode_file_uri(uri: &str) -> Option<PathBuf> {
     if decoded.trim().is_empty() { None } else { Some(PathBuf::from(decoded)) }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn extract_xml_attr<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
     for quote in ['"', '\''] {
         let pattern = format!("{attr}={quote}");
@@ -117,7 +114,6 @@ fn extract_xml_attr<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
 
 /// Parses Freedesktop `recently-used.xbel` XML content and returns playable video
 /// file paths ordered from most recently visited/modified to oldest.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_xbel_recent_files(xml: &str) -> Vec<PathBuf> {
     let mut entries: Vec<(String, usize, PathBuf)> = Vec::new();
     for (idx, chunk) in xml.split("<bookmark").skip(1).enumerate() {
@@ -155,7 +151,6 @@ pub(crate) fn parse_xbel_recent_files(xml: &str) -> Vec<PathBuf> {
     out
 }
 
-#[cfg(target_os = "linux")]
 fn mpris_xesam_url_for(player: &str, title: &str) -> Option<PathBuf> {
     use std::collections::HashMap;
     use zbus::zvariant::OwnedValue;
@@ -229,7 +224,6 @@ fn mpris_xesam_url_for(player: &str, title: &str) -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "linux")]
 fn proc_open_playable_files(programs: &[String]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(proc_dir) = std::fs::read_dir("/proc") else {
@@ -264,7 +258,6 @@ fn proc_open_playable_files(programs: &[String]) -> Vec<PathBuf> {
     out
 }
 
-#[cfg(target_os = "linux")]
 fn xbel_recent_playable_files() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(data_dir) = dirs::data_local_dir() {
@@ -295,7 +288,6 @@ pub fn file_for(player: &str, title: &str) -> Option<PathBuf> {
         return None;
     }
 
-    #[cfg(target_os = "linux")]
     if let Some(path) = mpris_xesam_url_for(player, title) {
         return Some(path);
     }
@@ -305,7 +297,6 @@ pub fn file_for(player: &str, title: &str) -> Option<PathBuf> {
     let mut titles: Vec<&str> = windows.iter().map(String::as_str).collect();
     titles.push(title);
 
-    #[cfg(target_os = "linux")]
     {
         let open_files = proc_open_playable_files(&programs);
         let open_names: Vec<String> = open_files

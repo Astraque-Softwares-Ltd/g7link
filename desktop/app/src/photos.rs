@@ -836,9 +836,6 @@ pub fn view() -> View {
                 })
                 .collect(),
         );
-        #[cfg(windows)]
-        const DEFAULT_SAVE_FOLDER: &str = r"Downloads\G7Link";
-        #[cfg(not(windows))]
         const DEFAULT_SAVE_FOLDER: &str = "Downloads/G7Link";
         let save_folder = s
             .save_folder

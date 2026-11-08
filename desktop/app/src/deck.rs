@@ -319,13 +319,8 @@ fn execute_action(action: &DeckAction) -> Result<(), String> {
             Ok(())
         }
         DeckAction::Screenshot => {
-            #[cfg(target_os = "linux")]
             {
                 let _ = win::shell::take_screenshot();
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                win::input::press_key("s", &[KeyMod::Win, KeyMod::Shift]);
             }
             Ok(())
         }
@@ -518,11 +513,7 @@ pub fn build_action(
     if !action.is_valid() {
         return Err(match kind {
             deck_kinds::LAUNCH_APP => {
-                if cfg!(target_os = "linux") {
-                    tr!("Deck", "Enter an application path (/usr/bin/..., .desktop, or .AppImage).")
-                } else {
-                    tr!("Deck", "Application path must end with .exe or .lnk.")
-                }
+                tr!("Deck", "Enter an application path (/usr/bin/..., .desktop, or .AppImage).")
             }
             deck_kinds::OPEN_URL => tr!("Deck", "Web address must start with http:// or https://."),
             deck_kinds::SHORTCUT => {

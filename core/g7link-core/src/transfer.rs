@@ -1837,23 +1837,8 @@ fn read_ahead(
 /// `try_clone` share one position, and a reader from an attempt that just ended
 /// can still be going: moving it under the next one would send the wrong bytes.
 fn read_exact_at(file: &std::fs::File, block: &mut [u8], at: u64) -> std::io::Result<()> {
-    #[cfg(unix)]
     {
         std::os::unix::fs::FileExt::read_exact_at(file, block, at)
-    }
-    #[cfg(windows)]
-    {
-        let mut filled = 0;
-        while filled < block.len() {
-            let offset = at + filled as u64;
-            match std::os::windows::fs::FileExt::seek_read(file, &mut block[filled..], offset) {
-                Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
-                Ok(n) => filled += n,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
     }
 }
 
@@ -2106,15 +2091,6 @@ fn save_files(target: &Path, entries: &[FileEntry], parts: Vec<PathBuf>) -> std:
 /// document in Protected View. Best effort: a drive without alternate data
 /// streams (FAT32, say) takes no mark.
 pub(crate) fn mark_from_elsewhere(path: &Path) {
-    #[cfg(windows)]
-    {
-        let mut stream = path.as_os_str().to_owned();
-        stream.push(":Zone.Identifier");
-        if let Err(e) = std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=3\r\n") {
-            tracing::debug!(error = %e, "can't mark a received file as from elsewhere");
-        }
-    }
-    #[cfg(not(windows))]
     let _ = path;
 }
 
@@ -2125,16 +2101,6 @@ const SPACE_MARGIN: u64 = 64 * 1024 * 1024;
 /// can't tell, which never blocks a transfer).
 #[allow(unsafe_code)]
 pub(crate) fn free_space(path: &Path) -> Option<u64> {
-    #[cfg(windows)]
-    {
-        use windows::{Win32::Storage::FileSystem::GetDiskFreeSpaceExW, core::HSTRING};
-        let mut free = 0u64;
-        // SAFETY: a valid path string and an out pointer to a local.
-        unsafe { GetDiskFreeSpaceExW(&HSTRING::from(path.as_os_str()), Some(&mut free), None, None) }
-            .ok()
-            .map(|()| free)
-    }
-    #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
         let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -2146,11 +2112,6 @@ pub(crate) fn free_space(path: &Path) -> Option<u64> {
         }
         let block = if stat.f_frsize > 0 { stat.f_frsize as u64 } else { stat.f_bsize as u64 };
         Some((stat.f_bavail as u64).saturating_mul(block))
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = path;
-        None
     }
 }
 
@@ -2237,17 +2198,6 @@ mod tests {
         assert!(got == data[100..], "the bytes came from where they should");
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn received_files_are_marked_as_from_the_internet_zone() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("setup.exe");
-        std::fs::write(&file, b"MZ").unwrap();
-        mark_from_elsewhere(&file);
-        let mut stream = file.into_os_string();
-        stream.push(":Zone.Identifier");
-        assert_eq!(std::fs::read_to_string(stream).unwrap(), "[ZoneTransfer]\r\nZoneId=3\r\n");
-    }
 
     #[test]
     fn free_space_is_read_for_a_real_folder() {

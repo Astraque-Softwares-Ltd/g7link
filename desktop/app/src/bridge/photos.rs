@@ -223,9 +223,6 @@ fn folder_from_url(url: &QString) -> Option<PathBuf> {
 
 impl cxx_qt::Initialize for qobject::Photos {
     fn initialize(mut self: Pin<&mut Self>) {
-        #[cfg(windows)]
-        const DEFAULT_SAVE_FOLDER: &str = r"Downloads\G7Link";
-        #[cfg(not(windows))]
         const DEFAULT_SAVE_FOLDER: &str = "Downloads/G7Link";
         self.as_mut().set_status(QString::from("idle"));
         self.as_mut().set_albums(QString::from("[]"));

@@ -912,7 +912,6 @@ fn unregister_sidebar_bookmarks(mount_path: &Path) {
 }
 
 fn find_fusermount_binary() -> Option<&'static str> {
-    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let extra = [Path::new("/usr/bin"), Path::new("/bin"), Path::new("/usr/sbin"), Path::new("/sbin")];
@@ -1052,7 +1051,6 @@ fn open_fuse_mount(mount_path: &Path) -> Option<OwnedFd> {
     let fusermount_bin = find_fusermount_binary()?;
     unmount_fuse_path(mount_path);
 
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::create_dir_all(mount_path);

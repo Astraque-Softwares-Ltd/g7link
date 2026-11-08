@@ -101,7 +101,7 @@ pub fn start(data_dir: PathBuf, platform: Arc<dyn Platform>) -> std::io::Result<
 /// and input injection (`mirror.input`, `input.inject`) only when enabled for at
 /// least one paired device (or actively sharing).
 pub fn compute_capabilities(
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(unused_variables))] node: Option<&Node>,
+    node: Option<&Node>,
 ) -> Vec<String> {
     let mut caps = vec![
         "pc.power".into(),
@@ -112,7 +112,6 @@ pub fn compute_capabilities(
         g7link_core::SMS_SHOW.into(),
         g7link_core::TOGGLES_SHOW.into(),
     ];
-    #[cfg(any(windows, target_os = "linux"))]
     {
         caps.push(g7link_core::PC_WAKE.into());
         caps.push("media.control".into());
@@ -124,16 +123,6 @@ pub fn compute_capabilities(
         caps.push(g7link_core::DECK_ACTIONS.into());
         caps.push(g7link_core::PC_AUDIO.into());
         caps.push(g7link_core::RECORDER.into());
-        #[cfg(windows)]
-        {
-            caps.push(g7link_core::WEBCAM_VIRTUAL.into());
-            if crate::webcam::supports_hevc() {
-                caps.push(g7link_core::WEBCAM_HEVC.into());
-                caps.push(g7link_core::MIRROR_HEVC.into());
-            }
-            caps.push(g7link_core::MEDIA_STREAM.into());
-        }
-        #[cfg(target_os = "linux")]
         {
             if crate::win::h264::supports_hevc_hardware() {
                 caps.push(g7link_core::MIRROR_HEVC.into());
@@ -147,11 +136,8 @@ pub fn compute_capabilities(
         }
         caps.push(g7link_core::MIC_LISTEN.into());
     }
-    #[cfg(any(windows, target_os = "linux"))]
     let mut pc_mirror_enabled = crate::pc_mirror::is_active();
-    #[cfg(any(windows, target_os = "linux"))]
     let mut remote_input_enabled = false;
-    #[cfg(any(windows, target_os = "linux"))]
     if let Some(node) = node
         && let Ok(devices) = node.paired_devices()
     {
@@ -168,15 +154,10 @@ pub fn compute_capabilities(
             }
         }
     }
-    #[cfg(any(windows, target_os = "linux"))]
     if pc_mirror_enabled && crate::pc_mirror::is_capture_available() {
         caps.push(g7link_core::MIRROR_CAPTURE.into());
     }
-    #[cfg(windows)]
-    let input_available = true;
-    #[cfg(target_os = "linux")]
     let input_available = crate::win::input::is_available();
-    #[cfg(any(windows, target_os = "linux"))]
     if remote_input_enabled && input_available {
         caps.push(g7link_core::MIRROR_INPUT.into());
         caps.push(g7link_core::INPUT_INJECT.into());
@@ -434,38 +415,3 @@ pub fn shutdown() {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn macos_advertises_only_supported_capabilities() {
-        let caps = compute_capabilities(None);
-        // Ensure unsupported features on macOS are never advertised
-        assert!(!caps.contains(&"mirror.view".into()), "macOS must not advertise mirror.view");
-        assert!(!caps.contains(&"mirror.listen".into()), "macOS must not advertise mirror.listen");
-        assert!(!caps.contains(&"media.control".into()), "macOS must not advertise media.control");
-        assert!(!caps.contains(&g7link_core::STORAGE_MOUNT.into()), "macOS must not advertise storage.mount");
-        assert!(!caps.contains(&g7link_core::STORAGE_READ.into()), "macOS must not advertise storage.read");
-        assert!(!caps.contains(&g7link_core::STORAGE_WRITE.into()), "macOS must not advertise storage.write");
-        assert!(
-            !caps.contains(&g7link_core::WEBCAM_VIRTUAL.into()),
-            "macOS must not advertise camera.virtual"
-        );
-        assert!(!caps.contains(&g7link_core::PC_AUDIO.into()), "macOS must not advertise pc.audio");
-        assert!(!caps.contains(&g7link_core::RECORDER.into()), "macOS must not advertise recorder");
-        assert!(!caps.contains(&g7link_core::DECK_ACTIONS.into()), "macOS must not advertise deck.actions");
-        assert!(!caps.contains(&g7link_core::MEDIA_STREAM.into()), "macOS must not advertise media.stream");
-        assert!(!caps.contains(&g7link_core::MIC_LISTEN.into()), "macOS must not advertise mic.listen");
-        assert!(!caps.contains(&g7link_core::PC_WAKE.into()), "macOS must not advertise pc.wake");
-
-        // Ensure supported features on macOS are advertised
-        assert!(caps.contains(&"pc.power".into()));
-        assert!(caps.contains(&g7link_core::PHOTOS_SHOW.into()));
-        assert!(caps.contains(&g7link_core::CAMERA_CONTINUITY.into()));
-        assert!(caps.contains(&g7link_core::CALLS_SHOW.into()));
-        assert!(caps.contains(&g7link_core::CONTACTS_SHOW.into()));
-        assert!(caps.contains(&g7link_core::SMS_SHOW.into()));
-        assert!(caps.contains(&g7link_core::TOGGLES_SHOW.into()));
-    }
-}

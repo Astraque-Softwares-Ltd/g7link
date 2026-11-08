@@ -5555,7 +5555,7 @@ fn default_command_title(first_token: &str) -> String {
 }
 
 enum TaskTransport {
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     DesktopDir(PathBuf),
     Standalone {
         node: Node,
@@ -5566,11 +5566,9 @@ enum TaskTransport {
 impl TaskTransport {
     async fn send(&self, device_query: Option<&str>, task: &TaskNotify) -> Result<()> {
         // Only the desktop app's queue (Windows / Linux) picks the phone by name here.
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(target_os = "linux"))]
         let _ = device_query;
         match self {
-            #[cfg(windows)]
-            TaskTransport::DesktopDir(dir) => win_watch::queue_desktop_task_notify(dir, device_query, task),
             #[cfg(target_os = "linux")]
             TaskTransport::DesktopDir(dir) => linux_watch::queue_desktop_task_notify(dir, device_query, task),
             TaskTransport::Standalone { node, targets } => {
@@ -5593,25 +5591,19 @@ impl TaskTransport {
     async fn shutdown(self) {
         match self {
             TaskTransport::Standalone { node, .. } => node.shutdown().await,
-            #[cfg(any(windows, target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             TaskTransport::DesktopDir(_) => {}
         }
     }
 }
 
 async fn connect_task_transport(cli: &Cli, device_query: Option<&str>) -> Result<TaskTransport> {
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     {
         let desktop_dir = match &cli.data_dir {
             Some(dir) => Some(dir.clone()),
             None => dirs::data_local_dir().map(|d| d.join("G7Link")),
         };
-        #[cfg(windows)]
-        if let Some(dir) = desktop_dir
-            && win_watch::is_desktop_running(&dir)
-        {
-            return Ok(TaskTransport::DesktopDir(dir));
-        }
         #[cfg(target_os = "linux")]
         if let Some(dir) = desktop_dir
             && linux_watch::is_desktop_running(&dir)
@@ -5673,61 +5665,6 @@ async fn run_notify_when(
 
     let is_pid = target.len() == 1 && target[0].parse::<u32>().is_ok();
     if is_pid {
-        #[cfg(windows)]
-        {
-            let pid: u32 = target[0].parse()?;
-            let watched = win_watch::open_process(pid)?;
-            let title = title_override
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| watched.title.clone());
-            let started = watched.started_ms;
-            let initial_elapsed = now_unix_ms().saturating_sub(started) as u64;
-            let task_id = format!("pid-{pid}-{started}");
-            let transport = connect_task_transport(cli, device).await?;
-            let running = TaskNotify {
-                id: task_id.clone(),
-                title: title.clone(),
-                active: true,
-                elapsed_ms: initial_elapsed,
-                exit_code: None,
-            };
-            transport.send(device, &running).await?;
-            let mut wait_handle = tokio::task::spawn_blocking(move || win_watch::wait_process(watched));
-            let exit_code = tokio::select! {
-                res = &mut wait_handle => res.context("process watch task panicked")??,
-                _ = tokio::signal::ctrl_c() => {
-                    let dismissed = TaskNotify {
-                        id: task_id,
-                        title,
-                        active: false,
-                        elapsed_ms: 0,
-                        exit_code: None,
-                    };
-                    let _ = transport.send(device, &dismissed).await;
-                    transport.shutdown().await;
-                    return Ok(130);
-                }
-            };
-            let total_elapsed = now_unix_ms().saturating_sub(started) as u64;
-            let finished = TaskNotify {
-                id: task_id,
-                title: title.clone(),
-                active: false,
-                elapsed_ms: total_elapsed,
-                exit_code: Some(exit_code),
-            };
-            let took = TaskNotify::format_took(total_elapsed);
-            let send_res = transport.send(device, &finished).await;
-            transport.shutdown().await;
-            send_res?;
-            println!(
-                "{} (exit {exit_code}, {took}).",
-                if exit_code == 0 { format!("{title} finished") } else { format!("{title} failed") },
-            );
-            return Ok(0);
-        }
         #[cfg(target_os = "linux")]
         {
             let pid: u32 = target[0].parse()?;
@@ -5780,7 +5717,7 @@ async fn run_notify_when(
             println!("{title} finished ({took}).");
             return Ok(0);
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(target_os = "linux"))]
         {
             bail!("watching a process by PID is only supported on Windows and Linux");
         }
@@ -5837,165 +5774,6 @@ async fn run_notify_when(
     Ok(exit_code)
 }
 
-#[cfg(windows)]
-#[allow(unsafe_code)]
-mod win_watch {
-    use std::{
-        fs,
-        hash::{DefaultHasher, Hash, Hasher},
-        io::Write,
-        path::Path,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    use anyhow::{Context, Result, bail};
-    use g7link_core::TaskNotify;
-    use serde::Serialize;
-    use windows::{
-        Win32::{
-            Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0},
-            System::Threading::{
-                EVENT_MODIFY_STATE, GetExitCodeProcess, GetProcessTimes, INFINITE, OpenEventW, OpenProcess,
-                PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-                QueryFullProcessImageNameW, SetEvent, WaitForSingleObject,
-            },
-        },
-        core::{HSTRING, PWSTR},
-    };
-
-    static REQUEST_SEQ: AtomicU64 = AtomicU64::new(0);
-    const WINDOWS_TO_UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
-
-    #[derive(Serialize)]
-    #[serde(tag = "kind", rename_all = "camelCase")]
-    enum DesktopRequest<'a> {
-        TaskNotify {
-            #[serde(skip_serializing_if = "Option::is_none")]
-            device: Option<&'a str>,
-            task: &'a TaskNotify,
-        },
-    }
-
-    pub fn desktop_activate_event_name(data_dir: &Path) -> HSTRING {
-        let mut hasher = DefaultHasher::new();
-        data_dir.to_string_lossy().to_lowercase().hash(&mut hasher);
-        let tag = format!("{:016x}", hasher.finish());
-        HSTRING::from(format!(r"Local\G7Link.Desktop.Activate.{tag}"))
-    }
-
-    pub fn is_desktop_running(data_dir: &Path) -> bool {
-        let event_name = desktop_activate_event_name(data_dir);
-        // SAFETY: Opening a named event in the local session and immediately closing the handle.
-        unsafe {
-            if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, &event_name) {
-                let _ = CloseHandle(event);
-                true
-            } else {
-                false
-            }
-        }
-    }
-
-    pub fn queue_desktop_task_notify(data_dir: &Path, device: Option<&str>, task: &TaskNotify) -> Result<()> {
-        let dir = data_dir.join("requests");
-        fs::create_dir_all(&dir).context("can't create desktop requests directory")?;
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let seq = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
-        let name = format!("{nanos:024}-{}-{seq:04}", std::process::id());
-        let partial = dir.join(format!("{name}.tmp"));
-        let payload = serde_json::to_vec(&DesktopRequest::TaskNotify { device, task })?;
-        let mut file = fs::File::create(&partial)?;
-        file.write_all(&payload)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&partial, dir.join(format!("{name}.json")))?;
-
-        let event_name = desktop_activate_event_name(data_dir);
-        // SAFETY: Signaling the running desktop instance's auto-reset event handle.
-        unsafe {
-            let event = OpenEventW(EVENT_MODIFY_STATE, false, &event_name)
-                .context("the desktop app is no longer running")?;
-            let _ = SetEvent(event);
-            let _ = CloseHandle(event);
-        }
-        Ok(())
-    }
-
-    pub struct WatchedProcess {
-        handle: HANDLE,
-        pub title: String,
-        pub started_ms: i64,
-    }
-
-    // SAFETY: Win32 process kernel handles can be transferred across threads for WaitForSingleObject.
-    unsafe impl Send for WatchedProcess {}
-
-    impl Drop for WatchedProcess {
-        fn drop(&mut self) {
-            // SAFETY: `self.handle` is owned by `WatchedProcess` and closed once on drop.
-            unsafe {
-                let _ = CloseHandle(self.handle);
-            }
-        }
-    }
-
-    fn filetime_to_unix_ms(ft: FILETIME) -> Option<i64> {
-        let ticks = (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime);
-        let unix_ticks = ticks.checked_sub(WINDOWS_TO_UNIX_EPOCH_TICKS)?;
-        Some((unix_ticks / 10_000) as i64)
-    }
-
-    pub fn open_process(pid: u32) -> Result<WatchedProcess> {
-        // SAFETY: Opening the target process with SYNCHRONIZE | QUERY_LIMITED_INFORMATION.
-        let handle = unsafe {
-            OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-                .with_context(|| format!("can't open process {pid}"))?
-        };
-        let mut buf = [0u16; 1024];
-        let mut len = buf.len() as u32;
-        // SAFETY: `buf` is a writable UTF-16 buffer of `len` elements.
-        let image_ok = unsafe {
-            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok()
-        };
-        let title = if image_ok && len > 0 {
-            let full = String::from_utf16_lossy(&buf[..len as usize]);
-            Path::new(&full)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(&full)
-                .to_owned()
-        } else {
-            format!("PID {pid}")
-        };
-
-        let mut creation = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        // SAFETY: All four FILETIME pointers are valid writable stack locals.
-        let times_ok =
-            unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user).is_ok() };
-        let started_ms =
-            if times_ok { filetime_to_unix_ms(creation) } else { None }.unwrap_or_else(super::now_unix_ms);
-
-        Ok(WatchedProcess { handle, title, started_ms })
-    }
-
-    pub fn wait_process(proc: WatchedProcess) -> Result<i32> {
-        // SAFETY: Waiting on the valid process handle until it terminates, then querying its exit code.
-        unsafe {
-            let waited = WaitForSingleObject(proc.handle, INFINITE);
-            if waited != WAIT_OBJECT_0 {
-                bail!("failed waiting for process to exit ({waited:?})");
-            }
-            let mut code = 0u32;
-            GetExitCodeProcess(proc.handle, &mut code).context("can't read process exit code")?;
-            Ok(code as i32)
-        }
-    }
-}
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
@@ -6293,64 +6071,7 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn watches_spawned_process_by_pid_and_reads_exit_code() {
-        let mut child = std::process::Command::new("cmd")
-            .args(["/c", "ping -n 2 127.0.0.1 >nul & exit /b 7"])
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        let watched = win_watch::open_process(pid).unwrap();
-        assert!(watched.title.to_ascii_lowercase().contains("cmd"));
-        assert!(watched.started_ms > 1_700_000_000_000);
-        let code = win_watch::wait_process(watched).unwrap();
-        let _ = child.wait();
-        assert_eq!(code, 7);
-    }
 
-    #[cfg(windows)]
-    #[test]
-    #[allow(unsafe_code)]
-    fn queues_task_notify_request_when_desktop_event_is_present() {
-        use windows::Win32::{
-            Foundation::{CloseHandle, WAIT_OBJECT_0},
-            System::Threading::{CreateEventW, WaitForSingleObject},
-        };
-
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!win_watch::is_desktop_running(dir.path()));
-
-        let event_name = win_watch::desktop_activate_event_name(dir.path());
-        // SAFETY: Creating a local auto-reset event for the test temp dir.
-        let event = unsafe { CreateEventW(None, false, false, &event_name).unwrap() };
-        assert!(win_watch::is_desktop_running(dir.path()));
-
-        let task = TaskNotify {
-            id: "test-1".into(),
-            title: "cargo build".into(),
-            active: true,
-            elapsed_ms: 0,
-            exit_code: None,
-        };
-        win_watch::queue_desktop_task_notify(dir.path(), Some("pixel"), &task).unwrap();
-
-        // SAFETY: Checking that `queue_desktop_task_notify` signaled the event.
-        assert_eq!(unsafe { WaitForSingleObject(event, 0) }, WAIT_OBJECT_0);
-        unsafe {
-            let _ = CloseHandle(event);
-        }
-
-        let entries: Vec<_> = std::fs::read_dir(dir.path().join("requests"))
-            .unwrap()
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .collect();
-        assert_eq!(entries.len(), 1);
-        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&entries[0]).unwrap()).unwrap();
-        assert_eq!(json["kind"], "taskNotify");
-        assert_eq!(json["device"], "pixel");
-        assert_eq!(json["task"]["id"], "test-1");
-    }
 
     #[cfg(target_os = "linux")]
     #[test]

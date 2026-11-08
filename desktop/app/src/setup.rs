@@ -20,8 +20,6 @@
 //! `g7link-desktop.exe` by name, which would otherwise include these.
 
 use crate::i18n::tr;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -35,16 +33,8 @@ pub const INSTALLED_ARG: &str = "--installed";
 /// Where the Android app is downloaded (the done screen's QR code and link).
 pub const ANDROID_URL: &str = "https://github.com/Astraque-Softwares-Ltd/g7link/releases/latest";
 
-const APP_EXE: &str = if cfg!(windows) { "g7link-desktop.exe" } else { "g7link-desktop" };
-#[cfg(windows)]
-const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\G7Link";
-#[cfg(windows)]
-const SETUP_COPY_NAME: &str = "G7Link Uninstall.exe";
+const APP_EXE: &str = "g7link-desktop";
 
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-#[cfg(windows)]
-const DETACHED_PROCESS: u32 = 0x0000_0008;
 
 /// What the window is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,17 +52,7 @@ pub struct Installed {
     pub version: String,
 }
 
-#[cfg(windows)]
-pub fn installed() -> Option<Installed> {
-    use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
-    let dir = crate::win::reg_string(HKEY_LOCAL_MACHINE, UNINSTALL_KEY, "InstallLocation")?;
-    let version =
-        crate::win::reg_string(HKEY_LOCAL_MACHINE, UNINSTALL_KEY, "DisplayVersion").unwrap_or_default();
-    let dir = PathBuf::from(dir);
-    dir.join(APP_EXE).is_file().then_some(Installed { dir, version })
-}
 
-#[cfg(target_os = "linux")]
 pub fn installed() -> Option<Installed> {
     if let Some(version) = dpkg_installed_version("g7link") {
         let dir = PathBuf::from("/usr/bin");
@@ -99,12 +79,7 @@ pub fn installed() -> Option<Installed> {
     None
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn installed() -> Option<Installed> {
-    None
-}
 
-#[cfg(target_os = "linux")]
 fn dpkg_installed_version(pkg: &str) -> Option<String> {
     let out = std::process::Command::new("dpkg-query")
         .args(["-W", "-f=${db:Status-Status}\\t${Version}\\n", pkg])
@@ -118,7 +93,6 @@ fn dpkg_installed_version(pkg: &str) -> Option<String> {
     parse_dpkg_query_output(&String::from_utf8_lossy(&out.stdout))
 }
 
-#[cfg(any(target_os = "linux", test))]
 fn parse_dpkg_query_output(output: &str) -> Option<String> {
     let line = output.lines().next()?.trim();
     let (status, version) = line.split_once('\t')?;
@@ -129,7 +103,6 @@ fn parse_dpkg_query_output(output: &str) -> Option<String> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn read_installed_version(dir: &Path, exe: &Path) -> Option<String> {
     if let Ok(text) = std::fs::read_to_string(dir.join("VERSION")) {
         let trimmed = text.trim();
@@ -194,9 +167,6 @@ impl Step {
         match self {
             Step::Closing => "Closing G7 Link",
             Step::Files => "Copying files",
-            #[cfg(not(target_os = "linux"))]
-            Step::Firewall => "Allowing through Windows Firewall",
-            #[cfg(target_os = "linux")]
             Step::Firewall => "Configure Linux firewall rules",
             Step::Updates => "Setting up updates",
             Step::Shortcuts => "Adding shortcuts",
@@ -257,39 +227,16 @@ pub enum Outcome {
 
 /// Whether the desktop has G7 Link's shortcut, which setup only adds when
 /// asked to (#102).
-#[cfg(windows)]
-pub fn has_desktop_shortcut() -> bool {
-    crate::win::shortcut::public_desktop_dir().is_some_and(|dir| dir.join("G7 Link.lnk").is_file())
-}
 
-#[cfg(not(windows))]
 pub fn has_desktop_shortcut() -> bool {
     false
 }
 
 /// Installs from `installer` with administrator rights, reporting each step:
 /// into Program Files, or where `placement` says.
-#[cfg(windows)]
-pub fn install(
-    installer: &Path,
-    desktop_shortcut: bool,
-    placement: Option<&Placement>,
-    on_event: impl FnMut(Event),
-) -> Outcome {
-    let rechecked = match placement {
-        Some(p) => match crate::win::install_dir::check(&p.dir) {
-            Ok(fresh) => Some(fresh),
-            Err(reason) => return Outcome::Failed(reason),
-        },
-        None => None,
-    };
-    let progress = progress_file("install");
-    let params = install_params(desktop_shortcut, rechecked.as_ref(), &progress);
-    run_tracked(installer, &params, &progress, Duration::from_secs(600), true, on_event)
-}
 
 /// The installer's switches. NSIS takes `/D=` last and unquoted, spaces and all.
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn install_params(desktop_shortcut: bool, placement: Option<&Placement>, progress: &Path) -> String {
     let mut params = format!("/S /DESKTOP={} /PROGRESS={}", u8::from(desktop_shortcut), progress.display());
     if let Some(placement) = placement {
@@ -302,7 +249,6 @@ fn install_params(desktop_shortcut: bool, placement: Option<&Placement>, progres
     params
 }
 
-#[cfg(target_os = "linux")]
 pub fn install(
     installer: &Path,
     _desktop_shortcut: bool,
@@ -358,40 +304,10 @@ pub fn install(
 }
 
 /// The app installs from a disk image on macOS, not through this setup.
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn install(
-    installer: &Path,
-    _desktop_shortcut: bool,
-    _placement: Option<&Placement>,
-    _on_event: impl FnMut(Event),
-) -> Outcome {
-    Outcome::Failed(tr!("Setup", "Couldn't start setup: %1", installer.display()))
-}
 
 /// Removes the copy in `installed` with administrator rights, then this
 /// user's data.
-#[cfg(windows)]
-pub fn remove(installed: &Path, mut on_event: impl FnMut(Event)) -> Outcome {
-    let uninstaller = installed.join("uninstall.exe");
-    if !uninstaller.is_file() {
-        return Outcome::Failed(tr!(
-            "Setup",
-            "The uninstaller is missing. Reinstall G7 Link, then uninstall it."
-        ));
-    }
-    let progress = progress_file("remove");
-    let params = format!("/S /PROGRESS={}", progress.display());
-    // The uninstaller hands over to a copy of itself and exits at once, so
-    // only the progress file says when it's finished.
-    let outcome =
-        run_tracked(&uninstaller, &params, &progress, Duration::from_secs(300), false, &mut on_event);
-    if outcome == Outcome::Done {
-        remove_user_data();
-    }
-    outcome
-}
 
-#[cfg(target_os = "linux")]
 pub fn remove(installed: &Path, mut on_event: impl FnMut(Event)) -> Outcome {
     on_event(Event::Step(Step::Closing));
     let _ = crate::win::autostart::set_enabled(false);
@@ -445,12 +361,6 @@ pub fn remove(installed: &Path, mut on_event: impl FnMut(Event)) -> Outcome {
 /// files, recordings and synced folders live elsewhere and stay.
 /// On macOS the app is removed by moving it to the Trash; this removes this
 /// user's data.
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn remove(_installed: &Path, mut on_event: impl FnMut(Event)) -> Outcome {
-    remove_user_data();
-    on_event(Event::Done);
-    Outcome::Done
-}
 
 pub fn remove_user_data() {
     let Some(data) = user_data_dir() else { return };
@@ -462,13 +372,7 @@ pub fn remove_user_data() {
 }
 
 /// `%LOCALAPPDATA%\G7Link`, the app's default data folder.
-#[cfg(windows)]
-fn user_data_dir() -> Option<PathBuf> {
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
-    local.is_absolute().then(|| local.join("G7Link"))
-}
 
-#[cfg(not(windows))]
 fn user_data_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("G7Link"))
 }
@@ -476,7 +380,7 @@ fn user_data_dir() -> Option<PathBuf> {
 /// Runs `program` elevated with `params` and follows `progress` until it
 /// reports done or an error. With `wait_for_exit`, the process ending also
 /// ends the run (its exit code decides when the file says nothing).
-#[cfg_attr(not(windows), allow(dead_code))]
+#[allow(dead_code)]
 fn run_tracked(
     program: &Path,
     params: &str,
@@ -546,9 +450,8 @@ fn new_events(path: &Path, read: &mut usize) -> Vec<Event> {
     fresh
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[allow(dead_code)]
 fn progress_file(what: &str) -> PathBuf {
-    #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let uid = std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(0);
@@ -560,30 +463,12 @@ fn progress_file(what: &str) -> PathBuf {
         let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir);
         dir.join(format!("g7link-{what}-{}.progress", std::process::id()))
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        std::env::temp_dir().join(format!("g7link-{what}-{}.progress", std::process::id()))
-    }
 }
 
 /// Starts the installed app as this user, not elevated. Through Explorer, so
 /// it starts as a fresh process of the shell and inherits nothing from
 /// whatever launched setup.
-#[cfg(windows)]
-pub fn open_app(dir: &Path) -> Result<(), String> {
-    let app = dir.join(APP_EXE);
-    if !app.is_file() {
-        return Err(format!("{} is missing", app.display()));
-    }
-    std::process::Command::new("explorer.exe")
-        .arg(&app)
-        .creation_flags(DETACHED_PROCESS)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
 
-#[cfg(target_os = "linux")]
 pub fn open_app(dir: &Path) -> Result<(), String> {
     let app = dir.join(APP_EXE);
     if !app.is_file() {
@@ -598,43 +483,11 @@ pub fn open_app(dir: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-pub fn open_app(dir: &Path) -> Result<(), String> {
-    let app = dir.join(APP_EXE);
-    if !app.is_file() {
-        return Err(format!("{} is missing", app.display()));
-    }
-    std::process::Command::new("open").arg(&app).spawn().map(|_| ()).map_err(|e| e.to_string())
-}
 
 /// For `--remove` started from the installed folder: carries on from a copy
 /// in a temporary folder, so the installed one can be deleted. `Ok(true)`
 /// when the copy took over and this process should exit.
-#[cfg(windows)]
-pub fn hand_over_removal(installed: &Path) -> Result<bool, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let temp = std::env::temp_dir();
-    if exe.starts_with(&temp)
-        || (cfg!(debug_assertions) && std::env::var_os("G7LINK_SETUP_PREVIEW").is_some())
-    {
-        return Ok(false);
-    }
-    let copy = temp.join(format!("G7Link-uninstall-{}", std::process::id()));
-    copy_tree(installed, &copy).map_err(|e| format!("can't prepare removal: {e}"))?;
-    let app = copy.join(APP_EXE);
-    let renamed = copy.join(SETUP_COPY_NAME);
-    std::fs::rename(&app, &renamed).map_err(|e| e.to_string())?;
-    std::process::Command::new(&renamed)
-        .arg(REMOVE_ARG)
-        .arg(INSTALLED_ARG)
-        .arg(installed)
-        .current_dir(&copy)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(true)
-}
 
-#[cfg(not(windows))]
 pub fn hand_over_removal(_installed: &Path) -> Result<bool, String> {
     // On Unix, open executables can be unlinked while running, and `installed`
     // may be `/usr/bin` which must never be copied into `/tmp`.
@@ -642,25 +495,7 @@ pub fn hand_over_removal(_installed: &Path) -> Result<bool, String> {
 }
 
 /// Deletes this program's temporary copy once it has exited.
-#[cfg(windows)]
-pub fn delete_own_copy_later() {
-    let Ok(exe) = std::env::current_exe() else { return };
-    let Some(dir) = exe.parent() else { return };
-    let temp = std::env::temp_dir();
-    // Only ever a folder this module made under %TEMP%.
-    let ours = dir.starts_with(&temp)
-        && dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("G7Link-uninstall-"));
-    if !ours {
-        return;
-    }
-    let script = format!("/c ping -n 4 127.0.0.1 >nul & rmdir /s /q \"{}\"", dir.display());
-    let _ = std::process::Command::new("cmd.exe")
-        .raw_arg(script)
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-        .spawn();
-}
 
-#[cfg(not(windows))]
 pub fn delete_own_copy_later() {
     let Ok(exe) = std::env::current_exe() else { return };
     let Some(dir) = exe.parent() else { return };
@@ -681,7 +516,7 @@ pub fn delete_own_copy_later() {
         .spawn();
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {

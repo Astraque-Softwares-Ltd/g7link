@@ -111,7 +111,6 @@ pub fn write_desktop_file_to(
     let desktop_path = dir.join("g7link.desktop");
     let content = build_desktop_file(exe, icon_path, custom_data_dir);
 
-    #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -123,10 +122,6 @@ pub fn write_desktop_file_to(
             .mode(0o644)
             .open(&desktop_path)?;
         file.write_all(content.as_bytes())?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(&desktop_path, content)?;
     }
     Ok(desktop_path)
 }

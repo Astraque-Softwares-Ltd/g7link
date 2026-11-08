@@ -3587,16 +3587,6 @@ async fn phone_storage_lists_reads_ranges_writes_resumes_mutates_and_enforces_se
     std::fs::write(storage_root.path().join("DCIM/photo.jpg"), b"fake-jpeg-bytes").unwrap();
 
     // Create a directory link inside storage_root pointing to outside_root to verify symlink/junction rejection.
-    #[cfg(windows)]
-    {
-        let link = storage_root.path().join("escape_link");
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(&link)
-            .arg(outside_root.path())
-            .output();
-    }
-    #[cfg(unix)]
     {
         let _ = std::os::unix::fs::symlink(outside_root.path(), storage_root.path().join("escape_link"));
     }

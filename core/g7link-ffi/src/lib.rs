@@ -2364,7 +2364,6 @@ fn file_to_send(file: FileToSend) -> Result<core::OutgoingFile> {
         FileToSend::Path { name, path, folder } => {
             core::OutgoingFile { name, folder, source: core::FileSource::Path(path.into()) }
         }
-        #[cfg(unix)]
         FileToSend::Fd { name, fd, folder } => {
             use std::os::fd::FromRawFd;
             if fd < 0 {
@@ -2375,10 +2374,6 @@ fn file_to_send(file: FileToSend) -> Result<core::OutgoingFile> {
             #[allow(unsafe_code)]
             let file = unsafe { std::fs::File::from_raw_fd(fd) };
             core::OutgoingFile { name, folder, source: core::FileSource::File(file) }
-        }
-        #[cfg(not(unix))]
-        FileToSend::Fd { .. } => {
-            return Err(G7LinkError::Internal { reason: "file descriptors exist only on Android".into() });
         }
     })
 }

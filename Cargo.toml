@@ -9,7 +9,6 @@ members = [
     "desktop/app",
     "desktop/vcam",
     "tools/xtask",
-    "spikes/s1-qt-rust",
 ]
 # Patched crates, used through [patch.crates-io] below.
 exclude = ["third_party"]
@@ -73,10 +72,7 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "io-util", 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
-windows = "0.62"
 # The same version windows itself depends on, never newer on its own.
-windows-collections = "0.3"
-windows-core = "0.62"
 zbus = { version = "5", default-features = false, features = ["tokio", "blocking-api"] }
 
 [workspace.lints.rust]

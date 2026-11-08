@@ -60,13 +60,7 @@ mod update_relay;
 mod updater;
 mod version;
 mod webcam;
-#[cfg(windows)]
-mod win;
-#[cfg(target_os = "linux")]
 #[path = "linux/mod.rs"]
-mod win;
-#[cfg(target_os = "macos")]
-#[path = "mac/mod.rs"]
 mod win;
 
 use std::{
@@ -79,8 +73,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(not(target_os = "linux"))]
-use cxx_qt_lib::QGuiApplication;
 use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
 use g7link_core::{
     MediaAction, MediaError, MirrorInput, MirrorStart, Platform, PowerAction, StorageEntry, StorageError,
@@ -451,10 +443,7 @@ fn run_setup_window(mode: setup::Mode) -> ExitCode {
     }
     bridge::setup::set_mode(mode);
     bridge::native::ffi::prepare_qt_without_log();
-    #[cfg(target_os = "linux")]
     let mut app = bridge::native::ffi::create_qt_app();
-    #[cfg(not(target_os = "linux"))]
-    let mut app = QGuiApplication::new();
     if let Some(mut app) = app.as_mut() {
         app.as_mut().set_application_name(&QString::from("G7 Link Setup"));
         app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
@@ -504,10 +493,6 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
-    }
-    #[cfg(windows)]
-    if options.register_package {
-        return win::share_target::register_elevated();
     }
     if options.unregister_vcam {
         return match win::vcam::unregister_hklm() {
@@ -581,7 +566,6 @@ fn main() -> ExitCode {
     win::toast::set_process_id();
     // Logging out or shutting down sends SIGTERM: quit as Quit does, so
     // phone storage is unmounted instead of left behind.
-    #[cfg(target_os = "linux")]
     win::quit_on_signals(bridge::app::request_quit);
     win::jumplist::register(options.data_dir.as_deref());
     if let Err(e) = core_host::start(data_dir.clone(), Arc::new(DesktopPlatform)) {
@@ -604,8 +588,6 @@ fn main() -> ExitCode {
     watch_network();
     start_toasts();
     // The Share sheet and notification buttons, after an update (#84).
-    #[cfg(windows)]
-    win::share_target::ensure_sparse_package(data_dir.clone());
     clipboard::start();
     win::smtc::start(media::on_flyout);
     win::media_sessions::start(media::local_changed);
@@ -701,10 +683,7 @@ fn main() -> ExitCode {
         bridge::native::ffi::prepare_qt(&logging::logs_dir(&data_dir).to_string_lossy());
     }
     bridge::native::ffi::set_ui_scale(i32::from(settings::Settings::load(&data_dir).ui_scale));
-    #[cfg(target_os = "linux")]
     let mut app = bridge::native::ffi::create_qt_app();
-    #[cfg(not(target_os = "linux"))]
-    let mut app = QGuiApplication::new();
     if let Some(mut app) = app.as_mut() {
         app.as_mut().set_application_name(&QString::from("G7Link"));
         app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
@@ -774,24 +753,6 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     /// Qt gives its windows the icon of this exact name, or else a generic one.
-    #[cfg(windows)]
-    #[allow(unsafe_code)]
-    #[test]
-    fn the_exe_has_the_icon_qt_looks_for() {
-        use windows::{
-            Win32::{
-                System::LibraryLoader::GetModuleHandleW,
-                UI::WindowsAndMessaging::{IMAGE_ICON, LR_DEFAULTSIZE, LoadImageW},
-            },
-            core::w,
-        };
-        // SAFETY: the name is a valid wide string, and this only reads our own resources.
-        let icon = unsafe {
-            let module = GetModuleHandleW(None).unwrap();
-            LoadImageW(Some(module.into()), w!("IDI_ICON1"), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE)
-        };
-        assert!(icon.is_ok_and(|icon| !icon.is_invalid()));
-    }
 
     use std::ffi::OsString;
 
@@ -868,7 +829,6 @@ mod tests {
             })
         );
 
-        #[cfg(target_os = "linux")]
         {
             let uri_opts = parse_options_from(["tel:+15551234567"].into_iter().map(OsString::from));
             assert!(uri_opts.minimized);
