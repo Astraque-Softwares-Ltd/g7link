@@ -311,6 +311,74 @@ QtObject {
             }
           }
         },
+        "cobalt": {
+          "description": "G7 Link's own look. Cool grey, ink and cobalt: hairlines instead of filled cards, ink primary buttons, navigation in a bottom dock. Colors are fixed.",
+          "dynamicColor": false,
+          "fonts": {
+            "display": "Figtree",
+            "label": "Figtree",
+            "mono": "Space Mono",
+            "ui": "Figtree"
+          },
+          "label": {
+            "case": "none",
+            "size": 12.5,
+            "tracking": 0,
+            "weight": 600
+          },
+          "shape": {
+            "full": 3,
+            "lg": 4,
+            "md": 4,
+            "sm": 3,
+            "xl": 6,
+            "xs": 2
+          },
+          "variants": {
+            "day": {
+              "error": "#A4230F",
+              "onError": "#FFFFFF",
+              "onPrimary": "#FFFFFF",
+              "onPrimaryContainer": "#0B2260",
+              "onSecondaryContainer": "#12161C",
+              "onSurface": "#12161C",
+              "onSurfaceVariant": "#4D5663",
+              "outline": "#6B7480",
+              "outlineVariant": "#CFD5DC",
+              "primary": "#1F4FD8",
+              "primaryContainer": "#D9E2FA",
+              "secondaryContainer": "#DDE2E8",
+              "success": "#12161C",
+              "surface": "#ECEFF2",
+              "surfaceContainer": "#ECEFF2",
+              "surfaceContainerHigh": "#E5E9EE",
+              "surfaceContainerHighest": "#DFE4EA",
+              "surfaceContainerLow": "#F2F4F7",
+              "warning": "#6F5200"
+            },
+            "night": {
+              "error": "#F0A39C",
+              "onError": "#3B0B07",
+              "onPrimary": "#0B1B52",
+              "onPrimaryContainer": "#DCE4FF",
+              "onSecondaryContainer": "#ECEFF2",
+              "onSurface": "#ECEFF2",
+              "onSurfaceVariant": "#A9B3BF",
+              "outline": "#7C8794",
+              "outlineVariant": "#2E3641",
+              "primary": "#8FA9FF",
+              "primaryContainer": "#1F3A94",
+              "secondaryContainer": "#262D37",
+              "success": "#ECEFF2",
+              "surface": "#12161C",
+              "surfaceContainer": "#12161C",
+              "surfaceContainerHigh": "#1A2027",
+              "surfaceContainerHighest": "#222932",
+              "surfaceContainerLow": "#0E1217",
+              "warning": "#E2C47A"
+            }
+          }
+        },
         "graphite": {
           "description": "Built-in alternative, from github.com/thtbee/graphite. Monochrome ink on paper / chalk on slate; dynamic color off.",
           "dynamicColor": false,

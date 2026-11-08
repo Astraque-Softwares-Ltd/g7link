@@ -541,6 +541,7 @@ Item {
                             title: qsTr("Theme")
                             Segmented {
                                 options: [
+                                    { value: "cobalt", label: qsTr("Cobalt") },
                                     { value: "hive", label: qsTr("Hive") },
                                     { value: "bloom", label: qsTr("Bloom") },
                                     { value: "glass", label: qsTr("Glass") },

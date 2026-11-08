@@ -568,8 +568,8 @@ NativeWindow {
     // ---- Navigation rail ----
     Rectangle {
         id: rail
-        visible: !window.welcome
-        width: Theme.railWidth
+        visible: !window.welcome && !Theme.cobalt
+        width: Theme.cobalt ? 0 : Theme.railWidth
         height: parent.height
         color: "transparent"
         property string hoveredNav: ""
@@ -700,7 +700,7 @@ NativeWindow {
         visible: !window.welcome
         anchors.left: rail.right
         anchors.right: parent.right
-        height: parent.height
+        height: parent.height - (dock.visible ? dock.height : 0)
 
         Item {
             id: topBar
@@ -879,7 +879,7 @@ NativeWindow {
             anchors.bottom: parent.bottom
             width: parent.width
             clip: true
-            topLeftRadius: 18
+            topLeftRadius: Theme.cobalt ? 0 : 18
             // Hive: lets the comb show faintly through, under opaque cards.
             color: Theme.hive
                 ? Qt.rgba(Theme.surfaceContainerLow.r, Theme.surfaceContainerLow.g, Theme.surfaceContainerLow.b, Theme.dark ? 0.50 : 0.58)
@@ -985,6 +985,109 @@ NativeWindow {
                         Qt.callLater(() => pageEnterAnim.restart())
                     }
                 }
+            }
+        }
+    }
+
+    // ---- Cobalt's bottom dock: the same destinations as the rail, plus
+    // Timeline and Commands, which the title bar also keeps ----
+    Item {
+        id: dock
+        visible: !window.welcome && Theme.cobalt
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 58
+        readonly property bool compact: width < 1130
+        readonly property bool roomy: width >= 1400
+        readonly property var destinations: [
+            { page: "home", icon: Icons.home, name: qsTr("Home") },
+            { page: "messages", icon: Icons.messages, name: qsTr("Messages") },
+            { page: "calls", icon: Icons.call, name: qsTr("Calls") },
+            { page: "photos", icon: Icons.photo, name: qsTr("Photos") },
+            { page: "apps", icon: Icons.apps, name: qsTr("Apps") },
+            { page: "deck", icon: Icons.deck, name: qsTr("Deck") },
+            { page: "timeline", icon: Icons.history, name: qsTr("Timeline") },
+            { page: "commands", icon: Icons.search, name: qsTr("Commands") },
+            { page: "guide", icon: Icons.book, name: qsTr("Guide") },
+            { page: "settings", icon: Icons.settings, name: qsTr("Settings") }
+        ]
+
+        Rectangle {
+            width: parent.width
+            height: 1.5
+            color: Theme.surfaceContent
+        }
+        Row {
+            id: dockBrand
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.contentPadding
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 9
+            Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 28; height: 28
+                radius: Theme.radiusSm
+                color: Theme.surfaceContent
+                Icon {
+                    anchors.centerIn: parent
+                    width: 17; height: 17
+                    path: Icons.mark
+                    stroke: 2.4
+                    color: Theme.surface
+                }
+            }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !dock.compact
+                text: "G7 Link"
+                role: "title"
+                size: 15
+            }
+        }
+        Row {
+            anchors.left: dockBrand.right
+            anchors.leftMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+            Repeater {
+                model: dock.destinations
+                DockItem {
+                    required property var modelData
+                    anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+                    visible: modelData.page !== "timeline" || AppController.hasDevices
+                    iconPath: modelData.icon
+                    text: modelData.name
+                    showLabel: !dock.compact
+                    selected: window.page === modelData.page
+                    onClicked: {
+                        if (modelData.page === "commands")
+                            AppController.openCommandPalette()
+                        else
+                            window.page = modelData.page
+                    }
+                }
+            }
+        }
+        Row {
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.contentPadding
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 12
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: dock.roomy && window.currentDeviceName.length > 0
+                text: window.currentDeviceName
+                role: "bodySmall"
+                muted: true
+            }
+            IconButton {
+                anchors.verticalCenter: parent.verticalCenter
+                iconPath: Icons.plus
+                text: dock.roomy ? qsTr("Pair a new device") : ""
+                label: qsTr("Pair a new device")
+                tonal: true
+                onClicked: window.openPairing()
             }
         }
     }

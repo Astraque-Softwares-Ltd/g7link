@@ -126,7 +126,7 @@ Item {
             capKey: "sms",
             toggleKey: "sms",
             summary: qsTr("Read and send SMS and MMS threads, or reply to notification-backed chat conversations."),
-            whereLabel: qsTr("Left rail › Messages"),
+            whereLabel: qsTr("Navigation › Messages"),
             needsLabel: qsTr("SMS and Contacts permissions on phone"),
             targetId: "messages:main",
             docKey: "messages"
@@ -139,7 +139,7 @@ Item {
             capKey: "calls",
             toggleKey: "calls",
             summary: qsTr("Answer or decline incoming calls, browse call history and contacts, and dial from your PC."),
-            whereLabel: qsTr("Left rail › Calls"),
+            whereLabel: qsTr("Navigation › Calls"),
             needsLabel: qsTr("Phone, Call Log, and Contacts permissions on phone"),
             targetId: "calls:main",
             docKey: "calls"
@@ -206,7 +206,7 @@ Item {
             capKey: "photos",
             toggleKey: "files",
             summary: qsTr("Browse recent phone photos and screenshots on demand, copy to clipboard, or drag into apps."),
-            whereLabel: qsTr("Left rail › Photos"),
+            whereLabel: qsTr("Navigation › Photos"),
             needsLabel: qsTr("Photos and Media permission on phone"),
             targetId: "photos:main",
             docKey: "photos"
@@ -311,7 +311,7 @@ Item {
             capKey: "media_view",
             toggleKey: "media",
             summary: qsTr("Control Now playing media, switch PC audio outputs, and customize shortcut tiles for your phone."),
-            whereLabel: qsTr("Left rail › Deck"),
+            whereLabel: qsTr("Navigation › Deck"),
             needsLabel: qsTr("Paired phone"),
             targetId: "deck:main",
             docKey: "deck"
@@ -324,7 +324,7 @@ Item {
             capKey: "media_view",
             toggleKey: "media",
             summary: qsTr("Turn your phone or PC window into a glanceable desk display with clock, media, and live status."),
-            whereLabel: qsTr("Left rail › Deck › Desk mode"),
+            whereLabel: qsTr("Navigation › Deck › Desk mode"),
             needsLabel: qsTr("Paired phone"),
             targetId: "deck:main",
             docKey: "deck"

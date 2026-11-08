@@ -15,7 +15,9 @@ const FILE_NAME: &str = "desktop-settings.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
+    /// Cool grey, ink and cobalt, with the bottom dock.
     #[default]
+    Cobalt,
     Bloom,
     /// Honey on charcoal or wax, with the living comb.
     Hive,
@@ -27,6 +29,7 @@ impl<'de> Deserialize<'de> for Theme {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer).unwrap_or_default();
         Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "cobalt" => Theme::Cobalt,
             "hive" => Theme::Hive,
             "graphite" => Theme::Graphite,
             "glass" | "blurry" => Theme::Glass,
@@ -868,6 +871,14 @@ pub(crate) fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_install_is_cobalt_and_its_name_round_trips() {
+        assert_eq!(Settings::default().theme, Theme::Cobalt);
+        let parsed: Theme = serde_json::from_str("\"cobalt\"").unwrap();
+        assert_eq!(parsed, Theme::Cobalt);
+        assert_eq!(serde_json::to_string(&Theme::Cobalt).unwrap(), "\"cobalt\"");
+    }
 
     #[test]
     fn an_update_asks_for_a_star_unless_it_was_answered() {

@@ -3,16 +3,20 @@ pragma Singleton
 import QtQuick
 import app.g7link
 
-// The active theme: Bloom (Material You, seed presets, the default), Hive
-// (honey on charcoal or wax), Glass, or Graphite (paper and slate), light
-// or dark, resolved from Preferences and the system. Colors
+// The active theme: Cobalt (cool grey, ink and cobalt, the default), Bloom
+// (Material You, seed presets), Hive (honey on charcoal or wax), Glass, or
+// Graphite (paper and slate), light or dark, resolved from Preferences and
+// the system. Colors
 // come from Tokens (generated from docs/design/tokens.json); Material's
 // "onX" roles are named "xContent" because QML reserves the "on" prefix.
 QtObject {
     id: theme
 
     readonly property bool hive: Preferences.theme === "hive"
-    readonly property bool graphite: Preferences.theme === "graphite"
+    readonly property bool cobalt: Preferences.theme === "cobalt"
+    // Cobalt shares Graphite's hairlines, ink buttons and small corners; its
+    // colors, display type and bottom dock are its own.
+    readonly property bool graphite: Preferences.theme === "graphite" || cobalt
     readonly property bool glass: Preferences.theme === "glass" || Preferences.theme === "blurry"
     readonly property bool dark: Preferences.colorMode === "dark"
                                  || (Preferences.colorMode === "system" && AppController.systemDark)
@@ -112,9 +116,11 @@ QtObject {
           : (seed === "wallpaper" ? wallpaperSeed : bloomSeeds[seed])
     readonly property var palette: hive
         ? Tokens.data.themes.hive.variants[dark ? "comb" : "wax"]
-        : (graphite
-            ? Tokens.data.themes.graphite.variants[dark ? "slate" : "paper"]
-            : seedColors[dark ? "dark" : "light"])
+        : (cobalt
+            ? Tokens.data.themes.cobalt.variants[dark ? "night" : "day"]
+            : (graphite
+                ? Tokens.data.themes.graphite.variants[dark ? "slate" : "paper"]
+                : seedColors[dark ? "dark" : "light"]))
     readonly property var status: graphite || hive ? palette : Tokens.data.themes.bloom.status[dark ? "dark" : "light"]
 
     // ---- Color roles ----
@@ -213,16 +219,17 @@ QtObject {
                         surfaceLow,
                         Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, isPhoneSeed ? (dark ? 0.24 : 0.32) : (dark ? 0.14 : 0.18))
                     ))))
-    readonly property color indicator: graphite ? surfaceContent : (hive ? primaryContainer : secondaryContainer)
-    readonly property color indicatorContent: graphite ? surface : (hive ? primaryContainerContent : secondaryContainerContent)
+    readonly property color indicator: cobalt ? primary : (graphite ? surfaceContent : (hive ? primaryContainer : secondaryContainer))
+    readonly property color indicatorContent: cobalt ? primaryContent : (graphite ? surface : (hive ? primaryContainerContent : secondaryContainerContent))
     // Hive: the honey halo around a primary control on hover.
     readonly property color glow: Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.30 : 0.22)
-    readonly property color buttonShadow: graphite ? palette.buttonShadow : "transparent"
+    readonly property color buttonShadow: graphite && !cobalt ? palette.buttonShadow : "transparent"
     readonly property color scrim: Qt.rgba(0, 0, 0, dark ? 0.5 : 0.32)
 
     // ---- Shape ----
-    readonly property var shape: graphite ? Tokens.data.themes.graphite.shape
-        : (hive ? Tokens.data.themes.hive.shape : Tokens.data.themes.bloom.shape)
+    readonly property var shape: cobalt ? Tokens.data.themes.cobalt.shape
+        : (graphite ? Tokens.data.themes.graphite.shape
+            : (hive ? Tokens.data.themes.hive.shape : Tokens.data.themes.bloom.shape))
     readonly property int radiusXs: shape.xs
     readonly property int radiusSm: shape.sm
     readonly property int radiusMd: shape.md
@@ -234,15 +241,16 @@ QtObject {
     // ---- Type ----
     // Bundled with the app (assets/fonts).
     readonly property string fontUi: "Figtree"
-    readonly property string fontDisplay: graphite ? "Instrument Serif" : "Figtree"
+    readonly property string fontDisplay: graphite && !cobalt ? "Instrument Serif" : "Figtree"
     readonly property string fontMono: "Space Mono"
     // Caption button glyphs: Segoe Fluent Icons ships with Windows 11 only;
     // Windows 10's Segoe MDL2 Assets has the same code points.
     readonly property string captionIconFont: Qt.fontFamilies().indexOf("Segoe Fluent Icons") >= 0
         ? "Segoe Fluent Icons" : "Segoe MDL2 Assets"
     readonly property var typography: Tokens.data.typography
-    readonly property var labelStyle: graphite ? Tokens.data.themes.graphite.label
-        : (hive ? Tokens.data.themes.hive.label : Tokens.data.themes.bloom.label)
+    readonly property var labelStyle: cobalt ? Tokens.data.themes.cobalt.label
+        : (graphite ? Tokens.data.themes.graphite.label
+            : (hive ? Tokens.data.themes.hive.label : Tokens.data.themes.bloom.label))
 
     // ---- Layout and spacing ----
     readonly property var layout: Tokens.data.layout.desktop
