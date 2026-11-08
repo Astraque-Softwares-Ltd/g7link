@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MPL-2.0
+[bindings.kotlin]
+package_name = "app.g7link.core"
+cdylib_name = "g7link_ffi"
