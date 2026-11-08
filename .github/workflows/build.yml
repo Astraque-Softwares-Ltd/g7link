@@ -1,12 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Builds everything a release ships, at a given version: the Windows
-# installers, the Linux packages and the signed Android app, each checked
-# before it's uploaded (installs, starts, signature). Called by the release
-# workflow (a tag) and the nightly one (a build from main), so both ship
-# builds made and checked the same way.
+# Builds everything a release ships, at a given version: the Linux packages
+# and the signed Android app, each checked before it's uploaded (installs,
+# starts, signature). Called by the release workflow (a tag) and the nightly
+# one (a build from main), so both ship builds made and checked the same way.
+# Run by hand, it builds the Linux packages alone, to try before releasing.
 name: Build
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to build: 1.2.3, or a nightly's 1.2.3-nightly.N"
+        required: true
+        type: string
   workflow_call:
     inputs:
       version:
@@ -173,6 +179,8 @@ jobs:
             dist/install.sh
 
   android:
+    # Signing needs the keystore, which only a release has.
+    if: github.event_name != 'workflow_dispatch'
     name: Android app (signed)
     runs-on: ubuntu-latest
     steps:
