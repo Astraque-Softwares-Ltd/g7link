@@ -12,13 +12,13 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("App", "Downloading the update · %1 of %2"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Downloading the update…"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Find my phone"), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("App", "My phone's colors"), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("App", "My phone's colors (%1)"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "G7 Link · %1"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "G7 Link · %1 devices connected"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "G7 Link · 1 device connected"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "G7 Link · no devices paired"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "G7 Link · not connected"), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("App", "My phone's colors"), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("App", "My phone's colors (%1)"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "No phone is paired yet."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Open G7 Link"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Open copied link on phone"), // desktop/app/src/bridge/app.rs
@@ -207,6 +207,10 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "Connected to %1"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Connected to a network"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Connecting to %1…"), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "G7 Link can't show its icon in the top bar"), // desktop/app/src/linux/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "G7 Link is in the top bar"), // desktop/app/src/linux/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "G7 Link isn't allowed through Windows Firewall"), // desktop/app/src/doctor.rs
+    QT_TRANSLATE_NOOP("Doctor", "G7 Link isn't allowed through the firewall"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "GNOME shows app icons there only with the AppIndicator extension. Install it (gnome-shell-extension-appindicator) and turn it on in Extensions."), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Install fuse3 to browse your phone's files in your file manager."), // desktop/app/src/linux/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Install gstreamer1.0-pipewire and gstreamer1.0-tools, and the desktop portal (xdg-desktop-portal) if it's missing."), // desktop/app/src/linux/doctor.rs
@@ -215,10 +219,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Doctor", "It hasn't connected yet."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Keep %1 reachable in the background (%2)"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "Last seen %1."), // desktop/app/src/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "G7 Link can't show its icon in the top bar"), // desktop/app/src/linux/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "G7 Link is in the top bar"), // desktop/app/src/linux/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "G7 Link isn't allowed through Windows Firewall"), // desktop/app/src/doctor.rs
-    QT_TRANSLATE_NOOP("Doctor", "G7 Link isn't allowed through the firewall"), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On Huawei / Honor: open Settings → Battery → App launch, turn off Manage automatically for G7 Link, and keep Auto-launch, Secondary launch, and Run in background on."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On OnePlus / OxygenOS: open Settings → Apps → App management → G7 Link → Battery usage and turn on Allow background activity and Allow auto-launch."), // desktop/app/src/doctor.rs
     QT_TRANSLATE_NOOP("Doctor", "On Oppo / Realme: open Settings → Apps → App management → G7 Link → Battery usage and turn on Allow background activity and Allow auto-launch."), // desktop/app/src/doctor.rs
@@ -281,6 +281,10 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Guide", "Elevated and Assist modes"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Features guide"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Features reference"), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("Guide", "G7 Island"), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("Guide", "G7 Link links your Android phone and your PC directly on your local network or over a USB cable.\n\nHow it works\n- Devices discover each other over local Wi-Fi (mDNS) or USB (ADB reverse tunnel) and connect over QUIC (TLS 1.3).\n- Every connection is mutually authenticated using Ed25519 device keys generated on each device.\n- There is no user account, no cloud database, and no telemetry.\n\nCapability tiers on Android\n- Standard mode: Works right after installation with standard Android permissions.\n- Elevated mode (optional): Uses Wireless debugging (set up once in the phone app) or root for phone apps in their own windows, mirroring without the screen capture prompt, and more phone controls.\n- Assist mode (optional): Uses the Android Accessibility service only when you enable Remote input so your PC mouse and keyboard can control the phone."), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("Guide", "G7 Link never asks for every permission up front. Each feature works independently:\n\n- Notification Access: Required only if you want phone notifications, inline replies, and notification-backed chat threads on your PC.\n- SMS and Contacts: Required only if you want to read and send SMS/MMS messages or look up contact names on your PC.\n- Phone and Call Log: Required only if you want incoming call alerts, call history, or dialing from your PC.\n- Media and Photos: Required only if you want the Photos gallery, Shelf latest photo, or folder sync.\n- Camera and Microphone: Required only while streaming your phone as a webcam, taking a Continuity Camera shot, or recording a voice note."), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("Guide", "G7 Link overview"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Handoff"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "If your phone and PC do not see each other:\n\n1. Open Connection Doctor from Settings › Connection & About or the Command Palette.\n2. Check that your Wi-Fi network profile in Windows is set to Private rather than Public, or click Fix in Connection Doctor to allow G7 Link through Windows Firewall.\n3. Verify that both devices are on the same subnet and that guest Wi-Fi client isolation is turned off on your router.\n4. You can also connect over a USB cable with USB debugging enabled; G7 Link automatically sets up a local tunnel."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Install and first-time setup"), // desktop/app/src/bridge/app.rs
@@ -289,10 +293,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Guide", "LocalSend"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Messages"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Most G7 Link features work in Standard mode with regular Android permissions. Two optional modes unlock deeper system integration:\n\nElevated mode (Wireless debugging or root)\n- Captures the phone screen without showing the Android cast confirmation prompt every time.\n- Streams individual phone apps in separate desktop windows (virtual displays).\n- Controls additional system quick toggles.\n\nAssist mode (Android Accessibility Service)\n- Injects mouse clicks, scrolling, and touch gestures when you control your phone from your PC.\n- G7 Link never reads screen text or logs keystrokes through the Accessibility service."), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("Guide", "G7 Island"), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("Guide", "G7 Link links your Android phone and your PC directly on your local network or over a USB cable.\n\nHow it works\n- Devices discover each other over local Wi-Fi (mDNS) or USB (ADB reverse tunnel) and connect over QUIC (TLS 1.3).\n- Every connection is mutually authenticated using Ed25519 device keys generated on each device.\n- There is no user account, no cloud database, and no telemetry.\n\nCapability tiers on Android\n- Standard mode: Works right after installation with standard Android permissions.\n- Elevated mode (optional): Uses Wireless debugging (set up once in the phone app) or root for phone apps in their own windows, mirroring without the screen capture prompt, and more phone controls.\n- Assist mode (optional): Uses the Android Accessibility service only when you enable Remote input so your PC mouse and keyboard can control the phone."), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("Guide", "G7 Link never asks for every permission up front. Each feature works independently:\n\n- Notification Access: Required only if you want phone notifications, inline replies, and notification-backed chat threads on your PC.\n- SMS and Contacts: Required only if you want to read and send SMS/MMS messages or look up contact names on your PC.\n- Phone and Call Log: Required only if you want incoming call alerts, call history, or dialing from your PC.\n- Media and Photos: Required only if you want the Photos gallery, Shelf latest photo, or folder sync.\n- Camera and Microphone: Required only while streaming your phone as a webcam, taking a Continuity Camera shot, or recording a voice note."), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("Guide", "G7 Link overview"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Notifications"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Phone as speaker"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "Phone as webcam"), // desktop/app/src/bridge/app.rs
