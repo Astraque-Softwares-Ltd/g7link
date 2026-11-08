@@ -694,7 +694,6 @@ fn mirror_bgrx_in_place(bgrx: &mut [u8], width: u32, height: u32) {
     }
 }
 
-
 fn decode(device: DeviceId, items: &Receiver<Item>, waiting: &AtomicUsize) {
     let mut decoder = match Decoder::new_gpu("h264") {
         Ok(decoder) => decoder,

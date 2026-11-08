@@ -10,7 +10,6 @@ use std::sync::{
 
 use ab_glyph::{Font, FontRef, GlyphId, PxScale, ScaleFont, point};
 
-
 /// The mapping the camera and the app share. The camera's media source runs
 /// inside Windows' Frame Server service, in another session than the app, so
 /// it has to be in the global namespace: the service creates it (only
@@ -75,7 +74,6 @@ unsafe impl Send for SharedFrameMapping {}
 #[allow(unsafe_code)]
 unsafe impl Sync for SharedFrameMapping {}
 
-
 impl std::fmt::Debug for SharedFrameMapping {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedFrameMapping").field("view", &self.view).finish()
@@ -107,7 +105,6 @@ fn unix_shm_path(name: &str) -> std::path::PathBuf {
     };
     base.join(file_name)
 }
-
 
 impl SharedFrameMapping {
     /// Opens or creates the shared-memory frame mapping with `name` in

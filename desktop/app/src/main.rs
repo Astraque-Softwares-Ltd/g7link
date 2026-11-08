@@ -753,7 +753,6 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     /// Qt gives its windows the icon of this exact name, or else a generic one.
-
     use std::ffi::OsString;
 
     use super::*;

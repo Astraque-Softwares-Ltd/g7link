@@ -35,7 +35,6 @@ pub const ANDROID_URL: &str = "https://github.com/Astraque-Softwares-Ltd/g7link/
 
 const APP_EXE: &str = "g7link-desktop";
 
-
 /// What the window is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -51,7 +50,6 @@ pub struct Installed {
     pub dir: PathBuf,
     pub version: String,
 }
-
 
 pub fn installed() -> Option<Installed> {
     if let Some(version) = dpkg_installed_version("g7link") {
@@ -78,7 +76,6 @@ pub fn installed() -> Option<Installed> {
     }
     None
 }
-
 
 fn dpkg_installed_version(pkg: &str) -> Option<String> {
     let out = std::process::Command::new("dpkg-query")
@@ -482,7 +479,6 @@ pub fn open_app(dir: &Path) -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
-
 
 /// For `--remove` started from the installed folder: carries on from a copy
 /// in a temporary folder, so the installed one can be deleted. `Ok(true)`

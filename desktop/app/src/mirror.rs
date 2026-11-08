@@ -1524,9 +1524,7 @@ pub(crate) fn parse_dropped_file_urls(raw_urls: &[String]) -> (Option<Window>, V
             .to_local_file()
             .map(|p| String::from(&p))
             .filter(|p| !p.is_empty())
-            .or_else(|| {
-                trimmed.strip_prefix("file://").map(str::to_owned)
-            });
+            .or_else(|| trimmed.strip_prefix("file://").map(str::to_owned));
         let pb = PathBuf::from(local.as_deref().unwrap_or(trimmed));
         if pb.exists() {
             paths.push(pb);
@@ -1685,9 +1683,6 @@ pub fn normalize_gamepad_state(raw: GamepadState) -> GamepadState {
     }
 }
 
-
-
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct JsEvent {
@@ -1826,7 +1821,6 @@ fn poll_gamepad() -> Option<GamepadState> {
 
     Some(normalize_gamepad_state(poller.state))
 }
-
 
 fn ensure_gamepad_loop() {
     static RUNNING: AtomicBool = AtomicBool::new(false);

@@ -134,7 +134,6 @@ pub fn set_channel(channel: Channel) {
 
 /// Where the app tells the update task which channel to follow.
 
-
 fn write_service_channel(_channel: Channel) {}
 
 /// The channel for the update task: any user may set it, and it only picks
@@ -380,8 +379,6 @@ fn install_suffixes() -> &'static [&'static str] {
     linux_suffixes(detect_linux_install_kind())
 }
 
-
-
 // Each kind of install only takes its own kind of file: a .deb installed
 // under a running AppImage, say, leaves the AppImage as old as it was (and
 // the update is offered again), and a tarball beside a package is a second
@@ -444,7 +441,6 @@ fn rpm_installed() -> bool {
 fn newer_release(release: Release, current: &str) -> Option<Update> {
     newer_release_linux_kind(release, current, detect_linux_install_kind())
 }
-
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn newer_release_linux(release: Release, current: &str, is_appimage: bool) -> Option<Update> {
@@ -872,7 +868,6 @@ fn remove_old_service_dirs(parent: &Path) {
     }
 }
 
-
 fn service_dir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let parent = PathBuf::from("/var/cache");
@@ -1088,7 +1083,6 @@ fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-
 
 /// The flag the relauncher passes to the new version.
 pub const UPDATED_ARG: &str = "--updated";

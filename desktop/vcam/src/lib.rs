@@ -4,8 +4,6 @@
 
 #![allow(linker_messages)]
 
-
-
 pub mod shm;
 
 pub use shm::{
@@ -28,9 +26,6 @@ pub use shm::{
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
-
-
-
 
     #[test]
     fn shared_memory_mirror_and_aspect_fit_round_trip() {

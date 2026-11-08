@@ -100,9 +100,7 @@ pub fn start(data_dir: PathBuf, platform: Arc<dyn Platform>) -> std::io::Result<
 /// Computes the PC's advertised capabilities, advertising capture (`mirror.capture`)
 /// and input injection (`mirror.input`, `input.inject`) only when enabled for at
 /// least one paired device (or actively sharing).
-pub fn compute_capabilities(
-    node: Option<&Node>,
-) -> Vec<String> {
+pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     let mut caps = vec![
         "pc.power".into(),
         g7link_core::PHOTOS_SHOW.into(),
@@ -414,4 +412,3 @@ pub fn shutdown() {
         }
     }
 }
-

@@ -2050,11 +2050,7 @@ impl qobject::AppController {
                 .to_local_file()
                 .map(|p| String::from(&p))
                 .filter(|p| !p.is_empty())
-                .or_else(|| {
-                    {
-                        raw.strip_prefix("file://").map(str::to_owned)
-                    }
-                });
+                .or_else(|| raw.strip_prefix("file://").map(str::to_owned));
             if let Some(local_str) = local {
                 let pb = std::path::PathBuf::from(&local_str);
                 if pb.exists() {

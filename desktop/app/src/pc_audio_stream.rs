@@ -41,7 +41,6 @@ mod imp {
         time::Duration,
     };
 
-
     use crate::core_host;
 
     static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -395,9 +394,7 @@ mod imp {
         Ok(())
     }
 
-
     /// Tells [`process_loopback_client`] that Windows has made the client.
-
 
     /// A capture of everything the PC plays except G7 Link itself: the phone's
     /// own sound playing here must not go back to the phone, round and round (#281).
@@ -405,7 +402,6 @@ mod imp {
     /// The capture client, its rate, channels and bits per sample: without
     /// G7 Link's own sound where Windows can (version 2004 and later), or else
     /// everything the default output plays, as before.
-
 
     #[cfg(test)]
     mod tests {
@@ -477,6 +473,5 @@ mod imp {
         }
     }
 }
-
 
 pub use imp::*;

@@ -1273,7 +1273,6 @@ fn folder_from_url(url: &QString) -> Option<PathBuf> {
 mod tests {
     use super::new_rule_id;
 
-
     #[test]
     fn a_new_rule_never_gets_an_id_in_use() {
         // The old scheme: rules 1 and 2, rule 1 deleted, the next one became 2 again.

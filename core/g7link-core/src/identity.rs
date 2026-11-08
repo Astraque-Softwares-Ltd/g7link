@@ -43,9 +43,7 @@ impl KeyProtector for PlainKeyProtector {
 
 /// The best protector available on this platform.
 pub fn default_protector() -> Arc<dyn KeyProtector> {
-    {
-        Arc::new(PlainKeyProtector)
-    }
+    { Arc::new(PlainKeyProtector) }
 }
 
 /// Loads the device key from `dir`, creating and saving a new one on first
@@ -125,8 +123,6 @@ fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
     }
     fs::rename(&tmp, path)
 }
-
-
 
 /// The install ID a device reports to its peers ([`DeviceInfo::install_id`]): a salted
 /// BLAKE3 hash of a platform ID that survives app reinstalls (Android's `ANDROID_ID`,
@@ -220,7 +216,6 @@ mod tests {
         assert!(!a.contains("9774d56d682e549c"), "the raw ID never appears");
         assert_eq!(install_id_from("  "), None);
     }
-
 
     /// The real macOS path: a fresh install writes a Keychain-sealed key, the
     /// Keychain item exists, and the file alone doesn't contain the key.

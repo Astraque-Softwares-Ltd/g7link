@@ -314,19 +314,6 @@ mod imp {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
     fn has_h264_idr(data: &[u8]) -> bool {
         data.windows(4).any(|w| w[..3] == [0, 0, 1] && (w[3] & 0x1f) == 5)
     }
@@ -855,7 +842,6 @@ mod imp {
         }
     }
 
-
     fn new_pc_encoder(
         codec: &str,
         width: u32,
@@ -883,7 +869,6 @@ mod imp {
             Err(error) => Err(error),
         }
     }
-
 
     /// Captures the primary desktop monitor into `bgra` scaled to `(dst_w, dst_h)`,
     /// with the pointer, and returns the current physical screen dimensions
@@ -1985,7 +1970,6 @@ mod imp {
 
         use super::*;
 
-
         #[test]
         fn wayland_capture_reads_the_stream_through_the_portal_connection() {
             let args = pipeline_args(57, 1280, 720);
@@ -2020,7 +2004,6 @@ mod imp {
             assert!(has_h265_irap(&idr));
             assert!(!has_h265_parameters(&idr));
         }
-
 
         #[test]
         fn hevc_encoder_round_trips_when_available() {
@@ -2127,6 +2110,5 @@ mod imp {
         }
     }
 }
-
 
 pub use imp::*;

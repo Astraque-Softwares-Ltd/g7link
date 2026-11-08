@@ -32,11 +32,6 @@ mod imp {
     /// Chunk size for hydrating files via `CF_OPERATION_TYPE_TRANSFER_DATA` (must be
     /// a multiple of 4096 bytes for non-EOF chunks).
 
-
-
-
-
-
     /// Starts watching paired devices and their `storage` toggles to register or
     /// unregister File Explorer sync roots.
 
@@ -104,15 +99,12 @@ mod imp {
         if !path.exists() {
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
         }
-        {
-            win::shell::open_folder(&path)
-        }
+        { win::shell::open_folder(&path) }
     }
 
     pub(crate) fn base_sync_dir() -> Option<PathBuf> {
         dirs::home_dir().map(|h| h.join("G7Link"))
     }
-
 
     /// Sanitizes a phone's display name into a valid Windows directory name.
     pub fn sanitize_folder_name(device_name: &str) -> String {
@@ -180,18 +172,9 @@ mod imp {
         stripped.trim_end_matches('\\').to_owned()
     }
 
-
-
     /// Clears the phone's folder: its placeholders go, but a file that never
     /// reached the phone (copied in, or changed and not uploaded) is the
     /// user's own and stays where it is.
-
-
-
-
-
-
-
 
     /// What Explorer is told when the phone couldn't list or read something.
     /// A refusal (storage access off, or no All files access) isn't a network
@@ -200,30 +183,17 @@ mod imp {
     /// Says on this PC why the phone's folder won't open, at most every ten
     /// minutes per phone (Explorer asks again for every folder it shows).
 
-
-
-
-
-
-
-
-
-
     /// Refreshes a folder's placeholders from the phone (`storage.changed` or initial connect).
 
     /// Watches the sync root directory for files or folders dropped in by the user
     /// and uploads them to the phone via `storage.write` / `storage.mkdir`.
 
-
     /// Checks whether `full_path` is a newly dropped non-placeholder file/folder or
     /// a modified placeholder that is no longer in sync.
-
-
 
     #[cfg(test)]
     mod tests {
         use super::*;
-
 
         #[test]
         fn converts_unix_ms_to_filetime_and_back() {
@@ -233,7 +203,6 @@ mod imp {
             assert_eq!(filetime_ticks_to_unix_ms(ticks), unix_ms);
             assert_eq!(unix_ms_to_filetime_ticks(-500), EPOCH_DIFF_100NS);
         }
-
 
         #[test]
         fn normalizes_relative_paths_and_sanitizes_folder_names() {
@@ -278,6 +247,5 @@ mod imp {
         }
     }
 }
-
 
 pub use imp::*;

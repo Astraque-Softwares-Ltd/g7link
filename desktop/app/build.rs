@@ -11,10 +11,6 @@ use std::{
 
 use cxx_qt_build::{CxxQtBuilder, QmlFile, QmlModule};
 
-// The mark the app draws at runtime, rendered here for the .exe's icon.
-#[path = "src/mark.rs"]
-mod mark;
-
 const QML: &[&str] = &[
     "qml/App.qml",
     "qml/IslandWindow.qml",
@@ -260,7 +256,6 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         build_linux_video_codec();
     }
-    println!("cargo:rerun-if-changed=src/mark.rs");
     for qml in QML.iter().chain(QML_SINGLETONS.iter()) {
         println!("cargo:rerun-if-changed={qml}");
     }

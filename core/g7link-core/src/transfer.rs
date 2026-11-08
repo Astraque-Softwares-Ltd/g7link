@@ -1837,9 +1837,7 @@ fn read_ahead(
 /// `try_clone` share one position, and a reader from an attempt that just ended
 /// can still be going: moving it under the next one would send the wrong bytes.
 fn read_exact_at(file: &std::fs::File, block: &mut [u8], at: u64) -> std::io::Result<()> {
-    {
-        std::os::unix::fs::FileExt::read_exact_at(file, block, at)
-    }
+    { std::os::unix::fs::FileExt::read_exact_at(file, block, at) }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2197,7 +2195,6 @@ mod tests {
         reader.join().unwrap();
         assert!(got == data[100..], "the bytes came from where they should");
     }
-
 
     #[test]
     fn free_space_is_read_for_a_real_folder() {

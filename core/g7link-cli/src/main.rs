@@ -5774,7 +5774,6 @@ async fn run_notify_when(
     Ok(exit_code)
 }
 
-
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod linux_watch {
@@ -6070,8 +6069,6 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         }
     }
-
-
 
     #[cfg(target_os = "linux")]
     #[test]

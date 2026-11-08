@@ -916,11 +916,6 @@ fn convert_audio_in_process(src: &Path, dest: &Path, format: RecordingFormat) ->
     fs::write(dest, out_bytes).ok()
 }
 
-
-
-
-
-
 /// Handles a completed incoming voice recording transfer off the UI thread:
 /// moves/converts the file into the Recordings folder, writes markers when
 /// present, updates the transfer entry in Home, and posts the Windows toast.
