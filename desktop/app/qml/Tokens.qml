@@ -311,74 +311,6 @@ QtObject {
             }
           }
         },
-        "cobalt": {
-          "description": "G7 Link's own look. Cool grey, ink and cobalt: hairlines instead of filled cards, ink primary buttons, navigation in a bottom dock. Colors are fixed.",
-          "dynamicColor": false,
-          "fonts": {
-            "display": "Figtree",
-            "label": "Figtree",
-            "mono": "Space Mono",
-            "ui": "Figtree"
-          },
-          "label": {
-            "case": "none",
-            "size": 12.5,
-            "tracking": 0,
-            "weight": 600
-          },
-          "shape": {
-            "full": 3,
-            "lg": 4,
-            "md": 4,
-            "sm": 3,
-            "xl": 6,
-            "xs": 2
-          },
-          "variants": {
-            "day": {
-              "error": "#A4230F",
-              "onError": "#FFFFFF",
-              "onPrimary": "#FFFFFF",
-              "onPrimaryContainer": "#0B2260",
-              "onSecondaryContainer": "#12161C",
-              "onSurface": "#12161C",
-              "onSurfaceVariant": "#4D5663",
-              "outline": "#6B7480",
-              "outlineVariant": "#CFD5DC",
-              "primary": "#1F4FD8",
-              "primaryContainer": "#D9E2FA",
-              "secondaryContainer": "#DDE2E8",
-              "success": "#12161C",
-              "surface": "#ECEFF2",
-              "surfaceContainer": "#ECEFF2",
-              "surfaceContainerHigh": "#E5E9EE",
-              "surfaceContainerHighest": "#DFE4EA",
-              "surfaceContainerLow": "#F2F4F7",
-              "warning": "#6F5200"
-            },
-            "night": {
-              "error": "#F0A39C",
-              "onError": "#3B0B07",
-              "onPrimary": "#0B1B52",
-              "onPrimaryContainer": "#DCE4FF",
-              "onSecondaryContainer": "#ECEFF2",
-              "onSurface": "#ECEFF2",
-              "onSurfaceVariant": "#A9B3BF",
-              "outline": "#7C8794",
-              "outlineVariant": "#2E3641",
-              "primary": "#8FA9FF",
-              "primaryContainer": "#1F3A94",
-              "secondaryContainer": "#262D37",
-              "success": "#ECEFF2",
-              "surface": "#12161C",
-              "surfaceContainer": "#12161C",
-              "surfaceContainerHigh": "#1A2027",
-              "surfaceContainerHighest": "#222932",
-              "surfaceContainerLow": "#0E1217",
-              "warning": "#E2C47A"
-            }
-          }
-        },
         "graphite": {
           "description": "Built-in alternative, from github.com/thtbee/graphite. Monochrome ink on paper / chalk on slate; dynamic color off.",
           "dynamicColor": false,
@@ -543,6 +475,76 @@ QtObject {
               "surfaceContainerHighest": "#EDDDCD",
               "surfaceContainerLow": "#FCF2E9",
               "warning": "#7A4A00"
+            }
+          }
+        },
+        "quiet": {
+          "description": "G7's Quiet Tool language (docs/design-language.md in g7linux). Charcoal and paper grounds, neutral selection, lavender only for focus and the mark, the desktop's own font, bare glyphs, rows instead of cards. Colors are fixed.",
+          "dynamicColor": false,
+          "fonts": {
+            "display": "system",
+            "label": "system",
+            "mono": "Geist Mono",
+            "ui": "system"
+          },
+          "label": {
+            "case": "none",
+            "size": 12,
+            "tracking": 0,
+            "weight": 500
+          },
+          "shape": {
+            "full": 8,
+            "lg": 8,
+            "md": 8,
+            "sm": 6,
+            "xl": 12,
+            "xs": 5
+          },
+          "variants": {
+            "dark": {
+              "accent": "#B292D0",
+              "error": "#F0A39C",
+              "onError": "#3B0B07",
+              "onPrimary": "#18181B",
+              "onPrimaryContainer": "#F2F2F3",
+              "onSecondaryContainer": "#F2F2F3",
+              "onSurface": "#F2F2F3",
+              "onSurfaceVariant": "#A1A1A8",
+              "outline": "#6F6F78",
+              "outlineVariant": "#303035",
+              "primary": "#F2F2F3",
+              "primaryContainer": "#2B2B30",
+              "secondaryContainer": "#2B2B30",
+              "success": "#F2F2F3",
+              "surface": "#18181B",
+              "surfaceContainer": "#222226",
+              "surfaceContainerHigh": "#2B2B30",
+              "surfaceContainerHighest": "#303035",
+              "surfaceContainerLow": "#18181B",
+              "warning": "#E2C47A"
+            },
+            "light": {
+              "accent": "#7D5CA9",
+              "error": "#A4230F",
+              "onError": "#FFFFFF",
+              "onPrimary": "#FAFAFB",
+              "onPrimaryContainer": "#1C1C1F",
+              "onSecondaryContainer": "#1C1C1F",
+              "onSurface": "#1C1C1F",
+              "onSurfaceVariant": "#5F5F67",
+              "outline": "#7A7A83",
+              "outlineVariant": "#DCDCE1",
+              "primary": "#1C1C1F",
+              "primaryContainer": "#E9E9ED",
+              "secondaryContainer": "#E9E9ED",
+              "success": "#1C1C1F",
+              "surface": "#FAFAFB",
+              "surfaceContainer": "#F1F1F3",
+              "surfaceContainerHigh": "#E9E9ED",
+              "surfaceContainerHighest": "#E4E4E9",
+              "surfaceContainerLow": "#FAFAFB",
+              "warning": "#6F5200"
             }
           }
         }

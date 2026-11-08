@@ -541,7 +541,7 @@ Item {
                             title: qsTr("Theme")
                             Segmented {
                                 options: [
-                                    { value: "cobalt", label: qsTr("Cobalt") },
+                                    { value: "quiet", label: "G7" },
                                     { value: "hive", label: qsTr("Hive") },
                                     { value: "bloom", label: qsTr("Bloom") },
                                     { value: "glass", label: qsTr("Glass") },
@@ -584,11 +584,11 @@ Item {
                             }
                         }
                         // Hive's colors are fixed: no seed to pick.
-                        Divider { width: parent.width; visible: !Theme.graphite && !Theme.hive }
+                        Divider { width: parent.width; visible: !Theme.graphite && !Theme.hive && !Theme.quiet }
                         ListRow {
                             id: colorRow
                             width: parent.width
-                            visible: !Theme.graphite && !Theme.hive
+                            visible: !Theme.graphite && !Theme.hive && !Theme.quiet
                             stackBelow: true
                             iconPath: Icons.colorSwatch
                             title: qsTr("Color")

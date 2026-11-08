@@ -177,7 +177,7 @@ Sheet {
                             radius: Theme.radiusMd
                             color: "transparent"
                             border.width: Theme.focusVisible(recentCell) ? 2 : 0
-                            border.color: Theme.primary
+                            border.color: Theme.focusRing
                         }
                         Column {
                             anchors.centerIn: parent
@@ -266,7 +266,7 @@ Sheet {
                     radius: Theme.radiusMd
                     color: "transparent"
                     border.width: Theme.focusVisible(cell) ? 2 : 0
-                    border.color: Theme.primary
+                    border.color: Theme.focusRing
                 }
                 Column {
                     anchors.centerIn: parent

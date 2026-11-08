@@ -982,7 +982,7 @@ fn dispatch_jump_task(qt: &CxxQtThread<qobject::AppController>, action: String) 
                 _ => (mode, None),
             };
             st.theme = match name {
-                "cobalt" => Theme::Cobalt,
+                "quiet" => Theme::Quiet,
                 "graphite" => Theme::Graphite,
                 "glass" => Theme::Glass,
                 "hive" => Theme::Hive,

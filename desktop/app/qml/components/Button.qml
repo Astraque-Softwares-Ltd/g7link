@@ -17,6 +17,9 @@ FocusScope {
     readonly property bool small: size === "sm"
     readonly property bool interactive: enabled && !busy
     readonly property color background: {
+        if (Theme.quiet)
+            return variant === "fill" ? Theme.secondaryContainer
+                : (variant === "text" ? "transparent" : Theme.surfaceContainer)
         if (variant === "fill")
             return Theme.graphite ? Theme.surfaceContent : Theme.primary
         if (variant === "tonal") {
@@ -30,6 +33,8 @@ FocusScope {
         return "transparent"
     }
     readonly property color foreground: {
+        if (Theme.quiet)
+            return variant === "text" ? Theme.surfaceContentVariant : Theme.surfaceContent
         if (variant === "fill")
             return Theme.graphite ? Theme.surface : Theme.primaryContent
         if (variant === "tonal")
@@ -82,7 +87,7 @@ FocusScope {
         radius: Theme.pill(height)
         color: button.background
         Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-        border.width: button.variant === "outline" || (Theme.glass && (button.variant === "tonal" || button.variant === "fill")) ? 1 : 0
+        border.width: !Theme.quiet && button.variant === "outline" || (Theme.glass && (button.variant === "tonal" || button.variant === "fill")) ? 1 : 0
         border.color: button.variant === "outline"
             ? (Theme.glass ? Qt.rgba(1, 1, 1, Theme.dark ? 0.14 : 0.38)
                 : (Theme.hive ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.42 : 0.38) : Theme.outline))
@@ -147,7 +152,7 @@ FocusScope {
         radius: body.radius + 3
         color: "transparent"
         border.width: 2
-        border.color: Theme.primary
+        border.color: Theme.focusRing
         visible: Theme.focusVisible(button)
     }
 

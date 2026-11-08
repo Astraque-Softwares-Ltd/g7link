@@ -120,7 +120,7 @@ Row {
             anchors.margins: 2
             color: "transparent"
             border.width: 2
-            border.color: Theme.primary
+            border.color: Theme.focusRing
             visible: Theme.focusVisible(button)
         }
         HoverHandler { id: hover; enabled: !button.nativeInput }

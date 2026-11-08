@@ -244,6 +244,7 @@ Item {
     }
 
     Flickable {
+        id: homeScroll
         anchors.fill: parent
         contentHeight: column.height + Theme.contentPadding * 2
         boundsBehavior: Flickable.StopAtBounds
@@ -317,7 +318,7 @@ Item {
                 id: hiveInvite
                 width: column.width
                 visible: Preferences.walkthroughCompleted && Preferences.whatsNewDismissed
-                         && !Preferences.hiveInviteDismissed && !Theme.hive
+                         && !Preferences.hiveInviteDismissed && !Theme.hive && !Theme.quiet
                 padding: 14
                 Binding {
                     target: Theme
@@ -662,10 +663,17 @@ Item {
         Timer { id: ringTimeout; interval: 60000; onTriggered: home.ringing = false }
 
         spacing: Theme.gutter
-        readonly property real sideWidth: Math.round(Math.min(450, Math.max(320, home.width * 0.34)))
+        // The G7 theme, with room: the phone stands in its own column between the two.
+        readonly property bool phoneCentred: Theme.quiet && home.width >= 1240
+        readonly property real standWidth: 300
+        readonly property real sideWidth: phoneCentred
+            ? Math.round(Math.min(420, Math.max(340, home.width * 0.27)))
+            : Math.round(Math.min(450, Math.max(320, home.width * 0.34)))
 
         Column {
+            id: homeMain
             width: home.width - home.sideWidth - home.spacing
+                   - (home.phoneCentred ? home.standWidth + home.spacing : 0)
             spacing: Theme.gutter
 
             // ---- Hero ----
@@ -708,7 +716,7 @@ Item {
                 }
                 readonly property bool hasGlanceSummary: true
                 height: wide
-                    ? Math.max(188, Math.max(phoneArt.height, Math.max(identityCol.height, summaryPanel.height)) + 36)
+                    ? Math.max(Theme.quiet ? 0 : 188, Math.max(home.phoneCentred ? 0 : phoneArt.height, Math.max(identityCol.height, summaryPanel.height)) + 36)
                     : topHeroRow.height + 1 + summaryPanel.height + 60
                 Behavior on height {
                     enabled: home.canAnimateHero
@@ -729,19 +737,25 @@ Item {
                     width: heroCard.wide
                         ? heroCard.width - 36 - summaryPanel.width - 28
                         : heroCard.width - 36
-                    height: Math.max(phoneArt.height, identityCol.height)
+                    height: Math.max(home.phoneCentred ? 0 : phoneArt.height, identityCol.height)
 
                     // Vector front-only phone preview measured on the phone, with live status bar & circular battery arc inside.
                     Item {
                         id: phoneArt
-                        anchors.verticalCenter: parent.verticalCenter
+                        parent: home.phoneCentred ? phoneStand : topHeroRow
+                        anchors.verticalCenter: home.phoneCentred ? undefined : parent.verticalCenter
+                        // Drawn at its usual size and scaled, so everything inside keeps its proportions.
+                        transformOrigin: Item.TopLeft
+                        scale: home.phoneCentred ? phoneStand.artScale : 1
+                        x: home.phoneCentred ? Math.round((home.standWidth - width * scale) / 2) : 0
+                        y: home.phoneCentred ? phoneStand.pinnedY : 0
                         readonly property real aspect: {
                             const s = home.screenData
                             if (s && s.aspect >= 0.25 && s.aspect <= 2.5)
                                 return s.aspect
                             return home.kind === "tablet" ? 0.70 : 0.47
                         }
-                        height: heroCard.wide ? 156 : 142
+                        height: home.phoneCentred || heroCard.wide ? 156 : 142
                         width: Math.round(height * aspect)
                         readonly property real bezel: 3.5
                         readonly property real innerW: Math.max(10, width - bezel * 2)
@@ -764,25 +778,25 @@ Item {
                             : (home.accent && home.accent.length > 0 ? Qt.color(home.accent) : Theme.primary)
                         readonly property color frameFill: Theme.hive
                             ? (Theme.dark ? "#0E0E10" : "#2A2420")
-                            : Theme.graphite
+                            : Theme.graphite || Theme.quiet
                             ? (Theme.dark ? "#1B1D21" : "#282B30")
                             : Qt.darker(seedColor, Theme.dark ? 2.8 : 2.3)
-                        readonly property color frameStroke: Theme.graphite
+                        readonly property color frameStroke: Theme.graphite || Theme.quiet
                             ? Theme.outline
                             : Qt.rgba(Theme.heroContent.r, Theme.heroContent.g, Theme.heroContent.b, 0.42)
                         readonly property color screenTop: Theme.hive
                             ? (Theme.dark ? "#3A2709" : "#FFE2BC")
-                            : Theme.graphite
+                            : Theme.graphite || Theme.quiet
                             ? (Theme.dark ? "#262930" : "#E4E7EC")
                             : (Theme.dark ? Qt.darker(seedColor, 1.85) : Qt.lighter(seedColor, 1.35))
                         readonly property color screenBottom: Theme.hive
                             ? (Theme.dark ? "#141210" : "#F1C27F")
-                            : Theme.graphite
+                            : Theme.graphite || Theme.quiet
                             ? (Theme.dark ? "#17191D" : "#CFD4DC")
                             : (Theme.dark ? Qt.darker(seedColor, 2.55) : Qt.darker(seedColor, 1.25))
                         readonly property color screenInk: Theme.hive
                             ? (Theme.dark ? "#FFDDB3" : "#2C1600")
-                            : (Theme.graphite && !Theme.dark ? "#1E2025" : "#FFFFFF")
+                            : ((Theme.graphite || Theme.quiet) && !Theme.dark ? "#1E2025" : "#FFFFFF")
                         readonly property string cutoutSvg: {
                             const s = home.screenData
                             if (!s) return ""
@@ -806,7 +820,7 @@ Item {
                             height: parent.height + 18
                             radius: Math.max(phoneArt.rTl, phoneArt.rTr) + 9
                             color: Theme.graphite ? Theme.primary : phoneArt.seedColor
-                            opacity: home.online ? (Theme.dark ? 0.24 : 0.18) : 0.0
+                            opacity: home.online && !home.phoneCentred ? (Theme.dark ? 0.24 : 0.18) : 0.0
                             visible: opacity > 0
                             Behavior on opacity {
                                 enabled: home.canAnimateHero
@@ -942,6 +956,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     size: 6
                                     weight: Font.Bold
+                                    renderType: home.phoneCentred ? Text.CurveRendering : Text.QtRendering
                                     color: phoneArt.screenInk
                                     opacity: 0.90
                                     text: home.cellType.length > 0 && home.cellType.length <= 3 ? home.cellType : ""
@@ -1039,6 +1054,7 @@ Item {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         size: 11
                                         weight: Font.Bold
+                                        renderType: home.phoneCentred ? Text.CurveRendering : Text.QtRendering
                                         color: phoneArt.screenInk
                                         text: home.battery + "%"
                                     }
@@ -1047,14 +1063,31 @@ Item {
 
                             // Only show a pill below the battery ring when actively charging or low battery (never redundant LTE/Battery text)
                             Rectangle {
+                                id: statusMiniPill
                                 visible: statusMiniLabel.text.length > 0
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 height: 13
                                 width: Math.min(phoneArt.innerW - 6, Math.max(34, statusMiniLabel.implicitWidth + 10))
                                 radius: 6.5
-                                color: Qt.rgba(0, 0, 0, Theme.graphite && !Theme.dark ? 0.10 : 0.26)
-                                border.width: 0.6
+                                readonly property color fill: Qt.rgba(0, 0, 0, Theme.graphite && !Theme.dark ? 0.10 : 0.26)
+                                color: home.phoneCentred ? "transparent" : fill
+                                border.width: home.phoneCentred ? 0 : 0.6
                                 border.color: Qt.rgba(1, 1, 1, 0.14)
+
+                                // A Shape stays smooth when the phone is drawn large.
+                                Shape {
+                                    anchors.fill: parent
+                                    visible: home.phoneCentred
+                                    preferredRendererType: Shape.CurveRenderer
+                                    ShapePath {
+                                        strokeWidth: 0.6
+                                        strokeColor: statusMiniPill.border.color
+                                        fillColor: statusMiniPill.fill
+                                        PathSvg {
+                                            path: page.roundedRectSvg(0.3, 0.3, statusMiniPill.width - 0.6, 12.4, 6.2, 6.2, 6.2, 6.2)
+                                        }
+                                    }
+                                }
 
                                 Txt {
                                     id: statusMiniLabel
@@ -1064,6 +1097,7 @@ Item {
                                     elide: Text.ElideRight
                                     size: 6.5
                                     weight: Font.DemiBold
+                                    renderType: home.phoneCentred ? Text.CurveRendering : Text.QtRendering
                                     color: phoneArt.screenInk
                                     opacity: 0.90
                                     text: {
@@ -1084,18 +1118,30 @@ Item {
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: phoneArt.bezel + 4
+                            id: gesturePill
                             width: Math.round(phoneArt.innerW * 0.36)
                             height: 2.5
                             radius: 1.25
-                            color: Qt.rgba(phoneArt.screenInk.r, phoneArt.screenInk.g, phoneArt.screenInk.b, 0.38)
+                            readonly property color fill: Qt.rgba(phoneArt.screenInk.r, phoneArt.screenInk.g, phoneArt.screenInk.b, 0.38)
+                            color: home.phoneCentred ? "transparent" : fill
+                            Shape {
+                                anchors.fill: parent
+                                visible: home.phoneCentred
+                                preferredRendererType: Shape.CurveRenderer
+                                ShapePath {
+                                    strokeWidth: -1
+                                    strokeColor: "transparent"
+                                    fillColor: gesturePill.fill
+                                    PathSvg { path: page.roundedRectSvg(0, 0, gesturePill.width, 2.5, 1.25, 1.25, 1.25, 1.25) }
+                                }
+                            }
                         }
                     }
 
                     Column {
                         id: identityCol
-                        anchors.left: phoneArt.right
-                        anchors.leftMargin: 14
-                        anchors.right: parent.right
+                        x: home.phoneCentred ? 0 : phoneArt.width + 14
+                        width: parent.width - x
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 6
                         Row {
@@ -1226,8 +1272,8 @@ Item {
                         height: idleMediaCol.implicitHeight + 24
                         visible: heroCard.activeMediaRow < 0
                         radius: Theme.radiusLg
-                        color: Qt.rgba(Theme.surface.r, Theme.surface.g, Theme.surface.b, Theme.glass ? (Theme.dark ? 0.42 : 0.52) : (Theme.dark ? 0.44 : 0.58))
-                        border.width: 1
+                        color: Theme.quiet ? "transparent" : Qt.rgba(Theme.surface.r, Theme.surface.g, Theme.surface.b, Theme.glass ? (Theme.dark ? 0.42 : 0.52) : (Theme.dark ? 0.44 : 0.58))
+                        border.width: Theme.quiet ? 0 : 1
                         border.color: Qt.rgba(1, 1, 1, Theme.dark ? 0.12 : 0.40)
 
                         Column {
@@ -1243,7 +1289,7 @@ Item {
                                 Rectangle {
                                     width: 40; height: 40
                                     radius: Theme.radiusMd
-                                    color: Theme.secondaryContainer
+                                    color: Theme.quiet ? "transparent" : Theme.secondaryContainer
                                     anchors.verticalCenter: parent.verticalCenter
                                     Icon {
                                         anchors.centerIn: parent
@@ -1463,7 +1509,7 @@ Item {
                                         width: 32; height: 32
                                         anchors.verticalCenter: parent.verticalCenter
                                         radius: Theme.graphite ? Theme.radiusSm : 16
-                                        color: Theme.graphite ? "transparent" : Theme.secondaryContainer
+                                        color: Theme.quiet ? "transparent" : Theme.graphite ? "transparent" : Theme.secondaryContainer
                                         border.width: Theme.graphite ? 1 : 0
                                         border.color: Theme.outlineVariant
                                         Icon {
@@ -1835,8 +1881,25 @@ Item {
             }
         }
 
+        // ---- The phone on the desk ----
+        // Holds the hero's phone while it's centred; it stays in view as the page scrolls.
+        Item {
+            id: phoneStand
+            visible: home.phoneCentred
+            width: home.standWidth
+            height: 1
+            // Fits below whatever banners sit above the device at the top of the page.
+            readonly property real artScale: Math.max(1.6, Math.min(3.6,
+                (home.standWidth - 24) / Math.max(1, phoneArt.width),
+                (homeScroll.height - 16 - home.y - column.y) / Math.max(1, phoneArt.height)))
+            readonly property real pinnedY: Math.max(0, Math.min(
+                homeScroll.contentY - home.y - column.y,
+                Math.max(homeMain.height, homeSide.height) - phoneArt.height * artScale))
+        }
+
         // ---- Details ----
         Column {
+            id: homeSide
             width: home.sideWidth
             spacing: Theme.gutter
 
@@ -2243,11 +2306,11 @@ Item {
             }
 
             // Camera & remote typing above Timeline.
-            Row {
+            Flow {
                 id: sideCameraGrid
                 width: parent.width
-                spacing: 10
-                readonly property real tileWidth: (width - spacing) / 2
+                spacing: Theme.quiet ? 0 : 10
+                readonly property real tileWidth: Theme.quiet ? width : (width - spacing) / 2
 
                 ActionTile {
                     width: sideCameraGrid.tileWidth
@@ -2351,7 +2414,7 @@ Item {
                                 width: 32; height: 32
                                 anchors.verticalCenter: parent.verticalCenter
                                 radius: Theme.graphite ? Theme.radiusSm : Theme.radiusMd
-                                color: typeOnPhoneCard.activeHere
+                                color: Theme.quiet ? "transparent" : typeOnPhoneCard.activeHere
                                     ? Theme.primary
                                     : (Theme.graphite ? "transparent" : Theme.secondaryContainer)
                                 border.width: Theme.graphite ? 1 : 0
@@ -2362,7 +2425,7 @@ Item {
                                     anchors.centerIn: parent
                                     width: 17; height: 17
                                     path: Icons.keyboard
-                                    color: typeOnPhoneCard.activeHere ? Theme.primaryContent : Theme.secondaryContainerContent
+                                    color: Theme.quiet ? Theme.surfaceContent : typeOnPhoneCard.activeHere ? Theme.primaryContent : Theme.secondaryContainerContent
                                 }
                             }
                             Column {
@@ -2609,7 +2672,7 @@ Item {
                                 radius: Theme.radiusSm
                                 color: previewHover.hovered ? Theme.surfaceContainerHigh : "transparent"
                                 border.width: Theme.focusVisible(previewRow) ? 2 : 0
-                                border.color: Theme.primary
+                                border.color: Theme.focusRing
                             }
 
                             Icon {
@@ -3167,17 +3230,19 @@ Item {
                                            || (playableWhenAddonMissing && feature.state === "locked" && feature.action === "enableAddon")
                                            || (queueableWhenOffline && (!tile.deviceOnline || feature.state === "unknown") && feature.state !== "locked" && feature.state !== "unsupported"))
 
-        height: (tile.subtitle.length > 0 || !tile.available) ? 96 : 82
+        height: Theme.quiet ? 36 : ((tile.subtitle.length > 0 || !tile.available) ? 96 : 82)
         activeFocusOnTab: available
         radius: Theme.radiusLg
-        color: tile.active
+        color: Theme.quiet
+            ? (tile.active || hover.hovered ? Theme.secondaryContainer : "transparent")
+            : tile.active
             ? Theme.primary
             : (tile.accented && !Theme.graphite
                 ? Qt.tint(Theme.tileColor, Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.14 : 0.10))
                 : Theme.tileColor)
-        border.width: Theme.focusVisible(tile) ? 2 : ((tile.accented || Theme.graphite) && !Theme.glass ? 1 : 0)
+        border.width: Theme.focusVisible(tile) ? 2 : ((tile.accented || Theme.graphite) && !Theme.glass && !Theme.quiet ? 1 : 0)
         border.color: Theme.focusVisible(tile)
-            ? Theme.primary
+            ? Theme.focusRing
             : (tile.accented && !Theme.graphite
                 ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.36 : 0.30)
                 : (Theme.ambientBlurActive ? Theme.cardBorder : Theme.outlineVariant))
@@ -3197,14 +3262,49 @@ Item {
             }
         }
 
-        readonly property color ink: tile.active ? Theme.primaryContent : Theme.surfaceContent
+        readonly property color ink: tile.active && !Theme.quiet ? Theme.primaryContent : Theme.surfaceContent
         Rectangle {
             anchors.fill: parent
             radius: parent.radius
             color: tile.ink
             opacity: tap.pressed && tile.available ? 0.08 : 0
         }
+        // The G7 theme: a bare glyph with its name beside it.
+        Row {
+            visible: Theme.quiet
+            anchors.left: parent.left
+            anchors.leftMargin: 10
+            anchors.right: parent.right
+            anchors.rightMargin: tile.sideIcon.length > 0 ? 44 : 10
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 10
+            opacity: tile.available ? 1 : 0.6
+            Icon {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 16; height: 16
+                path: tile.iconPath
+                color: Theme.surfaceContent
+            }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth, parent.width - 26)
+                text: tile.title
+                role: "body"
+                size: 13
+                weight: 500
+                color: tile.ink
+            }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: width > 12
+                width: Math.max(0, parent.width - x)
+                text: tile.available ? tile.subtitle : (lock.label.length > 0 ? lock.label : qsTr("When connected"))
+                role: "bodySmall"
+                muted: true
+            }
+        }
         Column {
+            visible: !Theme.quiet
             anchors.fill: parent
             anchors.margins: 12
             spacing: 8
@@ -3246,8 +3346,10 @@ Item {
         TapHandler { id: tap; enabled: tile.available; onTapped: tile.clicked() }
         IconButton {
             anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: 6
+            anchors.rightMargin: 6
+            anchors.top: Theme.quiet ? undefined : parent.top
+            anchors.topMargin: 6
+            anchors.verticalCenter: Theme.quiet ? parent.verticalCenter : undefined
             visible: tile.sideIcon.length > 0 && (tile.available || tile.sideAlwaysAvailable)
             iconPath: tile.sideIcon
             label: tile.sideLabel
@@ -3269,7 +3371,7 @@ Item {
         signal clicked
         signal lockedClicked
 
-        height: 52
+        height: Theme.quiet ? 36 : 52
         activeFocusOnTab: available
 
         Accessible.role: Accessible.CheckBox
@@ -3287,6 +3389,8 @@ Item {
         }
 
         readonly property color fillColor: {
+            if (Theme.quiet)
+                return active || hovered ? Theme.secondaryContainer : "transparent"
             if (active && available)
                 return Theme.graphite ? Theme.surfaceContent : Theme.primary
             if (active && !available)
@@ -3294,6 +3398,8 @@ Item {
             return Theme.graphite ? "transparent" : (Theme.glass ? Theme.tileColor : Theme.surfaceContainerHigh)
         }
         readonly property color contentColor: {
+            if (Theme.quiet)
+                return available || active ? Theme.surfaceContent : Theme.surfaceContentVariant
             if (active && available)
                 return Theme.graphite ? Theme.surface : Theme.primaryContent
             if (active && !available)
@@ -3306,7 +3412,7 @@ Item {
             radius: Theme.radiusMd
             color: qbtn.fillColor
             border.width: Theme.focusVisible(qbtn) ? 2 : (Theme.graphite || Theme.glass || (qbtn.active && !qbtn.available) ? 1 : 0)
-            border.color: Theme.focusVisible(qbtn) ? Theme.primary : (Theme.glass ? Theme.cardBorder : Theme.outlineVariant)
+            border.color: Theme.focusVisible(qbtn) ? Theme.focusRing : (Theme.glass ? Theme.cardBorder : Theme.outlineVariant)
             opacity: qbtn.available || qbtn.active ? 1 : 0.55
             scale: qtap.pressed && qbtn.available ? Theme.pressScale : 1
             Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 170; easing.type: Easing.OutBack } }
@@ -3318,7 +3424,28 @@ Item {
                 opacity: qtap.pressed ? 0.09 : 0
             }
 
+            // The G7 theme: the glyph and its name on one line.
+            Row {
+                visible: Theme.quiet
+                anchors.centerIn: parent
+                spacing: 6
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 15; height: 15
+                    path: qbtn.iconPath
+                    color: qbtn.contentColor
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    role: "bodySmall"
+                    size: 12
+                    color: qbtn.contentColor
+                    text: qbtn.shortTitle
+                }
+            }
+
             Column {
+                visible: !Theme.quiet
                 anchors.centerIn: parent
                 width: parent.width - 4
                 spacing: 3
@@ -3451,7 +3578,7 @@ Item {
                 radius: 6
                 color: "transparent"
                 border.width: 2
-                border.color: Theme.primary
+                border.color: Theme.focusRing
                 visible: Theme.focusVisible(barScope)
             }
 
@@ -3600,7 +3727,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             width: 32; height: 32
                             radius: Theme.graphite ? Theme.radiusSm : 16
-                            color: Theme.graphite ? "transparent" : Theme.secondaryContainer
+                            color: Theme.quiet ? "transparent" : Theme.graphite ? "transparent" : Theme.secondaryContainer
                             border.width: Theme.graphite ? 1 : 0
                             border.color: Theme.outlineVariant
                             Icon {

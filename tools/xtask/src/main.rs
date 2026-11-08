@@ -117,7 +117,7 @@ fn validate(tokens: &Value) -> Result<()> {
         }
     }
     // Fixed-palette themes carry their own status colors.
-    for theme in ["cobalt", "graphite", "hive"] {
+    for theme in ["graphite", "hive", "quiet"] {
         let variants = themes
             .pointer(&format!("/{theme}/variants"))
             .and_then(Value::as_object)

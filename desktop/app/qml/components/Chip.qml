@@ -54,7 +54,7 @@ Rectangle {
         radius: chip.radius + 3
         color: "transparent"
         border.width: 2
-        border.color: Theme.primary
+        border.color: Theme.focusRing
         visible: chip.interactive && Theme.focusVisible(chip)
     }
 

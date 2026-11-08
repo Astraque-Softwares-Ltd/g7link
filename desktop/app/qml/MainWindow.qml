@@ -568,8 +568,8 @@ NativeWindow {
     // ---- Navigation rail ----
     Rectangle {
         id: rail
-        visible: !window.welcome && !Theme.cobalt
-        width: Theme.cobalt ? 0 : Theme.railWidth
+        visible: !window.welcome && !Theme.quiet
+        width: Theme.quiet ? 0 : Theme.railWidth
         height: parent.height
         color: "transparent"
         property string hoveredNav: ""
@@ -879,7 +879,7 @@ NativeWindow {
             anchors.bottom: parent.bottom
             width: parent.width
             clip: true
-            topLeftRadius: Theme.cobalt ? 0 : 18
+            topLeftRadius: Theme.quiet ? 0 : 18
             // Hive: lets the comb show faintly through, under opaque cards.
             color: Theme.hive
                 ? Qt.rgba(Theme.surfaceContainerLow.r, Theme.surfaceContainerLow.g, Theme.surfaceContainerLow.b, Theme.dark ? 0.50 : 0.58)
@@ -989,15 +989,15 @@ NativeWindow {
         }
     }
 
-    // ---- Cobalt's bottom dock: the same destinations as the rail, plus
+    // ---- The G7 theme's bottom dock: the same destinations as the rail, plus
     // Timeline and Commands, which the title bar also keeps ----
     Item {
         id: dock
-        visible: !window.welcome && Theme.cobalt
+        visible: !window.welcome && Theme.quiet
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: 58
+        height: 44
         readonly property bool compact: width < 1130
         readonly property bool roomy: width >= 1400
         readonly property var destinations: [
@@ -1015,8 +1015,8 @@ NativeWindow {
 
         Rectangle {
             width: parent.width
-            height: 1.5
-            color: Theme.surfaceContent
+            height: 1
+            color: Theme.outlineVariant
         }
         Row {
             id: dockBrand
@@ -1024,25 +1024,19 @@ NativeWindow {
             anchors.leftMargin: Theme.contentPadding
             anchors.verticalCenter: parent.verticalCenter
             spacing: 9
-            Rectangle {
+            Icon {
                 anchors.verticalCenter: parent.verticalCenter
-                width: 28; height: 28
-                radius: Theme.radiusSm
-                color: Theme.surfaceContent
-                Icon {
-                    anchors.centerIn: parent
-                    width: 17; height: 17
-                    path: Icons.mark
-                    stroke: 2.4
-                    color: Theme.surface
-                }
+                width: 20; height: 20
+                path: Icons.mark
+                stroke: 2.4
+                color: Theme.focusRing
             }
             Txt {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !dock.compact
                 text: "G7 Link"
                 role: "title"
-                size: 15
+                size: 13
             }
         }
         Row {

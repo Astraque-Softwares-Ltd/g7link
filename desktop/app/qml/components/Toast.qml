@@ -96,7 +96,7 @@ Rectangle {
                 radius: parent.radius + 3
                 color: "transparent"
                 border.width: 2
-                border.color: Theme.primary
+                border.color: Theme.focusRing
                 visible: Theme.focusVisible(actionChip)
             }
 

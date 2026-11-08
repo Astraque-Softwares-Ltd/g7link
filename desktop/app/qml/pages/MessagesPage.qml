@@ -652,7 +652,7 @@ Item {
                                 ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.08)
                                 : "transparent"
                             border.width: Theme.focusVisible(srow) ? 2 : 0
-                            border.color: Theme.primary
+                            border.color: Theme.focusRing
                         }
                         Item {
                             id: sFace
@@ -1054,7 +1054,7 @@ Item {
                  : rowHover.hovered ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.06)
                  : "transparent"
             border.width: Theme.focusVisible(row) ? 2 : 0
-            border.color: Theme.primary
+            border.color: Theme.focusRing
         }
         Item {
             id: face
@@ -1284,7 +1284,7 @@ Item {
                             radius: 18
                             color: "transparent"
                             border.width: 2
-                            border.color: Theme.primary
+                            border.color: Theme.focusRing
                             visible: Theme.focusVisible(picItem)
                         }
                         Spinner { anchors.centerIn: parent; visible: parent.modelData.length === 0 }

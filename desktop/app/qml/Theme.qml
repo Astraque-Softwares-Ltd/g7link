@@ -3,7 +3,7 @@ pragma Singleton
 import QtQuick
 import app.g7link
 
-// The active theme: Cobalt (cool grey, ink and cobalt, the default), Bloom
+// The active theme: Quiet (G7's own language, the default), Bloom
 // (Material You, seed presets), Hive (honey on charcoal or wax), Glass, or
 // Graphite (paper and slate), light or dark, resolved from Preferences and
 // the system. Colors
@@ -13,10 +13,8 @@ QtObject {
     id: theme
 
     readonly property bool hive: Preferences.theme === "hive"
-    readonly property bool cobalt: Preferences.theme === "cobalt"
-    // Cobalt shares Graphite's hairlines, ink buttons and small corners; its
-    // colors, display type and bottom dock are its own.
-    readonly property bool graphite: Preferences.theme === "graphite" || cobalt
+    readonly property bool quiet: Preferences.theme === "quiet"
+    readonly property bool graphite: Preferences.theme === "graphite"
     readonly property bool glass: Preferences.theme === "glass" || Preferences.theme === "blurry"
     readonly property bool dark: Preferences.colorMode === "dark"
                                  || (Preferences.colorMode === "system" && AppController.systemDark)
@@ -116,12 +114,12 @@ QtObject {
           : (seed === "wallpaper" ? wallpaperSeed : bloomSeeds[seed])
     readonly property var palette: hive
         ? Tokens.data.themes.hive.variants[dark ? "comb" : "wax"]
-        : (cobalt
-            ? Tokens.data.themes.cobalt.variants[dark ? "night" : "day"]
+        : (quiet
+            ? Tokens.data.themes.quiet.variants[dark ? "dark" : "light"]
             : (graphite
                 ? Tokens.data.themes.graphite.variants[dark ? "slate" : "paper"]
                 : seedColors[dark ? "dark" : "light"]))
-    readonly property var status: graphite || hive ? palette : Tokens.data.themes.bloom.status[dark ? "dark" : "light"]
+    readonly property var status: graphite || hive || quiet ? palette : Tokens.data.themes.bloom.status[dark ? "dark" : "light"]
 
     // ---- Color roles ----
     readonly property color primary: palette.primary
@@ -153,7 +151,7 @@ QtObject {
     // ---- Component colors (docs/design/assets/nl.css) ----
     // Hive: nearly opaque, so the comb shows through as texture without
     // ever crossing text.
-    readonly property color cardColor: hive
+    readonly property color cardColor: quiet ? "transparent" : hive
         ? (function() {
             const c = Qt.tint(surfaceContainer, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, dark ? 0.12 : 0.18))
             return Qt.rgba(c.r, c.g, c.b, dark ? 0.90 : 0.92)
@@ -173,7 +171,7 @@ QtObject {
                         Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, isPhoneSeed ? (dark ? 0.28 : 0.36) : (dark ? 0.16 : 0.22))
                     ))))
     // Hive: a faint honey edge, like wax around a cell.
-    readonly property color cardBorder: hive
+    readonly property color cardBorder: quiet ? "transparent" : hive
         ? Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.14 : 0.16)
         : graphite ? outlineVariant
         : (glass
@@ -181,7 +179,7 @@ QtObject {
             : (artworkAmbientActive
                 ? Qt.rgba(outlineVariant.r, outlineVariant.g, outlineVariant.b, dark ? 0.36 : 0.45)
                 : (amoled ? "#1D1F27" : "transparent")))
-    readonly property color tileColor: hive
+    readonly property color tileColor: quiet ? "transparent" : hive
         ? Qt.tint(surfaceContainerHigh, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, dark ? 0.14 : 0.20))
         : graphite ? "transparent"
         : (glass
@@ -197,7 +195,7 @@ QtObject {
                         surfaceContainerHigh,
                         Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, isPhoneSeed ? (dark ? 0.32 : 0.42) : (dark ? 0.18 : 0.24))
                     ))))
-    readonly property color heroColor: hive
+    readonly property color heroColor: quiet ? "transparent" : hive
         ? Qt.tint(surface, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, dark ? 0.55 : 0.62))
         : graphite ? "transparent"
         : Qt.tint(
@@ -206,9 +204,9 @@ QtObject {
                 : (amoled ? "#090A0E" : surface),
             Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, glass ? (dark ? 0.30 : 0.38) : (artworkAmbientActive ? 0.52 : (amoled ? 0.32 : 0.68)))
         )
-    readonly property color heroContent: graphite ? surfaceContent : primaryContainerContent
+    readonly property color heroContent: graphite || quiet ? surfaceContent : primaryContainerContent
     // Hive's rail is the comb itself.
-    readonly property color railColor: graphite || hive ? "transparent"
+    readonly property color railColor: graphite || hive || quiet ? "transparent"
         : (glass
             ? Qt.rgba(surfaceLow.r, surfaceLow.g, surfaceLow.b, amoled ? 0.48 : (dark ? 0.28 : 0.42))
             : (artworkAmbientActive
@@ -219,15 +217,17 @@ QtObject {
                         surfaceLow,
                         Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, isPhoneSeed ? (dark ? 0.24 : 0.32) : (dark ? 0.14 : 0.18))
                     ))))
-    readonly property color indicator: cobalt ? primary : (graphite ? surfaceContent : (hive ? primaryContainer : secondaryContainer))
-    readonly property color indicatorContent: cobalt ? primaryContent : (graphite ? surface : (hive ? primaryContainerContent : secondaryContainerContent))
+    readonly property color indicator: graphite ? surfaceContent : (hive ? primaryContainer : secondaryContainer)
+    readonly property color indicatorContent: graphite ? surface : (hive ? primaryContainerContent : secondaryContainerContent)
     // Hive: the honey halo around a primary control on hover.
     readonly property color glow: Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.30 : 0.22)
-    readonly property color buttonShadow: graphite && !cobalt ? palette.buttonShadow : "transparent"
+    readonly property color buttonShadow: graphite ? palette.buttonShadow : "transparent"
+    // Lavender marks keyboard focus and the G7 mark, and nothing else, in the G7 theme.
+    readonly property color focusRing: quiet ? palette.accent : primary
     readonly property color scrim: Qt.rgba(0, 0, 0, dark ? 0.5 : 0.32)
 
     // ---- Shape ----
-    readonly property var shape: cobalt ? Tokens.data.themes.cobalt.shape
+    readonly property var shape: quiet ? Tokens.data.themes.quiet.shape
         : (graphite ? Tokens.data.themes.graphite.shape
             : (hive ? Tokens.data.themes.hive.shape : Tokens.data.themes.bloom.shape))
     readonly property int radiusXs: shape.xs
@@ -236,19 +236,20 @@ QtObject {
     readonly property int radiusLg: shape.lg
     readonly property int radiusXl: shape.xl
     // "Pill": half the height of whatever uses it, in Bloom.
-    function pill(height) { return graphite ? shape.full : height / 2 }
+    function pill(height) { return graphite || quiet ? shape.full : height / 2 }
 
     // ---- Type ----
     // Bundled with the app (assets/fonts).
-    readonly property string fontUi: "Figtree"
-    readonly property string fontDisplay: graphite && !cobalt ? "Instrument Serif" : "Figtree"
-    readonly property string fontMono: "Space Mono"
+    // The G7 theme follows the desktop's own interface font, as G7 does.
+    readonly property string fontUi: quiet ? Qt.application.font.family : "Figtree"
+    readonly property string fontDisplay: graphite ? "Instrument Serif" : fontUi
+    readonly property string fontMono: quiet ? "Geist Mono" : "Space Mono"
     // Caption button glyphs: Segoe Fluent Icons ships with Windows 11 only;
     // Windows 10's Segoe MDL2 Assets has the same code points.
     readonly property string captionIconFont: Qt.fontFamilies().indexOf("Segoe Fluent Icons") >= 0
         ? "Segoe Fluent Icons" : "Segoe MDL2 Assets"
     readonly property var typography: Tokens.data.typography
-    readonly property var labelStyle: cobalt ? Tokens.data.themes.cobalt.label
+    readonly property var labelStyle: quiet ? Tokens.data.themes.quiet.label
         : (graphite ? Tokens.data.themes.graphite.label
             : (hive ? Tokens.data.themes.hive.label : Tokens.data.themes.bloom.label))
 

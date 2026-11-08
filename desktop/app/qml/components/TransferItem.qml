@@ -92,7 +92,7 @@ Item {
         Rectangle {
             width: 32; height: 32
             radius: Theme.graphite ? Theme.radiusSm : 16
-            color: Theme.graphite ? "transparent" : Theme.secondaryContainer
+            color: Theme.quiet ? "transparent" : Theme.graphite ? "transparent" : Theme.secondaryContainer
             border.width: Theme.graphite ? 1 : 0
             border.color: Theme.outlineVariant
             Icon {

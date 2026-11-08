@@ -359,7 +359,7 @@ Item {
                         required property int index
 
                         width: tileGrid.cellWidth
-                        height: 112
+                        height: Theme.quiet ? 52 : 112
                         activeFocusOnTab: true
                         Accessible.role: Accessible.Button
                         Accessible.name: modelData.label
@@ -393,15 +393,16 @@ Item {
                             Item {
                                 anchors.left: parent.left
                                 anchors.right: parent.right
-                                anchors.top: parent.top
+                                anchors.top: Theme.quiet ? undefined : parent.top
+                                anchors.verticalCenter: Theme.quiet ? parent.verticalCenter : undefined
                                 anchors.margins: 14
                                 height: 34
 
                                 Rectangle {
                                     id: iconBadge
-                                    width: 34; height: 34
+                                    width: Theme.quiet ? 18 : 34; height: 34
                                     radius: Theme.radiusSm
-                                    color: tileSlot.highlighted
+                                    color: Theme.quiet ? "transparent" : tileSlot.highlighted
                                         ? Theme.primaryContainer
                                         : (Theme.graphite ? Theme.surfaceContainerHigh : Theme.secondaryContainer)
                                     Icon {
@@ -417,8 +418,10 @@ Item {
                                 // Live status pill (e.g. "74%", "Muted", "Playing", "Live")
                                 Rectangle {
                                     visible: (tileSlot.modelData.status || "").length > 0
-                                    anchors.left: iconBadge.right
+                                    anchors.left: Theme.quiet ? undefined : iconBadge.right
                                     anchors.leftMargin: 8
+                                    anchors.right: Theme.quiet ? testBtn.left : undefined
+                                    anchors.rightMargin: 8
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: 22
                                     width: statusLabel.implicitWidth + 12
@@ -444,7 +447,7 @@ Item {
                                     activeFocusOnTab: true
                                     color: testHover.hovered ? Theme.surfaceContainerHighest : "transparent"
                                     border.width: Theme.focusVisible(testBtn) ? 2 : 0
-                                    border.color: Theme.primary
+                                    border.color: Theme.focusRing
                                     opacity: tileHover.hovered || testHover.hovered || testBtn.activeFocus ? 1 : 0.55
                                     Accessible.role: Accessible.Button
                                     Accessible.name: qsTr("Test %1").arg(tileSlot.modelData.label)
@@ -472,9 +475,12 @@ Item {
                             // Bottom labels: Tile label + action subtitle
                             Column {
                                 anchors.left: parent.left
+                                anchors.leftMargin: Theme.quiet ? 44 : 14
                                 anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                anchors.margins: 14
+                                anchors.rightMargin: Theme.quiet ? 84 : 14
+                                anchors.bottom: Theme.quiet ? undefined : parent.bottom
+                                anchors.bottomMargin: 14
+                                anchors.verticalCenter: Theme.quiet ? parent.verticalCenter : undefined
                                 spacing: 2
 
                                 Txt {
@@ -552,7 +558,7 @@ Item {
                 Rectangle {
                     visible: page.currentTiles.length < 24
                     width: tileGrid.cellWidth
-                    height: 112
+                    height: Theme.quiet ? 52 : 112
                     radius: Theme.radiusMd
                     color: addHover.hovered ? Theme.surfaceContainerHigh : "transparent"
                     border.width: Theme.focusVisible(addTileBtn) ? 2 : 1
@@ -672,7 +678,7 @@ Item {
                         x: 10; y: 10
                         width: 24; height: 24
                         radius: Theme.radiusSm
-                        color: Theme.graphite ? Theme.surfaceContainerHigh : Theme.secondaryContainer
+                        color: Theme.quiet ? "transparent" : Theme.graphite ? Theme.surfaceContainerHigh : Theme.secondaryContainer
                         Icon {
                             anchors.centerIn: parent
                             width: 14; height: 14
@@ -875,7 +881,7 @@ Item {
                             activeFocusOnTab: true
                             color: chosen ? Theme.secondaryContainer : Theme.surfaceContainerHigh
                             border.width: chosen || Theme.focusVisible(iconCell) ? 2 : 0
-                            border.color: Theme.primary
+                            border.color: Theme.focusRing
                             Accessible.role: Accessible.RadioButton
                             Accessible.name: modelData
                             Accessible.checked: chosen

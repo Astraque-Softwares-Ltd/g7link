@@ -35,7 +35,7 @@ pub mod qobject {
         #[qobject]
         #[qml_element]
         #[qml_singleton]
-        /// "cobalt", "bloom", "hive", "glass" or "graphite".
+        /// "quiet", "bloom", "hive", "glass" or "graphite".
         #[qproperty(QString, theme)]
         /// Bloom colors: "wallpaper", or a preset: "honey", "sage", "lavender"
         /// or "ocean".
@@ -398,7 +398,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
         let settings = Settings::load(&core_host::host().data_dir);
         settings.apply_runtime();
         self.as_mut().set_theme(QString::from(match settings.theme {
-            Theme::Cobalt => "cobalt",
+            Theme::Quiet => "quiet",
             Theme::Hive => "hive",
             Theme::Bloom => "bloom",
             Theme::Glass => "glass",
@@ -824,7 +824,7 @@ impl qobject::Preferences {
         }
         let disk = Settings::load(&core_host::host().data_dir);
         let disk_theme = QString::from(match disk.theme {
-            Theme::Cobalt => "cobalt",
+            Theme::Quiet => "quiet",
             Theme::Hive => "hive",
             Theme::Bloom => "bloom",
             Theme::Glass => "glass",
@@ -1118,7 +1118,7 @@ impl qobject::Preferences {
         let (win_screen, win_x, win_y, win_w, win_h, win_max) = crate::settings::window_geometry();
         Settings {
             theme: match String::from(&p.theme).as_str() {
-                "cobalt" => Theme::Cobalt,
+                "quiet" => Theme::Quiet,
                 "hive" => Theme::Hive,
                 "graphite" => Theme::Graphite,
                 "glass" | "blurry" => Theme::Glass,

@@ -279,7 +279,7 @@ Item {
                     radius: parent.radius + 3
                     color: "transparent"
                     border.width: 2
-                    border.color: Theme.primary
+                    border.color: Theme.focusRing
                     visible: Theme.focusVisible(deviceDropdownBtn)
                 }
 
@@ -382,7 +382,7 @@ Item {
         Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
             width: 48; height: 48; radius: 24
-            color: Theme.graphite ? "transparent" : Theme.surfaceContainerHigh
+            color: Theme.quiet ? "transparent" : Theme.graphite ? "transparent" : Theme.surfaceContainerHigh
             border.width: Theme.graphite ? 1 : 0
             border.color: Theme.outlineVariant
             Icon {
@@ -653,7 +653,7 @@ Item {
                 activeFocusOnTab: true
                 color: allDevHover.hovered ? Theme.surfaceContainerHigh : "transparent"
                 border.width: Theme.focusVisible(allDevItem) ? 2 : 0
-                border.color: Theme.primary
+                border.color: Theme.focusRing
                 Accessible.role: Accessible.MenuItem
                 Accessible.name: qsTr("All devices")
                 Accessible.onPressAction: {
@@ -719,7 +719,7 @@ Item {
                     activeFocusOnTab: true
                     color: devOptHover.hovered ? Theme.surfaceContainerHigh : "transparent"
                     border.width: Theme.focusVisible(devOptItem) ? 2 : 0
-                    border.color: Theme.primary
+                    border.color: Theme.focusRing
                     Accessible.role: Accessible.MenuItem
                     Accessible.name: name
                     Accessible.onPressAction: {

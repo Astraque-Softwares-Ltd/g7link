@@ -949,7 +949,7 @@ Item {
                     ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.06)
                     : "transparent"
                 border.width: Theme.focusVisible(row) ? 2 : 0
-                border.color: Theme.primary
+                border.color: Theme.focusRing
             }
 
             Item {
@@ -1117,7 +1117,7 @@ Item {
                     : contactHover.hovered ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.06)
                     : "transparent"
                 border.width: Theme.focusVisible(crow) ? 2 : 0
-                border.color: Theme.primary
+                border.color: Theme.focusRing
             }
 
             Item {

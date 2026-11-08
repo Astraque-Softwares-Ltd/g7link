@@ -72,11 +72,11 @@ const QML: &[&str] = &[
 ];
 
 /// QML singletons.
-const QML_SINGLETONS: &[&str] = &["qml/Tokens.qml", "qml/Theme.qml", "qml/Icons.qml"];
+const QML_SINGLETONS: &[&str] = &["qml/Tokens.qml", "qml/Theme.qml", "qml/Icons.qml", "qml/G7Glyphs.qml"];
 
 /// Bundled fonts (in `assets/fonts`), compiled in under `:/fonts/`.
 const FONTS: &[&str] =
-    &["Figtree.ttf", "InstrumentSerif-Regular.ttf", "SpaceMono-Regular.ttf", "SpaceMono-Bold.ttf"];
+    &["Figtree.ttf", "GeistMono-Variable.ttf", "InstrumentSerif-Regular.ttf", "SpaceMono-Regular.ttf", "SpaceMono-Bold.ttf"];
 
 fn write_if_changed(path: &Path, content: impl AsRef<[u8]>) {
     let bytes = content.as_ref();

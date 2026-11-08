@@ -7,6 +7,7 @@ each license sits next to its font and is packaged with it.
 | File | Family | Used for |
 |---|---|---|
 | `Figtree.ttf` | Figtree (variable, weights 300 to 900) | All text in Bloom; body text in Graphite |
+| `GeistMono-Variable.ttf` | Geist Mono (variable) | Codes and other monospace text in the G7 theme, the same file G7 ships |
 | `InstrumentSerif-Regular.ttf` | Instrument Serif | Graphite headings |
 | `SpaceMono-Regular.ttf`, `SpaceMono-Bold.ttf` | Space Mono | Codes, IDs and Graphite labels |
 

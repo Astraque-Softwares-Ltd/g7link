@@ -9,23 +9,27 @@ Item {
     property string path
     property color color: Theme.surfaceContent
     property real stroke: 1.8
+    // In the G7 theme, G7's own filled glyph when it has one for this icon.
+    readonly property string glyph: Theme.quiet ? (G7Glyphs.byPath[path] || "") : ""
+    readonly property int grid: glyph.length > 0 ? 16 : 24
 
     implicitWidth: 20
     implicitHeight: 20
 
     Shape {
         anchors.centerIn: parent
-        width: 24
-        height: 24
-        scale: Math.min(icon.width, icon.height) / 24
+        width: icon.grid
+        height: icon.grid
+        scale: Math.min(icon.width, icon.height) / icon.grid
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
-            strokeColor: icon.color
-            strokeWidth: icon.stroke
-            fillColor: "transparent"
+            strokeColor: icon.glyph.length > 0 ? "transparent" : icon.color
+            strokeWidth: icon.glyph.length > 0 ? -1 : icon.stroke
+            fillColor: icon.glyph.length > 0 ? icon.color : "transparent"
+            fillRule: ShapePath.OddEvenFill
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
-            PathSvg { path: icon.path }
+            PathSvg { path: icon.glyph.length > 0 ? icon.glyph : icon.path }
         }
     }
 }

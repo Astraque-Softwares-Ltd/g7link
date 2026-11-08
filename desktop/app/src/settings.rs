@@ -15,9 +15,9 @@ const FILE_NAME: &str = "desktop-settings.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
-    /// Cool grey, ink and cobalt, with the bottom dock.
+    /// G7's Quiet Tool language, with the bottom dock.
     #[default]
-    Cobalt,
+    Quiet,
     Bloom,
     /// Honey on charcoal or wax, with the living comb.
     Hive,
@@ -29,7 +29,7 @@ impl<'de> Deserialize<'de> for Theme {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer).unwrap_or_default();
         Ok(match s.trim().to_ascii_lowercase().as_str() {
-            "cobalt" => Theme::Cobalt,
+            "quiet" => Theme::Quiet,
             "hive" => Theme::Hive,
             "graphite" => Theme::Graphite,
             "glass" | "blurry" => Theme::Glass,
@@ -41,9 +41,9 @@ impl<'de> Deserialize<'de> for Theme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ColorMode {
-    #[default]
     System,
     Light,
+    #[default]
     Dark,
 }
 
@@ -873,11 +873,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_new_install_is_cobalt_and_its_name_round_trips() {
-        assert_eq!(Settings::default().theme, Theme::Cobalt);
-        let parsed: Theme = serde_json::from_str("\"cobalt\"").unwrap();
-        assert_eq!(parsed, Theme::Cobalt);
-        assert_eq!(serde_json::to_string(&Theme::Cobalt).unwrap(), "\"cobalt\"");
+    fn a_new_install_is_quiet_and_dark_and_the_name_round_trips() {
+        assert_eq!(Settings::default().theme, Theme::Quiet);
+        assert_eq!(Settings::default().color_mode, ColorMode::Dark);
+        let parsed: Theme = serde_json::from_str("\"quiet\"").unwrap();
+        assert_eq!(parsed, Theme::Quiet);
+        assert_eq!(serde_json::to_string(&Theme::Quiet).unwrap(), "\"quiet\"");
     }
 
     #[test]
