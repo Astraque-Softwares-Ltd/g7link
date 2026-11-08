@@ -8,7 +8,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use iroh::endpoint::{RecvStream, SendStream};
 pub use g7link_protocol::messages::{
     ButtonAction, KeyMod, MouseButton, RemoteInput, SlideAction, remote_keys,
 };
@@ -17,6 +16,7 @@ use g7link_protocol::{
     messages::{StreamHeader, remote, types},
     read_frame, write_frame,
 };
+use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::{Error, NodeEvent, Result, node::Shared, session::Session};
 

@@ -1893,9 +1893,7 @@ impl From<core::Error> for G7LinkError {
             core::Error::Network(reason) => G7LinkError::Network { reason },
             core::Error::Storage(reason) => G7LinkError::Storage { reason },
             core::Error::Io(e) => G7LinkError::Storage { reason: e.to_string() },
-            core::Error::Protocol(reason) | core::Error::Internal(reason) => {
-                G7LinkError::Internal { reason }
-            }
+            core::Error::Protocol(reason) | core::Error::Internal(reason) => G7LinkError::Internal { reason },
         }
     }
 }
@@ -2380,9 +2378,7 @@ fn file_to_send(file: FileToSend) -> Result<core::OutgoingFile> {
         }
         #[cfg(not(unix))]
         FileToSend::Fd { .. } => {
-            return Err(G7LinkError::Internal {
-                reason: "file descriptors exist only on Android".into(),
-            });
+            return Err(G7LinkError::Internal { reason: "file descriptors exist only on Android".into() });
         }
     })
 }
@@ -4482,9 +4478,10 @@ impl G7LinkNode {
         let mac_bytes = core::parse_mac(&mac)
             .ok_or_else(|| G7LinkError::Internal { reason: "invalid MAC address".into() })?;
         let bcast = match broadcast.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(s) => Some(s.parse::<std::net::Ipv4Addr>().map_err(|_| G7LinkError::Internal {
-                reason: "invalid broadcast IPv4 address".into(),
-            })?),
+            Some(s) => Some(
+                s.parse::<std::net::Ipv4Addr>()
+                    .map_err(|_| G7LinkError::Internal { reason: "invalid broadcast IPv4 address".into() })?,
+            ),
             None => None,
         };
         let node = self.node.clone();

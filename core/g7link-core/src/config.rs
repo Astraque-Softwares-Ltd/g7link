@@ -308,8 +308,7 @@ pub trait Platform: Send + Sync + 'static {
     /// The PC's mouse or keyboard on this phone's mirrored screen or app
     /// window (checked, and only while it offers `mirror.input`, or
     /// `mirror.virtual_display` for app windows). Must return quickly.
-    fn mirror_input(&self, _peer: &g7link_protocol::DeviceId, _session: u32, _input: crate::MirrorInput) {
-    }
+    fn mirror_input(&self, _peer: &g7link_protocol::DeviceId, _session: u32, _input: crate::MirrorInput) {}
 
     /// The PC's decoder needs a fresh start: encode a keyframe next.
     fn mirror_keyframe_requested(&self, _peer: &g7link_protocol::DeviceId, _session: u32) {}

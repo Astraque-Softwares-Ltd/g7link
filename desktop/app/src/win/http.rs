@@ -391,8 +391,7 @@ mod release_download {
     #[test]
     #[ignore = "needs the internet"]
     fn downloads_a_release_installer() {
-        let url =
-            "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.2/G7Link-0.1.2-x64-setup.exe";
+        let url = "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v0.1.2/G7Link-0.1.2-x64-setup.exe";
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("setup.exe.part");
         let started = std::time::Instant::now();

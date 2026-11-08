@@ -165,13 +165,7 @@ impl Platform for RecordingPlatform {
     fn mirror_keyframe_requested(&self, _peer: &g7link_core::DeviceId, session: u32) {
         self.mirror_asks.lock().unwrap().push(format!("keyframe {session}"));
     }
-    fn mirror_resize_requested(
-        &self,
-        _peer: &g7link_core::DeviceId,
-        session: u32,
-        width: u32,
-        height: u32,
-    ) {
+    fn mirror_resize_requested(&self, _peer: &g7link_core::DeviceId, session: u32, width: u32, height: u32) {
         self.mirror_asks.lock().unwrap().push(format!("resize {session} {width}x{height}"));
     }
     fn mirror_sound_requested(&self, _peer: &g7link_core::DeviceId, on: bool) {
@@ -180,12 +174,7 @@ impl Platform for RecordingPlatform {
     fn mirror_power_requested(&self, _peer: &g7link_core::DeviceId, stay_awake: bool, screen_off: bool) {
         self.mirror_asks.lock().unwrap().push(format!("power awake={stay_awake} off={screen_off}"));
     }
-    fn mirror_input(
-        &self,
-        _peer: &g7link_core::DeviceId,
-        session: u32,
-        input: g7link_core::MirrorInput,
-    ) {
+    fn mirror_input(&self, _peer: &g7link_core::DeviceId, session: u32, input: g7link_core::MirrorInput) {
         self.mirror_asks.lock().unwrap().push(format!("{input:?} on {session}"));
     }
     fn mic_sink(&self, _peer: &g7link_core::DeviceId) -> Option<Arc<dyn g7link_core::MicSink>> {
@@ -299,11 +288,7 @@ impl Platform for RecordingPlatform {
         self.calls.lock().unwrap().push((id.to_owned(), command));
         Ok(())
     }
-    fn call_log(
-        &self,
-        before: Option<i64>,
-        limit: u32,
-    ) -> Result<Vec<g7link_core::CallLogEntry>, String> {
+    fn call_log(&self, before: Option<i64>, limit: u32) -> Result<Vec<g7link_core::CallLogEntry>, String> {
         let entry = |date: i64| g7link_core::CallLogEntry {
             id: format!("log:{date}"),
             number: format!("+1555010{date}"),
@@ -497,10 +482,9 @@ impl Platform for RecordingPlatform {
                     id: id.clone(),
                     data: vec![0xff, 0xd8, id.as_bytes().last().copied().unwrap()],
                 }),
-                "oversized" => Some(PhotoThumb {
-                    id: id.clone(),
-                    data: vec![0; g7link_core::PHOTO_MAX_THUMB_BYTES + 1],
-                }),
+                "oversized" => {
+                    Some(PhotoThumb { id: id.clone(), data: vec![0; g7link_core::PHOTO_MAX_THUMB_BYTES + 1] })
+                }
                 _ => None,
             })
             .collect())
@@ -542,10 +526,7 @@ impl Platform for RecordingPlatform {
         self.pc_audio_changes.lock().unwrap().push((volume, muted));
         Ok(())
     }
-    fn storage_list(
-        &self,
-        path: &str,
-    ) -> Result<Vec<g7link_core::StorageEntry>, g7link_core::StorageError> {
+    fn storage_list(&self, path: &str) -> Result<Vec<g7link_core::StorageEntry>, g7link_core::StorageError> {
         let guard = self.storage.lock().unwrap();
         let storage = guard.as_ref().ok_or(g7link_core::StorageError::Unsupported)?;
         storage.list(path)
@@ -2022,11 +2003,7 @@ async fn the_phone_sound_plays_on_the_pc_without_its_screen() {
     let mut phone = device_with(
         "Pixel",
         DeviceKind::Phone,
-        &[
-            g7link_core::MIRROR_CAPTURE,
-            g7link_core::MIRROR_AUDIO_PLAYBACK,
-            g7link_core::MIRROR_SOUND,
-        ],
+        &[g7link_core::MIRROR_CAPTURE, g7link_core::MIRROR_AUDIO_PLAYBACK, g7link_core::MIRROR_SOUND],
     )
     .await;
     pair_qr(&mut pc, &mut phone).await;
@@ -2036,11 +2013,8 @@ async fn the_phone_sound_plays_on_the_pc_without_its_screen() {
 
     // The phone sends only its sound.
     let sound = Arc::new(with_timeout("open sound", phone.node.mirror_open_audio(pc_id)).await.unwrap());
-    let format = g7link_core::MirrorAudioConfig {
-        codec: g7link_core::MIRROR_PCM.into(),
-        rate: 48_000,
-        channels: 2,
-    };
+    let format =
+        g7link_core::MirrorAudioConfig { codec: g7link_core::MIRROR_PCM.into(), rate: 48_000, channels: 2 };
     let sender = sound.clone();
     let sent = tokio::task::spawn_blocking(move || {
         [
@@ -2083,20 +2057,13 @@ async fn the_phone_sound_plays_on_the_pc_without_its_screen() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_phone_screen_streams_to_the_pc() {
     use g7link_core::{MirrorSend, PacketKind};
-    let mut pc = device_with(
-        "Desktop",
-        DeviceKind::Desktop,
-        &[g7link_core::MIRROR_VIEW, g7link_core::MIRROR_LISTEN],
-    )
-    .await;
+    let mut pc =
+        device_with("Desktop", DeviceKind::Desktop, &[g7link_core::MIRROR_VIEW, g7link_core::MIRROR_LISTEN])
+            .await;
     let mut phone = device_with(
         "Pixel",
         DeviceKind::Phone,
-        &[
-            g7link_core::MIRROR_CAPTURE,
-            g7link_core::MIRROR_INPUT,
-            g7link_core::MIRROR_AUDIO_PLAYBACK,
-        ],
+        &[g7link_core::MIRROR_CAPTURE, g7link_core::MIRROR_INPUT, g7link_core::MIRROR_AUDIO_PLAYBACK],
     )
     .await;
     pair_qr(&mut pc, &mut phone).await;
@@ -2119,8 +2086,7 @@ async fn the_phone_screen_streams_to_the_pc() {
 
     // The user agreed: the phone streams.
     let stream = Arc::new(with_timeout("open", phone.node.mirror_open(pc_id)).await.unwrap());
-    let config =
-        g7link_core::MirrorConfig { codec: "h264".into(), width: 1080, height: 2400, session: 0 };
+    let config = g7link_core::MirrorConfig { codec: "h264".into(), width: 1080, height: 2400, session: 0 };
     let sender = stream.clone();
     let sent = tokio::task::spawn_blocking(move || {
         [
@@ -2142,11 +2108,8 @@ async fn the_phone_screen_streams_to_the_pc() {
 
     // And its sound, on a stream of its own.
     let sound = Arc::new(with_timeout("open sound", phone.node.mirror_open_audio(pc_id)).await.unwrap());
-    let format = g7link_core::MirrorAudioConfig {
-        codec: g7link_core::MIRROR_PCM.into(),
-        rate: 48_000,
-        channels: 2,
-    };
+    let format =
+        g7link_core::MirrorAudioConfig { codec: g7link_core::MIRROR_PCM.into(), rate: 48_000, channels: 2 };
     let sender = sound.clone();
     let sent = tokio::task::spawn_blocking(move || {
         [
@@ -2339,8 +2302,7 @@ async fn phone_apps_open_in_windows_of_their_own() {
 async fn the_pc_reads_and_sends_texts_through_the_phone() {
     let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::SMS_SHOW]).await;
     let mut phone =
-        device_with("Pixel", DeviceKind::Phone, &[g7link_core::SMS_READ, g7link_core::SMS_SEND])
-            .await;
+        device_with("Pixel", DeviceKind::Phone, &[g7link_core::SMS_READ, g7link_core::SMS_SEND]).await;
     pair_qr(&mut pc, &mut phone).await;
     let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
 
@@ -2381,12 +2343,9 @@ async fn the_pc_reads_and_sends_texts_through_the_phone() {
 async fn calls_show_on_the_pc_which_can_answer_them() {
     use g7link_core::{CallCommand, CallState};
     let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CALLS_SHOW]).await;
-    let mut phone = device_with(
-        "Pixel",
-        DeviceKind::Phone,
-        &[g7link_core::CALLS_STATE, g7link_core::CALLS_CONTROL],
-    )
-    .await;
+    let mut phone =
+        device_with("Pixel", DeviceKind::Phone, &[g7link_core::CALLS_STATE, g7link_core::CALLS_CONTROL])
+            .await;
     pair_qr(&mut pc, &mut phone).await;
     let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
     let ringing = CallState {
@@ -2674,11 +2633,7 @@ async fn call_log_and_dial_work_and_respect_permissions_and_toggles() {
         .node
         .update_power(
             PowerLevel::NotApplicable,
-            vec![
-                "media.control".into(),
-                g7link_core::CALLS_LOG.into(),
-                g7link_core::CALLS_DIAL.into(),
-            ],
+            vec!["media.control".into(), g7link_core::CALLS_LOG.into(), g7link_core::CALLS_DIAL.into()],
         )
         .await;
     wait_for(&mut pc, "call.dial unlocked", |e| match e {
@@ -4465,8 +4420,7 @@ async fn mms_image_attachments_send_over_sms_service() {
 
     let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::SMS_SHOW]).await;
     let mut phone =
-        device_with("Pixel", DeviceKind::Phone, &[g7link_core::SMS_READ, g7link_core::SMS_SEND])
-            .await;
+        device_with("Pixel", DeviceKind::Phone, &[g7link_core::SMS_READ, g7link_core::SMS_SEND]).await;
     pair_qr(&mut pc, &mut phone).await;
     let phone_id = phone.node.device_id();
 
@@ -4842,9 +4796,7 @@ async fn a_capture_the_pc_never_asked_for_isnt_saved() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn data_retention_counts_and_clear_all_local_data_preserves_pairing_and_settings() {
-    use g7link_core::{
-        Notification, NotificationAction, NotificationChatMessage, NotificationConversation,
-    };
+    use g7link_core::{Notification, NotificationAction, NotificationChatMessage, NotificationConversation};
 
     let mut pc = device_with("pc", DeviceKind::Desktop, &["notify.show", "clip.write"]).await;
     let mut phone = device_with("phone", DeviceKind::Phone, &["notify.mirror", "notify.reply"]).await;
@@ -4853,10 +4805,7 @@ async fn data_retention_counts_and_clear_all_local_data_preserves_pairing_and_se
 
     // Configure non-default retention and a device toggle on PC.
     pc.node
-        .set_timeline_retention(g7link_core::timeline::TimelineRetention {
-            max_days: 30,
-            max_entries: 5000,
-        })
+        .set_timeline_retention(g7link_core::timeline::TimelineRetention { max_days: 30, max_entries: 5000 })
         .unwrap();
     pc.node.set_device_toggle(phone_id, "clipboard", true).unwrap();
 
@@ -5872,13 +5821,9 @@ async fn usb_transport_carries_features_when_wifi_unavailable() {
         &["clip.write", g7link_core::MIRROR_CAPTURE],
     )
     .await;
-    let mut pc = start_usb_device(
-        "Desktop USB",
-        DeviceKind::Desktop,
-        None,
-        &["clip.write", g7link_core::MIRROR_VIEW],
-    )
-    .await;
+    let mut pc =
+        start_usb_device("Desktop USB", DeviceKind::Desktop, None, &["clip.write", g7link_core::MIRROR_VIEW])
+            .await;
     let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
 
     let usb_port = phone.node.usb_port().expect("phone USB TCP listener");
@@ -6643,8 +6588,7 @@ async fn play_on_phone_offers_a_video_file_the_phone_reads_in_ranges() {
     use g7link_core::{MEDIA_STREAM, MEDIA_WATCH, MEDIA_WATCH_MAX_READ};
 
     let mut pc = device_with("Desktop", DeviceKind::Desktop, &[MEDIA_STREAM]).await;
-    let mut phone =
-        device_with("Pixel", DeviceKind::Phone, &[MEDIA_WATCH, g7link_core::MIRROR_VIEW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[MEDIA_WATCH, g7link_core::MIRROR_VIEW]).await;
     pair_qr(&mut pc, &mut phone).await;
     let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
 
@@ -6696,8 +6640,7 @@ async fn play_on_phone_lets_the_phone_watch_only_what_the_pc_offered() {
     use g7link_core::{MEDIA_STREAM, MEDIA_WATCH, MIRROR_SCREEN, MirrorStart};
 
     let mut pc = device_with("Desktop", DeviceKind::Desktop, &[MEDIA_STREAM]).await;
-    let mut phone =
-        device_with("Pixel", DeviceKind::Phone, &[MEDIA_WATCH, g7link_core::MIRROR_VIEW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[MEDIA_WATCH, g7link_core::MIRROR_VIEW]).await;
     pair_qr(&mut pc, &mut phone).await;
     let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
     let watch = |player: &str| MirrorStart {

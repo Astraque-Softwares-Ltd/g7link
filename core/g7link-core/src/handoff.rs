@@ -219,7 +219,7 @@ pub fn address_to_geo_uri(address: &str) -> String {
 ///   -> `("Demo Video · 1:30", "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90")`
 /// - `https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90` without media title
 ///   -> `("YouTube · 1:30", "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90")`
-/// - `https://g7.astraque.io/timeline` -> `("g7link.app/timeline", "https://g7.astraque.io/timeline")`
+/// - `https://g7.astraque.io/timeline` -> `("g7.astraque.io/timeline", "https://g7.astraque.io/timeline")`
 #[must_use]
 pub fn timeline_link_title_and_detail(url: &str, media_title: Option<&str>) -> (String, String) {
     let raw = url.trim().to_owned();
@@ -697,7 +697,7 @@ mod tests {
         assert_eq!(v_site_detail, "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90");
 
         let (w_title, w_detail) = timeline_link_title_and_detail("https://g7.astraque.io/timeline", None);
-        assert_eq!(w_title, "g7link.app/timeline");
+        assert_eq!(w_title, "g7.astraque.io/timeline");
         assert_eq!(w_detail, "https://g7.astraque.io/timeline");
     }
 }

@@ -400,9 +400,7 @@ fn feed_update(found: &feed::Feed, current: &str) -> Option<Update> {
 /// a file name under %TEMP%: a plain name only, never a path.
 fn is_installer_name(name: &str, suffix: &str) -> bool {
     name.ends_with(suffix)
-        && (name.starts_with("G7Link-")
-            || name.starts_with("g7link_")
-            || name.starts_with("g7link-"))
+        && (name.starts_with("G7Link-") || name.starts_with("g7link_") || name.starts_with("g7link-"))
         && feed::is_plain_name(name)
 }
 
@@ -1371,33 +1369,37 @@ mod tests {
             assets: vec![
                 Asset {
                     name: "G7Link-9.0.0-x64-setup.exe".into(),
-                    browser_download_url: "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup"
-                        .into(),
+                    browser_download_url:
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup".into(),
                 },
                 Asset {
                     name: "G7Link-9.0.0-arm64-setup.exe".into(),
                     browser_download_url:
-                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup-arm64".into(),
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup-arm64"
+                            .into(),
                 },
                 Asset {
                     name: "G7Link-9.0.0-x86_64.AppImage".into(),
                     browser_download_url:
-                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/appimage-x64".into(),
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/appimage-x64"
+                            .into(),
                 },
                 Asset {
                     name: "g7link_9.0.0_amd64.deb".into(),
                     browser_download_url:
-                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/deb-amd64".into(),
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/deb-amd64"
+                            .into(),
                 },
                 Asset {
                     name: "g7link-9.0.0-1.x86_64.rpm".into(),
                     browser_download_url:
-                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/rpm-x86_64".into(),
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/rpm-x86_64"
+                            .into(),
                 },
                 Asset {
                     name: "SHA256SUMS.txt".into(),
-                    browser_download_url: "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/sums"
-                        .into(),
+                    browser_download_url:
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/sums".into(),
                 },
             ],
         }

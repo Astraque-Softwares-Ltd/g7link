@@ -327,8 +327,7 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
                     let items = node.send_queue(None).unwrap_or_default();
                     host.hub.update(|s| s.set_send_queue(items));
                 }
-                if let g7link_core::NodeEvent::QueueDroppedOnUnpair { peer_name, dropped_count, .. } =
-                    &event
+                if let g7link_core::NodeEvent::QueueDroppedOnUnpair { peer_name, dropped_count, .. } = &event
                     && *dropped_count > 0
                 {
                     crate::bridge::app::show_message(tr!(
@@ -446,32 +445,17 @@ mod tests {
         assert!(!caps.contains(&"mirror.view".into()), "macOS must not advertise mirror.view");
         assert!(!caps.contains(&"mirror.listen".into()), "macOS must not advertise mirror.listen");
         assert!(!caps.contains(&"media.control".into()), "macOS must not advertise media.control");
-        assert!(
-            !caps.contains(&g7link_core::STORAGE_MOUNT.into()),
-            "macOS must not advertise storage.mount"
-        );
-        assert!(
-            !caps.contains(&g7link_core::STORAGE_READ.into()),
-            "macOS must not advertise storage.read"
-        );
-        assert!(
-            !caps.contains(&g7link_core::STORAGE_WRITE.into()),
-            "macOS must not advertise storage.write"
-        );
+        assert!(!caps.contains(&g7link_core::STORAGE_MOUNT.into()), "macOS must not advertise storage.mount");
+        assert!(!caps.contains(&g7link_core::STORAGE_READ.into()), "macOS must not advertise storage.read");
+        assert!(!caps.contains(&g7link_core::STORAGE_WRITE.into()), "macOS must not advertise storage.write");
         assert!(
             !caps.contains(&g7link_core::WEBCAM_VIRTUAL.into()),
             "macOS must not advertise camera.virtual"
         );
         assert!(!caps.contains(&g7link_core::PC_AUDIO.into()), "macOS must not advertise pc.audio");
         assert!(!caps.contains(&g7link_core::RECORDER.into()), "macOS must not advertise recorder");
-        assert!(
-            !caps.contains(&g7link_core::DECK_ACTIONS.into()),
-            "macOS must not advertise deck.actions"
-        );
-        assert!(
-            !caps.contains(&g7link_core::MEDIA_STREAM.into()),
-            "macOS must not advertise media.stream"
-        );
+        assert!(!caps.contains(&g7link_core::DECK_ACTIONS.into()), "macOS must not advertise deck.actions");
+        assert!(!caps.contains(&g7link_core::MEDIA_STREAM.into()), "macOS must not advertise media.stream");
         assert!(!caps.contains(&g7link_core::MIC_LISTEN.into()), "macOS must not advertise mic.listen");
         assert!(!caps.contains(&g7link_core::PC_WAKE.into()), "macOS must not advertise pc.wake");
 

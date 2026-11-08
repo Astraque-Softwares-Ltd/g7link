@@ -804,10 +804,7 @@ mod imp {
         let body = if no_all_files_access {
             tr!("Storage", "On the phone, allow All files access for G7 Link.")
         } else {
-            tr!(
-                "Storage",
-                "On the phone, turn on Browse this phone's storage in File Explorer in G7 Link."
-            )
+            tr!("Storage", "On the phone, turn on Browse this phone's storage in File Explorer in G7 Link.")
         };
         crate::win::toast::show(crate::win::toast::Toast {
             device: crate::transfers::TOAST_GROUP.into(),
@@ -1131,9 +1128,7 @@ mod imp {
                 Ok(()) => STATUS_SUCCESS,
                 Err(g7link_core::Error::Offline) => STATUS_CLOUD_NETWORK_UNAVAILABLE,
                 // With neither All files access nor a folder picked, the phone can't.
-                Err(g7link_core::Error::Denied | g7link_core::Error::Unsupported) => {
-                    STATUS_ACCESS_DENIED
-                }
+                Err(g7link_core::Error::Denied | g7link_core::Error::Unsupported) => STATUS_ACCESS_DENIED,
                 // Already gone from the phone: deleted, as asked.
                 Err(g7link_core::Error::NotFound) => STATUS_SUCCESS,
                 Err(e) => {
@@ -1486,10 +1481,7 @@ mod imp {
             let root = Path::new(r"C:\Users\alice\G7Link\Pixel 9");
             assert_eq!(relative_path_under_root(root, root), Some(String::new()));
             assert_eq!(
-                relative_path_under_root(
-                    root,
-                    Path::new(r"C:\Users\alice\G7Link\Pixel 9\DCIM\Camera\a.jpg")
-                ),
+                relative_path_under_root(root, Path::new(r"C:\Users\alice\G7Link\Pixel 9\DCIM\Camera\a.jpg")),
                 Some("DCIM/Camera/a.jpg".into())
             );
             assert_eq!(

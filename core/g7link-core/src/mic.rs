@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
-use iroh::endpoint::{RecvStream, SendStream, VarInt};
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, PacketKind,
     messages::{MirrorAudioConfig, StreamHeader, mic, types},
     read_video_packet, write_frame,
 };
+use iroh::endpoint::{RecvStream, SendStream, VarInt};
 
 use crate::{Error, MirrorStream, Result, events::NodeEvent, node::Shared, session::Session};
 

@@ -11,7 +11,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use iroh::endpoint::{ReadError, RecvStream, SendStream, VarInt, WriteError};
 pub use g7link_protocol::messages::{RecordingMarker, files::RECORDER};
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
@@ -21,6 +20,7 @@ use g7link_protocol::{
     },
     read_frame, write_frame,
 };
+use iroh::endpoint::{ReadError, RecvStream, SendStream, VarInt, WriteError};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 

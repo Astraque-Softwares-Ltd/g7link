@@ -11,11 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::endpoint::{Connection, RecvStream, SendStream, VarInt};
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION, ProtocolError, messages::*,
     negotiate_version, read_frame, write_frame,
 };
+use iroh::endpoint::{Connection, RecvStream, SendStream, VarInt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 

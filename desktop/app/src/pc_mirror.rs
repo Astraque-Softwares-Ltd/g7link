@@ -278,10 +278,7 @@ mod imp {
 
     pub fn on_event(event: &g7link_core::NodeEvent) {
         match event {
-            g7link_core::NodeEvent::LinkChanged {
-                device,
-                link: g7link_core::LinkState::Offline { .. },
-            }
+            g7link_core::NodeEvent::LinkChanged { device, link: g7link_core::LinkState::Offline { .. } }
             | g7link_core::NodeEvent::DeviceRemoved(device) => {
                 stop_for(device);
             }

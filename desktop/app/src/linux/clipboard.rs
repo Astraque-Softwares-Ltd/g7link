@@ -1229,8 +1229,7 @@ mod tests {
         );
         assert_eq!(from_file_uri("# comment line"), None);
 
-        let paths =
-            vec![PathBuf::from("/tmp/g7link_a.txt"), PathBuf::from("/tmp/g7link dir/b café.png")];
+        let paths = vec![PathBuf::from("/tmp/g7link_a.txt"), PathBuf::from("/tmp/g7link dir/b café.png")];
         let list = format_uri_list(&paths);
         assert_eq!(parse_uri_list(&list), paths);
 

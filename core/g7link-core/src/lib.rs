@@ -64,19 +64,6 @@ pub use events::{
     ConnectionPath, DiscoveredDevice, LinkState, NodeEvent, PairedDevice, PairingEvent, PairingFailure,
 };
 pub use features::{CapabilityMatrix, FeatureState};
-pub use handoff::{
-    HandoffKind, HandoffLink, address_to_geo_uri, extract_handoff_link, format_video_timestamp,
-    geo_to_maps_https, is_safe_handoff_document, parse_video_timestamp, timeline_link_title_and_detail,
-    with_video_timestamp,
-};
-pub use identity::{KeyProtector, PlainKeyProtector, default_protector, install_id_from};
-pub use localsend::{
-    LOCALSEND_DEFAULT_PORT, LOCALSEND_MULTICAST_ADDR, LOCALSEND_PROTOCOL_VERSION, LocalSendPeer,
-    peer_device_id as localsend_peer_device_id,
-};
-pub use media::{MediaAction, MediaError};
-pub use mic::{MicSink, TOGGLE as MIC_TOGGLE};
-pub use mirror::{MirrorSend, MirrorSink, MirrorStream, PC_MIRROR_TOGGLE};
 pub use g7link_protocol::messages::clip::{
     IMAGE_TYPES as CLIP_IMAGE_TYPES, MAX_IMAGE_BYTES as CLIP_MAX_IMAGE_BYTES,
 };
@@ -140,6 +127,19 @@ pub use g7link_protocol::{
     },
     pairing::PairingUri,
 };
+pub use handoff::{
+    HandoffKind, HandoffLink, address_to_geo_uri, extract_handoff_link, format_video_timestamp,
+    geo_to_maps_https, is_safe_handoff_document, parse_video_timestamp, timeline_link_title_and_detail,
+    with_video_timestamp,
+};
+pub use identity::{KeyProtector, PlainKeyProtector, default_protector, install_id_from};
+pub use localsend::{
+    LOCALSEND_DEFAULT_PORT, LOCALSEND_MULTICAST_ADDR, LOCALSEND_PROTOCOL_VERSION, LocalSendPeer,
+    peer_device_id as localsend_peer_device_id,
+};
+pub use media::{MediaAction, MediaError};
+pub use mic::{MicSink, TOGGLE as MIC_TOGGLE};
+pub use mirror::{MirrorSend, MirrorSink, MirrorStream, PC_MIRROR_TOGGLE};
 pub use node::{DataRetentionCounts, Node, PeerDiagnostics};
 pub use notifications::{NotificationError, SHOW as NOTIFY_SHOW};
 pub use palette::{

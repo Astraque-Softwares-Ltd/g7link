@@ -9,14 +9,6 @@ use std::{
     time::Duration,
 };
 
-use iroh::{
-    Endpoint, EndpointAddr, RelayMode,
-    address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver},
-    endpoint::{Connection, PortmapperConfig, QuicTransportConfig, VarInt, presets},
-    endpoint_info::{EndpointInfo, UserData},
-    protocol::{AcceptError, ProtocolHandler, Router},
-};
-use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use g7link_protocol::{
     ALPN_PAIR, ALPN_SESSION, DeviceId, Envelope, ErrorCode,
     messages::{
@@ -25,6 +17,14 @@ use g7link_protocol::{
     },
     pairing::PairingUri,
 };
+use iroh::{
+    Endpoint, EndpointAddr, RelayMode,
+    address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver},
+    endpoint::{Connection, PortmapperConfig, QuicTransportConfig, VarInt, presets},
+    endpoint_info::{EndpointInfo, UserData},
+    protocol::{AcceptError, ProtocolHandler, Router},
+};
+use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use tokio::sync::{Notify, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -4584,8 +4584,8 @@ async fn deliver_queued_rpc(
 mod away_tests {
     use super::*;
     use crate::config::NoopPlatform;
-    use iroh::Watcher as _;
     use g7link_protocol::messages::{DeviceInfo, DeviceKind};
+    use iroh::Watcher as _;
 
     async fn node(dir: &tempfile::TempDir, away: bool) -> Node {
         let mut config = NodeConfig::new(

@@ -426,13 +426,7 @@ pub fn remove(installed: &Path, mut on_event: impl FnMut(Event)) -> Outcome {
     } else {
         crate::win::elevated::run_elevated(
             Path::new("rm"),
-            &[
-                "-rf",
-                "--",
-                "/opt/g7link",
-                "/usr/local/bin/g7link-desktop",
-                "/usr/bin/g7link-desktop",
-            ],
+            &["-rf", "--", "/opt/g7link", "/usr/local/bin/g7link-desktop", "/usr/bin/g7link-desktop"],
         )
     };
     match res {

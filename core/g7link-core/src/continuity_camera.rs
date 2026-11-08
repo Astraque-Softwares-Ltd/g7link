@@ -5,7 +5,6 @@
 
 use std::{sync::Arc, time::Duration};
 
-use iroh::endpoint::{RecvStream, SendStream};
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
     messages::{
@@ -14,6 +13,7 @@ use g7link_protocol::{
     },
     read_frame, write_frame,
 };
+use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::{Error, NodeEvent, Result, error::net, node::Shared, session::Session};
 

@@ -5,12 +5,12 @@
 
 use std::{sync::Arc, time::Duration};
 
-use iroh::endpoint::{RecvStream, SendStream};
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
     messages::{ClipImage, ClipSet, StreamHeader, clip, types},
     read_frame, write_frame,
 };
+use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::{Error, Result, error::net, events::NodeEvent, node::Shared, session::Session};
 

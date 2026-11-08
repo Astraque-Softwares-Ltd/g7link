@@ -578,13 +578,8 @@ fn encode_pcm_to_aac(rate: u32, channels: u8, pcm_s16le: &[u8]) -> Option<Encode
             error.as_mut_ptr(),
             error.len(),
         ) < 0
-            || g7link_video_aac_encoder_send(
-                guard.0,
-                std::ptr::null(),
-                0,
-                error.as_mut_ptr(),
-                error.len(),
-            ) < 0
+            || g7link_video_aac_encoder_send(guard.0, std::ptr::null(), 0, error.as_mut_ptr(), error.len())
+                < 0
         {
             return None;
         }

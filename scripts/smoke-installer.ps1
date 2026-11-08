@@ -23,7 +23,7 @@ if (-not $Setup -or -not (Test-Path $Setup)) { throw "no setup installer found t
 $dir = Join-Path $env:ProgramFiles 'G7Link'
 $exe = Join-Path $dir 'g7link-desktop.exe'
 $uninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\G7Link'
-$shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\G7Link.lnk'
+$shortcut = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\G7 Link.lnk'
 $desktopShortcut = Join-Path $env:PUBLIC 'Desktop\G7 Link.lnk'
 $data = if ($env:RUNNER_TEMP) { Join-Path $env:RUNNER_TEMP 'g7link-smoke' } else { Join-Path $env:TEMP 'g7link-smoke' }
 

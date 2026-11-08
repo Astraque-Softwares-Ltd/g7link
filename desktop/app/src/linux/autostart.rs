@@ -178,9 +178,7 @@ mod tests {
         assert!(is_installed(Path::new("/usr/bin/g7link-desktop")));
         assert!(is_installed(Path::new("/usr/local/bin/g7link-desktop")));
         assert!(is_installed(Path::new("/opt/g7link/g7link-desktop")));
-        assert!(is_installed_location(Path::new(
-            "/home/user/.local/share/g7link-app/g7link-desktop"
-        )));
+        assert!(is_installed_location(Path::new("/home/user/.local/share/g7link-app/g7link-desktop")));
         assert!(is_installed_location(Path::new("/home/user/.local/bin/g7link-desktop")));
         assert!(!is_installed(Path::new("/home/user/repo/target/debug/g7link-desktop")));
         assert!(!is_installed(Path::new("/home/user/repo/target/release/g7link-desktop")));
@@ -203,9 +201,6 @@ mod tests {
     #[test]
     fn command_escapes_desktop_entry_special_characters() {
         let exe = Path::new("/opt/my \"quoted\" $dir`1`\\bin%20/g7link-desktop");
-        assert_eq!(
-            command(exe),
-            r#""/opt/my \"quoted\" \$dir\`1\`\\bin%%20/g7link-desktop" --minimized"#
-        );
+        assert_eq!(command(exe), r#""/opt/my \"quoted\" \$dir\`1\`\\bin%%20/g7link-desktop" --minimized"#);
     }
 }

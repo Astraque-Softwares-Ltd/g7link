@@ -838,7 +838,10 @@ mod tests {
         let positives = [
             ("https://g7.astraque.io/docs?tab=1#top", "https://g7.astraque.io/docs?tab=1#top"),
             ("  http://example.com/path/to/page  ", "http://example.com/path/to/page"),
-            ("HTTPS://github.com/Astraque-Softwares-Ltd/g7link", "https://github.com/Astraque-Softwares-Ltd/g7link"),
+            (
+                "HTTPS://github.com/Astraque-Softwares-Ltd/g7link",
+                "https://github.com/Astraque-Softwares-Ltd/g7link",
+            ),
             (
                 "www.wikipedia.org/wiki/Rust_(programming_language)",
                 "https://www.wikipedia.org/wiki/Rust_(programming_language)",

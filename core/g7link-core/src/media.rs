@@ -12,7 +12,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use iroh::endpoint::{RecvStream, SendStream};
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
     messages::{
@@ -21,6 +20,7 @@ use g7link_protocol::{
     },
     read_frame, write_frame,
 };
+use iroh::endpoint::{RecvStream, SendStream};
 
 use crate::{Error, Result, events::NodeEvent, node::Shared, session::Session};
 

@@ -64,7 +64,7 @@ mod tests {
         for size in [16, 20, 24, 32, 40, 48, 64, 256, 512] {
             let image = render(size);
             assert_eq!(image.len(), size * size * 4);
-            assert!(image.chunks_exact(4).any(|px| px[3] == 255), "{size} has solid pixels");
+            assert!(image.as_chunks::<4>().0.iter().any(|px| px[3] == 255), "{size} has solid pixels");
         }
     }
 }

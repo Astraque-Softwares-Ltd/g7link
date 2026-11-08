@@ -19,15 +19,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::{
-    EndpointAddr,
-    endpoint::{Connection, ConnectionError, RecvStream, SendStream, VarInt},
-};
 use g7link_protocol::{
     ALPN_PAIR, DeviceId, Envelope, ErrorCode,
     messages::*,
     pairing::{self as proto, NONCE_LEN, PairingUri, SECRET_LEN},
     read_frame, write_frame,
+};
+use iroh::{
+    EndpointAddr,
+    endpoint::{Connection, ConnectionError, RecvStream, SendStream, VarInt},
 };
 use tokio::sync::oneshot;
 

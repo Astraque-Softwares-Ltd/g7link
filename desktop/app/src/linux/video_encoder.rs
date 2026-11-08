@@ -19,11 +19,7 @@ unsafe extern "C" {
         capacity: usize,
     ) -> *mut c_void;
     fn g7link_video_encoder_destroy(encoder: *mut c_void);
-    fn g7link_video_encoder_next_device(
-        encoder: *mut c_void,
-        error: *mut c_char,
-        capacity: usize,
-    ) -> bool;
+    fn g7link_video_encoder_next_device(encoder: *mut c_void, error: *mut c_char, capacity: usize) -> bool;
     fn g7link_video_encoder_backend(encoder: *const c_void) -> *const c_char;
     fn g7link_video_encoder_send(
         encoder: *mut c_void,

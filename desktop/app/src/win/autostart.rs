@@ -91,9 +91,7 @@ mod tests {
 
     #[test]
     fn builds_are_not_installed_copies() {
-        assert!(!is_installed(Path::new(
-            r"C:\Users\me\src\g7link\target\release\g7link-desktop.exe"
-        )));
+        assert!(!is_installed(Path::new(r"C:\Users\me\src\g7link\target\release\g7link-desktop.exe")));
         if let Ok(dir) = std::env::var("ProgramFiles") {
             assert!(is_installed(&Path::new(&dir).join("G7Link").join("g7link-desktop.exe")));
         }
