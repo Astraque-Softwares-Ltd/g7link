@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `g7link_vcam`: Windows 11 Media Foundation virtual camera media source
-//! COM DLL and shared-memory frame transport (`docs/protocol/webcam.md`).
-
-#![allow(linker_messages)]
+//! `g7link_vcam`: shared-memory frame transport for the virtual camera
+//! (`docs/protocol/webcam.md`).
 
 pub mod shm;
 
@@ -10,17 +8,6 @@ pub use shm::{
     DEFAULT_MAPPING_NAME, LOCAL_MAPPING_NAME, MAX_FRAME_BYTES, MAX_HEIGHT, MAX_WIDTH, SharedFrameMapping,
     bgrx_to_nv12, fit_bgrx_aspect, render_placeholder_bgrx,
 };
-
-/// CLSID of the G7 Link Virtual Camera Media Foundation media source:
-/// `{8E6C3B74-5D4A-4B9E-9A12-7C8F1E2D3A40}`.
-
-/// Standard COM DLL entry point returning an `IClassFactory` for
-/// [`CLSID_G7LINK_VCAM`].
-///
-/// # Safety
-/// `rclsid`, `riid`, and `ppv` must be valid pointers as specified by COM.
-
-/// Standard COM DLL unload check.
 
 #[cfg(test)]
 #[allow(unsafe_code)]

@@ -237,9 +237,6 @@ pub fn show_in_folder(path: &Path) {
     }
 }
 
-/// What Explorer needs to select `path`: `/select,"C:\folder\file"`, with the
-/// quotes around the path only and backslashes (with `/` it opens the Desktop).
-
 /// A Windows notification when files from a phone or LocalSend peer are requested or saved.
 pub fn on_event(event: &NodeEvent) {
     let NodeEvent::Transfer(t) = event else { return };

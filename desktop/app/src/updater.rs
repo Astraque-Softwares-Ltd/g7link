@@ -132,12 +132,7 @@ pub fn set_channel(channel: Channel) {
     }
 }
 
-/// Where the app tells the update task which channel to follow.
-
 fn write_service_channel(_channel: Channel) {}
-
-/// The channel for the update task: any user may set it, and it only picks
-/// between this repository's own builds, which the task checks as always.
 
 fn read_service_channel() -> Option<Channel> {
     None
@@ -373,8 +368,6 @@ fn is_installer_name(name: &str, suffix: &str) -> bool {
         && feed::is_plain_name(name)
 }
 
-/// The files this install takes, best first.
-
 fn install_suffixes() -> &'static [&'static str] {
     linux_suffixes(detect_linux_install_kind())
 }
@@ -434,9 +427,6 @@ fn rpm_installed() -> bool {
         .status()
         .is_ok_and(|s| s.success())
 }
-
-/// The release as an update, if it's a newer published one with an
-/// installer for this architecture and its sums.
 
 fn newer_release(release: Release, current: &str) -> Option<Update> {
     newer_release_linux_kind(release, current, detect_linux_install_kind())
@@ -520,8 +510,6 @@ fn quiet() -> bool {
     !(mirroring || transferring || calling || webcam || crate::pc_mirror::is_active())
 }
 
-/// Whether the installer registered [`TASK`] on this PC.
-
 fn task_registered() -> bool {
     false
 }
@@ -584,10 +572,6 @@ impl std::fmt::Display for StageError {
         }
     }
 }
-
-/// Where the app leaves a downloaded installer for the task:
-/// `%ProgramData%\G7Link\updates`. Anyone may write here; the task only
-/// runs a copy that matches the release's own sums.
 
 #[allow(unsafe_code)]
 fn current_euid() -> u32 {
@@ -693,15 +677,6 @@ fn install_with_task(shown: bool) -> Result<(), String> {
     crate::bridge::app::request_quit();
     Ok(())
 }
-
-/// A hidden PowerShell that waits (up to ten minutes) until something other
-/// than `version`, the one running now, is installed and the installer has
-/// finished, then opens the app again. Not a particular new version: the task
-/// installs the latest, which can be newer than the one this copy knew about.
-
-/// PowerShell running `script` with no window, and still running after this app
-/// quits. Not `DETACHED_PROCESS`: without a console PowerShell exits at once,
-/// reporting success, and never runs the script.
 
 fn spawn_relauncher(exe: &Path, version: &str, shown: bool) -> Result<(), String> {
     let exe =
@@ -903,10 +878,6 @@ fn download_verified(update: &Update, dir: &Path) -> Result<PathBuf, String> {
     }
     Ok(path)
 }
-
-/// The installer with Windows' administrator prompt (no update task): a
-/// fresh copy of the download in this user's temp folder, checked again, so
-/// what runs is what was checked.
 
 /// Root-executed shell script that copies a user-staged `.deb` into a
 /// root-owned `0700` directory (`/var/cache/g7link-update`), verifies its
@@ -1218,8 +1189,6 @@ mod tests {
             ],
         }
     }
-
-    /// Really starts it, because the way it's started decides if the script runs.
 
     #[test]
     fn the_relauncher_waits_for_another_version_then_opens_the_app() {

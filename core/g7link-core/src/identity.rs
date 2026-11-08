@@ -43,7 +43,7 @@ impl KeyProtector for PlainKeyProtector {
 
 /// The best protector available on this platform.
 pub fn default_protector() -> Arc<dyn KeyProtector> {
-    { Arc::new(PlainKeyProtector) }
+    Arc::new(PlainKeyProtector)
 }
 
 /// Loads the device key from `dir`, creating and saving a new one on first
@@ -51,20 +51,7 @@ pub fn default_protector() -> Arc<dyn KeyProtector> {
 pub(crate) fn load_or_create(dir: &Path, protector: &dyn KeyProtector) -> Result<SecretKey> {
     let path = dir.join(FILE_NAME);
     match fs::read(&path) {
-        Ok(bytes) => {
-            let key = match decode(&bytes, protector) {
-                Ok(key) => key,
-                // A key written by an earlier macOS build, before this
-                // platform had a protector (method 0), is upgraded in place so
-                // the device keeps its identity and doesn't have to pair again.
-                // Only macOS does this. On Windows a method-0 file must stay
-                // refused: re-sealing one under DPAPI would adopt a plain key
-                // dropped into the data folder as this PC's identity, and
-                // whoever wrote it would hold the private key.
-                Err(e) => return Err(e),
-            };
-            Ok(key)
-        }
+        Ok(bytes) => decode(&bytes, protector),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let key = SecretKey::generate();
             if protector.id() == 0 {
@@ -180,9 +167,6 @@ mod tests {
         assert!(!file.windows(raw.len()).any(|w| w == raw), "plaintext key found on disk");
     }
 
-    /// The in-place upgrade is macOS-only (see `load_or_create`), so this test
-    /// is too: on Windows and Linux the same file must stay refused.
-
     /// Windows and Linux must keep refusing a method-`0` file. Re-sealing it
     /// under the platform protector would turn a plain key dropped into the
     /// data folder into this device's trusted identity.
@@ -216,11 +200,6 @@ mod tests {
         assert!(!a.contains("9774d56d682e549c"), "the raw ID never appears");
         assert_eq!(install_id_from("  "), None);
     }
-
-    /// The real macOS path: a fresh install writes a Keychain-sealed key, the
-    /// Keychain item exists, and the file alone doesn't contain the key.
-
-    /// Upgrading an install that stored the key unsealed (method 0).
 
     #[test]
     fn key_file_has_0600_permissions_on_unix() {

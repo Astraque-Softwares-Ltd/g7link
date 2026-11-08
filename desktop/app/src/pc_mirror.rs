@@ -870,11 +870,6 @@ mod imp {
         }
     }
 
-    /// Captures the primary desktop monitor into `bgra` scaled to `(dst_w, dst_h)`,
-    /// with the pointer, and returns the current physical screen dimensions
-    /// `(src_w, src_h)`. With `region` (physical screen pixels), captures only
-    /// that, without the pointer (Play on phone), and returns its size.
-
     #[repr(C)]
     struct XWindowAttributes {
         x: std::ffi::c_int,
@@ -2081,10 +2076,6 @@ mod imp {
             assert!(produced_packets > 0, "encoder must emit H.264 access units");
             assert!(decoded_any, "decoder must reconstruct at least one frame from ScreenEncoder");
         }
-
-        /// With a Chromium browser showing a video on a page whose title has
-        /// `G7LINK_TEST_TAB` in it, in view: captures just the video, as
-        /// Play on phone does.
 
         #[test]
         fn keyframes_come_on_request_without_rebuilding_the_encoder() {

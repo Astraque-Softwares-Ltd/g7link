@@ -90,8 +90,6 @@ pub fn format_recording_stem(year: u16, month: u16, day: u16, hour: u16, minute:
     format!("Recording {year:04}-{month:02}-{day:02} {hour:02}.{minute:02}")
 }
 
-/// Base name for a recording saved right now, in local time.
-
 pub fn current_recording_stem() -> String {
     // SAFETY: `libc::time` and `libc::localtime_r` are thread-safe POSIX calls
     // operating on stack-allocated `time_t` and `tm` values.

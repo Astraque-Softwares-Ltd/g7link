@@ -18,46 +18,26 @@ mod imp {
 
     use crate::{core_host, win};
 
-    /// Provider prefix for sync root IDs (`G7 Link!<device_id>`).
-
     /// Difference between Windows FILETIME epoch (1601-01-01) and Unix epoch
     /// (1970-01-01) in 100-nanosecond intervals.
     #[allow(dead_code)]
     const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000;
 
-    /// Cloud file network unavailable NTSTATUS (`STATUS_CLOUD_FILE_NETWORK_UNAVAILABLE`).
-
-    /// Cloud file unsuccessful / cancelled operation NTSTATUS (`STATUS_CLOUD_FILE_UNSUCCESSFUL`).
-
-    /// Chunk size for hydrating files via `CF_OPERATION_TYPE_TRANSFER_DATA` (must be
-    /// a multiple of 4096 bytes for non-EOF chunks).
-
-    /// Starts watching paired devices and their `storage` toggles to register or
-    /// unregister File Explorer sync roots.
-
     pub fn start() {
         win::storage::start();
     }
-
-    /// Triggers a reconciliation of active sync roots (e.g. after a device toggle changes).
 
     pub fn sync() {
         win::storage::sync();
     }
 
-    /// Handles core events (`StorageChanged`, `DeviceRemoved`, `LinkChanged`).
-
     pub fn on_event(event: &NodeEvent) {
         win::storage::on_event(event);
     }
 
-    /// Disconnects active sync roots when the desktop app exits.
-
     pub fn shutdown() {
         win::storage::shutdown();
     }
-
-    /// Unregisters all `G7 Link!*` sync roots from Windows (`--uninstall`).
 
     pub fn unregister_all() {
         win::storage::unregister_all();
@@ -171,25 +151,6 @@ mod imp {
         let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
         stripped.trim_end_matches('\\').to_owned()
     }
-
-    /// Clears the phone's folder: its placeholders go, but a file that never
-    /// reached the phone (copied in, or changed and not uploaded) is the
-    /// user's own and stays where it is.
-
-    /// What Explorer is told when the phone couldn't list or read something.
-    /// A refusal (storage access off, or no All files access) isn't a network
-    /// problem: it's "access denied", and G7 Link says what to turn on.
-
-    /// Says on this PC why the phone's folder won't open, at most every ten
-    /// minutes per phone (Explorer asks again for every folder it shows).
-
-    /// Refreshes a folder's placeholders from the phone (`storage.changed` or initial connect).
-
-    /// Watches the sync root directory for files or folders dropped in by the user
-    /// and uploads them to the phone via `storage.write` / `storage.mkdir`.
-
-    /// Checks whether `full_path` is a newly dropped non-placeholder file/folder or
-    /// a modified placeholder that is no longer in sync.
 
     #[cfg(test)]
     mod tests {

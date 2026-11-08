@@ -18,12 +18,6 @@ pub const DEFAULT_MAPPING_NAME: &str = "Global\\G7LinkVcamFrame_v2";
 /// The same mapping in the caller's own session, when the global one can't be
 /// created (the media source running in-process, as in tests).
 pub const LOCAL_MAPPING_NAME: &str = "Local\\G7LinkVcamFrame_v2";
-/// Wide-string mapping name for local v2 virtual camera frame transport.
-
-/// Who may use the global mapping: the system, the Frame Server's
-/// LocalService account and administrators fully, signed-in (interactive)
-/// users read and write (the app), nobody else.
-
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 pub const MAX_FRAME_BYTES: usize = (MAX_WIDTH as usize) * (MAX_HEIGHT as usize) * 4;
@@ -57,8 +51,6 @@ struct CachedLiveFrame {
     timestamp_us: u64,
     bgrx: Vec<u8>,
 }
-
-/// Shared-memory mapping handle and view. Safe to share across threads.
 
 /// Shared-memory mapping file descriptor and mapped view on Unix (`/dev/shm`).
 pub struct SharedFrameMapping {

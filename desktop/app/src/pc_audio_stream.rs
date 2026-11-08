@@ -394,22 +394,9 @@ mod imp {
         Ok(())
     }
 
-    /// Tells [`process_loopback_client`] that Windows has made the client.
-
-    /// A capture of everything the PC plays except G7 Link itself: the phone's
-    /// own sound playing here must not go back to the phone, round and round (#281).
-
-    /// The capture client, its rate, channels and bits per sample: without
-    /// G7 Link's own sound where Windows can (version 2004 and later), or else
-    /// everything the default output plays, as before.
-
     #[cfg(test)]
     mod tests {
         use super::*;
-
-        /// Plays a tone too quiet to hear and checks what each capture picks up:
-        /// everything sees it, the one for Phone as speaker doesn't. Needs a sound
-        /// device, so it runs by hand: `cargo test -- --ignored own_sound`.
 
         #[test]
         fn f32_stereo_to_i16le_clamps_and_encodes_little_endian() {

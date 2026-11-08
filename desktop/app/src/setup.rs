@@ -222,15 +222,9 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// Whether the desktop has G7 Link's shortcut, which setup only adds when
-/// asked to (#102).
-
 pub fn has_desktop_shortcut() -> bool {
     false
 }
-
-/// Installs from `installer` with administrator rights, reporting each step:
-/// into Program Files, or where `placement` says.
 
 /// The installer's switches. NSIS takes `/D=` last and unquoted, spaces and all.
 #[cfg(test)]
@@ -300,11 +294,6 @@ pub fn install(
     }
 }
 
-/// The app installs from a disk image on macOS, not through this setup.
-
-/// Removes the copy in `installed` with administrator rights, then this
-/// user's data.
-
 pub fn remove(installed: &Path, mut on_event: impl FnMut(Event)) -> Outcome {
     on_event(Event::Step(Step::Closing));
     let _ = crate::win::autostart::set_enabled(false);
@@ -354,11 +343,6 @@ pub fn remove(installed: &Path, mut on_event: impl FnMut(Event)) -> Outcome {
     }
 }
 
-/// Removes this user's settings, pairings, history and caches. Received
-/// files, recordings and synced folders live elsewhere and stay.
-/// On macOS the app is removed by moving it to the Trash; this removes this
-/// user's data.
-
 pub fn remove_user_data() {
     let Some(data) = user_data_dir() else { return };
     if let Err(e) = std::fs::remove_dir_all(&data)
@@ -367,8 +351,6 @@ pub fn remove_user_data() {
         tracing::warn!(error = %e, "can't remove all of G7 Link's data");
     }
 }
-
-/// `%LOCALAPPDATA%\G7Link`, the app's default data folder.
 
 fn user_data_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("G7Link"))
@@ -462,10 +444,6 @@ fn progress_file(what: &str) -> PathBuf {
     }
 }
 
-/// Starts the installed app as this user, not elevated. Through Explorer, so
-/// it starts as a fresh process of the shell and inherits nothing from
-/// whatever launched setup.
-
 pub fn open_app(dir: &Path) -> Result<(), String> {
     let app = dir.join(APP_EXE);
     if !app.is_file() {
@@ -480,17 +458,11 @@ pub fn open_app(dir: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// For `--remove` started from the installed folder: carries on from a copy
-/// in a temporary folder, so the installed one can be deleted. `Ok(true)`
-/// when the copy took over and this process should exit.
-
 pub fn hand_over_removal(_installed: &Path) -> Result<bool, String> {
     // On Unix, open executables can be unlinked while running, and `installed`
     // may be `/usr/bin` which must never be copied into `/tmp`.
     Ok(false)
 }
-
-/// Deletes this program's temporary copy once it has exited.
 
 pub fn delete_own_copy_later() {
     let Ok(exe) = std::env::current_exe() else { return };
