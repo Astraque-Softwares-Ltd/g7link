@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn a_sealed_file_holding_plain_bytes_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let key = load_or_create(dir.path(), &PlainKeyProtector).unwrap();
+        load_or_create(dir.path(), &PlainKeyProtector).unwrap();
         let mut forged = key_file(dir.path());
         forged[METHOD_OFFSET] = SECRET_SERVICE_PROTECTOR;
         fs::write(dir.path().join(FILE_NAME), &forged).unwrap();
