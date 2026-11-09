@@ -618,7 +618,7 @@ const SEALED_PREFIX: &str = "sealed1:";
 
 /// Seals queued content with the platform's key protector, as the clipboard
 /// history is, so a copied password waiting to send isn't readable in the
-/// database. On a platform without a protector (Linux) this is only encoding.
+/// database. Without a protector (Linux with no keyring) this is only encoding.
 #[derive(Default)]
 struct QueueSeal(OnceLock<Arc<dyn crate::identity::KeyProtector>>);
 
@@ -638,7 +638,9 @@ impl QueueSeal {
 
     fn open(&self, sealed: &[u8]) -> Option<Vec<u8>> {
         match self.0.get() {
-            Some(protector) => protector.unprotect(sealed).ok(),
+            Some(protector) => {
+                crate::identity::open_stored(protector.as_ref(), sealed).ok().map(|(plain, _)| plain)
+            }
             None => Some(sealed.to_vec()),
         }
     }
@@ -658,6 +660,38 @@ impl QueueSeal {
             None => serde_json::from_str(stored).ok(),
         }
     }
+}
+
+/// Seals rows that only got the sealed prefix because there was nothing to
+/// seal with yet, as on Linux before the keyring was used.
+fn reseal_plain_rows(c: &Connection, seal: &QueueSeal) -> rusqlite::Result<usize> {
+    let Some(protector) = seal.0.get() else { return Ok(0) };
+    let rows: Vec<(String, String)> = {
+        let mut stmt = c.prepare(
+            "SELECT id, payload_json FROM send_queue
+             WHERE payload_json LIKE 'sealed1:%'",
+        )?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut resealed = 0;
+    for (id, stored) in rows {
+        let Some(encoded) = stored.strip_prefix(SEALED_PREFIX) else { continue };
+        let Ok(plain) = data_encoding::BASE64.decode(encoded.as_bytes()) else { continue };
+        if !protector.is_legacy_plain(&plain) {
+            continue;
+        }
+        let blob: Option<Vec<u8>> =
+            c.query_row("SELECT payload_blob FROM send_queue WHERE id = ?1", params![id], |r| r.get(0))?;
+        let Ok(sealed) = seal.seal(&plain) else { continue };
+        let Ok(blob) = blob.map(|b| seal.seal(&b)).transpose() else { continue };
+        let payload = format!("{SEALED_PREFIX}{}", data_encoding::BASE64.encode(&sealed));
+        c.execute(
+            "UPDATE send_queue SET payload_json = ?1, payload_blob = ?2 WHERE id = ?3",
+            params![payload, blob, id],
+        )?;
+        resealed += 1;
+    }
+    Ok(resealed)
 }
 
 #[derive(Debug)]
@@ -734,6 +768,7 @@ impl Store {
                 )?;
                 sealed += 1;
             }
+            sealed += reseal_plain_rows(c, &self.queue_seal)?;
             if sealed > 0 {
                 // The old rows shouldn't linger in the log or in free pages.
                 let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
@@ -4167,6 +4202,31 @@ mod tests {
         assert_eq!(store.seal_queue_with(Arc::new(Flip)).unwrap(), 1);
         let (title, _, json, _) = raw_queue_columns(&store).remove(0);
         assert!(!title.contains(secret) && !json.contains(secret));
+        assert_eq!(store.list_send_queue(None).unwrap()[0].title, secret);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn clips_saved_without_a_keyring_are_sealed_once_there_is_one() {
+        let store = Store::in_memory().unwrap();
+        let peer = DeviceId([7; 32]);
+        store.upsert_peer(&peer, &info("Phone"), 1).unwrap();
+        let secret = "copied-before-the-keyring";
+        let payload = QueuePayload::Clipboard { text: secret.into(), html: None, rtf: None };
+        store.enqueue_send_item("old", &peer, &payload, Some(b"image bytes".as_slice()), 1000).unwrap();
+        let (_, _, before, _) = raw_queue_columns(&store).remove(0);
+        let encoded = before.strip_prefix(SEALED_PREFIX).unwrap();
+        let unsealed = data_encoding::BASE64.decode(encoded.as_bytes()).unwrap();
+        assert!(unsealed.windows(secret.len()).any(|w| w == secret.as_bytes()), "only encoded so far");
+
+        let keyring = crate::keyring::SecretServiceProtector::new(&[7; 32]).unwrap();
+        assert_eq!(store.seal_queue_with(Arc::new(keyring)).unwrap(), 1);
+
+        let (_, _, json, blob) = raw_queue_columns(&store).remove(0);
+        let encoded = json.strip_prefix(SEALED_PREFIX).unwrap();
+        let sealed = data_encoding::BASE64.decode(encoded.as_bytes()).unwrap();
+        assert!(!sealed.windows(secret.len()).any(|w| w == secret.as_bytes()));
+        assert!(!blob.unwrap().windows(11).any(|w| w == b"image bytes"));
         assert_eq!(store.list_send_queue(None).unwrap()[0].title, secret);
     }
 

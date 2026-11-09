@@ -1610,8 +1610,15 @@ impl Node {
     /// networking, and begins reconnecting to paired devices.
     pub async fn start(config: NodeConfig, platform: Arc<dyn Platform>) -> Result<Node> {
         std::fs::create_dir_all(&config.data_dir)?;
-        let protector = config.key_protector.clone().unwrap_or_else(identity::default_protector);
+        let protector = match config.key_protector.clone() {
+            Some(protector) => protector,
+            // May wait for the user to unlock their keyring.
+            None => tokio::task::spawn_blocking(identity::default_protector)
+                .await
+                .map_err(|e| Error::Internal(e.to_string()))?,
+        };
         let secret = identity::load_or_create(&config.data_dir, protector.as_ref())?;
+        let protector = identity::protector_for_data(&config.data_dir, protector);
         let store = Store::open(&config.data_dir)?;
         if let Err(e) = store.seal_queue_with(protector.clone()) {
             tracing::warn!(error = %e, "can't seal the send queue");

@@ -361,8 +361,8 @@ fn scale_50_large_clips_encrypted_history() {
     let write_elapsed = write_start.elapsed();
 
     // Verify the file on disk does not leak plaintext. Encryption comes from
-    // the platform's protector (DPAPI on Windows); elsewhere the default
-    // protector stores as is (id 0), so there is nothing to check.
+    // the platform's protector (the Secret Service on Linux); without one the
+    // default protector stores as is (id 0), so there is nothing to check.
     let enc_bytes =
         std::fs::read(dir.path().join("clipboard_history.enc")).expect("encrypted history exists");
     if protector.id() != 0 {

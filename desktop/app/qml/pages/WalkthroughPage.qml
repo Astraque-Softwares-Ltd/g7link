@@ -852,7 +852,7 @@ FocusScope {
                                     {
                                         icon: Icons.shield,
                                         title: qsTr("Device keys stay on your devices"),
-                                        body: qsTr("On this PC the key is a file only your account can read. On the phone it's kept in the Android Keystore.")
+                                        body: qsTr("On this PC the key is sealed with your desktop keyring, or kept in a file only your account can read if there's no keyring. On the phone it's kept in the Android Keystore.")
                                     },
                                     {
                                         icon: Icons.wifi,

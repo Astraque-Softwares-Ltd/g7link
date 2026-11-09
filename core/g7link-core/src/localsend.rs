@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     Error, Result, TimelineKind,
     events::NodeEvent,
-    identity::KeyProtector,
+    identity::{KeyProtector, open_stored},
     node::Shared,
     timeline::NewTimelineEntry,
     transfer::{
@@ -286,17 +286,21 @@ impl std::fmt::Debug for LocalSendState {
 impl LocalSendState {
     pub fn open(data_dir: &Path, protector: Arc<dyn KeyProtector>, configured_port: u16) -> Result<Self> {
         let state_path = data_dir.join(STATE_FILE);
-        let mut stored: StoredLocalSendState = match fs::read(&state_path) {
-            Ok(sealed) => protector
-                .unprotect(&sealed)
+        let (mut stored, was_plain): (StoredLocalSendState, bool) = match fs::read(&state_path) {
+            Ok(saved) => open_stored(protector.as_ref(), &saved)
                 .ok()
-                .and_then(|plain| serde_json::from_slice(&plain).ok())
+                .and_then(|(plain, was_plain)| Some((serde_json::from_slice(&plain).ok()?, was_plain)))
                 .unwrap_or_default(),
-            Err(_) => StoredLocalSendState::default(),
+            Err(_) => (StoredLocalSendState::default(), false),
         };
 
         let identity = match decode_stored_identity(&stored) {
-            Some(id) => id,
+            Some(id) => {
+                if was_plain && let Err(e) = save_stored_state(data_dir, &*protector, &stored) {
+                    tracing::warn!(error = %e, "can't seal the LocalSend identity");
+                }
+                id
+            }
             None => {
                 let id = generate_self_signed_identity()?;
                 stored.cert_der_hex = data_encoding::HEXLOWER.encode(&id.cert_der);
@@ -2408,6 +2412,23 @@ impl ServerCertVerifier for LocalSendCertVerifier {
 mod tests {
     use super::*;
     use crate::identity::PlainKeyProtector;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_identity_survives_being_sealed_with_the_keyring() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = LocalSendState::open(dir.path(), Arc::new(PlainKeyProtector), 0).unwrap();
+        let fingerprint = plain.fingerprint().to_owned();
+
+        let key = crate::keyring::SecretServiceProtector::new(&[7; 32]).unwrap();
+        let keyring: Arc<dyn KeyProtector> = Arc::new(key);
+        let sealed = LocalSendState::open(dir.path(), keyring.clone(), 0).unwrap();
+        assert_eq!(sealed.fingerprint(), fingerprint);
+        assert!(!keyring.is_legacy_plain(&fs::read(dir.path().join(STATE_FILE)).unwrap()));
+
+        let reopened = LocalSendState::open(dir.path(), keyring, 0).unwrap();
+        assert_eq!(reopened.fingerprint(), fingerprint);
+    }
 
     #[tokio::test]
     async fn self_signed_cert_completes_tls_handshake_and_matches_fingerprint() {

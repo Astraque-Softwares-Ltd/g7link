@@ -21,6 +21,8 @@ mod events;
 pub mod features;
 pub mod handoff;
 mod identity;
+#[cfg(target_os = "linux")]
+mod keyring;
 pub mod localsend;
 mod media;
 pub mod mic;
@@ -132,7 +134,7 @@ pub use handoff::{
     geo_to_maps_https, is_safe_handoff_document, parse_video_timestamp, timeline_link_title_and_detail,
     with_video_timestamp,
 };
-pub use identity::{KeyProtector, PlainKeyProtector, default_protector, install_id_from};
+pub use identity::{KeyProtector, PlainKeyProtector, default_protector, install_id_from, open_stored};
 pub use localsend::{
     LOCALSEND_DEFAULT_PORT, LOCALSEND_MULTICAST_ADDR, LOCALSEND_PROTOCOL_VERSION, LocalSendPeer,
     peer_device_id as localsend_peer_device_id,

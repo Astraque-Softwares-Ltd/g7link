@@ -333,7 +333,7 @@ pub fn set_obs_settings(port: u16, protected_password: Option<String>) {
     *OBS.lock().unwrap_or_else(|e| e.into_inner()) = (port, protected_password);
 }
 
-/// Encrypts an OBS password for storage (DPAPI on Windows, base64 for the file).
+/// Encrypts an OBS password for storage (the desktop keyring, base64 for the file).
 pub fn protect_obs_password(password: &str) -> Option<String> {
     let sealed = g7link_core::default_protector().protect(password.as_bytes()).ok()?;
     Some(data_encoding::BASE64.encode(&sealed))
@@ -343,7 +343,7 @@ pub fn protect_obs_password(password: &str) -> Option<String> {
 pub fn obs_password() -> Option<String> {
     let stored = obs_settings().1?;
     let sealed = data_encoding::BASE64.decode(stored.as_bytes()).ok()?;
-    let plain = g7link_core::default_protector().unprotect(&sealed).ok()?;
+    let (plain, _) = g7link_core::open_stored(g7link_core::default_protector().as_ref(), &sealed).ok()?;
     String::from_utf8(plain).ok()
 }
 

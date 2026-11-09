@@ -3,8 +3,8 @@
 //! exchanged between paired devices (`docs/PLAN.md` §3.4).
 //!
 //! Sensitive clips and one-time codes (OTPs) are never stored. Everything is
-//! sealed on disk using the platform [`KeyProtector`] (Windows DPAPI or Android
-//! Keystore AES-GCM).
+//! sealed on disk using the platform [`KeyProtector`] (the Secret Service on
+//! Linux or Android Keystore AES-GCM).
 
 use std::{
     fs,
@@ -15,7 +15,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, identity::KeyProtector, otp};
+use crate::{
+    Error,
+    identity::{KeyProtector, open_stored},
+    otp,
+};
 
 /// Maximum number of clips retained in history.
 pub const MAX_CLIPBOARD_HISTORY: usize = 50;
@@ -207,23 +211,40 @@ impl ClipboardHistoryStore {
     /// history with `protector` and purging unpinned clips older than 7 days.
     pub fn open(data_dir: &Path, protector: Arc<dyn KeyProtector>) -> Self {
         let index_path = data_dir.join(INDEX_FILE);
-        let state = match fs::read(&index_path) {
-            Ok(sealed) => protector
-                .unprotect(&sealed)
+        let (state, was_plain) = match fs::read(&index_path) {
+            Ok(stored) => open_stored(protector.as_ref(), &stored)
                 .ok()
-                .and_then(|plain| parse_stored_state(&plain))
+                .and_then(|(plain, was_plain)| Some((parse_stored_state(&plain)?, was_plain)))
                 .unwrap_or_default(),
-            Err(_) => StoredState::default(),
+            Err(_) => (StoredState::default(), false),
         };
         let store = Self { data_dir: data_dir.to_path_buf(), protector, state: Mutex::new(state) };
         {
             let mut s = store.state.lock().unwrap_or_else(|e| e.into_inner());
             let evicted = store.evict_locked(&mut s.items);
-            if !evicted.is_empty() {
+            if was_plain {
+                // The images first: the index being unsealed is what brings
+                // this back after an interruption.
+                store.seal_plain_images(&s.items);
+            }
+            if !evicted.is_empty() || was_plain {
                 let _ = store.save_locked(&s);
             }
         }
         store
+    }
+
+    /// Seals images saved before sealing was in use. One that can't be sealed
+    /// stays as it was and can still be read.
+    fn seal_plain_images(&self, items: &[StoredEntry]) {
+        for item in items.iter().filter(|i| i.entry.kind == ClipboardItemKind::Image) {
+            let Ok(stored) = fs::read(self.image_path(&item.entry.id)) else { continue };
+            if self.protector.is_legacy_plain(&stored)
+                && let Err(e) = self.write_encrypted_image(&item.entry.id, &stored)
+            {
+                tracing::warn!(error = %e, "can't seal a clipboard image");
+            }
+        }
     }
 
     /// Returns `(item_count, total_bytes)` currently stored in clipboard history.
@@ -427,8 +448,8 @@ impl ClipboardHistoryStore {
             }
             item.entry.mime.clone().unwrap_or_else(|| "image/png".to_owned())
         };
-        let sealed = fs::read(self.image_path(id)).ok()?;
-        let plain = self.protector.unprotect(&sealed).ok()?;
+        let stored = fs::read(self.image_path(id)).ok()?;
+        let (plain, _) = open_stored(self.protector.as_ref(), &stored).ok()?;
         Some((mime, plain))
     }
 
@@ -630,6 +651,34 @@ mod tests {
         let (mime, decrypted) = reopened.image_bytes(&img_item.id).unwrap();
         assert_eq!(mime, "image/png");
         assert_eq!(decrypted, png);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn plain_history_is_kept_and_sealed_once_the_keyring_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = ClipboardHistoryStore::open(dir.path(), Arc::new(PlainKeyProtector));
+        assert!(plain.record_text("from before the keyring", "Pixel", true));
+        assert!(plain.record_image("image/png", b"old-image-bytes", "Pixel", false));
+        let items = plain.list(None);
+        let image = items.iter().find(|i| i.kind == ClipboardItemKind::Image).unwrap();
+        let image_path = dir.path().join(IMAGES_DIR).join(format!("{}.enc", image.id));
+        assert_eq!(fs::read(&image_path).unwrap(), b"old-image-bytes");
+
+        let key = crate::keyring::SecretServiceProtector::new(&[7; 32]).unwrap();
+        let keyring: Arc<dyn KeyProtector> = Arc::new(key);
+        let sealed = ClipboardHistoryStore::open(dir.path(), keyring.clone());
+        assert_eq!(sealed.list(None).len(), 2);
+        assert_eq!(sealed.image_bytes(&image.id).unwrap().1, b"old-image-bytes");
+
+        let needle = b"from before the keyring";
+        let index = fs::read(dir.path().join(INDEX_FILE)).unwrap();
+        assert!(!index.windows(needle.len()).any(|w| w == needle), "history sealed");
+        assert_ne!(fs::read(&image_path).unwrap(), b"old-image-bytes", "image sealed");
+
+        let reopened = ClipboardHistoryStore::open(dir.path(), keyring);
+        assert_eq!(reopened.list(None).len(), 2);
+        assert_eq!(reopened.image_bytes(&image.id).unwrap().1, b"old-image-bytes");
     }
 
     #[test]

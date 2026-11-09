@@ -12,16 +12,29 @@ use iroh::SecretKey;
 
 use crate::{Error, Result};
 
-const FILE_NAME: &str = "identity.key";
+pub(crate) const FILE_NAME: &str = "identity.key";
 const MAGIC: &[u8; 4] = b"NLK1";
 
-/// Protects the device key at rest. Each platform provides one: DPAPI on
-/// Windows, Android Keystore wrapping on Android (injected by the app).
+/// The method byte of a key sealed with the desktop's Secret Service. 1 was
+/// Windows DPAPI and 2 is the Android Keystore.
+pub(crate) const SECRET_SERVICE_PROTECTOR: u8 = 3;
+
+const KEYRING_NEEDED: &str =
+    "the desktop keyring that holds the device key is locked or not running; unlock it and reopen G7 Link";
+
+/// Protects the device key at rest. Each platform provides one: the Secret
+/// Service on Linux, Android Keystore wrapping on Android (injected by the app).
 pub trait KeyProtector: Send + Sync {
     /// A stable one-byte identifier written into the key file.
     fn id(&self) -> u8;
     fn protect(&self, plaintext: &[u8]) -> io::Result<Vec<u8>>;
     fn unprotect(&self, ciphertext: &[u8]) -> io::Result<Vec<u8>>;
+    /// Whether `stored` was saved in the clear before this protector was in
+    /// use, and may be taken in and sealed. By default nothing is: a plain
+    /// key dropped into the data folder must not become this device's identity.
+    fn is_legacy_plain(&self, _stored: &[u8]) -> bool {
+        false
+    }
 }
 
 /// No protection. Only used where no platform protector exists (tests,
@@ -41,9 +54,27 @@ impl KeyProtector for PlainKeyProtector {
     }
 }
 
-/// The best protector available on this platform.
+/// The best protector available on this platform. On Linux this asks the
+/// Secret Service and can wait for the user to unlock it, so call it off the
+/// UI thread.
 pub fn default_protector() -> Arc<dyn KeyProtector> {
-    Arc::new(PlainKeyProtector)
+    #[cfg(target_os = "linux")]
+    {
+        crate::keyring::default_protector()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Arc::new(PlainKeyProtector)
+    }
+}
+
+/// Opens data a store saved. Returns the plain bytes and whether they were
+/// saved before sealing was in use, so the store can save them again sealed.
+pub fn open_stored(protector: &dyn KeyProtector, stored: &[u8]) -> io::Result<(Vec<u8>, bool)> {
+    if protector.is_legacy_plain(stored) {
+        return Ok((stored.to_vec(), true));
+    }
+    Ok((protector.unprotect(stored)?, false))
 }
 
 /// Loads the device key from `dir`, creating and saving a new one on first
@@ -51,7 +82,7 @@ pub fn default_protector() -> Arc<dyn KeyProtector> {
 pub(crate) fn load_or_create(dir: &Path, protector: &dyn KeyProtector) -> Result<SecretKey> {
     let path = dir.join(FILE_NAME);
     match fs::read(&path) {
-        Ok(bytes) => decode(&bytes, protector),
+        Ok(bytes) => load_existing(&path, &bytes, protector),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let key = SecretKey::generate();
             if protector.id() == 0 {
@@ -65,6 +96,67 @@ pub(crate) fn load_or_create(dir: &Path, protector: &dyn KeyProtector) -> Result
     }
 }
 
+/// The protector for everything else on disk. Data is sealed only once the
+/// device key is: a run that can't reach the keyring then stops at the key
+/// instead of reading sealed files as if they were plain.
+pub(crate) fn protector_for_data(dir: &Path, protector: Arc<dyn KeyProtector>) -> Arc<dyn KeyProtector> {
+    let stored = fs::read(dir.join(FILE_NAME)).unwrap_or_default();
+    match method_and_payload(&stored) {
+        Some((method, _)) if method == protector.id() => protector,
+        _ => Arc::new(PlainKeyProtector),
+    }
+}
+
+fn load_existing(path: &Path, bytes: &[u8], protector: &dyn KeyProtector) -> Result<SecretKey> {
+    if let Some((0, payload)) = method_and_payload(bytes)
+        && protector.is_legacy_plain(payload)
+    {
+        let key = decode(bytes, &PlainKeyProtector)?;
+        seal_plain_key(path, &key, protector);
+        return Ok(key);
+    }
+    decode(bytes, protector)
+}
+
+/// Moves a plain key under `protector`. If that fails the plain file stays,
+/// and the key works as it did; the next start tries again.
+fn seal_plain_key(path: &Path, key: &SecretKey, protector: &dyn KeyProtector) {
+    if !private_to_owner(path) {
+        tracing::warn!("device key file isn't private to its owner, so it was not sealed");
+        return;
+    }
+    match replace_with_sealed(path, key, protector) {
+        Ok(()) => tracing::info!("device key sealed with the desktop keyring"),
+        Err(e) => tracing::warn!(error = %e, "can't seal the device key; it stays as it was"),
+    }
+}
+
+fn replace_with_sealed(path: &Path, key: &SecretKey, protector: &dyn KeyProtector) -> Result<()> {
+    let sealed = encode(key, protector)?;
+    if decode(&sealed, protector)?.to_bytes() != key.to_bytes() {
+        return Err(Error::Storage("the sealed device key didn't open to the same key".into()));
+    }
+    write_atomically(path, &sealed)?;
+    Ok(())
+}
+
+/// A regular file with its folder's owner and no access for anyone else, as
+/// this app writes it. Anything else may have been put there by someone else.
+fn private_to_owner(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(file) = fs::symlink_metadata(path) else { return false };
+    let Some(owner) = path.parent().and_then(|dir| fs::metadata(dir).ok()).map(|dir| dir.uid()) else {
+        return false;
+    };
+    file.is_file() && file.uid() == owner && file.mode() & 0o077 == 0
+}
+
+fn method_and_payload(bytes: &[u8]) -> Option<(u8, &[u8])> {
+    let (&method, payload) = bytes.strip_prefix(MAGIC.as_slice())?.split_first()?;
+    Some((method, payload))
+}
+
 fn encode(key: &SecretKey, protector: &dyn KeyProtector) -> Result<Vec<u8>> {
     let sealed = protector.protect(&key.to_bytes())?;
     let mut out = Vec::with_capacity(MAGIC.len() + 1 + sealed.len());
@@ -76,8 +168,10 @@ fn encode(key: &SecretKey, protector: &dyn KeyProtector) -> Result<Vec<u8>> {
 
 fn decode(bytes: &[u8], protector: &dyn KeyProtector) -> Result<SecretKey> {
     let corrupt = || Error::Storage("the device key file is corrupt".into());
-    let rest = bytes.strip_prefix(MAGIC.as_slice()).ok_or_else(corrupt)?;
-    let (&method, sealed) = rest.split_first().ok_or_else(corrupt)?;
+    let (method, sealed) = method_and_payload(bytes).ok_or_else(corrupt)?;
+    if method == SECRET_SERVICE_PROTECTOR && protector.id() != method {
+        return Err(Error::Storage(KEYRING_NEEDED.into()));
+    }
     if method != protector.id() {
         return Err(Error::Storage(format!(
             "the device key is protected with method {method}, but this build uses {}",
@@ -132,8 +226,8 @@ pub fn install_id_from(platform_id: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Stands in for a platform protector so tests never touch the real
-    /// Keychain or DPAPI.
+    /// Stands in for a platform protector so tests never touch a real
+    /// keyring or Keystore.
     struct TestProtector;
 
     impl KeyProtector for TestProtector {
@@ -167,9 +261,9 @@ mod tests {
         assert!(!file.windows(raw.len()).any(|w| w == raw), "plaintext key found on disk");
     }
 
-    /// Windows and Linux must keep refusing a method-`0` file. Re-sealing it
-    /// under the platform protector would turn a plain key dropped into the
-    /// data folder into this device's trusted identity.
+    /// A protector that doesn't take in plain data keeps refusing a method-`0`
+    /// file. Re-sealing it would turn a plain key dropped into the data folder
+    /// into this device's trusted identity.
     #[test]
     fn a_plain_key_file_is_not_adopted_elsewhere() {
         let dir = tempfile::tempdir().unwrap();

@@ -26,7 +26,7 @@ pub struct NodeConfig {
     /// rules simpler on the desktop.
     pub port: u16,
     /// How the device key is protected at rest. `None` uses the platform
-    /// default (DPAPI on Windows).
+    /// default (the Secret Service on Linux, when there is one).
     pub key_protector: Option<std::sync::Arc<dyn KeyProtector>>,
     /// Where received files go once complete. `None`: a `received` folder
     /// in `data_dir`.
