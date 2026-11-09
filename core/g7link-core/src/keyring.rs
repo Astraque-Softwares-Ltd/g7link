@@ -275,7 +275,8 @@ impl Client {
         static ASKED: AtomicBool = AtomicBool::new(false);
 
         let reply = self.call(SERVICE_PATH, SERVICE_INTERFACE, "Unlock", &(items,))?;
-        let (_, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) = reply.body().deserialize().map_err(text)?;
+        let (_, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) =
+            reply.body().deserialize().map_err(text)?;
         if prompt.as_str() == NO_OBJECT {
             return Ok(());
         }
