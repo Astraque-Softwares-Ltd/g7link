@@ -297,6 +297,45 @@ object Tokens {
     val hiveCombWarning = Color(0xFFF5D58A)
     val hiveCombError = Color(0xFFF0A39C)
 
+    val quietDark = Palette(
+        primary = Color(0xFFF2F2F3),
+        onPrimary = Color(0xFF18181B),
+        primaryContainer = Color(0xFF2B2B30),
+        onPrimaryContainer = Color(0xFFF2F2F3),
+        secondaryContainer = Color(0xFF2B2B30),
+        onSecondaryContainer = Color(0xFFF2F2F3),
+        surface = Color(0xFF18181B),
+        surfaceContainerLow = Color(0xFF18181B),
+        surfaceContainer = Color(0xFF222226),
+        surfaceContainerHigh = Color(0xFF2B2B30),
+        surfaceContainerHighest = Color(0xFF303035),
+        onSurface = Color(0xFFF2F2F3),
+        onSurfaceVariant = Color(0xFFA1A1A8),
+        outline = Color(0xFF6F6F78),
+        outlineVariant = Color(0xFF303035),
+    )
+
+    val quietLight = Palette(
+        primary = Color(0xFF1C1C1F),
+        onPrimary = Color(0xFFFAFAFB),
+        primaryContainer = Color(0xFFE9E9ED),
+        onPrimaryContainer = Color(0xFF1C1C1F),
+        secondaryContainer = Color(0xFFE9E9ED),
+        onSecondaryContainer = Color(0xFF1C1C1F),
+        surface = Color(0xFFFAFAFB),
+        surfaceContainerLow = Color(0xFFFAFAFB),
+        surfaceContainer = Color(0xFFF1F1F3),
+        surfaceContainerHigh = Color(0xFFE9E9ED),
+        surfaceContainerHighest = Color(0xFFE4E4E9),
+        onSurface = Color(0xFF1C1C1F),
+        onSurfaceVariant = Color(0xFF5F5F67),
+        outline = Color(0xFF7A7A83),
+        outlineVariant = Color(0xFFDCDCE1),
+    )
+
+    val quietDarkError = Color(0xFFF0A39C)
+    val quietLightError = Color(0xFFA4230F)
+
     /** The honeycomb backdrop (themes.hive.comb). */
     const val COMB_CELL_DP = 24f
     const val COMB_LINE_ALPHA_DARK = 0.27f

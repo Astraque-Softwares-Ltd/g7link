@@ -31,7 +31,7 @@
                 android:ellipsize="end"
                 android:singleLine="true"
                 android:text="@string/widget_pc_no_pc"
-                android:textColor="#FAF6EE"
+                android:textColor="#F2F2F3"
                 android:textSize="16.5sp"
                 android:textStyle="bold" />
 
@@ -43,7 +43,7 @@
                 android:ellipsize="end"
                 android:singleLine="true"
                 android:text="@string/widget_pc_tap_to_pair"
-                android:textColor="#C4BDB0"
+                android:textColor="#A1A1A8"
                 android:textSize="11.5sp"
                 android:visibility="visible" />
         </LinearLayout>
@@ -59,7 +59,7 @@
             android:paddingEnd="10dp"
             android:paddingBottom="4dp"
             android:text="@string/widget_pc_offline"
-            android:textColor="#D5CFC2"
+            android:textColor="#A1A1A8"
             android:textSize="11.5sp"
             android:textStyle="bold" />
 
@@ -74,7 +74,7 @@
             android:paddingEnd="12dp"
             android:paddingBottom="4dp"
             android:text="@string/widget_pc_wake"
-            android:textColor="#F4B841"
+            android:textColor="#F2F2F3"
             android:textSize="11.5sp"
             android:textStyle="bold"
             android:visibility="gone" />
@@ -100,7 +100,7 @@
             android:layout_weight="1"
             android:ellipsize="end"
             android:singleLine="true"
-            android:textColor="#FAF6EE"
+            android:textColor="#F2F2F3"
             android:textSize="11.5sp"
             android:textStyle="bold" />
 
@@ -113,7 +113,7 @@
             android:padding="5dp"
             android:scaleType="fitCenter"
             android:src="@drawable/ic_play"
-            android:tint="#F4B841" />
+            android:tint="#F2F2F3" />
 
         <ImageView
             android:id="@+id/widget_btn_media_next"
@@ -124,7 +124,7 @@
             android:padding="5dp"
             android:scaleType="fitCenter"
             android:src="@drawable/ic_skip_next"
-            android:tint="#FAF6EE" />
+            android:tint="#F2F2F3" />
     </LinearLayout>
 
     <!-- 4 Quick Action Bento Pills: Send Files, Clipboard, Ring PC, Lock PC -->
@@ -148,7 +148,7 @@
             android:paddingEnd="4dp"
             android:singleLine="true"
             android:text="@string/action_send_files"
-            android:textColor="#FAF6EE"
+            android:textColor="#F2F2F3"
             android:textSize="11.5sp"
             android:textStyle="bold" />
 
@@ -165,7 +165,7 @@
             android:paddingEnd="4dp"
             android:singleLine="true"
             android:text="@string/widget_pc_send_clip"
-            android:textColor="#FAF6EE"
+            android:textColor="#F2F2F3"
             android:textSize="11.5sp"
             android:textStyle="bold" />
 
@@ -182,7 +182,7 @@
             android:paddingEnd="4dp"
             android:singleLine="true"
             android:text="@string/widget_pc_ring"
-            android:textColor="#FAF6EE"
+            android:textColor="#F2F2F3"
             android:textSize="11.5sp"
             android:textStyle="bold" />
 
@@ -199,7 +199,7 @@
             android:paddingEnd="4dp"
             android:singleLine="true"
             android:text="@string/widget_pc_lock"
-            android:textColor="#FAF6EE"
+            android:textColor="#F2F2F3"
             android:textSize="11.5sp"
             android:textStyle="bold" />
     </LinearLayout>

@@ -341,6 +341,16 @@ fn render_kotlin(tokens: &Value) -> Result<String> {
             out.push(format!("    val {field} = {}", kotlin_color(hex)));
         }
     }
+    out.push(String::new());
+    let quiet = tokens.pointer("/themes/quiet/variants").context("missing quiet variants")?;
+    out.push(format!("    val quietDark = {}", kotlin_palette(&quiet["dark"], 4)?));
+    out.push(String::new());
+    out.push(format!("    val quietLight = {}", kotlin_palette(&quiet["light"], 4)?));
+    out.push(String::new());
+    for (field, mode) in [("quietDarkError", "dark"), ("quietLightError", "light")] {
+        let hex = quiet.pointer(&format!("/{mode}/error")).and_then(Value::as_str).context("missing quiet error")?;
+        out.push(format!("    val {field} = {}", kotlin_color(hex)));
+    }
     let comb = tokens.pointer("/themes/hive/comb").context("missing hive comb")?;
     let number =
         |key: &str| comb.get(key).and_then(Value::as_f64).with_context(|| format!("missing comb.{key}"));

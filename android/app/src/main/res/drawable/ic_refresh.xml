@@ -1,13 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!-- Refresh: a circular arrow (same shape as the PC app's). -->
+<!-- G7's own glyph (src/server/icons in g7linux). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path
-        android:pathData="M3,12a9,9 0 0,1 15,-6.7L21,8M21,3v5h-5M21,12a9,9 0 0,1 -15,6.7L3,16M3,21v-5h5"
-        android:strokeColor="#FF000000"
-        android:strokeWidth="1.85"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:fillColor="#00000000" />
+    android:width="24dp" android:height="24dp" android:viewportWidth="16" android:viewportHeight="16">
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd" android:pathData="M1 8.875a5.875 5.875 0 0 1 11.75 0v1.42l.943-1.047a.75.75 0 0 1 1.114 1.004l-2.25 2.5a.75.75 0 0 1-1.114 0l-2.25-2.5a.75.75 0 1 1 1.114-1.004l.943 1.048V8.875a4.375 4.375 0 1 0-8.75 0v3.375a.75.75 0 0 1-1.5 0z" />
 </vector>

@@ -259,6 +259,7 @@ fun SettingsScreen(
                     Label(stringResource(R.string.settings_theme))
                     Choice(
                         listOf(
+                            "quiet" to "G7",
                             "hive" to stringResource(R.string.theme_hive),
                             "bloom" to stringResource(R.string.theme_bloom),
                             "glass" to "Glass",

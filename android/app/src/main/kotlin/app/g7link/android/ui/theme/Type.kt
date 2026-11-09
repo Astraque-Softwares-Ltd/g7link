@@ -14,12 +14,13 @@ import androidx.compose.ui.text.font.FontWeight
 /**
  * The fonts bundled with the app (`assets/fonts` in the repository, packaged
  * as assets under `fonts/`): Figtree for text, Instrument Serif for
- * Graphite's headings, Space Mono for codes.
+ * Graphite's headings, Space Mono for codes. The G7 theme uses the phone's
+ * own font, and Geist Mono for codes, as G7 does on the desktop.
  */
 @Immutable
-class AppFonts(assets: AssetManager) {
+class AppFonts(assets: AssetManager, quiet: Boolean = false) {
     /** Figtree is a variable font: one file, every weight the app uses. */
-    val sans = FontFamily(
+    val sans = if (quiet) FontFamily.Default else FontFamily(
         listOf(400, 500, 600, 650, 700).map { weight ->
             Font(
                 "fonts/Figtree.ttf",
@@ -30,7 +31,7 @@ class AppFonts(assets: AssetManager) {
         },
     )
     val serif = FontFamily(Font("fonts/InstrumentSerif-Regular.ttf", assets))
-    val mono = FontFamily(
+    val mono = if (quiet) FontFamily(Font("fonts/GeistMono-Variable.ttf", assets)) else FontFamily(
         Font("fonts/SpaceMono-Regular.ttf", assets),
         Font("fonts/SpaceMono-Bold.ttf", assets, FontWeight.Bold),
     )
@@ -43,11 +44,12 @@ val LocalAppFonts = staticCompositionLocalOf<AppFonts> { error("G7LinkTheme prov
  * fonts, with the weights from docs/design/tokens.json: bold headings in
  * Bloom, serif headings in Graphite.
  */
-internal fun typography(fonts: AppFonts, graphite: Boolean): Typography {
+internal fun typography(fonts: AppFonts, graphite: Boolean, quiet: Boolean = false): Typography {
     val base = Typography()
     fun TextStyle.text(weight: Int) = copy(fontFamily = fonts.sans, fontWeight = FontWeight(weight))
     fun TextStyle.heading() =
-        if (graphite) copy(fontFamily = fonts.serif, fontWeight = FontWeight.Normal) else text(650)
+        if (graphite) copy(fontFamily = fonts.serif, fontWeight = FontWeight.Normal) else text(if (quiet) 600 else 650)
+    val title = if (quiet) 500 else 600
     return base.copy(
         displayLarge = base.displayLarge.heading(),
         displayMedium = base.displayMedium.heading(),
@@ -55,9 +57,9 @@ internal fun typography(fonts: AppFonts, graphite: Boolean): Typography {
         headlineLarge = base.headlineLarge.heading(),
         headlineMedium = base.headlineMedium.heading(),
         headlineSmall = base.headlineSmall.heading(),
-        titleLarge = base.titleLarge.text(600),
-        titleMedium = base.titleMedium.text(600),
-        titleSmall = base.titleSmall.text(600),
+        titleLarge = base.titleLarge.text(title),
+        titleMedium = base.titleMedium.text(title),
+        titleSmall = base.titleSmall.text(title),
         bodyLarge = base.bodyLarge.text(400),
         bodyMedium = base.bodyMedium.text(400),
         bodySmall = base.bodySmall.text(400),

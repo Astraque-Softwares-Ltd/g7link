@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 val LocalReducedMotion = compositionLocalOf { false }
 val LocalGlassTheme = compositionLocalOf { false }
 val LocalAmoledTheme = compositionLocalOf { false }
+val LocalQuietTheme = compositionLocalOf { false }
 
 /** True when Android's "Remove animations" (animator duration scale 0) is enabled. */
 @Composable
@@ -62,11 +63,17 @@ fun rememberReducedMotion(): Boolean {
     return reduced
 }
 
+/**
+ * The G7 theme's line color while it's active, null otherwise. Set by [G7LinkTheme]; read
+ * while modifiers are built, so a theme switch rebuilds them.
+ */
+private var quietLine by mutableStateOf<Color?>(Tokens.quietDark.outlineVariant)
+
 /** The user's look choices (see Preferences). */
 @androidx.compose.runtime.Immutable
 data class Appearance(
-    val theme: String = "graphite",
-    val mode: String = "system",
+    val theme: String = "quiet",
+    val mode: String = "dark",
     val seed: String = Tokens.DEFAULT_SEED,
     /** Bloom/Glass takes its colors from the wallpaper (Android 12+). */
     val dynamicColor: Boolean = true,
@@ -326,7 +333,14 @@ private fun ColorScheme.toAmoledScheme(glass: Boolean): ColorScheme = copy(
 )
 
 /** Shapes from the tokens: Glass and Bloom are smoothly rounded, Hive a little firmer, Graphite crisp. */
-private fun shapes(graphite: Boolean, glass: Boolean, hive: Boolean) = when {
+private fun shapes(graphite: Boolean, glass: Boolean, hive: Boolean, quiet: Boolean) = when {
+    quiet -> Shapes(
+        extraSmall = RoundedCornerShape(5.dp),
+        small = RoundedCornerShape(6.dp),
+        medium = RoundedCornerShape(8.dp),
+        large = RoundedCornerShape(8.dp),
+        extraLarge = RoundedCornerShape(12.dp),
+    )
     hive -> Shapes(
         extraSmall = RoundedCornerShape(6.dp),
         small = RoundedCornerShape(10.dp),
@@ -394,6 +408,7 @@ fun G7LinkTheme(
         else -> isSystemInDarkTheme()
     }
     val graphite = appearance.theme == "graphite"
+    val quiet = appearance.theme == "quiet"
     val glass = appearance.theme == "glass"
     // Hive keeps its own honey: no wallpaper, artwork or phone colors.
     val hive = appearance.theme == "hive"
@@ -401,17 +416,21 @@ fun G7LinkTheme(
     val amoledActive = dark && appearance.amoled && (graphite || isBlackSwatch)
     val error = when {
         hive -> if (dark) Tokens.hiveCombError else Tokens.hiveWaxError
+        quiet -> if (dark) Tokens.quietDarkError else Tokens.quietLightError
         else -> if (dark) Tokens.errorDark else Tokens.errorLight
     }
     val context = LocalContext.current
     // The settings alone pick the color source. Artwork applies only when the user turned
     // "Media artwork color" on; with nothing playing, it falls back to the wallpaper or preset.
-    val artworkSeed = if (!graphite && !hive && appearance.seed == "artwork") mediaSeedColor else null
-    val wallpaper = !graphite && !hive && appearance.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val artworkSeed = if (!graphite && !hive && !quiet && appearance.seed == "artwork") mediaSeedColor else null
+    val wallpaper = !graphite && !hive && !quiet && appearance.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val wallpaperSeed = rememberWallpaperSeed(enabled = wallpaper && artworkSeed == null)
     val baseScheme = when {
         hive -> remember(dark, error) {
             (if (dark) Tokens.hiveComb else Tokens.hiveWax).toScheme(dark, error)
+        }
+        quiet -> remember(dark, error) {
+            (if (dark) Tokens.quietDark else Tokens.quietLight).toScheme(dark, error)
         }
         graphite -> remember(dark, error) {
             (if (dark) Tokens.graphiteSlate else Tokens.graphitePaper).toScheme(dark, error)
@@ -434,6 +453,7 @@ fun G7LinkTheme(
         // Screens let the comb show through; the window paints the surface under it.
         if (combBehind) withAmoled.copy(background = Color.Transparent) else withAmoled
     }
+    androidx.compose.runtime.SideEffect { quietLine = if (quiet) targetScheme.outlineVariant else null }
     val reducedMotion = rememberReducedMotion()
     val powerSaver = rememberPowerSaver()
 
@@ -449,14 +469,15 @@ fun G7LinkTheme(
         }
     }
     val assets = context.assets
-    val fonts = remember(assets) { AppFonts(assets) }
-    val currentShapes = remember(graphite, glass, hive) { shapes(graphite, glass, hive) }
-    val currentTypography = remember(fonts, graphite) { typography(fonts, graphite) }
+    val fonts = remember(assets, quiet) { AppFonts(assets, quiet) }
+    val currentShapes = remember(graphite, glass, hive, quiet) { shapes(graphite, glass, hive, quiet) }
+    val currentTypography = remember(fonts, graphite, quiet) { typography(fonts, graphite, quiet) }
     CompositionLocalProvider(
         LocalAppFonts provides fonts,
         LocalReducedMotion provides reducedMotion,
         LocalGlassTheme provides glass,
         LocalAmoledTheme provides amoledActive,
+        LocalQuietTheme provides quiet,
         LocalHiveTheme provides hive,
     ) {
         MaterialTheme(
@@ -493,37 +514,51 @@ fun Modifier.liquidGlassCard(
     baseColor: Color,
     @Suppress("UNUSED_PARAMETER") tintColor: Color = Color.Transparent,
     outlineColor: Color = Color.Transparent,
-): Modifier = this.drawWithCache {
-    val radiusPx = cornerRadius.toPx()
-    val cr = CornerRadius(radiusPx, radiusPx)
-    val strokePx = 1.dp.toPx()
-    val halfStroke = strokePx * 0.5f
-    val topLeftOffset = Offset(halfStroke, halfStroke)
-    val insetSize = Size(
-        (size.width - strokePx).coerceAtLeast(0f),
-        (size.height - strokePx).coerceAtLeast(0f),
-    )
-    val isDarkSurface = (baseColor.red * 0.299f + baseColor.green * 0.587f + baseColor.blue * 0.114f) < 0.5f
-    val uniformRimColor = if (isGlass) {
-        if (outlineColor.alpha > 0f) {
-            outlineColor.copy(alpha = outlineColor.alpha.coerceAtMost(if (isDarkSurface) 0.14f else 0.22f))
-        } else {
-            Color.White.copy(alpha = if (isDarkSurface) 0.10f else 0.22f)
+    /** Keeps its fill in the G7 theme: for chrome that floats over other content. */
+    solid: Boolean = false,
+): Modifier {
+    val line = quietLine.takeUnless { solid }
+    if (line != null) {
+        // The G7 theme has no boxes: a section is its content and a line under it.
+        return this.drawWithCache {
+            val strokePx = 1.dp.toPx()
+            onDrawBehind {
+                drawRect(color = line, topLeft = Offset(0f, size.height - strokePx), size = Size(size.width, strokePx))
+            }
         }
-    } else {
-        outlineColor
     }
-    val strokeStyle = Stroke(width = strokePx)
-    onDrawBehind {
-        drawRoundRect(color = baseColor, cornerRadius = cr)
-        if (uniformRimColor.alpha > 0f) {
-            drawRoundRect(
-                color = uniformRimColor,
-                topLeft = topLeftOffset,
-                size = insetSize,
-                cornerRadius = cr,
-                style = strokeStyle,
-            )
+    return this.drawWithCache {
+        val radiusPx = cornerRadius.toPx()
+        val cr = CornerRadius(radiusPx, radiusPx)
+        val strokePx = 1.dp.toPx()
+        val halfStroke = strokePx * 0.5f
+        val topLeftOffset = Offset(halfStroke, halfStroke)
+        val insetSize = Size(
+            (size.width - strokePx).coerceAtLeast(0f),
+            (size.height - strokePx).coerceAtLeast(0f),
+        )
+        val isDarkSurface = (baseColor.red * 0.299f + baseColor.green * 0.587f + baseColor.blue * 0.114f) < 0.5f
+        val uniformRimColor = if (isGlass) {
+            if (outlineColor.alpha > 0f) {
+                outlineColor.copy(alpha = outlineColor.alpha.coerceAtMost(if (isDarkSurface) 0.14f else 0.22f))
+            } else {
+                Color.White.copy(alpha = if (isDarkSurface) 0.10f else 0.22f)
+            }
+        } else {
+            outlineColor
+        }
+        val strokeStyle = Stroke(width = strokePx)
+        onDrawBehind {
+            drawRoundRect(color = baseColor, cornerRadius = cr)
+            if (uniformRimColor.alpha > 0f) {
+                drawRoundRect(
+                    color = uniformRimColor,
+                    topLeft = topLeftOffset,
+                    size = insetSize,
+                    cornerRadius = cr,
+                    style = strokeStyle,
+                )
+            }
         }
     }
 }

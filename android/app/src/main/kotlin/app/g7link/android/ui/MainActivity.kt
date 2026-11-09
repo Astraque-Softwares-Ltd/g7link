@@ -907,7 +907,7 @@ private fun App(
                                     onOpenRecorder = { pcId -> recordPcId = pcId },
                                     onStopRecorder = { RecorderService.stop(context) },
                                     showWhatsNewGuideBanner = startupWalkthrough.showWhatsNewGuideBanner,
-                                    showHiveInvite = hiveInviteShown && appearance.theme != "hive",
+                                    showHiveInvite = hiveInviteShown && appearance.theme != "hive" && appearance.theme != "quiet",
                                     onTryHive = {
                                         preferences.answerHiveInvite()
                                         preferences.update { it.copy(theme = "hive") }
@@ -1040,6 +1040,7 @@ private fun FloatingBottomPillDock(
                         )
                     } else {
                         Modifier.liquidGlassCard(
+                            solid = true,
                             cornerRadius = 30.dp,
                             isGlass = false,
                             baseColor = baseFill,

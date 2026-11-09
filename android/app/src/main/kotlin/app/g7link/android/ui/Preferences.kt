@@ -154,7 +154,7 @@ class Preferences(context: Context) {
         private const val WALKTHROUGH_STEP = "walkthrough_step"
         private const val WHATS_NEW_GUIDE_DISMISSED = "whats_new_guide_dismissed"
 
-        val VALID_THEMES = setOf("hive", "bloom", "graphite", "glass")
+        val VALID_THEMES = setOf("quiet", "hive", "bloom", "graphite", "glass")
         val VALID_MODES = setOf("system", "light", "dark")
 
         fun sanitizeAppearance(

@@ -107,6 +107,7 @@ import app.g7link.android.storage.PhoneStorage
 import app.g7link.android.ui.pairing.PairingActions
 import app.g7link.android.ui.pairing.QrScanner
 import app.g7link.android.ui.theme.LocalGlassTheme
+import app.g7link.android.ui.theme.LocalQuietTheme
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.bentoWell
 import app.g7link.android.ui.theme.liquidGlassCard
@@ -201,17 +202,19 @@ fun WalkthroughScreen(
             )
             Spacer(Modifier.height(12.dp))
 
-            HoneycombCellStage(
-                step = step,
-                permissionGrantedFlags = permissionGrantedFlags,
-                hasPairedPc = hasPairedPc,
-                activeTierIndex = activeTierIndex,
-                isGlass = isGlass,
-                reducedMotion = reducedMotion,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(128.dp),
-            )
+            if (!LocalQuietTheme.current) {
+                HoneycombCellStage(
+                    step = step,
+                    permissionGrantedFlags = permissionGrantedFlags,
+                    hasPairedPc = hasPairedPc,
+                    activeTierIndex = activeTierIndex,
+                    isGlass = isGlass,
+                    reducedMotion = reducedMotion,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(128.dp),
+                )
+            }
             Spacer(Modifier.height(14.dp))
 
             AnimatedContent(

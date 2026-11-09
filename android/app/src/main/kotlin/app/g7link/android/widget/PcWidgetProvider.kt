@@ -119,10 +119,10 @@ class PcWidgetProvider : AppWidgetProvider() {
         private const val REQ_MEDIA_PLAY_PAUSE = 106
         private const val REQ_MEDIA_NEXT = 107
 
-        private val COLOR_ONLINE_TEXT = Color.parseColor("#F4B841")
-        private val COLOR_OFFLINE_TEXT = Color.parseColor("#D5CFC2")
-        private val COLOR_BTN_ACTIVE = Color.parseColor("#FAF6EE")
-        private val COLOR_BTN_DIM = Color.parseColor("#77FAF6EE")
+        private val COLOR_ONLINE_TEXT = Color.parseColor("#F2F2F3")
+        private val COLOR_OFFLINE_TEXT = Color.parseColor("#A1A1A8")
+        private val COLOR_BTN_ACTIVE = Color.parseColor("#F2F2F3")
+        private val COLOR_BTN_DIM = Color.parseColor("#77F2F2F3")
 
         private fun primaryPc(state: CoreState?): Device? =
             state?.devices?.firstOrNull { it.online } ?: state?.devices?.firstOrNull()
