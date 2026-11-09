@@ -89,7 +89,7 @@ Sheet {
                             anchors.verticalCenter: parent.verticalCenter
                             width: 28; height: 28
                             radius: 14
-                            color: row.modelData.outcome === "ok" ? Theme.secondaryContainer
+                            color: Theme.quiet ? "transparent" : row.modelData.outcome === "ok" ? Theme.secondaryContainer
                                  : row.modelData.outcome === "warn" ? Qt.alpha(Theme.warning, 0.18)
                                  : Qt.alpha(Theme.error, 0.16)
                             Icon {

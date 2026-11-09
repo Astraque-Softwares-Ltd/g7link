@@ -1245,7 +1245,7 @@ Item {
             readonly property var audioList: bubble.message.audios || []
             width: Math.max(pictures.width, audiosCol.width, Math.min(text.implicitWidth, bubble.maxWidth - 28) + 28)
             height: pictures.height + audiosCol.height + (text.visible ? text.height + 18 : 0)
-            radius: 18
+            radius: Theme.quiet ? 10 : 18
             color: bubble.mine ? Theme.primaryContainer : Theme.surfaceContainerHigh
             border.width: Theme.graphite ? 1 : 0
             border.color: Theme.outlineVariant
@@ -1274,14 +1274,14 @@ Item {
                         RoundedImage {
                             id: picture
                             anchors.fill: parent
-                            radius: 18
+                            radius: Theme.quiet ? 10 : 18
                             source: parent.modelData
                             fillMode: Image.PreserveAspectCrop
                             sourceSize.width: 520
                         }
                         Rectangle {
                             anchors.fill: parent
-                            radius: 18
+                            radius: Theme.quiet ? 10 : 18
                             color: "transparent"
                             border.width: 2
                             border.color: Theme.focusRing

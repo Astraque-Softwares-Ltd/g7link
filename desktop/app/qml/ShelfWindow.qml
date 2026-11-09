@@ -293,7 +293,7 @@ Window {
                             width: 28
                             height: 28
                             radius: Theme.pill(height)
-                            color: Theme.primaryContainer
+                            color: Theme.quiet ? "transparent" : Theme.primaryContainer
                             anchors.verticalCenter: parent.verticalCenter
 
                             Icon {

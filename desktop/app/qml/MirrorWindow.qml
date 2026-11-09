@@ -541,7 +541,7 @@ Window {
         anchors.bottomMargin: hintBanner.visible ? 8 : 16
         width: Math.min(parent.width - 24, noticeTxt.implicitWidth + 24)
         height: noticeTxt.implicitHeight + 12
-        radius: height / 2
+        radius: Theme.quiet ? Theme.radiusMd : height / 2
         color: Qt.rgba(0, 0, 0, 0.78)
         visible: opacity > 0
         opacity: pillText.length > 0 ? 1 : 0

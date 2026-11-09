@@ -85,7 +85,7 @@ Item {
         if (event.modifiers & Qt.ControlModifier) mods.push("Ctrl")
         if (event.modifiers & Qt.AltModifier) mods.push("Alt")
         if (event.modifiers & Qt.ShiftModifier) mods.push("Shift")
-        if (event.modifiers & Qt.MetaModifier) mods.push(Qt.platform.os === "linux" ? "Super" : "Win")
+        if (event.modifiers & Qt.MetaModifier) mods.push("Super")
         if (mods.length === 0)
             return ""
         let keyName = ""
@@ -179,7 +179,7 @@ Item {
         pc_mirror: qsTr("Share PC screen to phone"),
         webcam: qsTr("Webcam"),
         mic: qsTr("Phone as microphone"),
-        storage: Qt.platform.os === "linux" ? qsTr("File manager integration") : qsTr("File Explorer integration"),
+        storage: qsTr("File manager integration"),
         remote_input: qsTr("Remote mouse, keyboard & Deck"),
         commands: qsTr("Run Deck shell commands"),
         remote_files: qsTr("Remote PC file access")
@@ -837,9 +837,7 @@ Item {
                             iconPath: Icons.sparkle
                             title: qsTr("Animated comb")
                             description: AppController.reduceMotion
-                                ? (Qt.platform.os === "linux"
-                                    ? qsTr("Still while animations are off in system settings.")
-                                    : qsTr("Still while animations are off in Windows."))
+                                ? (qsTr("Still while animations are off in system settings."))
                                 : (AppController.powerSaver
                                     ? qsTr("Still while energy saver is on.")
                                     : qsTr("The honeycomb breathes and pulses."))
@@ -911,10 +909,8 @@ Item {
                                 width: appearanceBottomPair.colWidth
                                 iconPath: Icons.desktop
                                 title: qsTr("Mica backdrop")
-                                description: Qt.platform.os === "windows"
-                                    ? qsTr("Tint window with desktop wallpaper.")
-                                    : qsTr("Only on Windows 11.")
-                                opacity: Qt.platform.os === "windows" ? 1.0 : 0.5
+                                description: qsTr("Only on Windows 11.")
+                                opacity: 0.5
                                 Toggle {
                                     label: qsTr("Mica backdrop")
                                     enabled: Qt.platform.os === "windows"
@@ -946,9 +942,7 @@ Item {
                             width: parent.width
                             iconPath: Icons.globe
                             title: qsTr("Language")
-                            description: Qt.platform.os === "linux"
-                                ? qsTr("G7 Link follows the system unless you pick one.")
-                                : qsTr("G7 Link follows Windows unless you pick one.")
+                            description: qsTr("G7 Link follows the system unless you pick one.")
                             Segmented {
                                 readonly property var other: page.languages.find(
                                     (l) => l.code === Preferences.language && l.code !== "en")
@@ -986,10 +980,10 @@ Item {
                                 y: startupPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
                                 width: startupPairRow.colWidth
                                 iconPath: Icons.power
-                                title: Qt.platform.os === "linux" ? qsTr("Start at login") : qsTr("Start with Windows")
+                                title: qsTr("Start at login")
                                 description: qsTr("Launch in the tray when you sign in.")
                                 Toggle {
-                                    label: Qt.platform.os === "linux" ? qsTr("Start at login") : qsTr("Start with Windows")
+                                    label: qsTr("Start at login")
                                     checked: Preferences.startWithWindows
                                     onToggled: (on) => Preferences.startWithWindows = on
                                 }
@@ -1017,7 +1011,7 @@ Item {
                                     ? Math.round((parent.height - height) / 2)
                                     : (startWinRow.implicitHeight + 1)
                                 width: startupPairRow.colWidth
-                                opacity: Qt.platform.os === "osx" ? 0.5 : 1.0
+                                opacity: 1.0
                                 iconPath: Icons.window
                                 title: qsTr("Stay in system tray")
                                 description: qsTr("Keep running when the window is closed.")
@@ -1479,9 +1473,7 @@ Item {
                                 title: qsTr("Join this phone's hotspot")
                                 description: hotspotRow.network.length > 0
                                     ? qsTr("When Instant Hotspot turns it on, this PC joins %1.").arg(hotspotRow.network)
-                                    : (Qt.platform.os === "linux"
-                                        ? qsTr("Join the phone's hotspot once from your system Wi-Fi list, then choose it here.")
-                                        : qsTr("Join the phone's hotspot once from Windows' Wi-Fi list, then choose it here."))
+                                    : (qsTr("Join the phone's hotspot once from your system Wi-Fi list, then choose it here."))
                                 Button {
                                     variant: "tonal"
                                     size: "sm"
@@ -2207,10 +2199,10 @@ Item {
                                 y: filesSharePairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
                                 width: filesSharePairRow.colWidth
                                 iconPath: Icons.send
-                                title: Qt.platform.os === "linux" ? qsTr("File manager Send to") : qsTr("File Explorer Send to")
+                                title: qsTr("File manager Send to")
                                 description: qsTr("Send files from right-click menu.")
                                 Toggle {
-                                    label: Qt.platform.os === "linux" ? qsTr("File manager Send to") : qsTr("File Explorer Send to")
+                                    label: qsTr("File manager Send to")
                                     checked: Preferences.sendToMenu
                                     onToggled: (on) => Preferences.sendToMenu = on
                                 }
@@ -3350,7 +3342,7 @@ Item {
                                     muted: true
                                     text: AppController.wakeState === "enabled" ? qsTr("Ready")
                                         : AppController.wakeState === "disabled"
-                                          ? (Qt.platform.os === "linux" ? qsTr("Off in the adapter's settings") : qsTr("Off in Windows"))
+                                          ? (qsTr("Off in the adapter's settings"))
                                         : AppController.wakeState === "unknown" ? qsTr("Check settings")
                                         : qsTr("No adapter")
                                 }
@@ -3743,13 +3735,9 @@ Item {
                 wrapMode: Text.WordWrap
                 role: "body"
                 muted: true
-                text: Qt.platform.os === "linux"
-                    ? (hotspotSheet.networks.length > 0
+                text: (hotspotSheet.networks.length > 0
                         ? qsTr("Wi-Fi networks this PC has joined before. Your system keeps their passwords; G7 Link never sees them.")
                         : qsTr("This PC hasn't saved any Wi-Fi networks yet. Join the phone's hotspot once from your system Wi-Fi list first."))
-                    : (hotspotSheet.networks.length > 0
-                        ? qsTr("Wi-Fi networks this PC has joined before. Windows keeps their passwords; G7 Link never sees them.")
-                        : qsTr("This PC hasn't saved any Wi-Fi networks yet. Join the phone's hotspot once from Windows' Wi-Fi list first."))
             }
             // A PC can have saved dozens of networks: the list scrolls.
             ListView {

@@ -453,7 +453,7 @@ Item {
             wolCheck: true,
             summary: qsTr("Let your paired phone wake this PC from sleep over your local network using Wake-on-LAN."),
             whereLabel: qsTr("Settings › Connection & About › Wake from your phone"),
-            needsLabel: qsTr("Network adapter with Wake-on-LAN enabled in Windows"),
+            needsLabel: qsTr("Network adapter with Wake-on-LAN enabled on this PC"),
             targetId: "settings:connection:wol",
             docKey: "wol"
         },
@@ -466,7 +466,7 @@ Item {
             toggleKey: "",
             pcLocal: true,
             localAlways: true,
-            summary: qsTr("Diagnose and fix Windows Firewall rules, network profile type, and local discovery issues."),
+            summary: qsTr("Diagnose and fix firewall rules and local discovery issues."),
             whereLabel: qsTr("Settings › Connection & About › Connection Doctor"),
             needsLabel: qsTr("Always available on PC"),
             targetId: "doctor:open",
@@ -747,7 +747,7 @@ Item {
                         width: chipText.implicitWidth + 24
                         implicitWidth: chipText.implicitWidth + 24
                         implicitHeight: 30
-                        radius: 15
+                        radius: Theme.quiet ? Theme.radiusMd : 15
                         color: selected ? Theme.secondaryContainer : Theme.surfaceContainerLow
                         border.width: 1
                         border.color: selected ? Theme.primary : Theme.outlineVariant
@@ -805,7 +805,7 @@ Item {
                             implicitWidth: 38
                             implicitHeight: 38
                             radius: Theme.radiusMd
-                            color: Theme.secondaryContainer
+                            color: Theme.quiet ? "transparent" : Theme.secondaryContainer
 
                             Icon {
                                 anchors.centerIn: parent
@@ -836,7 +836,7 @@ Item {
                                     width: badgeLabel.implicitWidth + 16
                                     implicitWidth: badgeLabel.implicitWidth + 16
                                     implicitHeight: 22
-                                    radius: 11
+                                    radius: Theme.quiet ? Theme.radiusMd : 11
                                     color: statusInfo.tone === "available"
                                         ? Theme.secondaryContainer
                                         : (statusInfo.tone === "warn"
@@ -1041,7 +1041,7 @@ Item {
                     implicitWidth: 36
                     implicitHeight: 36
                     radius: Theme.radiusMd
-                    color: Theme.secondaryContainer
+                    color: Theme.quiet ? "transparent" : Theme.secondaryContainer
 
                     Icon {
                         anchors.centerIn: parent
@@ -1078,7 +1078,7 @@ Item {
                         readonly property bool activeTab: guide.activeDocKey === modelData.key
                         implicitWidth: tabTxt.implicitWidth + 20
                         implicitHeight: 28
-                        radius: 14
+                        radius: Theme.quiet ? Theme.radiusMd : 14
                         color: activeTab
                             ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.16)
                             : Theme.surfaceContainerLow

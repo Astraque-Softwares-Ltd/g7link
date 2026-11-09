@@ -294,7 +294,7 @@ Item {
                             width: 32
                             height: 32
                             radius: Theme.radiusSm
-                            color: row.selected ? Theme.primaryContainer : Theme.surfaceContainerHighest
+                            color: Theme.quiet ? "transparent" : row.selected ? Theme.primaryContainer : Theme.surfaceContainerHighest
 
                             Icon {
                                 anchors.centerIn: parent

@@ -18,13 +18,13 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             width: 52; height: 52
             radius: Theme.radiusMd
-            color: Theme.graphite ? Theme.surfaceContent : Theme.primary
+            color: Theme.quiet ? Theme.focusRing : Theme.graphite ? Theme.surfaceContent : Theme.primary
             Icon {
                 anchors.centerIn: parent
                 width: 26; height: 26
                 path: Icons.mark
                 stroke: 2.4
-                color: Theme.graphite ? Theme.surface : Theme.primaryContent
+                color: Theme.quiet ? Theme.surface : Theme.graphite ? Theme.surface : Theme.primaryContent
             }
         }
         Column {

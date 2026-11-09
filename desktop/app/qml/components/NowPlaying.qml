@@ -583,7 +583,7 @@ Card {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width
                     height: bar.activeHover ? 7 : 4.5
-                    radius: height / 2
+                    radius: Theme.quiet ? Theme.radiusMd : height / 2
                     color: Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.16 : 0.12)
                     Behavior on height {
                         enabled: !Theme.reduceMotion
@@ -754,7 +754,7 @@ Card {
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width
                         height: volMouse.containsMouse || volMouse.pressed ? 6 : 4
-                        radius: height / 2
+                        radius: Theme.quiet ? Theme.radiusMd : height / 2
                         color: Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.16 : 0.12)
                         Behavior on height { NumberAnimation { duration: 120 } }
 
@@ -799,7 +799,7 @@ Card {
                     anchors.verticalCenter: parent.verticalCenter
                     height: 22
                     width: speakerRouteRow.implicitWidth + 12
-                    radius: 11
+                    radius: Theme.quiet ? Theme.radiusMd : 11
                     color: Preferences.streamPcAudioToPhone
                         ? Theme.secondaryContainer
                         : Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.10 : 0.07)

@@ -188,9 +188,7 @@ FocusScope {
         if (AppController.doctorBusy)
             return qsTr("Checking firewall and local network...")
         if (parsedDoctorChecks.length === 0)
-            return Qt.platform.os === "linux"
-                ? qsTr("Run a quick check to verify your firewall and local discovery.")
-                : qsTr("Run a quick check to verify Windows Firewall and local discovery.")
+            return qsTr("Run a quick check to verify your firewall and local discovery.")
         let problems = 0
         for (let i = 0; i < parsedDoctorChecks.length; i++) {
             if (parsedDoctorChecks[i].outcome !== "ok")
@@ -350,13 +348,14 @@ FocusScope {
 
                 // Unified Honeycomb Cell Stage (fixed height across all 7 steps)
                 Rectangle {
+                    visible: !Theme.quiet
                     Layout.fillWidth: true
                     Layout.preferredHeight: 148
                     implicitWidth: 640
                     implicitHeight: 148
                     radius: Theme.radiusLg
-                    color: Theme.surfaceContainerLow
-                    border.width: 1
+                    color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                    border.width: Theme.quiet ? 0 : 1
                     border.color: Theme.outlineVariant
 
                     Canvas {
@@ -746,8 +745,8 @@ FocusScope {
                                         implicitWidth: 260
                                         implicitHeight: tileCol.implicitHeight + 24
                                         radius: Theme.radiusMd
-                                        color: Theme.surfaceContainerLow
-                                        border.width: 1
+                                        color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                        border.width: Theme.quiet ? 0 : 1
                                         border.color: Theme.outlineVariant
 
                                         RowLayout {
@@ -762,7 +761,7 @@ FocusScope {
                                                 implicitHeight: 34
                                                 Layout.alignment: Qt.AlignTop
                                                 radius: 10
-                                                color: Theme.primaryContainer
+                                                color: Theme.quiet ? "transparent" : Theme.primaryContainer
 
                                                 Icon {
                                                     anchors.centerIn: parent
@@ -852,8 +851,8 @@ FocusScope {
                                     },
                                     {
                                         icon: Icons.shield,
-                                        title: qsTr("Hardware-backed device keys"),
-                                        body: qsTr("Device keys are protected by Windows DPAPI and the Android Keystore.")
+                                        title: qsTr("Device keys stay on your devices"),
+                                        body: qsTr("On this PC the key is a file only your account can read. On the phone it's kept in the Android Keystore.")
                                     },
                                     {
                                         icon: Icons.wifi,
@@ -868,8 +867,8 @@ FocusScope {
                                     implicitWidth: 520
                                     implicitHeight: privacyRow.implicitHeight + 24
                                     radius: Theme.radiusMd
-                                    color: Theme.surfaceContainerLow
-                                    border.width: 1
+                                    color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                    border.width: Theme.quiet ? 0 : 1
                                     border.color: Theme.outlineVariant
 
                                     RowLayout {
@@ -885,7 +884,7 @@ FocusScope {
                                             implicitHeight: 34
                                             Layout.alignment: Qt.AlignTop
                                             radius: 10
-                                            color: Theme.primaryContainer
+                                            color: Theme.quiet ? "transparent" : Theme.primaryContainer
 
                                             Icon {
                                                 anchors.centerIn: parent
@@ -931,8 +930,8 @@ FocusScope {
                                 implicitWidth: 520
                                 implicitHeight: releaseCol.implicitHeight + 28
                                 radius: Theme.radiusMd
-                                color: Theme.surfaceContainerLow
-                                border.width: 1
+                                color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                border.width: Theme.quiet ? 0 : 1
                                 border.color: Theme.outlineVariant
 
                                 ColumnLayout {
@@ -1011,8 +1010,8 @@ FocusScope {
                                 implicitWidth: 520
                                 implicitHeight: adbCol.implicitHeight + 28
                                 radius: Theme.radiusMd
-                                color: Theme.surfaceContainerLow
-                                border.width: 1
+                                color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                border.width: Theme.quiet ? 0 : 1
                                 border.color: Theme.outlineVariant
 
                                 ColumnLayout {
@@ -1164,8 +1163,8 @@ FocusScope {
                                         implicitWidth: 260
                                         implicitHeight: onDefaultCol.implicitHeight + 28
                                         radius: Theme.radiusMd
-                                        color: Theme.surfaceContainerLow
-                                        border.width: 1
+                                        color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                        border.width: Theme.quiet ? 0 : 1
                                         border.color: Theme.outlineVariant
 
                                         ColumnLayout {
@@ -1225,8 +1224,8 @@ FocusScope {
                                         implicitWidth: 260
                                         implicitHeight: optInCol.implicitHeight + 28
                                         radius: Theme.radiusMd
-                                        color: Theme.surfaceContainerLow
-                                        border.width: 1
+                                        color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                        border.width: Theme.quiet ? 0 : 1
                                         border.color: Theme.outlineVariant
 
                                         ColumnLayout {
@@ -1317,8 +1316,8 @@ FocusScope {
                                         implicitWidth: 260
                                         implicitHeight: pairedDefaultCol.implicitHeight + 28
                                         radius: Theme.radiusMd
-                                        color: Theme.surfaceContainerLow
-                                        border.width: 1
+                                        color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                        border.width: Theme.quiet ? 0 : 1
                                         border.color: Theme.outlineVariant
 
                                         ColumnLayout {
@@ -1371,8 +1370,8 @@ FocusScope {
                                         implicitWidth: 260
                                         implicitHeight: pairedOptInCol.implicitHeight + 28
                                         radius: Theme.radiusMd
-                                        color: Theme.surfaceContainerLow
-                                        border.width: 1
+                                        color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                        border.width: Theme.quiet ? 0 : 1
                                         border.color: Theme.outlineVariant
 
                                         ColumnLayout {
@@ -1430,8 +1429,8 @@ FocusScope {
                                 implicitWidth: 520
                                 implicitHeight: toastRow.implicitHeight + 24
                                 radius: Theme.radiusMd
-                                color: Theme.surfaceContainerLow
-                                border.width: 1
+                                color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                border.width: Theme.quiet ? 0 : 1
                                 border.color: Theme.outlineVariant
 
                                 RowLayout {
@@ -1446,7 +1445,7 @@ FocusScope {
                                         implicitWidth: 34
                                         implicitHeight: 34
                                         radius: 10
-                                        color: Theme.primaryContainer
+                                        color: Theme.quiet ? "transparent" : Theme.primaryContainer
 
                                         Icon {
                                             anchors.centerIn: parent
@@ -1463,19 +1462,15 @@ FocusScope {
 
                                         Txt {
                                             Layout.fillWidth: true
-                                            text: Qt.platform.os === "linux" ? qsTr("Desktop notifications") : qsTr("Windows notifications")
+                                            text: qsTr("Desktop notifications")
                                             role: "title"
                                         }
 
                                         Txt {
                                             Layout.fillWidth: true
                                             text: AppController.toastsEnabled
-                                                ? (Qt.platform.os === "linux"
-                                                    ? qsTr("Enabled in desktop notification settings.")
-                                                    : qsTr("Enabled in Windows Settings."))
-                                                : (Qt.platform.os === "linux"
-                                                    ? qsTr("Notifications are muted or Do Not Disturb is active.")
-                                                    : qsTr("Notifications are off for G7 Link in Windows Settings."))
+                                                ? (qsTr("Enabled in desktop notification settings."))
+                                                : (qsTr("Notifications are muted or Do Not Disturb is active."))
                                             role: "caption"
                                             color: Theme.surfaceContentVariant
                                             wrapMode: Text.WordWrap
@@ -1512,8 +1507,8 @@ FocusScope {
                                 implicitWidth: 520
                                 implicitHeight: startupRow.implicitHeight + 24
                                 radius: Theme.radiusMd
-                                color: Theme.surfaceContainerLow
-                                border.width: 1
+                                color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                border.width: Theme.quiet ? 0 : 1
                                 border.color: Theme.outlineVariant
 
                                 RowLayout {
@@ -1528,7 +1523,7 @@ FocusScope {
                                         implicitWidth: 34
                                         implicitHeight: 34
                                         radius: 10
-                                        color: Theme.primaryContainer
+                                        color: Theme.quiet ? "transparent" : Theme.primaryContainer
 
                                         Icon {
                                             anchors.centerIn: parent
@@ -1545,7 +1540,7 @@ FocusScope {
 
                                         Txt {
                                             Layout.fillWidth: true
-                                            text: Qt.platform.os === "linux" ? qsTr("Start at login") : qsTr("Start with Windows")
+                                            text: qsTr("Start at login")
                                             role: "title"
                                         }
 
@@ -1559,7 +1554,7 @@ FocusScope {
                                     }
 
                                     Toggle {
-                                        label: Qt.platform.os === "linux" ? qsTr("Start at login") : qsTr("Start with Windows")
+                                        label: qsTr("Start at login")
                                         checked: Preferences.startWithWindows
                                         onToggled: next => Preferences.startWithWindows = next
                                     }
@@ -1572,8 +1567,8 @@ FocusScope {
                                 implicitWidth: 520
                                 implicitHeight: firewallCol.implicitHeight + 24
                                 radius: Theme.radiusMd
-                                color: Theme.surfaceContainerLow
-                                border.width: 1
+                                color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                border.width: Theme.quiet ? 0 : 1
                                 border.color: Theme.outlineVariant
 
                                 ColumnLayout {
@@ -1592,7 +1587,7 @@ FocusScope {
                                             implicitWidth: 34
                                             implicitHeight: 34
                                             radius: 10
-                                            color: Theme.primaryContainer
+                                            color: Theme.quiet ? "transparent" : Theme.primaryContainer
 
                                             Icon {
                                                 anchors.centerIn: parent
@@ -1671,8 +1666,8 @@ FocusScope {
                                     implicitWidth: 520
                                     implicitHeight: doneRow.implicitHeight + 24
                                     radius: Theme.radiusMd
-                                    color: Theme.surfaceContainerLow
-                                    border.width: 1
+                                    color: Theme.quiet ? "transparent" : Theme.surfaceContainerLow
+                                    border.width: Theme.quiet ? 0 : 1
                                     border.color: Theme.outlineVariant
 
                                     RowLayout {
@@ -1688,7 +1683,7 @@ FocusScope {
                                             implicitHeight: 34
                                             Layout.alignment: Qt.AlignTop
                                             radius: 10
-                                            color: Theme.primaryContainer
+                                            color: Theme.quiet ? "transparent" : Theme.primaryContainer
 
                                             Icon {
                                                 anchors.centerIn: parent

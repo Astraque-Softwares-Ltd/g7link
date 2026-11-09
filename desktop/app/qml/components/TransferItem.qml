@@ -221,7 +221,7 @@ Item {
                     Rectangle {
                         width: fill.reach
                         height: parent.height
-                        radius: height / 2
+                        radius: Theme.quiet ? Theme.radiusMd : height / 2
                     }
                 }
             }

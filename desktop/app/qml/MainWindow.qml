@@ -94,6 +94,52 @@ NativeWindow {
         }
         window.page = "home"
     }
+    // The G7 theme, on a wide screen: related sections share the window.
+    readonly property var pagePair: {
+        if (!Theme.quiet || pages.width < 1560)
+            return []
+        const groups = [["messages", "calls"], ["photos", "apps"], ["deck", "timeline"]]
+        return groups.find((group) => group.includes(window.page)) || []
+    }
+    function pageUrl(name) {
+        switch (name) {
+        case "timeline": return "qrc:/qt/qml/app/g7link/qml/pages/TimelinePage.qml"
+        case "messages": return "qrc:/qt/qml/app/g7link/qml/pages/MessagesPage.qml"
+        case "calls": return "qrc:/qt/qml/app/g7link/qml/pages/CallsPage.qml"
+        case "photos": return "qrc:/qt/qml/app/g7link/qml/pages/PhotosPage.qml"
+        case "apps": return "qrc:/qt/qml/app/g7link/qml/pages/AppsPage.qml"
+        case "deck": return "qrc:/qt/qml/app/g7link/qml/pages/DeckPage.qml"
+        case "guide": return "qrc:/qt/qml/app/g7link/qml/pages/FeaturesGuidePage.qml"
+        case "settings": return "qrc:/qt/qml/app/g7link/qml/pages/SettingsPage.qml"
+        default: return "qrc:/qt/qml/app/g7link/qml/pages/HomePage.qml"
+        }
+    }
+
+    // Hooks a loaded page up to the window (both pages, when two share the screen).
+    function wirePage(item) {
+        if ("deviceId" in item)
+            item.deviceId = Qt.binding(() => window.currentDeviceId)
+        if ("deviceName" in item)
+            item.deviceName = Qt.binding(() => window.currentDeviceName)
+        item.active = true
+        if (window.pendingSettingsSection.length > 0 && "currentSection" in item) {
+            item.currentSection = window.pendingSettingsSection
+            window.pendingSettingsSection = ""
+        }
+        if (item.pairRequested)
+            item.pairRequested.connect(window.openPairing)
+        if (item.showMeRequested)
+            item.showMeRequested.connect(window.navigateAndHighlight)
+        if (item.restartWalkthroughRequested)
+            item.restartWalkthroughRequested.connect(() => Preferences.restartWalkthrough())
+        if (item.textRequested) {
+            item.textRequested.connect((number, name) => {
+                Messages.startChat(window.currentDeviceId, number, name)
+                window.page = "messages"
+            })
+        }
+    }
+
     function navigateAndHighlight(targetId) {
         if (!targetId || targetId.length === 0)
             return
@@ -420,7 +466,7 @@ NativeWindow {
 
     // Window background: a tinted veil of the theme over Mica/Acrylic (so the
     // theme's seed color is rich and clear), opaque otherwise.
-    readonly property color windowSurface: Theme.graphite || Theme.amoled || Theme.hive
+    readonly property color windowSurface: Theme.graphite || Theme.amoled || Theme.hive || Theme.quiet
         ? Theme.surface
         : Qt.tint(
             Theme.surface,
@@ -746,7 +792,7 @@ NativeWindow {
 
                 height: 34
                 width: Math.max(0, Math.min(14 + 10 + 8 + sharingLabel.implicitWidth + 12 + stopSharing.width + 4, room))
-                radius: height / 2
+                radius: Theme.quiet ? Theme.radiusMd : height / 2
                 x: Math.max(pageTitle.x + pageTitle.width + 16,
                             Math.min((parent.width - width) / 2, topBarActions.x - width - 16))
                 anchors.verticalCenter: parent.verticalCenter
@@ -895,7 +941,10 @@ NativeWindow {
 
             Loader {
                 id: pageLoader
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: companionLoader.active ? Math.floor(parent.width / 2) : parent.width
                 active: !window.welcome && AppController.status === "ready"
                 property bool firstLoadDone: false
                 transform: [
@@ -935,42 +984,9 @@ NativeWindow {
                         easing.type: Easing.OutCubic
                     }
                 }
-                source: {
-                    if (!active) return ""
-                    switch (window.page) {
-                    case "timeline": return "qrc:/qt/qml/app/g7link/qml/pages/TimelinePage.qml"
-                    case "messages": return "qrc:/qt/qml/app/g7link/qml/pages/MessagesPage.qml"
-                    case "calls": return "qrc:/qt/qml/app/g7link/qml/pages/CallsPage.qml"
-                    case "photos": return "qrc:/qt/qml/app/g7link/qml/pages/PhotosPage.qml"
-                    case "apps": return "qrc:/qt/qml/app/g7link/qml/pages/AppsPage.qml"
-                    case "deck": return "qrc:/qt/qml/app/g7link/qml/pages/DeckPage.qml"
-                    case "guide": return "qrc:/qt/qml/app/g7link/qml/pages/FeaturesGuidePage.qml"
-                    case "settings": return "qrc:/qt/qml/app/g7link/qml/pages/SettingsPage.qml"
-                    default: return "qrc:/qt/qml/app/g7link/qml/pages/HomePage.qml"
-                    }
-                }
+                source: active ? window.pageUrl(window.pagePair.length > 0 ? window.pagePair[0] : window.page) : ""
                 onLoaded: {
-                    if ("deviceId" in item)
-                        item.deviceId = Qt.binding(() => window.currentDeviceId)
-                    if ("deviceName" in item)
-                        item.deviceName = Qt.binding(() => window.currentDeviceName)
-                    item.active = true
-                    if (window.pendingSettingsSection.length > 0 && "currentSection" in item) {
-                        item.currentSection = window.pendingSettingsSection
-                        window.pendingSettingsSection = ""
-                    }
-                    if (item.pairRequested)
-                        item.pairRequested.connect(window.openPairing)
-                    if (item.showMeRequested)
-                        item.showMeRequested.connect(window.navigateAndHighlight)
-                    if (item.restartWalkthroughRequested)
-                        item.restartWalkthroughRequested.connect(() => Preferences.restartWalkthrough())
-                    if (item.textRequested) {
-                        item.textRequested.connect((number, name) => {
-                            Messages.startChat(window.currentDeviceId, number, name)
-                            window.page = "messages"
-                        })
-                    }
+                    window.wirePage(item)
                     if (!pageLoader.firstLoadDone || Theme.reduceMotion) {
                         pageLoader.firstLoadDone = true
                         pageLoader.opacity = 1.0
@@ -985,6 +1001,25 @@ NativeWindow {
                         Qt.callLater(() => pageEnterAnim.restart())
                     }
                 }
+            }
+
+            Rectangle {
+                visible: companionLoader.active
+                x: pageLoader.width
+                width: 1
+                height: parent.height
+                color: Theme.outlineVariant
+            }
+            Loader {
+                id: companionLoader
+                active: pageLoader.active && window.pagePair.length > 0
+                anchors.left: pageLoader.right
+                anchors.leftMargin: 1
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                source: active ? window.pageUrl(window.pagePair[1]) : ""
+                onLoaded: window.wirePage(item)
             }
         }
     }
@@ -1053,7 +1088,7 @@ NativeWindow {
                     iconPath: modelData.icon
                     text: modelData.name
                     showLabel: !dock.compact
-                    selected: window.page === modelData.page
+                    selected: window.page === modelData.page || window.pagePair.includes(modelData.page)
                     onClicked: {
                         if (modelData.page === "commands")
                             AppController.openCommandPalette()

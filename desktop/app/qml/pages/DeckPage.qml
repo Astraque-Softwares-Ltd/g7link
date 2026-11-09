@@ -98,14 +98,14 @@ Item {
         { id: "volume_up",        group: qsTr("Audio"), label: qsTr("Volume up") },
         { id: "volume_mute",      group: qsTr("Audio"), label: qsTr("Mute speaker") },
         { id: "mic_mute",         group: qsTr("Audio"), label: qsTr("Mute microphone") },
-        { id: "show_desktop",     group: qsTr("System"), label: Qt.platform.os === "linux" ? qsTr("Show desktop (Super+D)") : qsTr("Show desktop (Win+D)") },
+        { id: "show_desktop",     group: qsTr("System"), label: qsTr("Show desktop (Super+D)") },
         { id: "switch_window",    group: qsTr("System"), label: qsTr("Switch window (Alt+Tab)") },
-        { id: "screenshot",       group: qsTr("System"), label: Qt.platform.os === "linux" ? qsTr("Screenshot") : qsTr("Screenshot (Win+Shift+S)") },
+        { id: "screenshot",       group: qsTr("System"), label: qsTr("Screenshot") },
         { id: "lock_pc",          group: qsTr("System"), label: qsTr("Lock PC") },
         { id: "shortcut",         group: qsTr("Custom"), label: qsTr("Keyboard shortcut") },
         { id: "open_url",         group: qsTr("Custom"), label: qsTr("Open website") },
         { id: "type_text",        group: qsTr("Custom"), label: qsTr("Type text snippet") },
-        { id: "launch_app",       group: qsTr("Apps"),   label: Qt.platform.os === "linux" ? qsTr("Launch application (.desktop / binary)") : qsTr("Launch application (.exe / .lnk)") },
+        { id: "launch_app",       group: qsTr("Apps"),   label: qsTr("Launch application (.desktop / binary)") },
         { id: "run_command",      group: qsTr("Apps"),   label: qsTr("Run shell command") }
     ]
 
@@ -144,9 +144,7 @@ Item {
     FileDialog {
         id: appFilePicker
         title: qsTr("Choose an application or shortcut")
-        nameFilters: Qt.platform.os === "linux"
-            ? [qsTr("Applications and launchers (*.desktop *.AppImage *)"), qsTr("All files (*)")]
-            : [qsTr("Applications and shortcuts (*.exe *.lnk)")]
+        nameFilters: [qsTr("Applications and launchers (*.desktop *.AppImage *)"), qsTr("All files (*)")]
         onAccepted: {
             const localPath = DeckController.urlToLocalPath(selectedFile.toString())
             if (localPath.length > 0) {
@@ -425,7 +423,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: 22
                                     width: statusLabel.implicitWidth + 12
-                                    radius: 11
+                                    radius: Theme.quiet ? Theme.radiusMd : 11
                                     color: tileSlot.highlighted ? Theme.primaryContainer : Theme.surfaceContainerHigh
                                     Txt {
                                         id: statusLabel
@@ -443,7 +441,7 @@ Item {
                                     anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
                                     width: 28; height: 28
-                                    radius: 14
+                                    radius: Theme.quiet ? Theme.radiusMd : 14
                                     activeFocusOnTab: true
                                     color: testHover.hovered ? Theme.surfaceContainerHighest : "transparent"
                                     border.width: Theme.focusVisible(testBtn) ? 2 : 0
@@ -760,7 +758,7 @@ Item {
                     Chip {
                         interactive: true
                         selected: editorSheet.modWin
-                        text: Qt.platform.os === "linux" ? qsTr("Super") : qsTr("Win")
+                        text: qsTr("Super")
                         onClicked: editorSheet.modWin = !editorSheet.modWin
                     }
                 }
@@ -771,7 +769,7 @@ Item {
                     text: editorSheet.actionKind === "shortcut" ? qsTr("Key (e.g. c, v, z, f5, tab, enter, space, escape, up, down):")
                         : editorSheet.actionKind === "open_url" ? qsTr("Website address (https://…):")
                         : editorSheet.actionKind === "type_text" ? qsTr("Text snippet to type:")
-                        : editorSheet.actionKind === "launch_app" ? (Qt.platform.os === "linux" ? qsTr("Application or launcher path (/usr/bin/…, .desktop, or .AppImage):") : qsTr("Application or shortcut path (.exe or .lnk):"))
+                        : editorSheet.actionKind === "launch_app" ? (qsTr("Application or launcher path (/usr/bin/…, .desktop, or .AppImage):"))
                         : qsTr("Shell command to run on this PC:")
                 }
 
