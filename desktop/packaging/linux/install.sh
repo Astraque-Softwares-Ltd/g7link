@@ -491,11 +491,42 @@ finish() {
     echo "It updates itself from now on. If it was already open, quit and open it again."
 }
 
+# Has the installed app undo what it set up for the user (the file managers'
+# Send to entries, the phone bookmarks, its menu entry, starting with the
+# computer) and quit if it's running. As the user, not root: those are in
+# their home. Whatever happens, the uninstall goes on.
+app_cleanup() {
+    user_share="${XDG_DATA_HOME:-$TARGET_HOME/.local/share}"
+    app=""
+    for candidate in "$(command -v g7link-desktop 2>/dev/null || true)" /usr/bin/g7link-desktop \
+        /usr/local/bin/g7link-desktop /opt/g7link/g7link-desktop "$TARGET_HOME/.local/bin/g7link-desktop" \
+        "$user_share/g7link-app/g7link-desktop"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then app="$candidate"; break; fi
+    done
+    if [ -z "$app" ]; then
+        say "The app isn't here, so it can't clean up after itself."
+        return 0
+    fi
+    set -- "$app" --uninstall
+    if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
+        # The user's shell expands it, so a quote in the path stays a quote.
+        # shellcheck disable=SC2016
+        set -- env G7LINK_APP="$app" su -s /bin/sh "$TARGET_USER" -c 'exec "$G7LINK_APP" --uninstall'
+    fi
+    if has timeout; then set -- timeout 60 "$@"; fi
+    if run "$@"; then
+        good "The app removed its menu entries and file manager actions"
+    else
+        note "The app couldn't clean up after itself; going on."
+    fi
+}
+
 uninstall() {
     STEPS=3
     find_admin
     find_user
     step "Removing G7 Link"
+    app_cleanup
     removed=0
     if has dpkg && dpkg -s g7link >/dev/null 2>&1; then
         admin env DEBIAN_FRONTEND=noninteractive apt-get remove -y g7link && removed=1
