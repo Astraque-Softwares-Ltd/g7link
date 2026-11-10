@@ -194,7 +194,7 @@ pub(crate) fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
 }
 
 /// Formats a clipboard text string for display in the Timeline UI:
-/// - Local file paths (including `"C:\..."` quoted paths from Explorer's "Copy as path")
+/// - Local file paths (quoted or not, absolute or under `~/`)
 ///   return `("Copied <filename>", Some(unquoted_path))`.
 /// - Web/geo URLs (`http://`, `https://`, `geo:`) return `("Link · <domain>", Some(raw_url))`.
 /// - Long or multi-line text returns `("Copied text: <first words>", Some(raw_first_line))`.
@@ -233,19 +233,11 @@ pub fn format_clip_display(raw_text: &str) -> (String, Option<String>) {
         }
     }
 
-    let bytes = unquoted.as_bytes();
-    let is_win_drive = bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'\\' || bytes[2] == b'/');
-    let is_unc = unquoted.starts_with("\\\\") && unquoted.len() > 3;
-    let is_unix_path = (unquoted.starts_with('/') && !unquoted.starts_with("//") && unquoted.len() > 2)
+    let is_path = (unquoted.starts_with('/') && !unquoted.starts_with("//") && unquoted.len() > 2)
         || unquoted.starts_with("~/");
-    if is_win_drive || is_unc || is_unix_path {
-        let cleaned = unquoted.trim_end_matches(['\\', '/']);
-        if let Some(name) = cleaned.rsplit(['\\', '/']).find(|seg| !seg.is_empty())
-            && !name.ends_with(':')
-        {
+    if is_path {
+        let name = unquoted.trim_end_matches('/').rsplit('/').find(|seg| !seg.is_empty());
+        if let Some(name) = name {
             return (format!("Copied file {name}"), Some(unquoted.to_owned()));
         }
     }
@@ -352,9 +344,9 @@ mod tests {
 
     #[test]
     fn formats_quoted_paths_urls_and_text_for_timeline() {
-        let (t1, d1) = format_clip_display("\"C:\\Users\\Alice\\Videos\\Sample Clip.mp4\"");
+        let (t1, d1) = format_clip_display("\"/home/alice/Videos/Sample Clip.mp4\"");
         assert_eq!(t1, "Copied file Sample Clip.mp4");
-        assert_eq!(d1.as_deref(), Some("C:\\Users\\Alice\\Videos\\Sample Clip.mp4"));
+        assert_eq!(d1.as_deref(), Some("/home/alice/Videos/Sample Clip.mp4"));
 
         let (t2, d2) = format_clip_display("https://example.com/posts/12345");
         assert_eq!(t2, "Link · example.com");

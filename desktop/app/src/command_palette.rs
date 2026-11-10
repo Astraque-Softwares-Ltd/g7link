@@ -1155,8 +1155,8 @@ fn build_candidates() -> Vec<PaletteCandidate> {
         }
     }
 
-    let clip = match crate::win::clipboard::read() {
-        crate::win::clipboard::Clip::Text { text, .. } => text,
+    let clip = match crate::sys::clipboard::read() {
+        crate::sys::clipboard::Clip::Text { text, .. } => text,
         _ => String::new(),
     };
     let from_clipboard = clipboard_number_candidates(&out, &clip);

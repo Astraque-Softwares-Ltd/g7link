@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Calls on a phone (docs/protocol/calls.md): a ringing Windows
+//! Calls on a phone (docs/protocol/calls.md): a ringing desktop
 //! notification to answer, decline or silence the call (its audio stays on
 //! the phone), the call in progress (for Home's call card and a quiet
 //! notification to mute or end it), and a notification for calls nobody
@@ -26,7 +26,7 @@ use crate::{
     core_host,
     messages::{Status, digits},
     state::Changes,
-    win::{
+    sys::{
         bt_hfp,
         toast::{self, CALL_ANSWER, CALL_DECLINE, CALL_END, Toast},
     },
@@ -51,14 +51,14 @@ fn note_call_ongoing(device: DeviceId) {
     // pause music the user started again during the call.
     let started = ongoing_calls(|c| c.insert(device));
     if started && PAUSE_MEDIA_ON_CALL.load(Ordering::Relaxed) {
-        crate::win::media_sessions::pause_for_call();
+        crate::sys::media_sessions::pause_for_call();
     }
 }
 
 fn note_call_ended(device: DeviceId) {
     let all_done = ongoing_calls(|c| c.remove(&device) && c.is_empty());
     if all_done {
-        crate::win::media_sessions::resume_after_call();
+        crate::sys::media_sessions::resume_after_call();
         let _ = std::thread::Builder::new().name("hfp-disconnect".into()).spawn(|| {
             bt_hfp::disconnect_audio();
             refresh_hfp_cache(None);

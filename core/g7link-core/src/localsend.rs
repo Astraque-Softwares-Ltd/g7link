@@ -1357,7 +1357,6 @@ async fn finalize_uploaded_file(
             fs::copy(&part_path, &dest)?;
             let _ = fs::remove_file(&part_path);
         }
-        crate::transfer::mark_from_elsewhere(&dest);
         if folder.is_none() {
             guard.saved_items.push(dest);
         }

@@ -51,7 +51,7 @@ t = "clip.image"  b = { mime: text, size: uint }
 
 followed by exactly `size` bytes of the image, then finishes its side.
 `mime` is `image/png` or `image/jpeg`; senders convert other formats (a
-copied bitmap on Windows, a WebP on Android) to PNG. `size` is 1 byte to
+copied JPEG, WebP or BMP on Linux, a WebP on Android) to PNG. `size` is 1 byte to
 32 MiB.
 
 The receiver puts the image on its clipboard and answers on the same
@@ -62,17 +62,16 @@ be written. A receiver that refuses early stops reading (QUIC
 after 60 seconds.
 
 Receivers offer the image the way their platform's apps paste it best:
-Windows as a bitmap with alpha (`CF_DIBV5`) plus the `PNG` format when a
-PNG arrived; Android as a content URI from the app's own provider.
+Linux as `image/png`; Android as a content URI from the app's own provider.
 
 ## 4. Rules
 
 - **Consent.** Each device sends and accepts only with the `clipboard`
   toggle on for the other device.
-- **Sensitive content is never sent.** On Windows: clips marked
-  `ExcludeClipboardContentFromMonitorProcessing`, or with
-  `CanIncludeInClipboardHistory` set to 0 (what password managers use). On
-  Android: clips marked `ClipDescription.EXTRA_IS_SENSITIVE`.
+- **Sensitive content is never sent.** On Linux: clips offering
+  `x-gnome-privacy-hint`, or `x-kde-passwordManagerHint` set to `secret`
+  (what password managers use). On Android: clips marked
+  `ClipDescription.EXTRA_IS_SENSITIVE`.
 - **No echoes.** A device does not send text it just received with
   `clip.set`.
 - **Smart clipboard context chips (local only).** When a text clip arrives via

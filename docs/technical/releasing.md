@@ -5,38 +5,46 @@ apps update themselves afterwards.
 
 ## What a release is
 
-A GitHub release with four files:
+A GitHub release with these files, built by
+[`build.yml`](../../.github/workflows/build.yml):
 
 | File | Built by |
 |---|---|
-| `G7Link-<version>-x64-setup.exe` | The `windows` job: `scripts/package.ps1`, then `scripts/smoke-installer.ps1` installs and uninstalls it |
-| `G7Link-<version>-arm64-setup.exe` | The `windows-arm64` job: cross-compiled and packaged via `scripts/package.ps1 -Arch arm64` |
-| `G7Link-<version>-android.apk` | The `android` job: a release build for 64-bit and 32-bit ARM, signed with the release key and checked with `apksigner verify` |
-| `SHA256SUMS.txt` | The `publish` job, over all installers and APKs |
+| `g7link_<version>_amd64.deb` | `desktop/packaging/linux/build-deb.sh` |
+| `g7link-<version>-1.x86_64.rpm` | `desktop/packaging/linux/build-rpm.sh` |
+| `G7Link-<version>-x86_64.AppImage` | `desktop/packaging/linux/build-appimage.sh` |
+| `G7Link-<version>-linux-x86_64.tar.gz` | `desktop/packaging/linux/build-tarball.sh` |
+| `install.sh` | Copied from `desktop/packaging/linux/install.sh` |
+| `G7Link-<version>-android.apk` | The Android job: a release build for 64-bit and 32-bit ARM, signed with the release key and checked with `apksigner verify` |
+| `SHA256SUMS.txt` | The `publish` job in `release.yml`, over all the files above |
+
+Before uploading, the Linux job checks that each package starts in clean
+Ubuntu 24.04 and Fedora 40 containers, and that `install.sh` installs and
+removes each one.
 
 Each app's updater needs its own file and `SHA256SUMS.txt`: it only
-accepts an installer that `SHA256SUMS.txt` lists with a matching hash.
-Each Windows updater picks the installer for its own architecture.
+accepts a file that `SHA256SUMS.txt` lists with a matching hash. The
+desktop app picks the file for the way it was installed (AppImage, `.deb`,
+`.rpm` or tarball).
 
 ## Steps
 
 1. **Version.** `Cargo.toml` (`[workspace.package] version`) is the only
-   place it's set: the Windows app, the installer and the Android app
+   place it's set: the desktop app, its packages and the Android app
    (`versionName`, and `versionCode` derived from it) all read it. Use
    `MAJOR.MINOR.PATCH`; a pre-release such as `0.2.0-beta.1` is allowed, and
-   `[workspace.metadata.release] name` gives the release a name. The
-   README's download table links straight to the files, so change the
-   version in its two links too.
-2. **Checks.** `./scripts/check.ps1 -Android` locally, and a green CI run on
-   the commit to release.
+   `[workspace.metadata.release] name` gives the release a name.
+2. **Checks.** A green CI run on the commit to release (the commands are in
+   [building and testing](building-and-testing.md#what-ci-runs)).
 3. **Tag and push.** `git tag v<version>` on that commit and push the tag.
    The `Release` workflow refuses a tag that doesn't match `Cargo.toml`. It
    builds with `build.yml`, the same workflow nightlies use.
-4. **Review the draft.** The workflow creates a draft release with generated
-   notes. Edit the notes (what's new, anything users must do), check the
-   files are there, then **Publish**. Publishing runs `channels.yml`, which
-   points the stable feed at the release; installed copies on Stable see it
-   within half a day, sooner when a paired PC tells its phone.
+4. **Review the draft.** The workflow creates a draft release. Its notes are
+   the version's section of `CHANGELOG.md`, or GitHub's generated notes when
+   there is none. Edit the notes (what's new, anything users must do), check
+   the files are there, then **Publish**. Publishing runs `channels.yml`,
+   which points the stable feed at the release; installed copies on Stable
+   see it within half a day, sooner when a paired device tells them.
 
 ## Channels and nightlies
 
@@ -63,9 +71,8 @@ changed).
 Version order: `1.2.3-nightly.N` comes after `1.2.2` and before `1.2.3`, and
 `nightly.10` after `nightly.9`. Android's `versionCode` is
 `major·10⁷ + minor·10⁵ + patch·10³ + build`, where `build` is N for a nightly
-and 999 for a release; the Windows file and package versions end in the same
-number, and Linux packages use `1.2.3~nightly.N`, which apt and dnf sort
-before `1.2.3`. So a nightly install moves to the release when it's out, and
+and 999 for a release. Linux packages use `1.2.3~nightly.N`, which apt and
+dnf sort before `1.2.3`. So a nightly install moves to the release when it's out, and
 a phone can't go from a nightly back to an older release without
 reinstalling.
 
@@ -84,28 +91,24 @@ update signed with the same key as the installed app, so:
 - To sign locally: set `G7LINK_KEYSTORE` to the `.jks` path and
   `G7LINK_KEYSTORE_PASSWORD`, then `./gradlew assembleRelease`.
 
-**Windows.** The installer and the app aren't Authenticode-signed yet, so
-SmartScreen warns on first download until the files build reputation. Options
-for open-source projects: [SignPath Foundation](https://signpath.org) (free
-certificates for qualifying projects, signing in CI) or Azure Trusted
-Signing. Either plugs in after `package.ps1` builds the installer, before
-`SHA256SUMS.txt` is written.
+**Linux.** The packages aren't signed. Their integrity rests on HTTPS from
+GitHub and the hashes in `SHA256SUMS.txt`, which `install.sh` and the
+desktop updater both check.
 
 ## How the apps update
 
-- **Windows** (`desktop/app/src/updater.rs`): checks its channel's feed 30
-  seconds after start, then every 12 hours on Stable and every 2 hours on
-  Nightly (twice as long on battery), and sooner when a phone tells it of a
-  build (`update_relay.rs`, `event.update`); it tells its phones when it sees
-  one. The **G7Link Update** task reads the channel from
-  `%ProgramData%\G7Link\update-channel`, which the app writes; any user
-  may change it, and it only picks between this repository's own builds. With **Install updates automatically** on,
-  it waits until nobody has used the PC for 10 minutes and nothing is in
-  progress, then starts the **G7Link Update** task that the installer
-  registers (`desktop/installer/g7link.nsi`). The task runs as SYSTEM,
-  downloads and checks the installer itself, and runs it silently; a hidden
-  relauncher reopens the app afterwards. The task logs to `update.log` in the
-  install folder. Details and the security reasoning:
+- **Linux desktop** (`desktop/app/src/updater.rs`): an installed copy
+  checks its channel's feed 30 seconds after start, then every 12 hours on
+  Stable and every 2 hours on Nightly (twice as long on battery), and sooner
+  when a phone tells it of a build (`update_relay.rs`, `event.update`); it
+  tells its phones when it sees one. **Update** downloads the file for this
+  kind of install as the user, resuming after a dropped connection, and
+  checks its SHA-256. An AppImage replaces itself. A `.deb`, an `.rpm`, or a
+  tarball under `/opt` or `/usr` installs through `pkexec`, which asks for
+  the administrator password; the file is copied somewhere only root can
+  write and checked again before installing. A tarball in the user's own
+  folders installs without it. A small relauncher then opens the new
+  version. Details and the security reasoning:
   [security model](security-model.md#automatic-updates-and-release-verification).
 - **Android** (`update/AppUpdater.kt`): hears of new builds from its PC
   (`onHint`), and checks on its own daily on Stable or every six hours on
@@ -117,5 +120,5 @@ Signing. Either plugs in after `package.ps1` builds the installer, before
 
 Updaters only look at the latest published release, so test with two
 versions on a test PC and phone: install version N from its draft's files,
-publish N+1, and check that both apps update by themselves (`update.log` on
-the PC; `adb logcat -s AppUpdater` on the phone).
+publish N+1, and check that both apps update (the desktop log in
+`~/.local/share/G7Link/logs`; `adb logcat -s AppUpdater` on the phone).

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Media between this PC and paired phones (docs/protocol/media.md): what
-//! plays on a phone shows in the app and in Windows' media flyout, where
+//! plays on a phone shows in the app and in the desktop's media controls, where
 //! it can be controlled; what plays on this PC goes to the phones (see
-//! `win::media_sessions`).
+//! `sys::media_sessions`).
 
 use crate::i18n::tr;
 use std::{
@@ -17,7 +17,7 @@ use crate::{
     bridge::app::{describe, show_message},
     core_host,
     state::PlayerView,
-    win::smtc,
+    sys::smtc,
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -43,7 +43,7 @@ pub fn scheme_for_path(path: &std::path::Path) -> String {
     if let Some(existing) = lock(&ART_SCHEMES).as_ref().and_then(|m| m.get(path)).cloned() {
         return existing;
     }
-    let json = crate::win::wallpaper::artwork_scheme_from_path(path).unwrap_or_default();
+    let json = crate::sys::wallpaper::artwork_scheme_from_path(path).unwrap_or_default();
     let mut cache = lock(&ART_SCHEMES);
     let map = cache.get_or_insert_default();
     if map.len() > 64 {
@@ -159,7 +159,7 @@ fn fnv(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// Keeps Windows' media flyout showing what plays on the phones.
+/// Keeps the desktop's media controls showing what plays on the phones.
 pub fn update_flyout() {
     let current = core_host::host().hub.read(|s| {
         // A player that's playing wins; then the first one shown.
@@ -182,7 +182,7 @@ pub const LOCAL_DEVICE: DeviceId = DeviceId([0; 32]);
 pub fn command(device: DeviceId, player: String, action: MediaAction, position: Option<u64>) {
     if device == LOCAL_DEVICE {
         std::thread::spawn(move || {
-            let _ = crate::win::media_sessions::command(&player, action, position);
+            let _ = crate::sys::media_sessions::command(&player, action, position);
         });
         return;
     }

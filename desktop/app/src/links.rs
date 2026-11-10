@@ -16,7 +16,7 @@ use g7link_core::{
 use crate::{
     bridge::app::describe,
     core_host,
-    win::{
+    sys::{
         clipboard::{self, Clip},
         shell,
         toast::{self, Toast},
@@ -90,7 +90,7 @@ pub fn is_handoff_text(text: &str) -> bool {
     handoff_from_text(text).is_some()
 }
 
-/// Extracts a rich [`HandoffLink`] from the current Windows clipboard (supporting
+/// Extracts a rich [`HandoffLink`] from the current clipboard (supporting
 /// `http://`/`https://` links, YouTube/video links with timestamps, `geo:` URIs,
 /// map links, and copied street addresses).
 pub fn handoff_from_clipboard() -> Option<HandoffLink> {
@@ -163,7 +163,7 @@ pub fn open_copied_link_on_phone() {
     send(phone, name, handoff);
 }
 
-/// Opens `url` (or a street address / link snippet) on `phone`, showing a Windows toast notification with the outcome.
+/// Opens `url` (or a street address / link snippet) on `phone`, showing a notification with the outcome.
 pub fn send_to(phone: DeviceId, url: String) {
     let name = core_host::host().hub.read(|s| s.name_of(&phone)).unwrap_or_else(|| "your phone".into());
     let handoff = handoff_from_text(&url).unwrap_or(HandoffLink {

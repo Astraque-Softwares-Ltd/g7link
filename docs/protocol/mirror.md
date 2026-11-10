@@ -152,14 +152,14 @@ bottom), so they hold at any size and rotation.
   without the accessibility service, ASCII/Latin text is typed as key events
   and non-ASCII text is pasted via the phone's clipboard (`KEYCODE_PASTE`).
 - `gamepad`: controller state forwarded from the PC's connected gamepad
-  (e.g. XInput). `buttons` is a 16-bit XInput-compatible button bitmask
+  (`/dev/input/js*` on Linux). `buttons` is a 16-bit XInput-compatible button bitmask
   (D-pad up/down/left/right, Start, Back, L3, R3, LB, RB, Guide, A, B, X, Y);
   `lx`, `ly`, `rx`, `ry` are signed 16-bit thumbstick axes (`-32768..=32767`);
   `lt` and `rt` are unsigned 8-bit trigger axes (`0..=255`). At Elevated,
   the phone injects matching `KeyEvent` (`SOURCE_GAMEPAD`) and `MotionEvent`
   (`SOURCE_JOYSTICK`) inputs on the target display.
 
-The Windows app maps the left button to a finger, right-click to Back,
+The desktop app maps the left button to a finger, right-click to Back,
 middle-click to Home, Ctrl+C to syncing the phone's clipboard back to the PC,
 and Ctrl+V to syncing the PC's clipboard (`clip.set`) and pasting/typing into
 the phone. Dragging and dropping files onto the mirror canvas sends them to

@@ -20,7 +20,7 @@ use g7link_core::{DeviceId, Error, FeatureState, LinkState, PhoneToggleValue, fe
 use crate::{
     core_host,
     state::{Changes, CoreStatus},
-    win::{self, sound, tray},
+    sys::{self, sound, tray},
 };
 
 #[cxx_qt::bridge]
@@ -66,7 +66,7 @@ pub mod qobject {
         #[qproperty(QString, wallpaper_colors)]
         /// Material You color schemes for paired phones (`[{ id, key, name, label, hasAccent, scheme }]`).
         #[qproperty(QString, phone_colors)]
-        /// Whether Windows shows this app's notifications.
+        /// Whether the desktop shows this app's notifications.
         #[qproperty(bool, toasts_enabled)]
         #[qproperty(QString, version)]
         /// The Connection Doctor's findings, as JSON: [{ id, outcome:
@@ -175,7 +175,7 @@ pub mod qobject {
         /// Recomputes the Shelf items while the Shelf is open.
         #[qinvokable]
         fn refresh_shelf(self: Pin<&mut AppController>);
-        /// Applies Win32 `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST` to the Shelf window.
+        /// Keeps the Shelf window on top without taking focus or a taskbar entry.
         #[qinvokable]
         fn style_shelf_window(self: &AppController);
         /// Starts a native OS drag-out operation for a Shelf item (photo, screenshot, clip, or file).
@@ -240,7 +240,7 @@ pub mod qobject {
         /// `[{ name, on }]`: what the user allows this device to do.
         #[qinvokable]
         fn device_toggles(self: &AppController, device: &QString) -> QList_QVariant;
-        /// The Wi-Fi networks Windows has saved, as a JSON array of names.
+        /// The Wi-Fi networks this PC has saved, as a JSON array of names.
         #[qinvokable]
         #[cxx_name = "wifiNetworks"]
         fn wifi_networks(self: &AppController) -> QString;
@@ -320,7 +320,7 @@ pub mod qobject {
         #[qinvokable]
         fn note_command_palette_shown(self: Pin<&mut AppController>);
 
-        /// Re-reads whether Windows shows this app's notifications (the user
+        /// Re-reads whether the desktop shows this app's notifications (the user
         /// may have changed it in Settings).
         #[qinvokable]
         #[cxx_name = "refreshToastsEnabled"]
@@ -345,7 +345,7 @@ pub mod qobject {
         #[qinvokable]
         fn logs_url(self: &AppController) -> QString;
 
-        /// Opens a paired phone's storage sync root in File Explorer.
+        /// Opens a paired phone's storage folder in the file manager.
         #[qinvokable]
         fn open_phone_storage(self: &AppController, device: &QString);
         /// Tells the event-driven Home summary which phone the Home page is showing (`""` when hidden).
@@ -376,7 +376,7 @@ pub mod qobject {
         /// Clears all local histories and caches across all 6 categories while keeping paired devices and settings intact.
         #[qinvokable]
         fn clear_everything(self: Pin<&mut AppController>);
-        /// Copies plain text to the Windows clipboard and shows a confirmation toast.
+        /// Copies plain text to the clipboard and shows a confirmation toast.
         #[qinvokable]
         fn copy_text(self: &AppController, text: &QString);
         /// Loads a guide topic from `docs/guide/<doc_name>.md` (or built-in guide text) into the in-app reader sheet.
@@ -1081,7 +1081,7 @@ static WALLPAPER_GENERATION: AtomicU64 = AtomicU64::new(0);
 fn refresh_wallpaper_colors(qt: CxxQtThread<qobject::AppController>) {
     let generation = WALLPAPER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let spawned = std::thread::Builder::new().name("wallpaper-colors".into()).spawn(move || {
-        let seed = win::wallpaper::seed();
+        let seed = sys::wallpaper::seed();
         tracing::debug!(seed = ?seed.map(|s| format!("#{:06X}", s.as_u32())), "wallpaper colors");
         let json = seed.map(|seed| crate::palette::scheme_json(seed).to_string());
         if WALLPAPER_GENERATION.load(Ordering::SeqCst) != generation {
@@ -1400,9 +1400,9 @@ impl qobject::AppController {
     }
 
     fn refresh_appearance(mut self: Pin<&mut Self>) {
-        self.as_mut().set_system_dark(win::system_dark());
-        self.as_mut().set_reduce_motion(win::reduce_motion());
-        self.as_mut().set_power_saver(win::power_saver());
+        self.as_mut().set_system_dark(sys::system_dark());
+        self.as_mut().set_reduce_motion(sys::reduce_motion());
+        self.as_mut().set_power_saver(sys::power_saver());
         refresh_wallpaper_colors(self.qt_thread());
         self.refresh_toasts_enabled();
     }
@@ -1555,8 +1555,8 @@ impl qobject::AppController {
     pub fn refresh_toasts_enabled(mut self: Pin<&mut Self>) {
         // Also when the window comes back to the front: battery saver may
         // have changed meanwhile.
-        self.as_mut().set_power_saver(win::power_saver());
-        self.set_toasts_enabled(win::toast::enabled());
+        self.as_mut().set_power_saver(sys::power_saver());
+        self.set_toasts_enabled(sys::toast::enabled());
         core_host::spawn(core_host::refresh_wake());
     }
 
@@ -1678,7 +1678,7 @@ impl qobject::AppController {
 
     pub fn wifi_networks(&self) -> QString {
         QString::from(
-            &serde_json::to_string(&crate::win::wifi::saved_networks()).unwrap_or_else(|_| "[]".into()),
+            &serde_json::to_string(&crate::sys::wifi::saved_networks()).unwrap_or_else(|_| "[]".into()),
         )
     }
 
@@ -1689,7 +1689,7 @@ impl qobject::AppController {
 
     pub fn set_hotspot_network(&self, device: &QString, network: &QString) {
         if let Some(id) = super::parse_device(device) {
-            // Trimmed: it's matched against the networks Windows sees.
+            // Trimmed: it's matched against the networks this PC sees.
             let name = String::from(network).trim().to_owned();
             crate::hotspot::set_network(id, (!name.is_empty()).then_some(name));
         }
@@ -1943,7 +1943,7 @@ impl qobject::AppController {
             let json = compute_shelf_items_json(idx);
             self.as_mut().set_shelf_items(QString::from(&json));
             self.as_mut().set_shelf_open(true);
-            win::tray::apply_no_activate_style_by_title("G7 Link Shelf");
+            sys::tray::apply_no_activate_style_by_title("G7 Link Shelf");
         }
     }
 
@@ -1965,8 +1965,8 @@ impl qobject::AppController {
     }
 
     pub fn style_shelf_window(&self) {
-        win::tray::apply_no_activate_style_by_title("G7 Link Shelf");
-        win::tray::apply_no_activate_style_by_title("G7 Island");
+        sys::tray::apply_no_activate_style_by_title("G7 Link Shelf");
+        sys::tray::apply_no_activate_style_by_title("G7 Island");
     }
 
     pub fn start_shelf_drag(&self, kind: &QString, id_or_path: &QString, text: &QString) -> bool {
@@ -2121,7 +2121,7 @@ impl qobject::AppController {
                             };
                             match std::fs::read(p)
                                 .map_err(|e| e.to_string())
-                                .and_then(|b| crate::win::clipboard::write_image(mime, &b))
+                                .and_then(|b| crate::sys::clipboard::write_image(mime, &b))
                             {
                                 Ok(()) => show_message(tr!("App", "Copied to clipboard.")),
                                 Err(_) => {
@@ -2170,7 +2170,7 @@ impl qobject::AppController {
         if s.is_empty() {
             return;
         }
-        match crate::win::clipboard::write(&s) {
+        match crate::sys::clipboard::write(&s) {
             Ok(()) => show_message(tr!("App", "Copied to clipboard.")),
             Err(_) => show_message(tr!("App", "Could not copy to the clipboard.")),
         }
@@ -2190,7 +2190,7 @@ impl qobject::AppController {
 
     pub fn work_area(&self) -> cxx_qt_lib::QMap<cxx_qt_lib::QMapPair_QString_QVariant> {
         let mut map = cxx_qt_lib::QMap::<cxx_qt_lib::QMapPair_QString_QVariant>::default();
-        if let Some((x, y, w, h)) = crate::win::work_area() {
+        if let Some((x, y, w, h)) = crate::sys::work_area() {
             for (key, value) in [("x", x), ("y", y), ("width", w), ("height", h)] {
                 map.insert(QString::from(key), cxx_qt_lib::QVariant::from(&value));
             }
@@ -2868,7 +2868,7 @@ fn compute_shelf_items_json(current_device_idx: i32) -> String {
         }
     }
 
-    // 4. Current clip (from encrypted local clipboard history, or live Windows clipboard fallback).
+    // 4. Current clip (from encrypted local clipboard history, or the live clipboard as a fallback).
     let current_clip = if let Some(entry) =
         node.as_ref().and_then(|n| n.clipboard_history(None).into_iter().next())
     {
@@ -2887,8 +2887,8 @@ fn compute_shelf_items_json(current_device_idx: i32) -> String {
             "localPath": "",
         })
     } else {
-        match crate::win::clipboard::read() {
-            crate::win::clipboard::Clip::Text { text: t, .. } if !t.trim().is_empty() => serde_json::json!({
+        match crate::sys::clipboard::read() {
+            crate::sys::clipboard::Clip::Text { text: t, .. } if !t.trim().is_empty() => serde_json::json!({
                 "id": "",
                 "kind": "text",
                 "text": t,

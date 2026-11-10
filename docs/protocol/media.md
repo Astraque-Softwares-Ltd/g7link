@@ -4,8 +4,8 @@
 > allowed until v1. License: CC BY 4.0.
 
 What plays on one device shows on the other, which can control it: a
-phone's music in the PC's app and in Windows' media flyout, a PC's in the
-phone's media controls. Both directions use the same messages.
+phone's music in the PC's app and in the desktop's media controls (MPRIS),
+a PC's in the phone's media controls. Both directions use the same messages.
 
 ## 1. Capabilities
 
@@ -33,8 +33,7 @@ t = "ok"             re = n
 ```
 
 **`media.state`** carries every player the sender shares, the most
-relevant first (what Windows calls the current session, or what's playing,
-then the most recently active). It's sent when a session starts, after
+relevant first (what's playing first). It's sent when a session starts, after
 every change, and again when the user changes what the other device may
 see. An empty list means nothing plays (or the user stopped sharing); the
 receiver clears what it showed. A receiver also clears a device's players
@@ -75,8 +74,8 @@ players. Receivers drop actions they don't know.
 ## 3. Rules
 
 - **No echoes.** A device leaves its own stand-in for another device's
-  player (Windows' flyout session, Android's media session) out of what it
-  shares.
+  player (its MPRIS player on Linux, its media session on Android) out of
+  what it shares.
 - Implementations **MUST NOT** log titles, artists or albums (v0 §11).
 
 ## 4. Play on phone

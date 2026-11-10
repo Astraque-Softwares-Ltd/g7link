@@ -83,8 +83,8 @@
 .composer .send{width:38px;height:38px;border-radius:50%;background:var(--btn-bg);color:var(--btn-ink);display:grid;place-items:center;box-shadow:var(--btn-shadow)}
 [data-theme^="graphite"] .composer .send{border-radius:3px}
 .via{font-size:11px;color:var(--on-surface-variant);text-align:center;margin:-8px 0 12px}
-/* toast (native Windows style, theme-tinted accent only) */
-.toast{width:364px;border-radius:8px;background:#2B2B2B;color:#fff;box-shadow:0 16px 40px rgba(0,0,0,.35);font-family:"Segoe UI Variable Text","Segoe UI",sans-serif;padding:14px 14px 12px;font-size:13px}
+/* toast (a desktop notification; the real one is drawn by the desktop) */
+.toast{width:364px;border-radius:8px;background:#2B2B2B;color:#fff;box-shadow:0 16px 40px rgba(0,0,0,.35);font-family:system-ui,sans-serif;padding:14px 14px 12px;font-size:13px}
 .toast .t{display:flex;gap:8px;align-items:center;font-size:12px;color:#c8c8c8}
 .toast .t i{width:16px;height:16px;border-radius:4px;background:var(--primary)}
 .toast h5{font-size:14px;margin-top:10px;font-weight:600}.toast p{color:#d6d6d6;margin-top:2px}
@@ -198,12 +198,12 @@ set('pair','1 · First run','Pair in under a minute',
    </div></div></div>
   <div>${phone(`<div class="finder"><div class="frame"><i></i><i></i><i></i><i></i><div class="ghost">${qrSVG(25,7)}</div></div>
      <div class="tip">Point your camera at the code on your PC</div></div>
-     <div class="sheet"><b style="font-size:14px">Found “Bee's Desktop”</b><span class="hint">Windows 11 · on Home Wi-Fi</span><button class="btn fill wide">Pair</button></div>`)}
+     <div class="sheet"><b style="font-size:14px">Found “Bee's Desktop”</b><span class="hint">Linux · on Home Wi-Fi</span><button class="btn fill wide">Pair</button></div>`)}
    <p class="caption"><b>Scan.</b> The phone finds the PC from the code and pairs securely.</p></div>
   <div>${phone(`<div class="ph-title" style="margin-top:8px">Check the code</div>
      <p class="ph-sub">Make sure this matches the code on <b>Bee's Desktop</b>. This keeps anyone else from pairing in between.</p>
      <div class="sas"><span>4</span><span>8</span><span>2</span><span>9</span><span>1</span><span>3</span></div>
-     <div class="card" style="display:flex;gap:10px;align-items:center"><span class="av p">${i('screen')}</span><div><b style="font-size:13px">Bee's Desktop</b><div class="hint">Windows 11 · nearby</div></div></div>
+     <div class="card" style="display:flex;gap:10px;align-items:center"><span class="av p">${i('screen')}</span><div><b style="font-size:13px">Bee's Desktop</b><div class="hint">Linux · nearby</div></div></div>
      <div style="margin-top:auto;display:flex;flex-direction:column;gap:8px"><button class="btn fill wide">Codes match</button><button class="btn text wide">They don't match</button></div>`)}
    <p class="caption"><b>Nearby pairing.</b> No camera needed; both screens show the same 6 digits.</p></div>`) +
 
@@ -249,7 +249,7 @@ set('power','3 · Choose your power','Pick how much G7 Link can do',
    <p class="caption"><b>Setup paths.</b> Recommended path chosen from what's detected (Android version, USB, Shizuku).</p></div>`) +
 
 set('notif','4 · Notifications','Your phone’s alerts, organized',
- 'Native Windows toasts with replies and actions for the moment, and a calm feed in the app for everything else: filter by app, reply inline, copy codes in one click.',
+ 'Desktop notifications with replies and actions for the moment, and a calm feed in the app for everything else: filter by app, reply inline, copy codes in one click.',
  `<div class="win">${rail('Alerts')}<div class="main">${topbar('Notifications')}
    <div class="body"><div class="col-list">
      <div class="head"><span class="chip on">All</span><span class="chip">Messages</span><span class="chip">Codes</span><span class="chip">${i('filter')}Apps</span></div>
@@ -270,7 +270,7 @@ set('notif','4 · Notifications','Your phone’s alerts, organized',
   <div style="display:flex;flex-direction:column;gap:14px">
     <div class="toast"><div class="t"><i></i>G7 Link · Pixel 9<span class="grow"></span>now</div><h5>Mom · WhatsApp</h5><p>Dinner at 8? Bring the charger you borrowed.</p><div class="reply"><span>Type a reply</span><b>Send</b></div></div>
     <div class="toast"><div class="t"><i></i>G7 Link · Pixel 9<span class="grow"></span>now</div><h5>Google</h5><p>Your sign-in code is 482 913</p><div class="reply"><b style="flex:1">Copy code</b><b>Dismiss</b></div></div>
-    <p class="caption" style="max-width:364px"><b>Toasts.</b> Native Windows style for system consistency; only the small app badge picks up the theme accent.</p>
+    <p class="caption" style="max-width:364px"><b>Notifications.</b> The desktop draws them, so they match the rest of the system.</p>
   </div>`) +
 
 set('msgs','5 · Messages','Texts and chat apps in one inbox',

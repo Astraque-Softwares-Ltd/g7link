@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Instant Hotspot, the PC's half: after the phone turns its hotspot on (Home's
 //! Instant Hotspot, through Elevated), the PC joins it, using the Wi-Fi network
-//! the user picked for that phone in Settings. That's a network Windows has
+//! the user picked for that phone in Settings. That's a network this PC has
 //! saved from when the user joined the hotspot themselves once, so G7 Link
 //! never handles its password.
 
@@ -15,11 +15,11 @@ use std::{
 
 use g7link_core::DeviceId;
 
-use crate::{bridge::app::show_message, core_host, state::Changes, win::wifi::Reach};
+use crate::{bridge::app::show_message, core_host, state::Changes, sys::wifi::Reach};
 
 /// How long the phone's hotspot has to show up.
 const APPEAR_WITHIN: Duration = Duration::from_secs(45);
-/// How long Windows has to finish joining it.
+/// How long the PC has to finish joining it.
 const JOIN_WITHIN: Duration = Duration::from_secs(20);
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 
@@ -80,17 +80,17 @@ pub(crate) trait Wifi {
     fn wait(&self, d: Duration);
 }
 
-struct Windows;
+struct System;
 
-impl Wifi for Windows {
+impl Wifi for System {
     fn scan(&self) {
-        crate::win::wifi::scan();
+        crate::sys::wifi::scan();
     }
     fn reach(&self, profile: &str) -> Reach {
-        crate::win::wifi::reach(profile)
+        crate::sys::wifi::reach(profile)
     }
     fn connect(&self, profile: &str) -> Result<(), String> {
-        crate::win::wifi::connect(profile)
+        crate::sys::wifi::connect(profile)
     }
     fn wait(&self, d: Duration) {
         std::thread::sleep(d);
@@ -106,7 +106,7 @@ pub(crate) enum JoinOutcome {
     Failed(String),
 }
 
-/// Waits for `profile` to come into range, joins it, and waits for Windows to finish.
+/// Waits for `profile` to come into range, joins it, and waits for the join to finish.
 pub(crate) fn join(
     wifi: &impl Wifi,
     profile: &str,
@@ -142,7 +142,7 @@ pub(crate) fn join(
             return JoinOutcome::Joined;
         }
     }
-    JoinOutcome::Failed("Windows didn't finish joining".into())
+    JoinOutcome::Failed("the join didn't finish".into())
 }
 
 /// The phone just turned its hotspot on: join it, if a network is set for it.
@@ -159,14 +159,14 @@ pub fn hotspot_turned_on(device: DeviceId) {
     std::thread::Builder::new()
         .name("hotspot-join".into())
         .spawn(move || {
-            let outcome = join(&Windows, &profile, APPEAR_WITHIN, JOIN_WITHIN);
+            let outcome = join(&System, &profile, APPEAR_WITHIN, JOIN_WITHIN);
             JOINING.lock().unwrap_or_else(|e| e.into_inner()).retain(|d| *d != device);
             match outcome {
                 JoinOutcome::Already => {}
                 JoinOutcome::Joined => show_message(tr!("Hotspot", "Connected to %1's hotspot.", name)),
                 JoinOutcome::NotFound => show_message(tr!(
                     "Hotspot",
-                    "%1's hotspot didn't show up. Check that it's on, then pick %2 in Windows' Wi-Fi list.",
+                    "%1's hotspot didn't show up. Check that it's on, then pick %2 in the Wi-Fi menu.",
                     name,
                     profile
                 )),
@@ -174,7 +174,7 @@ pub fn hotspot_turned_on(device: DeviceId) {
                     tracing::warn!(error = e, "couldn't join the phone's hotspot");
                     show_message(tr!(
                         "Hotspot",
-                        "Couldn't join %1's hotspot. Pick %2 in Windows' Wi-Fi list.",
+                        "Couldn't join %1's hotspot. Pick %2 in the Wi-Fi menu.",
                         name,
                         profile
                     ));

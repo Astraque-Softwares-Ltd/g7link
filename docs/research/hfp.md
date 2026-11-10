@@ -13,25 +13,15 @@ Consequently, hearing a cellular call on the PC works with `Elevated` on phones 
 
 ---
 
-## 2. Why Public Windows WinRT / Win32 APIs Cannot Route Two-Way HFP Call Audio for Unpackaged Apps
+## 2. Call Audio on the PC over Bluetooth HFP
 
-We evaluated three Windows Bluetooth APIs for using the PC's microphone and speakers as a Bluetooth Hands-Free Profile (HFP) Hands-Free (HF) unit during a cellular call:
+The way around section 1 is Bluetooth: the phone sends call audio to a hands-free device by itself, and the PC can be that device. G7 Link's part is small. `desktop/app/src/linux/bt_hfp.rs`:
 
-1. **`Windows.Media.Audio.AudioPlaybackConnection` (Windows 10 2004+) is A2DP Media Sink Only**:
-   - `AudioPlaybackConnection` activates the inbox Bluetooth **A2DP Sink** (`AvrcpTransport` / media playback) role so a paired phone can stream media audio *to* the PC.
-   - It is **not** a bidirectional Bluetooth HFP Hands-Free unit or Audio Gateway API: it does not establish a Synchronous Connection-Oriented (SCO / eSCO) voice channel, does not route the PC's microphone back to the phone's cellular call uplink, and does not switch the phone's `InCallService` audio route to Bluetooth Hands-Free.
-2. **`Windows.ApplicationModel.Calls.PhoneLineTransportDevice` (Broken / Locked Down on Windows 11 22H2+)**:
-   - Microsoft originally introduced `PhoneLineTransportDevice` for companion apps to bind to `bthhfenum.sys` (`Microsoft Bluetooth Hands-Free Profile Handsfree role`).
-   - Starting in Windows 11 22H2, `PhoneLineTransportDevice::RequestAccessAsync()` and `Connect()` are gated behind internal Windows inbox broker checks (`YourPhone.exe` / `PhoneExperienceHost` system identity and restricted `phoneCallTransport` / `phoneCallOrigin` capabilities) and fail with `E_ACCESSDENIED` for third-party unpackaged and self-signed applications (see [MyPhone#26](https://github.com/BestOwl/MyPhone/issues/26)).
-3. **Kernel Profile Driver Requirement (`BTH_PROFILE_DRIVER_INTERFACE`)**:
-   - Without access to the inbox `PhoneExperienceHost` broker, opening an HFP RFCOMM service-level connection (AT command channel) plus an eSCO bidirectional voice channel on Windows requires a WHQL-signed kernel-mode Bluetooth profile driver (`bthport.sys` / KMDF) paired with a custom audio miniport driver.
+1. **Finds the phone among the PC's paired Bluetooth devices**, through BlueZ over D-Bus (`org.bluez`, `ObjectManager`), or `bluetoothctl` when that fails. It matches the device by the phone's name.
+2. **Connects it** (`org.bluez.Device1.Connect`, or `bluetoothctl connect`).
+3. **Switches the phone's audio card to a call profile** with `pactl set-card-profile bluez_card.<MAC>`, trying the profile names PipeWire and PulseAudio use for HFP and HSP in turn, with `a2dp-sink` last.
+4. **Switches back to `a2dp-sink`** when call audio is disconnected.
 
-**Conclusion**: Routing two-way cellular call audio through the PC's microphone and speakers is **not possible with public Windows user-mode APIs**. G7 Link therefore supports incoming call alerts, caller ID, answer/decline/hangup, dialer, call log, and (with Elevated mode) mute/speakerphone/hold/DTMF keypad controls on the PC while call voice audio remains on the phone (or a Bluetooth headset paired directly to the phone).
+Whether a call is heard on the PC depends on the desktop's Bluetooth audio stack offering a call profile for the phone. G7 Link doesn't install or configure one.
 
----
-
-## 3. Scope of `desktop/app/src/win/bt_hfp.rs`
-
-- `desktop/app/src/win/bt_hfp.rs` reports no call audio, so the Calls page shows no "PC call audio" panel on Windows. Call audio stays on the phone.
-- It used to report the Bluetooth link to a paired device, which read as call audio on the PC and could name a paired headset instead of the phone (#86).
-- On Linux, `desktop/app/src/linux/bt_hfp.rs` routes call audio through BlueZ and PipeWire or PulseAudio, and the panel is shown there.
+Without Bluetooth, G7 Link supports incoming call alerts, caller ID, answer/decline/hangup, dialer, call log, and (with Elevated mode) mute/speakerphone/hold/DTMF keypad controls on the PC while call voice audio remains on the phone (or a Bluetooth headset paired directly to the phone).

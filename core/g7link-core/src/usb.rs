@@ -684,7 +684,7 @@ mod tests {
         let (near, mut far) = tcp_pair().await;
         let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let bridge = udp.local_addr().unwrap();
-        // Answers need somewhere to go: Windows reports a closed port on the socket itself.
+        // Answers need somewhere to go, not a closed port.
         let sink = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let relay = tokio::spawn(relay_until_silent(
             near,
@@ -695,7 +695,6 @@ mod tests {
         ));
 
         // The far end stops reading, so the relay's writes fill the socket and block.
-        // (Under 9 KiB: macOS refuses larger datagrams by default.)
         let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let frame = vec![0u8; 8 * 1024];
         let flood = tokio::spawn(async move {

@@ -1,21 +1,21 @@
 # Desktop Surfaces and Automation
 
-Beyond the main window, G7 Link integrates into Windows 11 with fast, low-overhead desktop surfaces and automation tools: the slide-out **`Shelf`** edge panel, **`G7 Island`** at the top of your screen, the searchable cross-device **`Timeline`**, the global **`Command Palette`** (`Ctrl+Alt+Space`), rich **`Handoff`** for links, maps, videos, and documents, **`notify-when`** process completion alerts, a trigger-action **Rules Engine**, a local authenticated **HTTP API**, a **PowerToys Command Palette** extension, and the `g7link` command-line client.
+Beyond the main window, G7 Link integrates into your Linux desktop with fast, low-overhead desktop surfaces and automation tools: the slide-out **`Shelf`** edge panel, **`G7 Island`** at the top of your screen, the searchable cross-device **`Timeline`**, the global **`Command Palette`** (`Ctrl+Alt+Space`), rich **`Handoff`** for links, maps, videos, and documents, **`notify-when`** process completion alerts, a trigger-action **Rules Engine**, a local authenticated **HTTP API**, and the `g7link` command-line client.
 
 <p align="center">
-  <img src="images/command-palette.png" alt="Global Command Palette open over the G7 Link window on Windows 11" width="760">
+  <img src="images/command-palette.png" alt="Global Command Palette open over the G7 Link window" width="760">
 </p>
 
 ## What You Need
 
 | Feature | Requirements |
 | :--- | :--- |
-| **`Shelf` edge panel (`Ctrl+Alt+S`)** | Windows 11 app running (window open or in the system tray). |
+| **`Shelf` edge panel (`Ctrl+Alt+S`)** | PC app running (window open or in the system tray). The global shortcut needs X11, or the Global Shortcuts portal on Wayland. |
 | **`G7 Island`** | Turn on **G7 Island** in PC **Settings › General** (off by default). |
-| **`Timeline`** | Enabled by default on both Windows and Android (retains up to 5,000 items or 90 days by default). |
-| **`Command Palette` (`Ctrl+Alt+Space`)** | Windows 11 app running (window open or in the system tray). |
+| **`Timeline`** | Enabled by default on both the PC and Android (retains up to 5,000 items or 90 days by default). |
+| **`Command Palette` (`Ctrl+Alt+Space`)** | PC app running (window open or in the system tray). The global shortcut needs X11, or the Global Shortcuts portal on Wayland. |
 | **Rich `Handoff` (links, maps, video timestamps, documents)** | `Standard` power level. **Files** toggle enabled in **Settings › Devices**. |
-| **`notify-when` task alerts & CLI (`g7link`)** | Windows 11 app running in the same user session. |
+| **`notify-when` task alerts & CLI (`g7link`)** | PC app running in the same user session. |
 | **Trigger-action automations** | Configured in PC **Settings › Shortcuts & Rules › Trigger-action rules**. |
 | **Local automation API (`127.0.0.1:53320`)** | Turn on **Local automation API** in PC **Settings › Connection & About** (off by default). |
 
@@ -35,7 +35,7 @@ The `Shelf` is a lightweight edge panel on your PC that gives you instant drag-a
    - **Latest screenshot**
    - **Current clipboard**
    - **Recent received files**
-3. **Drag out to any app**: Drag any item out of the `Shelf` directly into an email, document, browser upload box, chat window, or File Explorer folder.
+3. **Drag out to any app**: Drag any item out of the `Shelf` directly into an email, document, browser upload box, chat window, or file manager folder.
 4. **Drop or Flick in to send**: Drag any file, folder, image, or text selection from your PC into the `Shelf` (or flick a file toward the `Shelf` screen edge) to send it straight to your phone, with a 3-second **Undo** option.
 5. Press **Escape** or click outside the `Shelf` to hide it. When hidden, the `Shelf` unloads its QML surface completely so it uses zero background GPU or memory overhead.
 
@@ -51,14 +51,14 @@ To set it up:
    - **Transfers** (on by default): Live file transfer progress bars and `Waiting to send` count.
    - **Media** (on by default): Now-playing track artwork, title, and transport controls.
    - **Alerts** (off by default): Phone notifications, one-time verification codes, active timers/Live Updates, and incoming voice recordings.
-3. Hover over or click `G7 Island` to expand its interactive controls, or let it collapse back into a minimal pill when idle. `G7 Island` automatically hides itself when you are running a full-screen game or video, or when Windows Do Not Disturb is active.
+3. Hover over or click `G7 Island` to expand its interactive controls, or let it collapse back into a minimal pill when idle. `G7 Island` stays hidden when there is no live activity.
 
 ### 3. Cross-Device `Timeline`
 
 The `Timeline` gives you one searchable local log of everything that has moved between your phone and your PC:
 
 <p align="center">
-  <img src="images/timeline-page.png" alt="Timeline page on Windows showing files, clips, links, photos, and sessions grouped by day" width="760">
+  <img src="images/timeline-page.png" alt="Timeline page on the PC showing files, clips, links, photos, and sessions grouped by day" width="760">
 </p>
 
 1. Click **Timeline** in the left navigation bar on your PC (or scroll to the **Timeline** card on the Android Home screen).
@@ -74,7 +74,7 @@ The `Timeline` gives you one searchable local log of everything that has moved b
 
 ### 4. Global `Command Palette` (`Ctrl+Alt+Space`)
 
-Press **`Ctrl+Alt+Space`** from anywhere in Windows to open G7 Link's `Command Palette` over your current window:
+Press **`Ctrl+Alt+Space`** from anywhere on your desktop to open G7 Link's `Command Palette` over your current window:
 
 1. Start typing to fuzzy-search every action, paired device, recent file, or setting:
    - **Mirror phone screen**
@@ -83,7 +83,7 @@ Press **`Ctrl+Alt+Space`** from anywhere in Windows to open G7 Link's `Command P
    - **Type on phone with PC keyboard**
    - **Ring phone (Find my phone)**
    - **Toggle Phone as speaker**
-   - **Open phone storage in File Explorer**
+   - **Browse phone storage in the file manager**
    - **Open Setup walkthrough** / **Open Features guide**
    - **Run Connection Doctor**
 2. You can also type or paste a web URL or text directly into the `Command Palette` to send it to your phone immediately.
@@ -102,8 +102,8 @@ Press **`Ctrl+Alt+Space`** from anywhere in Windows to open G7 Link's `Command P
 
 When you start a long build, test run, render, or download on your PC and want to step away with your phone:
 
-1. In any Windows terminal (PowerShell, Command Prompt, or Windows Terminal), wrap a command or attach to an existing process ID (`PID`):
-   ```powershell
+1. In any terminal, wrap a command or attach to an existing process ID (`PID`):
+   ```bash
    # Run a command and alert your phone when it finishes or fails
    g7link notify-when -- cargo test --workspace
 
@@ -123,14 +123,14 @@ You can automate routine actions between your phone and PC without writing scrip
    - **Actions**: `Lock this PC`, `Sleep this PC`, `Pause PC media`, `Resume PC media`, `Mute PC audio`, `Unmute PC audio`, `Show notification`, `Run command`.
 3. Toggle individual rules on or off or click **Remove** to delete a rule at any time.
 
-### 8. Local Authenticated HTTP API and PowerToys Extension
+### 8. Local Authenticated HTTP API
 
-For power users who use **PowerToys Command Palette**, **AutoHotkey**, **Raycast**, **Flow Launcher**, or custom PowerShell/Python scripts, G7 Link includes an opt-in local HTTP/JSON API:
+For power users who drive their desktop with launchers, shell scripts, or Python, G7 Link includes an opt-in local HTTP/JSON API:
 
 1. Open PC **Settings › Connection & About** and turn on **Local automation API** (default port `53320`).
-2. G7 Link binds strictly to loopback (`127.0.0.1:53320`, never exposed on LAN) and writes a random 256-bit Bearer token to `%LOCALAPPDATA%\G7Link\api-token.json`.
+2. G7 Link binds strictly to loopback (`127.0.0.1:53320`, never exposed on LAN) and writes a random 256-bit Bearer token to `~/.local/share/G7Link/api-token.json`.
 3. Every request must include `Authorization: Bearer <token>`, and any request carrying a browser `Origin` header is rejected with `403 Forbidden` to prevent cross-site browser attacks.
-4. Available endpoints (see [`docs/api.md`](../api.md) for full request/response schemas and PowerShell/`curl` examples):
+4. Available endpoints (see [`docs/api.md`](../api.md) for full request/response schemas and `curl` examples):
    - `GET /v1/devices`: List paired devices, connection status, and battery level.
    - `POST /v1/send`: Send files, URLs, or text to a phone.
    - `GET /v1/clipboard` and `POST /v1/clipboard`: Read or push clipboard text and history.
@@ -139,12 +139,11 @@ For power users who use **PowerToys Command Palette**, **AutoHotkey**, **Raycast
    - `POST /v1/play-on-phone`: Play what this PC plays on the phone.
    - `POST /v1/camera`: Trigger Continuity Camera (`"photo"` or `"scan"`).
    - `GET /v1/timeline`: Query recent cross-device `Timeline` entries.
-5. A companion **PowerToys Command Palette** extension in `tools/powertoys-cmdpal/` connects to this API so you can invoke G7 Link actions directly from PowerToys.
 
 ## What the Options Do
 
 - **G7 Island** and **Island triggers** (`Settings › General` on PC, default: **Off**): Enables the top-of-screen activity pill and selects which triggers (`Calls`, `Transfers`, `Media`, `Alerts`) expand it.
-- **Command palette / File shelf / Take photo / Scan document shortcuts** (`Settings › Shortcuts & Rules` on PC): Customizes the global Windows hotkeys (`Ctrl+Alt+Space`, `Ctrl+Alt+S`, `Ctrl+Alt+C`, `Ctrl+Alt+D`), with a **Reset** button next to each.
+- **Command palette / File shelf / Take photo / Scan document shortcuts** (`Settings › Shortcuts & Rules` on PC): Customizes the global shortcuts (`Ctrl+Alt+Space`, `Ctrl+Alt+S`, `Ctrl+Alt+C`, `Ctrl+Alt+D`), with a **Reset** button next to each.
 - **Trigger-action rules** (`Settings › Shortcuts & Rules` on PC): Manages "When X, Do Y" automation rules.
 - **Cross-device timeline** (`Settings › Storage & Privacy` on PC and `Settings › Features & Data › Data & storage` on Android, default: **90d**): Sets auto-purge retention (**30d**, **90d**, **1y**, or **All** up to 5,000 items) and provides a **Clear** button.
 - **Local automation API** (`Settings › Connection & About` on PC, default: **Off**, port `53320`): Starts or stops the localhost HTTP server and configures its TCP port (`1024` to `65535`).
@@ -152,9 +151,9 @@ For power users who use **PowerToys Command Palette**, **AutoHotkey**, **Raycast
 ## Data and Privacy
 
 - **Local-only `Timeline`**: `Timeline` entries are stored exclusively in your local SQLite database (`g7link.db`) on each device and are automatically pruned according to your chosen retention period (**30 days**, **90 days**, **1 year**, or **5,000 items**). Clipboard entries in `Timeline` store only a pointer to your encrypted `clipboard_history.enc` file so clip text is never stored in plain text inside SQLite.
-- **Zero network exposure for the Local API**: The Local automation API is off by default, binds only to `127.0.0.1`, requires a 256-bit CSPRNG Bearer token readable only by your Windows user account, and deletes `api-token.json` immediately when turned off.
+- **Zero network exposure for the Local API**: The Local automation API is off by default, binds only to `127.0.0.1`, requires a 256-bit CSPRNG Bearer token readable only by your user account, and deletes `api-token.json` immediately when turned off.
 
 ## Limits
 
-- **Global Hotkey Conflicts**: If another Windows application has already registered `Ctrl+Alt+Space`, `Ctrl+Alt+S`, `Ctrl+Alt+C`, or `Ctrl+Alt+D` as a system-wide hotkey, you can assign any non-conflicting `Ctrl`/`Alt`/`Shift`/`Win` key combination in **Settings › Shortcuts & Rules**.
-- **No Windows Widgets board widget yet**: G7 Link doesn't offer a widget in the Windows 11 `Win+W` Widgets board. The taskbar **Jump List** works on all installs, and on Android the **PC quick actions** home-screen widget works on all devices.
+- **Global Shortcut Conflicts**: If another application or your desktop already uses `Ctrl+Alt+Space`, `Ctrl+Alt+S`, `Ctrl+Alt+C`, or `Ctrl+Alt+D`, you can assign any non-conflicting `Ctrl`/`Alt`/`Shift`/`Super` key combination in **Settings › Shortcuts & Rules**.
+- **Global Shortcuts on Wayland**: On Wayland, G7 Link registers its shortcuts through the desktop's Global Shortcuts portal, and your desktop may ask you to confirm them. Where the desktop doesn't offer that portal, the shortcuts don't work; open the `Command Palette` and `Shelf` from the tray instead.

@@ -159,7 +159,7 @@ impl qobject::PhotoBackup {
         let name = core_host::host().hub.read(|s| s.name_of(&id)).unwrap_or_default();
         let folder = photo_backup::summary(id, &name).folder;
         if std::fs::create_dir_all(&folder).is_ok()
-            && let Err(e) = crate::win::shell::open_folder(&folder)
+            && let Err(e) = crate::sys::shell::open_folder(&folder)
         {
             tracing::warn!(error = %e, "can't open the photo backup folder");
         }

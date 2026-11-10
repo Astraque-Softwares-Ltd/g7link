@@ -161,7 +161,7 @@ mod tests {
     fn anything_else_streams() {
         // An app, not a browser tab: there's no page to open.
         assert_eq!(plan(None, Some(30)), stream(None));
-        assert_eq!(plan(Some("file:///C:/Videos/a.mp4"), None), stream(None));
+        assert_eq!(plan(Some("file:///home/alice/Videos/a.mp4"), None), stream(None));
         assert_eq!(
             plan(Some("https://vimeo.com/123"), Some(30)),
             stream(Some("https://vimeo.com/123")),

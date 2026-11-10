@@ -1,7 +1,8 @@
-# ADR 0005: Qt Quick (QML) + Rust for the Windows app
+# ADR 0005: Qt Quick (QML) + Rust for the desktop app
 
 - **Status:** Accepted
 - **Date:** 2026-10-05
+- **Updated:** 2026-11-10, for the Linux-only desktop
 
 ## Context
 
@@ -9,7 +10,7 @@ The desktop app runs all day, is video-heavy (mirroring, one window per phone ap
 
 ## Decision
 
-Build the desktop UI in Qt Quick (QML) with all logic in Rust, bridged by cxx-qt through a single crate (`g7link-qt`). Mirrored video is decoded with Media Foundation into D3D11 textures shown directly in Qt's scene graph.
+Build the desktop UI in Qt Quick (QML) with all logic in Rust, bridged by cxx-qt in one place (`desktop/app/src/bridge`). Mirrored video is decoded with FFmpeg (on the GPU through VA-API, Quick Sync or CUDA when one works) or OpenH264, and shown in Qt's scene graph.
 
 ## Consequences
 

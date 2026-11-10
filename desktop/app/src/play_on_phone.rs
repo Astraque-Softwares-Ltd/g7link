@@ -19,11 +19,11 @@ mod imp {
 
     use g7link_core::{DeviceId, Error, FeatureState, LinkState, MediaAction, PlayOnPhone};
 
-    use crate::win::browser::{HWND, RECT};
+    use crate::sys::browser::{Rect, XWin};
     use crate::{
         bridge::app::{describe, show_message},
         core_host,
-        win::browser::{self, Automation, Window},
+        sys::browser::{self, Automation, Window},
     };
 
     /// The phone to play on: the first one online that can watch a PC's
@@ -48,13 +48,6 @@ mod imp {
     /// watching on a phone, unless they say otherwise.
     const MUSIC_APPS: &[&str] = &[
         "spotify",
-        "applemusic",
-        "itunes",
-        "zunemusic",
-        "foobar2000",
-        "musicbee",
-        "aimp",
-        "winamp",
         "tidal",
         "deezer",
         "amazonmusic",
@@ -78,7 +71,7 @@ mod imp {
         crate::media::local_views()
             .into_iter()
             .map(|v| v.player)
-            .find(|p| p.playing && plays_video(&p.id, &p.app, crate::win::media_sessions::says_video(&p.id)))
+            .find(|p| p.playing && plays_video(&p.id, &p.app, crate::sys::media_sessions::says_video(&p.id)))
             .map(|p| p.id)
     }
 
@@ -246,10 +239,10 @@ mod imp {
         /// The window's handle (as a number: handles go between threads).
         window: isize,
         /// The picture, in physical screen pixels.
-        pub on_screen: RECT,
+        pub on_screen: Rect,
         /// The picture, in the window's own pixels (from its frame's top-left),
         /// as a capture of the window has it.
-        pub in_window: RECT,
+        pub in_window: Rect,
     }
 
     /// How often the picture's place is looked up again.
@@ -260,8 +253,8 @@ mod imp {
 
     impl Place {
         /// The window the picture is in.
-        pub fn window(&self) -> HWND {
-            HWND(self.window as *mut core::ffi::c_void)
+        pub fn window(&self) -> XWin {
+            XWin(self.window as *mut core::ffi::c_void)
         }
     }
 
@@ -279,22 +272,22 @@ mod imp {
                 let started = std::time::Instant::now();
                 while !stopped.load(Ordering::Relaxed) {
                     // The window it played in, while it's still there; else find it again.
-                    if window.as_ref().is_none_or(|w| browser::frame_of(w.hwnd).is_none()) {
+                    if window.as_ref().is_none_or(|w| browser::frame_of(w.xwin).is_none()) {
                         let (title, _) = now_playing(&player);
                         window = browser::window_for(&player, &title);
                     }
                     // Minimized, it draws nothing and the phone's picture stops:
                     // back behind the other windows, it plays on out of the way.
-                    if let Some(w) = window.as_ref().filter(|w| browser::is_minimized(w.hwnd)) {
+                    if let Some(w) = window.as_ref().filter(|w| browser::is_minimized(w.xwin)) {
                         tracing::info!(
                             "the watched player's window was minimized; restoring it behind the others"
                         );
-                        browser::restore_behind(w.hwnd);
+                        browser::restore_behind(w.xwin);
                         std::thread::sleep(FOLLOW_EVERY);
                         continue;
                     }
                     let place = window.as_ref().and_then(|w| {
-                        let frame = browser::frame_of(w.hwnd)?;
+                        let frame = browser::frame_of(w.xwin)?;
                         let on_screen = match &automation {
                             // A browser builds what UI Automation sees of a page
                             // only once asked: give the player a moment to show
@@ -306,13 +299,13 @@ mod imp {
                             },
                             _ => frame,
                         };
-                        let in_window = RECT {
+                        let in_window = Rect {
                             left: on_screen.left - frame.left,
                             top: on_screen.top - frame.top,
                             right: on_screen.right - frame.left,
                             bottom: on_screen.bottom - frame.top,
                         };
-                        Some(Place { window: w.hwnd.0 as isize, on_screen, in_window })
+                        Some(Place { window: w.xwin.0 as isize, on_screen, in_window })
                     });
                     if place.is_some() {
                         *found.lock().unwrap_or_else(|e| e.into_inner()) = place;
@@ -345,20 +338,11 @@ mod imp {
         #[test]
         fn music_apps_are_not_offered_unless_they_say_video() {
             assert!(plays_video("chrome", "YouTube", false), "a browser's video says music");
-            assert!(plays_video("F0DC299D809B9700", "Zen", false));
-            assert!(plays_video(r"C:/Program Files/VideoLAN/VLC/vlc.exe", "vlc", false));
-            assert!(!plays_video("Spotify.exe", "Spotify", false));
+            assert!(plays_video("org.mpris.MediaPlayer2.firefox.instance_1_42", "Firefox", false));
+            assert!(plays_video("org.mpris.MediaPlayer2.vlc", "VLC media player", false));
+            assert!(!plays_video("org.mpris.MediaPlayer2.spotify", "Spotify", false));
             assert!(!plays_video("chrome", "YouTube Music", false), "named by its site");
-            assert!(!plays_video(
-                "Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic",
-                "Media Player",
-                false
-            ));
-            assert!(plays_video(
-                "Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic",
-                "Media Player",
-                true
-            ));
+            assert!(plays_video("org.mpris.MediaPlayer2.spotify", "Spotify", true));
         }
     }
 }

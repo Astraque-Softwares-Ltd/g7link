@@ -97,13 +97,13 @@ SlideAction  = "next" | "previous" | "start" | "stop" | "black"
   `up`, or `click` (press and release). If a session ends or `remote_input` is
   turned off while a button is held down, the PC releases the held button.
 - **Scroll (`scroll`):** horizontal (`dx`, positive right) and vertical (`dy`,
-  positive down/towards the user or wheel delta; on Windows `dy > 0` scrolls
-  up / standard wheel ticks, `dx > 0` scrolls right) in wheel notches
+  positive down/towards the user) in wheel notches
   (fractions allowed for smooth scrolling), each finite and within
   `[-200, 200]`.
 - **Text (`text`):** 1 to 256 UTF-8 bytes of printable Unicode text (no control
-  characters). Injected as Unicode characters (`KEYEVENTF_UNICODE` on Windows)
-  so non-Latin scripts and emojis work regardless of keyboard layout.
+  characters). Typed with the keys of the user's keyboard layout where it
+  has them, otherwise through the RemoteDesktop portal, XTest, `wtype` or
+  `xdotool`.
 - **Keys (`key`):**
   - Named keys: `enter`, `backspace`, `tab`, `escape`, `space`, `left`,
     `right`, `up`, `down`, `home`, `end`, `page_up`, `page_down`, `delete`,

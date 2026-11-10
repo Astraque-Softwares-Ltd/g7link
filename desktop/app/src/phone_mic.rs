@@ -21,7 +21,7 @@ use crate::{
     bridge::app::{describe, show_message},
     core_host,
     state::Changes,
-    win::audio_out::Player,
+    sys::audio_out::Player,
 };
 
 /// Where the phone's microphone is.
@@ -70,7 +70,7 @@ pub fn phase() -> Phase {
 pub fn init(settings: &crate::settings::Settings) {
     let _ = std::thread::Builder::new()
         .name("vmic-cleanup".into())
-        .spawn(crate::win::vmic::cleanup_stale_sources);
+        .spawn(crate::sys::vmic::cleanup_stale_sources);
     *OUTPUT.lock().unwrap_or_else(|e| e.into_inner()) = settings.phone_mic_output.clone();
     GAIN.store(settings.phone_mic_gain.clamp(MIN_GAIN, MAX_GAIN), Ordering::Relaxed);
 }
@@ -154,8 +154,8 @@ pub fn is_cable(name: &str) -> bool {
 
 /// The output devices, and the one the microphone plays into.
 pub fn outputs() -> (Vec<AudioOutputDevice>, Option<String>) {
-    let mut devices = crate::win::audio::output_devices();
-    if crate::win::vmic::is_available() {
+    let mut devices = crate::sys::audio::output_devices();
+    if crate::sys::vmic::is_available() {
         if !devices.iter().any(|d| d.id == VIRTUAL_MIC_MONO_ID) {
             devices.insert(
                 0,
@@ -300,7 +300,7 @@ struct Sink {
     player: Mutex<Option<Player>>,
     /// The stream's format, to start again on another output.
     config: Mutex<Option<MirrorAudioConfig>>,
-    vmic: Mutex<Option<crate::win::vmic::VirtualMic>>,
+    vmic: Mutex<Option<crate::sys::vmic::VirtualMic>>,
 }
 
 impl Sink {
@@ -312,7 +312,7 @@ impl Sink {
             self.player.lock().unwrap_or_else(|e| e.into_inner()).take();
             let out_channels = if output.as_deref() == Some(VIRTUAL_MIC_MONO_ID) { 1 } else { 2 };
             let phone_name = core_host::host().hub.read(|s| s.name_of(&self.peer));
-            match crate::win::vmic::VirtualMic::open_with_label(
+            match crate::sys::vmic::VirtualMic::open_with_label(
                 config.rate,
                 config.channels,
                 out_channels,

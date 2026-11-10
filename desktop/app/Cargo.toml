@@ -1,6 +1,6 @@
 [package]
 name = "g7link-desktop"
-description = "G7 Link for Windows: the desktop app"
+description = "G7 Link: the Linux desktop app"
 version.workspace = true
 edition.workspace = true
 # Above the workspace minimum: material-colors needs Rust 1.97.
@@ -46,7 +46,6 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 cc = "1"
 pkg-config = "0.3"
 cxx-qt-build = { workspace = true, features = ["link_qt_object_files"] }
-embed-resource.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

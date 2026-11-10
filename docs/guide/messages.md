@@ -3,7 +3,7 @@
 The **Messages** page on your PC brings together your phone's SMS and MMS text threads alongside **Unified Conversations** from RCS, WhatsApp, Telegram, Signal, and other messaging apps. You can read threads, search contacts, send texts and image attachments, schedule messages for later, copy verification codes, and filter spam from one inbox.
 
 <p align="center">
-  <img src="images/messages-inbox.png" alt="Messages page on Windows showing SMS threads and Unified Conversations from chat apps" width="760">
+  <img src="images/messages-inbox.png" alt="Messages page on the PC showing SMS threads and Unified Conversations from chat apps" width="760">
 </p>
 
 ## What You Need
@@ -41,7 +41,7 @@ You can attach images to any SMS/MMS conversation in three ways:
 </p>
 
 1. **Paste from clipboard**: Copy any image on your PC and press `Ctrl+V` inside the message composer.
-2. **Drag and drop**: Drag a `.png`, `.jpg`, `.webp`, or `.gif` image file from File Explorer or the `Shelf` onto the conversation pane.
+2. **Drag and drop**: Drag a `.png`, `.jpg`, `.webp`, or `.gif` image file from your file manager or the `Shelf` onto the conversation pane.
 3. **Attachment picker**: Click the attachment icon (`+` or paperclip) in the composer and choose an image file from your PC.
 4. A thumbnail preview appears above the text box. Add an optional caption and press **Enter** to send the image as an MMS through your phone's cellular connection.
 
@@ -67,7 +67,7 @@ When an SMS or chat message contains a verification code, G7 Link displays a **C
 - **Where data travels**: SMS threads, MMS attachments, contact records, and Unified Conversation messages are transmitted directly between your phone and PC over your end-to-end encrypted QUIC connection.
 - **Where data stays**:
   - On your **phone**, SMS and MMS messages live in Android's system telephony provider (`content://sms` and `content://mms`). Temporary staging files used when building or receiving MMS attachments are stored in the app's private cache and deleted automatically within 5 minutes.
-  - On your **PC**, Unified Conversations (`MessagingStyle` chat threads) are cached in your local SQLite database (`%LOCALAPPDATA%\G7Link\g7link.db` in `chat_threads` and `chat_messages`) and MMS image attachments are stored in `%LOCALAPPDATA%\G7Link\cache\images\` for up to **90 days** so conversations open without delay. Clicking **Clear** next to **Cached messages** in **Settings › Storage & Privacy** removes all locally cached messages and attachments on the PC without deleting any texts on your phone.
+  - On your **PC**, Unified Conversations (`MessagingStyle` chat threads) are cached in your local SQLite database (`~/.local/share/G7Link/g7link.db` in `chat_threads` and `chat_messages`) and MMS image attachments are stored in `~/.local/share/G7Link/cache/images/` for up to **90 days** so conversations open without delay. Clicking **Clear** next to **Cached messages** in **Settings › Storage & Privacy** removes all locally cached messages and attachments on the PC without deleting any texts on your phone.
 
 ## Limits
 

@@ -16,23 +16,19 @@ as carrier CGNAT. So:
 mDNS doesn't cross Tailscale (no multicast), so with the address dropped there
 was nothing to dial. Tailscale's IPv6 range (`fd7a:115c:a1e0::/48`) is already a
 unique-local address and passed; most setups only route IPv4 by default.
-On Windows, the installer's firewall rule covers Private and Domain networks
-only; the Tailscale adapter is often a Public network.
+On Linux, the firewall rules `install.sh` adds (ufw or firewalld) allow only
+private ranges (`192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`,
+`fe80::/10`), not the tailnet.
 
 ## Change
 - `is_lan_ip` also accepts tailnet ranges (`is_tailnet_ip`: `100.64.0.0/10`,
   `fd7a:115c:a1e0::/48`). Every LAN-only filter now keeps tailnet addresses,
   so the PC's tailnet address from pairing (or learned from a session) is
   stored, dialed and allowed, with away mode off.
-- No new firewall rule. A Public-profile rule for `100.64.0.0/10` would also
-  open the port to carrier and hotspot networks that use that range. Instead,
-  mark the Tailscale network Private once, in an administrator PowerShell:
-
-  ```powershell
-  Set-NetConnectionProfile -InterfaceAlias Tailscale -NetworkCategory Private
-  ```
-
-  The installer's existing rule (Private and Domain) then covers it.
+- No new firewall rule. A rule for `100.64.0.0/10` would also open the port
+  to carrier and hotspot networks that use that range. When a firewall is on,
+  allow G7 Link's port (UDP `7718` by default) on the Tailscale interface yourself, for
+  example `sudo ufw allow in on tailscale0 to any port 7718 proto udp`.
 
 Unchanged: pairing, device keys, QUIC end-to-end encryption, relays (still off
 unless away mode is on), mDNS.

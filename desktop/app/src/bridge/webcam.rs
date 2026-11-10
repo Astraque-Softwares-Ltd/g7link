@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `Webcam`: QML singleton exposing the Windows virtual camera add-on status,
+//! `Webcam`: QML singleton exposing the virtual camera (`v4l2loopback`) status,
 //! webcam preferences (phone, 720p, 1080p or 4K when the camera can, mirror),
 //! and live stream state.
 

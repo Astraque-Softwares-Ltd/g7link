@@ -786,7 +786,7 @@ pub async fn sync_now(node: &Node) -> SyncReport {
 
         for rel_path in removals {
             let path = pc_dir.join(&rel_path);
-            let recycled = tokio::task::spawn_blocking(move || crate::win::shell::recycle_file(&path)).await;
+            let recycled = tokio::task::spawn_blocking(move || crate::sys::shell::recycle_file(&path)).await;
             match recycled {
                 Ok(Ok(())) => {
                     updated_baseline.remove(&rel_path);

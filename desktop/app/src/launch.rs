@@ -4,7 +4,7 @@
 //! share, run a launcher action, or quit (`--quit`, `--uninstall`).
 //!
 //! The launch writes a request file into the data folder, then wakes the
-//! running instance (`win::single_instance`), which drains the folder. The
+//! running instance (`sys::single_instance`), which drains the folder. The
 //! data folder is private to the user, and files survive the moment between
 //! a first launch taking over and the app being ready to send.
 

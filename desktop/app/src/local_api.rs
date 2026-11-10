@@ -95,7 +95,7 @@ pub fn token_file_path() -> PathBuf {
 /// guessable token.
 pub fn generate_token() -> Option<String> {
     let mut bytes = [0u8; 32];
-    crate::win::secure_random(&mut bytes).then(|| HEXLOWER.encode(&bytes))
+    crate::sys::secure_random(&mut bytes).then(|| HEXLOWER.encode(&bytes))
 }
 
 fn is_valid_token_hex(s: &str) -> bool {
@@ -453,8 +453,8 @@ fn read_pc_clipboard() -> String {
     }
     #[cfg(not(test))]
     {
-        match crate::win::clipboard::read() {
-            crate::win::clipboard::Clip::Text { text, .. } => text,
+        match crate::sys::clipboard::read() {
+            crate::sys::clipboard::Clip::Text { text, .. } => text,
             _ => String::new(),
         }
     }
@@ -468,7 +468,7 @@ fn write_pc_clipboard(text: &str) -> Result<(), String> {
     }
     #[cfg(not(test))]
     {
-        crate::win::clipboard::write(text)
+        crate::sys::clipboard::write(text)
     }
 }
 

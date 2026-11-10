@@ -1,14 +1,14 @@
 # Settings Reference
 
-This page explains every setting in the PC app (Windows and Linux) and the Android app one by one, including its exact in-app label, default value, and what changing it does.
+This page explains every setting in the PC app and the Android app one by one, including its exact in-app label, default value, and what changing it does.
 
 <p align="center">
-  <img src="images/settings-appearance.png" alt="Categorized two-pane Settings screen in G7 Link for Windows" width="760">
+  <img src="images/settings-appearance.png" alt="Categorized two-pane Settings screen in G7 Link on the PC" width="760">
 </p>
 
-## Windows 11 App Settings
+## PC App Settings
 
-On Windows, **Settings** uses a two-pane layout with 9 categories in the left navigation rail (or a scrollable top pill bar when the window is narrower than 680 pixels). Preferences are stored atomically in `%LOCALAPPDATA%\G7Link\desktop-settings.json`, while per-device permissions live in your local SQLite database (`g7link.db`).
+On the PC, **Settings** uses a two-pane layout with 9 categories in the left navigation rail (or a scrollable top pill bar when the window is narrower than 680 pixels). Preferences are stored atomically in `~/.local/share/G7Link/desktop-settings.json`, while per-device permissions live in your local SQLite database (`g7link.db`).
 
 ---
 
@@ -18,11 +18,11 @@ Controls the visual theme, light/dark mode, accent palette, and OLED black surfa
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
-| **Theme** | `Hive`, `Bloom` (default), `Glass`, `Graphite` | Selects the visual style. **Hive** is honey on charcoal (dark) or warm wax (light), with a living honeycomb behind the whole window that grows from the logo, breathes, and sends soft pulses of light; its colors are fixed, so the color options below are hidden. **Bloom** uses soft, tinted Material You surfaces. **Glass** renders translucent cards over the Windows backdrop, each with a lit glass rim: a specular edge from the top left, a softer reflection at the bottom right, and a faint inner glow. **Graphite** uses high-contrast monochrome ink-on-paper surfaces. |
-| **Mode** | `System` (default), `Light`, `Dark` | Follows Windows 11's system light/dark mode or locks G7 Link to Light or Dark. |
+| **Theme** | `Hive`, `Bloom` (default), `Glass`, `Graphite` | Selects the visual style. **Hive** is honey on charcoal (dark) or warm wax (light), with a living honeycomb behind the whole window that grows from the logo, breathes, and sends soft pulses of light; its colors are fixed, so the color options below are hidden. **Bloom** uses soft, tinted Material You surfaces. **Glass** renders translucent cards, each with a lit glass rim: a specular edge from the top left, a softer reflection at the bottom right, and a faint inner glow. **Graphite** uses high-contrast monochrome ink-on-paper surfaces. |
+| **Mode** | `System` (default), `Light`, `Dark` | Follows your desktop's light/dark preference or locks G7 Link to Light or Dark. |
 | **Color** *(shown in Bloom and Glass)* | **Wallpaper** (default), **Honey**, **Lavender**, **Ocean**, **Sage**, **Black**, **Media artwork**, or **Phone color pills** | Picks the accent seed color. **Wallpaper** extracts colors from your desktop wallpaper. **Media artwork** dynamically adapts the app's palette to the album art of whatever song is currently playing. **Phone color pills** sync live with each paired phone's Material You wallpaper palette. |
 | **Pure black (AMOLED)** | **Off** (default) | Shown inline as an **AMOLED** pill when the **Black** color swatch is selected in Bloom/Glass, or as a dedicated row in **Graphite Dark**. Replaces dark gray backgrounds with pure `#000000` black for OLED monitors. |
-| **Animated comb** *(Hive)* | **On** (default) | Lets Hive's honeycomb breathe and pulse. It also holds still while animations are off in Windows, while energy saver is on, and while the window isn't in front. |
+| **Animated comb** *(Hive)* | **On** (default) | Lets Hive's honeycomb breathe and pulse. It also holds still while animations are off in system settings, while energy saver is on, and while the window isn't in front. |
 
 ---
 
@@ -32,15 +32,15 @@ Controls startup behavior, the system tray, `G7 Island`, battery notifications, 
 
 | Setting | Default | What It Does |
 | :--- | :--- | :--- |
-| **Start with Windows** | **On** for installed copies | Launches G7 Link quietly in the Windows system tray when you sign in to your PC. |
-| **Stay in system tray** | **On** | Keeps G7 Link running in the system tray (unloading the UI window to ~5 to 10 MB working set) when you close the main window, so your phone stays connected. When turned off, closing the window quits the app completely. |
-| **G7 Island** | **Off** | Shows a compact pill at the top center of your primary monitor during active phone events. Automatically hides during full-screen games/videos or Windows Do Not Disturb. |
+| **Start at login** | **On** for installed copies | Launches G7 Link quietly in the system tray when you sign in to your PC (an XDG autostart entry, `~/.config/autostart/g7link.desktop`). |
+| **Stay in system tray** | **On** | Keeps G7 Link running in the system tray (unloading the UI window) when you close the main window, so your phone stays connected. When turned off, closing the window quits the app completely. |
+| **G7 Island** | **Off** | Shows a compact pill at the top center of your primary monitor during active phone events, and stays hidden when nothing is happening. On Wayland, the desktop decides where it opens. |
 | **Island triggers** *(shown when G7 Island is On)* | **Calls**: On, **Transfers**: On, **Media**: On, **Alerts**: Off | Toggles which phone events expand `G7 Island`: incoming/active **Calls**, active file **Transfers**, now-playing **Media**, and phone notification **Alerts** (including OTPs, timers, and recordings). |
 | **Battery alerts** | **On** | Shows a desktop notification when a connected phone's battery drops low or reaches a full charge. |
 | **Sync clipboard to phone** | **On** | Automatically sends text and images copied on this PC (`Ctrl+C`) to connected phones. |
 | **Clipboard follows control** | **On** | Sends the PC clipboard to the phone when you start controlling it: the mouse moves into its mirror window, or a remote control session starts. |
 | **Copy one-time codes** | **Off** | Automatically copies 4-to-8-digit verification codes detected in incoming phone notifications and SMS messages onto your PC clipboard. |
-| **Copy received files** | **On** | Automatically places small incoming files received from your phone onto the Windows clipboard (`CF_HDROP`) so you can press `Ctrl+V` to paste them anywhere. |
+| **Copy received files** | **On** | Automatically places small incoming files received from your phone onto the clipboard as copied files so you can press `Ctrl+V` to paste them anywhere. |
 | **Suggest clipboard actions** | **On** | Offers one-click context chips (**Open**, **Open in Maps**, **Call**, **Track**, **Email**) when a web link, street address, phone number, parcel tracking number, or email address arrives from your phone's clipboard. |
 
 ---
@@ -50,7 +50,7 @@ Controls startup behavior, the system tray, `G7 Island`, battery notifications, 
 Lists your paired phones (with a device selector pill bar at the top when more than one phone is paired), a **Pair a new device** button, an **Unpair** button, and 19 per-device feature permission toggles grouped into three sections.
 
 <p align="center">
-  <img src="images/settings-devices.png" alt="Per-device feature permission toggles in Settings › Devices on Windows" width="760">
+  <img src="images/settings-devices.png" alt="Per-device feature permission toggles in Settings › Devices on the PC" width="760">
 </p>
 
 #### Group A: Calls, messages & notifications
@@ -70,7 +70,7 @@ Lists your paired phones (with a device selector pill bar at the top when more t
 | **Files** (`files`) | **On** | Sending and receiving files, folders, and `Handoff` links/documents. |
 | **Photos** (`photos`) | **On** | Browsing the phone's camera roll, screenshots, and albums in the **Photos** page and receiving new photo alerts. |
 | **Voice recordings** (`recordings`) | **On** | Receiving voice notes recorded on the phone. |
-| **File Explorer integration** (`storage`) | **Off** | Mounting the phone's storage under `%USERPROFILE%\G7Link\<Phone name>` via Windows Cloud Files (includes an **Open** button when enabled), and allowing the phone to browse shared PC folders when **Your PC in your pocket** is also turned on. |
+| **File manager integration** (`storage`) | **Off** | Mounting the phone's storage at `~/G7Link/<Phone name>` with FUSE (includes an **Open** button when enabled), and allowing the phone to browse shared PC folders when **Your PC in your pocket** is also turned on. |
 | **Remote PC file access** (`remote_files`) | **Off** | Allowing storage browsing when the phone and PC are connected over mobile data / relay (**Connect over mobile data**) rather than your local Wi-Fi network. |
 
 #### Group C: Screen, camera & control
@@ -95,9 +95,9 @@ Configures **Phone as speaker**, call media pausing, the **G7 Link Webcam** virt
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
-| **Stream PC audio to phone** | **Off** (default) | Streams real-time Windows system audio (uncompressed 16-bit stereo) to your connected phone so you can listen through your phone's speakers or headphones. |
+| **Stream PC audio to phone** | **Off** (default) | Streams your PC's system audio (uncompressed 16-bit stereo, from the default output's monitor in PipeWire or PulseAudio) to your connected phone so you can listen through your phone's speakers or headphones. |
 | **Pause media during calls** | **On** (default) | Automatically pauses media playing on this PC when your phone rings or is in an active call, and resumes when the call ends. |
-| **Virtual camera add-on** | **Set up** / **Remove** | Registers or unregisters `g7link_vcam.dll` with Windows 11 Media Foundation (requires a one-time Administrator prompt) so **G7 Link Webcam** appears in Zoom, Teams, Meet, and OBS. |
+| **Virtual camera add-on** | **Set up** / **Remove** | Loads or removes the `v4l2loopback` driver as **G7 Link Webcam** (asks once for your administrator password) so it appears in Zoom, Meet, Discord, OBS, and browsers. The driver must be installed; the one-command install does that. |
 | **Phone** *(shown when more than one phone is paired)* | First paired phone | Picks which paired phone provides the webcam video feed. |
 | **Camera** | `Back` (default), `Front` | Selects the phone's rear or front camera lens. |
 | **Mirror image** | **Off** (default) | Flips the webcam video horizontally. |
@@ -112,39 +112,39 @@ Configures Do Not Disturb synchronization, PC-to-phone notification forwarding, 
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
-| **Follow phone Do not disturb** | **Off** (default) | Mutes Windows notification popups on this PC whenever your phone is in Do Not Disturb mode (notifications still wait quietly in the G7 Link feed). |
-| **Forward PC notifications** | **Off** (default) | Forwards Windows desktop notifications to your connected phone while you are away from your desk. |
-| **Per-app notification rules** | `Show` (default), `No pop-ups`, `Hide` | For every phone app that has posted a notification: **Show** displays both Windows popups and feed cards; **No pop-ups** keeps alerts in the G7 Link feed without desktop popups; **Hide** blocks that app's notifications completely. |
+| **Follow phone Do not disturb** | **Off** (default) | Mutes desktop notification popups on this PC whenever your phone is in Do Not Disturb mode (notifications still wait quietly in the G7 Link feed). |
+| **Forward PC notifications** | **Off** (default) | Forwards this PC's desktop notifications to your connected phone while you are away from your desk. |
+| **Per-app notification rules** | `Show` (default), `No pop-ups`, `Hide` | For every phone app that has posted a notification: **Show** displays both desktop popups and feed cards; **No pop-ups** keeps alerts in the G7 Link feed without desktop popups; **Hide** blocks that app's notifications completely. |
 
 ---
 
 ### 6. Files & Sync
 
-Configures File Explorer integration, PC folder sharing, LocalSend, voice recording output, and automatic folder synchronization.
+Configures file manager integration, PC folder sharing, LocalSend, voice recording output, and automatic folder synchronization.
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
-| **File Explorer Send to** | **On** (default) | Adds your paired phones to the right-click **Send to** menu in Windows File Explorer. |
-| **Your PC in your pocket** | **Off** (default) | Shares your PC's `Downloads`, `Documents`, `Desktop`, `Pictures`, and `G7 Link Shared` folders with paired phones that have **File Explorer integration** enabled. |
+| **File manager Send to** | **On** (default) | Adds your paired phones to the right-click menu of GNOME Files (under **Scripts**), Dolphin, Nemo, Thunar and Caja. |
+| **Your PC in your pocket** | **Off** (default) | Shares your PC's `Downloads`, `Documents`, `Desktop`, `Pictures`, and `G7 Link Shared` folders with paired phones that have **File manager integration** enabled. |
 | **LocalSend on local network** | **Off** (default) | Enables the built-in LocalSend v2.1 client and server (UDP/TCP port `53317`) to send and receive files with nearby LocalSend devices on your Wi-Fi network without pairing. |
-| **Open files shared from the phone** | **Off** (default) | When you share a single photo or document from the phone, opens it in its default Windows app as soon as it arrives. When off, the file is saved to `Downloads\G7Link` without opening anything. |
-| **Voice recordings** | Format: `M4A` (default), `MP3`, `WAV`, `FLAC`; Folder: **Choose folder** / **Reset** | Sets where incoming voice notes from your phone are saved (`Documents\G7Link Recordings` or `Downloads\G7Link` by default) and automatically converts them to MP3, WAV, or FLAC if selected. |
+| **Open files shared from the phone** | **Off** (default) | When you share a single photo or document from the phone, opens it in its default app as soon as it arrives. When off, the file is saved to `~/Downloads/G7Link` without opening anything. |
+| **Voice recordings** | Format: `M4A` (default), `MP3`, `WAV`, `FLAC`; Folder: **Choose folder** / **Reset** | Sets where incoming voice notes from your phone are saved (`~/Documents/G7Link Recordings` by default) and automatically converts them to MP3, WAV, or FLAC if selected. |
 | **Synced folders** | **Sync now**, **Add DCIM to Pictures**, per-rule toggle & **Remove** | Configures one-way (**One-way (phone to PC)**) or two-way (**Two-way sync**, keeping conflict copies) automatic folder synchronization rules with BLAKE3 integrity verification. |
 
 ---
 
 ### 7. Shortcuts & Rules
 
-Configures global Windows keyboard shortcuts and trigger-action automation rules.
+Configures global keyboard shortcuts and trigger-action automation rules.
 
 | Setting | Default | What It Does |
 | :--- | :--- | :--- |
-| **Command palette** | `Ctrl+Alt+Space` | Global Windows shortcut to open the `Command Palette` from any app. Click the box and press a new key combination to change it, or click **Reset**. |
-| **File shelf** | `Ctrl+Alt+S` | Global Windows shortcut to slide out the `Shelf` edge panel. |
-| **Take photo** | `Ctrl+Alt+C` | Global Windows shortcut to trigger Continuity Camera in Photo mode on your phone. |
-| **Scan document** | `Ctrl+Alt+D` | Global Windows shortcut to trigger Continuity Camera in Document Scan mode on your phone. |
+| **Command palette** | `Ctrl+Alt+Space` | Global shortcut to open the `Command Palette` from any app. Click the box and press a new key combination to change it, or click **Reset**. |
+| **File shelf** | `Ctrl+Alt+S` | Global shortcut to slide out the `Shelf` edge panel. |
+| **Take photo** | `Ctrl+Alt+C` | Global shortcut to trigger Continuity Camera in Photo mode on your phone. |
+| **Scan document** | `Ctrl+Alt+D` | Global shortcut to trigger Continuity Camera in Document Scan mode on your phone. |
 | **Trigger-action rules** | Empty by default (includes quick buttons for **Lock PC on disconnect** and **Pause media on ring**) | Runs automated actions on your PC (`Lock this PC`, `Sleep this PC`, `Pause PC media`, `Resume PC media`, `Mute PC audio`, `Unmute PC audio`, `Show notification`, `Run command`) when a phone event occurs (`When phone connects`, `When phone disconnects`, `When phone rings`, `When call ends`, `When phone battery is low`, `When phone is charged`). |
-| **OBS Studio** | Port `4455`, no password | Where Deck tiles with `obs:` commands (`obs:record`, `obs:stream`, `obs:scene:<name>`) reach OBS's WebSocket server on this PC. Enter the password from OBS's **Tools › WebSocket Server Settings** and click **Save**; it is stored encrypted with Windows DPAPI. **Test connection** checks the port and password. |
+| **OBS Studio** | Port `4455`, no password | Where Deck tiles with `obs:` commands (`obs:record`, `obs:stream`, `obs:scene:<name>`) reach OBS's WebSocket server on this PC. Enter the password from OBS's **Tools › WebSocket Server Settings** and click **Save**; it is stored sealed with the desktop keyring's key (file permissions only without a keyring). **Test connection** checks the port and password. |
 
 <p align="center">
   <img src="images/settings-obs.png" alt="Shortcuts and Rules settings with the OBS Studio card" width="760">
@@ -157,16 +157,16 @@ Configures global Windows keyboard shortcuts and trigger-action automation rules
 Displays live item counts and disk usage for every local history store and cache, with individual **Clear** buttons and a master **Clear everything** action.
 
 <p align="center">
-  <img src="images/settings-storage.png" alt="Storage and Privacy settings on Windows showing retention periods and Clear buttons" width="760">
+  <img src="images/settings-storage.png" alt="Storage and Privacy settings on the PC showing retention periods and Clear buttons" width="760">
 </p>
 
 | Setting | Retention / Default | What It Does |
 | :--- | :--- | :--- |
-| **Clipboard history** | **On** (default) / up to 50 clips / 128 MB / kept 7 days | Toggles the Windows DPAPI encrypted local clipboard history (`clipboard_history.enc` and `clipboard_images/<id>.enc`) and provides a **Clear** button. |
+| **Clipboard history** | **On** (default) / up to 50 clips / 128 MB / kept 7 days | Toggles the encrypted local clipboard history (`clipboard_history.enc` and `clipboard_images/<id>.enc`) and provides a **Clear** button. |
 | **Notification history** | **On** (default) / up to 300 alerts / kept 24 hours | Toggles 24-hour retention of dismissed phone notifications (`notification-history.json`) and cached notification images on this PC, with a **Clear** button. |
 | **Cross-device timeline** | `30d`, `90d` (default), `1y`, `All` (max 5,000 items) | Sets how long `Timeline` activity entries are kept before auto-purging, with **Open** and **Clear** buttons. |
 | **Cached messages** | Kept 90 days | Shows the count and disk size of cached SMS and Unified Conversation threads and MMS attachments, with a **Clear** button. |
-| **Photo thumbnails** | Kept 30 days | Shows the count and disk size of cached gallery thumbnails in `%LOCALAPPDATA%\G7Link\cache\photos\`, with a **Clear** button. |
+| **Photo thumbnails** | Kept 30 days | Shows the count and disk size of cached gallery thumbnails in `~/.local/share/G7Link/cache/photos/`, with a **Clear** button. |
 | **Transfer history** | Kept with `Timeline` | Shows the number of logged file transfer records and lets you **Clear** the log (never deletes saved files in `Downloads`). |
 | **Clear all local history & caches** | **Clear everything...** button | Wipes clipboard history, `Timeline`, notification history, cached messages, photo thumbnails, and transfer history on this PC in one step while keeping your paired devices, settings, and downloaded files intact. |
 
@@ -177,15 +177,15 @@ Displays live item counts and disk usage for every local history store and cache
 Provides network diagnostics, **Connect over mobile data**, Wake-on-LAN readiness, the local HTTP automation API, version info, logs, and updates.
 
 <p align="center">
-  <img src="images/settings-connection.png" alt="Connection and About settings on Windows" width="760">
+  <img src="images/settings-connection.png" alt="Connection and About settings on the PC" width="760">
 </p>
 
 | Setting | Default | What It Does |
 | :--- | :--- | :--- |
-| **Connection Doctor** | **Check** button | Runs a live check of Windows Firewall rules, network profile type (Public vs Private), active VPN interfaces, and suspected Wi-Fi AP isolation, and fixes firewall or network profile issues with one click. |
+| **Connection Doctor** | **Check** button | Runs a live check of the firewall (ufw or firewalld, including NetworkManager's zone for your network), active VPN interfaces, suspected Wi-Fi AP isolation, and what some features need on this desktop (FUSE, `v4l2loopback`, the ScreenCast portal, input access, audio, the tray). It opens the firewall rule with one click where it can, after an administrator password prompt. |
 | **Connect over mobile data** | **Off** | Allows this PC and paired phones to stay connected over LTE/5G or across separate networks via end-to-end encrypted relay packets when direct LAN/USB is unavailable. |
-| **Wake from your phone** | Read-only status indicator (`Ready`, `Off in Windows`, `Check settings`, `No adapter`) | Inspects your active Windows network adapter and tells you whether Wake on LAN is enabled in Device Manager so your phone can wake this PC from sleep. |
-| **Local automation API** | **Off** (default port `53320`) | Starts the loopback-only HTTP/JSON server (`127.0.0.1:<port>`) for PowerToys, AutoHotkey, and scripts, and writes the 256-bit Bearer token to `%LOCALAPPDATA%\G7Link\api-token.json`. |
+| **Wake from your phone** | Read-only status indicator (`Ready`, `Off in the adapter's settings`, `Check settings`, `No adapter`) | Inspects your active network adapter and tells you whether Wake on Magic Packet is on, so your phone can wake this PC from sleep. Turn it on with NetworkManager or `ethtool`. |
+| **Local automation API** | **Off** (default port `53320`) | Starts the loopback-only HTTP/JSON server (`127.0.0.1:<port>`) for launchers and scripts, and writes the 256-bit Bearer token to `~/.local/share/G7Link/api-token.json`. |
 | **G7 Link `<version>`** | **Check for updates** and **Open logs** buttons | Shows the app version and this PC's device name, checks GitHub Releases for SHA-256 verified updates, or opens the local diagnostic logs folder. |
 | **Check for updates** | **On** (shown on installed copies) | Checks the update channel's feed over HTTPS (`https://raw.githubusercontent.com/Astraque-Softwares-Ltd/g7link/channels/<channel>.json`) 30 seconds after startup, then every 12 hours on **Stable** and every 2 hours on **Nightly** (twice as long on battery), and tells your phone when there's a new build. A check of an unchanged feed is a few hundred bytes. |
 | **Update channel** | **Stable** (**Nightly** on a nightly build) | **Stable** gets releases. **Nightly** gets a build from the latest code every couple of hours when it changes, with the newest fixes and features and sometimes new bugs, and releases too. Switching back to **Stable** keeps the nightly installed until the next release is newer. An install stays on its channel when it takes a release, until you change it. |
@@ -205,7 +205,7 @@ On Android, tap **Settings** in the floating bottom dock. You can view all setti
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
-| **Theme** | `Hive`, `Graphite` (default), `Bloom`, `Glass` | Selects the visual style on Android, matching the Windows themes. **Hive** draws the same honeycomb behind every screen, with fixed honey colors (no wallpaper or artwork colors). In **Glass** on Android 13 and newer, the floating Home and Settings dock is Liquid Glass: content scrolling beneath it bends at the rim. |
+| **Theme** | `Hive`, `Graphite` (default), `Bloom`, `Glass` | Selects the visual style on Android, matching the PC themes. **Hive** draws the same honeycomb behind every screen, with fixed honey colors (no wallpaper or artwork colors). In **Glass** on Android 13 and newer, the floating Home and Settings dock is Liquid Glass: content scrolling beneath it bends at the rim. |
 | **Mode** | `System` (default), `Light`, `Dark` | Follows Android's system dark theme or locks the app to Light or Dark. |
 | **Animated comb** *(Hive)* | **On** (default) | Lets Hive's honeycomb breathe and pulse. It holds still with **Remove animations** or battery saver on, and while the app isn't in front. |
 | **Pure black (AMOLED)** | **Off** (default) | Shown in Graphite Dark or as an inline **AMOLED** pill when the **Black** seed swatch is selected. Uses true `#000000` black surfaces for OLED phone screens. |
@@ -218,7 +218,7 @@ On Android, tap **Settings** in the floating bottom dock. You can view all setti
 | Setting | Default | What It Does |
 | :--- | :--- | :--- |
 | **Paired PC list & Unpair** | Per paired PC | Shows each paired PC's name and live connection status (`Connected` or `Not connected`) with an **Unpair** button. |
-| **Browse this phone's storage in File Explorer** | **Off** (per PC) | Allows that specific PC to mount this phone's shared storage (or selected folders) inside Windows File Explorer. |
+| **Browse this phone’s storage in the file manager** | **Off** (per PC) | Allows that specific PC to mount this phone's shared storage (or selected folders) as a folder in its file manager. |
 | **Pair another PC** | Button | Opens the pairing screen to scan a QR code or pair nearby with another PC. |
 | **Connect over mobile data** | **Off** | Allows this phone to stay connected to paired PCs over LTE/5G or across different networks when away from Wi-Fi. |
 
@@ -239,7 +239,7 @@ Each permission row shows its live state (**On** / **Allowed** vs **Off**) and a
 | **Calls, contacts and messages › Contacts on your PC** | Grants contact read access so names and avatars appear in Calls and Messages on your PC. |
 | **Calls, contacts and messages › Text from your PC** | Grants SMS permissions to read and send texts on your PC. |
 | **Photos and videos › Photos and videos on your PC** | Grants media access (`Allow all` or `Select photos`) so you can browse your camera roll and get new screenshot alerts on your PC. |
-| **Photos and videos › All files access / Selected folders only** | Configures whether File Explorer storage mounting and folder sync can access your whole shared storage (`MANAGE_EXTERNAL_STORAGE`) or only specific folders you pick with Android's folder picker (`Add folder` / `Remove`). |
+| **Photos and videos › All files access / Selected folders only** | Configures whether file manager storage mounting and folder sync can access your whole shared storage (`MANAGE_EXTERNAL_STORAGE`) or only specific folders you pick with Android's folder picker (`Add folder` / `Remove`). |
 
 ### 4. Features & Data (and About)
 

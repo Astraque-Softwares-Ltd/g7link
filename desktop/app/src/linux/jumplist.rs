@@ -3,8 +3,7 @@
 // (`~/.local/share/applications/g7link.desktop` + hicolor app icon).
 //
 // Desktop environments (GNOME Dash, KDE Plasma Task Manager, Cinnamon, XFCE) expose
-// `[Desktop Action <id>]` entries in the launcher right-click menu, providing full
-// parity with Windows taskbar Jump List tasks.
+// `[Desktop Action <id>]` entries in the launcher right-click menu.
 
 use std::path::{Path, PathBuf};
 
@@ -12,8 +11,7 @@ use std::path::{Path, PathBuf};
 pub const ARG: &str = "--task";
 
 /// Jump-list tasks exposed on the launcher / dock right-click menu.
-/// Kept in parity with the Windows Jump List (`win/jumplist.rs`) and
-/// `bridge::app::G7LinkApp::dispatch_jump_task`.
+/// Kept in step with `bridge::app::G7LinkApp::dispatch_jump_task`.
 pub const TASKS: &[(&str, &str, &str)] = &[
     ("send-files", "Send files to phone", "Open the file picker to send files to your phone"),
     ("send-clipboard", "Send clipboard to phone", "Send what's currently copied on this PC to your phone"),
@@ -43,7 +41,7 @@ fn ensure_desktop_icon() -> PathBuf {
 /// Register the application `.desktop` entry and 256x256 PNG icon in the user's XDG data dir.
 ///
 /// Only installs into the user's real `~/.local/share/applications` when running as the
-/// primary profile (`custom_data_dir.is_none()`), matching Windows Jump List registration.
+/// primary profile (`custom_data_dir.is_none()`).
 pub fn register(custom_data_dir: Option<&Path>) {
     if custom_data_dir.is_some() {
         return;

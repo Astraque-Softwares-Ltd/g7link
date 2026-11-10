@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `strings`: the text the Windows app builds in Rust, for Qt's translation
+//! `strings`: the text the desktop app builds in Rust, for Qt's translation
 //! tools. Every `tr!("Context", "Text", ...)` in `desktop/app/src` goes into
 //! `desktop/app/i18n/rust_strings.h` as a `QT_TRANSLATE_NOOP`, which `lupdate`
 //! reads along with the QML. `--check` fails when the file is out of date.

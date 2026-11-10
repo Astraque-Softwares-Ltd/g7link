@@ -116,13 +116,13 @@ fn parse_window_handle(raw: &str) -> Option<isize> {
     Some(handle)
 }
 
-fn raw_window_id(hwnd: isize) -> String {
+fn raw_window_id(xwin: isize) -> String {
     if let Ok(map) = window_id_map().lock()
-        && let Some(raw) = map.get(&hwnd)
+        && let Some(raw) = map.get(&xwin)
     {
         return raw.clone();
     }
-    hwnd.to_string()
+    xwin.to_string()
 }
 
 fn run_command_stdout(program: &str, args: &[&str]) -> Option<String> {
@@ -134,12 +134,12 @@ fn run_command_stdout(program: &str, args: &[&str]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn is_numeric_window_id(hwnd: isize) -> bool {
-    if hwnd <= 0 {
+fn is_numeric_window_id(xwin: isize) -> bool {
+    if xwin <= 0 {
         return false;
     }
     if let Ok(map) = window_id_map().lock()
-        && let Some(raw) = map.get(&hwnd)
+        && let Some(raw) = map.get(&xwin)
     {
         let trimmed = raw.trim();
         return trimmed.starts_with("0x")
@@ -391,19 +391,19 @@ fn x11_query_active_window() -> Option<(isize, String)> {
         if is_g7link_title(&title) {
             return None;
         }
-        let hwnd = win as isize;
-        if hwnd == 0 {
+        let xwin = win as isize;
+        if xwin == 0 {
             return None;
         }
         if let Ok(mut map) = window_id_map().lock() {
-            map.insert(hwnd, format!("0x{win:x}"));
+            map.insert(xwin, format!("0x{win:x}"));
         }
-        Some((hwnd, title))
+        Some((xwin, title))
     }
 }
 
-fn x11_is_window_alive_and_visible(hwnd: isize) -> bool {
-    if !is_numeric_window_id(hwnd) {
+fn x11_is_window_alive_and_visible(xwin: isize) -> bool {
+    if !is_numeric_window_id(xwin) {
         return false;
     }
     let Some(x11) = x11_lib() else {
@@ -417,7 +417,7 @@ fn x11_is_window_alive_and_visible(hwnd: isize) -> bool {
         const IS_VIEWABLE: libc::c_int = 2;
         let (viewable, had_err) = with_x11_error_guard(x11.x_set_error_handler, x11.x_sync, dpy, || {
             let mut attrs: XWindowAttributes = std::mem::zeroed();
-            let status = (x11.x_get_window_attributes)(dpy, hwnd as libc::c_ulong, &mut attrs);
+            let status = (x11.x_get_window_attributes)(dpy, xwin as libc::c_ulong, &mut attrs);
             status != 0 && attrs.map_state == IS_VIEWABLE
         });
         let _ = (x11.x_close_display)(dpy);
@@ -425,8 +425,8 @@ fn x11_is_window_alive_and_visible(hwnd: isize) -> bool {
     }
 }
 
-fn x11_focus_window(hwnd: isize) -> bool {
-    if !is_numeric_window_id(hwnd) {
+fn x11_focus_window(xwin: isize) -> bool {
+    if !is_numeric_window_id(xwin) {
         return false;
     }
     let Some(x11) = x11_lib() else {
@@ -446,7 +446,7 @@ fn x11_focus_window(hwnd: isize) -> bool {
         const SUBSTRUCTURE_NOTIFY_MASK: libc::c_long = 1 << 19;
 
         let (ok, had_err) = with_x11_error_guard(x11.x_set_error_handler, x11.x_sync, dpy, || {
-            let win = hwnd as libc::c_ulong;
+            let win = xwin as libc::c_ulong;
             let mut attrs: XWindowAttributes = std::mem::zeroed();
             if (x11.x_get_window_attributes)(dpy, win, &mut attrs) == 0 || attrs.map_state != IS_VIEWABLE {
                 return false;
@@ -484,25 +484,25 @@ fn x11_focus_window(hwnd: isize) -> bool {
 /// (in-process), `kdotool` (KDE Wayland), or `xdotool`, ignoring G7 Link's own windows.
 pub fn query_active_window() -> Option<(isize, String)> {
     if has_x11_display()
-        && let Some((hwnd, title)) = x11_query_active_window()
+        && let Some((xwin, title)) = x11_query_active_window()
     {
-        return Some((hwnd, title));
+        return Some((xwin, title));
     }
     if has_wayland_display()
         && let Some(raw_id) = run_command_stdout("kdotool", &["getactivewindow"])
-        && let Some(hwnd) = parse_window_handle(&raw_id)
+        && let Some(xwin) = parse_window_handle(&raw_id)
         && let Some(title) = run_command_stdout("kdotool", &["getwindowname", &raw_id])
         && !is_g7link_title(&title)
     {
-        return Some((hwnd, title));
+        return Some((xwin, title));
     }
     if has_x11_display()
         && let Some(raw_id) = run_command_stdout("xdotool", &["getactivewindow"])
-        && let Some(hwnd) = parse_window_handle(&raw_id)
+        && let Some(xwin) = parse_window_handle(&raw_id)
         && let Some(title) = run_command_stdout("xdotool", &["getwindowname", &raw_id])
         && !is_g7link_title(&title)
     {
-        return Some((hwnd, title));
+        return Some((xwin, title));
     }
     None
 }
@@ -510,34 +510,34 @@ pub fn query_active_window() -> Option<(isize, String)> {
 /// Records the current foreground window if it belongs to an external
 /// user-facing application (not G7 Link itself).
 pub fn record_foreground_window() {
-    if let Some((hwnd, title)) = query_active_window() {
+    if let Some((xwin, title)) = query_active_window() {
         let mut guard = LAST_EXTERNAL_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some((hwnd, title));
+        *guard = Some((xwin, title));
     }
 }
 
-/// Captures the last active external foreground window `(hwnd, title)` at the
+/// Captures the last active external foreground window `(xwin, title)` at the
 /// moment a Continuity Camera request begins. Returns `None` honestly when no
 /// live external window can be inspected.
 pub fn snapshot_target_window() -> Option<(isize, String)> {
-    if let Some((hwnd, title)) = query_active_window() {
+    if let Some((xwin, title)) = query_active_window() {
         let mut guard = LAST_EXTERNAL_WINDOW.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some((hwnd, title.clone()));
-        return Some((hwnd, title));
+        *guard = Some((xwin, title.clone()));
+        return Some((xwin, title));
     }
     let cached = LAST_EXTERNAL_WINDOW.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
     if is_window_alive_and_visible(cached.0) { Some(cached) } else { None }
 }
 
-/// Returns true if `hwnd` still refers to an existing, visible top-level window.
-pub fn is_window_alive_and_visible(hwnd: isize) -> bool {
-    if hwnd == 0 {
+/// Returns true if `xwin` still refers to an existing, visible top-level window.
+pub fn is_window_alive_and_visible(xwin: isize) -> bool {
+    if xwin == 0 {
         return false;
     }
-    if has_x11_display() && x11_is_window_alive_and_visible(hwnd) {
+    if has_x11_display() && x11_is_window_alive_and_visible(xwin) {
         return true;
     }
-    let raw_id = raw_window_id(hwnd);
+    let raw_id = raw_window_id(xwin);
     if has_wayland_display()
         && let Some(title) = run_command_stdout("kdotool", &["getwindowname", &raw_id])
         && !title.is_empty()
@@ -553,16 +553,16 @@ pub fn is_window_alive_and_visible(hwnd: isize) -> bool {
     false
 }
 
-/// Restores and brings `hwnd` to the foreground so a paste shortcut can be
+/// Restores and brings `xwin` to the foreground so a paste shortcut can be
 /// synthesized into it. Returns false if the window is gone or cannot be focused.
-pub fn focus_window(hwnd: isize) -> bool {
-    if !is_window_alive_and_visible(hwnd) {
+pub fn focus_window(xwin: isize) -> bool {
+    if !is_window_alive_and_visible(xwin) {
         return false;
     }
-    if has_x11_display() && x11_focus_window(hwnd) {
+    if has_x11_display() && x11_focus_window(xwin) {
         return true;
     }
-    let raw_id = raw_window_id(hwnd);
+    let raw_id = raw_window_id(xwin);
     if has_wayland_display()
         && Command::new("kdotool")
             .args(["windowactivate", &raw_id])
@@ -599,16 +599,16 @@ pub fn focus_window(hwnd: isize) -> bool {
     false
 }
 
-/// If the window manager prevented `focus_window` from making `hwnd` the
-/// active window on X11, sends `Ctrl+V` directly to `hwnd`.
-pub fn send_paste_fallback_if_not_foreground(hwnd: isize) {
-    if hwnd == 0 || !has_x11_display() {
+/// If the window manager prevented `focus_window` from making `xwin` the
+/// active window on X11, sends `Ctrl+V` directly to `xwin`.
+pub fn send_paste_fallback_if_not_foreground(xwin: isize) {
+    if xwin == 0 || !has_x11_display() {
         return;
     }
-    if query_active_window().is_some_and(|(active, _)| active == hwnd) {
+    if query_active_window().is_some_and(|(active, _)| active == xwin) {
         return;
     }
-    let raw_id = raw_window_id(hwnd);
+    let raw_id = raw_window_id(xwin);
     let _ = Command::new("xdotool")
         .args(["key", "--window", &raw_id, "--clearmodifiers", "ctrl+v"])
         .stdin(Stdio::null())

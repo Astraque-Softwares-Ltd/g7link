@@ -10,7 +10,7 @@ use crate::i18n::tr;
 use g7link_core::{ConnectionPath, LinkState};
 use serde::Serialize;
 
-use crate::{core_host, win::doctor as windows_checks};
+use crate::{core_host, sys::doctor as desktop_checks};
 
 /// How a check came out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -54,7 +54,7 @@ pub struct Facts {
     /// Connected networks: name, and whether it's private or domain.
     pub networks: Vec<(String, bool)>,
     /// `None` when the firewall couldn't be read.
-    pub firewall: Option<windows_checks::Firewall>,
+    pub firewall: Option<desktop_checks::Firewall>,
     /// Paired devices: link and discovery diagnostics.
     pub devices: Vec<DeviceFact>,
     /// Optional helper tools missing from `PATH` on Linux.
@@ -65,11 +65,11 @@ pub struct Facts {
 
 /// Asks the OS and the core (blocking; call on a worker thread).
 pub fn gather() -> Facts {
-    let adapters = windows_checks::adapters();
-    let networks = windows_checks::networks()
+    let adapters = desktop_checks::adapters();
+    let networks = desktop_checks::networks()
         .map(|list| list.into_iter().map(|n| (network_name(&n.name), n.trusted)).collect())
         .unwrap_or_default();
-    let firewall = std::env::current_exe().ok().and_then(|exe| windows_checks::firewall(&exe).ok());
+    let firewall = std::env::current_exe().ok().and_then(|exe| desktop_checks::firewall(&exe).ok());
     let node = core_host::node();
     let devices = core_host::host().hub.read(|s| {
         s.devices
@@ -94,14 +94,13 @@ pub fn gather() -> Facts {
         networks,
         firewall,
         devices,
-        missing_tools: windows_checks::missing_tools(),
-        linux_checks: windows_checks::linux_checks(),
+        missing_tools: desktop_checks::missing_tools(),
+        linux_checks: desktop_checks::linux_checks(),
     }
 }
 
-/// A network's name as people say it. While Windows is still identifying
-/// a network it calls it "Loading..." (or "Identifying..."), which says
-/// nothing.
+/// A network's name as people say it. A network still being identified is
+/// called "Loading..." (or "Identifying..."), which says nothing.
 fn network_name(name: &str) -> String {
     let name = name.trim();
     if name.is_empty() || name.ends_with("...") || name.ends_with('…') {
@@ -443,10 +442,10 @@ pub fn fix(id: &str) -> bool {
     match id {
         "firewall" => {
             let Ok(exe) = std::env::current_exe() else {
-                return windows_checks::open_firewall_settings();
+                return desktop_checks::open_firewall_settings();
             };
-            let fixed = match windows_checks::fix_firewall(&exe) {
-                Ok(true) => windows_checks::firewall(&exe).map(|f| f.allowed && !f.blocked).unwrap_or(true),
+            let fixed = match desktop_checks::fix_firewall(&exe) {
+                Ok(true) => desktop_checks::firewall(&exe).map(|f| f.allowed && !f.blocked).unwrap_or(true),
                 Ok(false) => false,
                 Err(e) => {
                     tracing::warn!(error = %e, "can't change the firewall");
@@ -454,12 +453,12 @@ pub fn fix(id: &str) -> bool {
                 }
             };
             if !fixed {
-                let _ = windows_checks::open_firewall_settings();
+                let _ = desktop_checks::open_firewall_settings();
             }
             true
         }
-        "firewall-settings" => windows_checks::open_firewall_settings(),
-        "network-settings" => windows_checks::open_network_settings(),
+        "firewall-settings" => desktop_checks::open_firewall_settings(),
+        "network-settings" => desktop_checks::open_network_settings(),
         "reconnect" => {
             if let Some(node) = core_host::node() {
                 core_host::spawn(async move { node.refresh().await });
@@ -491,7 +490,7 @@ mod tests {
             local_address: true,
             vpn: false,
             networks: vec![("Home".into(), true)],
-            firewall: Some(windows_checks::Firewall { on: true, allowed: true, blocked: false }),
+            firewall: Some(desktop_checks::Firewall { on: true, allowed: true, blocked: false }),
             devices: vec![device_fact("Pixel", LinkState::Online { path: ConnectionPath::Lan, rtt_ms: 4 })],
             missing_tools: Vec::new(),
             linux_checks: Vec::new(),
@@ -514,7 +513,7 @@ mod tests {
     fn problems_come_first_with_fixes() {
         let mut f = facts();
         f.networks = vec![("Cafe".into(), false)];
-        f.firewall = Some(windows_checks::Firewall { on: true, allowed: true, blocked: true });
+        f.firewall = Some(desktop_checks::Firewall { on: true, allowed: true, blocked: true });
         f.vpn = true;
         f.devices = vec![device_fact("Phone", LinkState::Offline { last_seen: Some(1_000) })];
         let checks = diagnose(&f, 1_000 + 3 * 3600);
@@ -622,7 +621,7 @@ mod tests {
     fn no_network_and_no_allow_rule() {
         let mut f = facts();
         f.local_address = false;
-        f.firewall = Some(windows_checks::Firewall { on: true, allowed: false, blocked: false });
+        f.firewall = Some(desktop_checks::Firewall { on: true, allowed: false, blocked: false });
         let checks = diagnose(&f, 0);
         assert_eq!(checks[0].title, "This PC isn't on a network");
         assert_eq!(checks[1].outcome, Outcome::Warn);

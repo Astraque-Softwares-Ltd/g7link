@@ -19,8 +19,6 @@ ab_glyph = "0.2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[build-dependencies]
-embed-resource.workspace = true
 
 [lints]
 workspace = true

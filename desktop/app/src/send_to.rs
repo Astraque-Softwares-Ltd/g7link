@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Explorer's "Send to" menu: a shortcut per paired phone, which starts
 //! G7 Link with `--send-to <device> <files…>`. The running app sends the
-//! files and follows the transfer in a Windows notification with a progress
+//! files and follows the transfer in a desktop notification with a progress
 //! bar, so nothing else needs to open.
 
 use crate::i18n::tr;
@@ -23,7 +23,7 @@ use crate::{
     core_host,
     launch::Request,
     state::{Changes, CoreStatus},
-    win::{
+    sys::{
         shortcut::{self, Shortcut},
         toast::{self, Progress, Toast},
     },
@@ -38,7 +38,7 @@ pub const ACTION_CANCEL: &str = "cancel";
 
 /// How long a send from Explorer waits for the app to start.
 const START_TIMEOUT: Duration = Duration::from_secs(60);
-/// Progress bars move at most this often (Windows animates in between).
+/// Progress bars move at most this often.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -69,12 +69,12 @@ transfers automatically once the PC reconnects.
 When a recording transfer (`recording: true`) completes on the PC:
 
 1. **Folder & naming:** Saved in the user's configured Recordings folder
-   (default `Documents\G7Link Recordings`) under the name the phone gave
+   (default `~/Documents/G7Link Recordings`) under the name the phone gave
    it, from when recording started (so one that waited for the PC keeps its
    time), or else the time it arrived: `Recording YYYY-MM-DD HH.MM.<ext>` (or `Recording YYYY-MM-DD HH.MM (2).<ext>`
    if that name is already taken; existing files are never overwritten).
-2. **Format conversion:** Converted off the UI thread with Windows Media
-   Foundation to the user's chosen format (`m4a` as recorded without
+2. **Format conversion:** Converted off the UI thread with FFmpeg
+   (`libavcodec` in-process, or the `ffmpeg` command) to the user's chosen format (`m4a` as recorded without
    re-encoding, `mp3`, `wav`, or `flac`). If conversion fails, the original
    `.m4a` is kept in the Recordings folder.
 3. **Markers file:** When `markers` is non-empty, a companion UTF-8 text file
@@ -82,6 +82,6 @@ When a recording transfer (`recording: true`) completes on the PC:
    `Recording 2026-10-07 14.32.markers.txt`) is written next to the audio file,
    one marker per line (`MM:SS.mmm  <label>` or `HH:MM:SS.mmm  <label>`;
    one without a label reads `Marker <n>`).
-4. **Notification:** A Windows toast `"Recording from <phone> saved"` is shown
+4. **Notification:** A desktop notification `"Recording from <phone> saved"` is shown
    with **Open** and **Show in folder** actions, and the transfer entry's saved
    path is updated to the final file in the Recordings folder.

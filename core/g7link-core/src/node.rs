@@ -3543,7 +3543,7 @@ impl Node {
         crate::deck::set_pc_audio(&self.shared, &session, volume, muted).await
     }
 
-    // ---- Phone storage (PC File Explorer) ----
+    // ---- Phone storage (PC file manager) ----
 
     /// Lists a directory on a connected phone (`storage.list`).
     pub async fn storage_list(
@@ -3671,7 +3671,7 @@ impl Node {
         crate::storage::delete(&self.shared, &session, path.into(), confirmed).await
     }
 
-    /// Notifies connected PCs that have `path` open in File Explorer that its
+    /// Notifies connected PCs that have `path` open in their file manager that its
     /// contents changed (`storage.changed`, debounced to at most once per second).
     pub async fn storage_changed(&self, path: impl Into<String>) {
         crate::storage::notify_changed(&self.shared, path.into()).await;
@@ -4255,7 +4255,7 @@ fn install_mdns(shared: &Arc<Shared>, fast: bool) -> Result<()> {
         MDNS_SLOW
     });
     // Every LAN interface, not just the one the OS picks for multicast, which
-    // on a PC is often a Hyper-V, WSL or VPN adapter (#148). Not on phones:
+    // on a PC is often a container bridge, virtual machine or VPN adapter (#148). Not on phones:
     // mDNS on mobile data would only wake the radio.
     #[cfg(not(target_os = "android"))]
     let builder = builder.multicast_interfaces(is_mdns_interface);
@@ -4600,8 +4600,8 @@ mod away_tests {
             DeviceInfo {
                 name: "Test".into(),
                 kind: DeviceKind::Desktop,
-                os: "windows".into(),
-                os_ver: "11".into(),
+                os: "linux".into(),
+                os_ver: "6.12".into(),
                 model: None,
                 accent: None,
                 screen: None,

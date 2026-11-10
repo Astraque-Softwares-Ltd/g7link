@@ -471,7 +471,7 @@
     <string name="pc_audio_use_phone_mic_sub">Send this phone\'s microphone to the PC</string>
     <string name="pc_audio_use_phone_mic_on">The PC hears this phone\'s microphone</string>
 
-    <!-- Phone storage in File Explorer -->
+    <!-- Phone storage in the PC file manager -->
     <string name="storage_all_files_title">All files access</string>
     <string name="storage_all_files_on">On. PCs you allow can browse, open and copy this phone\'s files in their file manager.</string>
     <string name="storage_all_files_off">Browse this phone\'s folders in your PC\'s file manager. Needs All files access, or pick specific folders below.</string>
@@ -644,7 +644,7 @@
     <string name="remote_key_ctrl">Ctrl</string>
     <string name="remote_key_alt">Alt</string>
     <string name="remote_key_shift">Shift</string>
-    <string name="remote_key_win">Win</string>
+    <string name="remote_key_win">Super</string>
     <string name="remote_key_esc">Esc</string>
     <string name="remote_key_esc_desc">Escape</string>
     <string name="remote_key_tab">Tab</string>
@@ -1075,7 +1075,7 @@
     <string name="guide_share_privacy">Executables and scripts are never auto-opened on your PC.</string>
     <string name="guide_share_limits">Only safe document types auto-open; all other files save to Downloads.</string>
 
-    <!-- 10. Storage in File Explorer -->
+    <!-- 10. Storage in the file manager -->
     <string name="guide_storage_title">Storage in your file manager</string>
     <string name="guide_storage_summary">Browse this phone\'s shared storage or selected folders in your PC\'s file manager.</string>
     <string name="guide_storage_where">Settings › Permissions › Photos and videos (and Settings › Devices)</string>

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Photos and videos from a phone (docs/protocol/photos.md):
-//! - Windows notification with preview when a new photo or screenshot is taken,
+//! - Desktop notification with preview when a new photo or screenshot is taken,
 //!   to open, save, or copy it.
 //! - The Photos gallery page: albums, paged items newest-first, on-demand
 //!   batched thumbnails cached on disk, in-app viewer, Save (to a chosen
-//!   folder or `Downloads\G7Link`), Copy to clipboard, and Open in the
-//!   Windows Photos app or default video player.
+//!   folder or `Downloads/G7Link`), Copy to clipboard, and Open in the
+//!   default image viewer or video player.
 
 use crate::i18n::tr;
 use std::{
@@ -26,7 +26,7 @@ use crate::{
     core_host,
     messages::Status,
     state::Changes,
-    win::toast::{self, Toast},
+    sys::toast::{self, Toast},
 };
 
 /// The toast "device" for photos; their key is `<device ID> <photo ID>`.
@@ -485,7 +485,7 @@ fn copy_file_to_clipboard(path: &Path, remove_after: bool, notify_ui: bool) {
     };
     let copied = std::fs::read(path)
         .map_err(|e| e.to_string())
-        .and_then(|bytes| crate::win::clipboard::write_image(mime, &bytes));
+        .and_then(|bytes| crate::sys::clipboard::write_image(mime, &bytes));
     match copied {
         Ok(()) => {
             if remove_after {
@@ -1159,7 +1159,7 @@ pub fn ensure_full(id: String) {
     });
 }
 
-/// Opens `id` in the Windows Photos app (or default video player), downloading
+/// Opens `id` in the default image viewer (or video player), downloading
 /// it first if needed.
 pub fn open_item(id: String) {
     if id.is_empty() {
@@ -1408,7 +1408,7 @@ fn show_photo_error(error: &Error) {
     }
 }
 
-/// Sanitizes a photo's display name into a safe Windows filename for drag-and-drop.
+/// Sanitizes a photo's display name into a safe filename for drag-and-drop.
 pub(crate) fn sanitize_drag_filename(raw_name: &str, fallback_ext: &str) -> String {
     let leaf = raw_name.rsplit(['/', '\\']).next().unwrap_or(raw_name);
     let cleaned: String =
@@ -1508,7 +1508,7 @@ fn stage_for_drag_in(id: &str, drag_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Stages a gallery photo on disk under `<data_dir>/cache/photos/drag/<name>`
-/// so dragging a tile out to the Desktop or File Explorer drops the photo with
+/// so dragging a tile out to the Desktop or the file manager drops the photo with
 /// its real filename. Prefers the full-resolution image (waiting up to ~2.5s
 /// if it is still arriving), falling back to the cached thumbnail.
 pub fn stage_for_drag(id: &str) -> Option<PathBuf> {

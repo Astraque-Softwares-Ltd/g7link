@@ -167,7 +167,7 @@ impl fmt::Debug for NodeConfig {
 
 /// Platform services the app provides to the core.
 ///
-/// Implemented by each app (Windows, Android). Calls may come from any
+/// Implemented by each app (Linux desktop, Android). Calls may come from any
 /// thread and must not block for long.
 pub trait Platform: Send + Sync + 'static {
     /// Start ringing loudly (find my device), even on silent.

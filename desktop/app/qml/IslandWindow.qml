@@ -22,7 +22,7 @@ Window {
     readonly property int availW: Screen.desktopAvailableWidth > 0 ? Screen.desktopAvailableWidth : 1920
 
     // The work area (the screen minus the taskbar, wherever the taskbar is). Qt only knows
-    // its size, so Windows reports the position; refreshed when the work area changes.
+    // its size, so the app reports the position; refreshed when the work area changes.
     property var workArea: AppController.workArea()
     readonly property int workAreaKey: Screen.desktopAvailableWidth * 100000 + Screen.desktopAvailableHeight
     onWorkAreaKeyChanged: workArea = AppController.workArea()

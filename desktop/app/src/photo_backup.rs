@@ -246,7 +246,7 @@ pub fn default_folder(phone_name: &str) -> PathBuf {
     pictures.join("G7 Link").join(folder_name(phone_name))
 }
 
-/// A phone's name as a folder name: nothing Windows refuses in one.
+/// A phone's name as a folder name: nothing a file manager would choke on.
 fn folder_name(phone_name: &str) -> String {
     let cleaned: String = phone_name
         .chars()
@@ -431,7 +431,7 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 
 /// How far this PC's time zone is from UTC at `at_ms` (daylight saving included).
 fn local_offset_ms(at_ms: i64) -> i64 {
-    crate::win::local_offset_ms(at_ms)
+    crate::sys::local_offset_ms(at_ms)
 }
 
 /// Moves `staged` into `folder\<year>\<month>`, under the item's name. A file
@@ -486,7 +486,7 @@ fn same_bytes(a: &Path, b: &Path) -> bool {
 /// Whether the drive holding `dir` has room for `size` more bytes and a margin
 /// (yes when it can't tell).
 fn has_room(dir: &Path, size: u64) -> bool {
-    crate::win::free_space(dir).is_none_or(|free| free >= size.saturating_add(SPACE_MARGIN))
+    crate::sys::free_space(dir).is_none_or(|free| free >= size.saturating_add(SPACE_MARGIN))
 }
 
 // ---- Looking for new items ----

@@ -119,8 +119,7 @@ else (a reset, a closed connection, a missing `done`) means it didn't.
 - A name that already exists there gets a number: `photo (2).jpg`. A sent
   folder gets a new folder of its own the same way (`Trip (2)`); nothing
   is ever added to a folder that was already there.
-- Names the receiving system can't store (on Windows: `CON`, `NUL`, `?`,
-  trailing dots…) are changed to ones it can.
+- Names the receiving system can't store are changed to ones it can.
 - A device accepts files only from paired devices with the `files` toggle
   on. A receiver that runs out of space resets the stream.
 - Implementations **MUST NOT** log file names (v0 §11).

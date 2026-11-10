@@ -2388,9 +2388,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    // ---- Phone storage (File Explorer on PC) ----
+    // ---- Phone storage (file manager on PC) ----
 
-    /** Turns phone storage access in File Explorer on or off for `pcId` (off by default). */
+    /** Turns phone storage access in the PC's file manager on or off for `pcId` (off by default). */
     /** Stops reconnecting to a paired PC by itself ("Stop reconnecting"), or starts again. */
     fun setReconnect(pcId: String, on: Boolean) {
         _state.update { it.reduce(Event.ReconnectChanged(pcId, on)) }

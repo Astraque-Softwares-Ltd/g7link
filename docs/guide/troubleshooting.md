@@ -4,15 +4,16 @@ If your phone and PC cannot find each other, disconnect when your phone screen t
 
 ## 1. Run the `Connection Doctor` First
 
-G7 Link includes a built-in diagnostic tool on Windows that automatically detects the most common network blockers and fixes what it can.
+G7 Link includes a built-in diagnostic tool on the PC that automatically detects the most common network blockers and fixes what it can.
 
 1. On your PC, open **Settings › Connection & About**.
 2. Next to **Connection Doctor**, click **Check**.
-3. The `Connection Doctor` inspects four things and shows plain-language results with action buttons:
-   - **Windows or Linux Firewall**: Checks whether `g7link-desktop` is allowed to receive incoming UDP (QUIC) and mDNS packets (Windows Firewall on Windows, or `ufw` / `firewalld` on Linux). If a firewall rule is missing or blocked, click **Fix** to register the rule (requires Administrator / Polkit approval).
-   - **Network Profile and Local Discovery (`Public` vs. `Private` on Windows, `avahi-daemon` on Linux)**: Windows 11 often marks home Wi-Fi networks as **Public** by default, which blocks local device discovery and incoming connections. If your home Wi-Fi is set to **Public**, switch it to **Private** in **Windows Settings › Network & internet › Wi-Fi › `<Your Network>` properties › Network profile type**. On Linux, Connection Doctor also checks that `avahi-daemon` (mDNS), `fusermount3` (phone storage mount), and PipeWire / PulseAudio are available.
+3. The `Connection Doctor` inspects these things and shows plain-language results with action buttons:
+   - **Firewall**: Checks whether `ufw` or `firewalld` lets G7 Link receive incoming UDP (QUIC) and mDNS packets. If a rule is missing or blocked, click **Fix** to add it (asks for your administrator password through Polkit).
+   - **Public networks**: With `firewalld`, NetworkManager can put a connection in the `public` zone, which blocks local device discovery and incoming connections. If your home Wi-Fi is in that zone, the Doctor says so and opens your network settings; move the connection to the `home` or `trusted` zone there, or run `nmcli connection modify "<Your Network>" connection.zone home`.
    - **Active VPN Interfaces**: Full-tunnel corporate or privacy VPNs often route local subnet traffic (`192.168.x.x` / `10.x.x.x`) into the VPN tunnel so your PC and phone cannot reach each other directly. Enable **Split tunneling** (or "Allow LAN traffic") in your VPN client's settings, or connect your phone over a USB cable (`On USB`), or turn on **Connect over mobile data** on both devices.
    - **Suspected Wi-Fi AP Isolation (Guest / Campus Wi-Fi)**: If your PC can hear your phone's multicast mDNS broadcasts (seen within the last 2 minutes) but every direct QUIC connection attempt times out, your Wi-Fi router has **AP Isolation** (Client Isolation) turned on. AP Isolation is common on hotel, campus, cafe, and "Guest" Wi-Fi networks. To connect on an isolated Wi-Fi network, either switch both devices to your main home Wi-Fi SSID, plug in a USB cable, or turn on **Connect over mobile data** on both devices.
+   - **This desktop's features**: Checks that FUSE (phone storage), the `v4l2loopback` driver (phone as webcam), the ScreenCast portal (sharing your PC screen), input access (`/dev/uinput`, the Remote Desktop portal, or XTest), PipeWire or PulseAudio, and a system tray are available, and says what to install for anything missing.
 
 ## 2. Phone Disconnects When Its Screen Is Off (Per-OEM Battery Guides)
 
@@ -109,11 +110,11 @@ If plugging your phone into your PC with a USB cable does not trigger USB auto-p
 
 ## 7. Troubleshooting Phone as Webcam (`G7 Link Webcam`)
 
-### `G7 Link Webcam` Does Not Appear in Zoom, Teams, Meet, or OBS
+### `G7 Link Webcam` Does Not Appear in Zoom, Meet, or OBS
 
 1. Open G7 Link on your PC and go to **Settings › Camera & Audio**.
-2. Check the **Virtual camera add-on** row. If it shows **Set up** instead of **Ready**, click **Set up** and approve the Windows Administrator prompt.
-3. Restart Zoom, Teams, your web browser, or OBS so the application refreshes its list of Windows Media Foundation video capture devices.
+2. Check the **Virtual camera add-on** row. If it shows **Set up** instead of **Ready**, click **Set up** and enter your administrator password. This needs your distribution's `v4l2loopback` package; run **Connection Doctor** to check that it's installed. With Secure Boot on, the driver's key may need to be enrolled before the kernel loads it.
+3. Restart Zoom, your web browser, or OBS so the application refreshes its list of cameras.
 
 ### Clicking "Start Webcam" on the PC Waits on "Asking..."
 
@@ -121,4 +122,4 @@ If plugging your phone into your PC with a USB cable does not trigger USB auto-p
 
 ## 8. Inspecting Diagnostic Logs
 
-If you need to report a bug, open **Settings › Connection & About** on your PC and click **Open logs** (next to the G7 Link version row) to open the local log directory in File Explorer. G7 Link never logs notification text, SMS message bodies, or clipboard contents to its log files.
+If you need to report a bug, open **Settings › Connection & About** on your PC and click **Open logs** (next to the G7 Link version row) to open the local log directory (`~/.local/share/G7Link/logs`) in your file manager. G7 Link never logs notification text, SMS message bodies, or clipboard contents to its log files.

@@ -31,7 +31,7 @@ class CompanionAndMigrationTest {
 
     @Test
     fun `the scan filter matches the beacon a PC broadcasts for its device ID`() {
-        // What desktop/app/src/win/ble_beacon.rs broadcasts: the magic, then the
+        // What desktop/app/src/linux/ble_beacon.rs broadcasts: the magic, then the
         // ID's first 8 bytes, here A5 3C 00 FF 12 34 56 78, which no hex reading of
         // the ID could produce.
         val id = "ww6yb9a1gtm8tgw4ukpjigw4ukpjigw4ukpjigw4ukpjigw4ukpy"

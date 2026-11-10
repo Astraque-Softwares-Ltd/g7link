@@ -305,7 +305,7 @@ Window {
                 event.accepted = true
             } else if (event.text.length > 0 && event.text.charCodeAt(0) >= 32
                        && (!(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
-                           // AltGr (@ on a French keyboard, say) arrives as Ctrl+Alt on Windows.
+                           // AltGr (@ on a French keyboard, say) can arrive as Ctrl+Alt.
                            // A plain letter, digit or space with Ctrl+Alt is a shortcut:
                            // Qt gives Ctrl+Alt+2 the text "2" even without AltGr.
                            || ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.AltModifier)

@@ -2,7 +2,7 @@
 //! Voice recordings received from a paired phone (docs/protocol/recorder.md):
 //! naming by date and time without overwriting, optional Media Foundation
 //! conversion (`M4A` kept as recorded, `MP3`, `WAV`, or `FLAC`), marker sidecar
-//! files (`<stem>.markers.txt`), and the Windows notification on completion.
+//! files (`<stem>.markers.txt`), and the desktop notification on completion.
 
 #![allow(unsafe_code)]
 
@@ -19,8 +19,8 @@ use g7link_core::{RecordingMarker, Transfer, TransferState};
 use crate::{
     core_host,
     settings::{RecordingFormat, Settings},
+    sys::toast::{self, Toast},
     transfers::{ACTION_OPEN, ACTION_SHOW, TOAST_GROUP},
-    win::toast::{self, Toast},
 };
 
 #[derive(Debug, Default)]
@@ -916,7 +916,7 @@ fn convert_audio_in_process(src: &Path, dest: &Path, format: RecordingFormat) ->
 
 /// Handles a completed incoming voice recording transfer off the UI thread:
 /// moves/converts the file into the Recordings folder, writes markers when
-/// present, updates the transfer entry in Home, and posts the Windows toast.
+/// present, updates the transfer entry in Home, and posts the notification.
 pub fn on_done(transfer: Transfer) {
     let TransferState::Done { ref saved } = transfer.state else { return };
     let Some(src) = saved.first().cloned() else { return };

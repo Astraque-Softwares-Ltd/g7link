@@ -11,5 +11,6 @@
 Notifications, messages, calls, clipboard, files, photos, screen mirroring and phone apps in windows. Local-first,
 end-to-end encrypted, no account and no cloud.
 
-G7 Link is based on NectarLink; see [NOTICE](NOTICE.md). The [user guide](docs/guide/README.md) covers each feature, and
-[building and testing](docs/technical/building-and-testing.md) covers development.
+The [user guide](docs/guide/README.md) covers each feature, and
+[building and testing](docs/technical/building-and-testing.md) covers development. Credits for the code G7 Link builds
+on are in [NOTICE](NOTICE.md).

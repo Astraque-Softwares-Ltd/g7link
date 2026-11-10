@@ -222,9 +222,10 @@ fn items(entries: &[FileEntry]) -> Vec<String> {
     items
 }
 
-/// A name Windows can store: no reserved device names (`CON`, `COM1`…),
-/// characters it rejects (including `:`, which would make the name a drive
-/// prefix or an alternate data stream), or trailing dots and spaces.
+/// A name every common filesystem can store, FAT, exFAT and NTFS drives and
+/// Android's shared storage included: no reserved device names (`CON`,
+/// `COM1`…), characters they reject (including `:`), or trailing dots and
+/// spaces.
 pub fn storable_name(name: &str) -> String {
     let mut clean: String = name
         .chars()
@@ -2060,7 +2061,6 @@ fn save_files(target: &Path, entries: &[FileEntry], parts: Vec<PathBuf>) -> std:
             };
             let to = unique_path(&at, &storable_name(&entry.name));
             move_file(&part, &to)?;
-            mark_from_elsewhere(&to);
             moved.push((to.clone(), part));
             if entry.folder.is_none() {
                 saved.push(to);
@@ -2081,15 +2081,6 @@ fn save_files(target: &Path, entries: &[FileEntry], parts: Vec<PathBuf>) -> std:
         return Err(e);
     }
     Ok(saved)
-}
-
-/// Marks a received file as coming from another device, the way a browser
-/// marks a download: on Windows that's the Internet zone (Mark of the Web),
-/// so SmartScreen checks a program before it runs and Office opens a
-/// document in Protected View. Best effort: a drive without alternate data
-/// streams (FAT32, say) takes no mark.
-pub(crate) fn mark_from_elsewhere(path: &Path) {
-    let _ = path;
 }
 
 /// Room kept free beyond an incoming transfer's size.
@@ -2277,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn names_windows_can_store() {
+    fn names_every_common_filesystem_can_store() {
         assert_eq!(storable_name("photo.jpg"), "photo.jpg");
         assert_eq!(storable_name("CON"), "_CON");
         assert_eq!(storable_name("nul.txt"), "_nul.txt");

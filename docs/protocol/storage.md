@@ -4,9 +4,9 @@
 > [files service](files.md); breaking changes are allowed until v1.
 > License: CC BY 4.0.
 
-Lets a PC browse and mount a phone's shared storage in File Explorer (Windows
-Cloud Files API) or inspect it from the CLI: folders list on demand, files
-hydrate when opened via ranged reads, files dropped in upload with resume, and
+Lets a PC browse and mount a phone's shared storage in its file manager (a
+FUSE mount at `~/G7Link/<Phone name>` on Linux) or inspect it from the CLI:
+folders list on demand, files are read in ranges as they are opened, files dropped in upload with resume, and
 renames, folder creation and deletions round-trip to the phone.
 
 ## 1. Capabilities
@@ -15,7 +15,7 @@ renames, folder creation and deletions round-trip to the phone.
 |---|---|---|
 | `storage.read` | phone | Lists folders and reads file byte ranges in the phone's shared storage (or folders picked with the Storage Access Framework) |
 | `storage.write` | phone | Creates folders, writes/uploads files, renames and deletes entries in the phone's shared storage (or picked SAF folders) |
-| `storage.mount` | PC | Mounts the phone's shared storage in File Explorer |
+| `storage.mount` | PC | Mounts the phone's shared storage in the file manager |
 
 Access is guarded by the `storage` per-device toggle (**off by default** on the
 phone, and configurable per device on both sides). While `storage` is off on
@@ -92,7 +92,7 @@ Renames or moves `from` to `to` within the shared storage root.
 
 Deletes `path`. On Android 11+, media items indexed by `MediaStore` are moved
 to the system trash when possible; otherwise, deletion requires `confirmed =
-true` (indicating the user confirmed deletion on the PC, e.g. in File Explorer
+true` (indicating the user confirmed deletion on the PC, e.g. in the file manager
 or the CLI).
 
 ### 3.5 `storage.changed`

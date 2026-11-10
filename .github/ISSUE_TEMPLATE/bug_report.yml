@@ -24,10 +24,10 @@ body:
     validations:
       required: true
   - type: input
-    id: windows
+    id: linux
     attributes:
-      label: Windows version and build
-      placeholder: Windows 11 24H2 (26100.1234), x64
+      label: Linux distribution and desktop
+      placeholder: Fedora 43, GNOME 49 on Wayland, x86_64
   - type: input
     id: phone
     attributes:
@@ -43,6 +43,6 @@ body:
     attributes:
       label: Logs
       description: >
-        Desktop logs are in %LOCALAPPDATA%\G7Link\logs. Please remove anything
+        Desktop logs are in ~/.local/share/G7Link/logs. Please remove anything
         personal before attaching them.
       render: text

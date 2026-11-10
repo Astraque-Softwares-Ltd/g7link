@@ -227,7 +227,7 @@ impl MdnsAddressLookupBuilder {
     }
 
     /// Sends and receives on every local IPv4 address that `include` accepts
-    /// (NectarLink patch).
+    /// (G7 Link patch).
     ///
     /// Without it, swarm-discovery uses one socket that joins the mDNS group
     /// only on the interface the OS picks for multicast, so on a PC whose
@@ -576,7 +576,7 @@ impl MdnsAddressLookup {
     }
 }
 
-/// The IPv4 addresses among `addrs` that `include` accepts (NectarLink patch).
+/// The IPv4 addresses among `addrs` that `include` accepts (G7 Link patch).
 fn local_ipv4s<'a>(
     addrs: impl Iterator<Item = &'a SocketAddr>,
     include: fn(Ipv4Addr) -> bool,

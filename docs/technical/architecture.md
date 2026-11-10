@@ -1,19 +1,19 @@
 # Architecture
 
-G7 Link is built around a shared Rust core library (`g7link-core`) that implements peer discovery, cryptographic identity, QUIC session management, capability negotiation, persistent storage, and media/file framing. Native platform shells on Windows (`desktop/app`) and Android (`android/app`) bind directly to this core and provide OS integration and UI rendering.
+G7 Link is built around a shared Rust core library (`g7link-core`) that implements peer discovery, cryptographic identity, QUIC session management, capability negotiation, persistent storage, and media/file framing. Native platform shells on Linux (`desktop/app`) and Android (`android/app`) bind directly to this core and provide OS integration and UI rendering.
 
 ## System Topology
 
 ```text
 +-------------------------------------------------------------------------------+
-| Windows or Linux PC                                                           |
+| Linux PC                                                                      |
 |                                                                               |
 |  +-------------------------------------------------------------------------+  |
 |  | desktop/app (g7link-desktop)                                        |  |
 |  |  +---------------------------+   +-----------------------------------+  |  |
-|  |  | Qt 6.12 QML UI            |   | Windows OS Integrations           |  |  |
-|  |  | (desktop/app/qml/*.qml)   |   | WASAPI, Media Foundation, WinRT,  |  |  |
-|  |  +-------------+-------------+   | DXGI Desktop Duplication, SendInput|  |  |
+|  |  | Qt 6.12 QML UI            |   | Linux Integrations                |  |  |
+|  |  | (desktop/app/qml/*.qml)   |   | PipeWire/PulseAudio, FFmpeg, D-Bus|  |  |
+|  |  +-------------+-------------+   | portals, X11, uinput, FUSE        |  |  |
 |  |                | cxx-qt 0.10     +-----------------+-----------------+  |  |
 |  |  +-------------v-----------------------------------v-----------------+  |  |
 |  |  | Rust Bridge & Services (desktop/app/src/bridge/, services)        |  |  |
@@ -22,7 +22,7 @@ G7 Link is built around a shared Rust core library (`g7link-core`) that implemen
 |  |                |                                   | NLVC v2            |  |
 |  |                |                     +-------------v-----------------+  |  |
 |  |                |                     | desktop/vcam                  |  |  |
-|  |                |                     | (g7link_vcam.dll IMFMedia)|  |  |
+|  |                |                     | (frames → v4l2loopback)       |  |  |
 |  |                |                     +-------------------------------+  |  |
 |  |  +-------------v-----------------------------------------------------+  |  |
 |  |  | core/g7link-core (incl. adb.rs & usb.rs) + g7link-protocol|  |  |
@@ -66,11 +66,11 @@ Pure wire-protocol crate with no runtime IO or platform dependencies beyond `tok
 The central networking, USB/ADB transport, persistence, and feature runtime.
 
 - **Node and Session Engine (`src/node.rs`, `src/session.rs`)**: Manages the `iroh::Endpoint`, accepts incoming `ALPN_PAIR` and `ALPN_SESSION` connections, runs the `hello` / `hello.update` capability handshake, maintains per-peer connection state, and multiplexes control messages, bulk streams, and QUIC datagrams.
-- **Zero-Shell-Out ADB & USB Tunnel (`core/g7link-adb`, `src/usb.rs`)**: Speaks the ADB host protocol directly over TCP (`127.0.0.1:5037`) to track attached USB Android devices via `host:track-devices` without spawning `adb.exe` subprocesses per poll, configures port forwards (`host-serial:<serial>:forward:tcp:0;tcp:53319`), and opens a TCP-carried UDP tunnel (`NLQU` header) so `iroh` QUIC datagrams traverse the USB cable with full TLS 1.3 encryption and congestion control.
+- **Zero-Shell-Out ADB & USB Tunnel (`core/g7link-adb`, `src/usb.rs`)**: Speaks the ADB host protocol directly over TCP (`127.0.0.1:5037`) to track attached USB Android devices via `host:track-devices` without spawning `adb` subprocesses per poll, configures port forwards (`host-serial:<serial>:forward:tcp:0;tcp:53319`), and opens a TCP-carried UDP tunnel (`NLQU` header) so `iroh` QUIC datagrams traverse the USB cable with full TLS 1.3 encryption and congestion control.
 - **Persistence (`src/store.rs`)**: Embedded SQLite database (`g7link.db`, schema version 7) storing paired devices, per-device capability toggles, key-value settings, unified timeline entries, `MessagingStyle` chat threads/messages, and the persistent FIFO send queue (`send_queue`).
 - **Resumable Transfers (`src/transfer.rs`)**: Implements `files.v0` multi-file transfers with BLAKE3 integrity verification (`blake3`), `.part` byte-offset resume, pause/resume/cancel semantics, and automatic queueing when a peer is offline or mid-disconnect.
 - **Perceptual Color Engine (`src/palette.rs`)**: Extracts Material You HCT + OKLab 15-role light and dark color palettes (`ThemeScheme`) from album cover art.
-- **Encrypted Clipboard Vault (`src/clipboard_history.rs`)**: Stores recent text and image clips in encrypted files (`clipboard_history.enc` with `NLCB\x01` header and `clipboard_images/<id>.enc` with `NLCI\x01` header) sealed directly with the platform `KeyProtector` (Windows DPAPI or Android Keystore AES-256-GCM).
+- **Encrypted Clipboard Vault (`src/clipboard_history.rs`)**: Stores recent text and image clips in encrypted files (`clipboard_history.enc` with `NLCB\x01` header and `clipboard_images/<id>.enc` with `NLCI\x01` header) sealed directly with the platform `KeyProtector` (AES-256-GCM under a Secret Service key on Linux, Android Keystore AES-256-GCM on Android).
 - **Interoperability (`src/localsend.rs`, `src/handoff.rs`)**: Implements LocalSend v2 HTTP/HTTPS discovery and file transfer compatibility (`UDP/TCP 53317`) and cross-device reading/document continuation (`handoff`).
 
 ### 3. `core/g7link-ffi`
@@ -81,33 +81,33 @@ UniFFI `0.32` bridge (`src/lib.rs`) compiled via `cargo-ndk` into `libg7link_ffi
 - Marshals async Rust events into Kotlin `EventCallback` interfaces (`NodeEvent`) and exposes synchronous/asynchronous methods for pairing, messaging, file transfers, send queue inspection, media sessions, and stream creation.
 - Accepts a Kotlin-implemented `ForeignKeyProtector` so Android's `KeystoreKeyProtector` (AES-256-GCM inside `AndroidKeyStore`, hardware-backed when supported by the device) seals `identity.key` and `clipboard_history.enc` inside Rust.
 
-### 4. `cli` (`g7link-cli`)
+### 4. `core/g7link-cli` (`g7link-cli`)
 
-Command-line binary (`g7link`) in top-level `cli/` for headless operation, scripted integration testing, `notify-when` task completion alerts, and diagnostic commands (`id`, `pair`, `qr-host`, `send`, `status`).
+Command-line binary (`g7link`) in `core/g7link-cli/` for headless operation, scripted integration testing, `notify-when` task completion alerts, and diagnostic commands (`id`, `pair`, `qr-host`, `send`, `status`).
 
 ### 5. `desktop/app` (`g7link-desktop`)
 
-The desktop client for Windows and Linux, combining a Rust service host with a Qt 6.12 Quick/QML user interface bridged via `cxx-qt` `0.10`.
+The Linux desktop client, combining a Rust service host with a Qt 6.12 Quick/QML user interface bridged via `cxx-qt` `0.10`.
 
 - **Qt Bridges (`desktop/app/src/bridge/`)**: One bridge per area (`app.rs`, `devices.rs`, `messages.rs`, `calls.rs`, `photos.rs`, `media.rs`, `mirror.rs`, `transfers.rs`, `prefs.rs` and others) exposes state and actions to QML. Design tokens come from `qml/Tokens.qml` and `qml/Theme.qml`.
-- **Platform Modules (`desktop/app/src/win/`, `desktop/app/src/linux/`)**: The same interface on each system: audio, clipboard, input, tray, video, storage integration and so on. `crate::win` resolves to the module for the system being built.
+- **Platform Modules (`desktop/app/src/linux/`)**: Linux integration: audio (PipeWire, PulseAudio), clipboard (Wayland and X11), input (`/dev/uinput`, the RemoteDesktop portal, XTest), tray and global shortcuts, desktop notifications, MPRIS, video (FFmpeg, OpenH264), the `v4l2loopback` camera, the FUSE storage mount and so on.
 - **Shared Desktop Modules (`desktop/app/src/`)**:
   - `mirror.rs`: Phone screen mirroring and app windows, with hardware video decoding.
   - `pc_audio_stream.rs`, `phone_sound.rs` and `phone_mic.rs`: PC sound to the phone, the phone's sound on the PC, and the phone as a microphone.
-  - `pc_mirror.rs` and `remote.rs`: Sharing the PC's screen with a phone (DXGI Desktop Duplication on Windows, the screen capture portal or X11 on Linux), and input from a phone (`SendInput` on Windows; `/dev/uinput`, the portal or XTest on Linux).
-  - `media.rs`, `win/smtc.rs` and `win/media_sessions.rs`: Now Playing metadata and transport controls, in both directions (SMTC on Windows, MPRIS on Linux).
-  - `win/ble_beacon.rs`: Bluetooth LE beacon for waking the phone's connection.
-  - `local_api.rs`: Opt-in localhost HTTP/SSE server (`127.0.0.1:53320`) for CLI, PowerToys, Raycast, and Stream Deck integrations.
-  - `win/share_target.rs` and `send_to.rs`: Windows Share Target activation, and files sent from File Explorer's or a Linux file manager's **Send to**.
-  - `updater.rs` and `feed.rs`: Update checks against the channel feed (see the [security model](security-model.md#automatic-updates-and-release-verification)), SHA-256 verified downloads, and the installer or package for the kind of install.
+  - `pc_mirror.rs` and `remote.rs`: Sharing the PC's screen with a phone (the ScreenCast portal with PipeWire, or X11), and input from a phone (`/dev/uinput`, the RemoteDesktop portal or XTest).
+  - `media.rs` and `linux/media_sessions.rs`: Now Playing metadata and transport controls over MPRIS, in both directions.
+  - `linux/ble_beacon.rs`: Bluetooth LE beacon through BlueZ, for waking the phone's connection.
+  - `local_api.rs`: Opt-in localhost HTTP/SSE server (`127.0.0.1:53320`) for the CLI and local scripts.
+  - `linux/share_target.rs` and `send_to.rs`: Files, links and text shared to G7 Link from the desktop entry or the command line, and files sent from a Linux file manager's context menu.
+  - `updater.rs` and `feed.rs`: Update checks against the channel feed (see the [security model](security-model.md#automatic-updates-and-release-verification)), SHA-256 verified downloads, and the package for the kind of install.
 
 ### 6. `desktop/vcam` (`g7link-vcam`)
 
-A standalone Windows Media Foundation virtual camera COM DLL (`g7link_vcam.dll`) registered via `IMFVirtualCamera` or DirectShow/Media Foundation class factories.
+The shared-memory frame transport for the virtual camera. The desktop app (`linux/vcam.rs`) reads frames from it and writes them as YUYV to a `v4l2loopback` device named `G7 Link Webcam`, which video apps see as a camera.
 
-- Communicates with `g7link-desktop` across a lock-free sequence-numbered shared memory region (`Global\G7LinkVcamFrame_v2`, `Local\G7LinkVcamFrame_v2`, or `Local\G7LinkVirtualCamera_v2` defined in `desktop/vcam/src/shm.rs`).
-- Supports `RGB32` (`PIXEL_FORMAT_RGB32 = 0`) and `NV12` (`PIXEL_FORMAT_NV12 = 1`) frames up to `3840x2160` (`MAX_WIDTH = 3840`, `MAX_HEIGHT = 2160`, `MAX_FRAME_BYTES = 33,177,600`) with a 64-byte `SharedHeader` (signature `0x4E4C5643` / `"NLVC"`, `VERSION = 1`).
-- Writers update payload bytes between odd and even sequence numbers (`seq`), allowing camera consumers (Zoom, Teams, Meet, OBS) to read frames without cross-process mutexes.
+- The mapping is a file in `$XDG_RUNTIME_DIR` (or `/dev/shm`) with `0600` permissions, `vcam_frame_v2` or `vcam_frame_v2_local` (`desktop/vcam/src/shm.rs`).
+- Supports `RGB32` and `NV12` frames up to `3840x2160` (`MAX_WIDTH = 3840`, `MAX_HEIGHT = 2160`, `MAX_FRAME_BYTES = 33,177,600`) behind a `SharedHeader` (signature `0x4E4C5643` / `"NLVC"`, `VERSION = 1`).
+- Writers update payload bytes between odd and even sequence numbers (`seq`), so readers get whole frames without cross-process mutexes.
 
 ### 7. `android/app` (`app.g7link.android`)
 

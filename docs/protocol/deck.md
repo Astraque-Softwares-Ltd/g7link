@@ -101,8 +101,8 @@ Errors:
 
 ### 2.4 `pc.audio.set`
 
-Sets the PC's master speaker volume (`0..=100`) and/or mute state via Windows
-Core Audio (`IAudioEndpointVolume`), then pushes the updated `deck.state`.
+Sets the PC's master speaker volume (`0..=100`) and/or mute state through
+PipeWire (`wpctl`) or PulseAudio (`pactl`), then pushes the updated `deck.state`.
 
 ```
 PcAudioSet = {
@@ -130,7 +130,7 @@ Errors:
     - `"shortcut"` (custom keyboard shortcut: key + modifiers)
     - `"open_url"` (`http` or `https` URL)
     - `"type_text"` (text snippet typed into the focused field)
-    - `"launch_app"` (`.exe` or `.lnk` picked on the PC, launched via `ShellExecuteW` without arguments)
+    - `"launch_app"` (a `.desktop` entry or a program picked on the PC, launched without arguments)
     - `"run_command"` (command written on the PC; requires the per-device `commands` toggle)
 - **Icons (`icon`):** `"play"`, `"pause"`, `"skip_next"`, `"skip_previous"`, `"volume_up"`, `"volume_down"`, `"volume_off"`, `"mic"`, `"mic_off"`, `"lock"`, `"desktop"`, `"switch_window"`, `"screenshot"`, `"shortcut"`, `"globe"`, `"text"`, `"app"`, `"terminal"`, `"sparkle"`, `"star"`.
 - **Colors (`color`):** `"amber"`, `"coral"`, `"red"`, `"teal"`, `"green"`, `"blue"`, `"violet"`, `"slate"`.

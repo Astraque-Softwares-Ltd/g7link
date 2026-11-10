@@ -1,6 +1,8 @@
 # G7 Link Performance Budgets & Measurements
 
-This document records the release performance budgets, root-cause regression audits, and measured BEFORE/AFTER results across the Windows Desktop app (`g7link-desktop`), the Rust core engine (`g7link-core`), and the Android companion app (`app.g7link.android`).
+This document records the release performance budgets, root-cause regression audits, and measured BEFORE/AFTER results across the Linux desktop app (`g7link-desktop`), the Rust core engine (`g7link-core`), and the Android companion app (`app.g7link.android`).
+
+The desktop measurements below were taken before the desktop app became Linux-only. They haven't been repeated on Linux yet, so this page lists the desktop budgets without results.
 
 ---
 
@@ -8,16 +10,15 @@ This document records the release performance budgets, root-cause regression aud
 
 | Metric | Target Budget | Measured Result | Status |
 | :--- | :--- | :--- | :--- |
-| **Desktop Cold Start to Window** | `< 800 ms` | **`310 ms to 424 ms`** (process launch to QML first frame interactive) | **PASS** |
-| **Desktop Start Minimized (`--minimized`)** | `< 400 ms` | **`145 ms`** (process launch to tray icon ready, no QML window realized) | **PASS** |
-| **Desktop Idle CPU (Window Closed / Tray)** | `< 0.2%` | **`0.00%`** (`0.000s` CPU delta over 15s steady-state window) | **PASS** |
-| **Desktop Idle CPU (Window Open on Home, Glass + Island)** | `< 0.5%` | **`0.039%` total CPU** (`0.47%` single-core over 10s steady-state window) | **PASS** |
-| **Desktop Working Set Memory (Window Closed / Tray)** | `< 50 MB` | **`14.2 MB`** private working set (`WorkingSet64`) | **PASS** |
-| **Desktop Working Set Memory (Window Open, Glass + Island)** | `< 170 MB` | **`165.32 MB` WS / `137.34 MB` Private** (down from `205.36 MB` WS / `174.58 MB` Private) | **PASS** |
-| **Desktop 20-Step Window Resize CPU** | `< 350 ms` CPU | **`296.9 ms` CPU (`635 ms` wall)** (down from `421.9 ms` CPU; `-29.6%` CPU, `0` QML binding loops) | **PASS** |
-| **Command Palette (`Ctrl+Alt+Space`) Open Time** | `< 30 ms` | **`8.4 ms`** (popup open + initial action list filter) | **PASS** |
-| **Screen Mirror End-to-End Latency (USB / LAN)** | `< 45 ms` | **`22 ms to 31 ms`** (`60 fps` H.264 hardware encode/decode over QUIC) | **PASS** |
-| **PC-to-Phone Speaker Audio Latency (`PcAudio`)** | `< 40 ms` | **`22 ms to 36 ms`** (10 ms WASAPI loopback chunk + QUIC stream + `AudioTrack` `PERFORMANCE_MODE_LOW_LATENCY`) | **PASS** |
+| **Desktop Cold Start to Window** | `< 800 ms` | Not yet measured on Linux (process launch to QML first frame interactive) | — |
+| **Desktop Start Minimized (`--minimized`)** | `< 400 ms` | Not yet measured on Linux (process launch to tray icon ready, no QML window realized) | — |
+| **Desktop Idle CPU (Window Closed / Tray)** | `< 0.2%` | Not yet measured on Linux | — |
+| **Desktop Idle CPU (Window Open on Home, Glass + Island)** | `< 0.5%` | Not yet measured on Linux | — |
+| **Desktop Memory (Window Closed / Tray)** | `< 50 MB` | Not yet measured on Linux | — |
+| **Desktop Memory (Window Open, Glass + Island)** | `< 170 MB` | Not yet measured on Linux | — |
+| **Command Palette (`Ctrl+Alt+Space`) Open Time** | `< 30 ms` | Not yet measured on Linux (popup open + initial action list filter) | — |
+| **Screen Mirror End-to-End Latency (USB / LAN)** | `< 45 ms` | Not yet measured on Linux | — |
+| **PC-to-Phone Speaker Audio Latency (`PcAudio`)** | `< 40 ms` | Not yet measured on Linux (monitor-source capture + QUIC stream + `AudioTrack` `PERFORMANCE_MODE_LOW_LATENCY`) | — |
 | **4 GiB File Transfer + Pause/Resume + BLAKE3** | `< 180 s` in test | **`16.0 s`** transfer with two mid-stream pauses and `.part` offset resumes, then **`1.74 s`** full BLAKE3 verification (release build) | **PASS** |
 | **Android Cold Start (`MainActivity`)** | `< 1,000 ms` | **`479 ms to 750 ms`** (`TotalTime` via `am start -W`, down from `1,566 ms to 2,291 ms`) | **PASS** |
 | **Android Warm Start (`MainActivity`)** | `< 100 ms` | **`14 ms to 30 ms`** (`WaitTime` via `am start -W`, down from `81 ms to 91 ms`) | **PASS** |
@@ -64,27 +65,15 @@ This document records the release performance budgets, root-cause regression aud
 
 ---
 
-### 2.3 Persistent Send Queue Idle CPU Overhead (`g7link-desktop.exe`)
+### 2.3 Persistent Send Queue Idle Overhead
 
-Measured over a 10-second steady-state window on 12 logical cores (`release` build, window open on `HomePage`):
-
-| State | 10s Process CPU Delta | Normalized Total CPU (`12` cores) | Working Set Memory | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| **Without a send queue (`0` items waiting)** | `0.078 s` | **`0.07%`** | `153.6 MB` | `queue_notify` awaits `std::future::pending()` when no items are waiting (zero background timers). |
-| **With a send queue (`3` items waiting in `send_queue`)** | `0.062 s` | **`0.05%`** | `157.3 MB` | Event-driven `tokio::sync::Notify` + `tokio::time::sleep_until` next expiry/retry timestamp; zero polling loops. |
+The send queue doesn't poll. With nothing waiting, its task sleeps on `queue_notify` (`tokio::sync::Notify`) until something is queued. With items waiting, it sleeps until the next expiry or retry time (`tokio::time::sleep_until`).
 
 ---
 
-### 2.2 Windows Desktop (`g7link-desktop.exe --data-dir <test-data-dir>`)
+### 2.2 Desktop App
 
-| Metric | BEFORE (post-redesign baseline) | AFTER (with all §1 & §2 fixes) | Improvement |
-| :--- | :--- | :--- | :--- |
-| **Cold Start to Window (`PC_WINDOW_OPEN_MS`)** | `723 ms` | **`424 ms`** | **`-299 ms` (`41.4%` faster)** |
-| **Working Set Memory (`PC_MEMORY_WS_MB`)** | `205.36 MB` | **`165.32 MB`** | **`-40.04 MB` (`-19.5%`)** |
-| **Private Memory (`PC_MEMORY_PRIVATE_MB`)** | `174.58 MB` | **`137.34 MB`** | **`-37.24 MB` (`-21.3%`)** |
-| **20-Step Window Resize (`PC_RESIZE_20_STEPS`)** | `655 ms` wall / `421.9 ms` CPU (`64.4%` core) | **`635 ms` wall / `296.9 ms` CPU (`46.8%` core)** | **`-125.0 ms` CPU (`-29.6%`), `0` QML binding loops** |
-| **Hover + Scroll Burst (`PC_HOVER_SCROLL_CPU_DELTA_MS`)** | `15.6 ms` | **`15.6 ms`** | **1 OS timer tick** |
-| **Idle CPU (10s Window Open, Glass + Island)** | `15.6 ms to 46.9 ms` (`0.013% to 0.039%` total CPU) | **`46.9 ms` (`0.039%` total CPU / `0.47%` single-core)** | **Within `< 0.5%` budget** |
+These fixes were made before the desktop app became Linux-only, and their before-and-after numbers came from that build. They haven't been re-measured on Linux.
 
 #### Desktop Root Causes Identified & Fixed:
 1. **32+ Per-Card Software/FBO `Canvas` Instances (`Card.qml`)**:
@@ -93,11 +82,11 @@ Measured over a 10-second steady-state window on 12 logical cores (`release` bui
 2. **4-Pass Nested FBO / `MultiEffect` Blur Chain & 4s Poll Storm in `NowPlaying` (`NowPlaying.qml`, `RoundedImage.qml`, `media.rs`)**:
    - **Root Cause**:
      - `NowPlaying.qml` used `layer.enabled: true` + `MultiEffect` (`blurMax: 36`) over a `RoundedImage` that itself had `layer.enabled: true` + `MultiEffect` (`maskEnabled: true`) over a `Rectangle` mask with `layer.enabled: true` (4 nested offscreen GPU textures per media card!).
-     - In `desktop/app/src/media.rs`, `PlayerView.at` was set to `SystemTime::now()` on every `snapshot()` call, and `media_sessions.rs` polled GSMTC every 4 seconds (`pos_ms` advancing by 4000ms), causing `last_json != next_json` to trigger a full `MediaBridge` `cxx-qt` signal emission, QML JSON re-parse, and `NowPlaying` layout pass every 4 seconds even when idle!
+     - In `desktop/app/src/media.rs`, `PlayerView.at` was set to `SystemTime::now()` on every `snapshot()` call, and `media_sessions.rs` polled the PC's media sessions every 4 seconds (`pos_ms` advancing by 4000ms), causing `last_json != next_json` to trigger a full `MediaBridge` `cxx-qt` signal emission, QML JSON re-parse, and `NowPlaying` layout pass every 4 seconds even when idle!
    - **Fix**:
      - Replaced `NowPlaying.qml`'s `MultiEffect` blur with a zero-FBO `LinearGradient` ambient tint using `Theme.primaryContainer` / `Theme.secondaryContainer`.
      - Replaced `RoundedImage.qml`'s 3-FBO `MultiEffect` mask chain with a single `OpacityMask` and `sourceSize` bound to physical pixel dimensions (`Math.min(512, width * Screen.devicePixelRatio)`).
-     - Stabilized `PlayerView.at` using the actual poll `SystemTime` stored in `LOCAL_PLAYERS`, and added `players_meaningfully_changed()` in `media.rs` so routine 4s GSMTC position advances (>1.5s expected delta) do not spam UI broadcasts while genuine track/state/user-seek changes broadcast immediately.
+     - Stabilized `PlayerView.at` using the actual poll `SystemTime` stored in `LOCAL_PLAYERS`, and added `players_meaningfully_changed()` in `media.rs` so routine 4s position advances (>1.5s expected delta) do not spam UI broadcasts while genuine track/state/user-seek changes broadcast immediately.
 3. **Full-Window `MultiEffect` Blur in `MainWindow.qml` & Eager Page Instantiation (`HomePage.qml`)**:
    - **Root Cause**: `MainWindow.qml` ran a `MultiEffect` (`blurMax: 52`) over `glassColorMesh`, and `HomePage.qml` eagerly instantiated all non-Home subpages and ran a `Canvas` (`batteryArcCanvas`) inside the miniature phone illustration.
    - **Fix**: Replaced `glassColorMesh` + `MultiEffect` with a zero-FBO 3-stop `LinearGradient`, replaced `batteryArcCanvas` in `HomePage.qml` with a hardware-accelerated `Shape` / `ShapePath` (`PathAngleArc`), and fixed the `activeMediaRow` width binding loop during window resize.
@@ -106,9 +95,9 @@ Measured over a 10-second steady-state window on 12 logical cores (`release` bui
 
 ## 3. Scale Benchmark Measurements (`core/g7link-core/tests/scale_tests.rs`)
 
-The scale benchmarks move gigabytes and hold timing limits, so they are opt-in. Measured with a release build on Windows 11 x64 on 2026-10-14:
+The scale benchmarks move gigabytes and hold timing limits, so they are opt-in. Last measured with a release build on 2026-10-14, before the desktop app became Linux-only:
 
-```powershell
+```sh
 cargo test -p g7link-core --release --test scale_tests -- --ignored --nocapture
 ```
 
@@ -119,4 +108,4 @@ cargo test -p g7link-core --release --test scale_tests -- --ignored --nocapture
 3. **5,000 timeline entries and 200 chat threads (`scale_5000_timeline_entries_and_200_chat_threads`)**
    - Insert: **`442 ms`** (timeline), **`105 ms`** (chats). Page query: **`0.89 ms`**; search: **`4.60 ms`**; thread list: **`0.37 ms`**; messages: **`0.06 ms`**. Limits: `50 ms` per query, `100 ms` for search.
 4. **50 clipboard items of 64 KiB, encrypted (`scale_50_large_clips_encrypted_history`)**
-   - Writing all 50 with DPAPI encryption: **`3.06 s`**. Reopening, decrypting, listing and searching: **`182 ms`**. Limit: `250 ms` in release builds.
+   - Reopening, decrypting, listing and searching must take under `250 ms` in release builds. Not yet measured with the Secret Service protector.

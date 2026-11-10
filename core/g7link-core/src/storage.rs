@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Phone storage in File Explorer (`docs/protocol/storage.md`).
+//! Phone storage in the PC's file manager (`docs/protocol/storage.md`).
 //!
 //! A phone that offers `storage.read` / `storage.write` lets a paired PC
 //! (while the `storage` per-device toggle is on) list directories, read file

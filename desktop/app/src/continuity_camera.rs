@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Continuity Camera coordinator for Windows: initiates "Take photo with phone"
-//! and "Scan document with phone" from the tray menu, global hotkeys, or the
-//! G7 Link UI, remembers the external foreground window (`HWND`) that was
-//! active when the request started, places the captured image onto the Windows
-//! clipboard on arrival, and either restores focus + synthesizes `Ctrl+V` into
-//! the original target window or prompts the user if that window was closed.
+//! Continuity Camera coordinator: initiates "Take photo with phone" and "Scan
+//! document with phone" from the tray menu, global hotkeys, or the G7 Link UI,
+//! remembers the external foreground window (`XWin`) that was active when the
+//! request started, places the captured image onto the clipboard on arrival,
+//! and either restores focus + synthesizes `Ctrl+V` into the original target
+//! window or prompts the user if that window was closed.
 
 use crate::i18n::tr;
 use std::{
@@ -63,7 +63,7 @@ pub struct ContinuityView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DeliveryDecision {
     /// The remembered target window is still alive and visible: focus it and paste.
-    AutoPaste { hwnd: isize, toast: String },
+    AutoPaste { xwin: isize, toast: String },
     /// A target window was remembered when the request started, but is no longer
     /// alive/visible when the capture arrived. Do not blindly paste elsewhere;
     /// ask the user in G7 Link.
@@ -82,15 +82,15 @@ fn decide_delivery_action(
         CameraCaptureMode::Photo => ("Photo", "photo"),
         CameraCaptureMode::Scan => ("Scanned document", "scanned document"),
     };
-    if let Some((hwnd, raw_title)) = target
-        && hwnd != 0
+    if let Some((xwin, raw_title)) = target
+        && xwin != 0
     {
         let trimmed = raw_title.trim();
         let target_name =
             if trimmed.is_empty() { "your previous window".to_owned() } else { trimmed.to_owned() };
         if target_still_alive {
             return DeliveryDecision::AutoPaste {
-                hwnd,
+                xwin,
                 toast: format!("{item_cap} from {device_name} pasted into {target_name}"),
             };
         }
@@ -161,7 +161,7 @@ pub fn start(mode_raw: &str) {
 /// preferred offline paired phone (queueing a 2-minute expiring request).
 pub fn start_for_index(preferred_index: usize, mode_raw: &str) {
     let mode = CameraCaptureMode::parse(mode_raw).unwrap_or(CameraCaptureMode::Photo);
-    let target = crate::win::tray::snapshot_target_window();
+    let target = crate::sys::tray::snapshot_target_window();
 
     let chosen = core_host::host().hub.read(|s| {
         s.devices
@@ -182,7 +182,7 @@ pub fn start_for_index(preferred_index: usize, mode_raw: &str) {
 
     let request_id = next_request_id();
     let (target_hwnd, target_title) = match target {
-        Some((hwnd, title)) => (Some(hwnd), title),
+        Some((xwin, title)) => (Some(xwin), title),
         None => (None, String::new()),
     };
 
@@ -277,8 +277,8 @@ pub fn confirm_paste() {
     }
     notify_continuity();
 
-    if let Some((hwnd, title)) = crate::win::tray::snapshot_target_window() {
-        spawn_focus_and_paste(hwnd);
+    if let Some((xwin, title)) = crate::sys::tray::snapshot_target_window() {
+        spawn_focus_and_paste(xwin);
         let label = if title.is_empty() { "active window".to_owned() } else { title };
         crate::bridge::app::show_message(tr!("ContinuityCamera", "Pasted into %1", label));
     } else {
@@ -298,13 +298,13 @@ pub fn dismiss_paste() {
     notify_continuity();
 }
 
-fn spawn_focus_and_paste(hwnd: isize) {
+fn spawn_focus_and_paste(xwin: isize) {
     let _ = std::thread::Builder::new().name("continuity-paste".into()).spawn(move || {
-        if crate::win::tray::focus_window(hwnd) {
+        if crate::sys::tray::focus_window(xwin) {
             std::thread::sleep(Duration::from_millis(65));
-            if crate::win::tray::is_window_alive_and_visible(hwnd) {
-                crate::win::input::press_key("paste", &[]);
-                crate::win::tray::send_paste_fallback_if_not_foreground(hwnd);
+            if crate::sys::tray::is_window_alive_and_visible(xwin) {
+                crate::sys::input::press_key("paste", &[]);
+                crate::sys::tray::send_paste_fallback_if_not_foreground(xwin);
             }
         }
     });
@@ -327,7 +327,7 @@ pub fn on_event(event: &NodeEvent) {
                 core_host::host().hub.read(|s| s.name_of(device).unwrap_or_else(|| device.short()))
             });
 
-            if let Err(e) = crate::win::clipboard::write_image(mime, data) {
+            if let Err(e) = crate::sys::clipboard::write_image(mime, data) {
                 tracing::warn!(error = %e, "can't copy continuity camera image to clipboard");
                 notify_continuity();
                 crate::bridge::app::show_message(tr!(
@@ -339,19 +339,19 @@ pub fn on_event(event: &NodeEvent) {
             }
 
             let target_ref =
-                matched.as_ref().and_then(|a| a.target_hwnd.map(|hwnd| (hwnd, a.target_title.as_str())));
+                matched.as_ref().and_then(|a| a.target_hwnd.map(|xwin| (xwin, a.target_title.as_str())));
             let alive =
-                target_ref.is_some_and(|(hwnd, _)| crate::win::tray::is_window_alive_and_visible(hwnd));
+                target_ref.is_some_and(|(xwin, _)| crate::sys::tray::is_window_alive_and_visible(xwin));
 
             match decide_delivery_action(*mode, &device_name, target_ref, alive) {
-                DeliveryDecision::AutoPaste { hwnd, toast } => {
+                DeliveryDecision::AutoPaste { xwin, toast } => {
                     {
                         let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
                         guard.prompt = None;
                     }
                     notify_continuity();
                     crate::bridge::app::show_message(toast);
-                    spawn_focus_and_paste(hwnd);
+                    spawn_focus_and_paste(xwin);
                 }
                 DeliveryDecision::PromptMissingTarget { title, body, target_name } => {
                     {
@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(
             decision,
             DeliveryDecision::AutoPaste {
-                hwnd: 0x1234,
+                xwin: 0x1234,
                 toast: "Photo from Pixel 9 pasted into Document.docx - Word".into(),
             }
         );

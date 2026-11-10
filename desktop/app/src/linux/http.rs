@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! HTTPS client for Linux (`win::http` equivalent), used by the auto-updater
+//! HTTPS client used by the auto-updater
 //! and metadata checks. Uses `curl` (with `wget` fallback) so system CA
 //! certificates and proxy settings are respected without pulling in an extra
 //! TLS stack.

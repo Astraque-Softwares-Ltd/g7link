@@ -5,8 +5,8 @@
 //! The exchange: OBS greets (`Hello`, op 0), possibly with a login challenge; we identify
 //! (op 1), with the answer if OBS asked for one; OBS confirms (`Identified`, op 2); we send
 //! one request (op 6) and read its result (op 7). OBS turns authentication on by default,
-//! so the password from Settings is needed in most setups. It's stored encrypted with
-//! Windows DPAPI, like the device key.
+//! so the password from Settings is needed in most setups. It's sealed with the desktop
+//! keyring when there is one, like the device key.
 
 use crate::i18n::tr;
 use std::{

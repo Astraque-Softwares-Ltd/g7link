@@ -1,33 +1,36 @@
 # Cameras and Audio
 
-G7 Link lets your PC use your phone's cameras and audio hardware in four ways: streaming your phone's camera as a Windows webcam (`G7 Link Webcam`), snapping photos or scanning documents straight into your PC clipboard (**Continuity Camera**), playing your PC's system audio through your phone (**Phone as speaker**), and recording voice notes on your phone that land automatically on your PC (**Voice recorder**).
+G7 Link lets your PC use your phone's cameras and audio hardware in four ways: streaming your phone's camera as a webcam on your PC (`G7 Link Webcam`), snapping photos or scanning documents straight into your PC clipboard (**Continuity Camera**), playing your PC's system audio through your phone (**Phone as speaker**), and recording voice notes on your phone that land automatically on your PC (**Voice recorder**).
 
 <p align="center">
-  <img src="images/webcam-live.png" alt="Camera and Audio settings on Windows showing a live webcam preview from the phone" width="760">
+  <img src="images/webcam-live.png" alt="Camera and Audio settings on the PC showing a live webcam preview from the phone" width="760">
 </p>
 
 ## What You Need
 
 | Feature | Requirements |
 | :--- | :--- |
-| **Phone as webcam** | `Standard` power level. Android **Camera** permission (`CAMERA`, requested when you start the webcam). **Webcam** per-device toggle enabled in PC **Settings › Devices** (on by default). To use the camera inside third-party apps (Zoom, Teams, Meet, OBS, Windows Camera), click **Set up** next to **Virtual camera add-on** in PC **Settings › Camera & Audio** (one-time administrator prompt on Windows 11). |
+| **Phone as webcam** | `Standard` power level. Android **Camera** permission (`CAMERA`, requested when you start the webcam). **Webcam** per-device toggle enabled in PC **Settings › Devices** (on by default). To use the camera inside other apps (Zoom, Meet, Discord, OBS, your browser), the `v4l2loopback` driver must be installed and loaded. The one-command install does this; otherwise click **Set up** next to **Virtual camera add-on** in PC **Settings › Camera & Audio** (one-time administrator password prompt). |
 | **Continuity Camera (Take photo / Scan document)** | `Standard` power level. Android **Camera** permission. **Webcam** toggle enabled. |
 | **Phone as speaker (Stream PC audio to phone)** | `Standard` power level. **Media controls** per-device toggle enabled in PC **Settings › Devices** (on by default). |
 | **Voice recorder** | `Standard` power level. Android **Microphone** permission (`RECORD_AUDIO`, requested when you start recording). **Voice recordings** per-device toggle enabled in PC **Settings › Devices** (on by default). |
 
 ## Step-by-Step Use
 
-### 1. Using Your Phone as a Windows Webcam
+### 1. Using Your Phone as a Webcam
 
 Your phone's main camera sensor offers much better optics and low-light quality than a typical built-in laptop webcam.
 
 #### One-Time Virtual Camera Add-On Setup
 
-You can preview your phone's camera inside G7 Link's **Settings › Camera & Audio** immediately with zero setup. To make **G7 Link Webcam** appear as a selectable camera inside Zoom, Microsoft Teams, Google Meet, Discord, OBS Studio, and the Windows Camera app:
+You can preview your phone's camera inside G7 Link's **Settings › Camera & Audio** immediately with zero setup. To make **G7 Link Webcam** appear as a selectable camera inside Zoom, Google Meet, Discord, OBS Studio, and other apps, G7 Link needs the `v4l2loopback` kernel driver. The one-command install sets it up. If you installed another way:
 
-1. On your PC, open **Settings › Camera & Audio**.
-2. Next to **Virtual camera add-on**, click **Set up** and approve the Windows User Account Control (UAC) administrator prompt.
-3. G7 Link registers `g7link_vcam.dll` with Windows 11's Media Foundation `MFCreateVirtualCamera` service. Once registered, the status indicator shows **Ready** (and you can unregister it at any time by clicking **Remove**).
+1. Install your distribution's `v4l2loopback` package (on Fedora it comes from RPM Fusion).
+2. On your PC, open **Settings › Camera & Audio**.
+3. Next to **Virtual camera add-on**, click **Set up** and enter your password when asked (through Polkit).
+4. G7 Link loads `v4l2loopback` as **G7 Link Webcam** and sets it to load at every start. Once it's loaded, the status indicator shows **Ready** (and you can remove it at any time by clicking **Remove**).
+
+With Secure Boot on, the driver's signing key may need to be enrolled before the kernel loads it. The **Connection Doctor** says what's missing.
 
 #### Starting and Controlling the Webcam Stream
 
@@ -40,7 +43,7 @@ You can preview your phone's camera inside G7 Link's **Settings › Camera & Aud
    - **Zoom**: Tap `1x` or `2x` presets or drag the continuous zoom slider on your phone.
    - **Flashlight (Torch)**: Toggle the rear LED flash on or off for fill lighting.
    - **Mirror image**: Horizontally flip the video feed in PC **Settings › Camera & Audio**.
-3. Open your video conferencing app on Windows and select **G7 Link Webcam** as your camera.
+3. Open your video conferencing app and select **G7 Link Webcam** as your camera.
 
 ### 2. Continuity Camera: Take a Photo or Scan a Document
 
@@ -57,7 +60,7 @@ When you need to insert a photo of a physical object, whiteboard, or multi-corne
    - Drag the four corner handles (**Adjust corners**) to match the edges of the document. G7 Link corrects the perspective geometry into a flat rectangle.
    - Toggle **Enhance document** to apply high-contrast black-and-white document enhancement for crisp, readable text.
    - Tap **Send scan**.
-5. The captured photo or enhanced scan arrives on your PC in `Downloads\G7Link` and is automatically placed onto your Windows clipboard so you can press `Ctrl+V` straight into Word, Notion, Slack, email, or any image editor.
+5. The captured photo or enhanced scan arrives on your PC in `~/Downloads/G7Link` and is automatically placed onto your clipboard so you can press `Ctrl+V` straight into a document, chat, email, or any image editor.
 
 ### 3. Phone as Speaker: Listening to PC Audio on Your Phone
 
@@ -70,7 +73,7 @@ If your desktop PC lacks speakers, or you want to walk around the room while lis
 1. Toggle **Phone as speaker** on from either side:
    - **On your PC**: Click **Phone as speaker** on the Home screen, or turn on **Stream PC audio to phone** in **Settings › Camera & Audio**.
    - **On your phone**: Tap **Use phone as speaker** in the **PC audio** card on the Android Home screen.
-2. Both switches stay synchronized in real time. Your PC captures system playback via Windows WASAPI loopback and streams it as uncompressed 16-bit PCM in small QUIC datagrams. The phone plays it through a regular media `AudioTrack`, so its own speaker tuning and sound effects still apply, and keeps about 40 ms buffered to absorb Wi-Fi jitter.
+2. Both switches stay synchronized in real time. Your PC captures system playback from the default output's monitor source (PipeWire or PulseAudio) and streams it as uncompressed 16-bit PCM in small QUIC datagrams. The phone plays it through a regular media `AudioTrack`, so its own speaker tuning and sound effects still apply, and keeps about 40 ms buffered to absorb Wi-Fi jitter.
    - Audio goes to the phone that turned **Use phone as speaker** on. When you turn it on from the PC, it goes to the first connected phone.
 3. From the **PC audio** card on your phone (or in `Deck`), you can also adjust your PC's master volume slider, toggle mute, and switch between your PC's connected audio output devices.
 
@@ -92,32 +95,32 @@ Use your phone's microphone to record voice notes, interviews, or meeting memos 
 2. While recording, a live level meter shows your microphone input, and recording continues cleanly in a foreground service even if you turn your phone's screen off.
 3. Tap **Pause** and **Resume** as needed. To flag an important moment while recording, type an optional label and tap **Add marker** to record a timestamped marker.
 4. When you finish and tap **Send**:
-   - If your PC is online, the recording transfers immediately and lands in your chosen recordings folder (`Downloads\G7Link` or `Documents\G7Link Recordings` by default).
+   - If your PC is online, the recording transfers immediately and lands in your chosen recordings folder (`~/Documents/G7Link Recordings` by default).
    - If you chose **MP3**, **WAV**, or **FLAC** in PC **Settings › Files & Sync › Voice recordings** (instead of the default **M4A**), your PC automatically converts the audio file upon arrival.
    - If you added markers during the recording, G7 Link writes a companion `<filename>.markers.txt` file right beside the audio file listing every marker's timestamp and label.
    - If your PC is offline when you finish recording, the voice note stays saved on your phone and is sent automatically as soon as your PC reconnects.
 
 ## What the Options Do
 
-- **Stream PC audio to phone** (`Settings › Camera & Audio` on PC, default: **Off**): Streams real-time Windows system audio to your connected phone.
+- **Stream PC audio to phone** (`Settings › Camera & Audio` on PC, default: **Off**): Streams your PC's system audio to your connected phone in real time.
 - **Pause media during calls** (`Settings › Camera & Audio` on PC, default: **On**): Auto-pauses PC media playback when your phone rings or is in a call.
-- **Virtual camera add-on** (`Settings › Camera & Audio` on PC): Registers or removes the Windows 11 `G7 Link Webcam` Media Foundation virtual camera.
+- **Virtual camera add-on** (`Settings › Camera & Audio` on PC): Loads or removes the `G7 Link Webcam` virtual camera (`v4l2loopback`).
 - **Phone** (`Settings › Camera & Audio` on PC, shown when multiple phones are paired): Selects which paired phone is used for the webcam.
 - **Camera** (`Settings › Camera & Audio` on PC, default: **Back**): Selects the **Back** or **Front** phone lens.
 - **Mirror image** (`Settings › Camera & Audio` on PC, default: **Off**): Flips the webcam video horizontally.
 - **Resolution** (`Settings › Camera & Audio` on PC, default: **720p**): Selects **720p**, **1080p**, or **4K** (`2160p`) webcam output.
 - **Voice recordings** (`Settings › Files & Sync` on PC, default format: **M4A**): Sets the destination folder (**Choose folder** / **Reset**) and output format (**M4A**, **MP3**, **WAV**, or **FLAC**) for incoming voice recordings.
-- **Take photo / Scan document shortcuts** (`Settings › Shortcuts & Rules` on PC, defaults: `Ctrl+Alt+C` and `Ctrl+Alt+D`): Global Windows hotkeys for Continuity Camera.
+- **Take photo / Scan document shortcuts** (`Settings › Shortcuts & Rules` on PC, defaults: `Ctrl+Alt+C` and `Ctrl+Alt+D`): Global shortcuts for Continuity Camera (on Wayland, where the desktop offers the Global Shortcuts portal).
 
 ## Data and Privacy
 
 - **Explicit camera consent on the phone**: A paired PC can never open your phone's camera unless you allowed it. Whenever you click **Start webcam** or trigger **Continuity Camera** from the PC, your phone displays a notification requiring a physical tap on the phone before the camera opens, unless you turned on **Start the camera and microphone without asking** for that PC (webcam and microphone only). While streaming, Android's green camera privacy indicator and G7 Link's persistent **Streaming camera to `<PC>`** notification remain visible on your phone with a one-tap **Stop** button.
-- **Shared memory isolation**: On Windows, decoded webcam frames are passed to the Media Foundation virtual camera DLL through a logon-session-scoped shared memory ring buffer (`Local\G7LinkVirtualCamera_v2`) with strict atomic bounds checking (`MAX_WIDTH = 3840`, `MAX_HEIGHT = 2160`) so other Windows user accounts cannot read the feed.
+- **Shared memory isolation**: Decoded webcam frames pass through a shared-memory file that only your user can read (`0600`, in `$XDG_RUNTIME_DIR` or `/dev/shm`), with bounds checks (`MAX_WIDTH = 3840`, `MAX_HEIGHT = 2160`), before G7 Link writes them to the `v4l2loopback` device.
 - **Temporary camera cache**: Temporary Continuity Camera captures on the phone are stored in the app's private cache and deleted automatically within 24 hours (or immediately via **Settings › Features & Data › Data & storage › Photo thumbnails & camera cache › Clear**).
 
 ## Limits
 
 - **4K Webcam Hardware Support**: 4K (`3840 x 2160`) webcam streaming requires a phone camera sensor and hardware encoder that support 4K 30 fps output, plus sufficient Wi-Fi or USB bandwidth. If a phone camera only supports up to 1080p, it streams at its highest supported resolution.
-- **8-Bit SDR Webcam Pipeline**: The webcam pipeline uses 8-bit SDR color (`NV12` / `RGB32` Media Foundation media types) for broad compatibility across Zoom, Teams, Meet, Chrome, and OBS; 10-bit HDR video is not used.
-- **Administrator Prompt for Virtual Camera Registration**: Registering or removing a system-wide Media Foundation virtual camera on Windows 11 (**Virtual camera add-on › Set up**) requires a one-time Administrator (UAC) approval. Previewing the webcam inside G7 Link's own window works without Administrator privileges.
+- **8-Bit SDR Webcam Pipeline**: The webcam pipeline uses 8-bit SDR color (YUYV frames on the `v4l2loopback` device) for broad compatibility across video calling apps, browsers, and OBS; 10-bit HDR video is not used.
+- **Administrator Prompt for the Virtual Camera**: Loading or removing the `v4l2loopback` driver (**Virtual camera add-on › Set up**) needs your administrator password once. Previewing the webcam inside G7 Link's own window works without it.
 - **Continuity Camera Request Expiry**: If you trigger **Take photo** or **Scan document** while your phone is offline, the queued request expires after **2 minutes** so your phone does not unexpectedly prompt for a photo hours later.

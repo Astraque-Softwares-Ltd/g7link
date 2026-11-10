@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Phone storage in File Explorer (`docs/protocol/storage.md`, `PLAN.md` §3.6).
+//! Phone storage in the file manager (`docs/protocol/storage.md`, `PLAN.md` §3.6).
 //!
-//! Registers a Windows Cloud Files (`cfapi`) sync root per paired phone under
-//! `%USERPROFILE%\G7Link\<Phone name>` when the phone's `storage` toggle is
-//! enabled. Placeholders are populated on demand when folders are opened
-//! (`CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS`) and hydrated on open via ranged
-//! reads (`CF_CALLBACK_TYPE_FETCH_DATA`). Renames, deletes, and new or modified
-//! files dropped into the sync root are forwarded to the phone.
+//! Mounts each paired phone at `~/G7Link/<Phone name>` (FUSE, see
+//! `sys::storage`) when the phone's `storage` toggle is enabled. Folders are
+//! listed and files read from the phone on demand; renames, deletes, and new
+//! or modified files are forwarded to the phone.
 
 mod imp {
 
@@ -16,31 +14,31 @@ mod imp {
 
     use g7link_core::{DeviceId, NodeEvent};
 
-    use crate::{core_host, win};
+    use crate::{core_host, sys};
 
     pub fn start() {
-        win::storage::start();
+        sys::storage::start();
     }
 
     pub fn sync() {
-        win::storage::sync();
+        sys::storage::sync();
     }
 
     pub fn on_event(event: &NodeEvent) {
-        win::storage::on_event(event);
+        sys::storage::on_event(event);
     }
 
     pub fn shutdown() {
-        win::storage::shutdown();
+        sys::storage::shutdown();
     }
 
     pub fn unregister_all() {
-        win::storage::unregister_all();
+        sys::storage::unregister_all();
     }
 
     /// Returns the local sync root path for a paired phone (`%USERPROFILE%\G7Link\<Phone name>`).
     pub fn sync_root_path_for(device: DeviceId) -> Option<PathBuf> {
-        if let Some(path) = win::storage::mounted_path_for(&device) {
+        if let Some(path) = sys::storage::mounted_path_for(&device) {
             return Some(path);
         }
         let mut folders = core_host::host()
@@ -67,21 +65,21 @@ mod imp {
             .collect()
     }
 
-    /// Opens a paired phone's sync root folder in File Explorer.
+    /// Opens a paired phone's storage folder in the file manager.
     pub fn open_in_explorer(device: DeviceId) -> Result<(), String> {
         let path =
             sync_root_path_for(device).ok_or_else(|| "Phone storage folder is not available".to_owned())?;
         if !path.exists() {
             std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
         }
-        win::shell::open_folder(&path)
+        sys::shell::open_folder(&path)
     }
 
     pub(crate) fn base_sync_dir() -> Option<PathBuf> {
         dirs::home_dir().map(|h| h.join("G7Link"))
     }
 
-    /// Sanitizes a phone's display name into a valid Windows directory name.
+    /// Sanitizes a phone's display name into a valid directory name.
     pub fn sanitize_folder_name(device_name: &str) -> String {
         let cleaned: String = device_name
             .chars()

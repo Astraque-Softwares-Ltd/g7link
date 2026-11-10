@@ -15,8 +15,8 @@ use crate::{Error, Result};
 pub(crate) const FILE_NAME: &str = "identity.key";
 const MAGIC: &[u8; 4] = b"NLK1";
 
-/// The method byte of a key sealed with the desktop's Secret Service. 1 was
-/// Windows DPAPI and 2 is the Android Keystore.
+/// The method byte of a key sealed with the desktop's Secret Service. 1 is
+/// retired and 2 is the Android Keystore.
 pub(crate) const SECRET_SERVICE_PROTECTOR: u8 = 3;
 
 const KEYRING_NEEDED: &str =
@@ -207,7 +207,7 @@ fn write_atomically(path: &Path, data: &[u8]) -> io::Result<()> {
 
 /// The install ID a device reports to its peers ([`DeviceInfo::install_id`]): a salted
 /// BLAKE3 hash of a platform ID that survives app reinstalls (Android's `ANDROID_ID`,
-/// Windows' `MachineGuid`). The raw ID never leaves the device; the salt keeps the hash
+/// Linux's `/etc/machine-id`). The raw ID never leaves the device; the salt keeps the hash
 /// specific to G7 Link, so it can't be matched against other apps' identifiers.
 ///
 /// [`DeviceInfo::install_id`]: g7link_protocol::messages::DeviceInfo::install_id

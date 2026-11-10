@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Phone notifications on this PC: app icons are saved for QML and toasts,
-//! notifications become Windows toasts (removed again when the phone clears
+//! notifications become desktop notifications (removed again when the phone clears
 //! them), and what the user does with a toast or the feed goes back to the
 //! phone.
 
@@ -19,7 +19,7 @@ use g7link_core::{DeviceId, Error, NodeEvent, Notification};
 use crate::{
     core_host, icons,
     state::{AppRule, Changes},
-    win::toast::{self, Toast, ToastEvent},
+    sys::toast::{self, Toast, ToastEvent},
 };
 
 /// Local toast action ID for copying a detected one-time code.
@@ -48,7 +48,7 @@ static TOASTED: Mutex<Option<HashMap<DeviceId, HashSet<String>>>> = Mutex::new(N
 static LIVE_TOASTS: Mutex<Option<HashSet<(DeviceId, String)>>> = Mutex::new(None);
 
 /// Detected OTP codes by `(device, notification_key)` for active toasts, so
-/// the code never needs to be placed in Windows toast XML action arguments.
+/// the code never needs to be placed in notification action arguments.
 static OTP_CODES: Mutex<Option<HashMap<(DeviceId, String), String>>> = Mutex::new(None);
 
 /// Last auto-copied OTP and when it was copied, to avoid copying the same code
@@ -102,7 +102,7 @@ pub fn start_lock_watch() {
         loop {
             look.tick().await;
             let wanted = HOLD_WHEN_LOCKED.load(Ordering::Relaxed);
-            if let Some(hold) = hold_change(holding, wanted, crate::win::session_locked) {
+            if let Some(hold) = hold_change(holding, wanted, crate::sys::session_locked) {
                 node.hold_notifications(hold).await;
                 holding = hold;
             }
@@ -164,14 +164,14 @@ pub fn notification_otp(n: &Notification) -> Option<String> {
 }
 
 /// Copies a one-time code to the PC clipboard without syncing it back to any
-/// phone or keeping it in any clipboard history (ours or Windows'). Never
+/// phone or keeping it in any clipboard history (ours or the desktop's). Never
 /// logs the code.
 pub fn copy_otp(code: &str) {
     let trimmed = code.trim();
     if trimmed.is_empty() {
         return;
     }
-    if crate::win::clipboard::write_private(trimmed).is_ok() {
+    if crate::sys::clipboard::write_private(trimmed).is_ok() {
         crate::bridge::app::show_message(tr!("Notifications", "Code copied"));
     }
 }
@@ -426,7 +426,7 @@ fn show(device: DeviceId, n: &Notification) {
     if rule != AppRule::Show || (SYNC_DND.load(Ordering::Relaxed) && phone_dnd) {
         return;
     }
-    if stays_quiet(paused(), QUIET_WHEN_LOCKED.load(Ordering::Relaxed), crate::win::session_locked) {
+    if stays_quiet(paused(), QUIET_WHEN_LOCKED.load(Ordering::Relaxed), crate::sys::session_locked) {
         return;
     }
     let progress = live_toast_progress(n);

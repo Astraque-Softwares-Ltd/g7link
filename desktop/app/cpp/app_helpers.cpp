@@ -507,7 +507,7 @@ void linux_tray_setup(
             st.actions.clear();
         }
 
-        // Menu order matches win/tray.rs:
+        // Menu order matches src/linux/tray.rs:
         // Take Photo, Scan Document, Separator, Open, Command Palette, Shelf, Find Phone, Open Link, Separator, Quit.
         const bool enabled = st.phoneActionsEnabled;
         auto *menu = new QMenu();

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The G7 Link engine: device identity, pairing, sessions with paired
-//! devices, and storage. Shared by the Windows and Android apps.
+//! devices, and storage. Shared by the Linux desktop and Android apps.
 //!
 //! The entry point is [`Node`]. Commands are async methods; everything that
 //! changes is reported as a [`NodeEvent`]. See

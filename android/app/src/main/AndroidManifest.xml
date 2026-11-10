@@ -98,7 +98,7 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
-    <!-- Phone storage in File Explorer on paired PCs (off by default, asked in
+    <!-- Phone storage in the file manager on paired PCs (off by default, asked in
          context; users can also pick specific folders with the Storage Access
          Framework instead). -->
     <uses-permission

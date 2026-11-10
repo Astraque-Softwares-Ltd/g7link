@@ -11,7 +11,7 @@ travel on a dedicated bidirectional QUIC stream (`{ svc: "webcam", op: "video", 
 | `camera.stream` | Phone | Streams a camera for webcam use (when `CAMERA` permission is granted) |
 | `camera.virtual` | PC | Receives and decodes a phone's webcam stream |
 | `camera.virtual.hevc` | PC | Also accepts H.265/HEVC webcam video; absence means H.264 only |
-| `addon.vcam` | PC | The Windows virtual camera COM add-on is registered in `HKLM`, so apps (Teams, Meet, Zoom, Windows Camera) see `"G7 Link - <Phone name>"` |
+| `addon.vcam` | PC | A `v4l2loopback` device is set up, so video apps see a `"G7 Link Webcam"` camera |
 
 Both devices have a `webcam` per-device toggle (on by default). When turned off
 for a peer, `webcam.start` is refused with `denied` (`4`), incoming `webcam`
@@ -99,9 +99,9 @@ for a fresh keyframe rather than building up latency.
 
 An updated phone prefers `h265` only when the connected receiver advertises
 `camera.virtual.hevc` and a hardware HEVC Main-profile surface encoder supports
-the requested dimensions and frame rate. Otherwise it uses `h264`. Windows
-advertises HEVC only when its installed Media Foundation decoder can initialize
-with a GPU device manager. The phone falls back to H.264 if the HEVC encoder
+the requested dimensions and frame rate. Otherwise it uses `h264`. The Linux
+desktop advertises HEVC only when its FFmpeg hardware decoder can open an HEVC
+stream on the GPU. The phone falls back to H.264 if the HEVC encoder
 cannot start, or reconfigures the existing stream to H.264 after a HEVC drain error.
 
 For HEVC, `Config.codec` is `h265`, `Frame` and `Keyframe` contain Annex B HEVC

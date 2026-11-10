@@ -23,7 +23,7 @@ pub struct PcStorage {
 }
 
 impl PcStorage {
-    /// Creates a [`PcStorage`] backed by the current Windows user's
+    /// Creates a [`PcStorage`] backed by the current user's
     /// `Downloads`, `Documents`, `Desktop`, and `Pictures` folders.
     pub fn system() -> Self {
         let mut roots = Vec::with_capacity(4);
@@ -244,9 +244,9 @@ mod tests {
             "..",
             "../secret.txt",
             "Downloads/../secret.txt",
-            "Downloads/../../Windows/System32",
+            "Downloads/../../etc",
             "Downloads\\report.pdf",
-            "C:/Windows/System32",
+            "/etc/passwd",
         ] {
             assert!(storage.resolve_subpath(bad).is_err(), "expected error for {bad}");
             assert!(storage.list(bad).is_err(), "expected list error for {bad}");

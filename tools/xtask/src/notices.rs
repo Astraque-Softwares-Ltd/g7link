@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `cargo xtask notices <out> [--target <triple>]`: the third-party notices
-//! shipped with the Windows app. Every crate compiled into the app (normal
+//! shipped with the desktop app. Every crate compiled into the app (normal
 //! dependencies for that target; not build or dev ones) with its license
 //! and the license files it ships, then Qt and the bundled fonts.
 
@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 const ROOT_PACKAGE: &str = "g7link-desktop";
-const DEFAULT_TARGET: &str = "x86_64-pc-windows-msvc";
+const DEFAULT_TARGET: &str = "x86_64-unknown-linux-gnu";
 
 /// License-ish files a crate ships.
 fn is_license_file(name: &str) -> bool {
@@ -51,8 +51,8 @@ pub fn run(args: &[&str]) -> Result<()> {
     let crates = shipped_crates(&metadata)?;
 
     let mut text = String::new();
-    writeln!(text, "G7 Link for Windows: third-party notices")?;
-    writeln!(text, "{}", "=".repeat(43))?;
+    writeln!(text, "G7 Link: third-party notices")?;
+    writeln!(text, "{}", "=".repeat(28))?;
     writeln!(
         text,
         "\nG7 Link is free software under the GNU General Public License, version 3\n\

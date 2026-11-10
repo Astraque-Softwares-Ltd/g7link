@@ -3,7 +3,7 @@
 //! (docs/protocol/clipboard.md): what the user copies (text or an image)
 //! goes to connected phones (unless turned off in Settings), "Send
 //! clipboard" sends it on demand, and what a phone sends lands on the
-//! Windows clipboard.
+//! PC clipboard.
 
 use crate::i18n::tr;
 use std::{
@@ -25,7 +25,7 @@ use crate::{
     bridge::app::{describe, open_dialer, show_message, show_message_with_action},
     core_host,
     state::Changes,
-    win::clipboard::{self, Clip},
+    sys::clipboard::{self, Clip},
 };
 
 /// Toast group and action ID for smart clipboard context chips.
@@ -42,7 +42,7 @@ static HISTORY_ENABLED: AtomicBool = AtomicBool::new(true);
 static SUGGEST_ACTIONS: AtomicBool = AtomicBool::new(true);
 
 /// Most recent incoming clipboard context suggestion, kept only in memory so
-/// Windows toast XML arguments never carry the copied text.
+/// Notification action arguments never carry the copied text.
 static LAST_SUGGESTION: Mutex<Option<(DeviceId, ClipSuggestion)>> = Mutex::new(None);
 
 /// Small PNG previews of history images as data URLs, by entry ID. Made
@@ -82,7 +82,7 @@ pub fn set_suggest_actions(on: bool) {
     SUGGEST_ACTIONS.store(on, Ordering::Relaxed);
     if !on {
         *LAST_SUGGESTION.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        crate::win::toast::remove_device(TOAST_GROUP);
+        crate::sys::toast::remove_device(TOAST_GROUP);
     }
 }
 
@@ -156,9 +156,9 @@ fn make_thumbs(node: Node, ids: Vec<String>) {
         for id in ids {
             let url = node
                 .clipboard_history_image(&id)
-                .and_then(|(_, bytes)| crate::win::image::decode(&bytes).ok())
+                .and_then(|(_, bytes)| crate::sys::image::decode(&bytes).ok())
                 .and_then(|bitmap| {
-                    crate::win::image::encode_png(&crate::win::image::scale_to(&bitmap, THUMB_SIZE)).ok()
+                    crate::sys::image::encode_png(&crate::sys::image::scale_to(&bitmap, THUMB_SIZE)).ok()
                 })
                 .map(|png| format!("data:image/png;base64,{}", BASE64.encode(&png)))
                 .unwrap_or_default();
@@ -195,7 +195,7 @@ pub fn clear_history() {
     }
 }
 
-/// Starts watching the Windows clipboard.
+/// Starts watching the clipboard.
 pub fn start() {
     clipboard::start(on_copy);
 }
@@ -369,9 +369,9 @@ pub fn send_history_item(device: DeviceId, id: &str) {
     });
 }
 
-/// Places received file paths onto the Windows clipboard (`CF_HDROP`) when
+/// Places received file paths onto the clipboard (`text/uri-list`) when
 /// `clipboard_auto_copy_received_files` is enabled, so the user can immediately
-/// press `Ctrl+V` in File Explorer or any desktop app to paste them.
+/// press `Ctrl+V` in the file manager or any desktop app to paste them.
 pub fn copy_received_files_to_clipboard(paths: &[std::path::PathBuf]) -> bool {
     if paths.is_empty() || !crate::settings::clipboard_auto_copy_received_files() {
         return false;
@@ -395,7 +395,7 @@ pub fn on_event(event: &NodeEvent) {
             let label = suggestion.action_label();
             *LAST_SUGGESTION.lock().unwrap_or_else(|e| e.into_inner()) = Some((*device, suggestion));
             show_message_with_action(tr!("Clipboard", "Copied from %1.", name), label);
-            crate::win::toast::show(crate::win::toast::Toast {
+            crate::sys::toast::show(crate::sys::toast::Toast {
                 device: TOAST_GROUP.into(),
                 key: "clip_suggestion".into(),
                 title: tr!("Clipboard", "Copied from %1", name),
@@ -417,23 +417,23 @@ pub fn on_event(event: &NodeEvent) {
 }
 
 /// Runs the action for the most recently offered clipboard suggestion (from
-/// the in-app toast chip or the Windows toast action button).
+/// the in-app toast chip or the notification action button).
 pub fn run_last_suggestion() {
     let Some((device, suggestion)) = LAST_SUGGESTION.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
-    crate::win::toast::remove(TOAST_GROUP, "clip_suggestion");
+    crate::sys::toast::remove(TOAST_GROUP, "clip_suggestion");
     let result = match suggestion.kind {
-        ClipKind::WebLink => crate::win::shell::open_url(&suggestion.target),
-        ClipKind::StreetAddress => crate::win::shell::open_maps(&suggestion.target),
+        ClipKind::WebLink => crate::sys::shell::open_url(&suggestion.target),
+        ClipKind::StreetAddress => crate::sys::shell::open_maps(&suggestion.target),
         ClipKind::PhoneNumber => {
             open_dialer(device, &suggestion.target);
             Ok(())
         }
         ClipKind::TrackingNumber => {
-            crate::win::shell::open_url(&g7link_core::tracking_search_url(&suggestion.target))
+            crate::sys::shell::open_url(&g7link_core::tracking_search_url(&suggestion.target))
         }
-        ClipKind::Email => crate::win::shell::open_mailto(&suggestion.target),
+        ClipKind::Email => crate::sys::shell::open_mailto(&suggestion.target),
     };
     if let Err(e) = result {
         tracing::debug!(kind = ?suggestion.kind, error = %e, "clipboard suggestion action failed");

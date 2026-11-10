@@ -148,7 +148,7 @@ fn detect_web_link(s: &str) -> Option<String> {
     if s.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\') {
         return None;
     }
-    // Reject Windows drive paths (`C:/foo`), UNC paths, and Unix paths.
+    // Reject drive-letter paths (`C:/foo`), UNC paths, and Unix paths.
     if s.starts_with('/') || s.starts_with('~') {
         return None;
     }

@@ -5,8 +5,8 @@
 //!   (`desktop/app/qml/Tokens.qml`, `android/.../ui/theme/Tokens.kt`) from
 //!   `docs/design/tokens.json`, the single source of truth.
 //! - `tokens --check`: fails if the generated files are out of date (CI).
-//! - `notices <out>`: the third-party notices shipped with the Windows app.
-//! - `strings [--check]`: the Windows app's Rust-built text for Qt's
+//! - `notices <out>`: the third-party notices shipped with the desktop app.
+//! - `strings [--check]`: the desktop app's Rust-built text for Qt's
 //!   translation tools (`desktop/app/i18n/rust_strings.h`).
 
 mod notices;

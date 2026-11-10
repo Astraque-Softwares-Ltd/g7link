@@ -343,7 +343,7 @@ impl qobject::MediaList {
         if action_str == "volume" {
             let level = (position_ms.round() as i32).clamp(0, 100) as u8;
             if device == media::LOCAL_DEVICE {
-                let _ = crate::win::audio::set_speaker_volume(level);
+                let _ = crate::sys::audio::set_speaker_volume(level);
                 crate::deck::broadcast_live_state();
             } else if let Some(node) = core_host::node() {
                 core_host::host().hub.update(|s| {
@@ -365,7 +365,7 @@ impl qobject::MediaList {
         }
         if action_str == "mute" {
             if device == media::LOCAL_DEVICE {
-                let _ = crate::win::audio::toggle_speaker_mute();
+                let _ = crate::sys::audio::toggle_speaker_mute();
                 crate::deck::broadcast_live_state();
             } else if let Some(node) = core_host::node() {
                 let target = if position_ms > 0.0 { 0u8 } else { 50u8 };

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Builds the QML module `app.g7link` (QML files compiled ahead of time,
-//! Rust QObjects, C++ helpers), compiles in the bundled fonts, gives the
-//! executable its icon and version information, and links the Windows
-//! libraries C++ uses.
+//! Rust QObjects, C++ helpers), and compiles in the bundled fonts, shaders
+//! and translations.
 
 use std::{
     fs,
@@ -150,7 +149,7 @@ fn find_lrelease() -> Option<PathBuf> {
     if let Some(qmake) = std::env::var_os("QMAKE").map(PathBuf::from)
         && let Some(bin_dir) = qmake.parent()
     {
-        for name in ["lrelease", "lrelease.exe", "lrelease-qt6"] {
+        for name in ["lrelease", "lrelease-qt6"] {
             let candidate = bin_dir.join(name);
             if candidate.is_file() {
                 return Some(candidate);

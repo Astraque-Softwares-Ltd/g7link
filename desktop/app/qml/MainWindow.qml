@@ -316,8 +316,8 @@ NativeWindow {
         y = sy + normalY
 
         bringToFront()
-        // Again once shown: a size set before the first show comes out
-        // taller by the title bar on Windows. This is also the size
+        // Again once shown: a size set before the first show can come out
+        // taller by the title bar. This is also the size
         // un-maximizing returns to.
         width = fittedW
         height = fittedH

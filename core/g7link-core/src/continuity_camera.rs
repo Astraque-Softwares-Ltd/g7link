@@ -340,17 +340,14 @@ async fn take_result(
         CameraCaptureMode::Scan => format!("Scan.{default_ext}"),
     };
     let raw_name = if meta.file_name.trim().is_empty() { &fallback_name } else { &meta.file_name };
-    // Safe to save on any system: `C:x.jpg` must not become a path on drive C.
+    // Safe to save on any filesystem, removable drives included.
     let safe_name = crate::transfer::storable_name(&crate::transfer::safe_file_name(raw_name));
 
     let saved_path = match tokio::fs::create_dir_all(&shared.downloads_dir).await {
         Ok(()) => {
             let dest = crate::transfer::unique_path(&shared.downloads_dir, &safe_name);
             match tokio::fs::write(&dest, &data).await {
-                Ok(()) => {
-                    crate::transfer::mark_from_elsewhere(&dest);
-                    Some(dest)
-                }
+                Ok(()) => Some(dest),
                 Err(e) => {
                     tracing::warn!(error = %e, "can't save continuity camera capture");
                     None

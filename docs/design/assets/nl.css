@@ -1,9 +1,9 @@
 /* G7 Link design preview stylesheet. Mirrors docs/design/tokens.json. */
 :root{
-  --sans:"Figtree","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --sans:"Figtree",system-ui,sans-serif;
   --serif:"Instrument Serif",Georgia,serif;
-  --mono:"Space Mono","Cascadia Mono",Consolas,monospace;
-  --hand:"Caveat","Segoe Print",cursive;
+  --mono:"Space Mono",monospace;
+  --hand:"Caveat",cursive;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--sans);background:var(--page);color:var(--on-surface);-webkit-font-smoothing:antialiased;transition:background .4s,color .4s}

@@ -189,7 +189,7 @@ pub struct NotificationView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AppRule {
-    /// In the feed, and as Windows notifications.
+    /// In the feed, and as desktop notifications.
     #[default]
     Show,
     /// In the feed only: no pop-ups or sounds.
@@ -292,7 +292,7 @@ pub struct AppState {
     /// Active laser pointer overlay (`(device, x, y)` in `0.0..=1.0`).
     pub laser: Option<(DeviceId, f32, f32)>,
     /// This PC's physical adapters and Wake-on-LAN readiness.
-    pub wake: crate::win::wol::WakeStatus,
+    pub wake: crate::sys::wol::WakeStatus,
     /// Whether LocalSend LAN interop is enabled and whether port 53317 is bound for receiving.
     pub localsend_enabled: bool,
     pub localsend_receiving: bool,
@@ -1038,7 +1038,7 @@ impl AppState {
         Changes::PAIRING
     }
 
-    pub fn set_wake(&mut self, next: crate::win::wol::WakeStatus) -> Changes {
+    pub fn set_wake(&mut self, next: crate::sys::wol::WakeStatus) -> Changes {
         if self.wake == next {
             return Changes::NONE;
         }

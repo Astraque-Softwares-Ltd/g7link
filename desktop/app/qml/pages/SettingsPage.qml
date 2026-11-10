@@ -905,7 +905,7 @@ Item {
 
                         Divider { width: parent.width }
 
-                        // Row 1: Start with Windows | Stay in system tray
+                        // Row 1: Start at sign-in | Stay in system tray
                         Item {
                             id: startupPairRow
                             width: parent.width
@@ -2106,7 +2106,7 @@ Item {
                     Column {
                         width: parent.width
 
-                        // Row 1: Show phones in File Explorer | Your PC in your pocket
+                        // Row 1: Show phones in the file manager | Your PC in your pocket
                         Item {
                             id: filesSharePairRow
                             width: parent.width

@@ -4,12 +4,12 @@ G7 Link persists all relational state in an embedded SQLite database (`g7link.db
 
 ## Data Directory Layout
 
-- **Windows (`%LOCALAPPDATA%\G7Link`)** or custom `--data-dir`
+- **Linux (`~/.local/share/G7Link`)** or custom `--data-dir`
 - **Android (`context.filesDir`)**
 
 ```text
 <data_dir>/
-├── identity.key                  Ed25519 secret key (NLK1 header + DPAPI/Keystore ciphertext)
+├── identity.key                  Ed25519 secret key (NLK1 header + Secret Service/Keystore ciphertext)
 ├── g7link.db                 SQLite database (WAL mode, schema v8)
 ├── clipboard_history.enc         KeyProtector-encrypted clipboard index (NLCB\x01 header)
 ├── clipboard_images/
@@ -39,7 +39,7 @@ Configured in `core/g7link-core/src/store.rs` with `PRAGMA journal_mode = WAL`, 
 
 ### Schema Migrations (`Store::migrate`)
 
-`Store::open` inspects `PRAGMA user_version` inside a transaction and applies incremental migrations (`v1` → … → `v8`) non-destructively using `CREATE TABLE IF NOT EXISTS` and column checks before setting `PRAGMA user_version = 8`. Version 8 added `peers.install_id`: a salted hash of the other device's Android ID or Windows machine GUID, used only to replace the old entry when the same device is paired again (`cleanup_peers` merges by install ID and device kind, never by name).
+`Store::open` inspects `PRAGMA user_version` inside a transaction and applies incremental migrations (`v1` → … → `v8`) non-destructively using `CREATE TABLE IF NOT EXISTS` and column checks before setting `PRAGMA user_version = 8`. Version 8 added `peers.install_id`: a salted hash of the other device's Android ID or Linux `/etc/machine-id`, used only to replace the old entry when the same device is paired again (`cleanup_peers` merges by install ID and device kind, never by name).
 
 ## Unified Conversations (`chat_threads` & `chat_messages`)
 
@@ -54,7 +54,7 @@ When an Android notification uses `Notification.MessagingStyle` (such as WhatsAp
 
 ## Desktop Notification History (`desktop/app/src/notification_store.rs`)
 
-In addition to SQLite conversation threads, the desktop app maintains fast JSON-backed stores for live toast rules and recent notifications:
+In addition to SQLite conversation threads, the desktop app maintains fast JSON-backed stores for notification rules and recent notifications:
 
 - `notification-rules.json`: Stores `Rules { history: bool, apps: BTreeMap<String, AppEntry> }` where each `AppEntry` maps `<package_name>` to `AppRule` (`Show`, `Quiet`, or `Hidden`).
 - `notification-history.json`: Retains up to `MAX_HISTORY = 300` history entries (alongside up to `MAX_NOTIFICATIONS = 200` active notifications in memory) and automatically prunes entries older than 24 hours (`HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000`) on load and save.
@@ -124,7 +124,7 @@ Clipboard text and images, links and task alerts in `send_queue` are sealed with
 
 Recent clipboard items are persisted in `<data_dir>/clipboard_history.enc` and `<data_dir>/clipboard_images/<id>.enc`:
 
-- **At-Rest Protection (`KeyProtector`)**: Both the CBOR index (`clipboard_history.enc`, prefixed with 5-byte magic header `NLCB\x01`) and each image file (`clipboard_images/<id>.enc`, prefixed with 5-byte magic header `NLCI\x01`) are sealed directly via `KeyProtector::seal` and `KeyProtector::open` (`DpapiKeyProtector` using Windows DPAPI tied to the user logon credential on Windows, or `KeystoreKeyProtector` using AES-256-GCM inside Android Keystore on Android).
+- **At-Rest Protection (`KeyProtector`)**: Both the CBOR index (`clipboard_history.enc`, prefixed with 5-byte magic header `NLCB\x01`) and each image file (`clipboard_images/<id>.enc`, prefixed with 5-byte magic header `NLCI\x01`) are sealed directly via `KeyProtector::seal` and `KeyProtector::open` (`SecretServiceProtector` using AES-256-GCM under a key held by the desktop's Secret Service on Linux, or `KeystoreKeyProtector` using AES-256-GCM inside Android Keystore on Android). With no keyring on Linux they are stored unsealed; see the [security model](security-model.md#cryptographic-device-identity).
 - **Atomic Writes**: Updates write to `.tmp` files (`clipboard_history.enc.tmp` and `<id>.enc.tmp`) and atomically rename them into place.
 - **Retention Limits**:
   - Up to `MAX_ENTRIES = 50` entries.

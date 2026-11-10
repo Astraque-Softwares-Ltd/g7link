@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Capture a single window on Linux (via in-process X11 `XGetImage`, with `import` fallback),
-//! matching the public API of `desktop/app/src/win/window_capture.rs`.
+//! Capture a single window on Linux (via in-process X11 `XGetImage`, with `import` fallback).
 
 #![allow(unsafe_code)]
 
 use std::process::Command;
 
-use super::browser::{HWND, RECT, frame_of};
+use super::browser::{Rect, XWin, frame_of};
 
 #[repr(C)]
 struct XWindowAttributes {
@@ -174,7 +173,7 @@ pub fn is_available() -> bool {
 }
 
 pub struct WindowCapture {
-    hwnd: HWND,
+    xwin: XWin,
     rgba: Vec<u8>,
 }
 
@@ -182,28 +181,28 @@ pub struct WindowCapture {
 unsafe impl Send for WindowCapture {}
 
 impl WindowCapture {
-    pub fn new(hwnd: HWND) -> Result<WindowCapture, String> {
-        if hwnd.0.is_null() {
+    pub fn new(xwin: XWin) -> Result<WindowCapture, String> {
+        if xwin.0.is_null() {
             return Err("invalid window handle".to_owned());
         }
         if !is_available() {
             return Err("X11 window capture unavailable".to_owned());
         }
-        Ok(WindowCapture { hwnd, rgba: Vec::new() })
+        Ok(WindowCapture { xwin, rgba: Vec::new() })
     }
 
-    pub fn window(&self) -> HWND {
-        self.hwnd
+    pub fn window(&self) -> XWin {
+        self.xwin
     }
 
-    /// Capture `self.hwnd`, optionally cropped to `crop` (in window-relative coordinates),
+    /// Capture `self.xwin`, optionally cropped to `crop` (in window-relative coordinates),
     /// and scale the result into `bgra` (`dst_w` x `dst_h`, tightly packed BGRA).
-    pub fn capture(&mut self, crop: RECT, dst_w: u32, dst_h: u32, bgra: &mut Vec<u8>) -> bool {
+    pub fn capture(&mut self, crop: Rect, dst_w: u32, dst_h: u32, bgra: &mut Vec<u8>) -> bool {
         if dst_w == 0 || dst_h == 0 {
             return false;
         }
-        let xid = self.hwnd.0 as usize;
-        if let Some((src_w, src_h)) = capture_x11_window_bgra(self.hwnd, xid, &mut self.rgba) {
+        let xid = self.xwin.0 as usize;
+        if let Some((src_w, src_h)) = capture_x11_window_bgra(self.xwin, xid, &mut self.rgba) {
             let (cx0, cy0, cw, ch) = compute_window_crop(crop, src_w, src_h);
             scale_bgra(&self.rgba, src_w, src_w * 4, cx0, cy0, cw, ch, dst_w, dst_h, bgra);
             return true;
@@ -213,7 +212,7 @@ impl WindowCapture {
     }
 }
 
-fn compute_window_crop(crop: RECT, src_w: u32, src_h: u32) -> (u32, u32, u32, u32) {
+fn compute_window_crop(crop: Rect, src_w: u32, src_h: u32) -> (u32, u32, u32, u32) {
     let cw = crop.right - crop.left;
     let ch = crop.bottom - crop.top;
     if cw >= 64 && ch >= 64 {
@@ -297,14 +296,14 @@ fn capture_x11_window_in_process(xid: usize, out: &mut Vec<u8>) -> Option<(u32, 
     })
 }
 
-fn capture_x11_window_bgra(hwnd: HWND, xid: usize, out: &mut Vec<u8>) -> Option<(u32, u32)> {
+fn capture_x11_window_bgra(xwin: XWin, xid: usize, out: &mut Vec<u8>) -> Option<(u32, u32)> {
     if std::env::var_os("DISPLAY").is_none() || xid == 0 {
         return None;
     }
     if let Some(dims) = capture_x11_window_in_process(xid, out) {
         return Some(dims);
     }
-    let frame = frame_of(hwnd)?;
+    let frame = frame_of(xwin)?;
     let w = (frame.right - frame.left).max(0) as u32;
     let h = (frame.bottom - frame.top).max(0) as u32;
     if w < 32 || h < 32 {
@@ -424,9 +423,9 @@ mod tests {
 
     #[test]
     fn compute_window_crop_uses_window_relative_coordinates() {
-        let crop = RECT { left: 100, top: 80, right: 740, bottom: 440 };
+        let crop = Rect { left: 100, top: 80, right: 740, bottom: 440 };
         assert_eq!(compute_window_crop(crop, 1280, 720), (100, 80, 640, 360));
-        let tiny = RECT { left: 10, top: 10, right: 30, bottom: 30 };
+        let tiny = Rect { left: 10, top: 10, right: 30, bottom: 30 };
         assert_eq!(compute_window_crop(tiny, 1280, 720), (0, 0, 1280, 720));
     }
 }

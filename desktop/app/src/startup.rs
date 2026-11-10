@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::win::autostart;
+use crate::sys::autostart;
 
 static MANAGED: AtomicBool = AtomicBool::new(false);
 

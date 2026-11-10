@@ -4,7 +4,7 @@
 
 ## How it was tested
 
-<!-- Tests added or run, and manual checks (Windows build, phone model, Android version). -->
+<!-- Tests added or run, and manual checks (Linux desktop, phone model, Android version). -->
 
 ## Checklist
 

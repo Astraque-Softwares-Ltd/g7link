@@ -1,24 +1,16 @@
 # Getting Started
 
-This guide walks you through installing G7 Link on Windows, Linux and Android, completing the first-run setup walkthrough, pairing your devices, and choosing the Android power level that fits how you work.
+This guide walks you through installing G7 Link on Linux and Android, completing the first-run setup walkthrough, pairing your devices, and choosing the Android power level that fits how you work.
 
 ## System Requirements
 
 | Platform | Minimum Version | Notes |
 | :--- | :--- | :--- |
-| **Windows PC** | Windows 10 (version 2004 or newer) or Windows 11, 64-bit | The phone as webcam (`MFCreateVirtualCamera`) and the Mica backdrop need Windows 11 (build 22000 or newer). The phone's storage in File Explorer has only been tested on Windows 11. |
 | **Linux PC** | Ubuntu 24.04 or newer, Debian 13, Fedora 40 or newer, or another distribution from 2024 on (glibc 2.39 or newer), 64-bit Intel or AMD | X11 or Wayland. The phone as a webcam needs the `v4l2loopback` driver, which the install command sets up. |
 | **Android Phone or Tablet** | Android 8.0 (API 26) or newer | Android 10+ required for internal audio capture during mirroring; Android 11+ required for on-device Wireless Debugging (`Elevated`) and `app window` streaming; Android 12+ required for `Elevated` in-call mute/hold/speaker controls. |
 | **Network** | Shared Wi-Fi / LAN, USB cable, or **Connect over mobile data** | By default, all device-to-device traffic travels directly over your local network or a USB data cable without leaving your LAN (installed copies only contact GitHub Releases over HTTPS to check for app updates; see [Privacy and Security](privacy-and-security.md)). |
 
 ## Installing G7 Link
-
-### On Windows
-
-1. Download the latest Windows installer (`G7Link-<version>-x64-setup.exe` for Intel/AMD PCs or `G7Link-<version>-arm64-setup.exe` for Snapdragon/ARM64 PCs) from the project's GitHub Releases page.
-2. Run the installer. The installer isn't code-signed yet, so Windows SmartScreen may show **Windows protected your PC**: choose **More info**, then **Run anyway**.
-3. Click **Install** and allow the administrator prompt. Setup installs G7 Link in Program Files; to put it somewhere else, such as another drive, click **Change** next to **Installs in** first. It goes into a new `G7Link` folder inside the one you pick, on a drive inside the PC (not USB or network). Updates install without asking in Program Files or at the top of a drive. In a folder that people without administrator rights can change, such as one you made yourself, updates ask for your permission instead, so nothing else can slip in its own files to run with full rights. Setup also registers the required Windows Firewall rule for local QUIC discovery and connections, adds a Start Menu shortcut (and a desktop one, unless you untick **Add a desktop shortcut**), and sets G7 Link to start in the system tray when you sign in (turn this off with **Start with Windows** in **Settings › General**). **What this installs** on the first screen lists everything it adds.
-4. The last screen shows a QR code for the Android app's download page. Scan it with your phone's camera, then click **Open G7 Link**.
 
 ### On Linux
 
@@ -45,26 +37,25 @@ Each kind of install updates itself the same way it was installed.
 
 ### On Android
 
-1. Download `G7Link-<version>-android.apk` from the GitHub Releases page (or scan the QR code shown when Windows setup finishes, or in the PC walkthrough).
-2. Open the downloaded APK and allow installation if Android prompts you. Because G7 Link supports full SMS/MMS messaging, call logs, notification actions, accessibility input, and optional `All files access` for mounting phone storage in File Explorer (permissions that Google Play restricts), the full app is distributed directly as a signed APK with built-in SHA-256 verified updates:
+1. Download `G7Link-<version>-android.apk` from the GitHub Releases page (or scan the QR code shown in the PC walkthrough).
+2. Open the downloaded APK and allow installation if Android prompts you. Because G7 Link supports full SMS/MMS messaging, call logs, notification actions, accessibility input, and optional `All files access` for showing phone storage in your file manager (permissions that Google Play restricts), the full app is distributed directly as a signed APK with built-in SHA-256 verified updates:
    - If Google Play Protect shows an unrecognized-developer prompt, tap **More details › Install anyway**.
    - Where Google Play Protect's **Enhanced Fraud Protection** is on (185 markets, including India), it blocks browser-sideloaded APKs that declare `READ_SMS`, `BIND_NOTIFICATION_LISTENER_SERVICE`, or `BIND_ACCESSIBILITY_SERVICE` without showing an **Install anyway** button, either install over USB with `adb install -r G7Link-<version>-android.apk` or temporarily pause **Scan apps with Play Protect** in **Google Play Store › Profile icon › Play Protect › Settings (gear)** while installing the APK, then turn it back on.
 3. Open **G7 Link** on your phone.
 
 ### Uninstalling
 
-- **Windows:** open **Settings › Apps › Installed apps**, choose **G7 Link**, then **Uninstall**. This removes the app, its firewall rule, update task, shortcuts and Share sheet entry, and deletes its settings and pairings on this PC. Files you received and voice recordings stay where they were saved.
 - **Linux:** run `curl -fsSL https://github.com/Astraque-Softwares-Ltd/g7link/releases/latest/download/install.sh | sh -s -- --uninstall`. This removes the app however it was installed, its webcam, input and firewall settings, its menu entry and starting with your computer. Your settings and pairings stay in `~/.local/share/G7Link`; delete that folder to remove them too. An AppImage is removed by deleting the file.
 - **Android:** uninstall it like any other app.
 
 ## First-Run Setup Walkthrough
 
-When you open G7 Link for the first time on a new installation, a guided walkthrough sets up your device in a few short steps. You can go back or skip any optional step, and if you close the app midway, it resumes where you left off. You can also reopen the walkthrough at any time from **Settings › Connection & About** on Windows or **Settings › Features & Data › About** on Android.
+When you open G7 Link for the first time on a new installation, a guided walkthrough sets up your device in a few short steps. You can go back or skip any optional step, and if you close the app midway, it resumes where you left off. You can also reopen the walkthrough at any time from **Settings › Connection & About** on the PC or **Settings › Features & Data › About** on Android.
 
 ### PC Walkthrough Steps
 
 <p align="center">
-  <img src="images/walkthrough-pc.png" alt="First-run setup walkthrough on Windows" width="760">
+  <img src="images/walkthrough-pc.png" alt="First-run setup walkthrough on the PC" width="760">
 </p>
 
 1. **Welcome**: Introduces G7 Link and how your phone and PC work together.
@@ -72,11 +63,11 @@ When you open G7 Link for the first time on a new installation, a guided walkthr
 3. **Install the Phone App**: Shows a scannable QR code linking directly to the Android APK if you do not have it installed yet.
 4. **Pair**: Displays your PC's live pairing QR code and listens for nearby phones or USB connections.
 5. **Choose What to Share**: Lets you review the main per-device feature toggles (Notifications, Messages, Calls, Clipboard, Files, Photos, Screen mirroring, Webcam) before your first session begins.
-6. **Optional PC Setup**: Checks Windows notification permission, the **Start with Windows** toggle, and your firewall rules through the `Connection Doctor`.
+6. **Optional PC Setup**: Checks that desktop notifications are on, offers the **Start at login** toggle, and checks your firewall through the `Connection Doctor`.
 7. **Done**: Opens the in-app **Features Guide**, which shows every feature, its live availability for your paired phone, and a **Show me** button that navigates straight to each control.
 
 <p align="center">
-  <img src="images/features-guide-pc.png" alt="In-app Features Guide on Windows" width="760">
+  <img src="images/features-guide-pc.png" alt="In-app Features Guide on the PC" width="760">
 </p>
 
 ### Android Walkthrough Steps
@@ -148,11 +139,11 @@ Android groups app capabilities into tiers of system access. G7 Link is designed
 | **Notifications, inline reply, actions, dismiss sync** | Yes | Yes | Yes |
 | **Sensitive notification text & OTPs on Android 15+** | Hidden by Android OS | Hidden by Android OS | **Enabled** (`RECEIVE_SENSITIVE_NOTIFICATIONS`) |
 | **SMS, MMS, Unified Conversations, Calls, Contacts, Photos** | Yes | Yes | Yes |
-| **File transfers, Folder sync, Phone storage in Explorer** | Yes | Yes | Yes |
+| **File transfers, Folder sync, Phone storage in the file manager** | Yes | Yes | Yes |
 | **PC-to-phone clipboard sync** | Automatic | Automatic | Automatic |
 | **Phone-to-PC clipboard sync** | Manual (Quick Settings tile, share sheet, or app button) | Manual (Quick Settings tile, share sheet, or app button) | **Automatic in the background** |
 | **Screen mirroring (view video & audio on PC)** | Yes (Android prompts each time) | Yes (Android prompts each time) | **Prompt-free startup** (`PROJECT_MEDIA` granted automatically) |
-| **Control phone from PC mouse & keyboard during mirroring** | View-only | Tap, swipe, scroll, basic text entry | **Real-time touch dragging, XInput gamepad, stylus pressure/tilt** |
+| **Control phone from PC mouse & keyboard during mirroring** | View-only | Tap, swipe, scroll, basic text entry | **Real-time touch dragging and gamepad** |
 | **Turn off physical phone screen while mirroring** | No | No | **Yes** |
 | **Phone apps in individual PC windows (`app window`)** | No | No | **Yes** (Android 11+) |
 | **In-call mute, hold, speakerphone & keypad from PC** | Answer, decline, hang up, volume | Answer, decline, hang up, volume | **Yes** (Android 12+) |

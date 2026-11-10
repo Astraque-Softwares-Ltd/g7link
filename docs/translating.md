@@ -1,6 +1,6 @@
 # Translating G7 Link
 
-G7 Link's Android and Windows apps can be translated into any language.
+G7 Link's Android and Linux desktop apps can be translated into any language.
 Simplified Chinese, German, Turkish and Brazilian Portuguese are complete today.
 
 ## How to help
@@ -15,7 +15,7 @@ tools or Git needed.
   `values-de/strings.xml` or `values-pt-rBR/strings.xml`. Copy the entries
   from `values/strings.xml` and translate their text. Keep placeholders such as
   `%1$s` and `%2$d` exactly as they are; their order in the sentence can change.
-- Windows: `desktop/app/i18n/g7link_<language>.ts`, for example
+- Desktop: `desktop/app/i18n/g7link_<language>.ts`, for example
   `g7link_de.ts`. Start a new language by copying
   `desktop/app/i18n/template/g7link.ts` (every string, none translated),
   then fill in the `<translation>` elements with Qt Linguist or a text editor.
@@ -27,7 +27,7 @@ A few things that keep translations consistent:
 - Keep the product name "G7 Link" as it is.
 - Short UI labels stay short; the English text is already written to fit.
 - If a string's meaning isn't clear from its context, ask in the pull request
-  or on [Discussions](https://github.com/thtbee/nectarlink/discussions).
+  or on [Discussions](https://github.com/Astraque-Softwares-Ltd/g7link/discussions).
 
 ## Partly translated languages
 
@@ -39,8 +39,9 @@ language keeps showing English rather than a mix.
   `android/app/src/main/res/xml/locales_config.xml` (`localeFilters` in
   `android/app/build.gradle.kts` reads that file). Android lint doesn't fail
   on missing translations (`android/app/lint.xml`).
-- Windows: the installer only compiles the catalogues for languages in
-  `i18n::LANGUAGES` (`desktop/app/src/i18n.rs`; `scripts/package.ps1` reads it).
+- Desktop: the build only compiles the catalogues for languages in
+  `i18n::LANGUAGES` (`desktop/app/src/i18n.rs`; `desktop/app/build.rs` reads
+  it, and needs `lrelease` from Qt's tools), so only those reach the packages.
 
 ## Shipping a finished language
 
@@ -50,7 +51,7 @@ When a language is complete:
    `AppLanguage.languages` (`ui/AppLanguage.kt`), with its name in its own
    language. `LocalesTest` checks that the two match and that every offered
    language has every string.
-2. Windows: add it to `i18n::LANGUAGES` with its name in its own language. A
+2. Desktop: add it to `i18n::LANGUAGES` with its name in its own language. A
    test checks that every offered catalogue has no unfinished strings.
 3. Add a line to `CHANGELOG.md` crediting the translators.
 
@@ -58,7 +59,7 @@ When a language is complete:
 
 Android strings live in `values/strings.xml`; nothing else to run.
 
-On Windows, after adding or changing text in QML or in Rust (`tr!`), update
+For the desktop app, after adding or changing text in QML or in Rust (`tr!`), update
 the generated header and every catalogue, the template included:
 
 ```bash
@@ -78,7 +79,7 @@ the test above fails otherwise.
 push to a fork and open pull requests rather than push to `main`. Then add
 two components:
 
-| Setting | Android app | Windows app |
+| Setting | Android app | Desktop app |
 |---|---|---|
 | File format | Android String Resource | Qt Linguist translation file |
 | File mask | `android/app/src/main/res/values-*/strings.xml` | `desktop/app/i18n/g7link_*.ts` |

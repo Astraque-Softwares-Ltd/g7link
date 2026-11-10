@@ -12,7 +12,7 @@ and PC agree about what works.
 |---|---|
 | Capabilities of both devices | Each device's `hello.caps` / `hello.update` (protocol §6, registry in `docs/protocol/capabilities.md`); the peer's are stored, so the matrix also works while it is offline |
 | Phone power level | The phone's `hello.power` |
-| OS versions | `DeviceInfo.os_ver`: Android release (`"16"`), Windows build (`"10.0.26200"`) |
+| OS versions | `DeviceInfo.os_ver`: Android release (`"16"`); on the PC, the distribution and kernel (`"Fedora Linux 43 (6.17.1)"`), shown but not used by any requirement |
 | Enabled connection paths | LAN always; relay when Away mode is on |
 | Per-device toggles | The user's switches for this paired device (`DEVICE_TOGGLES`) |
 | Feature registry | Static definitions compiled into the core (`FEATURES`) |
@@ -41,9 +41,12 @@ pub enum Requirement {
     /// The device in `role` (Phone or Desktop) announces capability `id`.
     /// `unlock` says how a missing capability is obtained.
     Cap { role: Role, id: &'static str, unlock: Unlock },
+    /// The other device (`Peer`) or this one (`Here`) announces capability
+    /// `id`, for pairs of Android devices.
+    Peer { id: &'static str, unlock: Unlock },
+    Here { id: &'static str, unlock: Unlock },
     PowerAtLeast(PowerLevel),          // phone: Basic < Assist < Elevated
     AndroidAtLeast(u32),               // phone's Android release
-    WindowsBuildAtLeast(u32),          // desktop's Windows build
     Path(ConnectionPath),              // e.g. Relay (Away mode)
     DeviceToggle(&'static str),        // per-device user permission
 }
@@ -116,7 +119,7 @@ pub enum UnsupportedReason {
 
 A pair that isn't one phone (or tablet) and one desktop (or laptop) has every
 feature Unsupported (`DeviceKinds`). An `Unknown` device kind falls back to
-the OS (`android` → phone, `windows`/`macos` → desktop).
+the OS (`android` → phone, `linux` → desktop).
 
 Two Android devices (a phone and a tablet, or two phones) get the features
 of `ANDROID_PAIR_FEATURES` instead, from this device's side: `pair.battery`
@@ -146,7 +149,7 @@ Available. Everything else in the matrix is identical on both devices.
 | `notifications.sensitive` | phone `notify.sensitive` (Elevated), toggle | None | Locked → Elevated · ~2 min |
 | `mirroring.control` | phone `mirror.capture`, `mirror.input` (Assist) | None | Locked → Assist · ~1 min |
 | `mirroring.app_windows` | phone `mirror.virtual_display` (Elevated), Elevated, Android ≥ 11 | None | Locked → Elevated |
-| `camera.webcam` | phone `camera.stream` (camera permission), desktop `camera.virtual`, desktop `addon.vcam`, Windows build ≥ 22000, toggle `webcam` | None | Locked → install virtual camera · ~1 min |
+| `camera.webcam` | phone `camera.stream` (camera permission), desktop `camera.virtual`, desktop `addon.vcam`, toggle `webcam` | None | Locked → install virtual camera · ~1 min |
 | `media.play_on_phone` | desktop `media.stream`, phone `media.watch`, toggle `media` | None | Available |
 | `media.phone_mic` | phone `mic.stream`, desktop `mic.listen`, toggle `mic` | None | Available |
 

@@ -83,8 +83,6 @@ pub enum Requirement {
     PowerAtLeast(PowerLevel),
     /// The phone runs this Android release or newer.
     AndroidAtLeast(u32),
-    /// The desktop runs this Windows build or newer.
-    WindowsBuildAtLeast(u32),
     /// This connection path is enabled (e.g. Away mode for relays).
     Path(ConnectionPath),
     /// The user allows this for the device (see [`DEVICE_TOGGLES`]).
@@ -205,22 +203,18 @@ pub enum UnsupportedReason {
     AndroidTooOld {
         needs: u32,
     },
-    WindowsTooOld {
-        needs_build: u32,
-    },
     /// The phone has the needed power level but still doesn't offer the
     /// capability (hardware or OEM limitation).
     NotOnThisDevice,
 }
 
 impl UnsupportedReason {
-    /// A stable key for UIs and bindings: `deviceKinds`, `android:<release>`,
-    /// `windows:<build>` or `notOnThisDevice`.
+    /// A stable key for UIs and bindings: `deviceKinds`, `android:<release>`
+    /// or `notOnThisDevice`.
     pub fn describe(self) -> String {
         match self {
             UnsupportedReason::DeviceKinds => "deviceKinds".into(),
             UnsupportedReason::AndroidTooOld { needs } => format!("android:{needs}"),
-            UnsupportedReason::WindowsTooOld { needs_build } => format!("windows:{needs_build}"),
             UnsupportedReason::NotOnThisDevice => "notOnThisDevice".into(),
         }
     }
@@ -298,11 +292,6 @@ impl DeviceFacts {
     fn android_release(&self) -> Option<u32> {
         (self.os == "android").then(|| leading_number(&self.os_ver)).flatten()
     }
-
-    /// The Windows build (`"10.0.26200"` → 26200), if this is a Windows device.
-    fn windows_build(&self) -> Option<u32> {
-        (self.os == "windows").then(|| self.os_ver.split('.').nth(2).and_then(leading_number)).flatten()
-    }
 }
 
 /// Which role a device plays in a pair, from its kind (or OS when the kind
@@ -317,7 +306,7 @@ fn role_from(kind: DeviceKind, os: &str) -> Option<Role> {
         DeviceKind::Desktop | DeviceKind::Laptop => Some(Role::Desktop),
         DeviceKind::Unknown => match os {
             "android" => Some(Role::Phone),
-            "windows" | "macos" | "linux" => Some(Role::Desktop),
+            "linux" => Some(Role::Desktop),
             _ => None,
         },
     }
@@ -502,12 +491,6 @@ fn check(req: &Requirement, ctx: &Context<'_>) -> Check {
             Some(release) if release < needs => Check::Impossible(UnsupportedReason::AndroidTooOld { needs }),
             _ => Check::Met,
         },
-        Requirement::WindowsBuildAtLeast(needs_build) => match ctx.desktop.windows_build() {
-            Some(build) if build < needs_build => {
-                Check::Impossible(UnsupportedReason::WindowsTooOld { needs_build })
-            }
-            _ => Check::Met,
-        },
         Requirement::Path(path) => {
             if ctx.paths.contains(&path) {
                 Check::Met
@@ -580,7 +563,7 @@ fn evaluate(def: &FeatureDef, ctx: &Context<'_>) -> FeatureState {
 
 // ---- The registry ----
 
-use Requirement::{AndroidAtLeast, DeviceToggle, Path, PowerAtLeast, WindowsBuildAtLeast};
+use Requirement::{AndroidAtLeast, DeviceToggle, Path, PowerAtLeast};
 
 const fn phone(id: &'static str, unlock: Unlock) -> Requirement {
     Requirement::Cap { role: Role::Phone, id, unlock }
@@ -985,7 +968,6 @@ pub const FEATURES: &[FeatureDef] = &[
             phone("camera.stream", Unlock::Permission(Permission::Camera)),
             desktop("camera.virtual", UPDATE),
             desktop("addon.vcam", Unlock::Addon("vcam")),
-            WindowsBuildAtLeast(22000),
             DeviceToggle("webcam"),
         ],
         partial: None,
@@ -1093,7 +1075,7 @@ mod tests {
     ];
 
     fn pc() -> DeviceFacts {
-        facts(DeviceKind::Laptop, "windows", "10.0.26200", PowerLevel::NotApplicable, PC)
+        facts(DeviceKind::Laptop, "linux", "6.12", PowerLevel::NotApplicable, PC)
     }
 
     fn matrix_with(
@@ -1277,33 +1259,13 @@ mod tests {
     }
 
     #[test]
-    fn old_systems_are_unsupported() {
+    fn old_android_releases_are_unsupported() {
         let phone =
             facts(DeviceKind::Phone, "android", "10", PowerLevel::Elevated, &["mirror.virtual_display"]);
-        let win10 = facts(
-            DeviceKind::Desktop,
-            "windows",
-            "10.0.19045",
-            PowerLevel::NotApplicable,
-            &["camera.virtual", "addon.vcam"],
-        );
-        let m = matrix_with(&phone, &win10, &HashMap::new());
+        let m = matrix_with(&phone, &pc(), &HashMap::new());
         assert_eq!(
             m.state("mirroring.app_windows"),
             Some(FeatureState::Unsupported { reason: UnsupportedReason::AndroidTooOld { needs: 11 } })
-        );
-        let mut caps = BASIC_PHONE.to_vec();
-        caps.push("camera.stream");
-        let m = matrix_with(
-            &facts(DeviceKind::Phone, "android", "16", PowerLevel::Basic, &caps),
-            &win10,
-            &HashMap::new(),
-        );
-        assert_eq!(
-            m.state("camera.webcam"),
-            Some(FeatureState::Unsupported {
-                reason: UnsupportedReason::WindowsTooOld { needs_build: 22000 }
-            })
         );
     }
 
@@ -1348,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_desktop_maps_to_desktop_role_and_matches_windows_feature_matrix() {
+    fn linux_desktop_maps_to_desktop_role_and_matches_laptop_feature_matrix() {
         let mut linux_pc = DeviceFacts::for_os("linux");
         assert_eq!(linux_pc.kind, DeviceKind::Desktop);
         assert_eq!(linux_pc.role(), Some(Role::Desktop));
@@ -1358,14 +1320,12 @@ mod tests {
         let phone = facts(DeviceKind::Phone, "android", "16", PowerLevel::Basic, BASIC_PHONE);
         let toggles = HashMap::new();
         let m_linux = matrix_with(&phone, &linux_pc, &toggles);
-        let m_win = matrix_with(&phone, &pc(), &toggles);
-        assert_eq!(m_linux, m_win);
+        let m_laptop = matrix_with(&phone, &pc(), &toggles);
+        assert_eq!(m_linux, m_laptop);
     }
 
     #[test]
     fn os_versions_parse() {
-        let f = facts(DeviceKind::Desktop, "windows", "10.0.26200.6584", PowerLevel::NotApplicable, &[]);
-        assert_eq!(f.windows_build(), Some(26200));
         let f = facts(DeviceKind::Phone, "android", "12L", PowerLevel::Basic, &[]);
         assert_eq!(f.android_release(), Some(12));
         let f = facts(DeviceKind::Phone, "android", "beta", PowerLevel::Basic, &[]);
@@ -1471,74 +1431,5 @@ mod tests {
             Some(FeatureState::Unsupported { reason: UnsupportedReason::DeviceKinds })
         );
         assert_eq!(matrix.state("device.find_phone"), Some(FeatureState::Available));
-    }
-
-    #[test]
-    fn macos_desktop_matrix_reflects_supported_and_unsupported_features() {
-        const MAC_DESKTOP: &[&str] = &[
-            "core.ping",
-            "device.battery",
-            "device.ring",
-            "files.transfer",
-            "clip.image",
-            "media.remote",
-            "link.open",
-            "task.notify",
-            "camera.continuity",
-            "pc.power",
-            "photos.show",
-            "calls.show",
-            "contacts.show",
-            "sms.show",
-            "toggles.show",
-        ];
-        let mac = facts(DeviceKind::Desktop, "macos", "15.0", PowerLevel::NotApplicable, MAC_DESKTOP);
-        let mut phone_caps = BASIC_PHONE.to_vec();
-        phone_caps.extend(["link.open", "storage.read", "storage.write"]);
-        let phone = facts(DeviceKind::Phone, "android", "16", PowerLevel::Elevated, &phone_caps);
-        let m = matrix_with(&phone, &mac, &HashMap::new());
-
-        // Supported macOS features are Available:
-        assert_eq!(m.state("device.find_phone"), Some(FeatureState::Available));
-        assert_eq!(m.state("device.battery"), Some(FeatureState::Available));
-        assert_eq!(m.state("device.pc_actions"), Some(FeatureState::Available));
-        assert_eq!(m.state("device.links_to_pc"), Some(FeatureState::Available));
-        assert_eq!(m.state("device.links_to_phone"), Some(FeatureState::Available));
-        assert_eq!(m.state("camera.continuity"), Some(FeatureState::Available));
-        assert_eq!(m.state("files.send"), Some(FeatureState::Available));
-        assert_eq!(m.state("files.recent_photos"), Some(FeatureState::Available));
-        assert_eq!(m.state("calls.alerts"), Some(FeatureState::Available));
-        assert_eq!(m.state("contacts.read"), Some(FeatureState::Available));
-        assert_eq!(m.state("toggles.volume"), Some(FeatureState::Available));
-        assert_eq!(m.state("clipboard.pc_to_phone"), Some(FeatureState::Available));
-
-        // Unsupported macOS features are NOT Available:
-        assert_eq!(
-            m.state("mirroring.view"),
-            Some(locked(UpgradeAction::UpdateApp(Role::Desktop), Effort::Minutes(2)))
-        );
-        assert_ne!(m.state("mirroring.control"), Some(FeatureState::Available));
-        assert_ne!(m.state("mirroring.app_windows"), Some(FeatureState::Available));
-        assert_ne!(m.state("mirroring.audio"), Some(FeatureState::Available));
-        assert_eq!(
-            m.state("media.pc_control"),
-            Some(locked(UpgradeAction::UpdateApp(Role::Desktop), Effort::Minutes(2)))
-        );
-        // With default toggles, storage is opt-in (toggle off):
-        assert_eq!(
-            m.state("files.storage"),
-            Some(locked(UpgradeAction::EnableDeviceToggle("storage"), Effort::Instant))
-        );
-        // With storage toggle enabled, missing desktop("storage.mount") locks behind UpdateApp:
-        let toggles_with_storage = HashMap::from([("storage".to_owned(), true)]);
-        let m_storage = matrix_with(&phone, &mac, &toggles_with_storage);
-        assert_eq!(
-            m_storage.state("files.storage"),
-            Some(locked(UpgradeAction::UpdateApp(Role::Desktop), Effort::Minutes(2)))
-        );
-        assert_eq!(
-            m.state("camera.webcam"),
-            Some(locked(UpgradeAction::EnableAddon("vcam"), Effort::Minutes(1)))
-        );
     }
 }

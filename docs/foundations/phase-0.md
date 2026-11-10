@@ -35,14 +35,14 @@ g7link/
   desktop/
     app/                     the desktop app, one crate               (GPL)
       src/bridge/            cxx-qt bridge: the only Rust↔Qt code
-      src/win/               Windows integration (tray, power, sound)
+      src/linux/             Linux integration (tray, power, sound)
       cpp/                   C++ for Qt hooks (window chrome)
       qml/                   design system + screens
   tools/xtask/               code generation (theme tokens) and checks (GPL)
   android/                   Gradle project (app module)               (GPL)
   spikes/                    throwaway experiments, one folder each
   docs/
-  scripts/                   build helpers (PowerShell + bash)
+  scripts/                   build and check helpers
 ```
 
 **CI (GitHub Actions, runs once we push; until then the same scripts run
@@ -50,12 +50,12 @@ locally):**
 
 | Job | Runs on | Does |
 |---|---|---|
-| `core` | windows-latest, ubuntu-latest | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, fuzz smoke test |
-| `desktop` | windows-latest | Install Qt 6.12 (aqtinstall, cached), build x64 + ARM64, run QML tests |
+| `core` | ubuntu-latest | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, fuzz smoke test |
+| `desktop` | ubuntu-latest | Install Qt 6.12 (aqtinstall, cached), clippy, tests and a release build (x86_64) |
 | `android` | ubuntu-latest | `cargo ndk` build of `g7link-ffi`, Gradle build, unit tests |
 | `licenses` | ubuntu-latest | SPDX header check, dependency license audit (`cargo deny`) |
 
-Local equivalent: `scripts/check.ps1` runs the same steps on this machine.
+Local equivalent: the commands under [What CI runs](../technical/building-and-testing.md#what-ci-runs).
 
 ## 3. Core milestones (W3)
 
@@ -75,12 +75,12 @@ verdict. Spike code is throwaway; what we keep is the knowledge.
 
 | # | Spike | Question | Pass criteria | If it fails |
 |---|---|---|---|---|
-| **S1** | **Qt + Rust proof** (gate) | Can Qt Quick + cxx-qt deliver the design at our budgets? | Home screen, notification card, Deck grid, one hero transition and a live video window built from the mockups; 120 fps on a mid-range laptop; RAM < 60 MB tray / < 120 MB window; cold start < 500 ms; D3D11 video in the scene graph without copies; Mica works; 10k core→UI events/s without UI stutter; CI builds x64 + ARM64 | Fall back to web UI (Tauri) with native Rust video windows (ADR 0005) |
-| S2 | Mirror latency | Phone encoder → QUIC → MF decode → screen | ≤ 50 ms glass-to-glass at 1080p60 on LAN, measured with a high-speed camera or on-screen timestamps | Tune encoder/transport; dedicated swapchain for video |
-| S3 | Bluetooth calling | Can a third-party app act as an HFP hands-free device on Windows 11 24H2/25H2? | Answer a real call and hear audio on the PC, with package identity | Calls stay "alert + control", audio on the phone |
+| **S1** | **Qt + Rust proof** (gate) | Can Qt Quick + cxx-qt deliver the design at our budgets? | Home screen, notification card, Deck grid, one hero transition and a live video window built from the mockups; 120 fps on a mid-range laptop; RAM < 60 MB tray / < 120 MB window; cold start < 500 ms; live video in the scene graph; 10k core→UI events/s without UI stutter; CI builds x86_64 | Fall back to web UI (Tauri) with native Rust video windows (ADR 0005) |
+| S2 | Mirror latency | Phone encoder → QUIC → decode → screen | ≤ 50 ms glass-to-glass at 1080p60 on LAN, measured with a high-speed camera or on-screen timestamps | Tune encoder/transport; dedicated swapchain for video |
+| S3 | Bluetooth calling | Can the PC act as an HFP hands-free device through BlueZ? | Answer a real call and hear audio on the PC | Calls stay "alert + control", audio on the phone |
 | S4 | iroh on Android | Battery cost and reconnect behavior | < 2 %/day idle while connected; reconnect < 3 s after Wi-Fi switch, screen off, Doze | Tune keep-alives; lean on CDM wake |
 | S5 | USB transport | iroh custom transport (or TCP tunnel) over ADB | Session runs over USB with Wi-Fi off; ≥ 30 MB/s file throughput | TCP-framed tunnel fallback |
-| S6 | Toasts & identity | Sparse package identity + toasts with inline reply from an unpackaged installer | Toast with image, buttons and a reply box; reply text reaches the app, also when it was not running | Simpler toasts; reply opens the app |
+| S6 | Desktop notifications | Freedesktop notifications with actions and inline reply | Notification with image, buttons and a reply box where the notification server offers one; reply text reaches the app | Simpler notifications; reply opens the app |
 | S7 | Elevated self-pairing | Phone-only wireless-debugging pairing and re-arm after reboot | Pair from a notification on Android 11 to 16 (Pixel, Samsung, Xiaomi); helper process starts as `shell`; re-arm works where the OEM allows | Rely on PC-side re-arm and Shizuku |
 
 ## 5. Design (W1)
@@ -100,4 +100,4 @@ verdict. Spike code is throwaway; what we keep is the knowledge.
 - [ ] S1 passed (or the fallback was chosen and documented as an ADR).
 - [ ] Every other spike has a written verdict.
 - [ ] Design direction chosen, tokens and core mockups approved.
-- [ ] `scripts/check.ps1` is green locally.
+- [ ] The CI checks pass locally.

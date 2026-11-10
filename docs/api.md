@@ -1,18 +1,14 @@
 # G7 Link Local Authenticated Automation API (`docs/api.md`)
 
-G7 Link for Windows includes an opt-in, loopback-only HTTP/JSON API (`127.0.0.1:<port>`, default port `53320`) designed for local desktop automation tools:
-
-- **PowerToys Command Palette / PowerToys Run** (`tools/powertoys-extension`)
-- **AutoHotkey / Raycast for Windows / Flow Launcher**
-- **PowerShell & CLI scripts**
+The G7 Link desktop app includes an opt-in, loopback-only HTTP/JSON API (`127.0.0.1:<port>`, default port `53320`) for local automation: shell scripts, launchers, and anything else that can make an HTTP request.
 
 ---
 
 ## 1. Enabling the API & Discovering the Token
 
-The Local API is **off by default**. Enable it in **Settings → Local automation API** (or set `"localApiEnabled": true` in `%LOCALAPPDATA%\G7Link\desktop-settings.json`).
+The Local API is **off by default**. Enable it in **Settings → Local automation API** (or set `"localApiEnabled": true` in `~/.local/share/G7Link/desktop-settings.json`).
 
-When enabled, G7 Link binds strictly to `127.0.0.1:<localApiPort>` (default `53320`) and writes `<data-dir>\api-token.json` (`%LOCALAPPDATA%\G7Link\api-token.json`):
+When enabled, G7 Link binds strictly to `127.0.0.1:<localApiPort>` (default `53320`) and writes `<data-dir>/api-token.json` (`~/.local/share/G7Link/api-token.json`):
 
 ```json
 {
@@ -73,7 +69,7 @@ Sends files, a URL, or text to a paired phone (defaults to the first online or p
 ```json
 {
   "device": "Pixel 9 Pro",
-  "paths": ["C:\\Users\\Alice\\Pictures\\diagram.png"],
+  "paths": ["/home/alice/Pictures/diagram.png"],
   "url": "https://g7.astraque.io",
   "text": "Meeting notes"
 }
@@ -236,7 +232,7 @@ Returns recent cross-device timeline items. Accepts optional query parameters `?
       "timestamp": 1730000000,
       "title": "notes.txt",
       "detail": "File",
-      "target": "C:\\Users\\you\\Downloads\\G7Link\\notes.txt",
+      "target": "/home/you/Downloads/G7Link/notes.txt",
       "sizeBytes": 5
     }
   ]
@@ -251,25 +247,11 @@ separated by newlines) or the link.
 
 ## 4. Examples
 
-### PowerShell
-
-```powershell
-$cfg = Get-Content "$env:LOCALAPPDATA\G7Link\api-token.json" | ConvertFrom-Json
-$headers = @{ Authorization = "Bearer $($cfg.token)" }
-
-# List paired devices
-Invoke-RestMethod -Uri "http://127.0.0.1:$($cfg.port)/v1/devices" -Headers $headers
-
-# Ring your phone
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($cfg.port)/v1/ring" `
-  -Headers $headers -ContentType "application/json" -Body '{}'
-```
-
 ### curl
 
 ```bash
-TOKEN=$(jq -r .token "$LOCALAPPDATA/G7Link/api-token.json")
-PORT=$(jq -r .port "$LOCALAPPDATA/G7Link/api-token.json")
+TOKEN=$(jq -r .token ~/.local/share/G7Link/api-token.json)
+PORT=$(jq -r .port ~/.local/share/G7Link/api-token.json)
 
 curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/v1/devices"
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

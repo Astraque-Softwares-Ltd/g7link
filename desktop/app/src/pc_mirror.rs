@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Shares the PC's display with a paired phone over `mirror` / `video` (session 0).
-//! Encodes H.264 or HEVC using Media Foundation on Windows and FFmpeg or OpenH264
-//! on Linux, and handles remote touch, keyboard, and pointer input.
+//! Encodes H.264 or HEVC with FFmpeg or OpenH264, and handles remote touch,
+//! keyboard, and pointer input.
 
 mod imp {
 
@@ -16,7 +16,7 @@ mod imp {
     use g7link_core::{DeviceId, KeyMod, MirrorInput, MirrorStart, mirror_keys};
     use g7link_core::{MirrorConfig, MirrorSend, PacketKind};
 
-    use crate::{core_host, win};
+    use crate::{core_host, sys};
 
     struct ActiveSession {
         peer: DeviceId,
@@ -66,7 +66,7 @@ mod imp {
             let can_encode = can_encode || {
                 static HARDWARE_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                 *HARDWARE_AVAILABLE.get_or_init(|| {
-                    crate::win::video_encoder::Encoder::new("h264", 320, 240, 30, 1_000_000).is_ok()
+                    crate::sys::video_encoder::Encoder::new("h264", 320, 240, 30, 1_000_000).is_ok()
                 })
             };
             if !can_encode {
@@ -136,7 +136,7 @@ mod imp {
             }
         };
         if stopped {
-            win::input::release_held_buttons();
+            sys::input::release_held_buttons();
             crate::input_share::leave_remote();
             core_host::host().hub.changed(crate::state::Changes::REMOTE);
             core_host::refresh_capabilities();
@@ -160,7 +160,7 @@ mod imp {
             }
         };
         if let Some(peer) = stopped {
-            win::input::release_held_buttons();
+            sys::input::release_held_buttons();
             crate::input_share::leave_remote();
             if let Some(node) = core_host::node()
                 && replaced_by != Some(peer)
@@ -202,28 +202,28 @@ mod imp {
         let _ = crate::input_share::enter_remote(*peer);
         match input {
             MirrorInput::Touch { action, x, y } => {
-                win::input::mirror_touch(action, x, y);
+                sys::input::mirror_touch(action, x, y);
             }
             MirrorInput::Scroll { x, y, dx, dy } => {
-                win::input::move_absolute(x, y);
-                win::input::scroll(dx, dy);
+                sys::input::move_absolute(x, y);
+                sys::input::scroll(dx, dy);
             }
             MirrorInput::Text { text } => {
-                win::input::type_text(&text);
+                sys::input::type_text(&text);
             }
             MirrorInput::Key { key } => match key.as_str() {
-                mirror_keys::BACK => win::input::press_key("escape", &[]),
-                mirror_keys::HOME => win::input::press_key("a", &[KeyMod::Win]),
-                mirror_keys::RECENTS => win::input::press_key("task_view", &[]),
-                mirror_keys::ENTER => win::input::press_key("enter", &[]),
-                mirror_keys::BACKSPACE => win::input::press_key("backspace", &[]),
-                mirror_keys::DELETE => win::input::press_key("delete", &[]),
-                mirror_keys::LEFT => win::input::press_key("left", &[]),
-                mirror_keys::RIGHT => win::input::press_key("right", &[]),
-                mirror_keys::UP => win::input::press_key("up", &[]),
-                mirror_keys::DOWN => win::input::press_key("down", &[]),
-                mirror_keys::TAB => win::input::press_key("tab", &[]),
-                mirror_keys::NOTIFICATIONS => win::input::press_key("n", &[KeyMod::Win]),
+                mirror_keys::BACK => sys::input::press_key("escape", &[]),
+                mirror_keys::HOME => sys::input::press_key("a", &[KeyMod::Win]),
+                mirror_keys::RECENTS => sys::input::press_key("task_view", &[]),
+                mirror_keys::ENTER => sys::input::press_key("enter", &[]),
+                mirror_keys::BACKSPACE => sys::input::press_key("backspace", &[]),
+                mirror_keys::DELETE => sys::input::press_key("delete", &[]),
+                mirror_keys::LEFT => sys::input::press_key("left", &[]),
+                mirror_keys::RIGHT => sys::input::press_key("right", &[]),
+                mirror_keys::UP => sys::input::press_key("up", &[]),
+                mirror_keys::DOWN => sys::input::press_key("down", &[]),
+                mirror_keys::TAB => sys::input::press_key("tab", &[]),
+                mirror_keys::NOTIFICATIONS => sys::input::press_key("n", &[KeyMod::Win]),
                 _ => {}
             },
             MirrorInput::Gamepad { .. } => {}
@@ -770,7 +770,7 @@ mod imp {
     pub(crate) enum ScreenEncoder {
         OpenH264(OpenH264Encoder),
         #[cfg(linux_ffmpeg_video)]
-        Hardware(crate::win::video_encoder::Encoder),
+        Hardware(crate::sys::video_encoder::Encoder),
     }
 
     impl ScreenEncoder {
@@ -782,7 +782,7 @@ mod imp {
             bitrate: u32,
         ) -> Result<Self, String> {
             #[cfg(linux_ffmpeg_video)]
-            match crate::win::video_encoder::Encoder::new(codec, width, height, fps, bitrate) {
+            match crate::sys::video_encoder::Encoder::new(codec, width, height, fps, bitrate) {
                 Ok(encoder) => return Ok(Self::Hardware(encoder)),
                 Err(error) if codec != "h264" => return Err(error),
                 Err(error) => tracing::debug!(%error, "Hardware H.264 unavailable; using OpenH264"),
@@ -1478,7 +1478,7 @@ mod imp {
     }
 
     fn capture_screen(
-        region: Option<crate::win::browser::RECT>,
+        region: Option<crate::sys::browser::Rect>,
         dst_w: u32,
         dst_h: u32,
         bgra: &mut Vec<u8>,
@@ -1643,10 +1643,10 @@ mod imp {
         // PC's sound to that phone while it watches. The picture's place comes
         // in physical pixels; so does this thread's capture.
         if options.watch.is_some() {
-            win::browser::use_physical_pixels();
+            sys::browser::use_physical_pixels();
         }
         let watched = options.watch.as_deref().map(crate::play_on_phone::Watched::follow);
-        let mut window_capture: Option<win::window_capture::WindowCapture> = None;
+        let mut window_capture: Option<sys::window_capture::WindowCapture> = None;
         let _sound = watched.is_some().then(|| SoundToPhone::start(peer));
         if watched.is_some() {
             tracing::info!(%peer, fps, bitrate, "streaming a player to the phone");
@@ -1683,9 +1683,9 @@ mod imp {
                     encoder = None;
                 }
                 // The window's own pixels, whatever is in front of it; the
-                // screen there when Windows can't capture the window.
+                // screen there when the window can't be captured.
                 if window_capture.as_ref().is_none_or(|c| c.window() != place.window()) {
-                    window_capture = win::window_capture::WindowCapture::new(place.window())
+                    window_capture = sys::window_capture::WindowCapture::new(place.window())
                         .inspect_err(
                             |e| tracing::info!(error = %e, "can't capture the window; capturing the screen"),
                         )
@@ -1902,8 +1902,8 @@ mod imp {
             let mut before = BEFORE.lock().unwrap_or_else(|e| e.into_inner());
             if before.is_none() {
                 let muted = MUTE_WHILE_WATCHED.load(Ordering::Relaxed)
-                    && win::audio::speaker_state().is_some_and(|(_, muted)| !muted)
-                    && win::audio::set_speaker_mute(true).is_ok();
+                    && sys::audio::speaker_state().is_some_and(|(_, muted)| !muted)
+                    && sys::audio::set_speaker_mute(true).is_ok();
                 *before =
                     Some((crate::pc_audio_stream::is_enabled(), crate::pc_audio_stream::target(), muted));
             }
@@ -1926,7 +1926,7 @@ mod imp {
             crate::pc_audio_stream::set_enabled(was_on);
             // Unmuted only if this muted it.
             if muted {
-                let _ = win::audio::set_speaker_mute(false);
+                let _ = sys::audio::set_speaker_mute(false);
             }
         }
     }
@@ -2010,7 +2010,7 @@ mod imp {
                     return;
                 }
             };
-            let mut dec = match crate::win::h264::Decoder::new_for_codec("h265") {
+            let mut dec = match crate::sys::h264::Decoder::new_for_codec("h265") {
                 Ok(decoder) => decoder,
                 Err(error) => {
                     eprintln!("HEVC decoder unavailable: {error}");
@@ -2046,7 +2046,7 @@ mod imp {
             assert_eq!(h % 16, 0);
 
             let mut enc = new_pc_encoder("h264", w, h, 30, 4_000_000).expect("ScreenEncoder");
-            let mut dec = crate::win::h264::Decoder::new_for_codec("h264").expect("H264 Decoder");
+            let mut dec = crate::sys::h264::Decoder::new_for_codec("h264").expect("H264 Decoder");
 
             let mut bgra = vec![0u8; (w as usize) * (h as usize) * 4];
             for (i, px) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {

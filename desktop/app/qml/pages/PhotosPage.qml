@@ -5,8 +5,8 @@ import app.g7link
 
 // Photos: the phone's gallery on the PC. Albums on the left, a virtualized
 // GridView of thumbnails grouped by day on the right, multi-select, Save (to
-// a chosen folder or Downloads\G7Link), Copy to clipboard, Open in the
-// Windows Photos app, and an in-app viewer with arrow-key navigation.
+// a chosen folder or Downloads/G7Link), Copy to clipboard, Open in the
+// default image viewer, and an in-app viewer with arrow-key navigation.
 Item {
     id: page
     property bool active: false

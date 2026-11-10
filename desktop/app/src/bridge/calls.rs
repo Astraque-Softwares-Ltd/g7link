@@ -224,7 +224,7 @@ impl qobject::PhoneCall {
     }
 
     pub fn copy(&self, text: &QString) {
-        if let Err(reason) = crate::win::clipboard::write(&String::from(text)) {
+        if let Err(reason) = crate::sys::clipboard::write(&String::from(text)) {
             tracing::warn!(reason, "can't copy");
         }
     }

@@ -143,7 +143,7 @@ data class Device(
     val features: List<Feature> = emptyList(),
     val deckLayout: app.g7link.core.DeckLayout? = null,
     val deckState: app.g7link.core.DeckState? = null,
-    /** Whether this PC is allowed to browse this phone's storage in File Explorer (off by default). */
+    /** Whether this PC is allowed to browse this phone's storage in its file manager (off by default). */
     val storageEnabled: Boolean = false,
     /** Whether this PC may ask for this phone's microphone (on by default). */
     val micEnabled: Boolean = true,

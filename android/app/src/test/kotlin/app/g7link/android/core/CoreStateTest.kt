@@ -21,7 +21,7 @@ import org.junit.Test
 class CoreStateTest {
     private fun pc(id: String, name: String, pairedAt: Long, canWake: Boolean = false) = PairedDevice(
         id = id,
-        info = DeviceInfo(name, DeviceKind.DESKTOP, "windows", "10.0.26200", null, null),
+        info = DeviceInfo(name, DeviceKind.DESKTOP, "linux", "6.12", null, null),
         pairedAt = pairedAt,
         link = Link.Offline(null),
         canWake = canWake,

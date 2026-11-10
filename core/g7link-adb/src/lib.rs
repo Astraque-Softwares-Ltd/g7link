@@ -185,8 +185,7 @@ pub async fn forward_tcp(
         match send_command(&mut stream, &cmd).await {
             Ok(()) => return Ok(port),
             // A port that was free a moment ago can still be taken by the time
-            // adb binds it (on WSL the Windows side can hold a port the Linux
-            // side just closed). Only then is another port worth trying.
+            // adb binds it. Only then is another port worth trying.
             Err(AdbError::Remote(reason))
                 if local_port == 0 && attempts < BIND_RETRIES && is_bind_failure(&reason) =>
             {

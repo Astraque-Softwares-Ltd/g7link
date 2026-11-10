@@ -113,10 +113,10 @@ pub mod qobject {
         /// Opens a file, photo, recording, or web link in its default application.
         #[qinvokable]
         fn open_entry(self: &TimelineModel, entry_id: &QString);
-        /// Reveals a saved file, folder, photo, or recording in File Explorer.
+        /// Reveals a saved file, folder, photo, or recording in the file manager.
         #[qinvokable]
         fn reveal_entry(self: &TimelineModel, entry_id: &QString);
-        /// Copies a clip, link URL, or saved photo to the Windows clipboard.
+        /// Copies a clip, link URL, or saved photo to the clipboard.
         #[qinvokable]
         fn copy_entry(self: &TimelineModel, entry_id: &QString);
         /// Sends a file, folder, clip, or link again to `device` (or the entry's device when `""`).
@@ -390,7 +390,7 @@ impl qobject::TimelineModel {
             }
             TimelineKind::Link => {
                 let url = if row.entry.target.is_empty() { &row.entry.title } else { &row.entry.target };
-                match crate::win::clipboard::write(url) {
+                match crate::sys::clipboard::write(url) {
                     Ok(()) => show_message(tr!("Timeline", "Copied link to clipboard.")),
                     Err(e) => show_message(e),
                 }
@@ -407,7 +407,7 @@ impl qobject::TimelineModel {
                     };
                 match std::fs::read(path)
                     .map_err(|e| e.to_string())
-                    .and_then(|bytes| crate::win::clipboard::write_image(mime, &bytes))
+                    .and_then(|bytes| crate::sys::clipboard::write_image(mime, &bytes))
                 {
                     Ok(()) => show_message(tr!("Timeline", "Copied to clipboard.")),
                     Err(_) => show_message(tr!("Timeline", "The photo couldn't be copied to the clipboard.")),

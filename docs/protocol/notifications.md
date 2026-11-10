@@ -3,8 +3,8 @@
 > Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
 > allowed until v1. License: CC BY 4.0.
 
-A phone mirrors its notifications to paired PCs, which show them (as toasts
-and in a feed) and can dismiss them, reply to them and run their actions,
+A phone mirrors its notifications to paired PCs, which show them (as desktop
+notifications and in a feed) and can dismiss them, reply to them and run their actions,
 and to paired phones and tablets that offer `notify.show`, which show them
 in their own notification shade and dismiss them there.
 
@@ -101,7 +101,7 @@ Point = {
 Senders coalesce rapid `notify.posted` updates for the same `key` to at most
 one update per second while always delivering the final update (`progress >= max`
 or `notify.removed`). Receivers pin live notifications above regular
-notifications in the feed and update both the feed card and the native toast in
+notifications in the feed and update both the feed card and the desktop notification in
 place without re-alerting.
 
 ### 2.3 Conversation notifications (`conversation`)
@@ -151,7 +151,7 @@ t = "notify.removed"    b = { key: text }
   `key` (an update, such as a new message in the same conversation). The PC
   alerts unless `silent` is set.
 - **`notify.removed`** removes it: the user or the app dismissed it on the
-  phone. The PC removes its toast too.
+  phone. The PC removes its desktop notification too.
 
 ## 4. Requests (PC → phone)
 

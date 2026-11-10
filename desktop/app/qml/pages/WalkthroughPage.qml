@@ -503,7 +503,7 @@ FocusScope {
                                 drawStyledHex(ctx, cx + 88, cy, 32, primarySoft, primaryHex, 2.0)
                                 drawPcGlyph(ctx, cx + 88, cy, primaryHex)
                             } else if (walkthrough.step === 1) {
-                                // Step 1: 3 interlocking security honeycomb cells (QUIC, DPAPI+Keystore, Local LAN)
+                                // Step 1: 3 interlocking security honeycomb cells (QUIC, keyring+Keystore, Local LAN)
                                 let triad = [
                                     { x: cx - 54, y: cy + 6 },
                                     { x: cx, y: cy - 10 },
@@ -1423,7 +1423,7 @@ FocusScope {
                             spacing: 12
                             visible: walkthrough.step === 5
 
-                            // 1. Windows notifications
+                            // 1. Desktop notifications
                             Rectangle {
                                 Layout.fillWidth: true
                                 implicitWidth: 520
@@ -1492,7 +1492,7 @@ FocusScope {
                                 }
                             }
 
-                            // 2. Start with Windows
+                            // 2. Start at sign-in
                             Rectangle {
                                 Layout.fillWidth: true
                                 implicitWidth: 520

@@ -1,5 +1,5 @@
-# iroh-mdns-address-lookup 0.6.1 from crates.io with one NectarLink patch
-# (see NECTARLINK.md). Used through [patch.crates-io] in the workspace root.
+# iroh-mdns-address-lookup 0.6.1 from crates.io with one G7 Link patch
+# (see PATCH.md). Used through [patch.crates-io] in the workspace root.
 [package]
 name = "iroh-mdns-address-lookup"
 version = "0.6.1"

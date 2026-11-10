@@ -200,10 +200,10 @@ const MAX_LINK_ADDRS: usize = 3;
 /// route leaves from (`preferred`), then private IPv4 (what a phone on the
 /// same network almost always uses), then other IPv4, then at most one IPv6.
 /// Among private ranges, home routers' `192.168/16` and `10/8` come before
-/// `172.16/12`, where Hyper-V, WSL and Docker put their adapters (#148). A
-/// tailnet address comes right after the preferred one: on a network that
-/// keeps devices apart it's the only one that works, and VMware's adapters
-/// use `192.168/16`, so they'd crowd it out otherwise.
+/// `172.16/12`, where Docker and other container runtimes put their bridges
+/// (#148). A tailnet address comes right after the preferred one: on a network
+/// that keeps devices apart it's the only one that works, and virtual machine
+/// adapters use `192.168/16`, so they'd crowd it out otherwise.
 /// Link-local IPv6 is useless without a scope ID. Discovery on the network
 /// finds the device even if none of these work.
 fn link_addrs(mut addrs: Vec<SocketAddr>, preferred: Option<IpAddr>) -> Vec<SocketAddr> {
@@ -617,7 +617,7 @@ mod tests {
         assert_eq!(picked, ["10.20.30.40:61845", "100.67.18.105:61845", "192.168.56.1:61845"]);
     }
 
-    /// #148: three Hyper-V adapters used to fill every slot, leaving out Wi-Fi.
+    /// #148: three virtual adapters used to fill every slot, leaving out Wi-Fi.
     #[test]
     fn pairing_links_keep_the_lan_address_beside_virtual_adapters() {
         let addrs: Vec<SocketAddr> =

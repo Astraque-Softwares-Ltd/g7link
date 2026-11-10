@@ -1806,7 +1806,7 @@ fn sample_storage_tree(root: &std::path::Path) {
         ("Documents/notes.txt", b"Shopping list:\n- Coffee beans\n- Oats\n- Sparkling water\n"),
         (
             "Documents/project-plan.md",
-            b"# G7 Link Storage\n\nBrowse phone files directly in File Explorer.\n",
+            b"# G7 Link Storage\n\nBrowse phone files directly in your file manager.\n",
         ),
         ("Download/guide.txt", b"Welcome to G7 Link Phone Storage.\nOpen any file to stream it on demand.\n"),
         (
@@ -5176,9 +5176,6 @@ fn describe_reason(reason: &UnsupportedReason) -> String {
     match reason {
         UnsupportedReason::DeviceKinds => "needs a phone paired with a PC".into(),
         UnsupportedReason::AndroidTooOld { needs } => format!("needs Android {needs} or newer"),
-        UnsupportedReason::WindowsTooOld { needs_build } => {
-            format!("needs Windows build {needs_build} or newer")
-        }
         UnsupportedReason::NotOnThisDevice => "not available on this phone".into(),
     }
 }
@@ -5555,7 +5552,6 @@ fn default_command_title(first_token: &str) -> String {
 }
 
 enum TaskTransport {
-    #[cfg(target_os = "linux")]
     DesktopDir(PathBuf),
     Standalone {
         node: Node,
@@ -5565,11 +5561,8 @@ enum TaskTransport {
 
 impl TaskTransport {
     async fn send(&self, device_query: Option<&str>, task: &TaskNotify) -> Result<()> {
-        // Only the desktop app's queue (Windows / Linux) picks the phone by name here.
-        #[cfg(not(target_os = "linux"))]
-        let _ = device_query;
+        // Only the desktop app's queue picks the phone by name here.
         match self {
-            #[cfg(target_os = "linux")]
             TaskTransport::DesktopDir(dir) => linux_watch::queue_desktop_task_notify(dir, device_query, task),
             TaskTransport::Standalone { node, targets } => {
                 let mut sent_any = false;
@@ -5591,25 +5584,20 @@ impl TaskTransport {
     async fn shutdown(self) {
         match self {
             TaskTransport::Standalone { node, .. } => node.shutdown().await,
-            #[cfg(target_os = "linux")]
             TaskTransport::DesktopDir(_) => {}
         }
     }
 }
 
 async fn connect_task_transport(cli: &Cli, device_query: Option<&str>) -> Result<TaskTransport> {
-    #[cfg(target_os = "linux")]
+    let desktop_dir = match &cli.data_dir {
+        Some(dir) => Some(dir.clone()),
+        None => dirs::data_local_dir().map(|d| d.join("G7Link")),
+    };
+    if let Some(dir) = desktop_dir
+        && linux_watch::is_desktop_running(&dir)
     {
-        let desktop_dir = match &cli.data_dir {
-            Some(dir) => Some(dir.clone()),
-            None => dirs::data_local_dir().map(|d| d.join("G7Link")),
-        };
-        #[cfg(target_os = "linux")]
-        if let Some(dir) = desktop_dir
-            && linux_watch::is_desktop_running(&dir)
-        {
-            return Ok(TaskTransport::DesktopDir(dir));
-        }
+        return Ok(TaskTransport::DesktopDir(dir));
     }
     let node = Box::pin(start_node(cli)).await?;
     let targets = match device_query {
@@ -5665,62 +5653,55 @@ async fn run_notify_when(
 
     let is_pid = target.len() == 1 && target[0].parse::<u32>().is_ok();
     if is_pid {
-        #[cfg(target_os = "linux")]
-        {
-            let pid: u32 = target[0].parse()?;
-            let watched = linux_watch::open_process(pid)?;
-            let title = title_override
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| watched.name.clone());
-            let started = watched.started_epoch_ms;
-            let initial_elapsed = (now_unix_ms().max(0) as u64).saturating_sub(started);
-            let task_id = format!("pid-{pid}-{started}");
-            let transport = connect_task_transport(cli, device).await?;
-            let running = TaskNotify {
-                id: task_id.clone(),
-                title: title.clone(),
-                active: true,
-                elapsed_ms: initial_elapsed,
-                exit_code: None,
-            };
-            transport.send(device, &running).await?;
-            let mut wait_handle = tokio::task::spawn_blocking(move || linux_watch::wait_process(watched));
-            let elapsed = tokio::select! {
-                res = &mut wait_handle => res.context("process watch task panicked")?,
-                _ = tokio::signal::ctrl_c() => {
-                    let dismissed = TaskNotify {
-                        id: task_id,
-                        title,
-                        active: false,
-                        elapsed_ms: 0,
-                        exit_code: None,
-                    };
-                    let _ = transport.send(device, &dismissed).await;
-                    transport.shutdown().await;
-                    return Ok(130);
-                }
-            };
-            let total_elapsed = elapsed.as_millis() as u64;
-            let finished = TaskNotify {
-                id: task_id,
-                title: title.clone(),
-                active: false,
-                elapsed_ms: total_elapsed,
-                exit_code: Some(0),
-            };
-            let took = TaskNotify::format_took(total_elapsed);
-            let send_res = transport.send(device, &finished).await;
-            transport.shutdown().await;
-            send_res?;
-            println!("{title} finished ({took}).");
-            return Ok(0);
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            bail!("watching a process by PID is only supported on Windows and Linux");
-        }
+        let pid: u32 = target[0].parse()?;
+        let watched = linux_watch::open_process(pid)?;
+        let title = title_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| watched.name.clone());
+        let started = watched.started_epoch_ms;
+        let initial_elapsed = (now_unix_ms().max(0) as u64).saturating_sub(started);
+        let task_id = format!("pid-{pid}-{started}");
+        let transport = connect_task_transport(cli, device).await?;
+        let running = TaskNotify {
+            id: task_id.clone(),
+            title: title.clone(),
+            active: true,
+            elapsed_ms: initial_elapsed,
+            exit_code: None,
+        };
+        transport.send(device, &running).await?;
+        let mut wait_handle = tokio::task::spawn_blocking(move || linux_watch::wait_process(watched));
+        let elapsed = tokio::select! {
+            res = &mut wait_handle => res.context("process watch task panicked")?,
+            _ = tokio::signal::ctrl_c() => {
+                let dismissed = TaskNotify {
+                    id: task_id,
+                    title,
+                    active: false,
+                    elapsed_ms: 0,
+                    exit_code: None,
+                };
+                let _ = transport.send(device, &dismissed).await;
+                transport.shutdown().await;
+                return Ok(130);
+            }
+        };
+        let total_elapsed = elapsed.as_millis() as u64;
+        let finished = TaskNotify {
+            id: task_id,
+            title: title.clone(),
+            active: false,
+            elapsed_ms: total_elapsed,
+            exit_code: Some(0),
+        };
+        let took = TaskNotify::format_took(total_elapsed);
+        let send_res = transport.send(device, &finished).await;
+        transport.shutdown().await;
+        send_res?;
+        println!("{title} finished ({took}).");
+        return Ok(0);
     }
 
     let title = title_override
@@ -5774,7 +5755,6 @@ async fn run_notify_when(
     Ok(exit_code)
 }
 
-#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod linux_watch {
     use std::{
@@ -6070,7 +6050,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn linux_watch_opens_self_and_rejects_invalid_pid() {
         let me = linux_watch::open_process(std::process::id()).unwrap();
@@ -6082,7 +6061,6 @@ mod tests {
         assert!(err.to_string().contains("process does not exist"), "unexpected error: {err}");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn linux_watch_waits_for_short_lived_child() {
         let mut child = std::process::Command::new("sh").args(["-c", "sleep 0.1"]).spawn().unwrap();
@@ -6096,7 +6074,6 @@ mod tests {
         assert!(wall < Duration::from_secs(5), "wait_process took too long: {wall:?}");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     #[allow(unsafe_code)]
     fn linux_desktop_dir_lock_detection_and_request_queueing() {

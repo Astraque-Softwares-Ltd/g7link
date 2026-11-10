@@ -473,7 +473,7 @@ object FeaturesGuideCatalog {
             evaluateFixAction = { null },
         ),
 
-        // 10. Storage in File Explorer
+        // 10. Storage in the file manager
         FeatureGuideEntry(
             id = "browse_phone_storage",
             area = FeatureArea.ClipboardFiles,

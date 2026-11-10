@@ -30,7 +30,7 @@ import java.nio.file.Files
 
 /**
  * Exposes this phone's shared storage (or user-picked SAF folders when full
- * storage access is not granted) to paired PCs for browsing in File Explorer
+ * storage access is not granted) to paired PCs for browsing in their file manager
  * (`docs/protocol/storage.md`). With full access, each SD card or USB drive
  * shows as a folder of its own at the root, named as Android names it.
  *

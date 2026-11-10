@@ -104,7 +104,7 @@ pub mod qobject {
         #[qproperty(i32, local_api_port)]
         /// Path to `<data_dir>/api-token.json` containing the bearer token.
         #[qproperty(QString, local_api_token_path)]
-        /// Copy received files (<= 10) to the Windows clipboard as CF_HDROP.
+        /// Copy received files (<= 10) to the clipboard as `text/uri-list`.
         #[qproperty(bool, clipboard_auto_copy_received_files)]
         /// Open a single file shared from the phone when it arrives.
         #[qproperty(bool, open_shared_files)]
@@ -123,7 +123,7 @@ pub mod qobject {
         #[qproperty(bool, g7_island_media)]
         /// Trigger G7 Island for phone notifications.
         #[qproperty(bool, g7_island_notifications)]
-        /// Stream PC system audio to the connected phone via WASAPI loopback.
+        /// Stream PC system audio to the connected phone (the default sink's monitor).
         #[qproperty(bool, stream_pc_audio_to_phone)]
         /// Share PC user folders (Downloads, Documents, Desktop, Pictures) with phones.
         #[qproperty(bool, share_pc_storage)]
@@ -491,7 +491,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().set_window_width(settings.window_width as i32);
         self.as_mut().set_window_height(settings.window_height as i32);
         self.as_mut().set_window_maximized(settings.window_maximized);
-        crate::win::tray::update_hotkeys(
+        crate::sys::tray::update_hotkeys(
             &settings.continuity_photo_hotkey,
             &settings.continuity_scan_hotkey,
             &settings.command_palette_hotkey,
@@ -646,7 +646,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
             .release();
         self.as_mut()
             .on_continuity_photo_hotkey_changed(|p| {
-                crate::win::tray::update_hotkeys(
+                crate::sys::tray::update_hotkeys(
                     &String::from(&p.continuity_photo_hotkey),
                     &String::from(&p.continuity_scan_hotkey),
                     &String::from(&p.command_palette_hotkey),
@@ -657,7 +657,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
             .release();
         self.as_mut()
             .on_continuity_scan_hotkey_changed(|p| {
-                crate::win::tray::update_hotkeys(
+                crate::sys::tray::update_hotkeys(
                     &String::from(&p.continuity_photo_hotkey),
                     &String::from(&p.continuity_scan_hotkey),
                     &String::from(&p.command_palette_hotkey),
@@ -668,7 +668,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
             .release();
         self.as_mut()
             .on_command_palette_hotkey_changed(|p| {
-                crate::win::tray::update_hotkeys(
+                crate::sys::tray::update_hotkeys(
                     &String::from(&p.continuity_photo_hotkey),
                     &String::from(&p.continuity_scan_hotkey),
                     &String::from(&p.command_palette_hotkey),
@@ -679,7 +679,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
             .release();
         self.as_mut()
             .on_shelf_hotkey_changed(|p| {
-                crate::win::tray::update_hotkeys(
+                crate::sys::tray::update_hotkeys(
                     &String::from(&p.continuity_photo_hotkey),
                     &String::from(&p.continuity_scan_hotkey),
                     &String::from(&p.command_palette_hotkey),

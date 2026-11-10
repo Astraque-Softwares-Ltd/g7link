@@ -465,7 +465,7 @@ class PcMedia(
             return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
         }
 
-        private fun isOpaqueHexOrAumid(s: String): Boolean {
+        private fun isOpaqueId(s: String): Boolean {
             val trimmed = s.trim()
             if (trimmed.isEmpty()) return true
             if (trimmed.startsWith("_crx_", ignoreCase = true)) return true
@@ -475,17 +475,17 @@ class PcMedia(
         }
 
         /**
-         * Strips raw Windows AUMID hex hashes (like `F0DC299D809B9700`), GUIDs,
-         * or package suffixes from application identifiers so Android notifications never show random hex strings.
+         * Strips paths, hex hashes and GUIDs from a PC player's application identifier
+         * so Android notifications never show random hex strings.
          */
         internal fun sanitizeAppName(raw: String?): String {
             val trimmed = raw?.trim().orEmpty()
             if (trimmed.isEmpty()) return ""
-            val head = trimmed.substringBefore('!').substringAfterLast('\\').substringAfterLast('/').trim()
+            val head = trimmed.substringAfterLast('/').trim()
             if (head.isEmpty()) return ""
             val lower = head.lowercase()
-            if (lower.startsWith("308046b0af4a39cb") || lower.contains("firefox")) return "Firefox"
-            if (isOpaqueHexOrAumid(head)) return ""
+            if (lower.contains("firefox")) return "Firefox"
+            if (isOpaqueId(head)) return ""
             return when {
                 lower.contains("chrome") -> "Chrome"
                 lower.contains("msedge") || lower == "edge" -> "Edge"
@@ -493,20 +493,18 @@ class PcMedia(
                 lower.contains("vivaldi") -> "Vivaldi"
                 lower.contains("opera") -> "Opera"
                 lower.contains("spotify") -> "Spotify"
-                else -> head.removeSuffix(".exe").removeSuffix(".EXE")
+                else -> head
             }
         }
 
         /**
-         * Strips raw Windows AUMID hex hashes or GUIDs that sometimes leak into `artist`
+         * Strips raw hex hashes or GUIDs that sometimes leak into `artist`
          * without corrupting legitimate artist names like `"AC/DC"`, `"Panic! At The Disco"`, or `"Chromeo"`.
          */
         internal fun sanitizeArtistLabel(raw: String?): String {
             val trimmed = raw?.trim().orEmpty()
             if (trimmed.isEmpty()) return ""
-            val lower = trimmed.lowercase()
-            if (lower.startsWith("308046b0af4a39cb")) return ""
-            if (isOpaqueHexOrAumid(trimmed)) return ""
+            if (isOpaqueId(trimmed)) return ""
             return trimmed
         }
 

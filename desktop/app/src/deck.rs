@@ -17,7 +17,7 @@ use g7link_core::{
     deck_icons, deck_kinds,
 };
 
-use crate::{core_host, links, state::Changes, win};
+use crate::{core_host, links, state::Changes, sys};
 
 const FILE_NAME: &str = "deck.json";
 
@@ -42,10 +42,10 @@ fn file_mtime(path: &Path) -> Option<SystemTime> {
 }
 
 fn sample_live_state() -> DeckState {
-    let (volume, muted) = win::audio::speaker_state().unwrap_or((50, false));
-    let mic_muted = win::audio::mic_muted();
+    let (volume, muted) = sys::audio::speaker_state().unwrap_or((50, false));
+    let mic_muted = sys::audio::mic_muted();
     let playing = MEDIA_PLAYING.load(Ordering::Relaxed);
-    let mut output_devices = win::audio::output_devices();
+    let mut output_devices = sys::audio::output_devices();
     if crate::pc_audio_stream::is_enabled() {
         output_devices.push(g7link_core::AudioOutputDevice {
             id: "g7link:phone_speaker".to_owned(),
@@ -122,9 +122,9 @@ pub fn init(data_dir: &Path) {
             let _ = node.set_deck_layout(wire_layout).await;
             let _ = node.set_deck_state(sampled).await;
         }
-        // Windows reports audio changes as they happen; the poll only
+        // The sound server reports audio changes as they happen; the poll only
         // picks up edits to deck.json while the Deck page is open.
-        win::audio::watch(|| core_host::spawn(refresh_live_state()));
+        sys::audio::watch(|| core_host::spawn(refresh_live_state()));
         let mut interval = tokio::time::interval(Duration::from_millis(1500));
         loop {
             interval.tick().await;
@@ -187,7 +187,7 @@ pub async fn refresh_live_state() {
     }
 }
 
-/// Called by `crate::media::local_changed` when the PC's SMTC media sessions change.
+/// Called by `crate::media::local_changed` when the PC's media sessions change.
 pub fn on_local_media_changed(players: &[g7link_core::MediaPlayer]) {
     HAS_MEDIA_SESSION.store(!players.is_empty(), Ordering::Relaxed);
     let playing = players.iter().any(|p| p.playing);
@@ -257,10 +257,10 @@ pub fn handle_set_audio(peer: &DeviceId, volume: Option<u8>, muted: Option<bool>
             core_host::host().hub.changed(Changes::PREFS);
             return Ok(());
         }
-        win::audio::set_speaker_volume(level)?;
+        sys::audio::set_speaker_volume(level)?;
     }
     if let Some(m) = muted {
-        win::audio::set_speaker_mute(m)?;
+        sys::audio::set_speaker_mute(m)?;
     }
     core_host::spawn(async {
         refresh_live_state().await;
@@ -290,7 +290,7 @@ pub fn execute_tile(tile_id: &str) -> Result<(), String> {
 fn execute_action(action: &DeckAction) -> Result<(), String> {
     match action {
         DeckAction::MediaPlayPause => {
-            win::input::press_key("play_pause", &[]);
+            sys::input::press_key("play_pause", &[]);
             if !HAS_MEDIA_SESSION.load(Ordering::Relaxed) {
                 let prev = MEDIA_PLAYING.load(Ordering::Relaxed);
                 MEDIA_PLAYING.store(!prev, Ordering::Relaxed);
@@ -298,39 +298,39 @@ fn execute_action(action: &DeckAction) -> Result<(), String> {
             Ok(())
         }
         DeckAction::MediaNext => {
-            win::input::press_key("next_track", &[]);
+            sys::input::press_key("next_track", &[]);
             Ok(())
         }
         DeckAction::MediaPrevious => {
-            win::input::press_key("prev_track", &[]);
+            sys::input::press_key("prev_track", &[]);
             Ok(())
         }
-        DeckAction::VolumeUp => win::audio::speaker_volume_up().map(|_| ()),
-        DeckAction::VolumeDown => win::audio::speaker_volume_down().map(|_| ()),
-        DeckAction::VolumeMute => win::audio::toggle_speaker_mute().map(|_| ()),
-        DeckAction::MicMute => win::audio::toggle_mic_mute().map(|_| ()),
-        DeckAction::LockPc => win::shell::lock(),
+        DeckAction::VolumeUp => sys::audio::speaker_volume_up().map(|_| ()),
+        DeckAction::VolumeDown => sys::audio::speaker_volume_down().map(|_| ()),
+        DeckAction::VolumeMute => sys::audio::toggle_speaker_mute().map(|_| ()),
+        DeckAction::MicMute => sys::audio::toggle_mic_mute().map(|_| ()),
+        DeckAction::LockPc => sys::shell::lock(),
         DeckAction::ShowDesktop => {
-            win::input::press_key("d", &[KeyMod::Win]);
+            sys::input::press_key("d", &[KeyMod::Win]);
             Ok(())
         }
         DeckAction::SwitchWindow => {
-            win::input::press_key("tab", &[KeyMod::Alt]);
+            sys::input::press_key("tab", &[KeyMod::Alt]);
             Ok(())
         }
         DeckAction::Screenshot => {
             {
-                let _ = win::shell::take_screenshot();
+                let _ = sys::shell::take_screenshot();
             }
             Ok(())
         }
         DeckAction::Shortcut { key, mods } => {
-            win::input::press_key(key, mods);
+            sys::input::press_key(key, mods);
             Ok(())
         }
         DeckAction::OpenUrl { url } => links::open_here(url),
         DeckAction::TypeText { text } => {
-            win::input::type_text(text);
+            sys::input::type_text(text);
             Ok(())
         }
         DeckAction::LaunchApp { path } => {
@@ -339,13 +339,13 @@ fn execute_action(action: &DeckAction) -> Result<(), String> {
                 .strip_prefix("~/")
                 .and_then(|rest| dirs::home_dir().map(|home| home.join(rest)))
                 .unwrap_or_else(|| PathBuf::from(path.trim()));
-            win::shell::launch_app(&expanded)
+            sys::shell::launch_app(&expanded)
         }
         DeckAction::RunCommand { command } => {
             if let Some(obs_cmd) = command.trim().strip_prefix("obs:") {
                 send_obs_command(obs_cmd.trim())
             } else {
-                win::shell::run_command(command)
+                sys::shell::run_command(command)
             }
         }
     }
@@ -498,7 +498,7 @@ pub fn build_action(
         deck_kinds::LAUNCH_APP => {
             let unquoted = p.trim_matches('"');
             if unquoted.is_empty() {
-                return Err(tr!("Deck", "Choose an application (.exe or .lnk) on this PC."));
+                return Err(tr!("Deck", "Choose an application on this PC."));
             }
             DeckAction::LaunchApp { path: unquoted.to_owned() }
         }
@@ -613,11 +613,8 @@ mod tests {
         let url = build_action("open_url", "example.com/docs", false, false, false, false).unwrap();
         assert_eq!(url, DeckAction::OpenUrl { url: "https://example.com/docs".into() });
 
-        let app =
-            build_action("launch_app", "\"C:\\Windows\\System32\\calc.exe\"", false, false, false, false)
-                .unwrap();
-        assert_eq!(app, DeckAction::LaunchApp { path: "C:\\Windows\\System32\\calc.exe".into() });
-        assert!(build_action("launch_app", "C:\\script.bat", false, false, false, false).is_err());
+        let quoted = build_action("launch_app", "\"/usr/bin/vlc\"", false, false, false, false).unwrap();
+        assert_eq!(quoted, DeckAction::LaunchApp { path: "/usr/bin/vlc".into() });
 
         let linux_bin = build_action("launch_app", "/usr/bin/firefox", false, false, false, false).unwrap();
         assert_eq!(linux_bin, DeckAction::LaunchApp { path: "/usr/bin/firefox".into() });

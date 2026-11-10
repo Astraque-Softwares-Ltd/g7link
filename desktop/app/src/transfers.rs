@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! File transfers on this PC (docs/protocol/files.md): sending what the
-//! user picks or drops, opening what arrived, and a Windows notification
+//! user picks or drops, opening what arrived, and a desktop notification
 //! when files from a phone are saved.
 
 use crate::i18n::tr;
@@ -11,7 +11,7 @@ use g7link_core::{DeviceId, Direction, Error, NodeEvent, Transfer, TransferState
 use crate::{
     bridge::app::{describe, show_message},
     core_host,
-    win::toast::{self, Toast},
+    sys::toast::{self, Toast},
 };
 
 /// The toast "device" for received-file notifications; their key is the
@@ -215,29 +215,29 @@ pub fn resume(id: &str) {
     }
 }
 
-/// Opens a received file with its app (or a folder in File Explorer).
+/// Opens a received file with its app (or a folder in the file manager).
 pub fn open(path: &Path) {
     if path.to_str().is_some_and(|s| s.starts_with("req:")) {
         crate::bridge::app::request_activation();
         return;
     }
-    if let Err(e) = crate::win::shell::open_file(path) {
+    if let Err(e) = crate::sys::shell::open_file(path) {
         tracing::warn!(error = %e, "can't open a received file");
     }
 }
 
-/// Shows a received file or folder in File Explorer, selected.
+/// Shows a received file or folder in the file manager, selected.
 pub fn show_in_folder(path: &Path) {
     if path.to_str().is_some_and(|s| s.starts_with("req:")) {
         crate::bridge::app::request_activation();
         return;
     }
-    if let Err(e) = crate::win::shell::select_in_explorer(path) {
+    if let Err(e) = crate::sys::shell::select_in_explorer(path) {
         tracing::warn!(error = %e, "can't show a received file");
     }
 }
 
-/// A Windows notification when files from a phone or LocalSend peer are requested or saved.
+/// A desktop notification when files from a phone or LocalSend peer are requested or saved.
 pub fn on_event(event: &NodeEvent) {
     let NodeEvent::Transfer(t) = event else { return };
     // Photos the user asked to open or copy say nothing about being saved.

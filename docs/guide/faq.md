@@ -8,7 +8,7 @@ No. G7 Link has no user accounts, no sign-in screens, and no cloud servers. Each
 
 ### Is G7 Link free and open source?
 
-Yes. The Windows and Android applications and the CLI are licensed under [GPL-3.0-or-later](../../LICENSES/GPL-3.0-or-later.txt) (with an app-store distribution exception), the shared Rust core crates are licensed under [MPL-2.0](../../LICENSES/MPL-2.0.txt), and the protocol specifications and documentation are licensed under [CC BY 4.0](../../LICENSES/CC-BY-4.0.txt). There are no paid tiers, subscriptions, or advertisements.
+Yes. The Linux and Android applications and the CLI are licensed under [GPL-3.0-or-later](../../LICENSES/GPL-3.0-or-later.txt) (with an app-store distribution exception), the shared Rust core crates are licensed under [MPL-2.0](../../LICENSES/MPL-2.0.txt), and the protocol specifications and documentation are licensed under [CC BY 4.0](../../LICENSES/CC-BY-4.0.txt). There are no paid tiers, subscriptions, or advertisements.
 
 ### Does G7 Link only work with Samsung or Pixel phones?
 
@@ -64,21 +64,21 @@ Yes. Every Android permission is optional, and G7 Link's capability matrix adapt
 
 When connected and idle in the background, G7 Link maintains a single lightweight QUIC connection with event-driven wakeups and zero polling loops, using less than 1 percent battery per hour in continuous connected soak tests. High-power features such as screen mirroring (`mirror`) and camera streaming (**Phone as webcam**) use hardware video encoders only while actively streaming and stop immediately when you close the window.
 
-### Does G7 Link work on Linux or Windows 7?
+### Which Linux distributions does G7 Link support?
 
-Linux, yes, from 0.1.5: Ubuntu 24.04 or newer, Debian 13, Fedora 40 or newer and other distributions from 2024 on. See [Getting Started](getting-started.md) and what's different in [Known Limitations](known-limitations.md#on-linux). Windows needs Windows 10 version 2004 or newer, so Windows 7 and 8 aren't supported.
+Ubuntu 24.04 or newer, Debian 13, Fedora 40 or newer, and other 64-bit distributions from 2024 on (glibc 2.39 or newer), on X11 or Wayland. See [Getting Started](getting-started.md), and [Known Limitations](known-limitations.md#linux-desktop-differences) for what depends on your desktop.
 
-### How much RAM and CPU does the Windows app use in the background?
+### Does the PC app keep its window in memory when closed?
 
-When started minimized in the Windows system tray, G7 Link uses approximately **27 MB** of private commit memory (~5 to 10 MB active working set) and **0.0 percent** idle CPU. When you close the main window (`Stay in system tray`), G7 Link unloads the QML window tree and image caches to keep background memory usage minimal while staying ready to pop up notifications or open the `Shelf` and `Command Palette` in under 50 milliseconds.
+No. When you close the main window with **Stay in system tray** on, G7 Link unloads the window. It stays in the system tray, ready to show notifications or open the `Shelf` and `Command Palette`.
 
 ## Privacy and Data Management
 
 ### Does G7 Link send my clipboard when I copy a password from my password manager?
 
-No. Password managers on both Windows (such as 1Password, Bitwarden, and KeePassXC) and Android 13+ mark copied passwords with system privacy flags (`ExcludeClipboardContentFromMonitorProcessing` on Windows and `ClipDescription.EXTRA_IS_SENSITIVE` on Android). G7 Link checks those flags before reading or sending the clipboard and skips any sensitive item. One-time verification codes (OTPs) are also excluded from clipboard history and `Timeline`.
+No. Password managers mark copied passwords as private: on Linux with the `x-kde-passwordManagerHint` clipboard type (KeePassXC sets it, for example), and on Android 13+ with `ClipDescription.EXTRA_IS_SENSITIVE`. G7 Link checks those flags before reading or sending the clipboard and skips any sensitive item. One-time verification codes (OTPs) are also excluded from clipboard history and `Timeline`.
 
 ### How do I delete my local history or unpair a device?
 
-- To wipe your local history and caches while keeping your paired devices and settings, open **Settings › Storage & Privacy** on Windows (or **Settings › Features & Data › Data & storage** on Android) and click **Clear everything...** (or click **Clear** next to any individual category such as **Clipboard history**, **Notification history**, **Cross-device timeline**, **Cached messages**, or **Photo thumbnails**).
+- To wipe your local history and caches while keeping your paired devices and settings, open **Settings › Storage & Privacy** on the PC (or **Settings › Features & Data › Data & storage** on Android) and click **Clear everything...** (or click **Clear** next to any individual category such as **Clipboard history**, **Notification history**, **Cross-device timeline**, **Cached messages**, or **Photo thumbnails**).
 - To unpair a device, open **Settings › Devices** on either app and click **Unpair**. Both devices remove each other from their trust store and drop any queued items for that peer.

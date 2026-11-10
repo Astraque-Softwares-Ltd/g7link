@@ -16,9 +16,9 @@ This is a review by the project, not an independent audit. It says what the code
 ### What isn't protected
 
 - **After turning off Connect over mobile data, one idle relay connection stays until the next restart.** Nothing is published, looked up or relayed by then, and non-LAN sessions are closed. iroh 1.3 only lets go of its home relay when the endpoint closes.
-- **On Linux the device key and clipboard history aren't sealed.** `identity.key` is stored with `0600` permissions and no platform protection, and the core logs that it is. Anything running as your user can read it, and so can anyone who reads the disk without full-disk encryption. A Secret Service option is under review for after 0.1.5 ([#189](https://github.com/thtbee/nectarlink/pull/189)).
-- **Windows DPAPI and the macOS Keychain protect against other accounts and offline disks, not against programs running as you.** The same goes for anything else a program running as you can read.
-- **Release binaries aren't code-signed (Authenticode).** Trust in downloads rests on HTTPS to GitHub and the published checksums. Android APKs are signed, and updates must carry the same signature.
+- **Without a desktop keyring, the device key and clipboard history aren't sealed.** When no Secret Service answers, or it's locked and holds no G7 Link key yet, `identity.key` is stored with `0600` permissions and no other protection, and the core logs that it is. Anything running as your user can read it, and so can anyone who reads the disk without full-disk encryption.
+- **The keyring protects against other accounts and offline disks, not against programs running as you.** While it's unlocked, any program in your session can ask the Secret Service for the same key. The same goes for anything else a program running as you can read.
+- **Desktop packages aren't signed.** The `.deb`, `.rpm`, AppImage and tarball carry no GPG signature, so trust in downloads rests on HTTPS to GitHub and the published checksums. Android APKs are signed, and updates must carry the same signature.
 - **LocalSend is an open LAN protocol.** Any device on the network can offer a file. It's off by default, and nothing is written until you accept.
 - **Elevated gives G7 Link shell-level control of the phone.** That's what it's for. Its limits are in Surface 5.
 
@@ -39,7 +39,7 @@ This is a review by the project, not an independent audit. It says what the code
 5. **ADB serials.** `is_serial_allowed` rejects malformed serials in everything that talks to `adb`, and `G7LINK_ADB_ONLY_SERIAL` limits a build to one device for testing.
 6. **Frame cap.** `read_frame` rejects a length over 1 MiB before allocating.
 7. **Per-device toggles.** See Surface 8 and the security model.
-8. **Sealed data at rest.** `identity.key`, the clipboard vault (`clipboard_history.enc`, `clipboard_images/*.enc`) and queued clips, images, links and task alerts in `send_queue` (`QueueSeal`, including their titles) go through the platform `KeyProtector`: DPAPI on Windows, the login Keychain (AES-256-GCM) on macOS, Android Keystore AES-256-GCM on Android, and none on Linux (see above).
+8. **Sealed data at rest.** `identity.key`, the clipboard vault (`clipboard_history.enc`, `clipboard_images/*.enc`) and queued clips, images, links and task alerts in `send_queue` (`QueueSeal`, including their titles) go through the platform `KeyProtector`. On the PC that's AES-256-GCM under a random key held by the desktop's Secret Service (GNOME Keyring, KWallet and others, over D-Bus), and none when there's no keyring (see above). On Android it's Android Keystore AES-256-GCM. A sealed device key is never read as a plain one: if the keyring can't be reached, the app stops and asks you to unlock it.
 
 **Reported and fixed:** a private report pointed out that queued clips were plain text in SQLite and survived clearing, and that turning off Connect over mobile data left internet services running until restart. Both were real. Queued content is now sealed, older rows are sealed at startup, `secure_delete` is on, clearing removes it, and it's removed at its deadline. The switch now applies while running, with the one limit above.
 
@@ -57,8 +57,8 @@ This is a review by the project, not an independent audit. It says what the code
 2. **Size caps.** `MAX_HEADER_BYTES` is 64 KiB, `MAX_JSON_BODY_BYTES` is 4 MiB, and an offer holds at most `files::MAX_FILES` (5,000) files.
 3. **Consent first.** An offer waits for you to accept, for up to `APPROVAL_TIMEOUT` (60 seconds). No file bytes are written before that.
 4. **Random session and per-file tokens** (`random_token`), checked before an upload is read.
-5. **File names.** `safe_file_name` keeps only the last path component and replaces control characters. `storable_name` then removes what Windows would treat specially: `<>:"|?*` (a `:` would otherwise be a drive prefix or an alternate data stream), trailing dots and spaces, and reserved device names such as `CON` and `COM1`. Folder paths go through the same steps, segment by segment. Both apply to transfers from paired devices too.
-6. **Staged writes.** Bytes go to a `.part` file under `<data_dir>/incoming/localsend/<session_id>/` and move to Downloads when complete. `unique_path` never overwrites an existing file. On Windows, received files are marked as coming from elsewhere (`mark_from_elsewhere`), so SmartScreen and Protected View apply.
+5. **File names.** `safe_file_name` keeps only the last path component and replaces control characters. `storable_name` then replaces `<>:"|?*`, trims trailing dots and spaces, and prefixes reserved device names such as `CON` and `COM1`, so names stay portable. Folder paths go through the same steps, segment by segment. Both apply to transfers from paired devices too.
+6. **Staged writes.** Bytes go to a `.part` file under `<data_dir>/incoming/localsend/<session_id>/` and move to Downloads when complete. `unique_path` never overwrites an existing file.
 
 ---
 
@@ -82,15 +82,14 @@ Anything running as your user can read `api-token.json`, so this API doesn't sep
 
 ## Surface 4: Single instance and launch requests
 
-**Code:** `desktop/app/src/launch.rs`, `desktop/app/src/send_to.rs`, `desktop/app/src/win/single_instance.rs`, `desktop/app/src/linux/single_instance.rs`
+**Code:** `desktop/app/src/launch.rs`, `desktop/app/src/send_to.rs`, `desktop/app/src/linux/single_instance.rs`
 
 **Threats:** another user signalling the app or writing requests, and malformed request files.
 
 **Controls:**
 
-1. **Windows.** The mutex and wake event are `Local\G7Link.Desktop.<hash>` and `Local\G7Link.Desktop.Activate.<hash>`: per logon session and per data folder.
-2. **Linux.** `flock` on `<data_dir>/instance.lock`, and a Unix socket at `<data_dir>/instance.sock`, inside your private data folder.
-3. **Requests are files in the data folder,** which only you can write to. A malformed one is removed and ignored.
+1. **One instance per data folder.** `flock` on `<data_dir>/instance.lock`, and a Unix socket at `<data_dir>/instance.sock`, inside your private data folder.
+2. **Requests are files in the data folder,** which only you can write to. A malformed one is removed and ignored.
 
 ---
 
@@ -116,17 +115,17 @@ Anything running as your user can read `api-token.json`, so this API doesn't sep
 
 ## Surface 6: Virtual camera shared memory
 
-**Code:** `desktop/vcam/src/{shm,source,gpu}.rs`, `desktop/app/src/webcam.rs`, `desktop/app/src/linux/vcam.rs`
+**Code:** `desktop/vcam/src/shm.rs`, `desktop/app/src/webcam.rs`, `desktop/app/src/linux/vcam.rs`
 
-**Threats:** the camera's media source runs inside Windows' Frame Server, so bad frame headers could hurt that process, and torn reads could show half a frame.
+**Threats:** another local user writing frames into the camera, a planted file or symlink in place of the mapping, bad frame headers, and torn reads that show half a frame.
 
 **Controls:**
 
-1. **Who can open it.** The mapping is `Global\G7LinkVcamFrame_v2`, created by the service, because the Frame Server runs in another session. Its security descriptor (`GLOBAL_SDDL`) gives the system, LocalService and administrators full access, and signed-in interactive users read and write. A signed-in user on the same PC can therefore write frames to the camera. `Local\` names are used only when the media source runs in-process.
-2. **Bounds.** Frames are limited to `MAX_WIDTH` × `MAX_HEIGHT` (3840 × 2160) and `MAX_FRAME_BYTES`. Control messages are at most 256 bytes.
+1. **Who can open it.** The mapping is a file named `g7link_shm_<uid>_vcam_frame_v2`, in `$XDG_RUNTIME_DIR` when that folder is yours and private, otherwise in `/dev/shm`. It's created with `0600` permissions and `O_NOFOLLOW`, and refused unless it's a regular file you own.
+2. **Bounds.** Frames are limited to `MAX_WIDTH` × `MAX_HEIGHT` (3840 × 2160) and `MAX_FRAME_BYTES`.
 3. **No torn reads.** Readers check a sequence counter around each copy and discard the read if it changed.
 
-**Linux:** the camera is a `v4l2loopback` device. Any local program allowed to open that device can read or write it, as with any V4L2 camera.
+**Limit:** the camera itself is a `v4l2loopback` device. Any local program allowed to open that device can read or write it, as with any V4L2 camera.
 
 ---
 
@@ -140,7 +139,7 @@ Anything running as your user can read `api-token.json`, so this API doesn't sep
 
 1. **Path validation.** `is_valid_storage_path` accepts relative paths only: at most 1,024 bytes and 32 segments, each at most 255 bytes, with no leading `/`, `.` or `..` segments, `\`, or control characters.
 2. **Canonical paths on the phone.** `PhoneStorage` resolves paths canonically, so symlinks can't leave the storage root. It never exposes `/data`, `Android/data`, `Android/obb` or G7 Link's own folders.
-3. **Names on the PC.** A phone entry whose name Windows couldn't store safely isn't surfaced as it is (`storable_name` in `storage.rs`).
+3. **Names on the PC.** The mount doesn't list a phone entry whose name is empty, `.`, `..`, or contains `/`.
 4. **Linux mount.** The FUSE mount at `~/G7Link/<Phone name>` uses `nosuid,nodev,default_permissions` and only your user can reach it.
 5. **Toggles.** Storage needs the `storage` toggle (off by default). Over a relay it also needs `remote_files` (off by default).
 6. **Photos.** A paired PC with the `photos` toggle on can move photos to the phone's trash (`photos.delete`), without a prompt on the phone, when the phone has All files access. It can't delete anything for good.
@@ -168,16 +167,16 @@ Anything running as your user can read `api-token.json`, so this API doesn't sep
 
 ## Surface 9: Updates
 
-**Code:** `desktop/app/src/{updater,feed,update_relay}.rs`, `desktop/installer/g7link.nsi`, `android/.../update/AppUpdater.kt`. Details are in the [security model](technical/security-model.md#automatic-updates-and-release-verification).
+**Code:** `desktop/app/src/{updater,feed,update_relay}.rs`, `android/.../update/AppUpdater.kt`. Details are in the [security model](technical/security-model.md#automatic-updates-and-release-verification).
 
-**Threats:** a tampered download, a local user abusing the SYSTEM update task, or a paired device pushing a build.
+**Threats:** a tampered download, a local program swapping the file before a root install, or a paired device pushing a build.
 
 **Controls:**
 
 1. **HTTPS, size caps and SHA-256.** A feed can only point at this repository's own release files, each with a hash that the download must match.
 2. **Android** installs only over the same signature.
-3. **The Windows task takes no input.** It fetches and checks everything itself, and copies the installer into a folder only SYSTEM and administrators can write before re-checking it. The worst a user can do by starting it is install the newest official build early.
+3. **Root installs check their own copy.** A `.deb`, `.rpm` or `/opt` tarball update runs through `pkexec`, which asks for the administrator password. The root step copies the file into `/var/cache/g7link-update` (owned by root, `0700`) and checks its SHA-256 again there before installing it.
 4. **Hints between devices never name a file or hash.** They only start a check of the receiver's own feed.
-5. **Linux** updates only with the same kind of package it was installed from.
+5. **Same kind of install.** An AppImage, `.deb`, `.rpm` or tarball install updates only with its own kind of file.
 
-**Limit:** see "What isn't protected": Windows binaries aren't signed.
+**Limit:** see "What isn't protected": desktop packages aren't signed.

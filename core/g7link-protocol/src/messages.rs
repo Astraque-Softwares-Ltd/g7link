@@ -1818,7 +1818,7 @@ pub mod webcam {
     pub const VIRTUAL: &str = "camera.virtual";
     /// Receiver can decode HEVC webcam streams. Absence means H.264 only.
     pub const HEVC: &str = "camera.virtual.hevc";
-    /// Offered by PCs where the Windows virtual camera COM add-on is registered.
+    /// Offered by PCs whose virtual camera device (`v4l2loopback`) is available.
     pub const ADDON_VCAM: &str = "addon.vcam";
     pub const SERVICE: &str = "webcam";
     pub const OP_VIDEO: &str = "video";
@@ -3272,6 +3272,7 @@ pub enum KeyMod {
     Ctrl,
     Alt,
     Shift,
+    /// The Super (logo) key; `"win"` on the wire.
     Win,
 }
 
@@ -3352,7 +3353,7 @@ pub mod remote_keys {
             return mods.is_empty();
         }
         // Single ASCII lowercase letter or digit is valid when combined with at
-        // least one modifier (e.g. Ctrl+C, Win+L, Alt+1).
+        // least one modifier (e.g. Ctrl+C, Super+L, Alt+1).
         if let [b] = key.as_bytes() {
             return !mods.is_empty() && (b.is_ascii_lowercase() || b.is_ascii_digit());
         }
@@ -4142,7 +4143,7 @@ pub mod storage {
     pub const READ: &str = "storage.read";
     /// Offered by phones that create folders, write/upload files, rename and delete entries.
     pub const WRITE: &str = "storage.write";
-    /// Offered by PCs that mount phone storage in File Explorer.
+    /// Offered by PCs that mount phone storage in their file manager.
     pub const MOUNT: &str = "storage.mount";
     pub const SERVICE: &str = "storage";
     pub const OP_READ: &str = "read";
@@ -4576,12 +4577,12 @@ mod tests {
         assert_eq!(info().sanitized(), info(), "ordinary info is unchanged");
 
         let mut dev = info();
-        // A right-to-left override would show "Pixel\u{202E}gnp.exe" as "Pixelexe.png".
-        dev.name = " Pixel\u{202E}gnp.exe\u{0007}\n ".into();
+        // A right-to-left override would show "Pixel\u{202E}gnp.sh" as "Pixelhs.png".
+        dev.name = " Pixel\u{202E}gnp.sh\u{0007}\n ".into();
         dev.os_ver = "1".repeat(100);
         dev.model = Some("\u{2066}\u{2069}".into());
         let clean = dev.sanitized();
-        assert_eq!(clean.name, "Pixelgnp.exe");
+        assert_eq!(clean.name, "Pixelgnp.sh");
         assert_eq!(clean.os_ver.chars().count(), MAX_DEVICE_OS_CHARS);
         assert_eq!(clean.model, None);
 
@@ -5561,7 +5562,6 @@ mod tests {
             "DCIM/../secret",
             "DCIM/.",
             "DCIM\\Camera",
-            "C:\\Windows",
             "bad\0name",
             "bad\nname",
         ] {
@@ -5623,7 +5623,7 @@ mod tests {
 
         // A file offer: a plain name and a size; it goes over the wire as is.
         let file = WatchFile { name: "Holiday.mp4".into(), size: 1_000, position: 61_500 };
-        let with_file = MediaWatch { player: "vlc.exe".into(), title: None, file: Some(file.clone()) };
+        let with_file = MediaWatch { player: "vlc".into(), title: None, file: Some(file.clone()) };
         assert!(with_file.is_valid());
         let env = Envelope::new(types::MEDIA_WATCH, &with_file).unwrap();
         assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<MediaWatch>().unwrap(), with_file);

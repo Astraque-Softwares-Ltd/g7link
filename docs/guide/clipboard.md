@@ -19,7 +19,7 @@ G7 Link shares your clipboard between your PC and your Android phone. Copy plain
 
 ### Copying on Your PC to Paste on Your Phone
 
-1. On your PC, copy any plain text, formatted HTML text, or image (`Ctrl+C`, right-click **Copy**, or `Win+Shift+S` screen snip).
+1. On your PC, copy any plain text, formatted HTML text, or image (`Ctrl+C`, right-click **Copy**, or a screenshot tool's copy button).
 2. With **Sync clipboard to phone** turned on in **Settings › General** (the default), G7 Link sends the copied content to your connected phone automatically in the background.
 3. On your phone, tap **Paste** in any text field or image editor.
 4. You can also send your current PC clipboard manually at any time by clicking **Send clipboard** on the PC Home screen or running **Send clipboard to phone** in the `Command Palette` (`Ctrl+Alt+Space`).
@@ -37,10 +37,10 @@ Android 10 and newer block background apps from reading the system clipboard unl
 
 ### Copying and Pasting Files (`Ctrl+C` / `Ctrl+V`)
 
-G7 Link bridges Windows file clipboard drops (`CF_HDROP`) with file transfers:
+G7 Link bridges copied files (`text/uri-list` on the clipboard) with file transfers:
 
-- **PC to phone**: If you copy one or more files in Windows File Explorer (`Ctrl+C`) and click **Send clipboard** in G7 Link, those files are transferred straight to your phone.
-- **Phone to PC**: When **Copy received files** is enabled in **Settings › General** (the default), small files and photos you send from your phone to your PC are saved to `Downloads\G7Link` and automatically placed onto your Windows clipboard as file drops so you can press `Ctrl+V` straight into an email, chat window, document, or folder.
+- **PC to phone**: If you copy one or more files in your file manager (`Ctrl+C`) and click **Send clipboard** in G7 Link, those files are transferred straight to your phone.
+- **Phone to PC**: When **Copy received files** is enabled in **Settings › General** (the default), small files and photos you send from your phone to your PC are saved to `~/Downloads/G7Link` and automatically placed onto your clipboard as copied files so you can press `Ctrl+V` straight into an email, chat window, document, or folder.
 
 ### Smart Context Chips
 
@@ -58,7 +58,7 @@ You can turn these suggestions off at any time in **Settings › General › Sug
 
 ### Using Clipboard History
 
-Both the Windows app and the Android app keep an optional encrypted local **Clipboard history** of the last 50 text and image clips shared between your devices:
+Both the PC app and the Android app keep an optional encrypted local **Clipboard history** of the last 50 text and image clips shared between your devices:
 
 1. Open **Clipboard history** from the Home screen (or `Timeline` / `Shelf` on PC).
 2. Search clips by text, filter by source device, click **Copy** to place any earlier clip back on your active clipboard, or click **Pin** so an important snippet is never pushed out when new clips arrive.
@@ -66,11 +66,11 @@ Both the Windows app and the Android app keep an optional encrypted local **Clip
 
 ## What the Options Do
 
-### On Windows
+### On the PC
 
 - **Sync clipboard to phone** (`Settings › General`, default: **On**): Automatically sends text and images copied on the PC to connected phones.
 - **Copy one-time codes** (`Settings › General`, default: **Off**): Automatically copies verification codes detected in phone notifications and SMS messages to the PC clipboard.
-- **Copy received files** (`Settings › General`, default: **On**): Places newly received files onto the Windows file clipboard (`CF_HDROP`) so they are ready to paste with `Ctrl+V`.
+- **Copy received files** (`Settings › General`, default: **On**): Places newly received files onto the clipboard as copied files so they are ready to paste with `Ctrl+V`.
 - **Suggest clipboard actions** (`Settings › General`, default: **On**): Shows context chips (**Open**, **Open in Maps**, **Call**, **Track**, **Email**) when matching text arrives.
 - **Clipboard history** (`Settings › Storage & Privacy`, default: **On**): Stores up to 50 synced clips (kept for 7 days, up to 128 MB) in an encrypted local file, with a one-click **Clear** button.
 
@@ -83,12 +83,13 @@ Both the Windows app and the Android app keep an optional encrypted local **Clip
 ## Data and Privacy
 
 - **Automatic exclusion of passwords and one-time codes**:
-  - Any clipboard item marked private or sensitive by a password manager (`ExcludeClipboardContentFromMonitorProcessing` / `CloudClipboard` format flags on Windows, or `ClipDescription.EXTRA_IS_SENSITIVE` on Android 13+) is ignored and **never** transmitted or saved.
+  - Any clipboard item marked private or sensitive by a password manager (`x-kde-passwordManagerHint` on Linux, or `ClipDescription.EXTRA_IS_SENSITIVE` on Android 13+) is ignored and **never** transmitted or saved.
   - One-time verification codes (OTPs) are never written to clipboard history or `Timeline`, and an OTP auto-copied on your PC is never echoed back to your phone.
-- **At-rest encryption**: When **Clipboard history** is enabled, your saved clips (`clipboard_history.enc` with `NLCB\x01` header) and clipboard images (`clipboard_images/<id>.enc` with `NLCI\x01` header) are encrypted directly at rest using the platform `KeyProtector`: **Windows DPAPI** (`CryptProtectData`, tied to your Windows user account) on the PC and the **Android Keystore** (`AES-256-GCM`, which may be hardware-backed) on Android.
+- **At-rest encryption**: When **Clipboard history** is enabled, your saved clips (`clipboard_history.enc`) and clipboard images (`clipboard_images/<id>.enc`) are encrypted at rest. On the PC they are sealed with AES-256-GCM under a key kept in your desktop keyring (GNOME Keyring or KWallet, through the Secret Service); without a keyring, they are protected by file permissions only. On Android they are encrypted with the **Android Keystore** (`AES-256-GCM`, which may be hardware-backed).
 - **Retention**: Unpinned clipboard history entries expire automatically after **7 days** (capped at 50 items and 128 MB total). In `Timeline`, clipboard entries reference the encrypted history item by ID so clip content is never stored in plain text inside SQLite.
 
 ## Limits
 
 - **Android Background Clipboard Restriction without `Elevated`**: On Android 10 and newer, only the foreground app or the active input method (keyboard) can read the system clipboard. Unless `Elevated` is active, phone-to-PC clipboard sharing requires tapping the Quick Settings tile, share sheet, widget, or in-app button.
+- **GNOME on Wayland**: GNOME doesn't give background apps the clipboard, so the PC's clipboard syncs only while G7 Link's window has focus. KDE Plasma, compositors built on wlroots, and X11 sessions sync in the background.
 - **Clip Size Caps**: Individual text clips are capped at 256 KiB on the wire (`clip::MAX_TEXT_BYTES`) and clipboard images are capped at 32 MiB (`clip::MAX_IMAGE_BYTES`) during live sync (16 MiB per image in local history) so an accidental huge copy never stalls your connection. For larger images or files, use [Files and Transfers](files-and-transfers.md).

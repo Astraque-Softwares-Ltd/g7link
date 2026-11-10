@@ -3,7 +3,7 @@
 G7 Link streams your phone's screen to your PC in a dedicated window at up to 60 frames per second with hardware video encoding (H.264, H.265, or AV1) and live audio forwarding. Depending on your Android power level, you can view your screen, control it with your PC mouse and keyboard, open individual Android apps in their own desktop windows (`app window`), launch a full desktop layout (DeX mode), or reverse-mirror your PC's screen to your phone.
 
 <p align="center">
-  <img src="images/mirroring-window.png" alt="Phone screen mirrored in a window on Windows 11" width="760">
+  <img src="images/mirroring-window.png" alt="Phone screen mirrored in a window on the PC" width="760">
 </p>
 
 ## What You Need
@@ -11,10 +11,10 @@ G7 Link streams your phone's screen to your PC in a dedicated window at up to 60
 | Feature | Requirements |
 | :--- | :--- |
 | **View phone screen and audio on PC (`mirror`)** | `Standard` power level. **Screen mirroring** toggle enabled in PC **Settings › Devices** (on by default). At `Standard` or `Assist`, Android displays a system **Start recording or casting** prompt on your phone each time mirroring starts. With `Elevated`, G7 Link grants `PROJECT_MEDIA` automatically so mirroring starts without a phone prompt. |
-| **Tap, swipe, scroll, and type from PC** | `Assist` (Android Accessibility Service enabled in **Settings › Permissions › Control from your PC**) or `Elevated` (Wireless Debugging). `Elevated` adds real-time touch dragging, XInput gamepad passthrough, and stylus pressure/tilt. |
+| **Tap, swipe, scroll, and type from PC** | `Assist` (Android Accessibility Service enabled in **Settings › Permissions › Control from your PC**) or `Elevated` (Wireless Debugging). `Elevated` adds real-time touch dragging and gamepad passthrough. |
 | **Turn off physical phone screen while mirroring** | `Elevated` power level. |
 | **Phone apps in individual PC windows (`app window`)** | `Elevated` power level on Android 11 or newer. |
-| **Reverse mirroring (PC screen on phone)** | Per-device **Share PC screen to phone** (`pc_mirror`) toggle in PC **Settings › Devices** (off by default), or one-time approval on the PC's consent dialog when requested from the phone. Controlling the PC from the reverse-mirror view also requires **Remote mouse, keyboard & Deck** (`remote_input`, off by default). |
+| **Reverse mirroring (PC screen on phone)** | Per-device **Share PC screen to phone** (`pc_mirror`) toggle in PC **Settings › Devices** (off by default), or one-time approval on the PC's consent dialog when requested from the phone. Controlling the PC from the reverse-mirror view also requires **Remote mouse, keyboard & Deck** (`remote_input`, off by default). Capture needs X11, or the ScreenCast portal with PipeWire on Wayland, plus an H.264 encoder (FFmpeg or OpenH264). |
 
 ## Step-by-Step Use
 
@@ -33,9 +33,8 @@ Once `Assist` or `Elevated` is enabled on your phone:
 - **Mouse wheel / two-finger trackpad scroll**: Scrolls vertically or horizontally under the cursor.
 - **Right-click**: Triggers Android **Back**.
 - **Middle-click**: Triggers Android **Home**.
-- **Keyboard typing and shortcuts**: Type directly into any focused Android field. At `Elevated` (when `/dev/uhid` is permitted by your phone's kernel/SELinux policy), G7 Link registers a virtual gamepad so connected Xbox/XInput controllers work natively inside Android apps and games.
-- **Clipboard and file drop inside the mirror**: Pressing `Ctrl+C` or `Ctrl+V` while the `mirror` window is focused syncs your clipboard, and dragging files from Windows File Explorer onto the `mirror` window sends them straight to `Download/G7Link` on your phone.
-- **Stylus / Pen**: Windows Ink pen pressure, tilt, and barrel buttons are forwarded to the phone screen at `Elevated`.
+- **Keyboard typing and shortcuts**: Type directly into any focused Android field. At `Elevated` (when `/dev/uhid` is permitted by your phone's kernel/SELinux policy), G7 Link registers a virtual gamepad so game controllers connected to your PC work natively inside Android apps and games.
+- **Clipboard and file drop inside the mirror**: Pressing `Ctrl+C` or `Ctrl+V` while the `mirror` window is focused syncs your clipboard, and dragging files from your file manager onto the `mirror` window sends them straight to `Download/G7Link` on your phone.
 
 On Xiaomi, Redmi and POCO phones, `Elevated` control also needs **USB debugging (Security settings)** turned on in **Developer options**.
 
@@ -45,9 +44,9 @@ The `mirror` window header includes quick controls and keyboard shortcuts:
 
 | Action | Shortcut | What It Does |
 | :--- | :--- | :--- |
-| **Copy screenshot** | `Ctrl+Shift+C` | Captures the current mirrored frame directly onto the Windows clipboard as a PNG image. |
-| **Save screenshot** | `Ctrl+S` | Saves a PNG screenshot of the mirrored screen to `Downloads\G7Link`. |
-| **Record video (MP4)** | `Ctrl+R` | Records the live mirror stream and phone audio to an `.mp4` file in `Downloads\G7Link` using lossless H.264 stream passthrough (zero video re-encoding overhead on your PC). Press `Ctrl+R` again to stop and save. |
+| **Copy screenshot** | `Ctrl+Shift+C` | Captures the current mirrored frame directly onto your clipboard as a PNG image. |
+| **Save screenshot** | `Ctrl+S` | Saves a PNG screenshot of the mirrored screen to `~/Downloads/G7Link`. |
+| **Record video (MP4)** | `Ctrl+R` | Records the live mirror stream and phone audio to an `.mp4` file in `~/Downloads/G7Link` using lossless H.264 stream passthrough (zero video re-encoding overhead on your PC). Press `Ctrl+R` again to stop and save. |
 | **Keep phone awake** | Toolbar icon | Prevents your phone's screen timeout from locking the device while mirroring is active. |
 | **Turn phone screen off** | Toolbar icon (`Elevated`) | Blanks your phone's physical OLED/LCD display while the `mirror` window continues running on your PC, and turns the physical display back on automatically when mirroring stops. |
 | **Lock phone** | Toolbar icon | Locks the phone, as its power button would. Shows when you can control the phone. |
@@ -55,20 +54,20 @@ The `mirror` window header includes quick controls and keyboard shortcuts:
 
 ### Opening Phone Apps in Their Own PC Windows (`app window`)
 
-With `Elevated` on Android 11 or newer, you can run individual phone apps in separate Windows 11 windows without mirroring your whole phone screen:
+With `Elevated` on Android 11 or newer, you can run individual phone apps in separate windows on your PC without mirroring your whole phone screen:
 
 <p align="center">
-  <img src="images/app-window.png" alt="An Android app running in its own independent window on Windows 11" width="760">
+  <img src="images/app-window.png" alt="An Android app running in its own independent window on the PC" width="760">
 </p>
 
-1. Click **Apps** in the PC sidebar to see every app on your phone. You can also click **Open an app** on **Home**, or any phone notification in the feed, Notification history, or a Windows notification popup.
+1. Click **Apps** in the PC sidebar to see every app on your phone. You can also click **Open an app** on **Home**, or any phone notification in the feed, Notification history, or a desktop notification popup.
 2. **Apps** shows a **Recent** row (apps you opened from the PC and apps that recently posted notifications) above your phone's full app list. Type to search, and press Enter to open the first match. Apps already open on the PC are marked with a dot.
 
 <p align="center">
   <img src="images/apps-page.png" alt="The Apps page on the PC listing the phone's apps" width="760">
 </p>
 
-3. Click any app. G7 Link creates an isolated virtual display on your phone and opens that app on your PC in its own `app window` with its own Windows taskbar icon.
+3. Click any app. G7 Link creates an isolated virtual display on your phone and opens that app on your PC in its own `app window`, a separate window on your desktop.
 4. The app runs independently beside whatever is shown on your phone's physical screen, and typing from your PC does not pop up the on-screen soft keyboard on your phone.
 5. Resize the `app window` on your PC and the Android app dynamically re-lays out to match the new aspect ratio. G7 Link remembers each app's window size and screen position for the next time you open it. You can open multiple `app window` instances side by side in tabs or separate windows.
 6. The phone's sound comes to your PC with its app windows, and the phone itself goes quiet. It's the phone's whole sound, so with several app windows open you hear all of them. The speaker icon in any `app window` toolbar mutes it on the PC, and the sound stops when you close the last `app window`.
@@ -85,7 +84,7 @@ You can also view (and optionally control) your PC's desktop from your phone:
 2. **Explicit PC Consent**: Because a PC screen is sensitive, reverse mirroring is **off by default** (**Share PC screen to phone** in **Settings › Devices**). If it is not already enabled for your phone, your PC displays a modal consent prompt asking whether to **Not now**, **Allow** (for this session only, cleared automatically on disconnect), or **Allow for this device** (enables **Share PC screen to phone** for that phone).
 3. **Sharing indicator**: Throughout any active reverse-mirroring session, the PC window's title bar shows a live pill (**Sharing screen with `<Phone>`**) with a **Stop** button.
 4. **Input Gating**: Viewing the PC screen from your phone is read-only unless you have also enabled **Remote mouse, keyboard & Deck** (`remote_input`) for that phone on your PC.
-5. **Primary display**: The phone sees the PC's primary display. On a PC with several monitors, the others are not shared. To share a different monitor, make it the primary display in Windows **Settings › System › Display**.
+5. **Which screen**: On Wayland, your desktop asks which monitor to share when sharing starts (through the ScreenCast portal). On X11, the phone sees the whole desktop, all monitors together.
 6. **Slow connections**: On a slow link (mobile data through the relay), the PC lowers the video bitrate until the picture flows smoothly, and raises it again once the link recovers.
 
 ## What the Options Do

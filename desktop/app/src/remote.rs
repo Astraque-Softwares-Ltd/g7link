@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Dispatches remote touchpad, keyboard and presentation input from a paired
-//! phone to `win::input` and updates the laser pointer overlay state.
+//! phone to `sys::input` and updates the laser pointer overlay state.
 
 use std::{
     sync::atomic::{AtomicU64, Ordering},
@@ -9,7 +9,7 @@ use std::{
 
 use g7link_core::{DeviceId, LinkState, NodeEvent, RemoteInput};
 
-use crate::{core_host, state::Changes, win};
+use crate::{core_host, state::Changes, sys};
 
 /// When the laser pointer last heard from its phone (ms since the Unix
 /// epoch; 0 when it's off). The phone repeats it every second while held,
@@ -29,12 +29,12 @@ fn hide_laser() {
 pub fn handle_input(peer: &DeviceId, input: RemoteInput) {
     let _ = crate::input_share::enter_remote(*peer);
     match input {
-        RemoteInput::Move { dx, dy } => win::input::move_relative(dx, dy),
-        RemoteInput::Button { button, action } => win::input::mouse_button(button, action),
-        RemoteInput::Scroll { dx, dy } => win::input::scroll(dx, dy),
-        RemoteInput::Text { text } => win::input::type_text(&text),
-        RemoteInput::Key { key, mods } => win::input::press_key(&key, &mods),
-        RemoteInput::Slide { action } => win::input::slide(action),
+        RemoteInput::Move { dx, dy } => sys::input::move_relative(dx, dy),
+        RemoteInput::Button { button, action } => sys::input::mouse_button(button, action),
+        RemoteInput::Scroll { dx, dy } => sys::input::scroll(dx, dy),
+        RemoteInput::Text { text } => sys::input::type_text(&text),
+        RemoteInput::Key { key, mods } => sys::input::press_key(&key, &mods),
+        RemoteInput::Slide { action } => sys::input::slide(action),
         RemoteInput::Laser { on: true, x, y } => {
             let x = x.clamp(0.0, 1.0);
             let y = y.clamp(0.0, 1.0);
@@ -72,7 +72,7 @@ pub fn handle_input(peer: &DeviceId, input: RemoteInput) {
 /// `remote_input` is turned off).
 pub fn stop_all() {
     let _ = crate::input_share::leave_remote();
-    win::input::release_held_buttons();
+    sys::input::release_held_buttons();
     hide_laser();
 }
 
@@ -80,7 +80,7 @@ pub fn on_event(event: &NodeEvent) {
     match event {
         NodeEvent::LinkChanged { link: LinkState::Offline { .. }, .. } | NodeEvent::DeviceRemoved(_) => {
             let _ = crate::input_share::leave_remote();
-            win::input::release_held_buttons();
+            sys::input::release_held_buttons();
         }
         NodeEvent::RemoteInputRequested { .. } => {
             core_host::host().hub.update(|s| s.apply(event));

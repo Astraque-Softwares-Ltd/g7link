@@ -1049,10 +1049,10 @@ fn detect_or_convert_attachment(path: &Path, raw: Vec<u8>) -> Result<(String, Ve
         "3gp" => return Ok(("audio/3gpp".into(), raw)),
         _ => {}
     }
-    // Convert BMP/TIFF/ICO or other Windows-decodable images to PNG.
-    let bitmap = crate::win::image::decode(&raw)
+    // Convert BMP/TIFF/ICO or other decodable images to PNG.
+    let bitmap = crate::sys::image::decode(&raw)
         .map_err(|_| tr!("Messages", "Only image or voice-note audio files can be attached."))?;
-    let png = crate::win::image::encode_png(&bitmap).map_err(|e| e.to_string())?;
+    let png = crate::sys::image::encode_png(&bitmap).map_err(|e| e.to_string())?;
     Ok(("image/png".into(), png))
 }
 
@@ -1143,10 +1143,10 @@ pub fn attach_file(path_or_url: String) -> bool {
     }
 }
 
-/// Stages an image from the Windows clipboard (`Ctrl+V`) as an MMS attachment,
+/// Stages an image from the clipboard (`Ctrl+V`) as an MMS attachment,
 /// returning `true` when an image was on the clipboard.
 pub fn paste_clipboard_image() -> bool {
-    let Some(png) = crate::win::clipboard::read_image_png() else {
+    let Some(png) = crate::sys::clipboard::read_image_png() else {
         return false;
     };
     stage_attachment_bytes("Clipboard image.png".into(), "image/png".into(), png)

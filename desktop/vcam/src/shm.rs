@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Shared-memory frame transport between `g7link-desktop.exe` and
-//! `g7link_vcam.dll`, plus placeholder frame rendering and RGB32/NV12
-//! conversion.
+//! Shared-memory frame transport between the app and the virtual camera
+//! output, plus placeholder frame rendering and RGB32/NV12 conversion.
 
 use std::sync::{
     Mutex,
@@ -10,14 +9,10 @@ use std::sync::{
 
 use ab_glyph::{Font, FontRef, GlyphId, PxScale, ScaleFont, point};
 
-/// The mapping the camera and the app share. The camera's media source runs
-/// inside Windows' Frame Server service, in another session than the app, so
-/// it has to be in the global namespace: the service creates it (only
-/// services may create global objects) and the signed-in user's app opens it.
-pub const DEFAULT_MAPPING_NAME: &str = "Global\\G7LinkVcamFrame_v2";
-/// The same mapping in the caller's own session, when the global one can't be
-/// created (the media source running in-process, as in tests).
-pub const LOCAL_MAPPING_NAME: &str = "Local\\G7LinkVcamFrame_v2";
+/// The mapping the camera output and the app share.
+pub const DEFAULT_MAPPING_NAME: &str = "vcam_frame_v2";
+/// A second mapping, used when the default one can't be created.
+pub const LOCAL_MAPPING_NAME: &str = "vcam_frame_v2_local";
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 pub const MAX_FRAME_BYTES: usize = (MAX_WIDTH as usize) * (MAX_HEIGHT as usize) * 4;
@@ -866,7 +861,7 @@ mod tests {
 
     #[test]
     fn a_busy_writer_keeps_the_last_complete_live_frame() {
-        let name = format!(r"Local\G7LinkVcamReadCache_{}_busy", std::process::id());
+        let name = format!("vcam_read_cache_{}_busy", std::process::id());
         let mapping = SharedFrameMapping::open_or_create(&name).unwrap();
         let first = vec![42u8; 160 * 120 * 4];
         let second = vec![99u8; 160 * 120 * 4];
@@ -899,7 +894,7 @@ mod tests {
 
     #[test]
     fn busy_reads_do_not_reuse_a_frame_at_different_dimensions() {
-        let name = format!(r"Local\G7LinkVcamReadCache_{}_resize", std::process::id());
+        let name = format!("vcam_read_cache_{}_resize", std::process::id());
         let mapping = SharedFrameMapping::open_or_create(&name).unwrap();
         mapping.write_frame("Pixel", 160, 120, 123, &vec![42u8; 160 * 120 * 4], false);
         let mut output = vec![0u8; 160 * 120 * 4];
@@ -912,7 +907,7 @@ mod tests {
     #[test]
     fn the_camera_always_gets_a_mapping_and_the_app_finds_it() {
         // Use a private mapping so this test cannot overwrite an active webcam.
-        let name = format!(r"Local\G7LinkVcamMappingTest_{}", std::process::id());
+        let name = format!("vcam_mapping_test_{}", std::process::id());
         let camera = SharedFrameMapping::for_camera(&name).unwrap();
         camera.set_idle("Pixel 9");
         let app = SharedFrameMapping::open_existing(&name).unwrap();
@@ -921,7 +916,7 @@ mod tests {
 
     #[test]
     fn opening_a_missing_mapping_fails() {
-        let name = format!(r"Local\G7LinkVcamMissing_{}", std::process::id());
+        let name = format!("vcam_missing_{}", std::process::id());
         assert!(SharedFrameMapping::open_existing(&name).is_err());
     }
 
@@ -957,7 +952,7 @@ mod tests {
     #[allow(unsafe_code)]
     fn unix_shm_enforces_owner_only_permissions_and_uid_scope() {
         use std::os::unix::fs::MetadataExt;
-        let name = format!(r"Local\G7LinkVcamPermTest_{}", std::process::id());
+        let name = format!("vcam_perm_test_{}", std::process::id());
         let path = unix_shm_path(&name);
         let uid = unsafe { libc::geteuid() };
         assert!(

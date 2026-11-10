@@ -177,7 +177,7 @@ find_user() {
 
 check_system() {
     step "Checking this computer"
-    [ "$(uname -s)" = "Linux" ] || fail "this installer is for Linux." "On Windows, download the installer from https://github.com/$REPO/releases/latest"
+    [ "$(uname -s)" = "Linux" ] || fail "this installer is for Linux."
 
     ARCH="$(uname -m)"
     case "$ARCH" in

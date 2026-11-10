@@ -29,14 +29,14 @@ use crate::{
     },
     core_host,
     state::Changes,
-    transfers::{ACTION_OPEN, ACTION_SHOW, TOAST_GROUP},
-    win::{
+    sys::{
         audio_out::Player,
         h264::{Decoder, to_bgrx},
         image::{Bitmap, encode_png},
         mp4::{MirrorRecorder, local_timestamp_filename, merge_sps_pps},
         toast::{self, Toast},
     },
+    transfers::{ACTION_OPEN, ACTION_SHOW, TOAST_GROUP},
 };
 
 /// How sharp the screen and app windows are.
@@ -518,7 +518,7 @@ pub fn screenshot_clipboard(window: Window) {
     };
     let copied = encode_png(&bitmap)
         .map_err(|e| e.to_string())
-        .and_then(|png| crate::win::clipboard::write_image("image/png", &png));
+        .and_then(|png| crate::sys::clipboard::write_image("image/png", &png));
     match copied {
         Ok(()) => {
             set_notice(window, "Screenshot copied to clipboard");
@@ -952,7 +952,7 @@ pub fn keyboard_paste(device: DeviceId) {
     if keyboard_device() != Some(device) {
         return;
     }
-    if let crate::win::clipboard::Clip::Text { text, .. } = crate::win::clipboard::read_for_paste() {
+    if let crate::sys::clipboard::Clip::Text { text, .. } = crate::sys::clipboard::read_for_paste() {
         keyboard_text(device, text);
     }
 }
@@ -1594,7 +1594,7 @@ pub fn sync_clipboard_for_device(device: DeviceId) {
         return;
     }
 
-    if let crate::win::clipboard::Clip::Text { text, html, rtf } = crate::win::clipboard::read()
+    if let crate::sys::clipboard::Clip::Text { text, html, rtf } = crate::sys::clipboard::read()
         && !text.is_empty()
     {
         let normalized = text.replace("\r\n", "\n");

@@ -24,7 +24,7 @@ use crate::{
     core_host,
     settings::Settings,
     state::Changes,
-    win::{
+    sys::{
         h264::{Decoder, to_bgrx},
         vcam::{self, VirtualCameraHandle},
     },
@@ -162,8 +162,8 @@ pub fn set_resolution(res: &str) {
     set_height(h);
 }
 
-/// Initializes webcam preferences and (if registered) the Windows virtual
-/// camera session.
+/// Initializes webcam preferences and (if set up) the `v4l2loopback` virtual
+/// camera.
 pub fn init(settings: &Settings) {
     MIRROR.store(settings.webcam_mirror, Ordering::Relaxed);
     CAMERA_FRONT.store(settings.webcam_camera.trim().eq_ignore_ascii_case("front"), Ordering::Relaxed);

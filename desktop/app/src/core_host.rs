@@ -121,13 +121,13 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
         caps.push(g7link_core::PC_AUDIO.into());
         caps.push(g7link_core::RECORDER.into());
         {
-            if crate::win::h264::supports_hevc_hardware() {
+            if crate::sys::h264::supports_hevc_hardware() {
                 caps.push(g7link_core::MIRROR_HEVC.into());
             }
-            if crate::win::vcam::dll_path().is_some() || crate::win::vcam::is_registered() {
+            if crate::sys::vcam::dll_path().is_some() || crate::sys::vcam::is_registered() {
                 caps.push(g7link_core::WEBCAM_VIRTUAL.into());
             }
-            if crate::win::window_capture::is_available() && crate::pc_mirror::is_capture_available() {
+            if crate::sys::window_capture::is_available() && crate::pc_mirror::is_capture_available() {
                 caps.push(g7link_core::MEDIA_STREAM.into());
             }
         }
@@ -154,12 +154,12 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     if pc_mirror_enabled && crate::pc_mirror::is_capture_available() {
         caps.push(g7link_core::MIRROR_CAPTURE.into());
     }
-    let input_available = crate::win::input::is_available();
+    let input_available = crate::sys::input::is_available();
     if remote_input_enabled && input_available {
         caps.push(g7link_core::MIRROR_INPUT.into());
         caps.push(g7link_core::INPUT_INJECT.into());
     }
-    if crate::win::vcam::is_registered() {
+    if crate::sys::vcam::is_registered() {
         caps.push(g7link_core::WEBCAM_ADDON_VCAM.into());
     }
     caps
@@ -177,7 +177,7 @@ pub fn refresh_capabilities() {
 
 async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
     let host = host();
-    let wake = crate::win::wol::query_wake_status();
+    let wake = crate::sys::wol::query_wake_status();
     let mut config = NodeConfig::new(&data_dir, this_device(), env!("CARGO_PKG_VERSION"));
     config.downloads_dir = Some(downloads_dir());
     // G7LINK_NO_ADB=1 keeps a development copy from reaching phones plugged in over USB,
@@ -187,7 +187,7 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
     let adb_disabled = !only_emulator && std::env::var_os("G7LINK_NO_ADB").is_some_and(|v| v == "1");
     config.adb_server = (!adb_disabled).then_some(g7link_core::DEFAULT_ADB_ADDR);
     config.away_mode = crate::settings::Settings::load(&data_dir).away_mode;
-    // This PC's own players, for phones (crate::win::media_sessions).
+    // This PC's own players, for phones (crate::sys::media_sessions).
     config.capabilities = compute_capabilities(None);
     let initial_caps = config.capabilities.clone();
     let node = match Node::start(config, platform).await {
@@ -271,7 +271,7 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
                 was_active = false;
                 continue;
             }
-            let active = crate::win::input::is_user_active_within_ms(30_000);
+            let active = crate::sys::input::is_user_active_within_ms(30_000);
             let should_send = active != was_active
                 || (active && last_sent_at.elapsed() >= std::time::Duration::from_secs(30));
             if should_send {
@@ -375,20 +375,20 @@ fn this_device() -> DeviceInfo {
     let name = hostname::get().ok().and_then(|h| h.into_string().ok()).unwrap_or_else(|| "PC".into());
     DeviceInfo {
         name,
-        kind: if crate::win::is_laptop() { DeviceKind::Laptop } else { DeviceKind::Desktop },
+        kind: if crate::sys::is_laptop() { DeviceKind::Laptop } else { DeviceKind::Desktop },
         os: std::env::consts::OS.into(),
-        os_ver: crate::win::os_version(),
+        os_ver: crate::sys::os_version(),
         model: None,
         accent: None,
         screen: None,
-        install_id: crate::win::machine_guid().as_deref().and_then(g7link_core::install_id_from),
+        install_id: crate::sys::machine_guid().as_deref().and_then(g7link_core::install_id_from),
     }
 }
 
 /// Re-reads physical network adapters and their Wake-on-LAN settings, updates
 /// the UI state, and sends updated `pc.wake_info` to connected phones if changed.
 pub async fn refresh_wake() {
-    let wake = crate::win::wol::query_wake_status();
+    let wake = crate::sys::wol::query_wake_status();
     let info = wake.info.clone();
     // With no adapter up (Wi-Fi dropping as the PC goes to sleep, a network
     // change in progress) there's nothing to read, not a PC that can't be

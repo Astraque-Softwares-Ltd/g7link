@@ -175,7 +175,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("CoreHost", "Dropped %1 queued item(s) for %2 (device unpaired)."), // desktop/app/src/core_host.rs
     QT_TRANSLATE_NOOP("Deck", "Alt + Tab"), // desktop/app/src/bridge/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Choose a key for the shortcut."), // desktop/app/src/deck.rs
-    QT_TRANSLATE_NOOP("Deck", "Choose an application (.exe or .lnk) on this PC."), // desktop/app/src/deck.rs
+    QT_TRANSLATE_NOOP("Deck", "Choose an application on this PC."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Enter a command to run on this PC."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Enter an application path (/usr/bin/..., .desktop, or .AppImage)."), // desktop/app/src/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Enter an http:// or https:// web address."), // desktop/app/src/deck.rs
@@ -330,9 +330,9 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Guide", "What it does\nStreams your phone screen into a low-latency desktop window with hardware-accelerated decoding, or opens individual Android apps in their own windows on your PC.\n\nWhere to find it\n- Left navigation rail › Apps.\n- Home › Mirror screen quick action.\n\nWhat it needs\n- Standard mode mirrors the full phone screen after you tap Start now on Android's screen capture prompt.\n- Elevated mode (Wireless debugging or root) skips the prompt and unlocks individual app windows.\n- Assist mode or Elevated mode lets you click, scroll, and type inside the mirrored window."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "What it does\nSyncs media playback between your phone and PC, switches your PC's audio output and microphone (PipeWire or PulseAudio), and turns your phone into a customizable grid of shortcut tiles, macros, and volume sliders.\n\nWhere to find it\n- Left navigation rail › Deck.\n\nWhat it needs\n- Paired phone over any active connection."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "What it does\nTriggers your phone camera from your PC to snap a photo or scan a document, then copies the result to your clipboard and pastes it into the window you were using. Where your desktop doesn't let G7 Link see that window, press Ctrl+V yourself.\n\nWhere to find it\n- Global shortcuts Ctrl+Alt+C (Take photo with phone) and Ctrl+Alt+D (Scan document with phone). Your desktop may ask you to confirm them once.\n- Home › Continuity Camera.\n\nWhat it needs\n- Camera permission on your phone."), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("Hotspot", "%1's hotspot didn't show up. Check that it's on, then pick %2 in Windows' Wi-Fi list."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "%1's hotspot didn't show up. Check that it's on, then pick %2 in the Wi-Fi menu."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Connected to %1's hotspot."), // desktop/app/src/hotspot.rs
-    QT_TRANSLATE_NOOP("Hotspot", "Couldn't join %1's hotspot. Pick %2 in Windows' Wi-Fi list."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Couldn't join %1's hotspot. Pick %2 in the Wi-Fi menu."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Links", "%1: tap the notification on your phone to continue watching."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "%1: tap the notification on your phone to open in Maps."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "Copy a link or address first"), // desktop/app/src/links.rs

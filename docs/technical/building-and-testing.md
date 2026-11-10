@@ -1,180 +1,162 @@
 # Building and Testing
 
-This document covers the pinned toolchain versions, environment variables, build commands, and test suites required to build and verify G7 Link on Windows and Android.
+This page covers the toolchains, build commands and test suites for the G7
+Link Linux desktop app and the Android app. CI
+([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)) runs the same
+commands on Ubuntu.
 
-## Pinned Toolchains
+## Toolchains
 
-| Component | Required Version | Configuration File / Default Path |
+| Component | Version | Where it's set |
 |---|---|---|
-| **Rust Toolchain** | `stable` (pinned in [`rust-toolchain.toml`](../../rust-toolchain.toml)) | [`rust-toolchain.toml`](../../rust-toolchain.toml) |
-| **Rust Targets** | `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`, `aarch64-linux-android`, `x86_64-linux-android` | Installed via `rustup target add` |
-| **MSVC Build Tools** | Visual Studio 2022 Build Tools (C++, `x64` and `ARM64/ARM64EC`) | Windows 11 SDK |
-| **Qt 6** | `Qt 6.12` (`msvc2022_64` and `msvc2022_arm64`, QtQuick, QtQuickControls2, QtShaderTools, QtMultimedia) | `C:\Qt\6.12.0\msvc2022_64` / `msvc2022_arm64` |
-| **JDK** | JDK `17` or newer (`21` supported) | `JAVA_HOME` |
-| **Android SDK** | Platform `37` (`compileSdk = 37`, `targetSdk = 37`, `minSdk = 26` / Android 8.0) | `%LOCALAPPDATA%\Android\Sdk` |
-| **Android NDK** | `30.0.16248370` (or side-by-side NDK configured in `android/app/build.gradle.kts`) | `%LOCALAPPDATA%\Android\Sdk\ndk` |
-| **`cargo-ndk`** | `>= 3.5` | Used by Gradle (`buildRustAndroid`) to cross-compile `libg7link_ffi.so` |
-| **NSIS** | NSIS `3.x` (`makensis.exe`) | Used by `scripts/package.ps1` (`desktop/installer/g7link.nsi`) to build the Windows setup installer |
+| **Rust** | `stable`, at least 1.97 (edition 2024) | [`rust-toolchain.toml`](../../rust-toolchain.toml), `rust-version` in [`Cargo.toml`](../../Cargo.toml) |
+| **Qt 6** | 6.12 (Qt Quick, Quick Controls 2, Shader Tools, Wayland) | `QT_VERSION` in the workflows |
+| **FFmpeg** | `libavcodec` and `libavutil` development files (optional) | found with `pkg-config` by [`desktop/app/build.rs`](../../desktop/app/build.rs) |
+| **JDK** | 17 or newer (CI uses 21) | `JAVA_HOME` |
+| **Android SDK** | Platform 37 (`compileSdk = 37`, `targetSdk = 37`, `minSdk = 26`) | [`android/app/build.gradle.kts`](../../android/app/build.gradle.kts) |
+| **Android NDK** | `30.0.16248370` | `ndkVersion` in `android/app/build.gradle.kts` |
+| **`cargo-ndk`** | latest (`cargo install --locked cargo-ndk`) | Used by Gradle to cross-compile `libg7link_ffi.so` |
 
-## Environment Variables
+## Setting up the desktop build
 
-When building the Windows desktop client (`g7link-desktop`) or running workspace-wide `cargo` commands that compile `desktop/app`, ensure Qt's `bin` folder is on `PATH` or point `QMAKE` to its `qmake.exe`:
+On Ubuntu, CI installs these packages:
 
-```powershell
-$env:QMAKE = "C:\Qt\6.12.0\msvc2022_64\bin\qmake.exe"
-$env:PATH  = "C:\Qt\6.12.0\msvc2022_64\bin;$env:PATH"
+```sh
+sudo apt-get install --no-install-recommends \
+  libgl1-mesa-dev libxkbcommon-dev libvulkan-dev libx11-dev \
+  ffmpeg libavcodec-dev libavutil-dev libopenh264-dev qt6-l10n-tools
 ```
 
-When building the Android native library or APK:
+Qt 6.12 comes from [aqtinstall](https://github.com/miurahr/aqtinstall)
+(`linux_gcc_64`; the release build adds the `qtshadertools` and
+`qtwaylandcompositor` modules). A system Qt 6.12 works too. The build finds
+Qt through `qmake` on `PATH`, or through `QMAKE`:
 
-```powershell
-$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+```sh
+export QMAKE="$HOME/Qt/6.12.0/gcc_64/bin/qmake"
+export PATH="$HOME/Qt/6.12.0/gcc_64/bin:$PATH"
 ```
 
-Note: [`scripts/check.ps1`](../../scripts/check.ps1) and [`scripts/package.ps1`](../../scripts/package.ps1) automatically locate the installed Qt and Android SDK paths on Windows if the environment variables are not already set.
+With Nix, `nix develop` opens a shell with Rust, Qt, FFmpeg and `QMAKE`
+already set ([`flake.nix`](../../flake.nix)).
 
-## Building Individual Components
+When `pkg-config` finds `libavcodec` and `libavutil`, the desktop app is built
+with its FFmpeg video backend (`linux_ffmpeg_video`). Without them it still
+builds, without that backend.
 
-### 1. Core Rust Crates and Headless CLI
+## Building
 
-The core crates (`g7link-protocol`, `g7link-core`, `g7link-ffi`, `g7link-cli`) do not depend on Qt and can be built on any machine with the Rust toolchain:
+### Core crates and the CLI
 
-```powershell
-cargo build -p g7link-protocol -p g7link-core -p g7link-ffi -p g7link-cli
-```
+The core crates (`g7link-protocol`, `g7link-core`, `g7link-ffi`,
+`g7link-adb`, `g7link-cli`) don't need Qt:
 
-To run the headless CLI (`cli/`):
-
-```powershell
+```sh
+cargo build -p g7link-protocol -p g7link-core -p g7link-ffi -p g7link-adb -p g7link-cli
 cargo run -p g7link-cli -- --help
 ```
 
-### 2. Windows Desktop Application (`g7link-desktop`)
+### Desktop app
 
-```powershell
-# Debug build
+```sh
 cargo build -p g7link-desktop
+cargo build --release -p g7link-desktop -p g7link-vcam
+```
 
-# Release build (LTO = thin, codegen-units = 1, opt-level = 3)
+The app is `target/release/g7link-desktop`. `g7link-vcam`
+([`desktop/vcam`](../../desktop/vcam)) is the shared-memory frame transport
+between the app and the `v4l2loopback` virtual camera.
+
+### Design tokens, strings and notices
+
+[`tools/xtask`](../../tools/xtask/src/main.rs) generates files that are
+checked in:
+
+```sh
+cargo xtask tokens            # Tokens.qml and Tokens.kt from docs/design/tokens.json
+cargo xtask tokens --check    # fail if they are out of date
+cargo xtask strings           # translatable strings the desktop app builds in Rust
+cargo xtask strings --check
+cargo xtask notices           # THIRD-PARTY-NOTICES.txt
+```
+
+### Android app
+
+[`android/app/build.gradle.kts`](../../android/app/build.gradle.kts) builds
+the Rust library with `cargo ndk` and generates the UniFFI Kotlin bindings
+before compiling Kotlin:
+
+```sh
+cd android
+./gradlew assembleDebug                          # arm64-v8a and x86_64
+./gradlew assembleDebug -Pg7link.abis=arm64-v8a  # one ABI, faster
+./gradlew assembleRelease
+```
+
+### Linux packages
+
+The scripts in [`desktop/packaging/linux`](../../desktop/packaging/linux)
+write to `dist/`. The `.deb`, AppImage and tarball scripts build the release
+binary first if it's missing.
+
+```sh
 cargo build --release -p g7link-desktop
+bash desktop/packaging/linux/build-ffmpeg-backends.sh  # FFmpeg adapters for each supported distribution
+desktop/packaging/linux/build-deb.sh       # dist/g7link_<version>_<arch>.deb
+desktop/packaging/linux/build-rpm.sh
+desktop/packaging/linux/build-appimage.sh  # needs appimagetool on PATH
+desktop/packaging/linux/build-tarball.sh   # dist/G7Link-<version>-linux-<arch>.tar.gz
 ```
 
-The compiled executable is placed at `target/release/g7link-desktop.exe`.
+[`test-install.sh`](../../desktop/packaging/linux/test-install.sh) installs
+and removes each package with `install.sh`, as CI does.
 
-### 3. Windows Virtual Camera DLL (`g7link-vcam`)
+## Tests
 
-```powershell
-cargo build --release -p g7link-vcam
-```
+### What CI runs
 
-Produces `target/release/g7link_vcam.dll`. The DLL exports only `DllGetClassObject` and `DllCanUnloadNow`; it does not export `DllRegisterServer`, so `regsvr32` cannot register it. The desktop app writes the COM and Frame Server registry keys instead. Build the desktop app (section 2), then run in an elevated PowerShell prompt:
-
-```powershell
-target\release\g7link-desktop.exe --register-vcam
-```
-
-`--unregister-vcam` removes the registration again.
-
-> **Debug builds and Frame Server.** The virtual camera is loaded by the Windows
-> Frame Server service, which runs as `NT AUTHORITY\LocalService` and cannot
-> read files under your user profile. Registering
-> `target\debug\g7link_vcam.dll` therefore succeeds, but starting the camera
-> fails with `0x80070005` (access denied). Test with the installed build, which
-> keeps the DLL in its install folder (under `C:\Program Files\G7Link` by
-> default); to test a local DLL, stop the `FrameServer` service
-> (`Stop-Service FrameServer`), copy it over the installed DLL, and run the
-> installed `g7link-desktop.exe --register-vcam` elevated.
-
-### 4. Design Tokens and Third-Party Notices (`cargo xtask`)
-
-[`tools/xtask`](../../tools/xtask/src/main.rs) generates platform design-system files from [`docs/design/tokens.json`](../../docs/design/tokens.json) and compiles the third-party license attribution bundle:
-
-```powershell
-# Regenerate desktop/app/qml/Tokens.qml and android/.../ui/theme/Tokens.kt
-cargo xtask tokens
-
-# Verify generated token files are up to date without modifying disk
+```sh
+# Core crates
+cargo fmt --all --check
+cargo clippy --locked -p g7link-protocol -p g7link-core -p g7link-ffi -p g7link-cli -p g7link-adb -p xtask --all-targets -- -D warnings
+cargo test --locked -p g7link-protocol -p g7link-core -p g7link-ffi -p g7link-cli -p g7link-adb -p xtask
 cargo xtask tokens --check
+cargo xtask strings --check
 
-# Generate THIRD-PARTY-NOTICES.txt from Cargo.lock and Android dependencies
-cargo xtask notices
+# Desktop app (needs Qt)
+cargo clippy --locked -p g7link-desktop -p g7link-vcam --all-targets -- -D warnings
+cargo test --locked -p g7link-desktop -p g7link-vcam
+bash desktop/app/tests/linux_video_dispatch_test.sh
+bash desktop/app/tests/qt_thread_sync_test.sh
+LIBAVCODEC_NO_PKG_CONFIG=1 cargo check --locked -p g7link-desktop --tests
+
+# Packages
+shellcheck -s sh desktop/packaging/linux/install.sh
+desktop/packaging/linux/test-install.sh
+
+# Licenses and dependencies
+pwsh ./scripts/check-headers.ps1
+cargo deny check
+
+# Android
+cd android && ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-### 5. Android Native Library, Kotlin Bindings, and APK
+`linux_video_dispatch_test.sh` checks that video falls back cleanly when the
+FFmpeg adapters can't load; `qt_thread_sync_test.sh` checks waiting on the Qt
+thread. The `cargo check` without `pkg-config` makes sure the app still builds
+without the FFmpeg backend.
 
-[`android/app/build.gradle.kts`](../../android/app/build.gradle.kts) registers `buildRustAndroid` and `generateUniffiBindings` tasks that automatically invoke `cargo ndk` (`arm64-v8a` and `x86_64`) and `uniffi-bindgen` before compiling Kotlin sources:
+### Targeted suites
 
-```powershell
-Push-Location android
-# Debug APK (builds arm64-v8a + x86_64 JNI libs and regenerates UniFFI Kotlin bindings):
-.\gradlew.bat assembleDebug
-
-# Fast single-ABI build for an attached arm64 phone:
-.\gradlew.bat assembleDebug -Pabi=arm64-v8a
-
-# Release APK:
-.\gradlew.bat assembleRelease
-Pop-Location
-```
-
-### 6. Full Release Packaging (`scripts/package.ps1`)
-
-To stage the release desktop binary, `g7link_vcam.dll`, `windeployqt` Qt runtime DLLs and QML modules, `THIRD-PARTY-NOTICES.txt`, and Sparse Package manifest (`AppxManifest.xml`), and build the NSIS setup installer (`desktop/installer/g7link.nsi`):
-
-```powershell
-# Full release build + staging + NSIS installer (default x64):
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1
-
-# Full release build + staging + NSIS installer for Windows 11 ARM64:
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Arch arm64
-
-# Stage files into target\package\G7Link\ without running makensis:
-powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -StageOnly
-```
-
-Artifacts are written to `target/package/`:
-- `target/package/G7Link/` (staged portable directory)
-- `target/package/G7Link-<version>-x64-setup.exe` or `G7Link-<version>-arm64-setup.exe` (NSIS installer when `makensis.exe` is installed)
-
-## Running the Test Suites
-
-### Full Pre-Commit Verification (`scripts/check.ps1`)
-
-The canonical one-command verification script runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `scripts/check-headers.ps1`, `cargo xtask tokens --check`, and `cargo deny`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\check.ps1
-
-# Also verify Android NDK cross-compilation and Gradle assembleDebug:
-powershell -ExecutionPolicy Bypass -File scripts\check.ps1 -Android -Arm64
-```
-
-### Targeted Rust Test Suites
-
-```powershell
-# Protocol framing, pairing SAS/QR proofs, and video packetization tests
-cargo test -p g7link-protocol
-
-# Core unit tests (SQLite store v7, send_queue FIFO/TTL/replacement, ADB/USB tunnel, OKLab palette, clipboard vault)
-cargo test -p g7link-core --lib
-
-# End-to-end two-device QUIC integration tests (pairing, capabilities, transfers, pause/resume)
-cargo test -p g7link-core --test two_devices
-
-# Scale benchmarks, opt-in (4 GiB transfer, 10,000 notifications, 5,000 timeline entries, encrypted clipboard history)
-cargo test -p g7link-core --release --test scale_tests -- --ignored
-
-# UniFFI binding round-trip tests
+```sh
+cargo test -p g7link-protocol                     # framing, pairing proofs, video packets
+cargo test -p g7link-core --lib                   # store, send queue, USB tunnel, palette, clipboard history
+cargo test -p g7link-core --test two_devices      # two nodes over QUIC: pairing, capabilities, transfers
+cargo test -p g7link-core --release --test scale_tests -- --ignored  # opt-in scale benchmarks
 cargo test -p g7link-ffi
-
-# Desktop notification store, localhost HTTP API auth/CORS guards, and vcam shared memory tests
-cargo test -p g7link-desktop -p g7link-vcam
 ```
 
-### Android Lint and Unit Tests
-
-```powershell
-Push-Location android
-.\gradlew.bat compileDebugKotlin testDebugUnitTest
-Pop-Location
-```
+QML component tests (Qt Quick Test) live in
+[`desktop/app/tests/qml`](../../desktop/app/tests/qml), with stubs for the
+Rust singletons in `stubs/`. CI doesn't run them yet.

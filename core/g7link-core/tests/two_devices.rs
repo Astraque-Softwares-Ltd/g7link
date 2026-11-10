@@ -649,7 +649,7 @@ fn info(name: &str, kind: DeviceKind) -> DeviceInfo {
     DeviceInfo {
         name: name.into(),
         kind,
-        os: if kind == DeviceKind::Phone { "android" } else { "windows" }.into(),
+        os: if kind == DeviceKind::Phone { "android" } else { "linux" }.into(),
         os_ver: "test".into(),
         model: None,
         accent: None,
@@ -1795,7 +1795,7 @@ async fn media_is_shared_and_controlled_with_consent() {
     // And the other way: the PC's own players reach the phone once the
     // phone allows media again.
     phone.node.set_device_toggle(pc_id, "media", true).unwrap();
-    pc.node.media_changed(vec![player("Spotify.exe", "On the PC", None)]).await;
+    pc.node.media_changed(vec![player("spotify", "On the PC", None)]).await;
     let players = wait_for(&mut phone, "pc media", |e| match e {
         NodeEvent::MediaChanged { device, players } if *device == pc_id && !players.is_empty() => {
             Some(players.clone())
@@ -1806,11 +1806,11 @@ async fn media_is_shared_and_controlled_with_consent() {
     assert_eq!(players[0].title.as_deref(), Some("On the PC"));
     with_timeout(
         "phone controls the pc",
-        phone.node.media_command(pc_id, "Spotify.exe".into(), MediaAction::Next, None),
+        phone.node.media_command(pc_id, "spotify".into(), MediaAction::Next, None),
     )
     .await
     .expect("next");
-    assert_eq!(pc.platform.media.lock().unwrap()[0], ("Spotify.exe".to_owned(), MediaAction::Next, None));
+    assert_eq!(pc.platform.media.lock().unwrap()[0], ("spotify".to_owned(), MediaAction::Next, None));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -6592,11 +6592,11 @@ async fn play_on_phone_offers_a_video_file_the_phone_reads_in_ranges() {
     std::fs::write(&movie, &bytes).unwrap();
     with_timeout(
         "offer the file",
-        pc.node.offer_watch_file(phone_id, "vlc.exe".into(), Some("Holiday".into()), movie.clone(), 61_500),
+        pc.node.offer_watch_file(phone_id, "vlc".into(), Some("Holiday".into()), movie.clone(), 61_500),
     )
     .await
     .unwrap();
-    let offered = format!("vlc.exe: Holiday [Holiday.mp4 {} at 61500]", bytes.len());
+    let offered = format!("vlc: Holiday [Holiday.mp4 {} at 61500]", bytes.len());
     assert_eq!(*phone.platform.watch_offers.lock().unwrap(), [offered]);
 
     // Ranges come back as they are on the PC, capped at one read's worth.

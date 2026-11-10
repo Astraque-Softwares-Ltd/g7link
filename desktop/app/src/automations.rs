@@ -11,7 +11,7 @@ use std::{
 use g7link_core::{DeviceId, LinkState, NodeEvent};
 use serde::{Deserialize, Serialize};
 
-use crate::{deck, settings, win};
+use crate::{deck, settings, sys};
 
 /// Supported automation trigger identifiers.
 pub const TRIGGER_PHONE_CONNECTED: &str = "phone_connected";
@@ -62,14 +62,14 @@ pub fn matching_rules<'a>(rules: &'a [AutomationRule], trigger: &str) -> Vec<&'a
 
 fn execute_rule(rule: &AutomationRule) {
     let res = match rule.action_kind.as_str() {
-        ACTION_MUTE_PC => win::audio::set_speaker_mute(true),
-        ACTION_UNMUTE_PC => win::audio::set_speaker_mute(false),
+        ACTION_MUTE_PC => sys::audio::set_speaker_mute(true),
+        ACTION_UNMUTE_PC => sys::audio::set_speaker_mute(false),
         ACTION_PAUSE_PC_MEDIA => {
-            win::media_sessions::pause_for_call();
+            sys::media_sessions::pause_for_call();
             Ok(())
         }
-        ACTION_LOCK_PC => win::shell::lock(),
-        ACTION_RUN_COMMAND => win::shell::run_command(&rule.action_arg),
+        ACTION_LOCK_PC => sys::shell::lock(),
+        ACTION_RUN_COMMAND => sys::shell::run_command(&rule.action_arg),
         ACTION_DECK_TILE => deck::execute_tile(&rule.action_arg),
         other => Err(format!("unknown automation action_kind: {other}")),
     };

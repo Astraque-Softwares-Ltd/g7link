@@ -7,10 +7,10 @@ Uses a paired phone's microphone on a PC. Control messages travel on the
 session's control stream ([protocol v0](v0.md) §4); the sound travels on a
 dedicated bidirectional QUIC stream (`{ svc: "mic", op: "pcm", v: 1 }`).
 
-This is the streaming half of GitHub #7. The PC plays the sound into an
-output device; played into a virtual audio cable, the cable's other end is
-a microphone every app can pick. A virtual microphone of G7 Link's own
-needs an audio driver and is a separate step.
+The PC plays the sound into an output device. On Linux it offers its own
+virtual microphone (a PipeWire or PulseAudio `module-pipe-source`, in mono
+or stereo) that every app can pick; it can also play into the speakers, for
+listening in.
 
 ## 1. Capabilities and toggle
 

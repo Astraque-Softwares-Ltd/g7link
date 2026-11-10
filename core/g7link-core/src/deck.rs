@@ -147,9 +147,9 @@ impl DeckAction {
             Self::VolumeMute => "Mute or unmute speakers".into(),
             Self::MicMute => "Mute or unmute microphone".into(),
             Self::LockPc => "Lock this PC".into(),
-            Self::ShowDesktop => "Show desktop (Win+D)".into(),
+            Self::ShowDesktop => "Show desktop (Super+D)".into(),
             Self::SwitchWindow => "Switch window (Alt+Tab)".into(),
-            Self::Screenshot => "Take screenshot (Win+Shift+S)".into(),
+            Self::Screenshot => "Take screenshot".into(),
             Self::Shortcut { key, mods } => format_shortcut(key, mods),
             Self::OpenUrl { url } => url.clone(),
             Self::TypeText { text } => {
@@ -202,7 +202,7 @@ pub fn format_shortcut(key: &str, mods: &[KeyMod]) -> String {
                 KeyMod::Ctrl => "Ctrl",
                 KeyMod::Alt => "Alt",
                 KeyMod::Shift => "Shift",
-                KeyMod::Win => "Win",
+                KeyMod::Win => "Super",
             }
             .into()
         })
@@ -225,9 +225,9 @@ pub fn is_valid_snippet(text: &str) -> bool {
         && !text.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
 }
 
-/// Validates that `path` is a non-empty `.exe`, `.lnk`, `.desktop`, or `.appimage`
-/// file path, or an absolute (or `~/`) Unix executable path excluding shells,
-/// `.sh` scripts, and non-application system/temp directories.
+/// Validates that `path` is a non-empty `.desktop` or `.appimage` file path, or an
+/// absolute (or `~/`) executable path excluding shells, `.sh` scripts, and
+/// non-application system/temp directories.
 pub fn is_valid_app_path(path: &str) -> bool {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed.len() > MAX_PATH_BYTES || trimmed.chars().any(char::is_control) {
@@ -237,7 +237,7 @@ pub fn is_valid_app_path(path: &str) -> bool {
         return false;
     }
     let lower = trimmed.to_ascii_lowercase();
-    for ext in [".exe", ".lnk", ".desktop", ".appimage"] {
+    for ext in [".desktop", ".appimage"] {
         if let Some(stem) = lower.strip_suffix(ext) {
             let file_stem = stem.rsplit(['/', '\\']).next().unwrap_or(stem);
             return !file_stem.is_empty();
@@ -798,17 +798,12 @@ mod tests {
     }
 
     #[test]
-    fn action_validation_enforces_http_exe_lnk_and_shortcuts() {
+    fn action_validation_enforces_http_app_paths_and_shortcuts() {
         assert!(DeckAction::OpenUrl { url: "https://example.com/path?q=1".into() }.is_valid());
         assert!(DeckAction::OpenUrl { url: "http://localhost:8080".into() }.is_valid());
         assert!(!DeckAction::OpenUrl { url: "javascript:alert(1)".into() }.is_valid());
-        assert!(!DeckAction::OpenUrl { url: "file:///C:/Windows/System32/cmd.exe".into() }.is_valid());
+        assert!(!DeckAction::OpenUrl { url: "file:///usr/bin/xterm".into() }.is_valid());
         assert!(!DeckAction::OpenUrl { url: "ftp://example.com".into() }.is_valid());
-
-        assert!(DeckAction::LaunchApp { path: r"C:\Windows\System32\calc.exe".into() }.is_valid());
-        assert!(DeckAction::LaunchApp { path: r"C:\Users\me\Desktop\OBS Studio.LNK".into() }.is_valid());
-        assert!(!DeckAction::LaunchApp { path: r"C:\scripts\evil.bat".into() }.is_valid());
-        assert!(!DeckAction::LaunchApp { path: r"C:\scripts\evil.ps1".into() }.is_valid());
 
         assert!(DeckAction::LaunchApp { path: "/usr/bin/firefox".into() }.is_valid());
         assert!(DeckAction::LaunchApp { path: "org.mozilla.firefox.desktop".into() }.is_valid());
@@ -832,7 +827,7 @@ mod tests {
         assert!(!DeckAction::LaunchApp { path: "/payload".into() }.is_valid());
         assert!(!DeckAction::LaunchApp { path: "~/payload".into() }.is_valid());
         assert!(!DeckAction::LaunchApp { path: "~/".into() }.is_valid());
-        assert!(!DeckAction::LaunchApp { path: ".exe".into() }.is_valid());
+        assert!(!DeckAction::LaunchApp { path: ".appimage".into() }.is_valid());
         assert!(!DeckAction::LaunchApp { path: ".desktop".into() }.is_valid());
         assert!(!DeckAction::LaunchApp { path: "../bin/sh".into() }.is_valid());
         assert!(!DeckAction::LaunchApp { path: "/usr/../etc/passwd".into() }.is_valid());
@@ -869,7 +864,7 @@ mod tests {
             label: "Calculator".into(),
             icon: deck_icons::APP.into(),
             color: deck_colors::TEAL.into(),
-            action: DeckAction::LaunchApp { path: r"C:\Private\secret_app.exe".into() },
+            action: DeckAction::LaunchApp { path: "/opt/private/hidden-tool".into() },
         });
         cfg.pages[0].tiles.push(DeckTileConfig {
             id: "secret_url".into(),
@@ -880,13 +875,13 @@ mod tests {
         });
 
         let dbg = format!("{cfg:?}");
-        assert!(!dbg.contains("super-secret-token") && !dbg.contains("secret_app.exe"), "{dbg}");
+        assert!(!dbg.contains("super-secret-token") && !dbg.contains("hidden-tool"), "{dbg}");
 
         let wire = cfg.to_wire_layout();
         let cbor = Envelope::new(types::DECK_LAYOUT, &wire).unwrap().to_cbor();
         let cbor_text = String::from_utf8_lossy(&cbor);
         assert!(!cbor_text.contains("super-secret-token"));
-        assert!(!cbor_text.contains("secret_app.exe"));
+        assert!(!cbor_text.contains("hidden-tool"));
         assert!(!cbor_text.contains("internal.example.com"));
         assert_eq!(wire.tile("secret_cmd").unwrap().kind, deck_kinds::RUN_COMMAND);
         assert_eq!(wire.tile("secret_app").unwrap().kind, deck_kinds::LAUNCH_APP);

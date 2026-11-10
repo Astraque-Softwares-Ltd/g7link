@@ -70,7 +70,7 @@ impl Eq for ScreenShape {}
 pub struct DeviceInfo {
     pub name: String,
     pub kind: DeviceKind,
-    /// "android", "windows" or "macos".
+    /// "android" or "linux".
     pub os: String,
     pub os_version: String,
     pub model: Option<String>,
@@ -192,8 +192,7 @@ pub enum FeatureStatus {
     Locked {
         upgrade: Upgrade,
     },
-    /// `reason`: "deviceKinds", "android:<release>", "windows:<build>" or
-    /// "notOnThisDevice".
+    /// `reason`: "deviceKinds", "android:<release>" or "notOnThisDevice".
     Unsupported {
         reason: String,
     },
@@ -4234,7 +4233,7 @@ impl G7LinkNode {
     }
 
     /// A folder on this phone changed (`""` for root): PCs that have it open
-    /// in File Explorer refresh it (`storage.changed`, debounced).
+    /// in their file manager refresh it (`storage.changed`, debounced).
     pub async fn storage_changed(&self, path: String) {
         let node = self.node.clone();
         self.run(async move { node.storage_changed(path).await }).await;

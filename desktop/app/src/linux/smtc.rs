@@ -3,9 +3,9 @@
 //! D-Bus service `org.mpris.MediaPlayer2.g7link` on `/org/mpris/MediaPlayer2`
 //! and atomic JSON state snapshot).
 //!
-//! Mirrors the public API of `win::smtc`: [`start`] registers the command
-//! callback and spawns the `"media-controls"` worker thread; [`show`] updates
-//! or clears the currently displayed phone media session.
+//! [`start`] registers the command callback and spawns the `"media-controls"`
+//! worker thread; [`show`] updates or clears the currently displayed phone
+//! media session.
 
 use std::collections::HashMap;
 use std::fs;
@@ -64,7 +64,7 @@ fn on_command_slot() -> &'static Mutex<Option<OnCommand>> {
     ON_COMMAND.get_or_init(|| Mutex::new(None))
 }
 
-/// Formats the second line of the media flyout with source attribution matching `win::smtc`.
+/// Formats the second line of the media controls, naming the phone that plays.
 pub(crate) fn format_artist_line(artist: Option<&str>, app: &str, device_name: &str) -> String {
     let source = format!("{app} on {device_name}");
     match artist.map(str::trim).filter(|s| !s.is_empty()) {

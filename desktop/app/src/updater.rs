@@ -30,8 +30,8 @@ use crate::{
     core_host,
     feed::{self, RELEASE_DOWNLOADS},
     state::Changes,
+    sys::{autostart, http, toast},
     version::{self, Channel},
-    win::{autostart, http, toast},
 };
 
 const LATEST: &str = "https://api.github.com/repos/Astraque-Softwares-Ltd/g7link/releases/latest";
@@ -130,7 +130,7 @@ fn check_every() -> Duration {
         Channel::Nightly => NIGHTLY_EVERY,
         Channel::Stable => STABLE_EVERY,
     };
-    if crate::win::on_battery() { every * 2 } else { every }
+    if crate::sys::on_battery() { every * 2 } else { every }
 }
 
 pub fn set_auto(on: bool) {
@@ -674,7 +674,7 @@ fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
 
     if staged_name.ends_with(".deb") {
         let staged_str = staged.to_string_lossy();
-        let code = crate::win::elevated::run_elevated(
+        let code = crate::sys::elevated::run_elevated(
             Path::new("sh"),
             &["-e", "-c", PRIVILEGED_DEB_INSTALL_SCRIPT, "sh", &staged_str, &expected],
         )
@@ -691,7 +691,7 @@ fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
 
     if staged_name.ends_with(".rpm") {
         let staged_str = staged.to_string_lossy();
-        let code = crate::win::elevated::run_elevated(
+        let code = crate::sys::elevated::run_elevated(
             Path::new("sh"),
             &["-e", "-c", PRIVILEGED_RPM_INSTALL_SCRIPT, "sh", &staged_str, &expected],
         )
@@ -714,7 +714,7 @@ fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
 
         if needs_root {
             let staged_str = staged.to_string_lossy();
-            let code = crate::win::elevated::run_elevated(
+            let code = crate::sys::elevated::run_elevated(
                 Path::new("sh"),
                 &["-e", "-c", PRIVILEGED_TAR_INSTALL_SCRIPT, "sh", &staged_str, &expected],
             )
@@ -754,7 +754,7 @@ fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    if crate::win::shell::open_url(&update.notes_url).is_err() {
+    if crate::sys::shell::open_url(&update.notes_url).is_err() {
         return Err(tr!("Updater", "The update couldn't be started. Try again."));
     }
     Ok(())
@@ -858,12 +858,12 @@ mod tests {
             prerelease: false,
             assets: vec![
                 Asset {
-                    name: "G7Link-9.0.0-x64-setup.exe".into(),
+                    name: "G7Link-9.0.0-x86_64.AppImage".into(),
                     browser_download_url:
                         "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup".into(),
                 },
                 Asset {
-                    name: "G7Link-9.0.0-arm64-setup.exe".into(),
+                    name: "G7Link-9.0.0-aarch64.AppImage".into(),
                     browser_download_url:
                         "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup-arm64"
                             .into(),
@@ -914,33 +914,33 @@ mod tests {
 
     #[test]
     fn the_relauncher_refuses_paths_and_versions_that_could_break_its_quotes() {
-        let odd = Path::new(r"C:\Program Files\it's\g7link-desktop.exe");
+        let odd = Path::new("/opt/it's/g7link-desktop");
         assert!(spawn_relauncher(odd, "0.2.0", false).is_err());
-        let fine = Path::new(r"C:\Program Files\G7Link\g7link-desktop.exe");
-        assert!(spawn_relauncher(fine, "0.2.0'; Remove-Item x; '", false).is_err());
+        let fine = Path::new("/opt/g7link/g7link-desktop");
+        assert!(spawn_relauncher(fine, "0.2.0'; rm -rf x; '", false).is_err());
     }
 
     #[test]
     fn installer_names_that_are_not_plain_file_names_are_refused() {
-        for name in [r"..\..\evil-x64-setup.exe", "G7Link-9/../x-x64-setup.exe", "evil-x64-setup.exe"] {
+        for name in ["../../evil-x86_64.AppImage", "G7Link-9/../x-x86_64.AppImage", "evil-x86_64.AppImage"] {
             let mut r = release("v9.0.0");
             r.assets[0].name = name.into();
-            assert!(newer_release_for(r, "0.0.1", "-x64-setup.exe").is_none(), "{name}");
+            assert!(newer_release_for(r, "0.0.1", "-x86_64.AppImage").is_none(), "{name}");
         }
     }
 
     #[test]
     fn releases_become_updates_when_newer_and_complete() {
-        let x64 = newer_release_for(release("v9.0.0"), "0.0.1", "-x64-setup.exe").unwrap();
+        let x64 = newer_release_for(release("v9.0.0"), "0.0.1", "-x86_64.AppImage").unwrap();
         assert_eq!(
             (x64.version.as_str(), x64.installer_url.as_str()),
             ("9.0.0", "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup")
         );
-        let arm64 = newer_release_for(release("v9.0.0"), "0.0.1", "-arm64-setup.exe").unwrap();
+        let arm64 = newer_release_for(release("v9.0.0"), "0.0.1", "-aarch64.AppImage").unwrap();
         assert_eq!(
             (arm64.installer_name.as_str(), arm64.installer_url.as_str()),
             (
-                "G7Link-9.0.0-arm64-setup.exe",
+                "G7Link-9.0.0-aarch64.AppImage",
                 "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup-arm64"
             )
         );
@@ -957,10 +957,10 @@ mod tests {
         {
             let mut moved = release("v9.0.0");
             moved.assets[0].browser_download_url = elsewhere.into();
-            assert!(newer_release_for(moved, "0.0.1", "-x64-setup.exe").is_none(), "{elsewhere}");
+            assert!(newer_release_for(moved, "0.0.1", "-x86_64.AppImage").is_none(), "{elsewhere}");
             let mut moved_sums = release("v9.0.0");
             moved_sums.assets.last_mut().unwrap().browser_download_url = elsewhere.into();
-            assert!(newer_release_for(moved_sums, "0.0.1", "-x64-setup.exe").is_none(), "{elsewhere}");
+            assert!(newer_release_for(moved_sums, "0.0.1", "-x86_64.AppImage").is_none(), "{elsewhere}");
         }
     }
 
@@ -1017,9 +1017,9 @@ mod tests {
     #[test]
     fn finds_the_installer_hash() {
         let hash = "a".repeat(64);
-        let sums = format!("{hash}  G7Link-9.0.0-x64-setup.exe\n{}  other.txt\n", "b".repeat(64));
-        assert_eq!(listed_hash(&sums, "G7Link-9.0.0-x64-setup.exe"), Some(hash));
-        assert_eq!(listed_hash(&sums, "missing.exe"), None);
-        assert_eq!(listed_hash(&format!("{}  *x.exe", "C".repeat(64)), "x.exe"), Some("c".repeat(64)));
+        let sums = format!("{hash}  G7Link-9.0.0-x86_64.AppImage\n{}  other.txt\n", "b".repeat(64));
+        assert_eq!(listed_hash(&sums, "G7Link-9.0.0-x86_64.AppImage"), Some(hash));
+        assert_eq!(listed_hash(&sums, "missing.AppImage"), None);
+        assert_eq!(listed_hash(&format!("{}  *x.deb", "C".repeat(64)), "x.deb"), Some("c".repeat(64)));
     }
 }

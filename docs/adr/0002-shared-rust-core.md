@@ -2,14 +2,15 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-05
+- **Updated:** 2026-11-10, for the Linux-only desktop
 
 ## Context
 
-Competitors that implement the protocol twice (e.g. KDE Connect's separate desktop and Android code) suffer interop bugs. We need one implementation of networking, pairing, transfers and storage, that is fast, memory-safe for parsing untrusted input, and portable to Windows, Android and later macOS.
+Competitors that implement the protocol twice (e.g. KDE Connect's separate desktop and Android code) suffer interop bugs. We need one implementation of networking, pairing, transfers and storage, that is fast, memory-safe for parsing untrusted input, and portable to the Linux desktop and Android.
 
 ## Decision
 
-All protocol, pairing, session, transfer and storage logic lives in Rust crates under `core/`. The Windows app links them directly; the Android app uses them via UniFFI bindings.
+All protocol, pairing, session, transfer and storage logic lives in Rust crates under `core/`. The desktop app links them directly; the Android app uses them via UniFFI bindings.
 
 ## Consequences
 

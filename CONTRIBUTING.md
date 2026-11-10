@@ -45,22 +45,19 @@ parts, this includes the [app-store exception](LICENSES/APP-STORE-EXCEPTION.md).
 
 ## Building and checking
 
-The [README](README.md#building-from-source) lists the requirements and build commands.
-Before opening a pull request, run the same checks as CI:
-
-```powershell
-./scripts/check.ps1
-```
+[Building and testing](docs/technical/building-and-testing.md) lists the
+requirements and build commands. Before opening a pull request, run the same
+checks as CI; that page lists them under
+[What CI runs](docs/technical/building-and-testing.md#what-ci-runs).
 
 A pull request that changes only docs (Markdown, `docs/` apart from
 `docs/design/`, `LICENSES/`) skips CI's builds; the rule is in
 `.github/scripts/docs-only.sh`.
 
 The desktop app's shared QML components have tests in
-`desktop/app/tests/qml` (`tst_*.qml`, Qt Quick Test), which check.ps1 runs
-through `./scripts/qml-tests.ps1`. The Rust singletons the components read
-are stubbed in `desktop/app/tests/qml/stubs`; a test that needs one more
-adds it there.
+`desktop/app/tests/qml` (`tst_*.qml`, Qt Quick Test). The Rust singletons the
+components read are stubbed in `desktop/app/tests/qml/stubs`; a test that
+needs one more adds it there.
 
 ## Ground rules for code
 
@@ -73,7 +70,7 @@ These come from the plan and will grow into a full style guide:
   or keys. No telemetry.
 - **All user-facing strings are translatable**: `qsTr` in QML,
   `tr!("Context", "Sent to %1", name)` for text the desktop app builds in
-  Rust, string resources on Android. After changing text on Windows, run
+  Rust, string resources on Android. After changing desktop text, run
   `cargo xtask strings`, then `lupdate` over every catalogue and the
   template, as [docs/translating.md](docs/translating.md) shows. That page
   also covers translating G7 Link into a new language.
@@ -85,10 +82,11 @@ These come from the plan and will grow into a full style guide:
 ## Questions and ideas
 
 Questions, ideas that need talking through, and "how do I…" belong in
-[Discussions](https://github.com/thtbee/nectarlink/discussions), not issues.
+[Discussions](https://github.com/Astraque-Softwares-Ltd/g7link/discussions),
+not issues.
 
 ## Reporting bugs
 
-Open an issue with your Windows build, phone model, Android version, and the
-G7 Link versions on both sides. Security problems go through
+Open an issue with your Linux distribution and desktop, phone model, Android
+version, and the G7 Link versions on both sides. Security problems go through
 [SECURITY.md](SECURITY.md) instead, never a public issue.

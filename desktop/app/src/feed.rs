@@ -11,7 +11,7 @@
 //! { "schema": 1, "channel": "nightly", "version": "0.1.5-nightly.7",
 //!   "name": "Amber Clover", "published": "2026-11-03T10:17:00Z",
 //!   "notes": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/tag/v0.1.5-nightly.7",
-//!   "files": [{ "name": "G7Link-0.1.5-nightly.7-x64-setup.exe",
+//!   "files": [{ "name": "G7Link-0.1.5-nightly.7-x86_64.AppImage",
 //!               "url": "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/…",
 //!               "sha256": "…", "size": 41234567 }] }
 //! ```
@@ -21,8 +21,8 @@ use std::{collections::HashMap, sync::Mutex};
 use serde::Deserialize;
 
 use crate::{
+    sys::http::{self, Fresh},
     version::{self, Channel},
-    win::http::{self, Fresh},
 };
 
 /// Where the feeds are: `<FEEDS><channel>.json`.
@@ -139,8 +139,8 @@ mod tests {
             published: None,
             notes: "https://github.com/Astraque-Softwares-Ltd/g7link/releases/tag/v1".into(),
             files: vec![FeedFile {
-                name: "G7Link-0.1.5-nightly.7-x64-setup.exe".into(),
-                url: format!("{RELEASE_DOWNLOADS}v0.1.5-nightly.7/G7Link-0.1.5-nightly.7-x64-setup.exe"),
+                name: "G7Link-0.1.5-nightly.7-x86_64.AppImage".into(),
+                url: format!("{RELEASE_DOWNLOADS}v0.1.5-nightly.7/G7Link-0.1.5-nightly.7-x86_64.AppImage"),
                 sha256: "A".repeat(64),
                 size: 1,
             }],
@@ -172,9 +172,9 @@ mod tests {
         let mut f = feed("nightly", "0.1.5-nightly.7");
         let good = f.files[0].clone();
         f.files = vec![
-            FeedFile { url: "https://evil.example/G7Link-setup.exe".into(), ..good.clone() },
-            FeedFile { url: format!("{RELEASE_DOWNLOADS}../../other/x.exe"), ..good.clone() },
-            FeedFile { name: "..\\setup.exe".into(), ..good.clone() },
+            FeedFile { url: "https://evil.example/G7Link.AppImage".into(), ..good.clone() },
+            FeedFile { url: format!("{RELEASE_DOWNLOADS}../../other/x.AppImage"), ..good.clone() },
+            FeedFile { name: "../setup.AppImage".into(), ..good.clone() },
             FeedFile { sha256: "xyz".into(), ..good.clone() },
             good,
         ];

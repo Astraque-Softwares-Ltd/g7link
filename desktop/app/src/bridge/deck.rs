@@ -55,10 +55,10 @@ fn action_fields(action: &DeckAction) -> (String, bool, bool, bool, bool, String
         DeckAction::VolumeDown => (String::new(), false, false, false, false, "−2%".into()),
         DeckAction::VolumeMute => (String::new(), false, false, false, false, "Speaker".into()),
         DeckAction::MicMute => (String::new(), false, false, false, false, "Microphone".into()),
-        DeckAction::LockPc => (String::new(), false, false, false, false, "Win + L".into()),
-        DeckAction::ShowDesktop => (String::new(), false, false, false, false, "Win + D".into()),
+        DeckAction::LockPc => (String::new(), false, false, false, false, "Super + L".into()),
+        DeckAction::ShowDesktop => (String::new(), false, false, false, false, "Super + D".into()),
         DeckAction::SwitchWindow => (String::new(), false, false, false, false, tr!("Deck", "Alt + Tab")),
-        DeckAction::Screenshot => (String::new(), false, false, false, false, "Win + Shift + S".into()),
+        DeckAction::Screenshot => (String::new(), false, false, false, false, "Print Screen".into()),
         DeckAction::Shortcut { key, mods } => {
             let ctrl = mods.contains(&KeyMod::Ctrl);
             let alt = mods.contains(&KeyMod::Alt);
@@ -75,7 +75,7 @@ fn action_fields(action: &DeckAction) -> (String, bool, bool, bool, bool, String
                 parts.push("Shift".to_owned());
             }
             if win {
-                parts.push("Win".to_owned());
+                parts.push("Super".to_owned());
             }
             parts.push(key.to_ascii_uppercase());
             (key.clone(), ctrl, alt, shift, win, parts.join(" + "))

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Battery alerts: a Windows notification when a phone's battery runs low,
+//! Battery alerts: a desktop notification when a phone's battery runs low,
 //! and when it's fully charged. Once each, until the battery has moved on.
 
 use crate::i18n::tr;
@@ -15,7 +15,7 @@ use g7link_core::{Battery, DeviceId, NodeEvent};
 
 use crate::{
     core_host,
-    win::toast::{self, Toast},
+    sys::toast::{self, Toast},
 };
 
 /// The toast "device" for battery alerts; their key is the phone's ID.

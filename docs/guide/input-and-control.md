@@ -14,7 +14,7 @@ G7 Link lets you control your PC from your phone and control your phone from you
 | **Type on phone from PC keyboard (without mirroring)** | `Assist` (Android Accessibility Service) or `Elevated` (Wireless Debugging) on the phone. |
 | **`Deck` macro pad** | Per-phone **Remote mouse, keyboard & Deck** (`remote_input`) toggle enabled on the PC. Tiles that run custom PC shell commands also require the separate per-phone **Run Deck shell commands** (`commands`) toggle in PC **Settings › Devices** (off by default). |
 | **Phone controls on PC Home** | `Standard` for Media volume, Ringer mode (Ring/Vibrate), and Flashlight. **Do Not Disturb and silent mode** requires Android Notification Policy Access (**Settings › Permissions › Control from your PC**). **Screen brightness** requires Android Modify system settings. **Wi-Fi** and **Bluetooth** toggles require `Elevated` (which also grants DND and brightness permissions automatically). |
-| **Lock, Sleep, and Wake-on-LAN** | **Lock, sleep & wake PC** (`pc_actions`) toggle enabled in PC **Settings › Devices** (on by default). Wake-on-LAN requires a PC network adapter with Wake on LAN enabled in Windows Device Manager and BIOS/UEFI (typically Ethernet). |
+| **Lock, Sleep, and Wake-on-LAN** | **Lock, sleep & wake PC** (`pc_actions`) toggle enabled in PC **Settings › Devices** (on by default). Wake-on-LAN requires a PC network adapter with Wake-on-LAN enabled in the BIOS/UEFI and for the adapter (typically Ethernet). |
 
 ## Step-by-Step Use
 
@@ -38,7 +38,7 @@ Tap **Control PC** on the Android Home screen. The first time you open it, click
 
 #### Keyboard and Voice Dictation
 
-- **Remote Keyboard**: Tap **Keyboard** to open your phone's soft keyboard and type straight into the focused window on your PC. Above the keyboard sits a scrollable bar of PC modifier and special keys: **`Ctrl`**, **`Alt`**, **`Shift`**, **`Win`**, **`Esc`**, **`Tab`**, **Arrow keys**, **`Home`**, **`End`**, **`PgUp`**, **`PgDn`**, **`Del`**, **`Copy`**, and **`Paste`**. Tap a modifier key (`Ctrl`, `Alt`, `Shift`, `Win`) to latch it for the next keystroke.
+- **Remote Keyboard**: Tap **Keyboard** to open your phone's soft keyboard and type straight into the focused window on your PC. Above the keyboard sits a scrollable bar of PC modifier and special keys: **`Ctrl`**, **`Alt`**, **`Shift`**, **`Super`**, **`Esc`**, **`Tab`**, **Arrow keys**, **`Home`**, **`End`**, **`PgUp`**, **`PgDn`**, **`Del`**, **`Copy`**, and **`Paste`**. Tap a modifier key (`Ctrl`, `Alt`, `Shift`, `Super`) to latch it for the next keystroke.
 - **Voice Dictation**: Tap or hold **Dictate** and speak. G7 Link uses your phone's speech recognizer (on-device recognition where available) to stream live partial transcripts and type the finished sentence directly into the active text field on your PC.
 
 #### Presentation Remote and Laser Pointer
@@ -46,7 +46,7 @@ Tap **Control PC** on the Android Home screen. The first time you open it, click
 Switch to **Presentation** mode when giving a talk or slideshow:
 
 - Tap **Next slide** or **Previous** to step through slides. While the Presentation screen is open on your phone, your phone's physical **Volume Up** and **Volume Down** buttons also advance or go back a slide without looking at the screen.
-- Tap **Start show** (`F5`), **End show** (`Esc`), or **Black screen** (`B`) to control PowerPoint, Google Slides, Keynote Web, or PDF presenters.
+- Tap **Start show** (`F5`), **End show** (`Esc`), or **Black screen** (`B`) to control LibreOffice Impress, Google Slides, or PDF presenters.
 - **Hold for laser pointer**: Press and hold the laser button to project a bright, accent-colored laser dot overlay onto your PC monitor that follows how you tilt your phone (via gyroscope) or drag your finger.
 
 #### Screen Mode
@@ -75,7 +75,7 @@ When your phone is sitting on a stand next to your monitor and you just want to 
    - Live tiles update in real time to show whether PC media is **Playing** or **Paused**, the current speaker volume percentage, and whether your PC microphone is **Muted** or **Live**.
 2. **Customizing `Deck` on your PC**: Click **Deck** in the left navigation bar on your PC.
    - Drag and drop tiles to reorder them, add new pages, and customize each tile's label, icon, and color.
-   - Choose from built-in tile types: **Play / Pause**, **Previous**, **Next**, **Volume up / down / mute**, **Microphone mute**, **Lock PC**, **Show desktop**, **Switch window**, **Screenshot**, **Keyboard shortcut** (any custom hotkey combo), **Open web link**, **Type text snippet**, **Launch application** (`.exe` or `.lnk`), or **Run shell command**.
+   - Choose from built-in tile types: **Play / Pause**, **Previous**, **Next**, **Volume up / down / mute**, **Microphone mute**, **Lock PC**, **Show desktop**, **Switch window**, **Screenshot**, **Keyboard shortcut** (any custom hotkey combo), **Open web link**, **Type text snippet**, **Launch application** (a program path such as `/usr/bin/firefox`, a `.desktop` ID, or an `.AppImage`), or **Run shell command**.
    - **Security gate for shell commands**: Tiles that execute custom PC shell commands are blocked unless you also turn on **Run Deck shell commands** (`commands`, off by default) for that phone in PC **Settings › Devices**.
 
 ### 4. Phone Controls on PC Home
@@ -96,11 +96,11 @@ When your phone is resting on a charger or desk stand, tap **Desk clock** on the
 ### 6. Lock, Sleep, Find My Device, and Wake-on-LAN
 
 - **Find my device (both ways)**: Click **Find phone** on PC Home to ring your phone at full volume on the alarm audio stream (even if the phone is on silent or Do Not Disturb). Tap **Ring PC** on your phone (or on the Android home-screen widget) to play an alert chime on your PC.
-- **Lock or Sleep PC**: Tap **Lock PC** or **Sleep** on your phone (or on the Android **PC quick actions** widget) to lock your Windows session or put the PC to sleep when you walk away.
+- **Lock or Sleep PC**: Tap **Lock PC** or **Sleep** on your phone (or on the Android **PC quick actions** widget) to lock your desktop session or put the PC to sleep when you walk away.
 - **Wake PC (Wake-on-LAN)**: When your PC is asleep or powered off, tap **Wake** on your phone (or on the Android home-screen widget).
   - On the local network, your phone sends Wake-on-LAN UDP packets to every MAC and broadcast address stored for your PC during prior connections.
   - If you have another G7 Link device online on your home LAN while you are on mobile data (**Connect over mobile data**), G7 Link can also relay the wake request through your online home device.
-  - Check **Settings › Connection & About › Wake from your phone** on your PC to verify whether your Windows network adapter has Wake on LAN enabled in Device Manager.
+  - Check **Settings › Connection & About › Wake from your phone** on your PC to see whether your network adapter has Wake-on-LAN turned on (as `ethtool` reports it).
 
 ## What the Options Do
 
@@ -118,5 +118,5 @@ When your phone is resting on a charger or desk stand, tap **Desk clock** on the
 
 ## Limits
 
-- **Wake-on-LAN Hardware Requirements**: Waking a sleeping or powered-off PC over the network requires Wake-on-LAN to be enabled in your PC's BIOS/UEFI and in your network adapter's Windows Device Manager properties (**Power Management › Allow this device to wake the computer**). Most desktop Ethernet adapters support waking from both sleep (`S3`) and shutdown (`S5`), whereas many laptop Wi-Fi cards only support waking from low-power standby (`S0ix`) or sleep, not full shutdown.
+- **Wake-on-LAN Hardware Requirements**: Waking a sleeping or powered-off PC over the network requires Wake-on-LAN to be enabled in your PC's BIOS/UEFI and for your network adapter (for example `sudo ethtool -s <adapter> wol g`; your distribution's network settings may need to keep it on across restarts). Most desktop Ethernet adapters support waking from both sleep (`S3`) and shutdown (`S5`), whereas many laptop Wi-Fi cards only support waking from low-power standby (`S0ix`) or sleep, not full shutdown.
 - **Wi-Fi and Bluetooth Toggles on Android 10+**: Starting in Android 10, regular apps cannot toggle Wi-Fi or Bluetooth directly. Those two toggles on PC Home require the `Elevated` power level on your phone.

@@ -6,7 +6,7 @@ This guide summarizes the repository conventions, module header requirements, pr
 
 G7 Link uses three licenses across the repository (see [`LICENSE`](../../LICENSE)):
 - **Core libraries** (`core/g7link-protocol`, `core/g7link-core`, `core/g7link-ffi`): [`MPL-2.0`](../../LICENSES/MPL-2.0.txt)
-- **Applications and CLI** (`desktop/app`, `desktop/vcam`, `android`, `cli`): [`GPL-3.0-or-later`](../../LICENSES/GPL-3.0-or-later.txt) with an [`app-store exception`](../../LICENSES/APP-STORE-EXCEPTION.md)
+- **Applications and CLI** (`desktop/app`, `desktop/vcam`, `android`, `core/g7link-cli`): [`GPL-3.0-or-later`](../../LICENSES/GPL-3.0-or-later.txt) with an [`app-store exception`](../../LICENSES/APP-STORE-EXCEPTION.md)
 - **Protocol specification and documentation** (`docs/`): [`CC BY 4.0`](../../LICENSES/CC-BY-4.0.txt)
 
 Contributions are accepted under the [`Developer Certificate of Origin`](../../DCO.txt).
@@ -25,7 +25,7 @@ or for application and CLI files:
 // SPDX-License-Identifier: GPL-3.0-or-later
 ```
 
-- Verified automatically by [`scripts/check-headers.ps1`](../../scripts/check-headers.ps1) and [`scripts/check.ps1`](../../scripts/check.ps1).
+- Verified automatically by [`scripts/check-headers.ps1`](../../scripts/check-headers.ps1) (run with `pwsh`, as CI does).
 - Never log message text, phone numbers, contact names, file paths, or clipboard contents (see [`docs/protocol/v0.md`](../protocol/v0.md) section 11).
 
 ## Code Style and Static Analysis
@@ -39,7 +39,7 @@ or for application and CLI files:
   - Never unwrap fallible network, CBOR, file I/O, or SQLite operations on untrusted peer inputs.
 - **`unsafe` Blocks**:
   - Avoid `unsafe` in `g7link-protocol` and `g7link-core`.
-  - Where Win32/COM/FFI calls require `unsafe` (such as `DpapiKeyProtector`, `desktop/vcam` COM interfaces, or `desktop/app` Win32/WASAPI/DXGI interop), keep the `unsafe` block minimal and document the pointer/lifetime invariants.
+  - Where FFI or system calls require `unsafe` (such as `desktop/vcam` shared memory, or `desktop/app/src/linux` calls into libc, X11, V4L2 and FFmpeg), keep the `unsafe` block minimal and document the pointer/lifetime invariants.
 
 ### Kotlin (Android)
 
@@ -47,7 +47,7 @@ or for application and CLI files:
 - Run blocking disk, SQLite, or FFI calls on `Dispatchers.IO`, never on the main UI thread.
 - Keep `Compose` list items free of per-frame allocations (such as `SimpleDateFormat` creation inside `LazyColumn` item blocks) to preserve the `< 5%` scroll jank budget.
 
-### QML (Windows Desktop)
+### QML (Desktop)
 
 - Read colors, spacing, radii, and typography exclusively from the `Theme` singleton (`desktop/app/qml/Theme.qml`, built on the generated `Tokens.qml`) rather than hardcoding hex literals.
 - Gate continuous animations (`NumberAnimation`, `RotationAnimator`) on item visibility and active window state so minimized tray mode consumes `0.00%` CPU.
@@ -65,7 +65,7 @@ When introducing a new cross-device capability or extending an existing wire mes
    - Decide whether the feature is default-on or high-sensitivity opt-in (`default_enabled: false`), and whether it must be restricted over `ConnectionPath::Relay` (**Connect over mobile data** / `away_mode`).
 4. **Core & FFI Plumbing (`core/g7link-core`, `core/g7link-ffi`)**:
    - Implement the handler in `g7link-core` and enforce `self.capabilities.is_allowed(&peer, cap::...)` on both inbound and outbound paths.
-   - If Android needs the API, expose it in `core/g7link-ffi/src/lib.rs` and run `android\gradlew.bat generateUniffiBindings` (or `cargo run -p g7link-ffi --bin uniffi-bindgen`).
+   - If Android needs the API, expose it in `core/g7link-ffi/src/lib.rs`. The Android build regenerates the Kotlin bindings (`uniffiBindgen<Variant>` tasks), so `./gradlew assembleDebug` in `android/` picks it up.
 5. **Two-Device Integration Test (`core/g7link-core/tests/two_devices.rs`)**:
    - Add an end-to-end test spinning up two in-process `Node` instances over QUIC to verify capability negotiation, happy-path execution, and toggle denial behavior.
 
@@ -79,16 +79,11 @@ If a change alters the SQLite schema:
 
 ## Pre-Submission Checklist
 
-Before opening a pull request or merging a change, run the full verification script from the repository root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\check.ps1
-```
-
-Verify that:
-- `cargo fmt --all -- --check` produces no diff.
-- `cargo clippy --workspace --all-targets -- -D warnings` exits cleanly.
-- `cargo test --workspace` passes all unit and integration tests.
-- `scripts/check-headers.ps1` reports `OK`.
-- `cargo xtask tokens --check` confirms generated design token files are in sync.
-- `android/gradlew.bat compileDebugKotlin` succeeds when Android or FFI code is touched.
+Before opening a pull request, run the checks CI runs (the full list is in
+[building and testing](building-and-testing.md#what-ci-runs)). Verify that:
+- `cargo fmt --all --check` produces no diff.
+- `cargo clippy` with `-D warnings` exits cleanly for the crates you touched.
+- `cargo test` passes for those crates.
+- `pwsh ./scripts/check-headers.ps1` reports no missing headers.
+- `cargo xtask tokens --check` and `cargo xtask strings --check` confirm generated files are in sync.
+- `./gradlew testDebugUnitTest lintDebug assembleDebug` in `android/` succeeds when Android or FFI code is touched.

@@ -1,9 +1,9 @@
 # Photos
 
-The **Photos** page on your PC gives you instant access to your phone's camera roll, screenshots, and albums without plugging in a cable or uploading your gallery to a cloud photo service. You can browse thumbnails grouped by day, inspect full-resolution photos, drag images straight into File Explorer or desktop editing apps, and get notified on your PC the moment you take a new photo or screenshot on your phone.
+The **Photos** page on your PC gives you instant access to your phone's camera roll, screenshots, and albums without plugging in a cable or uploading your gallery to a cloud photo service. You can browse thumbnails grouped by day, inspect full-resolution photos, drag images straight into your file manager or desktop editing apps, and get notified on your PC the moment you take a new photo or screenshot on your phone.
 
 <p align="center">
-  <img src="images/photos-page.png" alt="Photos page on Windows showing the phone's camera roll and albums" width="760">
+  <img src="images/photos-page.png" alt="Photos page on the PC showing the phone's camera roll and albums" width="760">
 </p>
 
 ## What You Need
@@ -30,22 +30,22 @@ The **Photos** page on your PC gives you instant access to your phone's camera r
 2. G7 Link streams the original, uncompressed image file from your phone on demand.
 3. Use the **Left** and **Right** arrow keys on your keyboard to step through your gallery, or press **Escape** to return to the grid.
 4. From the viewer toolbar, you can:
-   - Click **Copy** (`Ctrl+C`) to copy the full-resolution image onto your Windows clipboard so you can paste it into any document, chat app, or image editor.
-   - Click **Save** (`Ctrl+S`) to save the original file to `Downloads\G7Link` (or pick a custom destination folder).
-   - Click **Open in Photos** to open the downloaded original in the default Windows photo viewer.
+   - Click **Copy** (`Ctrl+C`) to copy the full-resolution image onto your PC's clipboard so you can paste it into any document, chat app, or image editor.
+   - Click **Save** (`Ctrl+S`) to save the original file to `~/Downloads/G7Link` (or pick a custom destination folder).
+   - Click **Open in Photos** to open the downloaded original in your default image viewer.
 
-### Dragging Photos Out to File Explorer or Apps
+### Dragging Photos Out to Your File Manager or Apps
 
-You do not need to click Save before using a photo in another Windows program:
+You do not need to click Save before using a photo in another program:
 
 1. Point at any photo tile on the **Photos** page, on the **Home** screen, or inside the slide-out `Shelf`.
-2. Click and drag the photo directly onto your Windows Desktop, into a File Explorer folder, or into an open app (such as PowerPoint, Photoshop, Figma, Slack, or your web browser).
+2. Click and drag the photo directly onto your desktop, into a folder in your file manager, or into an open app (such as an image editor, a chat app, or your web browser).
 3. G7 Link stages the full-resolution file with its original sanitized filename (for example, `IMG_20261012_091500.jpg`) so the receiving app gets the real file immediately.
 
 ### Selecting and Saving Multiple Photos
 
 1. Hover over a photo tile and click its selection check mark (or hold `Shift` / `Ctrl` while clicking) to select multiple photos.
-2. In the selection bar at the top, click **Save** to download all chosen originals to `Downloads\G7Link` (or the folder button to pick another) in one batch.
+2. In the selection bar at the top, click **Save** to download all chosen originals to `~/Downloads/G7Link` (or the folder button to pick another) in one batch.
 
 ### Deleting Photos from Your PC
 
@@ -70,7 +70,7 @@ Whenever you take a new photo or capture a screenshot on your phone while connec
 ## Data and Privacy
 
 - **On-demand reading**: G7 Link never bulk-uploads your photo library in the background. Your phone reads photo metadata and thumbnails directly from Android's `MediaStore` only when you open the **Photos** page (or for the single latest photo/screenshot on Home), and full-resolution originals are transferred only when you view, copy, drag, or save a specific photo.
-- **Local cache retention**: Thumbnail previews downloaded to your PC are stored in `%LOCALAPPDATA%\G7Link\cache\photos\` and automatically purged after **30 days**. Drag-and-drop staging files in `%LOCALAPPDATA%\G7Link\cache\photos\drag\` are cleaned up automatically. Clicking **Clear** next to **Photo thumbnails** in **Settings › Storage & Privacy** wipes all cached thumbnails on your PC without affecting any photos on your phone or any files you saved to `Downloads`.
+- **Local cache retention**: Thumbnail previews downloaded to your PC are stored in `~/.local/share/G7Link/cache/photos/` and automatically purged after **30 days**. Drag-and-drop staging files in `~/.local/share/G7Link/cache/photos/drag/` are cleaned up automatically. Clicking **Clear** next to **Photo thumbnails** in **Settings › Storage & Privacy** wipes all cached thumbnails on your PC without affecting any photos on your phone or any files you saved to `Downloads`.
 
 ## Limits
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Linux platform integration, used through `crate::win`.
+//! Linux platform integration, used through `crate::sys`.
 
 #![allow(unsafe_code)]
 

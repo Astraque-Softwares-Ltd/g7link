@@ -60,8 +60,8 @@ fun rememberPowerSaver(): Boolean {
 }
 
 /**
- * Hive's living honeycomb behind the app, the same comb as the Windows app
- * and the installer: it breathes slowly and sends a soft pulse of light
+ * Hive's living honeycomb behind the app, the same comb as the desktop app:
+ * it breathes slowly and sends a soft pulse of light
  * outward from [origin] every few seconds.
  *
  * Light on the battery: on Android 13 and newer one GPU shader draws it;
@@ -204,7 +204,7 @@ private fun combPath(width: Float, height: Float, cell: Float, origin: Offset): 
     return path
 }
 
-/** The comb's shader, the same as the Windows app's (desktop/app/shaders/hive.frag). */
+/** The comb's shader, the same as the desktop app's (desktop/app/shaders/hive.frag). */
 private const val COMB_AGSL = """
 uniform float2 size;
 uniform float2 origin;

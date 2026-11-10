@@ -10,10 +10,9 @@ When G7 Link starts for the first time on your PC or Android phone, it generates
 
 - **How devices are identified**: Every device is addressed by its 32-byte Ed25519 public key (`DeviceId`), never by an IP address, hostname, or email address.
 - **How your private key is protected at rest**:
-  - On **Windows**, `identity.key` is encrypted using the Windows Data Protection API (**DPAPI** via `CryptProtectData` with `CRYPTPROTECT_UI_FORBIDDEN` and entropy `b"g7link/identity/v1"`), tied to your Windows user account credentials (not hardware-backed).
   - On **Android**, `identity.key` is encrypted by a non-exportable **AES-256-GCM** key (`g7link.identity.v1`) inside the **Android Keystore**, which may be hardware-backed depending on your phone.
-  - On **macOS**, `identity.key` is sealed with **AES-256-GCM** using a 256-bit key kept in your **login Keychain** (`app.g7link.identity`). A copy of the app's data folder alone can't act as this Mac. Removing that Keychain item makes the key unreadable, and the app then creates a new identity that has to pair again.
-  - On **Linux**, `identity.key` isn't encrypted yet. It's protected by file permissions (`0600`), so only your user can read it, but anything running as you can, and so can anyone who reads the disk. Full-disk encryption covers the second case.
+  - On **Linux**, `identity.key` is sealed with **AES-256-GCM** under a random 256-bit key that G7 Link keeps in your desktop keyring through the Secret Service (GNOME Keyring, KWallet and others, over D-Bus; the item is called **G7 Link data key**). A copy of the app's data folder alone can't act as this PC. Clipboard history, the LocalSend identity, queued sends and the OBS password are sealed with the same key.
+  - If there is no keyring, or it is locked and holds no G7 Link key yet, `identity.key` is kept in a file only your user can read (`0600`). Anything running as you can read it, and so can anyone who reads the disk; full-disk encryption covers the second case. A key stored this way is sealed the next time the keyring is available. If the keyring that holds the key is locked or not running, G7 Link asks you to unlock it and reopen the app.
 
 ## 2. Cryptographic Pairing (Out-of-Band Secret and 6-Digit SAS)
 
@@ -30,7 +29,7 @@ An unknown device on your Wi-Fi network can never read your notifications, clipb
 
 Once paired, each device saves the peer's Ed25519 public key in its local SQLite trust store (`peers` table).
 
-**Install ID**: Each device also shares a 32-character install ID with the devices it pairs with. It is a salted BLAKE3 hash of the Android ID on the phone, or the Windows machine GUID or Linux machine ID on the PC, so the underlying identifier is never sent. It is used for one thing: when you reset and re-pair the same device, the old entry is replaced instead of left behind. Two different devices with the same name are never merged.
+**Install ID**: Each device also shares a 32-character install ID with the devices it pairs with. It is a salted BLAKE3 hash of the Android ID on the phone, or the machine ID (`/etc/machine-id`) on the PC, so the underlying identifier is never sent. It is used for one thing: when you reset and re-pair the same device, the old entry is replaced instead of left behind. Two different devices with the same name are never merged.
 
 ## 3. End-to-End Encrypted Connections (QUIC + TLS 1.3)
 
@@ -49,11 +48,11 @@ Every post-pairing session (`ALPN = "g7link/0"`) runs over **QUIC** (via `iroh`)
 - **What it publishes**: While it's on, your device publishes its network addresses to `iroh`'s public address service under its public key, so your other device can find it. Your device's name isn't included.
 - **Turning it off**: It takes effect right away. Publishing and looking up stop, connections that aren't on your local network or USB close, and no relay carries anything more. One idle connection to the relay stays open, carrying nothing, until G7 Link next restarts.
 - **End-to-end encryption over relays**: When a direct UDP hole-punch cannot be established while **Connect over mobile data** is enabled, encrypted QUIC packets are forwarded through an `iroh` relay. Because TLS 1.3 terminates exclusively inside your phone and your PC using your paired Ed25519 keys, a relay only sees opaque encrypted UDP datagrams and can never decrypt your messages, notifications, clipboard, or files.
-- **Extra protection for remote storage**: Even if you have enabled **File Explorer integration** (`storage`) on your home Wi-Fi, G7 Link blocks storage browsing over a relay connection unless you also explicitly enable **Remote PC file access** (`remote_files`, off by default) in **Settings › Devices**.
+- **Extra protection for remote storage**: Even if you have enabled **File manager integration** (`storage`) on your home Wi-Fi, G7 Link blocks storage browsing over a relay connection unless you also explicitly enable **Remote PC file access** (`remote_files`, off by default) in **Settings › Devices**.
 
 ### Automatic Update Checks
 
-To keep your installation current without an app store, installed copies check this project's GitHub repository over HTTPS. Each check sends only a `User-Agent` such as `G7Link/<version> (Windows)`, with no personal or device information.
+To keep your installation current without an app store, installed copies check this project's GitHub repository over HTTPS. Each check sends only a `User-Agent` such as `G7Link/<version> (Linux)`, with no personal or device information.
 
 - **What's fetched**: your channel's feed, `https://raw.githubusercontent.com/Astraque-Softwares-Ltd/g7link/channels/<stable|nightly>.json`, or the GitHub Releases API if no feed is published. A download is only accepted from this repository's own release files, and only if its SHA-256 matches.
 - **How often on the PC**: 30 seconds after startup, then every 12 hours on Stable or every 2 hours on Nightly.
@@ -85,7 +84,7 @@ Pairing a device does not give it unrestricted access to everything. You control
 | **Reverse Mirroring** (`Share PC screen to phone`) | **Off** | Prompts on the PC screen (**Not now**, **Allow**, **Allow for this device**) when requested from a phone; shows a persistent **Sharing this PC's screen with `<Phone>`** top banner with a one-click **Stop sharing** button while active. |
 | **Remote Input to PC** (`Remote mouse, keyboard & Deck`) | **Off** | Prompts on the PC the first time a paired phone asks to move the cursor or send keys. |
 | **Deck Shell Commands** (`Run Deck shell commands`) | **Off** | Separate per-phone toggle that must be manually enabled in PC Settings before any `Deck` command tile can run. |
-| **File Explorer Storage** (`File Explorer integration`) | **Off** on both PC and phone | Must be turned on per device, with an explicit prompt on the phone and support for sharing only specific folders (**Selected folders only**). |
+| **Phone Storage in the File Manager** (`File manager integration`) | **Off** on both PC and phone | Must be turned on per device, with an explicit prompt on the phone and support for sharing only specific folders (**Selected folders only**). |
 | **Phone Screen Mirroring** (`Screen mirroring`) | **On** | Android prompts before sharing at `Standard`/`Assist`, and shows a persistent notification with a **Stop** button (or **Close all** for `app window` sessions) on the phone while active. |
 | **Deleting Photos from the PC** | **On** with `photos` | Needs **All files access** on the phone. A PC you've paired can move photos to the phone's trash without a prompt on the phone, and they stay restorable there. Turn off `photos` for that PC to prevent it. |
 | **Phone as Webcam, Phone as Microphone & Continuity Camera** | **On** | Starting them from the PC posts a notification on the phone requiring a physical tap on the phone before the camera opens, plus a persistent **Stop** notification and Android's green camera dot. The one exception is a PC you chose for **Start the camera and microphone without asking** on the phone (`Elevated`, off by default): its webcam and microphone requests start right away. |
@@ -104,17 +103,17 @@ To ensure no other app on your phone can abuse this helper:
 
 ## 7. Local Data Storage, Encryption, and Retention
 
-All cached data stays inside your local profile directory (`%LOCALAPPDATA%\G7Link` on Windows, `~/.local/share/G7Link` on Linux and the app's private data folder on Android):
+All cached data stays inside your local profile directory (`~/.local/share/G7Link` on the PC and the app's private data folder on Android):
 
 | Data Store | How It Is Stored | Default Retention |
 | :--- | :--- | :--- |
-| **Clipboard History** | Encrypted at rest in `clipboard_history.enc` (`NLCB\x01` header) and `clipboard_images/<id>.enc` (`NLCI\x01` header) directly using the platform `KeyProtector` (**Windows DPAPI** on Windows, **Android Keystore AES-256-GCM** on Android; not sealed on Linux, where only file permissions protect it). Passwords marked sensitive by password managers and one-time verification codes (OTPs) are never sent or saved. | **7 days**, up to 50 items / 128 MB |
-| **Notification History (PC)** | Stored locally in `notification-history.json` (and per-app rules in `notification-rules.json`) with cached images in `cache\images\`. One-time verification codes are excluded. Not duplicated on the phone. | **24 hours**, up to 300 items |
+| **Clipboard History** | Encrypted at rest in `clipboard_history.enc` and `clipboard_images/<id>.enc` with the platform `KeyProtector` (on the PC, AES-256-GCM under the desktop keyring's key, or file permissions only without a keyring; on Android, **Android Keystore AES-256-GCM**). Passwords marked sensitive by password managers and one-time verification codes (OTPs) are never sent or saved. | **7 days**, up to 50 items / 128 MB |
+| **Notification History (PC)** | Stored locally in `notification-history.json` (and per-app rules in `notification-rules.json`) with cached images in `cache/images/`. One-time verification codes are excluded. Not duplicated on the phone. | **24 hours**, up to 300 items |
 | **Cross-Device `Timeline`** | Stored locally in `g7link.db`. Clipboard items in `Timeline` reference `clipboard_history.enc` by ID so clip text is never stored in plain text in SQLite. | **90 days** (configurable to `30d`, `90d`, `1y`, or up to `5,000` items) |
-| **Cached Messages (PC)** | Cached in `g7link.db` and `cache\images\` for fast inbox loading. Temporary MMS staging files on Android are deleted within 5 minutes. | **90 days** on PC |
-| **Photo Thumbnails (PC)** | Cached in `cache\photos\`. Full-resolution photos are only fetched on demand. Temporary Continuity Camera captures on Android are deleted within 24 hours. | **30 days** on PC |
-| **Offline `Waiting to send` Queue** | Stored in `g7link.db` (`send_queue` table). Copied text and images, links and task alerts are sealed with the platform `KeyProtector`, like clipboard history (not on Linux, which has none yet). File names are stored as they are, and files are referenced by path rather than duplicated. | Camera requests: **2m**; Links/Clips/Alerts: **24h**, then removed; Files: **7d**. Clearing clipboard history removes waiting clips. **Clear everything...** also removes waiting links and alerts, and leaves files you chose to send. |
-| **OBS Studio Password (PC)** | Saved in `settings.json` only after you enter it in **Settings › Shortcuts & Rules › OBS Studio**, encrypted with **Windows DPAPI** for your Windows account (on Linux, protected by file permissions only). Used only to sign in to OBS's WebSocket server on this PC (`127.0.0.1`). | Until you remove it |
-| **Media Artwork Lookup** | Extracted from the local media session (Windows GSMTC, Linux MPRIS or Android `MediaSession`) and cached locally on disk. | Local session cache |
+| **Cached Messages (PC)** | Cached in `g7link.db` and `cache/images/` for fast inbox loading. Temporary MMS staging files on Android are deleted within 5 minutes. | **90 days** on PC |
+| **Photo Thumbnails (PC)** | Cached in `cache/photos/`. Full-resolution photos are only fetched on demand. Temporary Continuity Camera captures on Android are deleted within 24 hours. | **30 days** on PC |
+| **Offline `Waiting to send` Queue** | Stored in `g7link.db` (`send_queue` table). Copied text and images, links and task alerts are sealed with the platform `KeyProtector`, like clipboard history. File names are stored as they are, and files are referenced by path rather than duplicated. | Camera requests: **2m**; Links/Clips/Alerts: **24h**, then removed; Files: **7d**. Clearing clipboard history removes waiting clips. **Clear everything...** also removes waiting links and alerts, and leaves files you chose to send. |
+| **OBS Studio Password (PC)** | Saved in `desktop-settings.json` only after you enter it in **Settings › Shortcuts & Rules › OBS Studio**, sealed with the desktop keyring's key (or protected by file permissions only without a keyring). Used only to sign in to OBS's WebSocket server on this PC (`127.0.0.1`). | Until you remove it |
+| **Media Artwork Lookup** | Extracted from the local media session (MPRIS on the PC or Android `MediaSession`) and cached locally on disk. | Local session cache |
 
 You can clear any individual store or click **Clear everything...** at any time in **Settings › Storage & Privacy** on the PC or **Settings › Features & Data › Data & storage** on Android.

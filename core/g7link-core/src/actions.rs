@@ -522,7 +522,7 @@ mod tests {
         assert!(valid_link("geo:48.8584,2.2945?q=Eiffel%20Tower"));
         for bad in [
             "javascript:alert(1)",
-            "file:///C:/x",
+            "file:///etc/passwd",
             "https://",
             "geo:",
             "https://a b",

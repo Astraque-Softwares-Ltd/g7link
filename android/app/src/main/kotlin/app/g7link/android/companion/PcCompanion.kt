@@ -56,7 +56,7 @@ object PcCompanion {
 
     /**
      * Builds the manufacturer-specific BLE beacon payload a PC broadcasts
-     * (`desktop/app/src/win/ble_beacon.rs`): the 5-byte `NCTR\x01` magic followed
+     * (`desktop/app/src/linux/ble_beacon.rs`): the 5-byte `NCTR\x01` magic followed
      * by the first 8 bytes of the PC's 32-byte device ID (13 bytes in all), or
      * just the magic when [deviceId] isn't a valid device ID.
      */

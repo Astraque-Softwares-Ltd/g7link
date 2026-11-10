@@ -16,7 +16,7 @@ mod tests {
 
     #[test]
     fn shared_memory_mirror_and_aspect_fit_round_trip() {
-        let map_name = format!("Local\\G7LinkVcamShmTest_{}", std::process::id());
+        let map_name = format!("vcam_shm_test_{}", std::process::id());
         let writer = SharedFrameMapping::open_or_create(&map_name).unwrap();
         let reader = SharedFrameMapping::open_or_create(&map_name).unwrap();
 

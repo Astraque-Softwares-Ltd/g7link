@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! App icons that phones send with their notifications, kept as PNG files
-//! (`<data>\cache\icons`) so QML and Windows toasts can show them.
+//! (`<data>/cache/icons`) so QML and desktop notifications can show them.
 
 use std::{
     fs,

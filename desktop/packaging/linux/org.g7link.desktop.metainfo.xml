@@ -22,7 +22,7 @@
   </description>
   <launchable type="desktop-id">g7link.desktop</launchable>
   <url type="homepage">https://github.com/Astraque-Softwares-Ltd/g7link</url>
-  <url type="bugtracker">https://github.com/thtbee/nectarlink/issues</url>
+  <url type="bugtracker">https://github.com/Astraque-Softwares-Ltd/g7link/issues</url>
   <provides>
     <binary>g7link-desktop</binary>
     <mediatype>x-scheme-handler/g7link</mediatype>

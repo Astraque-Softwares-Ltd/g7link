@@ -461,7 +461,7 @@ pub struct Settings {
     )]
     pub device_nicknames: std::collections::HashMap<String, String>,
     /// Start when the user signs in. Unset until the user chooses: then an
-    /// installed copy starts with Windows and a build run from its folder
+    /// installed copy starts at sign-in and a build run from its folder
     /// doesn't.
     #[serde(skip_serializing_if = "Option::is_none", alias = "start_with_windows")]
     pub start_with_windows: Option<bool>,
@@ -510,7 +510,7 @@ pub struct Settings {
     /// TCP port on `127.0.0.1` for the localhost automation API.
     #[serde(default = "default_local_api_port", alias = "local_api_port")]
     pub local_api_port: u16,
-    /// Automatically place small incoming received files onto the Windows clipboard (`CF_HDROP`).
+    /// Automatically place small incoming received files onto the clipboard (as `text/uri-list`).
     #[serde(default = "default_true", alias = "clipboard_auto_copy_received_files")]
     pub clipboard_auto_copy_received_files: bool,
     /// Open a single photo or document shared from the phone as soon as it
@@ -588,7 +588,7 @@ pub struct Settings {
     pub star_prompt_minutes: u32,
     /// OBS Studio's WebSocket port, for `obs:` Deck commands.
     pub obs_port: u16,
-    /// OBS's WebSocket password, encrypted with Windows DPAPI (base64). Never stored in clear.
+    /// OBS's WebSocket password, sealed with the desktop keyring when there is one (base64).
     pub obs_password: Option<String>,
     /// Target monitor/screen name or identifier where the main window was last placed.
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "window_screen")]
@@ -818,8 +818,7 @@ impl Settings {
 }
 
 /// Creates (or truncates) a file only this user can read: settings hold the
-/// OBS password and the local API token file grants control of the app. On
-/// Windows the per-user AppData folder already keeps others out.
+/// OBS password and the local API token file grants control of the app.
 pub(crate) fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -986,7 +985,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         // 1. Commit d16a106 (initial desktop app: theme, seed, colorMode, backdrop, closeToTray).
-        // `backdrop` (Windows' Mica) is gone: an old file with it still loads.
+        // `backdrop` (a window material) is gone: an old file with it still loads.
         let snap_d16a106 = r#"{
             "theme": "bloom",
             "seed": "honey",

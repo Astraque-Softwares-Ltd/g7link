@@ -51,13 +51,13 @@ mod settings;
 mod startup;
 mod state;
 mod storage;
+#[path = "linux/mod.rs"]
+mod sys;
 mod transfers;
 mod update_relay;
 mod updater;
 mod version;
 mod webcam;
-#[path = "linux/mod.rs"]
-mod win;
 
 use std::{
     path::PathBuf,
@@ -77,7 +77,7 @@ use g7link_core::{
 
 use crate::{
     launch::Request,
-    win::single_instance::{self, Instance},
+    sys::single_instance::{self, Instance},
 };
 
 /// How many fonts `build.rs` compiles in.
@@ -89,25 +89,25 @@ struct DesktopPlatform;
 
 impl Platform for DesktopPlatform {
     fn start_ringing(&self) {
-        win::sound::start_ringing();
+        sys::sound::start_ringing();
     }
     fn stop_ringing(&self) {
-        win::sound::stop_ringing();
+        sys::sound::stop_ringing();
     }
     fn set_clipboard(&self, text: &str) -> Result<(), String> {
-        win::clipboard::write(text)
+        sys::clipboard::write(text)
     }
     fn set_clipboard_rich(&self, text: &str, html: Option<&str>, rtf: Option<&str>) -> Result<(), String> {
-        win::clipboard::write_rich(text, html, rtf)
+        sys::clipboard::write_rich(text, html, rtf)
     }
     fn set_clipboard_private(&self, text: &str) -> Result<(), String> {
-        win::clipboard::write_private(text)
+        sys::clipboard::write_private(text)
     }
     fn clear_clipboard_private(&self, text: &str) {
-        win::clipboard::clear_private(text);
+        sys::clipboard::clear_private(text);
     }
     fn set_clipboard_image(&self, mime: &str, bytes: &[u8]) -> Result<(), String> {
-        win::clipboard::write_image(mime, bytes)
+        sys::clipboard::write_image(mime, bytes)
     }
     fn power(&self, action: PowerAction) -> Result<(), String> {
         links::power(action)
@@ -121,7 +121,7 @@ impl Platform for DesktopPlatform {
         action: MediaAction,
         position: Option<u64>,
     ) -> Result<(), MediaError> {
-        win::media_sessions::command(player, action, position)
+        sys::media_sessions::command(player, action, position)
     }
     fn mirror_requested(&self, peer: &g7link_core::DeviceId, options: &MirrorStart) -> Result<(), String> {
         if options.session != g7link_core::MIRROR_SCREEN {
@@ -215,7 +215,7 @@ struct Options {
     /// `--send-to <device> <files…>`: a file manager's "Send to" entry.
     send_to: Option<(String, Vec<PathBuf>)>,
     /// `--share <targets…>`: files, links or text to share with a phone.
-    share: Option<win::share_target::SharedPayload>,
+    share: Option<sys::share_target::SharedPayload>,
     /// `--task <action>`: an action from the app's launcher menu.
     task: Option<String>,
     /// Ask the running app to quit.
@@ -281,11 +281,11 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
                 in_share = false;
                 options.updated = true;
             }
-            Some(win::vcam::REGISTER_ARG) => {
+            Some(sys::vcam::REGISTER_ARG) => {
                 in_share = false;
                 options.register_vcam = true;
             }
-            Some(win::vcam::UNREGISTER_ARG) => {
+            Some(sys::vcam::UNREGISTER_ARG) => {
                 in_share = false;
                 options.unregister_vcam = true;
             }
@@ -294,12 +294,12 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
                 let device = args.next().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
                 options.send_to = Some((device, Vec::new()));
             }
-            Some(win::jumplist::ARG) => {
+            Some(sys::jumplist::ARG) => {
                 in_share = false;
                 options.task =
                     args.next().map(|a| a.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
             }
-            Some(win::share_target::ARG) => {
+            Some(sys::share_target::ARG) => {
                 in_share = true;
             }
             _ if in_share && !arg.to_string_lossy().starts_with('-') => {
@@ -326,7 +326,7 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
         options.minimized = true;
     }
     if !share_targets.is_empty() {
-        let payload = win::share_target::parse_targets(&share_targets);
+        let payload = sys::share_target::parse_targets(&share_targets);
         if !payload.is_empty() {
             options.share = Some(payload);
             options.minimized = true;
@@ -342,7 +342,7 @@ fn default_data_dir() -> PathBuf {
 /// Network changes come in bursts; tell the core once things settle.
 fn watch_network() {
     static PENDING: AtomicBool = AtomicBool::new(false);
-    win::net::watch(|| {
+    sys::net::watch(|| {
         if PENDING.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -363,7 +363,7 @@ fn watch_network() {
 /// file).
 fn start_toasts() {
     let icon = core_host::host().data_dir.join("cache").join("g7link.png");
-    win::toast::start(icon, notifications::on_toast);
+    sys::toast::start(icon, notifications::on_toast);
 }
 
 /// Removes what the app set up on this PC: the "Send to" entries, the file
@@ -375,9 +375,9 @@ fn uninstall() {
         tracing::warn!(error = %e, "can't remove the Send to entries");
     }
     storage::unregister_all();
-    let _ = win::vcam::unregister_module();
-    win::toast::unregister();
-    win::jumplist::unregister();
+    let _ = sys::vcam::unregister_module();
+    sys::toast::unregister();
+    sys::jumplist::unregister();
     startup::remove();
 }
 
@@ -396,7 +396,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if options.register_vcam {
-        return match win::vcam::register_module() {
+        return match sys::vcam::register_module() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("g7link: register-vcam failed: {e}");
@@ -405,7 +405,7 @@ fn main() -> ExitCode {
         };
     }
     if options.unregister_vcam {
-        return match win::vcam::unregister_module() {
+        return match sys::vcam::unregister_module() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("g7link: unregister-vcam failed: {e}");
@@ -470,8 +470,8 @@ fn main() -> ExitCode {
 
     // Logging out or shutting down sends SIGTERM: quit as Quit does, so
     // phone storage is unmounted instead of left behind.
-    win::quit_on_signals(bridge::app::request_quit);
-    win::jumplist::register(options.data_dir.as_deref());
+    sys::quit_on_signals(bridge::app::request_quit);
+    sys::jumplist::register(options.data_dir.as_deref());
     if let Err(e) = core_host::start(data_dir.clone(), Arc::new(DesktopPlatform)) {
         tracing::error!(error = %e, "can't start the core runtime");
         return ExitCode::FAILURE;
@@ -480,7 +480,7 @@ fn main() -> ExitCode {
     // its device ID.
     core_host::spawn(async {
         if let Some(node) = core_host::wait_for_node().await {
-            win::ble_beacon::start(node.device_id());
+            sys::ble_beacon::start(node.device_id());
         }
     });
     core_host::host().hub.update(|s| {
@@ -493,8 +493,8 @@ fn main() -> ExitCode {
     start_toasts();
     // The Share sheet and notification buttons, after an update (#84).
     clipboard::start();
-    win::smtc::start(media::on_flyout);
-    win::media_sessions::start(media::local_changed);
+    sys::smtc::start(media::on_flyout);
+    sys::media_sessions::start(media::local_changed);
     deck::init(&data_dir);
     let settings = settings::Settings::load(&data_dir);
     settings.apply_runtime();
@@ -516,7 +516,7 @@ fn main() -> ExitCode {
     webcam::init(&settings);
     phone_mic::init(&settings);
     local_api::init(&settings);
-    win::tray::update_hotkeys(
+    sys::tray::update_hotkeys(
         &settings.continuity_photo_hotkey,
         &settings.continuity_scan_hotkey,
         &settings.command_palette_hotkey,
@@ -634,10 +634,10 @@ fn main() -> ExitCode {
     pc_audio_stream::set_enabled(false);
     pc_mirror::stop_all();
     local_api::stop();
-    win::ble_beacon::stop();
+    sys::ble_beacon::stop();
     webcam::shutdown();
     storage::shutdown();
-    win::net::stop();
+    sys::net::stop();
     core_host::shutdown();
     drop(app);
     if options.ui_check {
@@ -669,7 +669,7 @@ mod tests {
         assert!(opts.minimized);
         assert_eq!(
             opts.share,
-            Some(win::share_target::SharedPayload {
+            Some(sys::share_target::SharedPayload {
                 files: vec![PathBuf::from(r"C:\photo.jpg")],
                 url: Some("https://example.com".into()),
                 text: None,
@@ -713,7 +713,7 @@ mod tests {
         assert!(web_opts.minimized);
         assert_eq!(
             web_opts.share,
-            Some(win::share_target::SharedPayload {
+            Some(sys::share_target::SharedPayload {
                 files: Vec::new(),
                 url: Some("https://example.com".into()),
                 text: None,
@@ -725,7 +725,7 @@ mod tests {
             assert!(uri_opts.minimized);
             assert_eq!(
                 uri_opts.share,
-                Some(win::share_target::SharedPayload {
+                Some(sys::share_target::SharedPayload {
                     files: Vec::new(),
                     url: Some("tel:+15551234567".into()),
                     text: None,

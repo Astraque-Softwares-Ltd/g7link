@@ -1,24 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Find the window that owns a media session on Linux, and read the page
 //! address and the `<video>` rectangle out of a browser when available.
-//!
-//! Matches the public API of `desktop/app/src/win/browser.rs`.
 
 use std::process::Command;
 
-/// Cross-platform window handle representation matching `windows::Win32::Foundation::HWND`.
-#[allow(clippy::upper_case_acronyms)]
+/// An X11 window ID, as `wmctrl` and `xdotool` report it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct HWND(pub *mut core::ffi::c_void);
+pub struct XWin(pub *mut core::ffi::c_void);
 
 // SAFETY: Window handles (X11 XIDs cast to pointer size) are plain integer IDs.
-unsafe impl Send for HWND {}
-unsafe impl Sync for HWND {}
+unsafe impl Send for XWin {}
+unsafe impl Sync for XWin {}
 
-/// Cross-platform rectangle matching `windows::Win32::Foundation::RECT`.
-#[allow(clippy::upper_case_acronyms)]
+/// A screen rectangle in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RECT {
+pub struct Rect {
     pub left: i32,
     pub top: i32,
     pub right: i32,
@@ -27,15 +23,13 @@ pub struct RECT {
 
 #[derive(Debug, Clone)]
 pub struct Window {
-    pub hwnd: HWND,
+    pub xwin: XWin,
     pub program: String,
     pub title: String,
 }
 
-/// Possible process executable names for a MPRIS / SMTC `source_app_user_model_id`.
-///
-/// Supports both Windows `.exe` names (for cross-platform unit tests) and Linux
-/// binary names (`chrome`, `chromium`, `firefox`, `vlc`, `mpv`, etc.).
+/// Process names that may own the media session `player`: an MPRIS identity
+/// or bus name such as `firefox` or `org.mpris.MediaPlayer2.vlc`.
 pub fn programs_for(player: &str) -> Vec<String> {
     let trimmed = player.trim();
     if trimmed.is_empty() {
@@ -48,44 +42,37 @@ pub fn programs_for(player: &str) -> Vec<String> {
             out.push(s.to_ascii_lowercase());
         }
     };
-    if lower.ends_with(".exe") {
-        push(&lower);
-        push(lower.trim_end_matches(".exe"));
-    }
-    for (needle, exe, linux_bins) in [
-        ("chrome", "chrome.exe", &["chrome", "google-chrome", "google-chrome-stable"][..]),
-        ("chromium", "chromium.exe", &["chromium", "chromium-browser"][..]),
-        ("msedge", "msedge.exe", &["msedge", "microsoft-edge", "microsoft-edge-stable"][..]),
-        ("microsoft.microsoftedge", "msedge.exe", &["msedge", "microsoft-edge"][..]),
-        ("brave", "brave.exe", &["brave", "brave-browser"][..]),
-        ("vivaldi", "vivaldi.exe", &["vivaldi", "vivaldi-stable"][..]),
-        ("opera", "opera.exe", &["opera"][..]),
-        ("firefox", "firefox.exe", &["firefox", "firefox-esr", " firefox-bin"][..]),
-        ("308046b0af4a39cb", "firefox.exe", &["firefox", "firefox-esr"][..]),
-        ("mozilla", "firefox.exe", &["firefox", "firefox-esr"][..]),
-        ("zen", "zen.exe", &["zen", "zen-bin"][..]),
-        ("floorp", "floorp.exe", &["floorp"][..]),
-        ("waterfox", "waterfox.exe", &["waterfox"][..]),
-        ("librewolf", "librewolf.exe", &["librewolf"][..]),
-        ("vlc", "vlc.exe", &["vlc"][..]),
-        ("mpv", "mpv.exe", &["mpv"][..]),
-        ("potplayer", "potplayermini64.exe", &["potplayer"][..]),
-        ("mpc-hc", "mpc-hc64.exe", &["mpc-hc"][..]),
-        ("kmplayer", "kmplayer.exe", &["kmplayer"][..]),
-        ("microsoft.zunemusic", "microsoft.media.player.exe", &["rhythmbox", "elisa"][..]),
-        ("microsoft.zunevideo", "video.ui.exe", &["totem", "celluloid", "haruna", "dragon"][..]),
+    for (needle, bins) in [
+        ("chrome", &["chrome", "google-chrome", "google-chrome-stable"][..]),
+        ("chromium", &["chromium", "chromium-browser"][..]),
+        ("msedge", &["msedge", "microsoft-edge", "microsoft-edge-stable"][..]),
+        ("microsoft-edge", &["msedge", "microsoft-edge"][..]),
+        ("brave", &["brave", "brave-browser"][..]),
+        ("vivaldi", &["vivaldi", "vivaldi-stable"][..]),
+        ("opera", &["opera"][..]),
+        ("firefox", &["firefox", "firefox-esr", "firefox-bin"][..]),
+        ("mozilla", &["firefox", "firefox-esr"][..]),
+        ("zen", &["zen", "zen-bin"][..]),
+        ("floorp", &["floorp"][..]),
+        ("waterfox", &["waterfox"][..]),
+        ("librewolf", &["librewolf"][..]),
+        ("vlc", &["vlc"][..]),
+        ("mpv", &["mpv"][..]),
+        ("rhythmbox", &["rhythmbox"][..]),
+        ("elisa", &["elisa"][..]),
+        ("totem", &["totem"][..]),
+        ("celluloid", &["celluloid"][..]),
+        ("haruna", &["haruna"][..]),
     ] {
         if lower.contains(needle) {
-            push(exe);
-            for bin in linux_bins {
-                push(bin.trim());
+            for bin in bins {
+                push(bin);
             }
         }
     }
     if let Some(head) = lower.split(['!', '_', ' ']).next()
         && head.len() >= 3
     {
-        push(&format!("{head}.exe"));
         push(head);
     }
     out
@@ -93,9 +80,8 @@ pub fn programs_for(player: &str) -> Vec<String> {
 
 pub fn is_browser(program: &str) -> bool {
     let base = program.trim().to_ascii_lowercase();
-    let stem = base.trim_end_matches(".exe");
     matches!(
-        stem,
+        base.as_str(),
         "chrome"
             | "google-chrome"
             | "google-chrome-stable"
@@ -168,7 +154,7 @@ pub fn windows() -> Vec<Window> {
                 .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
                 .unwrap_or(0);
             let program = program_for_pid(pid).unwrap_or_default();
-            list.push(Window { hwnd: HWND(xid as *mut core::ffi::c_void), program, title });
+            list.push(Window { xwin: XWin(xid as *mut core::ffi::c_void), program, title });
         }
         return list;
     }
@@ -200,7 +186,7 @@ fn parse_wmctrl_lp(text: &str) -> Vec<Window> {
             continue;
         }
         let program = program_for_pid(pid).unwrap_or_default();
-        out.push(Window { hwnd: HWND(xid as *mut core::ffi::c_void), program, title });
+        out.push(Window { xwin: XWin(xid as *mut core::ffi::c_void), program, title });
     }
     out
 }
@@ -231,11 +217,7 @@ pub fn window_for(player: &str, title: &str) -> Option<Window> {
 
     let mut best: Option<(i32, Window)> = None;
     for w in all {
-        let prog_match = programs.iter().any(|p| {
-            let p_stem = p.trim_end_matches(".exe");
-            let w_stem = w.program.trim_end_matches(".exe");
-            !w_stem.is_empty() && (w_stem == p_stem || w.program == *p)
-        });
+        let prog_match = programs.iter().any(|p| !w.program.is_empty() && w.program == *p);
         let wtitle = w.title.to_ascii_lowercase();
         let title_match = !needle.is_empty() && wtitle.contains(&needle);
         let word_hits = if needle.is_empty() {
@@ -278,14 +260,14 @@ impl Automation {
     }
 
     /// Find the screen rectangle of the video player inside `window`.
-    pub fn player_rect(&self, window: &Window) -> Option<RECT> {
+    pub fn player_rect(&self, window: &Window) -> Option<Rect> {
         self.page_rect(window)
     }
 
     /// Find the screen rectangle of the web page area inside `window` (excluding the
     /// top browser tab/address bar chrome).
-    pub fn page_rect(&self, window: &Window) -> Option<RECT> {
-        let frame = frame_of(window.hwnd)?;
+    pub fn page_rect(&self, window: &Window) -> Option<Rect> {
+        let frame = frame_of(window.xwin)?;
         let w = frame.right - frame.left;
         let h = frame.bottom - frame.top;
         if w < 160 || h < 160 {
@@ -293,12 +275,12 @@ impl Automation {
         }
         // Estimate browser top toolbar height (~80px) when the window is a browser
         let top_inset = if is_browser(&window.program) && h > 240 { 80 } else { 0 };
-        Some(RECT { left: frame.left, top: frame.top + top_inset, right: frame.right, bottom: frame.bottom })
+        Some(Rect { left: frame.left, top: frame.top + top_inset, right: frame.right, bottom: frame.bottom })
     }
 }
 
-pub fn is_minimized(hwnd: HWND) -> bool {
-    let xid = hwnd.0 as usize;
+pub fn is_minimized(xwin: XWin) -> bool {
+    let xid = xwin.0 as usize;
     if xid == 0 {
         return false;
     }
@@ -311,16 +293,16 @@ pub fn is_minimized(hwnd: HWND) -> bool {
     false
 }
 
-pub fn restore_behind(hwnd: HWND) {
-    let xid = hwnd.0 as usize;
+pub fn restore_behind(xwin: XWin) {
+    let xid = xwin.0 as usize;
     if xid == 0 {
         return;
     }
     let _ = Command::new("xdotool").args(["windowmap", &xid.to_string()]).status();
 }
 
-pub fn frame_of(hwnd: HWND) -> Option<RECT> {
-    let xid = hwnd.0 as usize;
+pub fn frame_of(xwin: XWin) -> Option<Rect> {
+    let xid = xwin.0 as usize;
     if xid == 0 {
         return None;
     }
@@ -333,7 +315,7 @@ pub fn frame_of(hwnd: HWND) -> Option<RECT> {
     None
 }
 
-fn parse_xdotool_geometry(text: &str) -> Option<RECT> {
+fn parse_xdotool_geometry(text: &str) -> Option<Rect> {
     let mut x = None;
     let mut y = None;
     let mut w = None;
@@ -354,7 +336,7 @@ fn parse_xdotool_geometry(text: &str) -> Option<RECT> {
     if width <= 0 || height <= 0 {
         return None;
     }
-    Some(RECT { left, top, right: left + width, bottom: top + height })
+    Some(Rect { left, top, right: left + width, bottom: top + height })
 }
 
 #[cfg(test)]
@@ -362,11 +344,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_common_aumids_to_executables() {
-        assert!(programs_for("Chrome").contains(&"chrome.exe".to_owned()));
-        assert!(programs_for("MSEdge").contains(&"msedge.exe".to_owned()));
-        assert!(programs_for("308046B0AF4A39CB").contains(&"firefox.exe".to_owned()));
-        assert!(programs_for("VideoLAN.VLC").contains(&"vlc.exe".to_owned()));
+    fn maps_media_players_to_programs() {
+        assert!(programs_for("Chromium").contains(&"chromium".to_owned()));
+        assert!(programs_for("org.mpris.MediaPlayer2.firefox.instance_1_42").contains(&"firefox".to_owned()));
+        assert!(programs_for("org.mpris.MediaPlayer2.vlc").contains(&"vlc".to_owned()));
+        assert!(programs_for("  ").is_empty());
     }
 
     #[test]

@@ -85,7 +85,7 @@ class AppUpdaterTest {
     @Test
     fun findsTheApkHash() {
         val hash = "a".repeat(64)
-        val sums = "$hash  G7Link-9.0.0-android.apk\n${"b".repeat(64)}  G7Link-9.0.0-x64-setup.exe\n"
+        val sums = "$hash  G7Link-9.0.0-android.apk\n${"b".repeat(64)}  G7Link-9.0.0-x86_64.AppImage\n"
         assertEquals(hash, AppUpdater.listedHash(sums, "G7Link-9.0.0-android.apk"))
         assertNull(AppUpdater.listedHash(sums, "missing.apk"))
         assertEquals("c".repeat(64), AppUpdater.listedHash("${"C".repeat(64)} *x.apk", "x.apk"))
