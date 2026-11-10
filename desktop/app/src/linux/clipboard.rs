@@ -130,19 +130,6 @@ fn is_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
-/// Checks whether a newline-separated list of clipboard MIME targets contains
-/// a password-manager / privacy exclusion hint (`x-kde-passwordManagerHint` or
-/// `x-gnome-privacy-hint`).
-pub(crate) fn is_secret_mime_list(targets: &str) -> bool {
-    targets.lines().any(|line| {
-        let t = line.trim();
-        t.eq_ignore_ascii_case("x-gnome-privacy-hint")
-            || t.eq_ignore_ascii_case("x-kde-passwordManagerHint")
-            || t.eq_ignore_ascii_case("ExcludeClipboardContentFromMonitorProcessing")
-            || t.eq_ignore_ascii_case("Clipboard Viewer Ignore")
-    })
-}
-
 fn has_gnome_privacy_hint(targets: &str) -> bool {
     targets.lines().any(|line| {
         let t = line.trim();
@@ -1039,19 +1026,31 @@ pub(crate) fn decode_cf_rtf(bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Whether a newline-separated list of clipboard MIME targets carries a
+    /// password-manager or privacy hint.
+    fn is_secret_mime_list(targets: &str) -> bool {
+        targets.lines().any(|line| {
+            let t = line.trim();
+            t.eq_ignore_ascii_case("x-gnome-privacy-hint")
+                || t.eq_ignore_ascii_case("x-kde-passwordManagerHint")
+                || t.eq_ignore_ascii_case("ExcludeClipboardContentFromMonitorProcessing")
+                || t.eq_ignore_ascii_case("Clipboard Viewer Ignore")
+        })
+    }
+
     #[test]
     fn text_offers_carry_rich_types_and_private_hints() {
         let names = |offers: Vec<(String, Vec<u8>)>| offers.into_iter().map(|(m, _)| m).collect::<Vec<_>>();
         let plain = names(super::text_offers("hi", None, None, false));
         assert!(plain.contains(&"text/plain;charset=utf-8".to_owned()));
-        assert!(!plain.iter().any(|m| super::is_secret_mime_list(m)));
+        assert!(!plain.iter().any(|m| is_secret_mime_list(m)));
 
         let rich = names(super::text_offers("hi", Some("<b>hi</b>"), Some("{\\rtf1}"), false));
         assert!(rich.contains(&"text/html".to_owned()) && rich.contains(&"text/rtf".to_owned()));
 
         // What a password manager marks private stays marked, and carries nothing richer.
         let private = names(super::text_offers("pw", Some("<b>pw</b>"), None, true));
-        assert!(super::is_secret_mime_list(&private.join("\n")));
+        assert!(is_secret_mime_list(&private.join("\n")));
         assert!(!private.contains(&"text/html".to_owned()));
     }
 

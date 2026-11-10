@@ -186,11 +186,6 @@ pub fn watch(callback: impl Fn() + Send + Sync + 'static) {
     });
 }
 
-/// Alias for [`watch`].
-pub fn watch_address_changes(on_change: impl Fn() + Send + Sync + 'static) {
-    watch(on_change);
-}
-
 /// Stops watching for network address changes.
 pub fn stop() {
     if let Some(handle) = STOP_STATE.lock().unwrap_or_else(|e| e.into_inner()).take() {

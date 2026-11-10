@@ -13,8 +13,6 @@
 //! - Any request carrying an `Origin` header is rejected with `403 Forbidden`
 //!   so web pages opened in a browser cannot invoke the loopback API.
 
-#![allow(dead_code)]
-
 use std::{
     collections::HashMap,
     fs,

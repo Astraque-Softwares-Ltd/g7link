@@ -234,23 +234,6 @@ pub fn stop_ringing() {
     kill_active_child();
 }
 
-/// Plays a short non-blocking notification chime on a background thread and
-/// reaps the player process so no zombie child is left behind.
-#[allow(dead_code)]
-pub fn play_chime() {
-    let _ = thread::Builder::new().name("g7link-chime".into()).spawn(|| {
-        if let Ok(mut child) = Command::new("canberra-gtk-play")
-            .args(["-i", "message-new-instant"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            let _ = child.wait();
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

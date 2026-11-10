@@ -60,10 +60,6 @@ fn is_firewall_verified(port: u16) -> bool {
     false
 }
 
-pub fn parse_ufw_status(output: &str) -> Option<Firewall> {
-    parse_ufw_status_for_port(output, DEFAULT_PORT)
-}
-
 pub fn parse_ufw_status_for_port(output: &str, port: u16) -> Option<Firewall> {
     let lower = output.to_ascii_lowercase();
     if lower.contains("status: inactive") {
@@ -124,10 +120,6 @@ pub fn parse_ufw_status_for_port(output: &str, port: u16) -> Option<Firewall> {
 
     let allowed = !blocked && tcp_allowed && udp_allowed;
     Some(Firewall { on: true, allowed, blocked })
-}
-
-pub fn parse_firewalld_output(state: &str, ports: &str) -> Firewall {
-    parse_firewalld_output_for_port(state, ports, "", DEFAULT_PORT)
 }
 
 pub fn parse_firewalld_output_for_port(state: &str, ports: &str, rich_rules: &str, port: u16) -> Firewall {
@@ -705,6 +697,14 @@ pub fn open_network_settings() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_ufw_status(output: &str) -> Option<Firewall> {
+        parse_ufw_status_for_port(output, DEFAULT_PORT)
+    }
+
+    fn parse_firewalld_output(state: &str, ports: &str) -> Firewall {
+        parse_firewalld_output_for_port(state, ports, "", DEFAULT_PORT)
+    }
 
     #[test]
     fn parses_ufw_inactive_active_allowed_and_blocked() {

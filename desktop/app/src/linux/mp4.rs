@@ -100,28 +100,10 @@ pub fn has_idr_slice(data: &[u8]) -> bool {
     split_annexb(data).into_iter().any(|nal| nal_type(nal) == Some(5))
 }
 
-/// Returns `true` if `data` already carries both SPS (NAL 7) and PPS (NAL 8) units in-band.
-pub fn has_inband_sps_pps(data: &[u8]) -> bool {
-    let nals = split_annexb(data);
-    nals.iter().any(|nal| nal_type(nal) == Some(7)) && nals.iter().any(|nal| nal_type(nal) == Some(8))
-}
-
 /// Returns `true` if `data` is non-empty and every NAL unit is a parameter set (SPS/PPS).
 pub fn is_parameter_only(data: &[u8]) -> bool {
     let nals = split_annexb(data);
     !nals.is_empty() && nals.into_iter().all(|nal| matches!(nal_type(nal), Some(7 | 8)))
-}
-
-/// Extracts only SPS (NAL 7) and PPS (NAL 8) units from `data` with 4-byte Annex-B start codes.
-pub fn extract_sps_pps(data: &[u8]) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    for nal in split_annexb(data) {
-        if matches!(nal_type(nal), Some(7 | 8)) {
-            out.extend_from_slice(&[0, 0, 0, 1]);
-            out.extend_from_slice(nal);
-        }
-    }
-    (!out.is_empty()).then_some(out)
 }
 
 /// Extracts any SPS (NAL 7) and PPS (NAL 8) units from `incoming` and merges them
@@ -1163,24 +1145,6 @@ mod tests {
 
     fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
-    }
-
-    #[test]
-    fn extract_sps_pps_picks_out_parameter_sets_only() {
-        let stream = [
-            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1F, // SPS (type 7)
-            0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C, 0x80, // PPS (type 8)
-            0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x21, // IDR (type 5)
-        ];
-        let extracted = extract_sps_pps(&stream).expect("should extract SPS and PPS");
-        assert_eq!(
-            extracted,
-            vec![
-                0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1F, 0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C,
-                0x80,
-            ]
-        );
-        assert!(extract_sps_pps(&[0x00, 0x00, 0x00, 0x01, 0x65, 0x88]).is_none());
     }
 
     #[test]

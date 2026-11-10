@@ -206,23 +206,6 @@ mod imp {
             }
             out
         }
-
-        #[allow(dead_code)]
-        fn encode_stereo_i16(&mut self, samples: &[i16], channels: usize) -> Vec<u8> {
-            let frames = samples.len() / channels.max(1);
-            let mut out = Vec::with_capacity(frames * 4);
-            for frame in samples.chunks_exact(channels.max(1)) {
-                let l_in = (frame[0] as f32) / 32768.0;
-                let r_in = if channels > 1 { (frame[1] as f32) / 32768.0 } else { l_in };
-                let (l1, r1) = self.low_shelf.process_stereo(l_in, r_in);
-                let (l2, r2) = self.high_shelf.process_stereo(l1, r1);
-                let l_i16 = (Self::soft_limit(l2) * 32767.0).round() as i16;
-                let r_i16 = (Self::soft_limit(r2) * 32767.0).round() as i16;
-                out.extend_from_slice(&l_i16.to_le_bytes());
-                out.extend_from_slice(&r_i16.to_le_bytes());
-            }
-            out
-        }
     }
 
     fn ensure_worker() {
@@ -446,17 +429,12 @@ mod imp {
         }
 
         #[test]
-        fn speaker_enhancer_encodes_stereo_f32_and_i16_without_clipping() {
+        fn speaker_enhancer_encodes_stereo_f32_without_clipping() {
             let mut enhancer = SpeakerEnhancer::new(48_000);
             let floats = [0.25_f32, -0.25, 0.95, -0.95, f32::NAN, 0.5];
             let encoded = enhancer.encode_stereo_f32(&floats, 2);
             assert_eq!(encoded.len(), 3 * 4);
             assert!(encoded.iter().any(|&b| b != 0));
-
-            let i16s = [8000i16, -8000, 16000, -16000];
-            let encoded_i16 = enhancer.encode_stereo_i16(&i16s, 2);
-            assert_eq!(encoded_i16.len(), 2 * 4);
-            assert!(encoded_i16.iter().any(|&b| b != 0));
         }
     }
 }

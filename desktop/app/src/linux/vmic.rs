@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Phone-as-Microphone virtual audio source on Linux via PulseAudio / PipeWire
 //! `module-pipe-source`, including FIFO creation (`mkfifo`), non-blocking PCM
-//! writes, gain/mute processing, and RMS level metering.
+//! writes, and RMS level metering.
 
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -63,25 +63,17 @@ pub fn sanitize_phone_name(phone_name: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
-/// Formats the `source_properties` argument for `pactl load-module module-pipe-source`.
+/// Formats the `source_properties` argument for `pactl load-module module-pipe-source`,
+/// with an explicit `"Mono"` or `"Stereo"` channel suffix and
+/// `device.profile.description` so PulseAudio Volume Control (`pavucontrol`)
+/// displays the channel layout alongside the device name just like hardware ALSA
+/// profiles.
 ///
 /// PulseAudio / PipeWire parses module arguments in two passes:
 /// 1. `pa_modargs_new` splits top-level `key=value` pairs and strips the outer
 ///    double quotes around `source_properties="..."`.
 /// 2. `pa_proplist_from_string` parses `device.description='...'` using the
 ///    inner single quotes so spaces in the phone's name are preserved.
-pub fn format_source_properties(phone_name: Option<&str>) -> String {
-    let description = match phone_name.and_then(sanitize_phone_name) {
-        Some(name) => format!("{name} (G7 Link)"),
-        None => DEFAULT_DESCRIPTION.to_string(),
-    };
-    format!("source_properties=\"device.description='{description}'\"")
-}
-
-/// Formats `source_properties` with an explicit `"Mono"` or `"Stereo"` channel
-/// suffix and `device.profile.description` so PulseAudio Volume Control
-/// (`pavucontrol`) displays the channel layout alongside the device name just
-/// like hardware ALSA profiles.
 pub fn format_source_properties_with_channels(phone_name: Option<&str>, channels: u8) -> String {
     let mode = if channels <= 1 { "Mono" } else { "Stereo" };
     let description = match phone_name.and_then(sanitize_phone_name) {
@@ -225,15 +217,6 @@ pub fn cleanup_stale_sources() {
     }
 }
 
-pub fn create_source(rate: u32, channels: u8) -> Result<u32, String> {
-    let fifo_path = default_fifo_path();
-    create_source_with_label(rate, channels, &fifo_path, None)
-}
-
-pub fn create_source_with_path(rate: u32, channels: u8, fifo_path: &Path) -> Result<u32, String> {
-    create_source_with_label(rate, channels, fifo_path, None)
-}
-
 pub fn create_source_with_label(
     rate: u32,
     channels: u8,
@@ -284,50 +267,7 @@ pub fn destroy_source(module_id: u32) {
     let _ = super::run_cmd_timeout("pactl", &["unload-module", &id_str], PACTL_TIMEOUT);
 }
 
-/// Default makeup pre-gain (in dB) applied to phone microphone streams on Linux
-/// to compensate for handset `VOICE_COMMUNICATION` attenuation at desk distance.
-pub const DEFAULT_PHONE_MAKEUP_GAIN_DB: f32 = 9.0;
-
-/// Applies `gain_db` (`-12.0..=24.0`) and `muted` to 16-bit signed little-endian
-/// PCM samples, returning `(processed_pcm_bytes, rms_level_0_to_1)`.
-pub fn process_mic_pcm_s16le(pcm: &[u8], gain_db: f32, muted: bool) -> (Vec<u8>, f32) {
-    let sample_count = pcm.len() / 2;
-    if sample_count == 0 {
-        return (Vec::new(), 0.0);
-    }
-    if muted {
-        return (vec![0u8; sample_count * 2], 0.0);
-    }
-
-    let clamped_db = if gain_db.is_finite() { gain_db.clamp(-12.0, 24.0) } else { 0.0 };
-    let linear_gain = 10.0_f32.powf(clamped_db / 20.0);
-    let mut out = Vec::with_capacity(sample_count * 2);
-    let mut sum_sq = 0.0_f64;
-
-    for chunk in pcm.as_chunks::<2>().0 {
-        let raw = i16::from_le_bytes([chunk[0], chunk[1]]);
-        let norm = (f32::from(raw) / 32768.0) * linear_gain;
-        // Soft-knee saturation above 0.9 to prevent harsh digital clipping.
-        let limited = if norm.abs() > 0.9 {
-            let sign = norm.signum();
-            let excess = norm.abs() - 0.9;
-            sign * (0.9 + 0.1 * (excess / (0.1 + excess)))
-        } else {
-            norm
-        }
-        .clamp(-1.0, 1.0);
-
-        sum_sq += f64::from(limited) * f64::from(limited);
-        let scaled = (limited * 32767.0).round() as i16;
-        out.extend_from_slice(&scaled.to_le_bytes());
-    }
-
-    let rms = ((sum_sq / (sample_count as f64)).sqrt() as f32).clamp(0.0, 1.0);
-    (out, rms)
-}
-
-/// Manages a PipeWire / PulseAudio virtual microphone pipe source and its
-/// real-time gain/mute/RMS state.
+/// Manages a PipeWire / PulseAudio virtual microphone pipe source.
 #[derive(Debug)]
 pub struct VirtualMic {
     fifo_path: PathBuf,
@@ -335,65 +275,9 @@ pub struct VirtualMic {
     module_id: Option<u32>,
     input_channels: u8,
     output_channels: u8,
-    gain_db: f32,
-    muted: bool,
-    last_rms: f32,
 }
 
 impl VirtualMic {
-    /// Creates a new `VirtualMic` controller and attempts to register the
-    /// underlying `module-pipe-source` in PulseAudio/PipeWire.
-    pub fn new(rate: u32, channels: u8) -> Self {
-        let ch = channels.clamp(1, 2);
-        let fifo_path = default_fifo_path();
-        let _ = ensure_fifo(&fifo_path);
-        let fifo_file = open_fifo_nonblocking(&fifo_path).ok();
-        let module_id = create_source_with_label(rate, ch, &fifo_path, None).ok();
-        Self {
-            fifo_path,
-            fifo_file,
-            module_id,
-            input_channels: ch,
-            output_channels: ch,
-            gain_db: 0.0,
-            muted: false,
-            last_rms: 0.0,
-        }
-    }
-
-    /// Creates a new `VirtualMic` controller labeled with `phone_name` (for example,
-    /// `"Pixel 9a (G7 Link)"`) and registers a 2-channel stereo `module-pipe-source`
-    /// by default (upmixing mono phone audio to L+R).
-    pub fn new_for_phone(rate: u32, input_channels: u8, phone_name: Option<&str>) -> Self {
-        Self::new_for_phone_with_channels(rate, input_channels, 2, phone_name)
-    }
-
-    /// Creates a new `VirtualMic` controller labeled with `phone_name` and explicit
-    /// `input_channels` (from the phone) and `output_channels` (`1` for Mono, `2` for Stereo).
-    pub fn new_for_phone_with_channels(
-        rate: u32,
-        input_channels: u8,
-        output_channels: u8,
-        phone_name: Option<&str>,
-    ) -> Self {
-        let in_ch = input_channels.clamp(1, 2);
-        let out_ch = output_channels.clamp(1, 2);
-        let fifo_path = default_fifo_path();
-        let _ = ensure_fifo(&fifo_path);
-        let fifo_file = open_fifo_nonblocking(&fifo_path).ok();
-        let module_id = create_source_with_label(rate, out_ch, &fifo_path, phone_name).ok();
-        Self {
-            fifo_path,
-            fifo_file,
-            module_id,
-            input_channels: in_ch,
-            output_channels: out_ch,
-            gain_db: 0.0,
-            muted: false,
-            last_rms: 0.0,
-        }
-    }
-
     /// Creates a new `VirtualMic` controller labeled with `phone_name`, failing
     /// honestly when `pactl load-module module-pipe-source` does not succeed.
     pub fn open_with_label(
@@ -418,69 +302,12 @@ impl VirtualMic {
             module_id,
             input_channels: in_ch,
             output_channels: out_ch,
-            gain_db: 0.0,
-            muted: false,
-            last_rms: 0.0,
         })
-    }
-
-    /// Creates a `VirtualMic` backed by a specific FIFO path (creating the FIFO if needed)
-    /// without invoking `pactl`.
-    pub fn open_fifo_only(fifo_path: impl Into<PathBuf>) -> Result<Self, String> {
-        let fifo_path = fifo_path.into();
-        ensure_fifo(&fifo_path)?;
-        let fifo_file = open_fifo_nonblocking(&fifo_path)
-            .map_err(|e| format!("open FIFO {}: {e}", fifo_path.display()))?;
-        Ok(Self {
-            fifo_path,
-            fifo_file: Some(fifo_file),
-            module_id: None,
-            input_channels: 1,
-            output_channels: 1,
-            gain_db: 0.0,
-            muted: false,
-            last_rms: 0.0,
-        })
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.module_id.is_some()
-    }
-
-    pub fn fifo_path(&self) -> &Path {
-        &self.fifo_path
-    }
-
-    pub fn output_channels(&self) -> u8 {
-        self.output_channels
-    }
-
-    pub fn set_gain_db(&mut self, gain_db: f32) {
-        self.gain_db = if gain_db.is_finite() { gain_db.clamp(-12.0, 24.0) } else { 0.0 };
-    }
-
-    pub fn gain_db(&self) -> f32 {
-        self.gain_db
-    }
-
-    pub fn set_muted(&mut self, muted: bool) {
-        self.muted = muted;
-        if muted {
-            self.last_rms = 0.0;
-        }
-    }
-
-    pub fn is_muted(&self) -> bool {
-        self.muted
-    }
-
-    pub fn last_rms(&self) -> f32 {
-        self.last_rms
     }
 
     /// Writes already-processed or raw `s16le` bytes into the underlying non-blocking FIFO.
     /// Returns the number of bytes written (`0` if the kernel pipe buffer is currently full).
-    pub fn write_pcm_s16le(&mut self, pcm: &[u8]) -> Result<usize, String> {
+    fn write_pcm_s16le(&mut self, pcm: &[u8]) -> Result<usize, String> {
         if pcm.is_empty() {
             return Ok(0);
         }
@@ -501,43 +328,28 @@ impl VirtualMic {
         }
     }
 
-    /// Processes incoming `s16le` PCM frames (applying `gain_db` when non-zero and
-    /// upmixing mono to stereo when `input_channels == 1 && output_channels == 2`)
-    /// and writes them to the pipe FIFO if the virtual source or FIFO handle is active.
+    /// Writes incoming `s16le` PCM frames to the pipe FIFO (upmixing mono to
+    /// stereo when `input_channels == 1 && output_channels == 2`) if the virtual
+    /// source or FIFO handle is active, and returns their RMS level (`0` to `1`).
     pub fn push_pcm(&mut self, pcm: &[u8]) -> Result<f32, String> {
-        if !self.muted && self.gain_db.abs() < f32::EPSILON {
-            let sample_count = pcm.len() / 2;
-            let rms = if sample_count == 0 {
-                0.0
-            } else {
-                let mut sum_sq = 0.0_f64;
-                for chunk in pcm.as_chunks::<2>().0 {
-                    let norm = f64::from(i16::from_le_bytes([chunk[0], chunk[1]])) / 32768.0;
-                    sum_sq += norm * norm;
-                }
-                ((sum_sq / (sample_count as f64)).sqrt() as f32).clamp(0.0, 1.0)
-            };
-            self.last_rms = rms;
-            if (self.module_id.is_some() || self.fifo_file.is_some()) && sample_count > 0 {
-                let aligned = &pcm[..sample_count * 2];
-                if self.input_channels == 1 && self.output_channels == 2 {
-                    let stereo = mono_to_stereo_s16le(aligned);
-                    let _ = self.write_pcm_s16le(&stereo);
-                } else {
-                    let _ = self.write_pcm_s16le(aligned);
-                }
+        let sample_count = pcm.len() / 2;
+        let rms = if sample_count == 0 {
+            0.0
+        } else {
+            let mut sum_sq = 0.0_f64;
+            for chunk in pcm.as_chunks::<2>().0 {
+                let norm = f64::from(i16::from_le_bytes([chunk[0], chunk[1]])) / 32768.0;
+                sum_sq += norm * norm;
             }
-            return Ok(rms);
-        }
-
-        let (processed, rms) = process_mic_pcm_s16le(pcm, self.gain_db, self.muted);
-        self.last_rms = rms;
-        if (self.module_id.is_some() || self.fifo_file.is_some()) && !processed.is_empty() {
+            ((sum_sq / (sample_count as f64)).sqrt() as f32).clamp(0.0, 1.0)
+        };
+        if (self.module_id.is_some() || self.fifo_file.is_some()) && sample_count > 0 {
+            let aligned = &pcm[..sample_count * 2];
             if self.input_channels == 1 && self.output_channels == 2 {
-                let stereo = mono_to_stereo_s16le(&processed);
+                let stereo = mono_to_stereo_s16le(aligned);
                 let _ = self.write_pcm_s16le(&stereo);
             } else {
-                let _ = self.write_pcm_s16le(&processed);
+                let _ = self.write_pcm_s16le(aligned);
             }
         }
         Ok(rms)
@@ -560,43 +372,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn process_mic_pcm_s16le_unity_gain_preserves_signal_and_computes_rms() {
-        let mut raw = Vec::new();
-        for _ in 0..100 {
-            raw.extend_from_slice(&16384i16.to_le_bytes());
-        }
-        let (out, rms) = process_mic_pcm_s16le(&raw, 0.0, false);
-        assert_eq!(out.len(), raw.len());
-        let first = i16::from_le_bytes([out[0], out[1]]);
-        assert!((first - 16384).abs() <= 2);
-        assert!(rms > 0.45 && rms < 0.55, "expected ~0.5 RMS, got {rms}");
-    }
-
-    #[test]
-    fn process_mic_pcm_s16le_mute_zeroes_samples_and_rms() {
-        let mut raw = Vec::new();
-        for _ in 0..64 {
-            raw.extend_from_slice(&20000i16.to_le_bytes());
-        }
-        let (out, rms) = process_mic_pcm_s16le(&raw, 12.0, true);
-        assert!(out.iter().all(|&b| b == 0));
-        assert_eq!(rms, 0.0);
-    }
-
-    #[test]
-    fn process_mic_pcm_s16le_boosts_and_soft_limits_peaks() {
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&10000i16.to_le_bytes());
-        raw.extend_from_slice(&30000i16.to_le_bytes());
-        let (out, rms) = process_mic_pcm_s16le(&raw, 6.0, false);
-        let s0 = i16::from_le_bytes([out[0], out[1]]);
-        let s1 = i16::from_le_bytes([out[2], out[3]]);
-        assert!(s0 > 18000, "+6 dB should roughly double moderate sample: {s0}");
-        assert!(s1 >= 29000, "soft limiter should keep loud sample near full scale: {s1}");
-        assert!(rms > 0.5 && rms <= 1.0);
-    }
-
-    #[test]
     fn ensure_fifo_creates_named_pipe_and_nonblocking_writes_succeed_without_reader() {
         let dir = tempfile::tempdir().unwrap();
         let fifo_path = dir.path().join("test-vmic.pcm");
@@ -609,7 +384,13 @@ mod tests {
         assert!(meta.file_type().is_fifo(), "path must be a Unix FIFO");
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
 
-        let mut vmic = VirtualMic::open_fifo_only(&fifo_path).expect("should open FIFO non-blocking");
+        let mut vmic = VirtualMic {
+            fifo_path: fifo_path.clone(),
+            fifo_file: Some(open_fifo_nonblocking(&fifo_path).expect("should open FIFO non-blocking")),
+            module_id: None,
+            input_channels: 1,
+            output_channels: 1,
+        };
         let mut raw = Vec::new();
         for _ in 0..32 {
             raw.extend_from_slice(&8192i16.to_le_bytes());
@@ -625,37 +406,22 @@ mod tests {
 
     #[test]
     fn format_source_properties_quotes_description_and_strips_unsafe_chars() {
+        const PREFIX: &str = "source_properties=\"device.description='";
+        const SUFFIX: &str = "' device.profile.description='Mono'\"";
+        let props = |name: Option<&str>| format_source_properties_with_channels(name, 1);
+        let expect = |description: &str| format!("{PREFIX}{description} Mono{SUFFIX}");
+        assert_eq!(props(None), expect("G7 Link Phone Microphone"));
+        assert_eq!(props(Some("   ")), expect("G7 Link Phone Microphone"));
+        assert_eq!(props(Some("Pixel 9a")), expect("Pixel 9a (G7 Link)"));
+        assert_eq!(props(Some("Samsung   S20   FE (Work)")), expect("Samsung S20 FE (Work) (G7 Link)"));
+        assert_eq!(props(Some("Jochen's \"Phone\" \\ \n\t")), expect("Jochens Phone (G7 Link)"));
         assert_eq!(
-            format_source_properties(None),
-            "source_properties=\"device.description='G7 Link Phone Microphone'\""
+            props(Some("Phone' file=/etc/passwd; $(id) `uname`")),
+            expect("Phone fileetcpasswd (id) uname (G7 Link)")
         );
-        assert_eq!(
-            format_source_properties(Some("   ")),
-            "source_properties=\"device.description='G7 Link Phone Microphone'\""
-        );
-        assert_eq!(
-            format_source_properties(Some("Pixel 9a")),
-            "source_properties=\"device.description='Pixel 9a (G7 Link)'\""
-        );
-        assert_eq!(
-            format_source_properties(Some("Samsung   S20   FE (Work)")),
-            "source_properties=\"device.description='Samsung S20 FE (Work) (G7 Link)'\""
-        );
-        assert_eq!(
-            format_source_properties(Some("Jochen's \"Phone\" \\ \n\t")),
-            "source_properties=\"device.description='Jochens Phone (G7 Link)'\""
-        );
-        assert_eq!(
-            format_source_properties(Some("Phone' file=/etc/passwd; $(id) `uname`")),
-            "source_properties=\"device.description='Phone fileetcpasswd (id) uname (G7 Link)'\""
-        );
-        assert_eq!(
-            format_source_properties(Some("'\"\\=;$`{}")),
-            "source_properties=\"device.description='G7 Link Phone Microphone'\""
-        );
+        assert_eq!(props(Some("'\"\\=;$`{}")), expect("G7 Link Phone Microphone"));
         let long_name = "A".repeat(120);
-        let props = format_source_properties(Some(&long_name));
-        assert!(props.contains(&format!("'{} (G7 Link)'", "A".repeat(64))));
+        assert!(props(Some(long_name.as_str())).contains(&format!("'{} (G7 Link) Mono'", "A".repeat(64))));
 
         assert_eq!(
             format_file_arg(Path::new("/run/user/1000/g7link-vmic.pcm")).unwrap(),

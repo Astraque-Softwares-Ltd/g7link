@@ -382,12 +382,6 @@ fn newer_release(release: Release, current: &str) -> Option<Update> {
     newer_release_linux_kind(release, current, detect_linux_install_kind())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-fn newer_release_linux(release: Release, current: &str, is_appimage: bool) -> Option<Update> {
-    let kind = if is_appimage { LinuxInstallKind::AppImage } else { LinuxInstallKind::Deb };
-    newer_release_linux_kind(release, current, kind)
-}
-
 fn linux_suffixes(kind: LinuxInstallKind) -> &'static [&'static str] {
     match kind {
         LinuxInstallKind::AppImage => APPIMAGE_SUFFIXES,
@@ -989,9 +983,11 @@ mod tests {
             )
         );
         {
-            let picked_appimage = newer_release_linux(release("v9.0.0"), "0.0.1", true).unwrap();
+            let picked_appimage =
+                newer_release_linux_kind(release("v9.0.0"), "0.0.1", LinuxInstallKind::AppImage).unwrap();
             assert!(picked_appimage.installer_name.ends_with(".AppImage"));
-            let picked_deb = newer_release_linux(release("v9.0.0"), "0.0.1", false).unwrap();
+            let picked_deb =
+                newer_release_linux_kind(release("v9.0.0"), "0.0.1", LinuxInstallKind::Deb).unwrap();
             assert!(picked_deb.installer_name.ends_with(".deb"));
             assert!(PRIVILEGED_DEB_INSTALL_SCRIPT.contains("install -d -m 0700 -o 0 -g 0"));
             assert!(PRIVILEGED_DEB_INSTALL_SCRIPT.contains("sha256sum -c --status -"));

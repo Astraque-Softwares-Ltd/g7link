@@ -79,7 +79,6 @@ void linux_tray_set_pause_label(rust::Str label);
 void linux_tray_set_find_phone_enabled(bool enabled);
 void linux_tray_teardown();
 rust::String linux_tray_wait_action(uint32_t timeout_ms);
-bool linux_tray_is_available();
 
 bool linux_work_area(int32_t &x, int32_t &y, int32_t &w, int32_t &h);
 bool linux_screen_geometry(int32_t &x, int32_t &y, int32_t &w, int32_t &h);

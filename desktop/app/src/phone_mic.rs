@@ -154,7 +154,6 @@ pub fn is_cable(name: &str) -> bool {
 
 /// The output devices, and the one the microphone plays into.
 pub fn outputs() -> (Vec<AudioOutputDevice>, Option<String>) {
-    #[allow(unused_mut)]
     let mut devices = crate::win::audio::output_devices();
     if crate::win::vmic::is_available() {
         if !devices.iter().any(|d| d.id == VIRTUAL_MIC_MONO_ID) {

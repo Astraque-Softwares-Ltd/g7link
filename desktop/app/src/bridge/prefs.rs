@@ -747,12 +747,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
                 p.save();
             })
             .release();
-        self.as_mut()
-            .on_g7_island_changed(|p| {
-                crate::settings::set_g7_island(p.g7_island);
-                p.save();
-            })
-            .release();
+        self.as_mut().on_g7_island_changed(|p| p.save()).release();
         self.as_mut().on_g7_island_calls_changed(|p| p.save()).release();
         self.as_mut().on_g7_island_transfers_changed(|p| p.save()).release();
         self.as_mut().on_g7_island_media_changed(|p| p.save()).release();

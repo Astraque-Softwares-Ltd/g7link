@@ -357,24 +357,6 @@ fn parse_xdotool_geometry(text: &str) -> Option<RECT> {
     Some(RECT { left, top, right: left + width, bottom: top + height })
 }
 
-pub(crate) fn looks_like_url(s: &str) -> bool {
-    let s = s.trim();
-    if s.is_empty() || s.contains(char::is_whitespace) {
-        return false;
-    }
-    if let Some(rest) = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://")) {
-        return rest.contains('.') || rest.starts_with("localhost");
-    }
-    let host = s.split('/').next().unwrap_or("");
-    let Some((left, right)) = host.rsplit_once('.') else {
-        return false;
-    };
-    !left.is_empty()
-        && right.len() >= 2
-        && right.chars().all(|c| c.is_ascii_alphabetic())
-        && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,15 +367,6 @@ mod tests {
         assert!(programs_for("MSEdge").contains(&"msedge.exe".to_owned()));
         assert!(programs_for("308046B0AF4A39CB").contains(&"firefox.exe".to_owned()));
         assert!(programs_for("VideoLAN.VLC").contains(&"vlc.exe".to_owned()));
-    }
-
-    #[test]
-    fn spots_urls_with_or_without_scheme() {
-        assert!(looks_like_url("https://www.youtube.com/watch?v=abc"));
-        assert!(looks_like_url("youtube.com/watch?v=abc"));
-        assert!(looks_like_url("bilibili.com/video/BV1xx"));
-        assert!(!looks_like_url("Search Google or type a URL"));
-        assert!(!looks_like_url(""));
     }
 
     #[test]

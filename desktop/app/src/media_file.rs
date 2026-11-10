@@ -4,8 +4,6 @@
 //! shortcut to every file opened lately (the Recent folder), and the
 //! player's title or its window's names the file.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 use crate::win::{browser, shortcut};

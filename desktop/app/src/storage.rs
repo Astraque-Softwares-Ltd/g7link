@@ -12,16 +12,11 @@ mod imp {
 
     #![allow(unsafe_code)]
 
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use g7link_core::{DeviceId, NodeEvent};
 
     use crate::{core_host, win};
-
-    /// Difference between Windows FILETIME epoch (1601-01-01) and Unix epoch
-    /// (1970-01-01) in 100-nanosecond intervals.
-    #[allow(dead_code)]
-    const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000;
 
     pub fn start() {
         win::storage::start();
@@ -108,89 +103,12 @@ mod imp {
         }
     }
 
-    /// Converts a Unix timestamp in milliseconds to Windows FILETIME 100ns ticks
-    /// since 1601-01-01.
-    #[allow(dead_code)]
-    pub fn unix_ms_to_filetime_ticks(unix_ms: i64) -> i64 {
-        EPOCH_DIFF_100NS.saturating_add(unix_ms.max(0).saturating_mul(10_000))
-    }
-
-    /// Converts Windows FILETIME 100ns ticks since 1601-01-01 to Unix milliseconds.
-    #[cfg(test)]
-    pub fn filetime_ticks_to_unix_ms(ticks: i64) -> i64 {
-        ticks.saturating_sub(EPOCH_DIFF_100NS).max(0) / 10_000
-    }
-
-    /// Computes the slash-separated relative path inside `root_path` from a full
-    /// local path (`""` for the sync root itself). Returns `None` if `full_path` is
-    /// not inside `root_path`.
-    #[allow(dead_code)]
-    pub fn relative_path_under_root(root_path: &Path, full_path: &Path) -> Option<String> {
-        let root_norm = normalize_win_path(root_path);
-        let full_norm = normalize_win_path(full_path);
-        // Compared name by name, ignoring case. (Cutting the path at the length
-        // of a lowercased copy breaks on letters whose lowercase is longer,
-        // such as the Turkish "İ" in a phone's name.)
-        let root_parts: Vec<&str> = root_norm.split('\\').filter(|s| !s.is_empty()).collect();
-        let full_parts: Vec<&str> = full_norm.split('\\').filter(|s| !s.is_empty()).collect();
-        if full_parts.len() < root_parts.len()
-            || !root_parts.iter().zip(&full_parts).all(|(a, b)| a.to_lowercase() == b.to_lowercase())
-        {
-            return None;
-        }
-        let parts = &full_parts[root_parts.len()..];
-        if parts.iter().any(|p| *p == "." || *p == "..") {
-            return None;
-        }
-        Some(parts.join("/"))
-    }
-
-    #[allow(dead_code)]
-    fn normalize_win_path(path: &Path) -> String {
-        let s = path.to_string_lossy();
-        let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
-        stripped.trim_end_matches('\\').to_owned()
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
 
         #[test]
-        fn converts_unix_ms_to_filetime_and_back() {
-            let unix_ms = 1_710_000_000_123i64;
-            let ticks = unix_ms_to_filetime_ticks(unix_ms);
-            assert_eq!(ticks, EPOCH_DIFF_100NS + unix_ms * 10_000);
-            assert_eq!(filetime_ticks_to_unix_ms(ticks), unix_ms);
-            assert_eq!(unix_ms_to_filetime_ticks(-500), EPOCH_DIFF_100NS);
-        }
-
-        #[test]
-        fn normalizes_relative_paths_and_sanitizes_folder_names() {
-            let root = Path::new(r"C:\Users\alice\G7Link\Pixel 9");
-            assert_eq!(relative_path_under_root(root, root), Some(String::new()));
-            assert_eq!(
-                relative_path_under_root(root, Path::new(r"C:\Users\alice\G7Link\Pixel 9\DCIM\Camera\a.jpg")),
-                Some("DCIM/Camera/a.jpg".into())
-            );
-            assert_eq!(
-                relative_path_under_root(root, Path::new(r"C:\Users\alice\G7Link\Pixel 9 Pro\DCIM")),
-                None
-            );
-            // "İ" lowercases to two characters: the path still splits in the right place.
-            let turkish = Path::new(r"C:\Users\alice\G7Link\İpek's Phone");
-            assert_eq!(
-                relative_path_under_root(
-                    turkish,
-                    Path::new(r"C:\Users\alice\G7Link\İpek's Phone\DCIM\a.jpg")
-                ),
-                Some("DCIM/a.jpg".into())
-            );
-            assert_eq!(
-                relative_path_under_root(root, Path::new(r"c:\users\ALICE\g7link\pixel 9\Download")),
-                Some("Download".into())
-            );
-
+        fn sanitizes_folder_names() {
             assert_eq!(sanitize_folder_name("Pixel 9 (test)"), "Pixel 9 (test)");
             assert_eq!(sanitize_folder_name("My:Phone*1?"), "My Phone 1");
             assert_eq!(sanitize_folder_name("CON"), "CON phone");

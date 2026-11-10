@@ -1576,7 +1576,6 @@ pub fn leave_window() {
 }
 
 /// Records text that arrived from a remote device so focus/hover sync never echoes it back.
-#[allow(dead_code)]
 pub fn note_remote_clipboard(text: &str) {
     let normalized = text.replace("\r\n", "\n");
     state(|s| {
@@ -1627,13 +1626,10 @@ pub fn sync_clipboard_on_focus(window: Window) {
 }
 
 /// Standard XInput / Xbox left thumbstick deadzone.
-#[allow(dead_code)]
 pub const LEFT_THUMB_DEADZONE: i16 = 7849;
 /// Standard XInput / Xbox right thumbstick deadzone.
-#[allow(dead_code)]
 pub const RIGHT_THUMB_DEADZONE: i16 = 8689;
 /// Standard XInput / Xbox trigger threshold.
-#[allow(dead_code)]
 pub const TRIGGER_THRESHOLD: u8 = 30;
 
 /// Normalized controller snapshot forwarded via [`g7link_core::MirrorInput::Gamepad`].
@@ -1663,14 +1659,12 @@ impl GamepadState {
     }
 }
 
-#[allow(dead_code)]
 fn deadzone_axis(val: i16, deadzone: i16) -> i16 {
     if val.saturating_abs() <= deadzone { 0 } else { val }
 }
 
 /// Applies stick deadzones and trigger thresholds so idle controller noise does
 /// not generate redundant [`g7link_core::MirrorInput::Gamepad`] frames.
-#[allow(dead_code)]
 pub fn normalize_gamepad_state(raw: GamepadState) -> GamepadState {
     GamepadState {
         buttons: raw.buttons,

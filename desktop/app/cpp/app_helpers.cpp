@@ -630,17 +630,6 @@ rust::String linux_tray_wait_action(uint32_t timeout_ms)
     return rust::String();
 }
 
-bool linux_tray_is_available()
-{
-    bool available = false;
-    if (runOnQtMainThreadSync([&available]() {
-            available = QSystemTrayIcon::isSystemTrayAvailable();
-        })) {
-        return available;
-    }
-    return false;
-}
-
 bool linux_work_area(int32_t &x, int32_t &y, int32_t &w, int32_t &h)
 {
     bool ok = false;

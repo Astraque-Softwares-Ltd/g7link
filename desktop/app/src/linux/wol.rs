@@ -307,72 +307,6 @@ pub fn default_route() -> Option<(String, Option<Ipv4Addr>)> {
     parse_proc_net_route(&contents)
 }
 
-/// Parses `/proc/net/arp` to resolve `target_ip` to a normalized lowercase MAC (`aa:bb:cc:dd:ee:ff`).
-pub fn parse_proc_net_arp(arp_table: &str, target_ip: Ipv4Addr) -> Option<String> {
-    for line in arp_table.lines().skip(1) {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 6 {
-            continue;
-        }
-        let Ok(ip) = cols[0].parse::<Ipv4Addr>() else {
-            continue;
-        };
-        if ip != target_ip {
-            continue;
-        }
-        // Flags == 0x0 means incomplete ARP entry.
-        if cols[2].eq_ignore_ascii_case("0x0") {
-            continue;
-        }
-        if let Some(mac) = normalize_mac(cols[3]) {
-            return Some(mac);
-        }
-    }
-    None
-}
-
-/// Parses `ip neigh` output as a fallback when `/proc/net/arp` does not contain `target_ip`.
-pub fn parse_ip_neigh(output: &str, target_ip: Ipv4Addr) -> Option<String> {
-    for line in output.lines() {
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        let Some(first) = tokens.first() else {
-            continue;
-        };
-        let Ok(ip) = first.parse::<Ipv4Addr>() else {
-            continue;
-        };
-        if ip != target_ip {
-            continue;
-        }
-        for window in tokens.windows(2) {
-            if window[0] == "lladdr"
-                && let Some(mac) = normalize_mac(window[1])
-            {
-                return Some(mac);
-            }
-        }
-    }
-    None
-}
-
-/// Resolves the default gateway's MAC address in-process from `/proc/net/route` + `/proc/net/arp`,
-/// falling back to `ip neigh` only if `/proc/net/arp` misses it.
-pub fn query_gateway_mac() -> Option<String> {
-    let (_, Some(gw_ip)) = default_route()? else {
-        return None;
-    };
-    if let Ok(arp) = fs::read_to_string("/proc/net/arp")
-        && let Some(mac) = parse_proc_net_arp(&arp, gw_ip)
-    {
-        return Some(mac);
-    }
-    let out = Command::new("ip").args(["neigh", "show", &gw_ip.to_string()]).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_ip_neigh(&String::from_utf8_lossy(&out.stdout), gw_ip)
-}
-
 fn query_ipv4_broadcasts() -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -552,7 +486,7 @@ Settings for enp3s0:
     }
 
     #[test]
-    fn parses_proc_net_route_and_arp_tables() {
+    fn parses_proc_net_route_table() {
         let route_table = "\
 Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
 wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
@@ -562,22 +496,5 @@ tun0\t00000000\t0100000A\t0003\t0\t0\t50\t00000000\t0\t0\t0
         let (iface, gw) = parse_proc_net_route(route_table).expect("default route");
         assert_eq!(iface, "enp3s0");
         assert_eq!(gw, Some(Ipv4Addr::new(192, 168, 1, 1)));
-
-        let arp_table = "\
-IP address       HW type     Flags       HW address            Mask     Device
-192.168.1.50     0x1         0x0         00:00:00:00:00:00     *        enp3s0
-192.168.1.1      0x1         0x2         DC:A6:32:12:34:56     *        enp3s0
-";
-        assert_eq!(
-            parse_proc_net_arp(arp_table, Ipv4Addr::new(192, 168, 1, 1)),
-            Some("dc:a6:32:12:34:56".to_string())
-        );
-        assert_eq!(parse_proc_net_arp(arp_table, Ipv4Addr::new(192, 168, 1, 50)), None);
-
-        let ip_neigh = "192.168.1.1 dev enp3s0 lladdr DC:A6:32:12:34:56 REACHABLE\n";
-        assert_eq!(
-            parse_ip_neigh(ip_neigh, Ipv4Addr::new(192, 168, 1, 1)),
-            Some("dc:a6:32:12:34:56".to_string())
-        );
     }
 }

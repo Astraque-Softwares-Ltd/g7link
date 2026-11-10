@@ -11,7 +11,6 @@ pub mod ffi {
         type QGuiApplication = cxx_qt_lib::QGuiApplication;
         type QQmlApplicationEngine = cxx_qt_lib::QQmlApplicationEngine;
 
-        #[allow(dead_code)]
         fn create_qt_app() -> UniquePtr<QGuiApplication>;
 
         /// The latest picture of a video stream (32-bit BGRX rows), for
@@ -61,10 +60,8 @@ pub mod ffi {
         fn translate(context: &str, text: &str) -> String;
 
         /// Decodes image bytes into a byte vector: 4-byte width (LE), 4-byte height (LE), followed by ARGB32 bytes.
-        #[allow(dead_code)]
         fn decode_image(bytes: &[u8]) -> Vec<u8>;
 
-        #[allow(dead_code)]
         #[allow(clippy::too_many_arguments)]
         fn linux_tray_setup(
             icon_path: &str,
@@ -80,43 +77,26 @@ pub mod ffi {
             quit_label: &str,
         );
 
-        #[allow(dead_code)]
         fn linux_tray_set_tooltip(tooltip: &str);
 
-        #[allow(dead_code)]
         fn linux_tray_set_pause_label(label: &str);
 
-        #[allow(dead_code)]
         fn linux_tray_set_find_phone_enabled(enabled: bool);
 
-        #[allow(dead_code)]
         fn linux_tray_teardown();
 
-        #[allow(dead_code)]
         fn linux_tray_wait_action(timeout_ms: u32) -> String;
 
-        #[allow(dead_code)]
-        fn linux_tray_is_available() -> bool;
-
-        #[allow(dead_code)]
         fn linux_work_area(x: &mut i32, y: &mut i32, w: &mut i32, h: &mut i32) -> bool;
 
-        #[allow(dead_code)]
         fn linux_screen_geometry(x: &mut i32, y: &mut i32, w: &mut i32, h: &mut i32) -> bool;
 
-        #[allow(dead_code)]
         fn linux_set_activation_token(token: &str);
 
-        #[allow(dead_code)]
         fn linux_clipboard_sequence() -> u64;
 
-        #[allow(dead_code)]
         fn linux_clipboard_wait_change(last_seq: u64, timeout_ms: u32) -> u64;
 
-        #[allow(dead_code)]
-        fn linux_clipboard_notify_external();
-
-        #[allow(dead_code)]
         #[allow(clippy::too_many_arguments)]
         fn linux_clipboard_read(
             check_privacy: bool,
@@ -128,16 +108,12 @@ pub mod ffi {
             png_bytes: &mut Vec<u8>,
         ) -> bool;
 
-        #[allow(dead_code)]
         fn linux_clipboard_read_files() -> Vec<String>;
 
-        #[allow(dead_code)]
         fn linux_clipboard_write_text(text: &str, html: &str, rtf: &str, is_private: bool) -> bool;
 
-        #[allow(dead_code)]
         fn linux_clipboard_write_image_png(png: &[u8]) -> bool;
 
-        #[allow(dead_code)]
         fn linux_clipboard_write_files(paths: &[String]) -> bool;
     }
 }

@@ -13,8 +13,6 @@
 //   5. XFCE Thunar: our `<action>` entries in `~/.config/Thunar/uca.xml`, next to
 //      the user's own custom actions (only when Thunar's folder exists).
 
-#![allow(dead_code)]
-
 use std::io::Result;
 use std::path::{Path, PathBuf};
 
@@ -148,12 +146,6 @@ fn read_shortcut(path: &Path) -> Option<Shortcut> {
         }
     }
     Some(Shortcut { target: target?, arguments: args?, description: comment })
-}
-
-/// Resolve the user's Startup / Autostart folder (`~/.config/autostart`).
-pub fn startup_dir() -> Option<PathBuf> {
-    let base = dirs::config_dir().filter(|p| p.is_absolute())?;
-    Some(base.join("autostart"))
 }
 
 /// Resolve the user's canonical SendTo directory (`~/.local/share/g7link/send-to`).

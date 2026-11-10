@@ -11,7 +11,7 @@ use std::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::fs::{FileExt, OpenOptionsExt},
     },
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock,
@@ -24,7 +24,7 @@ use g7link_core::{DeviceId, LinkState, NodeEvent, StorageEntry};
 
 use crate::core_host;
 use crate::state::{Changes, CoreStatus};
-use crate::storage::{base_sync_dir, folder_names, relative_path_under_root, sanitize_folder_name};
+use crate::storage::{base_sync_dir, folder_names, sanitize_folder_name};
 
 const FUSE_KERNEL_VERSION: u32 = 7;
 const FUSE_KERNEL_MINOR_VERSION: u32 = 27;
@@ -549,29 +549,6 @@ fn remove_xbel_blocks_matching(existing: &str, predicate: impl Fn(&str) -> bool)
     }
     out.push_str(rest);
     out
-}
-
-/// Converts a local path inside `mount_root` into a normalized forward-slash relative remote path
-/// (`""` for `mount_root` itself). Returns `None` if `local_path` is outside `mount_root` or
-/// contains parent/current directory traversal components.
-pub fn to_remote_rel_path(mount_root: &Path, local_path: &Path) -> Option<String> {
-    if let Ok(stripped) = local_path.strip_prefix(mount_root) {
-        let mut parts: Vec<String> = Vec::new();
-        for comp in stripped.components() {
-            match comp {
-                Component::Normal(os) => {
-                    let s = os.to_string_lossy();
-                    if !s.is_empty() {
-                        parts.push(s.into_owned());
-                    }
-                }
-                Component::CurDir => {}
-                Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
-            }
-        }
-        return Some(parts.join("/"));
-    }
-    relative_path_under_root(mount_root, local_path)
 }
 
 #[derive(Debug, Clone)]
@@ -2248,17 +2225,6 @@ mod tests {
     }
 
     #[test]
-    fn to_remote_rel_path_converts_linux_mount_paths_to_slash_relative_paths() {
-        let root = Path::new("/home/alice/G7Link/Pixel 9");
-        assert_eq!(to_remote_rel_path(root, root), Some(String::new()));
-        assert_eq!(
-            to_remote_rel_path(root, Path::new("/home/alice/G7Link/Pixel 9/DCIM/Camera/IMG_001.jpg")),
-            Some("DCIM/Camera/IMG_001.jpg".to_owned())
-        );
-        assert_eq!(to_remote_rel_path(root, Path::new("/home/alice/G7Link/OtherPhone/DCIM")), None);
-    }
-
-    #[test]
     fn finds_a_mount_left_by_an_earlier_run() {
         let mounts = "sysfs /sys sysfs rw 0 0\n\
                       g7link /home/bee/G7Link/Pixel\\0409 fuse.g7link rw,nosuid,nodev 0 0\n\
@@ -2381,9 +2347,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_rel_path_rejects_parent_traversal() {
-        let root = Path::new("/home/alice/G7Link/Pixel 9");
-        assert_eq!(to_remote_rel_path(root, Path::new("/home/alice/G7Link/Pixel 9/../secret")), None);
+    fn parse_cstr_rejects_parent_traversal() {
         assert_eq!(parse_cstr(b"..\0"), None);
         assert_eq!(parse_cstr(b".\0"), None);
         assert_eq!(parse_cstr(b"sub/dir\0"), None);

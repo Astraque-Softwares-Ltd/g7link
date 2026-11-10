@@ -40,7 +40,6 @@ pub fn host() -> &'static CoreHost {
 }
 
 /// The running host's data directory, if the host has been started.
-#[allow(dead_code)]
 pub fn try_data_dir() -> Option<&'static std::path::Path> {
     HOST.get().map(|h| h.data_dir.as_path())
 }

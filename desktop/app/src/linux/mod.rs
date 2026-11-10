@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Linux platform integration, used through `crate::win`.
 
-#![allow(dead_code, unsafe_code)]
+#![allow(unsafe_code)]
 
 pub mod audio;
 pub mod audio_out;

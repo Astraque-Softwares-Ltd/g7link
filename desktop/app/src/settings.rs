@@ -134,11 +134,9 @@ fn normalize_webcam_camera(cam: &str) -> String {
 }
 
 static CLIPBOARD_AUTO_COPY_FILES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-static G7_ISLAND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static STREAM_PC_AUDIO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SHARE_PC_STORAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static FORWARD_PC_NOTIFICATIONS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static AWAY_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static FLOW_FOLLOW_CLIPBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static MIRROR_QUALITY: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static SYNC_PASSWORDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -194,16 +192,6 @@ pub fn set_open_shared_files(on: bool) {
     OPEN_SHARED_FILES.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[allow(dead_code)]
-pub fn g7_island() -> bool {
-    G7_ISLAND.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-pub fn set_g7_island(on: bool) {
-    G7_ISLAND.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[allow(dead_code)]
 pub fn stream_pc_audio_to_phone() -> bool {
     STREAM_PC_AUDIO.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -242,13 +230,7 @@ pub fn set_flow_follow_clipboard(on: bool) {
     FLOW_FOLLOW_CLIPBOARD.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[allow(dead_code)]
-pub fn away_mode() -> bool {
-    AWAY_MODE.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 pub fn set_away_mode(on: bool) {
-    AWAY_MODE.store(on, std::sync::atomic::Ordering::Relaxed);
     if let Some(node) = crate::core_host::node() {
         node.set_away_mode(on);
     }
@@ -771,7 +753,6 @@ impl Settings {
             if self.obs_port == 0 { crate::obs::DEFAULT_PORT } else { self.obs_port },
             self.obs_password.clone(),
         );
-        set_g7_island(self.g7_island);
         set_automation_rules(self.automation_rules.clone());
         set_stream_pc_audio_to_phone(self.stream_pc_audio_to_phone);
         set_share_pc_storage(self.share_pc_storage);
@@ -913,7 +894,6 @@ mod tests {
         assert_eq!(def.local_api_port, 53320);
         def.apply_runtime();
         assert!(flow_follow_clipboard());
-        assert!(!g7_island());
         assert!(!stream_pc_audio_to_phone());
 
         let settings = Settings {

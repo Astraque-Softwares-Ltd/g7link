@@ -495,17 +495,6 @@ fn download_once(
     Ok(())
 }
 
-/// Fetches a JSON document as a UTF-8 `String` (up to 2 MiB).
-pub fn get_json(url: &str) -> Result<String, String> {
-    let bytes = get_retrying(url, 2 * 1024 * 1024)?;
-    String::from_utf8(bytes).map_err(|e| e.to_string())
-}
-
-/// Downloads `url` to `dest` (up to 512 MiB).
-pub fn download_to_file(url: &str, dest: &Path, on_progress: impl FnMut(u64, u64)) -> Result<(), String> {
-    download(url, dest, 512 * 1024 * 1024, on_progress)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

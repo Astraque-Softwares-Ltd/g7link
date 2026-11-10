@@ -134,34 +134,6 @@ fn run_command_stdout(program: &str, args: &[&str]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Returns `true` when a system tray host (Qt `QSystemTrayIcon` or D-Bus
-/// `org.kde.StatusNotifierWatcher` / `org.freedesktop.Notifications`)
-/// is available in the current desktop session.
-pub fn is_tray_available() -> bool {
-    if !has_desktop_session() {
-        return false;
-    }
-    if !cfg!(test) && crate::bridge::native::ffi::linux_tray_is_available() {
-        return true;
-    }
-    if let Ok(conn) = zbus::blocking::Connection::session()
-        && let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&conn)
-    {
-        for name in [
-            "org.kde.StatusNotifierWatcher",
-            "org.freedesktop.StatusNotifierWatcher",
-            "org.freedesktop.Notifications",
-        ] {
-            if let Ok(bus_name) = zbus::names::BusName::try_from(name)
-                && dbus.name_has_owner(bus_name).unwrap_or(false)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn is_numeric_window_id(hwnd: isize) -> bool {
     if hwnd <= 0 {
         return false;
@@ -1261,28 +1233,6 @@ pub fn is_portal_appearance_setting(namespace: &str, key: &str) -> bool {
         && matches!(key.trim(), "color-scheme" | "contrast" | "accent-color")
 }
 
-/// Returns true when a line from `gdbus monitor` or `dbus-monitor` indicates
-/// `org.freedesktop.login1.Manager.PrepareForSleep(false)` (system waking up).
-pub fn is_prepare_for_sleep_resume_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    if !trimmed.contains("PrepareForSleep") {
-        return false;
-    }
-    trimmed.contains("(false") || trimmed.contains("boolean false") || trimmed.ends_with(" false")
-}
-
-/// Returns true when a line from `gdbus monitor` or `dbus-monitor` indicates
-/// an `org.freedesktop.portal.Settings.SettingChanged` signal for
-/// `"org.freedesktop.appearance"` (`"color-scheme"`, `"contrast"`, or `"accent-color"`).
-pub fn is_portal_appearance_changed_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.contains("SettingChanged")
-        && trimmed.contains("org.freedesktop.appearance")
-        && (trimmed.contains("color-scheme")
-            || trimmed.contains("contrast")
-            || trimmed.contains("accent-color"))
-}
-
 type TrayEventHandler = Box<dyn Fn(TrayEvent) + Send + Sync>;
 
 struct SharedHandler {
@@ -1400,7 +1350,6 @@ pub(crate) fn parse_tray_helper_action(line: &str) -> Option<TrayEvent> {
 
 pub struct Tray {
     tooltip: Mutex<String>,
-    #[allow(dead_code)]
     labels: Mutex<MenuLabels>,
     find_phone_enabled: Mutex<bool>,
     icon_path: PathBuf,
@@ -1612,26 +1561,6 @@ mod tests {
         assert!(parse_hotkey("Ctrl+Alt+C+D").is_none());
         assert!(parse_hotkey("Ctrl+F13").is_none());
         assert!(parse_hotkey("Ctrl+UnknownKey").is_none());
-    }
-
-    #[test]
-    fn sleep_and_portal_appearance_parsers_match_signals() {
-        assert!(is_prepare_for_sleep_resume_line(
-            "/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (false,)"
-        ));
-        assert!(!is_prepare_for_sleep_resume_line(
-            "/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (true,)"
-        ));
-
-        assert!(is_portal_appearance_changed_line(
-            "/org/freedesktop/portal/desktop: org.freedesktop.portal.Settings.SettingChanged ('org.freedesktop.appearance', 'color-scheme', <uint32 1>)"
-        ));
-        assert!(is_portal_appearance_changed_line(
-            "/org/freedesktop/portal/desktop: org.freedesktop.portal.Settings.SettingChanged ('org.freedesktop.appearance', 'contrast', <uint32 0>)"
-        ));
-        assert!(!is_portal_appearance_changed_line(
-            "/org/freedesktop/portal/desktop: org.freedesktop.portal.Settings.SettingChanged ('org.gnome.desktop.interface', 'font-name', <'Sans 11'>)"
-        ));
     }
 
     #[test]

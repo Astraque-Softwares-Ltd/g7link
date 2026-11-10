@@ -6,8 +6,6 @@
 // `[Desktop Action <id>]` entries in the launcher right-click menu, providing full
 // parity with Windows taskbar Jump List tasks.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 /// The command-line flag Jump List tasks pass back to G7 Link.

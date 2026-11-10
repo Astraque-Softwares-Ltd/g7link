@@ -999,33 +999,6 @@ pub fn scale_to(bitmap: &Bitmap, max: u32) -> Bitmap {
     Bitmap { width, height, bgra }
 }
 
-/// Crops the center square of `bitmap`.
-pub fn crop_square(bitmap: &Bitmap) -> Bitmap {
-    let side = bitmap.width.min(bitmap.height);
-    if side == 0 || (bitmap.width == bitmap.height) {
-        return bitmap.clone();
-    }
-    let x_off = (bitmap.width - side) / 2;
-    let y_off = (bitmap.height - side) / 2;
-    let mut bgra = Vec::with_capacity((side * side * 4) as usize);
-    for y in 0..side {
-        let src_row = (y_off + y) as usize * bitmap.width as usize;
-        let start = (src_row + x_off as usize) * 4;
-        let end = start + (side as usize * 4);
-        bgra.extend_from_slice(&bitmap.bgra[start..end]);
-    }
-    Bitmap { width: side, height: side, bgra }
-}
-
-/// Decodes an image, center-crops it to a square, scales to at most `max_side`,
-/// and encodes it as a baseline JPEG.
-pub fn crop_square_jpeg(bytes: &[u8], max_side: u32, quality: u8) -> Result<Vec<u8>> {
-    let decoded = decode(bytes)?;
-    let cropped = crop_square(&decoded);
-    let scaled = if max_side > 0 { scale_to(&cropped, max_side) } else { cropped };
-    encode_jpeg(&scaled, quality)
-}
-
 pub fn bmp_from_dib(dib: &[u8]) -> Option<Vec<u8>> {
     if dib.len() < 40 {
         return None;
@@ -1110,18 +1083,6 @@ mod tests {
         assert!(decoded.bgra[1].abs_diff(120) <= 8);
         assert!(decoded.bgra[2].abs_diff(220) <= 8);
         assert_eq!(decoded.bgra[3], 255);
-    }
-
-    #[test]
-    fn crop_square_jpeg_crops_and_scales_rectangular_image() {
-        let rect = sample_bitmap(80, 40);
-        let png = encode_png(&rect).expect("encode_png");
-        let square_jpg = crop_square_jpeg(&png, 24, 85).expect("crop_square_jpeg");
-        assert!(square_jpg.starts_with(&[0xFF, 0xD8, 0xFF]));
-
-        let decoded = decode(&square_jpg).expect("decode cropped jpeg");
-        assert_eq!(decoded.width, 24);
-        assert_eq!(decoded.height, 24);
     }
 
     #[test]
