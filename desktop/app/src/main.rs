@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! G7 Link for Windows.
+//! G7 Link for Linux.
 //!
 //! One process: Rust runs the core (`g7link-core`) and OS integration,
 //! Qt Quick draws the UI. Windows are created when opened and destroyed when
 //! closed; the app keeps running in the tray (docs/PLAN.md §5).
-
-// A GUI app: no console window in release builds.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod automations;
 mod battery;
@@ -51,7 +48,6 @@ mod recordings;
 mod remote;
 mod send_to;
 mod settings;
-mod setup;
 mod startup;
 mod state;
 mod storage;
@@ -64,7 +60,7 @@ mod webcam;
 mod win;
 
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::ExitCode,
     sync::{
         Arc,
@@ -210,41 +206,32 @@ impl Platform for DesktopPlatform {
 /// Command-line options (also used by shortcuts and autostart).
 #[derive(Debug, Default)]
 struct Options {
-    /// Where to keep data (default: %LOCALAPPDATA%\G7Link).
+    /// Where to keep data (default: ~/.local/share/G7Link).
     data_dir: Option<PathBuf>,
     /// Start in the tray without opening the window (autostart).
     minimized: bool,
     /// Started by the updater's relauncher, as the new version.
     updated: bool,
-    /// `--send-to <device> <files…>`: Explorer's "Send to" menu.
+    /// `--send-to <device> <files…>`: a file manager's "Send to" entry.
     send_to: Option<(String, Vec<PathBuf>)>,
-    /// `--share <targets…>`: Windows Share sheet or CLI share invocation.
+    /// `--share <targets…>`: files, links or text to share with a phone.
     share: Option<win::share_target::SharedPayload>,
-    /// `--task <action>`: Windows taskbar Jump List task.
+    /// `--task <action>`: an action from the app's launcher menu.
     task: Option<String>,
-    /// Ask the running app to quit (the installer, before an update).
+    /// Ask the running app to quit.
     quit: bool,
-    /// Quit the running app and undo what it set up in Windows (the
-    /// uninstaller). Data is kept.
+    /// Quit the running app and undo what it set up on this PC (see
+    /// `uninstall`). Data is kept.
     uninstall: bool,
-    /// Elevated helper: register `g7link_vcam.dll` in `HKLM` and exit.
+    /// Elevated helper (under `pkexec`): load `v4l2loopback` for the webcam,
+    /// keep it loaded at boot, and exit.
     register_vcam: bool,
-    /// Elevated helper: unregister `g7link_vcam.dll` from `HKLM` and exit.
+    /// Elevated helper (under `pkexec`): unload `v4l2loopback`, stop loading
+    /// it at boot, and exit.
     unregister_vcam: bool,
-    /// Elevated helper (Windows): register the sparse package and exit (#84).
-    register_package: bool,
-    /// Out-of-process Windows 11 Widget Board COM server (`--widget-provider`).
-    widget_provider: bool,
-    /// The update task's job, as SYSTEM (`--update-service`, see `updater`).
-    update_service: bool,
-    /// The installer's window (`--setup --installer <setup.exe>`, see `setup`).
-    setup: Option<PathBuf>,
-    /// The uninstaller's window (`--remove [--installed <folder>]`).
-    remove: bool,
-    installed: Option<PathBuf>,
     /// `--ui-check` (needs `--data-dir`): open the main window, quit after
     /// [`UI_CHECK_SECONDS`], and fail if QML reported a warning or an error.
-    /// Qt's messages go to stderr. For CI (`scripts/ui-check.ps1`).
+    /// Qt's messages go to stderr.
     ui_check: bool,
     /// `--version` / `-V`: print the version and exit.
     version: bool,
@@ -290,26 +277,6 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
                 in_share = false;
                 options.version = true;
             }
-            Some(setup::SETUP_ARG) => {
-                in_share = false;
-                options.setup = Some(PathBuf::new());
-            }
-            Some(setup::INSTALLER_ARG) => {
-                in_share = false;
-                options.setup = args.next().map(PathBuf::from);
-            }
-            Some(setup::REMOVE_ARG) => {
-                in_share = false;
-                options.remove = true;
-            }
-            Some(setup::INSTALLED_ARG) => {
-                in_share = false;
-                options.installed = args.next().map(PathBuf::from);
-            }
-            Some(updater::SERVICE_ARG) => {
-                in_share = false;
-                options.update_service = true;
-            }
             Some(updater::UPDATED_ARG) => {
                 in_share = false;
                 options.updated = true;
@@ -321,14 +288,6 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
             Some(win::vcam::UNREGISTER_ARG) => {
                 in_share = false;
                 options.unregister_vcam = true;
-            }
-            Some("--register-package") => {
-                in_share = false;
-                options.register_package = true;
-            }
-            Some(win::widget::ARG) => {
-                in_share = false;
-                options.widget_provider = true;
             }
             Some(send_to::ARG) => {
                 in_share = false;
@@ -346,7 +305,7 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
             _ if in_share && !arg.to_string_lossy().starts_with('-') => {
                 share_targets.push(arg.to_string_lossy().into_owned());
             }
-            // Explorer adds the chosen files after the shortcut's arguments.
+            // File managers add the chosen files after the entry's arguments.
             _ if !arg.to_string_lossy().starts_with('-') => paths.push(PathBuf::from(arg)),
             // Qt reads its own options; ignore everything else.
             _ => {
@@ -399,22 +358,24 @@ fn watch_network() {
     });
 }
 
-/// Phone notifications as Windows toasts, sent by "G7 Link" with the
-/// app's icon (written as a PNG, which Windows needs as a file).
+/// Phone notifications as desktop notifications, sent by "G7 Link" with the
+/// app's icon (written as a PNG, which the notification server needs as a
+/// file).
 fn start_toasts() {
     let icon = core_host::host().data_dir.join("cache").join("g7link.png");
     win::toast::start(icon, notifications::on_toast);
 }
 
-/// Removes what the app set up in Windows: the "Send to" entries and the
-/// notification sender registration.
+/// Removes what the app set up on this PC: the "Send to" entries, the file
+/// manager's phone bookmarks, open notifications, the menu entry and starting
+/// with the computer. Unloading the webcam module needs administrator rights.
 fn uninstall() {
     tracing::info!("uninstalling");
     if let Err(e) = send_to::remove_all() {
         tracing::warn!(error = %e, "can't remove the Send to entries");
     }
     storage::unregister_all();
-    let _ = win::vcam::unregister_hklm();
+    let _ = win::vcam::unregister_module();
     win::toast::unregister();
     win::jumplist::unregister();
     startup::remove();
@@ -428,65 +389,14 @@ fn install_panic_logging() {
     }));
 }
 
-/// The installer's or uninstaller's window: no core, no data folder, no log
-/// file (removal deletes that folder).
-fn run_setup_window(mode: setup::Mode) -> ExitCode {
-    if let setup::Mode::Remove { installed } = &mode {
-        match setup::hand_over_removal(installed) {
-            Ok(true) => return ExitCode::SUCCESS,
-            Ok(false) => {}
-            Err(e) => {
-                eprintln!("g7link: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-    bridge::setup::set_mode(mode);
-    bridge::native::ffi::prepare_qt_without_log();
-    let mut app = bridge::native::ffi::create_qt_app();
-    if let Some(mut app) = app.as_mut() {
-        app.as_mut().set_application_name(&QString::from("G7 Link Setup"));
-        app.as_mut().set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
-    }
-    // Before any QML loads, so every string is right on the first pass.
-    i18n::install("");
-    bridge::native::ffi::load_bundled_fonts();
-    for size in [16, 20, 24, 32, 40, 48, 64, 256] {
-        bridge::native::ffi::add_app_icon_image(size, &mark::render(size as usize));
-    }
-    bridge::native::ffi::apply_app_icon();
-    let mut engine = QQmlApplicationEngine::new();
-    if let Some(engine) = engine.as_mut() {
-        engine.load(&QUrl::from("qrc:/qt/qml/app/g7link/qml/setup/SetupWindow.qml"));
-    }
-    let code = app.as_mut().map_or(1, |app| app.exec());
-    drop(engine);
-    drop(app);
-    ExitCode::from(u8::try_from(code).unwrap_or(1))
-}
-
 fn main() -> ExitCode {
     let options = parse_options();
     if options.version {
         println!("g7link-desktop {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    if let Some(installer) = options.setup.clone().filter(|p| !p.as_os_str().is_empty()) {
-        return run_setup_window(setup::Mode::Install { installer });
-    }
-    if options.remove {
-        let installed = options
-            .installed
-            .clone()
-            .or_else(|| std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)));
-        let Some(installed) = installed else { return ExitCode::FAILURE };
-        return run_setup_window(setup::Mode::Remove { installed });
-    }
-    if options.update_service {
-        return updater::run_service();
-    }
     if options.register_vcam {
-        return match win::vcam::register_hklm() {
+        return match win::vcam::register_module() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("g7link: register-vcam failed: {e}");
@@ -495,7 +405,7 @@ fn main() -> ExitCode {
         };
     }
     if options.unregister_vcam {
-        return match win::vcam::unregister_hklm() {
+        return match win::vcam::unregister_module() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("g7link: unregister-vcam failed: {e}");
@@ -523,20 +433,16 @@ fn main() -> ExitCode {
         eprintln!("g7link: --ui-check: can't add the pretend phone: {e}");
         return ExitCode::FAILURE;
     }
-    if options.widget_provider {
-        return win::widget::run_provider(&data_dir);
-    }
     tracing::info!(version = env!("CARGO_PKG_VERSION"), minimized = options.minimized, "starting");
 
     if options.uninstall {
         uninstall();
     }
-    let share_payload = options.share.clone().or_else(|| win::share_target::take_activated_share(&data_dir));
     let request = if options.quit || options.uninstall {
         Request::Quit
     } else if let Some((device, paths)) = options.send_to.clone() {
         Request::Send { device, paths }
-    } else if let Some(shared) = share_payload {
+    } else if let Some(shared) = options.share.clone() {
         Request::Share { files: shared.files, url: shared.url, text: shared.text }
     } else if let Some(action) = options.task.clone() {
         Request::Task { action }
@@ -562,8 +468,6 @@ fn main() -> ExitCode {
         }
     };
 
-    // Before any window: toasts and the taskbar both go by this ID.
-    win::toast::set_process_id();
     // Logging out or shutting down sends SIGTERM: quit as Quit does, so
     // phone storage is unmounted instead of left behind.
     win::quit_on_signals(bridge::app::request_quit);
@@ -612,7 +516,6 @@ fn main() -> ExitCode {
     webcam::init(&settings);
     phone_mic::init(&settings);
     local_api::init(&settings);
-    win::widget::write_state_snapshot(&data_dir);
     win::tray::update_hotkeys(
         &settings.continuity_photo_hotkey,
         &settings.continuity_scan_hotkey,
@@ -634,7 +537,6 @@ fn main() -> ExitCode {
         send_to::start();
         startup::start(settings.start_with_windows);
         updater::set_auto(settings.auto_update);
-        updater::set_auto_install(settings.install_updates);
         // Kept from the first run: going by the version alone, a nightly install
         // would leave Nightly as soon as it took a release.
         let channel = version::Channel::parse(&settings.update_channel).unwrap_or_else(|| {
@@ -731,7 +633,6 @@ fn main() -> ExitCode {
     mirror::stop_decoders();
     pc_audio_stream::set_enabled(false);
     pc_mirror::stop_all();
-    photos::clear_shared_files();
     local_api::stop();
     win::ble_beacon::stop();
     webcam::shutdown();
@@ -801,15 +702,6 @@ mod tests {
         );
         assert_eq!(timeline_opts.task.as_deref(), Some("open-timeline"));
         assert!(!timeline_opts.minimized);
-    }
-
-    #[test]
-    fn parse_options_recognizes_widget_provider_flag() {
-        let opts = parse_options_from(
-            ["--data-dir", r"C:\Temp\g7link-test", "--widget-provider"].into_iter().map(OsString::from),
-        );
-        assert_eq!(opts.data_dir, Some(PathBuf::from(r"C:\Temp\g7link-test")));
-        assert!(opts.widget_provider);
     }
 
     #[test]

@@ -58,7 +58,6 @@ To keep your installation current without an app store, installed copies check t
 - **What's fetched**: your channel's feed, `https://raw.githubusercontent.com/Astraque-Softwares-Ltd/g7link/channels/<stable|nightly>.json`, or the GitHub Releases API if no feed is published. A download is only accepted from this repository's own release files, and only if its SHA-256 matches.
 - **How often on the PC**: 30 seconds after startup, then every 12 hours on Stable or every 2 hours on Nightly.
 - **How often on Android**: at most once a day on Stable or every 6 hours on Nightly, in the background and when the app comes to the front, and when you tap **Check for updates**. A paired device can tell another that a build is out, which only starts the same check sooner. It can't name a file.
-- **Installing on Windows**: with **Install updates automatically** on (the default), the update runs at a quiet moment, or when you click **Update**. The installer registers a Windows task, **G7Link Update**, that runs the update as SYSTEM so no administrator prompt is needed. It takes no input from whoever starts it, only installs an official build, and writes what it did to `update.log` in the install folder.
 - **Installing on Android**: a newer APK is downloaded, checked and installed. Android only installs it over G7 Link if it carries the same signature, so only official builds can update the app.
 - **Installing on Linux**: an install only takes its own kind of file, such as a `.deb` for a `.deb` install.
 

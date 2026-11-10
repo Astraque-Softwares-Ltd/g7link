@@ -18,7 +18,6 @@ use std::{
 
 use g7link_vcam::{DEFAULT_MAPPING_NAME, LOCAL_MAPPING_NAME, SharedFrameMapping};
 
-pub const CLSID_STR: &str = "{8E6C3B74-5D4A-4B9E-9A12-7C8F1E2D3A40}";
 pub const FRIENDLY_NAME: &str = "G7 Link Webcam";
 pub const REGISTER_ARG: &str = "--register-vcam";
 pub const UNREGISTER_ARG: &str = "--unregister-vcam";
@@ -162,14 +161,6 @@ pub fn is_registered() -> bool {
     find_v4l2loopback_device().is_some() || PathBuf::from("/sys/module/v4l2loopback").exists()
 }
 
-/// Ensures `v4l2loopback` is registered, attempting `register_hklm()` when not already active.
-pub fn ensure_registered() -> bool {
-    if is_registered() {
-        return true;
-    }
-    register_hklm().is_ok() && is_registered()
-}
-
 fn run_modprobe(args: &[&str]) -> Result<(), String> {
     let bins = ["/sbin/modprobe", "/usr/sbin/modprobe", "modprobe"];
     let mut last_err = String::from("modprobe not found");
@@ -211,7 +202,7 @@ fn write_config_nofollow(path: &Path, content: &[u8]) {
 }
 
 /// Loads `v4l2loopback` with `"G7 Link Webcam"` and writes persistent module config files.
-pub fn register_hklm() -> Result<(), String> {
+pub fn register_module() -> Result<(), String> {
     write_config_nofollow(Path::new(MODULES_LOAD_CONF), b"v4l2loopback\n");
     write_config_nofollow(
         Path::new(MODPROBE_CONF),
@@ -222,7 +213,7 @@ pub fn register_hklm() -> Result<(), String> {
 }
 
 /// Removes persistent `v4l2loopback` config files and unloads the kernel module.
-pub fn unregister_hklm() -> Result<(), String> {
+pub fn unregister_module() -> Result<(), String> {
     let _ = fs::remove_file(MODULES_LOAD_CONF);
     let _ = fs::remove_file(MODPROBE_CONF);
     run_modprobe(&["-r", "v4l2loopback"])

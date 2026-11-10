@@ -8,13 +8,12 @@
 
 class QGuiApplication;
 
-// Creates the Qt application instance (`QApplication` on Linux so
-// `QSystemTrayIcon` and `QMenu` work; `QGuiApplication` elsewhere).
+// Creates the Qt application instance (a `QApplication`, so `QSystemTrayIcon`
+// and `QMenu` work).
 std::unique_ptr<QGuiApplication> create_qt_app();
 
 // Qt setup that must happen before QGuiApplication is created.
 void prepare_qt(rust::Str log_dir);
-void prepare_qt_without_log();
 void prepare_qt_for_ui_check();
 void set_ui_scale(int32_t percent);
 int32_t qml_problem_count();
@@ -34,8 +33,7 @@ int32_t load_bundled_fonts();
 class QQmlEngine;
 class QQmlApplicationEngine;
 
-// Clears Qt pixmap/QML caches, compacts heaps, and asks Windows to trim unused
-// pages from the process working set after windows are destroyed (tray mode).
+// Clears Qt pixmap/QML caches after windows are destroyed (tray mode).
 void trim_memory_caches();
 
 // Records the active QML engine so trim_memory_caches can run GC and clear
@@ -44,13 +42,12 @@ void register_qml_engine(QQmlEngine *engine);
 void register_qml_app_engine(QQmlApplicationEngine &engine);
 
 // Starts an OS-level drag-and-drop operation for a local file or text fallback
-// so items dragged out of the Shelf can be dropped into Explorer or any app.
+// so items dragged out of the Shelf can be dropped into a file manager or any app.
 bool start_external_drag(rust::Str file_path, rust::Str text_fallback);
 
 // Installs the G7 Link and Qt translations for `language` (a locale name
 // such as "zh_CN", or "" for the system's), replacing those installed before.
-// `dir` is the folder holding the executable, where windeployqt and the
-// packaging script stage the .qm files. Call after QGuiApplication is
+// `dir` is the folder holding the .qm files. Call after QGuiApplication is
 // created and before the QML engine loads, so that every qsTr() resolves on
 // the first pass; called again later, it retranslates the open windows.
 // Returns true when G7 Link's own translation was found and installed.
@@ -63,14 +60,6 @@ rust::String translate(rust::Str context, rust::Str text);
 
 // Decodes image bytes (PNG, JPEG, WebP, BMP, etc.) into width, height and ARGB32 bytes.
 rust::Vec<uint8_t> decode_image(rust::Slice<const uint8_t> bytes);
-
-// Native macOS clipboard support: changeCount, privacy detection, and direct reading/writing.
-int64_t mac_clipboard_change_count();
-rust::String mac_clipboard_read_text(bool &is_private);
-bool mac_clipboard_write_text(rust::Str text, bool is_private);
-
-int64_t mac_local_offset_ms(int64_t at_ms);
-uint64_t mac_free_space(rust::Str path, bool &ok);
 
 // Linux QSystemTrayIcon + QMenu, screen geometry, activation token, and QClipboard.
 void linux_tray_setup(

@@ -1,33 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Updates for an installed copy: the latest GitHub release is checked at
-//! startup and once a day (unless turned off). A newer one is downloaded,
-//! checked against the release's SHA-256 sums, and installed silently.
+//! Updates for an installed copy: the channel's feed (or the latest GitHub
+//! release) is checked soon after startup and then on the channel's schedule
+//! (unless turned off). "Update" downloads the file for this kind of install
+//! (AppImage, .deb, .rpm or tarball), checks it against the build's SHA-256,
+//! and installs it: an AppImage replaces itself, a package or a tarball in
+//! /opt installs through `pkexec`, which asks for the administrator password.
 //!
-//! The app lives in Program Files, so installing needs administrator rights.
-//! The installer registers a scheduled task, [`TASK`], that runs this program
-//! as SYSTEM with [`SERVICE_ARG`]: it takes nothing from the user, fetches
-//! the latest release itself, and only ever installs a newer published one.
-//! Any signed-in user may start it, so updates need no prompt. With
-//! automatic updates on, the app starts it at a quiet moment (nobody at the
-//! PC, nothing being mirrored, sent or called); "Update" starts it right
-//! away. Without the task (a copy installed before it existed), "Update"
-//! runs the installer with the usual administrator prompt.
-//!
-//! The app downloads the installer first, as the user, showing progress and
-//! resuming after a dropped connection ([`stage`]), into a shared folder.
-//! The task takes that file only when it matches the release's sums, which
-//! it fetches itself, and copies it somewhere only SYSTEM can write before
-//! checking and running it; otherwise it downloads the installer itself.
-//!
-//! The installer replaces the running app, so once the download is ready the
-//! app starts a small hidden relauncher and quits; the relauncher opens the
-//! new version once the installer is done, or the old one again if the
-//! update didn't go through.
+//! The app downloads the file first, as the user, showing progress and
+//! resuming after a dropped connection ([`stage`]), into a folder only the
+//! user can write. A privileged install copies it somewhere only root can
+//! write and checks it again there before installing. Once it's in place the
+//! app starts a small relauncher and quits; the relauncher opens the new
+//! version.
 
 use crate::i18n::tr;
 use std::{
     path::{Path, PathBuf},
-    process::ExitCode,
     sync::{
         Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -86,17 +74,7 @@ impl Update {
     }
 }
 
-/// The scheduled task the installer registers (see the module docs).
-pub const TASK: &str = "G7Link Update";
-/// What the task runs: `g7link-desktop.exe --update-service`.
-pub const SERVICE_ARG: &str = "--update-service";
-/// How long nobody may have used the PC before an update installs by itself.
-const QUIET_FOR: Duration = Duration::from_secs(10 * 60);
-/// While an update waits for a quiet moment, how often to look for one.
-const LOOK_FOR_QUIET: Duration = Duration::from_secs(5 * 60);
-
 static AUTO: AtomicBool = AtomicBool::new(true);
-static AUTO_INSTALL: AtomicBool = AtomicBool::new(true);
 static CHECKING: AtomicBool = AtomicBool::new(false);
 static FOUND: Mutex<Option<Update>> = Mutex::new(None);
 /// The channel picked in Settings; `None` follows the build's own.
@@ -122,20 +100,12 @@ pub fn channel() -> Channel {
         .unwrap_or_else(|| version::channel_of(env!("CARGO_PKG_VERSION")))
 }
 
-/// Follows `channel` from now on, and checks it soon. On Windows the update
-/// task reads it too, from a file beside the downloads.
+/// Follows `channel` from now on, and checks it soon.
 pub fn set_channel(channel: Channel) {
     let changed = CHANNEL.lock().unwrap_or_else(|e| e.into_inner()).replace(channel) != Some(channel);
-    write_service_channel(channel);
     if changed {
         check_soon();
     }
-}
-
-fn write_service_channel(_channel: Channel) {}
-
-fn read_service_channel() -> Option<Channel> {
-    None
 }
 
 /// Checks soon (at most every [`MIN_BETWEEN`]), not waiting for the next turn.
@@ -167,11 +137,6 @@ pub fn set_auto(on: bool) {
     AUTO.store(on, Ordering::Relaxed);
 }
 
-/// Whether a newer release installs by itself at a quiet moment.
-pub fn set_auto_install(on: bool) {
-    AUTO_INSTALL.store(on, Ordering::Relaxed);
-}
-
 /// Whether this copy updates itself (an installed one, not a build run
 /// from its folder).
 pub fn can_update() -> bool {
@@ -191,24 +156,9 @@ pub fn start() {
             if AUTO.load(Ordering::Relaxed) {
                 check_now(false);
             }
-            // While an update waits to install itself, look for a quiet moment.
             let next_check = checked + check_every();
             while let Some(left) = next_check.checked_duration_since(Instant::now()) {
-                if AUTO.load(Ordering::Relaxed)
-                    && AUTO_INSTALL.load(Ordering::Relaxed)
-                    && available().is_some()
-                    && quiet()
-                    && task_registered()
-                {
-                    tracing::info!("installing the update at a quiet moment");
-                    let staged = available().map(|update| stage(&update, |_, _| {}));
-                    if let Some(Err(e)) = staged {
-                        tracing::info!(error = %e, "the automatic update couldn't be downloaded yet");
-                    } else if let Err(e) = install_with_task(false) {
-                        tracing::warn!(error = e, "the automatic update didn't start");
-                    }
-                }
-                if wait_for_soon(left.min(LOOK_FOR_QUIET)) {
+                if wait_for_soon(left) {
                     // Asked early: check now, or once the minimum gap is over.
                     if let Some(wait) = (checked + MIN_BETWEEN).checked_duration_since(Instant::now()) {
                         std::thread::sleep(wait);
@@ -361,7 +311,7 @@ fn feed_update(found: &feed::Feed, current: &str) -> Option<Update> {
 }
 
 /// Whether `name` is one of our files ending in `suffix`. The name becomes
-/// a file name under %TEMP%: a plain name only, never a path.
+/// a file name in the staging folder: a plain name only, never a path.
 fn is_installer_name(name: &str, suffix: &str) -> bool {
     name.ends_with(suffix)
         && (name.starts_with("G7Link-") || name.starts_with("g7link_") || name.starts_with("g7link-"))
@@ -477,7 +427,7 @@ fn newer_release_for(release: Release, current: &str, suffix: &str) -> Option<Up
     })
 }
 
-pub(crate) use crate::version::is_newer;
+use crate::version::is_newer;
 
 /// The SHA-256 a sums file lists for `name` (`<hex>  <name>` lines).
 fn listed_hash(sums: &str, name: &str) -> Option<String> {
@@ -487,52 +437,16 @@ fn listed_hash(sums: &str, name: &str) -> Option<String> {
     })
 }
 
-/// Nobody has used the PC for a while, and nothing is going on that an update
-/// would cut off: mirroring, an app window, a transfer, a call, screen sharing
-/// or the webcam.
-fn quiet() -> bool {
-    if crate::win::input::is_user_active_within_ms(QUIET_FOR.as_millis() as u32) {
-        return false;
-    }
-    let mirroring = crate::mirror::windows().iter().any(|(_, shown)| {
-        matches!(shown.phase, crate::mirror::Phase::Asking | crate::mirror::Phase::Showing)
-    });
-    let transferring = core_host::host().hub.read(|s| {
-        s.transfers.iter().any(|t| {
-            matches!(
-                t.transfer.state,
-                g7link_core::TransferState::Running | g7link_core::TransferState::Waiting
-            )
-        })
-    });
-    let calling = crate::calls::active_or_ringing(None).is_some();
-    let webcam = !matches!(crate::webcam::phase(), crate::webcam::Phase::Idle);
-    !(mirroring || transferring || calling || webcam || crate::pc_mirror::is_active())
-}
-
-fn task_registered() -> bool {
-    false
-}
-
 /// Installs the update found: downloads it (reporting `progress(done,
-/// total)`), then installs with [`TASK`] when it's there (no prompt),
-/// otherwise by running the installer, which asks for administrator rights.
-/// Blocking. Returns what went wrong, in words for the user. On success the
-/// app is about to quit for the installer.
+/// total)`), then installs it, asking for administrator rights when the
+/// install needs them. Blocking. Returns what went wrong, in words for the
+/// user. On success the app is about to quit for the new version.
 pub fn install(progress: impl FnMut(u64, u64)) -> Result<(), String> {
     let update = available().ok_or("There's no update to install.")?;
     let staged = stage(&update, progress).map_err(|e| {
         tracing::warn!(error = %e, "update download failed");
         e.for_user()
     })?;
-    if task_registered() {
-        match install_with_task(true) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                tracing::warn!(error = e, "the update task didn't start; asking for permission instead")
-            }
-        }
-    }
     install_with_prompt(&update, &staged)
 }
 
@@ -660,24 +574,8 @@ pub fn stage(update: &Update, progress: impl FnMut(u64, u64)) -> Result<PathBuf,
     Ok(path)
 }
 
-/// Starts [`TASK`], and quits so the installer can replace this copy; a
-/// hidden relauncher opens the new version afterwards. `shown`: open its
-/// window again (the user asked for the update) rather than start in the tray.
-fn install_with_task(shown: bool) -> Result<(), String> {
-    let update = available().ok_or("no update")?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    spawn_relauncher(&exe, env!("CARGO_PKG_VERSION"), shown)?;
-    let mut cmd = std::process::Command::new("schtasks.exe");
-    cmd.args(["/Run", "/TN", TASK]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    let started = cmd.status().map_err(|e| e.to_string())?;
-    if !started.success() {
-        return Err(format!("schtasks /Run: {started}"));
-    }
-    tracing::info!(version = update.version, "updating; quitting for the installer");
-    crate::bridge::app::request_quit();
-    Ok(())
-}
-
+/// Opens `exe` again in a moment, once this copy has quit: shown, or in the
+/// tray unless `shown`. Refuses paths and versions that look unusual.
 fn spawn_relauncher(exe: &Path, version: &str, shown: bool) -> Result<(), String> {
     let exe =
         exe.to_str().filter(|e| !e.contains('\'') && !e.contains('\n')).ok_or("unusual install path")?;
@@ -698,187 +596,6 @@ fn spawn_relauncher(exe: &Path, version: &str, shown: bool) -> Result<(), String
         .map_err(|e| format!("relauncher: {e}"))
 }
 
-#[allow(dead_code)]
-fn relauncher_script(exe: &str, version: &str, arguments: &str) -> String {
-    let start = if arguments.is_empty() {
-        format!("Start-Process -FilePath '{exe}'")
-    } else {
-        format!("Start-Process -FilePath '{exe}' -ArgumentList '{arguments}'")
-    };
-    format!(
-        "$key = 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\G7Link'\n\
-         $log = Join-Path (Split-Path -Parent '{exe}') 'update.log'\n\
-         $since = Get-Date\n\
-         $deadline = $since.AddMinutes(10)\n\
-         Start-Sleep -Seconds 3\n\
-         while ((Get-Date) -lt $deadline) {{\n\
-           $installed = (Get-ItemProperty -Path $key -Name DisplayVersion -ErrorAction SilentlyContinue).DisplayVersion\n\
-           $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Name -like 'G7Link-*-setup' }}\n\
-           if ($installed -and $installed -ne '{version}' -and -not $running) {{ break }}\n\
-           $logged = Get-Item -LiteralPath $log -ErrorAction SilentlyContinue\n\
-           if ($logged -and $logged.LastWriteTime -gt $since -and -not $running) {{\n\
-             $last = Get-Content -LiteralPath $log -Tail 1 -ErrorAction SilentlyContinue\n\
-             if ($last -and $last -notmatch 'installing') {{ break }}\n\
-           }}\n\
-           Start-Sleep -Seconds 2\n\
-         }}\n\
-         {start}\n"
-    )
-}
-
-/// The task's job (as SYSTEM, from [`SERVICE_ARG`]): installs the latest
-/// release if it's newer than this copy. Writes what it did to `update.log`
-/// beside the program, where only administrators can write.
-pub fn run_service() -> ExitCode {
-    let log_path =
-        std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("update.log")));
-    let log = |message: &str| {
-        tracing::info!("{message}");
-        if let Some(path) = &log_path {
-            let line = format!("{} {message}\n", unix_seconds_now());
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
-        }
-    };
-    if let Some(channel) = read_service_channel() {
-        *CHANNEL.lock().unwrap_or_else(|e| e.into_inner()) = Some(channel);
-    }
-    let update = match latest() {
-        Ok(Some(update)) => update,
-        Ok(None) => {
-            log("up to date");
-            return ExitCode::SUCCESS;
-        }
-        Err(e) => {
-            log(&format!("couldn't check: {e}"));
-            return ExitCode::FAILURE;
-        }
-    };
-    let dir = match service_dir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            log(&format!("no folder for the download: {e}"));
-            return ExitCode::FAILURE;
-        }
-    };
-    let path = match download_verified(&update, &dir) {
-        Ok(path) => path,
-        Err(e) => {
-            log(&format!("{} not installed: {e}", update.version));
-            return ExitCode::FAILURE;
-        }
-    };
-    // Not waited for: the installer replaces this program, which must not be running.
-    let spawned = {
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
-        if name.ends_with(".deb") {
-            std::process::Command::new("sh")
-                .args(["-c", "apt-get install -y -- \"$1\" || dpkg -i -- \"$1\"", "sh"])
-                .arg(&path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-        } else if name.ends_with(".rpm") {
-            std::process::Command::new("sh")
-                .args(["-c", RPM_INSTALL_COMMAND, "sh"])
-                .arg(&path)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-        } else if name.ends_with(".tar.gz") {
-            std::process::Command::new("sh")
-                .args([
-                    "-e",
-                    "-c",
-                    "tar -C \"$2\" -xzf \"$1\" && set -- \"$2\"/G7Link-*/install.sh && [ -x \"$1\" ] && \"$1\"",
-                    "sh",
-                ])
-                .arg(&path)
-                .arg(&dir)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-        } else {
-            // An AppImage replaces itself from the app; the service can't.
-            Err(std::io::Error::other(format!("{name} isn't installed by the update service")))
-        }
-    };
-    match spawned {
-        Ok(_) => {
-            log(&format!("installing {}", update.version));
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            log(&format!("couldn't start the installer: {e}"));
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// Seconds since 1970, for the log (no calendar needed).
-fn unix_seconds_now() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    format!("[{secs}]")
-}
-
-/// A new, empty folder for the download that only SYSTEM and administrators
-/// can change: Windows' `SystemTemp` (older Windows: the SYSTEM account's
-/// temp folder, whose new subfolders users can't write to). Earlier ones are
-/// removed first (in `SystemTemp` only, where nobody else can create them).
-/// Removes the folders earlier runs downloaded into. Links are left alone;
-/// only SYSTEM (or root) can create entries where these live.
-fn remove_old_service_dirs(parent: &Path) {
-    let Ok(entries) = std::fs::read_dir(parent) else { return };
-    for entry in entries.flatten() {
-        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink());
-        if is_dir && entry.file_name().to_string_lossy().starts_with("g7link-update-") {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-}
-
-fn service_dir() -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
-    let parent = PathBuf::from("/var/cache");
-    remove_old_service_dirs(&parent);
-    let mut random = [0u8; 8];
-    if !crate::win::secure_random(&mut random) {
-        return Err(std::io::Error::other("no secure random source"));
-    }
-    let name = format!("g7link-update-{}", random.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    let dir = parent.join(name);
-    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-    Ok(dir)
-}
-
-/// The installer in `dir` (only SYSTEM can write there), checked against
-/// the release's sums: copied from the app's download when that matches,
-/// downloaded otherwise. Errors are for the log.
-fn download_verified(update: &Update, dir: &Path) -> Result<PathBuf, String> {
-    let expected = expected_hash(update).map_err(|e| e.to_string())?;
-    let path = dir.join(&update.installer_name);
-    // Copied first and checked after, so what's checked is what runs.
-    let staged = staging_dir().join(&update.installer_name);
-    if staged.is_file() && std::fs::copy(&staged, &path).is_ok() {
-        if sha256_file(&path).is_ok_and(|h| h == expected) {
-            return Ok(path);
-        }
-        let _ = std::fs::remove_file(&path);
-    }
-    http::download(&update.installer_url, &path, MAX_INSTALLER, |_, _| {})?;
-    if sha256_file(&path).map_err(|e| e.to_string())? != expected {
-        let _ = std::fs::remove_file(&path);
-        return Err("checksum mismatch".into());
-    }
-    Ok(path)
-}
-
 /// Root-executed shell script that copies a user-staged `.deb` into a
 /// root-owned `0700` directory (`/var/cache/g7link-update`), verifies its
 /// SHA-256 digest as root on the root-owned copy, and only then runs
@@ -893,14 +610,8 @@ install -m 0600 -o 0 -g 0 \"$1\" \"$dst\"\n\
 printf '%s  %s\\n' \"$2\" \"$dst\" | sha256sum -c --status -\n\
 apt-get install -y -- \"$dst\" || dpkg -i -- \"$dst\"\n";
 
-/// Installs the RPM in `$1` with whichever package manager the system has.
-/// Its SHA-256 is checked before this runs; release RPMs aren't GPG-signed.
-const RPM_INSTALL_COMMAND: &str = "\
-if command -v dnf >/dev/null 2>&1; then dnf install -y --nogpgcheck -- \"$1\"; \
-elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive --no-gpg-checks install -- \"$1\"; \
-else rpm -U --replacepkgs -- \"$1\"; fi";
-
-/// The `.rpm` counterpart of [`PRIVILEGED_DEB_INSTALL_SCRIPT`].
+/// The `.rpm` counterpart of [`PRIVILEGED_DEB_INSTALL_SCRIPT`]. Release RPMs
+/// aren't GPG-signed; their SHA-256 is checked instead.
 const PRIVILEGED_RPM_INSTALL_SCRIPT: &str = "\
 dir=\"/var/cache/g7link-update\"\n\
 rm -rf -- \"$dir\"\n\
@@ -1059,7 +770,7 @@ fn install_with_prompt(update: &Update, staged: &Path) -> Result<(), String> {
 pub const UPDATED_ARG: &str = "--updated";
 
 /// The file that remembers which version last ran, to notice an update
-/// however it was installed (the task, the installer, or setup by hand).
+/// however it was installed (the updater, a package manager, or by hand).
 const LAST_VERSION_FILE: &str = "last-version";
 
 /// Records this version as the one that ran, and returns the one before it
@@ -1077,8 +788,8 @@ pub fn note_running_version(data_dir: &Path) -> Option<String> {
 }
 
 /// Just updated: says so, and when the window was asked for, brings it to
-/// the front. Started from the background, Windows would otherwise leave
-/// the new window behind whatever the user has open.
+/// the front. Started from the background, the new window would otherwise
+/// open behind whatever the user has open.
 pub fn announce_update(previous: String, shown: bool) {
     let current = env!("CARGO_PKG_VERSION");
     tracing::info!(from = previous, to = current, "updated");
@@ -1090,7 +801,7 @@ pub fn announce_update(previous: String, shown: bool) {
 }
 
 /// The relauncher opened this version again because the update didn't
-/// install (`update.log` says why).
+/// install (the log says why).
 pub fn announce_update_failed(shown: bool) {
     tracing::warn!("the update didn't install");
     after_start(
@@ -1188,23 +899,6 @@ mod tests {
                 },
             ],
         }
-    }
-
-    #[test]
-    fn the_relauncher_waits_for_another_version_then_opens_the_app() {
-        let script = relauncher_script(
-            r"C:\Program Files\G7Link\g7link-desktop.exe",
-            "0.2.0",
-            "--minimized --updated",
-        );
-        // Any other version counts: the task installs the latest, not the one asked for.
-        assert!(script.contains("$installed -and $installed -ne '0.2.0'"));
-        assert!(script.contains("G7Link-*-setup"));
-        assert!(script.contains(
-            r"Start-Process -FilePath 'C:\Program Files\G7Link\g7link-desktop.exe' -ArgumentList '--minimized --updated'"
-        ));
-        let shown = relauncher_script(r"C:\Program Files\G7Link\g7link-desktop.exe", "0.2.0", "");
-        assert!(!shown.contains("-ArgumentList"));
     }
 
     #[test]

@@ -125,7 +125,7 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "connectPcAudio"]
         fn connect_pc_audio(self: Pin<&mut PhoneCall>);
-        /// Opens Windows Bluetooth & devices settings (`ms-settings:bluetooth`).
+        /// Opens the desktop's Bluetooth settings.
         #[qinvokable]
         #[cxx_name = "openBluetoothSettings"]
         fn open_bluetooth_settings(self: Pin<&mut PhoneCall>);

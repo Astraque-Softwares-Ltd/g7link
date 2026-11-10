@@ -538,17 +538,6 @@ Item {
 
                 Button {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: page.selectedCount > 0 && Qt.platform.os === "windows"
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.share
-                    text: qsTr("Share")
-                    enabled: !Photos.saving
-                    onClicked: Photos.shareItems(page.selectedIds)
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
                     visible: page.selectedCount === 1
                     variant: "tonal"
                     size: "sm"
@@ -852,17 +841,6 @@ Item {
                     text: qsTr("Copy")
                     enabled: !Photos.saving
                     onClicked: if (page.viewedItem) Photos.copyItem(page.viewedItem.id)
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: page.viewedItem !== null && Qt.platform.os === "windows"
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.share
-                    text: qsTr("Share")
-                    enabled: !Photos.saving
-                    onClicked: if (page.viewedItem) Photos.shareItems([page.viewedItem.id])
                 }
 
                 Button {

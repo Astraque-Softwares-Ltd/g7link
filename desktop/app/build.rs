@@ -66,9 +66,6 @@ const QML: &[&str] = &[
     "qml/pages/WalkthroughPage.qml",
     "qml/pages/WelcomePage.qml",
     "qml/components/HiveBackdrop.qml",
-    "qml/setup/SadBee.qml",
-    "qml/setup/SetupButton.qml",
-    "qml/setup/SetupWindow.qml",
 ];
 
 /// QML singletons.
@@ -301,7 +298,6 @@ fn main() {
             "src/bridge/photo_backup.rs",
             "src/bridge/photos.rs",
             "src/bridge/prefs.rs",
-            "src/bridge/setup.rs",
             "src/bridge/timeline.rs",
             "src/bridge/transfers.rs",
             "src/bridge/webcam.rs",

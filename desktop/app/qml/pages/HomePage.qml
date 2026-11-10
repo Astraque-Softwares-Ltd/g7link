@@ -1840,8 +1840,8 @@ Item {
                                 : qsTr("Connect %1 to view notifications").arg(home.name)
                     }
                     LockChip { id: lockedHint; visible: feed.count === 0 && label.length > 0; feature: feed.state }
-                    // Windows hides every app's notifications when they're
-                    // turned off in Settings; say so instead of staying quiet.
+                    // The desktop hides every app's notifications when they're
+                    // turned off or Do Not Disturb is on; say so instead of staying quiet.
                     Rectangle {
                         width: parent.width
                         height: toastsOff.height + 20
@@ -1859,19 +1859,10 @@ Item {
                             Icon { anchors.verticalCenter: parent.verticalCenter; path: Icons.bell; color: Theme.surfaceContentVariant }
                             Txt {
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: parent.width - 32 - (turnOn.visible ? turnOn.width + 24 : 0)
+                                width: parent.width - 32
                                 role: "bodySmall"
                                 wrapMode: Text.WordWrap
                                 text: qsTr("Desktop notifications are off. Turn them on in your system's notification settings.")
-                            }
-                            Button {
-                                id: turnOn
-                                anchors.verticalCenter: parent.verticalCenter
-                                variant: "tonal"
-                                size: "sm"
-                                text: qsTr("Turn on")
-                                visible: Qt.platform.os === "windows"
-                                onClicked: Qt.openUrlExternally("ms-settings:notifications")
                             }
                         }
                     }

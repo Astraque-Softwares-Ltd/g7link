@@ -414,8 +414,6 @@ pub struct Settings {
     /// Pure #000000 OLED black surfaces when in dark mode.
     #[serde(default)]
     pub amoled: bool,
-    /// Use the Windows 11 Mica backdrop.
-    pub backdrop: bool,
     /// Hive's comb breathes and pulses (it holds still when off, and with
     /// reduced motion or battery saver whatever this says).
     #[serde(default = "default_true", alias = "comb_motion")]
@@ -462,9 +460,6 @@ pub struct Settings {
     /// Check for updates on its own (installed copies).
     #[serde(alias = "auto_update")]
     pub auto_update: bool,
-    /// Install a newer release by itself at a quiet moment (with `auto_update`).
-    #[serde(alias = "install_updates")]
-    pub install_updates: bool,
     /// Which builds to update to: "stable", "nightly", or empty to follow
     /// the installed build's own channel.
     #[serde(alias = "update_channel")]
@@ -658,7 +653,6 @@ impl Default for Settings {
             seed: "wallpaper".into(),
             color_mode: ColorMode::default(),
             amoled: false,
-            backdrop: true,
             comb_motion: true,
             close_to_tray: default_close_to_tray(),
             auto_clipboard: true,
@@ -674,7 +668,6 @@ impl Default for Settings {
             hold_when_locked: false,
             send_to_menu: true,
             auto_update: true,
-            install_updates: true,
             update_channel: String::new(),
             battery_alerts: true,
             battery_full_threshold: default_battery_full_threshold(),
@@ -928,7 +921,6 @@ mod tests {
             seed: "ocean".into(),
             color_mode: ColorMode::Dark,
             amoled: false,
-            backdrop: false,
             comb_motion: false,
             close_to_tray: false,
             auto_clipboard: false,
@@ -944,7 +936,6 @@ mod tests {
             hold_when_locked: true,
             send_to_menu: false,
             auto_update: false,
-            install_updates: false,
             update_channel: "nightly".into(),
             battery_alerts: false,
             battery_full_threshold: 80,
@@ -1021,7 +1012,8 @@ mod tests {
     fn loads_every_historical_settings_json_from_git_history() {
         let dir = tempfile::tempdir().unwrap();
 
-        // 1. Commit d16a106 (initial desktop app: theme, seed, colorMode, backdrop, closeToTray)
+        // 1. Commit d16a106 (initial desktop app: theme, seed, colorMode, backdrop, closeToTray).
+        // `backdrop` (Windows' Mica) is gone: an old file with it still loads.
         let snap_d16a106 = r#"{
             "theme": "bloom",
             "seed": "honey",
@@ -1034,7 +1026,6 @@ mod tests {
         assert_eq!(s.theme, Theme::Bloom);
         assert_eq!(s.seed, "honey");
         assert_eq!(s.color_mode, ColorMode::Dark);
-        assert!(!s.backdrop);
         assert!(!s.close_to_tray);
         assert!(s.auto_clipboard);
         assert!(!s.local_api_enabled);

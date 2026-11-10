@@ -400,43 +400,6 @@ NativeWindow {
         }
     }
 
-    // Mica/Acrylic is applied by Windows a moment after it's requested. Showing
-    // through before it's there reveals the bare desktop (a flash), so the
-    // window turns translucent only once the backdrop is in place, and opaque again
-    // before it is removed.
-    // Hive keeps its own fixed colors, so it never shows the wallpaper through.
-    // Windows 10 has no backdrop: the window stays opaque there.
-    readonly property bool wantBackdrop: Qt.platform.os === "windows" && systemBackdropSupported && (Preferences.backdrop || Theme.glass) && !Theme.amoled && !Theme.hive
-    property bool micaApplied: false
-    property bool micaVisible: false
-    backdrop: micaApplied
-    acrylic: Theme.glass && !Theme.amoled
-    Timer {
-        id: micaSettle
-        interval: 220
-        onTriggered: window.micaVisible = window.wantBackdrop
-    }
-    Timer {
-        id: micaRelease
-        interval: Theme.fadeNormal + 60
-        onTriggered: window.micaApplied = window.wantBackdrop
-    }
-    function followBackdrop() {
-        if (window.wantBackdrop) {
-            micaRelease.stop()
-            micaApplied = true
-            micaSettle.restart()
-        } else {
-            micaSettle.stop()
-            micaVisible = false
-            micaRelease.restart()
-        }
-    }
-    onWantBackdropChanged: followBackdrop()
-    Connections {
-        target: Preferences
-        function onBackdropChanged() { window.followBackdrop() }
-    }
     Connections {
         target: window
         function onActiveChanged() {
@@ -455,7 +418,6 @@ NativeWindow {
         }
     }
     Component.onCompleted: {
-        followBackdrop()
         if (!window.activeFocusItem && window.contentItem)
             window.contentItem.forceActiveFocus()
     }
@@ -464,8 +426,7 @@ NativeWindow {
 
     function openPairing() { pairingSheet.open() }
 
-    // Window background: a tinted veil of the theme over Mica/Acrylic (so the
-    // theme's seed color is rich and clear), opaque otherwise.
+    // Window background: the theme's surface, tinted with its seed color.
     readonly property color windowSurface: Theme.graphite || Theme.amoled || Theme.hive || Theme.quiet
         ? Theme.surface
         : Qt.tint(
@@ -479,14 +440,7 @@ NativeWindow {
         )
     Rectangle {
         anchors.fill: parent
-        color: window.micaVisible && !Theme.amoled
-            ? Qt.rgba(
-                window.windowSurface.r,
-                window.windowSurface.g,
-                window.windowSurface.b,
-                Theme.glass ? (Theme.dark ? 0.38 : 0.46) : (Theme.dark ? 0.76 : 0.84)
-            )
-            : window.windowSurface
+        color: window.windowSurface
         Behavior on color { ColorAnimation { duration: Theme.fadeNormal } }
     }
 

@@ -876,7 +876,7 @@ impl cxx_qt::Initialize for qobject::AppController {
 /// Taskbar tasks that came before the window was up, in order.
 static PENDING_JUMP_TASKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// Executes one of the 5 Windows Taskbar Jump List tasks (`--task <action>`).
+/// Runs one of the launcher menu's actions (`--task <action>`).
 pub fn handle_jump_task(action: &str) {
     let action = action.trim().to_owned();
     if action.is_empty() {

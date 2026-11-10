@@ -1481,15 +1481,6 @@ FocusScope {
                                         spacing: 8
 
                                         Button {
-                                            text: qsTr("Windows Settings")
-                                            variant: "tonal"
-                                            size: "sm"
-                                            visible: !AppController.toastsEnabled && Qt.platform.os === "windows"
-                                            Accessible.name: qsTr("Open Windows notification settings")
-                                            onClicked: Qt.openUrlExternally("ms-settings:notifications")
-                                        }
-
-                                        Button {
                                             text: qsTr("Recheck")
                                             iconPath: Icons.refresh
                                             variant: "text"

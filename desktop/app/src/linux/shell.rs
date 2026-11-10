@@ -130,22 +130,6 @@ pub fn open_maps(address: &str) -> Result<(), String> {
     open_url(&g7link_core::maps_web_url(trimmed))
 }
 
-/// Checks whether a custom URI scheme has a registered handler via `xdg-mime`.
-pub fn is_url_scheme_registered(scheme: &str) -> bool {
-    let scheme = scheme.trim().trim_end_matches(':');
-    if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-    {
-        return false;
-    }
-    let mime = format!("x-scheme-handler/{scheme}");
-    Command::new("xdg-mime")
-        .args(["query", "default", &mime])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-}
-
 /// Percent-encodes a filesystem path for use in `file://` URIs and FreeDesktop
 /// `.trashinfo` `Path=` entries (preserving `/` and unreserved URI bytes).
 pub(crate) fn percent_encode_path(path: &Path) -> String {
@@ -290,14 +274,6 @@ pub fn select_in_explorer(path: &Path) -> Result<(), String> {
     open_folder(folder)
 }
 
-/// Runs `program` with `arguments` (split on spaces, `"` groups).
-pub fn run(program: &Path, arguments: &str) -> Result<(), String> {
-    let args = split_args(arguments);
-    let mut cmd = Command::new(program);
-    cmd.args(&args);
-    spawn_and_reap(cmd).map_err(|e| e.to_string())
-}
-
 fn split_args(arguments: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -334,19 +310,9 @@ pub fn lock() -> Result<(), String> {
     spawn_detached("xdg-screensaver", &["lock"])
 }
 
-/// Alias for [`lock`].
-pub fn lock_workstation() -> Result<(), String> {
-    lock()
-}
-
 /// Suspends the system (`systemctl suspend`).
 pub fn sleep() -> Result<(), String> {
     spawn_detached("systemctl", &["suspend"])
-}
-
-/// Alias for [`sleep`].
-pub fn sleep_system() -> Result<(), String> {
-    sleep()
 }
 
 fn decode_file_uri(uri: &str) -> Option<PathBuf> {
@@ -637,13 +603,6 @@ pub fn launch_app(path: &Path) -> Result<(), String> {
     }
 
     open_file(path)
-}
-
-/// Alias for [`launch_app`].
-pub fn launch_executable(path: &Path, args: &[&str]) -> Result<(), String> {
-    let mut cmd = Command::new(path);
-    cmd.args(args);
-    spawn_and_reap(cmd).map_err(|e| e.to_string())
 }
 
 /// Runs a shell command (`sh -c <command>`) detached in the background.

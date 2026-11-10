@@ -138,12 +138,9 @@ Window {
         anchors.fill: parent
         stream: win.mirrorKey
         windowIcon: win.info.icon || ""
-        windowAppId: win.info.app && (win.info.pkg || "").length > 0
-            ? "G7Link.App." + (win.info.device || "").slice(0, 8) + "." + win.info.pkg
-            : ""
         focus: true
         acceptsText: win.phase === "showing" && win.canControl
-        // The emoji panel (Win+.) and input methods give finished text here
+        // The emoji picker and input methods give finished text here
         // instead of as key presses.
         onTextCommitted: (text) => Mirror.text(win.mirrorKey, text)
 

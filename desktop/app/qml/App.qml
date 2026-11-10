@@ -131,7 +131,7 @@ QtObject {
     function onMainClosed() {
         if (mainLoader.active && mainLoader.item)
             mainLoader.item.saveWindowState()
-        if (Qt.platform.os === "osx" || !Preferences.closeToTray) {
+        if (!Preferences.closeToTray) {
             Qt.quit()
             return
         }
@@ -158,7 +158,7 @@ QtObject {
     }
 
     // Qt follows the system color scheme unless told otherwise; the window
-    // frame and Mica tint must follow the app's theme instead.
+    // must follow the app's theme instead.
     readonly property Binding colorScheme: Binding {
         target: Qt.styleHints
         property: "colorScheme"

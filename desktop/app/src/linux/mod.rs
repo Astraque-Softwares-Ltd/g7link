@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Linux platform integration (`desktop/app/src/linux/`), matching the public
-//! API of `desktop/app/src/win/`.
+//! Linux platform integration, used through `crate::win`.
 
 #![allow(dead_code, unsafe_code)]
 
@@ -24,7 +23,6 @@ pub mod keymap;
 pub mod media_sessions;
 pub mod mp4;
 pub mod net;
-pub mod share;
 pub mod share_target;
 pub mod shell;
 pub mod shortcut;
@@ -41,7 +39,6 @@ pub(crate) mod video_decoder;
 pub(crate) mod video_encoder;
 pub mod vmic;
 pub mod wallpaper;
-pub mod widget;
 pub mod wifi;
 pub mod window_capture;
 pub mod wol;
@@ -163,11 +160,6 @@ fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Returns a synthetic build number (`22621`) so Windows 11 feature gates in shared UI stay enabled.
-pub fn os_build_number() -> u32 {
-    22621
 }
 
 /// Whether this PC is a laptop (battery present in `/sys/class/power_supply` or mobile DMI chassis).
@@ -487,11 +479,6 @@ pub fn secure_random(buf: &mut [u8]) -> bool {
     file.read_exact(buf).is_ok()
 }
 
-/// Runs `f` on the current thread (no-op COM wrapper on Linux).
-pub fn with_com<T>(f: impl FnOnce() -> T) -> T {
-    f()
-}
-
 /// Milliseconds from UTC to local time at `at_ms` (Unix epoch ms).
 /// East of UTC is positive.
 pub fn local_offset_ms(at_ms: i64) -> i64 {
@@ -527,7 +514,6 @@ mod tests {
     #[test]
     fn reads_os_info_without_panicking() {
         assert!(!os_version().is_empty());
-        assert_eq!(os_build_number(), 22621);
         let _ = machine_guid();
         let _ = is_laptop();
         let _ = power_saver();
@@ -559,11 +545,6 @@ mod tests {
         let mut buf = [0u8; 32];
         assert!(secure_random(&mut buf));
         assert!(buf.iter().any(|&b| b != 0));
-    }
-
-    #[test]
-    fn runs_closure_with_com() {
-        assert_eq!(with_com(|| 42), 42);
     }
 
     #[test]

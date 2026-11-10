@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Linux Share Target / freedesktop MIME & URI-scheme handler (`g7link://`, `file://`, URLs).
+// What the desktop entry passes to share: files, `file://` URIs, links
+// (`g7link://`, `tel:`, web pages) or text.
 
-#![allow(dead_code)]
-
-use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::UnboundedSender;
+use std::path::PathBuf;
 
 /// Command-line flag to share files, URLs, or text with a paired phone.
 pub const ARG: &str = "--share";
 
-/// Payload extracted from a Share target activation or `--share` CLI invocation.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// What to share, from the desktop entry's arguments or `--share`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SharedPayload {
     pub files: Vec<PathBuf>,
     pub url: Option<String>,
@@ -23,25 +19,6 @@ impl SharedPayload {
     pub fn is_empty(&self) -> bool {
         self.files.is_empty() && self.url.is_none() && self.text.is_none()
     }
-}
-
-/// Register the Linux share target listener.
-///
-/// On Linux, `.desktop` / `MimeType=x-scheme-handler/g7link;` invocations launch
-/// a new process whose arguments are parsed via [`parse_targets`] and forwarded over
-/// the single-instance Unix domain socket (`single_instance.rs`) or persisted to
-/// `activated-share.json` and consumed by [`take_activated_share`].
-pub fn register_listener(_tx: UnboundedSender<SharedPayload>) -> Result<(), String> {
-    Ok(())
-}
-
-/// Consume a pending `activated-share.json` drop file inside `data_dir` if present.
-pub fn take_activated_share(data_dir: &Path) -> Option<SharedPayload> {
-    let path = data_dir.join("activated-share.json");
-    let bytes = std::fs::read(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    let payload: SharedPayload = serde_json::from_slice(&bytes).ok()?;
-    if payload.is_empty() { None } else { Some(payload) }
 }
 
 /// Parse command-line targets (`%U` / `%F` from `.desktop` Exec lines, `file://` URIs,
@@ -194,22 +171,5 @@ mod tests {
     fn parse_targets_returns_empty_on_empty_or_whitespace() {
         assert!(parse_targets(&[]).is_empty());
         assert!(parse_targets(&["   ".to_string()]).is_empty());
-    }
-
-    #[test]
-    fn take_activated_share_reads_and_deletes_json_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let file_path = tmp.path().join("activated-share.json");
-        let expected = SharedPayload {
-            files: vec![PathBuf::from("/tmp/shared.txt")],
-            url: Some("https://g7.astraque.io".to_string()),
-            text: Some("Hello from share".to_string()),
-        };
-        std::fs::write(&file_path, serde_json::to_vec(&expected).unwrap()).unwrap();
-
-        let loaded = take_activated_share(tmp.path()).expect("should load activated share");
-        assert_eq!(loaded, expected);
-        assert!(!file_path.exists(), "activated-share.json should be removed");
-        assert!(take_activated_share(tmp.path()).is_none());
     }
 }

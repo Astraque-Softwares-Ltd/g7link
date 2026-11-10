@@ -23,9 +23,6 @@ pub mod ffi {
         /// Must run before `QGuiApplication` is created. Qt's messages go to
         /// `qml.log` in `log_dir`, beside the app's own log.
         fn prepare_qt(log_dir: &str);
-        /// Like `prepare_qt`, without the QML log file: for the installer
-        /// and uninstaller, which mustn't create the app's data folder.
-        fn prepare_qt_without_log();
         /// Like `prepare_qt`, for `--ui-check`: Qt's messages go to stderr
         /// instead of the log file, and QML warnings and errors are counted.
         fn prepare_qt_for_ui_check();
@@ -42,7 +39,7 @@ pub mod ffi {
         /// Registers the fonts compiled in under `:/fonts/`; returns how
         /// many loaded.
         fn load_bundled_fonts() -> i32;
-        /// Clears Qt pixmap caches and trims the process working set.
+        /// Clears Qt pixmap and QML caches.
         fn trim_memory_caches();
         /// Records the active QML engine so `trim_memory_caches` can run GC and
         /// clear component caches.
@@ -66,21 +63,6 @@ pub mod ffi {
         /// Decodes image bytes into a byte vector: 4-byte width (LE), 4-byte height (LE), followed by ARGB32 bytes.
         #[allow(dead_code)]
         fn decode_image(bytes: &[u8]) -> Vec<u8>;
-
-        #[allow(dead_code)]
-        fn mac_clipboard_change_count() -> i64;
-
-        #[allow(dead_code)]
-        fn mac_clipboard_read_text(is_private: &mut bool) -> String;
-
-        #[allow(dead_code)]
-        fn mac_clipboard_write_text(text: &str, is_private: bool) -> bool;
-
-        #[allow(dead_code)]
-        fn mac_local_offset_ms(at_ms: i64) -> i64;
-
-        #[allow(dead_code)]
-        fn mac_free_space(path: &str, ok: &mut bool) -> u64;
 
         #[allow(dead_code)]
         #[allow(clippy::too_many_arguments)]

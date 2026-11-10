@@ -73,7 +73,6 @@ All notification settings live in **Settings › Notifications** (and **Settings
 - **Follow phone Do not disturb** (`Settings › Notifications`, default: **Off**): When turned on, your PC silences popup toasts whenever your phone is in Do Not Disturb mode. Notifications still arrive quietly in the G7 Link feed so you can read them when you want.
 - **Notification profile on Home**: From the Phone Controls card on PC Home, you can switch your phone's notification profile between **All**, **Priority only** (Do Not Disturb), and **Silent**.
 - **Forward PC notifications** (`Settings › Notifications`, default: **Off**): Mirrors Windows desktop notifications to your connected phone.
-- **Quiet hours** (`Settings › Notifications`): Opens Windows **System › Notifications** settings so you can configure automatic Focus / Do Not Disturb schedules on Windows 11.
 - **Per-app notification rules** (`Settings › Notifications`): Every phone app that has sent at least one notification appears in an alphabetical list with its icon and a three-way selector:
   - **Show** (default): Shows a Windows popup toast and lists the alert in the G7 Link feed.
   - **No pop-ups**: Suppresses Windows popup toasts for that app while keeping its notifications visible inside the G7 Link feed.

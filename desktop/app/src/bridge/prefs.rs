@@ -44,8 +44,6 @@ pub mod qobject {
         #[qproperty(QString, color_mode)]
         /// Pure #000000 OLED black surfaces in dark mode.
         #[qproperty(bool, amoled)]
-        /// Mica behind the window.
-        #[qproperty(bool, backdrop)]
         /// Hive's comb breathes and pulses.
         #[qproperty(bool, comb_motion)]
         #[qproperty(bool, close_to_tray)]
@@ -76,8 +74,6 @@ pub mod qobject {
         #[qproperty(bool, start_with_windows)]
         /// Check for updates on their own.
         #[qproperty(bool, auto_update)]
-        /// Install a newer release by itself at a quiet moment.
-        #[qproperty(bool, install_updates)]
         /// The update channel: "stable" or "nightly" (the build's own when unset).
         #[qproperty(QString, update_channel)]
         /// Tell when a phone's battery is low, or full.
@@ -322,7 +318,6 @@ pub struct PreferencesRust {
     seed: QString,
     color_mode: QString,
     amoled: bool,
-    backdrop: bool,
     comb_motion: bool,
     close_to_tray: bool,
     auto_clipboard: bool,
@@ -339,7 +334,6 @@ pub struct PreferencesRust {
     send_to_menu: bool,
     start_with_windows: bool,
     auto_update: bool,
-    install_updates: bool,
     update_channel: QString,
     battery_alerts: bool,
     battery_full_threshold: i32,
@@ -411,7 +405,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
             ColorMode::Dark => "dark",
         }));
         self.as_mut().set_amoled(settings.amoled);
-        self.as_mut().set_backdrop(settings.backdrop);
         self.as_mut().set_comb_motion(settings.comb_motion);
         let close_to_tray = settings.close_to_tray;
         self.as_mut().set_close_to_tray(close_to_tray);
@@ -437,7 +430,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         crate::notifications::set_hold_when_locked(settings.hold_when_locked);
         self.as_mut().set_send_to_menu(settings.send_to_menu);
         self.as_mut().set_auto_update(settings.auto_update);
-        self.as_mut().set_install_updates(settings.install_updates);
         // Shown as the channel in use, whether picked or the build's own.
         let channel =
             crate::version::Channel::parse(&settings.update_channel).unwrap_or_else(crate::updater::channel);
@@ -513,7 +505,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().on_seed_changed(|p| p.save()).release();
         self.as_mut().on_color_mode_changed(|p| p.save()).release();
         self.as_mut().on_amoled_changed(|p| p.save()).release();
-        self.as_mut().on_backdrop_changed(|p| p.save()).release();
         self.as_mut().on_comb_motion_changed(|p| p.save()).release();
         self.as_mut()
             .on_close_to_tray_changed(|p| {
@@ -590,12 +581,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut()
             .on_auto_update_changed(|p| {
                 crate::updater::set_auto(p.auto_update);
-                p.save();
-            })
-            .release();
-        self.as_mut()
-            .on_install_updates_changed(|p| {
-                crate::updater::set_auto_install(p.install_updates);
                 p.save();
             })
             .release();
@@ -1131,7 +1116,6 @@ impl qobject::Preferences {
                 _ => ColorMode::System,
             },
             amoled: p.amoled,
-            backdrop: p.backdrop,
             comb_motion: p.comb_motion,
             close_to_tray: p.close_to_tray,
             auto_clipboard: p.auto_clipboard,
@@ -1147,7 +1131,6 @@ impl qobject::Preferences {
             hold_when_locked: p.hold_when_locked,
             send_to_menu: p.send_to_menu,
             auto_update: p.auto_update,
-            install_updates: p.install_updates,
             update_channel: String::from(&p.update_channel),
             battery_alerts: p.battery_alerts,
             battery_full_threshold: p.battery_full_threshold.clamp(50, 100) as u8,

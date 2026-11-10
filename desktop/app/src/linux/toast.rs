@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
-pub const AUMID: &str = "G7Link.Desktop";
 pub const CALL_ANSWER: &str = "answer";
 pub const CALL_DECLINE: &str = "decline";
 pub const CALL_END: &str = "end";
@@ -378,8 +377,6 @@ fn query_enabled() -> bool {
 
     true
 }
-
-pub fn set_process_id() {}
 
 pub fn start<F>(icon: PathBuf, on_event: F)
 where

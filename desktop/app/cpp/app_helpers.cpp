@@ -11,9 +11,7 @@
 #include <QtCore/QLocale>
 #include <QtCore/QMimeData>
 #include <QtCore/QPointer>
-#include <QtCore/QStorageInfo>
 #include <QtCore/QStringList>
-#include <QtCore/QTimeZone>
 #include <QtCore/QTranslator>
 #include <QtCore/QUrl>
 #include <QtCore/QtEnvironmentVariables>
@@ -28,13 +26,6 @@
 #include <QtQml/QQmlEngine>
 #include <QtQuick/QQuickWindow>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <malloc.h>
-#endif
-
-#ifdef __linux__
 #include <QtCore/QBuffer>
 #include <QtCore/QMetaObject>
 #include <QtCore/QThread>
@@ -48,7 +39,6 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
-#endif
 
 namespace {
 QIcon &appIcon()
@@ -153,13 +143,24 @@ void qtLogMessageHandler(QtMsgType type, const QMessageLogContext &ctx, const QS
            << msg << " (" << (ctx.file ? ctx.file : "") << ":" << ctx.line << ")\n";
     }
 }
+void prepareQtCommon()
+{
+    // Windows get an alpha channel, so the ones drawn with transparent
+    // corners (the island, the shelf) show what's behind them.
+    QQuickWindow::setDefaultAlphaBuffer(true);
+    qputenv("QSG_RENDER_LOOP", "basic");
+    // Qt's V4 JS engine reserves 2 x QV4_JS_MAX_STACK_SIZE of committed RW
+    // memory (8 MB by default). 512 KB per stack (1 MB total) is plenty for
+    // UI bindings and saves 7 MB of private commit in the tray.
+    qputenv("QV4_JS_MAX_STACK_SIZE", "524288");
+}
 } // namespace
 
 void prepare_qt(rust::Str log_dir)
 {
     qmlLogDir() = QString::fromUtf8(log_dir.data(), static_cast<qsizetype>(log_dir.size()));
     qInstallMessageHandler(qtLogMessageHandler);
-    prepare_qt_without_log();
+    prepareQtCommon();
 }
 
 void set_ui_scale(int32_t percent)
@@ -171,26 +172,12 @@ void set_ui_scale(int32_t percent)
 void prepare_qt_for_ui_check()
 {
     qInstallMessageHandler(uiCheckMessageHandler);
-    prepare_qt_without_log();
+    prepareQtCommon();
 }
 
 int32_t qml_problem_count()
 {
     return qmlProblems().load();
-}
-
-void prepare_qt_without_log()
-{
-    // Windows get an alpha channel so the Mica backdrop can show through, and
-    // D3D swap chains are presented with DirectComposition, without which
-    // transparent pixels render white (see spikes/s1-qt-rust, lesson 7).
-    QQuickWindow::setDefaultAlphaBuffer(true);
-    qputenv("QT_QPA_DISABLE_REDIRECTION_SURFACE", "1");
-    qputenv("QSG_RENDER_LOOP", "basic");
-    // Qt's V4 JS engine reserves 2 x QV4_JS_MAX_STACK_SIZE of committed RW
-    // memory (8 MB by default). 512 KB per stack (1 MB total) is plenty for
-    // UI bindings and saves 7 MB of private commit in the tray.
-    qputenv("QV4_JS_MAX_STACK_SIZE", "524288");
 }
 
 void add_app_icon_image(int32_t size, rust::Slice<const uint8_t> rgba)
@@ -233,15 +220,6 @@ void trim_memory_caches()
         engine->trimComponentCache();
         engine->collectGarbage();
     }
-#ifdef _WIN32
-    _heapmin();
-    HANDLE heaps[64];
-    const DWORD count = GetProcessHeaps(64, heaps);
-    for (DWORD i = 0; i < count && i < 64; ++i) {
-        HeapCompact(heaps[i], 0);
-    }
-    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
-#endif
 }
 
 bool start_external_drag(rust::Str file_path, rust::Str text_fallback)
@@ -385,202 +363,6 @@ rust::Vec<uint8_t> decode_image(rust::Slice<const uint8_t> bytes)
     return result;
 }
 
-#ifdef __APPLE__
-#include <objc/runtime.h>
-#include <objc/message.h>
-
-extern "C" void *objc_autoreleasePoolPush(void);
-extern "C" void objc_autoreleasePoolPop(void *pool);
-
-namespace {
-struct AutoReleasePool {
-    void *pool;
-    AutoReleasePool() : pool(objc_autoreleasePoolPush()) {}
-    ~AutoReleasePool() { objc_autoreleasePoolPop(pool); }
-};
-} // namespace
-
-int64_t mac_clipboard_change_count()
-{
-    AutoReleasePool pool;
-    id pboardClass = reinterpret_cast<id>(objc_getClass("NSPasteboard"));
-    if (!pboardClass)
-        return 0;
-    id pboard = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(pboardClass, sel_registerName("generalPasteboard"));
-    if (!pboard)
-        return 0;
-    return reinterpret_cast<int64_t (*)(id, SEL)>(objc_msgSend)(pboard, sel_registerName("changeCount"));
-}
-
-rust::String mac_clipboard_read_text(bool &is_private)
-{
-    AutoReleasePool pool;
-    is_private = false;
-    id pboardClass = reinterpret_cast<id>(objc_getClass("NSPasteboard"));
-    if (!pboardClass)
-        return rust::String();
-    id pboard = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(pboardClass, sel_registerName("generalPasteboard"));
-    if (!pboard)
-        return rust::String();
-
-    id strClass = reinterpret_cast<id>(objc_getClass("NSString"));
-    if (!strClass)
-        return rust::String();
-
-    id concealed = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-        strClass, sel_registerName("stringWithUTF8String:"), "org.nspasteboard.ConcealedType");
-    id transient = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-        strClass, sel_registerName("stringWithUTF8String:"), "org.nspasteboard.TransientType");
-    id autoGen = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-        strClass, sel_registerName("stringWithUTF8String:"), "org.nspasteboard.AutoGeneratedType");
-    id plainTextType = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-        strClass, sel_registerName("stringWithUTF8String:"), "public.utf8-plain-text");
-
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        int64_t countBefore = reinterpret_cast<int64_t (*)(id, SEL)>(objc_msgSend)(pboard, sel_registerName("changeCount"));
-
-        id types = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(pboard, sel_registerName("types"));
-        if (types) {
-            if ((concealed && reinterpret_cast<bool (*)(id, SEL, id)>(objc_msgSend)(types, sel_registerName("containsObject:"), concealed))
-                || (transient && reinterpret_cast<bool (*)(id, SEL, id)>(objc_msgSend)(types, sel_registerName("containsObject:"), transient))
-                || (autoGen && reinterpret_cast<bool (*)(id, SEL, id)>(objc_msgSend)(types, sel_registerName("containsObject:"), autoGen))) {
-                int64_t countAfter = reinterpret_cast<int64_t (*)(id, SEL)>(objc_msgSend)(pboard, sel_registerName("changeCount"));
-                if (countBefore == countAfter) {
-                    is_private = true;
-                    return rust::String();
-                }
-                continue;
-            }
-        }
-
-        id str = reinterpret_cast<id (*)(id, SEL, id)>(objc_msgSend)(pboard, sel_registerName("stringForType:"), plainTextType);
-        int64_t countAfter = reinterpret_cast<int64_t (*)(id, SEL)>(objc_msgSend)(pboard, sel_registerName("changeCount"));
-        if (countBefore != countAfter) {
-            continue;
-        }
-
-        if (str) {
-            const char *utf8 = reinterpret_cast<const char * (*)(id, SEL)>(objc_msgSend)(str, sel_registerName("UTF8String"));
-            if (utf8)
-                return rust::String(utf8);
-        }
-        return rust::String();
-    }
-
-    is_private = false;
-    return rust::String();
-}
-
-bool mac_clipboard_write_text(rust::Str text, bool is_private)
-{
-    AutoReleasePool pool;
-    id pboardClass = reinterpret_cast<id>(objc_getClass("NSPasteboard"));
-    if (!pboardClass)
-        return false;
-    id pboard = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(pboardClass, sel_registerName("generalPasteboard"));
-    if (!pboard)
-        return false;
-
-    reinterpret_cast<void (*)(id, SEL)>(objc_msgSend)(pboard, sel_registerName("clearContents"));
-
-    id strClass = reinterpret_cast<id>(objc_getClass("NSString"));
-    if (!strClass)
-        return false;
-
-    const std::string text_str(text.data(), text.size());
-    id nsStr = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-        strClass, sel_registerName("stringWithUTF8String:"), text_str.c_str());
-    if (!nsStr)
-        return false;
-
-    id plainTextType = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-        strClass, sel_registerName("stringWithUTF8String:"), "public.utf8-plain-text");
-
-    id arrClass = reinterpret_cast<id>(objc_getClass("NSArray"));
-    if (!arrClass)
-        return false;
-
-    if (is_private) {
-        id concealed = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-            strClass, sel_registerName("stringWithUTF8String:"), "org.nspasteboard.ConcealedType");
-        id transient = reinterpret_cast<id (*)(id, SEL, const char *)>(objc_msgSend)(
-            strClass, sel_registerName("stringWithUTF8String:"), "org.nspasteboard.TransientType");
-        const id items[] = { plainTextType, concealed, transient };
-        id types = reinterpret_cast<id (*)(id, SEL, const id *, unsigned long)>(objc_msgSend)(
-            arrClass, sel_registerName("arrayWithObjects:count:"), items, 3);
-        reinterpret_cast<void (*)(id, SEL, id, id)>(objc_msgSend)(
-            pboard, sel_registerName("declareTypes:owner:"), types, nullptr);
-        bool ok = reinterpret_cast<bool (*)(id, SEL, id, id)>(objc_msgSend)(
-            pboard, sel_registerName("setString:forType:"), nsStr, plainTextType);
-        if (!ok)
-            return false;
-        id dataClass = reinterpret_cast<id>(objc_getClass("NSData"));
-        if (dataClass) {
-            id emptyData = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend)(dataClass, sel_registerName("data"));
-            reinterpret_cast<bool (*)(id, SEL, id, id)>(objc_msgSend)(
-                pboard, sel_registerName("setData:forType:"), emptyData, concealed);
-            reinterpret_cast<bool (*)(id, SEL, id, id)>(objc_msgSend)(
-                pboard, sel_registerName("setData:forType:"), emptyData, transient);
-        }
-        return true;
-    } else {
-        const id items[] = { plainTextType };
-        id types = reinterpret_cast<id (*)(id, SEL, const id *, unsigned long)>(objc_msgSend)(
-            arrClass, sel_registerName("arrayWithObjects:count:"), items, 1);
-        reinterpret_cast<void (*)(id, SEL, id, id)>(objc_msgSend)(
-            pboard, sel_registerName("declareTypes:owner:"), types, nullptr);
-        return reinterpret_cast<bool (*)(id, SEL, id, id)>(objc_msgSend)(
-            pboard, sel_registerName("setString:forType:"), nsStr, plainTextType);
-    }
-}
-#else
-int64_t mac_clipboard_change_count()
-{
-    return 0;
-}
-
-rust::String mac_clipboard_read_text(bool &is_private)
-{
-    is_private = false;
-    return rust::String();
-}
-
-bool mac_clipboard_write_text(rust::Str /*text*/, bool /*is_private*/)
-{
-    return false;
-}
-#endif
-
-int64_t mac_local_offset_ms(int64_t at_ms)
-{
-    const QDateTime dt = QDateTime::fromMSecsSinceEpoch(at_ms, QTimeZone::systemTimeZone());
-    return static_cast<int64_t>(dt.offsetFromUtc()) * 1000;
-}
-
-uint64_t mac_free_space(rust::Str path, bool &ok)
-{
-    ok = false;
-    const std::string pathStr(path.data(), path.size());
-    QString qpath = QString::fromStdString(pathStr);
-    QFileInfo info(qpath);
-    while (!info.exists() && !qpath.isEmpty()) {
-        const QString parent = info.dir().absolutePath();
-        if (parent == qpath)
-            break;
-        qpath = parent;
-        info.setFile(qpath);
-    }
-    const QStorageInfo storage(qpath);
-    if (!storage.isValid() || !storage.isReady())
-        return 0;
-    const qint64 available = storage.bytesAvailable();
-    if (available < 0)
-        return 0;
-    ok = true;
-    return static_cast<uint64_t>(available);
-}
-
-#ifdef __linux__
 namespace {
 std::atomic<bool> &qtEventLoopRunning()
 {
@@ -658,14 +440,12 @@ bool runOnQtMainThreadSync(F &&fn, uint32_t timeout_ms = 500)
     return runOnThreadAndWait(app, std::forward<F>(fn), timeout_ms);
 }
 } // namespace
-#endif
 
 std::unique_ptr<QGuiApplication> create_qt_app()
 {
     static int s_argc = 1;
     static char s_arg0[] = "g7link";
     static char *s_argv[] = { s_arg0, nullptr };
-#ifdef __linux__
     auto app = std::unique_ptr<QGuiApplication>(new QApplication(s_argc, s_argv));
     // On Wayland this is the app id, which is how the dock finds our icon and name.
     QGuiApplication::setDesktopFileName(QStringLiteral("g7link"));
@@ -684,9 +464,6 @@ std::unique_ptr<QGuiApplication> create_qt_app()
         });
     }
     return app;
-#else
-    return std::make_unique<QGuiApplication>(s_argc, s_argv);
-#endif
 }
 
 void linux_tray_setup(
@@ -702,7 +479,6 @@ void linux_tray_setup(
     rust::Str pause_notifications_label,
     rust::Str quit_label)
 {
-#ifdef __linux__
     const QString iconPath = QString::fromUtf8(icon_path.data(), static_cast<qsizetype>(icon_path.size()));
     const QString tooltipStr = QString::fromUtf8(tooltip.data(), static_cast<qsizetype>(tooltip.size()));
     const QString openStr = QString::fromUtf8(open_label.data(), static_cast<qsizetype>(open_label.size()));
@@ -783,50 +559,28 @@ void linux_tray_setup(
         st.openLinkAction = openLink;
         st.pauseAction = pause;
     });
-#else
-    (void)icon_path;
-    (void)tooltip;
-    (void)open_label;
-    (void)command_palette_label;
-    (void)shelf_label;
-    (void)take_photo_label;
-    (void)scan_document_label;
-    (void)find_phone_label;
-    (void)open_link_label;
-    (void)pause_notifications_label;
-    (void)quit_label;
-#endif
 }
 
 void linux_tray_set_pause_label(rust::Str label)
 {
-#ifdef __linux__
     const QString text = QString::fromUtf8(label.data(), static_cast<qsizetype>(label.size()));
     runOnQtMainThread([text]() {
         if (auto *action = linuxTray().pauseAction.data())
             action->setText(text);
     });
-#else
-    (void)label;
-#endif
 }
 
 void linux_tray_set_tooltip(rust::Str tooltip)
 {
-#ifdef __linux__
     const QString tooltipStr = QString::fromUtf8(tooltip.data(), static_cast<qsizetype>(tooltip.size()));
     runOnQtMainThread([tooltipStr]() {
         if (auto *icon = linuxTray().icon.data())
             icon->setToolTip(tooltipStr);
     });
-#else
-    (void)tooltip;
-#endif
 }
 
 void linux_tray_set_find_phone_enabled(bool enabled)
 {
-#ifdef __linux__
     runOnQtMainThread([enabled]() {
         auto &st = linuxTray();
         st.phoneActionsEnabled = enabled;
@@ -839,14 +593,10 @@ void linux_tray_set_find_phone_enabled(bool enabled)
         if (auto *act = st.openLinkAction.data())
             act->setEnabled(enabled);
     });
-#else
-    (void)enabled;
-#endif
 }
 
 void linux_tray_teardown()
 {
-#ifdef __linux__
     auto &st = linuxTray();
     st.cv.notify_all();
     runOnQtMainThread([]() {
@@ -863,12 +613,10 @@ void linux_tray_teardown()
         s.findPhoneAction = nullptr;
         s.openLinkAction = nullptr;
     });
-#endif
 }
 
 rust::String linux_tray_wait_action(uint32_t timeout_ms)
 {
-#ifdef __linux__
     auto &st = linuxTray();
     std::unique_lock<std::mutex> lock(st.mutex);
     if (st.actions.empty() && timeout_ms > 0) {
@@ -879,28 +627,22 @@ rust::String linux_tray_wait_action(uint32_t timeout_ms)
         st.actions.pop_front();
         return rust::String(next);
     }
-#else
-    (void)timeout_ms;
-#endif
     return rust::String();
 }
 
 bool linux_tray_is_available()
 {
-#ifdef __linux__
     bool available = false;
     if (runOnQtMainThreadSync([&available]() {
             available = QSystemTrayIcon::isSystemTrayAvailable();
         })) {
         return available;
     }
-#endif
     return false;
 }
 
 bool linux_work_area(int32_t &x, int32_t &y, int32_t &w, int32_t &h)
 {
-#ifdef __linux__
     bool ok = false;
     int32_t rx = 0, ry = 0, rw = 0, rh = 0;
     if (runOnQtMainThreadSync([&]() {
@@ -923,18 +665,11 @@ bool linux_work_area(int32_t &x, int32_t &y, int32_t &w, int32_t &h)
         h = rh;
         return true;
     }
-#else
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
-#endif
     return false;
 }
 
 bool linux_screen_geometry(int32_t &x, int32_t &y, int32_t &w, int32_t &h)
 {
-#ifdef __linux__
     bool ok = false;
     int32_t rx = 0, ry = 0, rw = 0, rh = 0;
     if (runOnQtMainThreadSync([&]() {
@@ -957,41 +692,26 @@ bool linux_screen_geometry(int32_t &x, int32_t &y, int32_t &w, int32_t &h)
         h = rh;
         return true;
     }
-#else
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
-#endif
     return false;
 }
 
 void linux_set_activation_token(rust::Str token)
 {
-#ifdef __linux__
     if (token.empty())
         return;
     const QByteArray tok(token.data(), static_cast<qsizetype>(token.size()));
     runOnQtMainThread([tok]() {
         qputenv("XDG_ACTIVATION_TOKEN", tok);
     });
-#else
-    (void)token;
-#endif
 }
 
 uint64_t linux_clipboard_sequence()
 {
-#ifdef __linux__
     return linuxClipboardWatch().seq.load(std::memory_order_acquire);
-#else
-    return 0;
-#endif
 }
 
 uint64_t linux_clipboard_wait_change(uint64_t last_seq, uint32_t timeout_ms)
 {
-#ifdef __linux__
     auto &w = linuxClipboardWatch();
     uint64_t cur = w.seq.load(std::memory_order_acquire);
     if (cur != last_seq || timeout_ms == 0)
@@ -1001,23 +721,16 @@ uint64_t linux_clipboard_wait_change(uint64_t last_seq, uint32_t timeout_ms)
         return w.seq.load(std::memory_order_acquire) != last_seq;
     });
     return w.seq.load(std::memory_order_acquire);
-#else
-    (void)last_seq;
-    (void)timeout_ms;
-    return 0;
-#endif
 }
 
 void linux_clipboard_notify_external()
 {
-#ifdef __linux__
     auto &w = linuxClipboardWatch();
     {
         std::lock_guard<std::mutex> lock(w.mutex);
         w.seq.fetch_add(1, std::memory_order_release);
     }
     w.cv.notify_all();
-#endif
 }
 
 bool linux_clipboard_read(
@@ -1035,7 +748,6 @@ bool linux_clipboard_read(
     html = rust::String();
     rtf = rust::String();
     png_bytes.clear();
-#ifdef __linux__
     bool ran = false;
     bool priv = false;
     bool files = false;
@@ -1135,16 +847,11 @@ bool linux_clipboard_read(
             png_bytes.push_back(raw[i]);
     }
     return true;
-#else
-    (void)check_privacy;
-    return false;
-#endif
 }
 
 rust::Vec<rust::String> linux_clipboard_read_files()
 {
     rust::Vec<rust::String> result;
-#ifdef __linux__
     std::vector<std::string> paths;
     if (runOnQtMainThreadSync([&]() {
             QClipboard *cb = QGuiApplication::clipboard();
@@ -1187,13 +894,11 @@ rust::Vec<rust::String> linux_clipboard_read_files()
         for (const std::string &p : paths)
             result.push_back(rust::String(p));
     }
-#endif
     return result;
 }
 
 bool linux_clipboard_write_text(rust::Str text, rust::Str html, rust::Str rtf, bool is_private)
 {
-#ifdef __linux__
     const QString qtext = QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
     const QString qhtml = QString::fromUtf8(html.data(), static_cast<qsizetype>(html.size()));
     const QByteArray qrtf(rtf.data(), static_cast<qsizetype>(rtf.size()));
@@ -1222,18 +927,11 @@ bool linux_clipboard_write_text(rust::Str text, rust::Str html, rust::Str rtf, b
         })) {
         return ok;
     }
-#else
-    (void)text;
-    (void)html;
-    (void)rtf;
-    (void)is_private;
-#endif
     return false;
 }
 
 bool linux_clipboard_write_image_png(rust::Slice<const uint8_t> png)
 {
-#ifdef __linux__
     if (png.empty())
         return false;
     const QByteArray bytes(reinterpret_cast<const char *>(png.data()), static_cast<qsizetype>(png.size()));
@@ -1252,15 +950,11 @@ bool linux_clipboard_write_image_png(rust::Slice<const uint8_t> png)
         })) {
         return ok;
     }
-#else
-    (void)png;
-#endif
     return false;
 }
 
 bool linux_clipboard_write_files(rust::Slice<const rust::String> paths)
 {
-#ifdef __linux__
     if (paths.empty())
         return false;
     QList<QUrl> urls;
@@ -1290,8 +984,5 @@ bool linux_clipboard_write_files(rust::Slice<const rust::String> paths)
         })) {
         return ok;
     }
-#else
-    (void)paths;
-#endif
     return false;
 }

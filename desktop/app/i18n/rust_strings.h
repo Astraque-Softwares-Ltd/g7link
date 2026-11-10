@@ -406,7 +406,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("PhotoBackup", "Waiting for Wi-Fi"), // desktop/app/src/bridge/photo_backup.rs
     QT_TRANSLATE_NOOP("Photos", "%1 of %2 couldn't be moved to %3. They're in Downloads\\G7Link."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "Copied to clipboard."), // desktop/app/src/photos.rs
-    QT_TRANSLATE_NOOP("Photos", "Couldn't open the share window. Try Save instead."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "Deleted %1 of %2."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "From %1"), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "New photo"), // desktop/app/src/photos.rs
@@ -440,11 +439,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("SendTo", "Sent to %1"), // desktop/app/src/send_to.rs
     QT_TRANSLATE_NOOP("SendTo", "The transfer didn't go through."), // desktop/app/src/send_to.rs
     QT_TRANSLATE_NOOP("SendTo", "Waiting for %1…"), // desktop/app/src/send_to.rs
-    QT_TRANSLATE_NOOP("Setup", "Couldn't start setup: %1"), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "Couldn't uninstall G7 Link: %1"), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "Setup is taking too long. Try again after restarting the PC."), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "Setup stopped with code %1."), // desktop/app/src/setup.rs
-    QT_TRANSLATE_NOOP("Setup", "Uninstall stopped with code %1."), // desktop/app/src/setup.rs
     QT_TRANSLATE_NOOP("Timeline", "App window #%1"), // desktop/app/src/i18n.rs
     QT_TRANSLATE_NOOP("Timeline", "Clip (removed from clipboard history)"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Copied image"), // desktop/app/src/bridge/timeline.rs

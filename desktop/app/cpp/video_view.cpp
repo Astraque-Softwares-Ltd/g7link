@@ -13,13 +13,6 @@
 #include <QtQuick/QSGSimpleTextureNode>
 #include <QtQuick/QSGTexture>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <propkey.h>
-#include <propsys.h>
-#include <shobjidl.h>
-#endif
-
 #include <algorithm>
 #include <mutex>
 #include <vector>
@@ -102,15 +95,6 @@ void VideoView::setWindowIcon(const QString &icon)
     applyWindowChrome();
 }
 
-void VideoView::setWindowAppId(const QString &appId)
-{
-    if (appId == m_windowAppId)
-        return;
-    m_windowAppId = appId;
-    emit windowAppIdChanged();
-    applyWindowChrome();
-}
-
 void VideoView::setAcceptsText(bool on)
 {
     if (on == m_acceptsText)
@@ -166,21 +150,6 @@ void VideoView::applyWindowChrome()
     QQuickWindow *win = window();
     if (!win)
         return;
-#ifdef _WIN32
-    if (!m_windowAppId.isEmpty()) {
-        if (HWND hwnd = reinterpret_cast<HWND>(win->winId())) {
-            IPropertyStore *store = nullptr;
-            if (SUCCEEDED(SHGetPropertyStoreForWindow(hwnd, IID_PPV_ARGS(&store))) && store) {
-                PROPVARIANT pv{};
-                pv.vt = VT_LPWSTR;
-                pv.pwszVal = const_cast<LPWSTR>(reinterpret_cast<LPCWSTR>(m_windowAppId.utf16()));
-                store->SetValue(PKEY_AppUserModel_ID, pv);
-                store->Commit();
-                store->Release();
-            }
-        }
-    }
-#endif
     if (!m_windowIcon.isEmpty()) {
         const QUrl url(m_windowIcon);
         const QString path = url.isLocalFile() ? url.toLocalFile() : m_windowIcon;

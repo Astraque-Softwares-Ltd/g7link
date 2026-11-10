@@ -830,7 +830,7 @@ Item {
                         }
                         Divider { width: parent.width }
 
-                        // Hive: the comb's motion instead of Mica (Hive keeps its own colors).
+                        // Hive: the comb's motion (Hive keeps its own colors).
                         ListRow {
                             width: parent.width
                             visible: Theme.hive
@@ -848,75 +848,16 @@ Item {
                             }
                         }
 
-                        // Side-by-side when Graphite Dark shows Pure Black + Mica backdrop
-                        Item {
-                            id: appearanceBottomPair
-                            readonly property bool showGraphiteAmoled: Theme.graphite && Theme.dark
-                            readonly property bool showMica: Qt.platform.os === "windows"
-                                && !!Window.window && Window.window.systemBackdropSupported === true
-                            visible: !Theme.hive && (showMica || showGraphiteAmoled)
+                        ListRow {
                             width: parent.width
-                            readonly property bool splitCols: showGraphiteAmoled && showMica && width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: !showGraphiteAmoled
-                                ? (showMica ? micaRow.implicitHeight : 0)
-                                : (!showMica
-                                    ? graphiteAmoledRow.implicitHeight
-                                    : (splitCols
-                                        ? Math.max(graphiteAmoledRow.implicitHeight, micaRow.implicitHeight)
-                                        : (graphiteAmoledRow.implicitHeight + 1 + micaRow.implicitHeight)))
-
-                            ListRow {
-                                id: graphiteAmoledRow
-                                visible: appearanceBottomPair.showGraphiteAmoled
-                                x: 0
-                                y: appearanceBottomPair.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: appearanceBottomPair.colWidth
-                                iconPath: Icons.moon
-                                title: qsTr("Pure black (AMOLED)")
-                                description: qsTr("Pitch-black #000000 surfaces.")
-                                Toggle {
-                                    checked: Preferences.amoled
-                                    label: qsTr("Pure black (AMOLED)")
-                                    onToggled: (on) => Preferences.amoled = on
-                                }
-                            }
-
-                            Rectangle {
-                                visible: appearanceBottomPair.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: appearanceBottomPair.showGraphiteAmoled && appearanceBottomPair.showMica && !appearanceBottomPair.splitCols
-                                y: graphiteAmoledRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: micaRow
-                                visible: appearanceBottomPair.showMica
-                                x: appearanceBottomPair.splitCols ? (parent.width - width) : 0
-                                y: !appearanceBottomPair.showGraphiteAmoled
-                                    ? 0
-                                    : (appearanceBottomPair.splitCols
-                                        ? Math.round((parent.height - height) / 2)
-                                        : (graphiteAmoledRow.implicitHeight + 1))
-                                width: appearanceBottomPair.colWidth
-                                iconPath: Icons.desktop
-                                title: qsTr("Mica backdrop")
-                                description: qsTr("Only on Windows 11.")
-                                opacity: 0.5
-                                Toggle {
-                                    label: qsTr("Mica backdrop")
-                                    enabled: Qt.platform.os === "windows"
-                                    checked: Preferences.backdrop
-                                    onToggled: (on) => Preferences.backdrop = on
-                                }
+                            visible: !Theme.hive && Theme.graphite && Theme.dark
+                            iconPath: Icons.moon
+                            title: qsTr("Pure black (AMOLED)")
+                            description: qsTr("Pitch-black #000000 surfaces.")
+                            Toggle {
+                                checked: Preferences.amoled
+                                label: qsTr("Pure black (AMOLED)")
+                                onToggled: (on) => Preferences.amoled = on
                             }
                         }
                     }
@@ -1018,11 +959,7 @@ Item {
                                 Toggle {
                                     label: qsTr("Stay in system tray")
                                     checked: Preferences.closeToTray
-                                    enabled: Qt.platform.os !== "osx"
-                                    onToggled: (on) => {
-                                        if (Qt.platform.os !== "osx")
-                                            Preferences.closeToTray = on
-                                    }
+                                    onToggled: (on) => Preferences.closeToTray = on
                                 }
                             }
                         }
@@ -2102,20 +2039,6 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width; visible: Qt.platform.os === "windows" }
-                        ListRow {
-                            width: parent.width
-                            visible: Qt.platform.os === "windows"
-                            iconPath: Icons.moon
-                            title: qsTr("Quiet hours")
-                            description: qsTr("Configure automatic DND schedule in Windows.")
-                            Button {
-                                variant: "tonal"
-                                size: "sm"
-                                text: qsTr("Set a schedule")
-                                onClicked: Qt.openUrlExternally("ms-settings:notifications")
-                            }
-                        }
                         Repeater {
                             model: { try { return JSON.parse(NotificationList.apps) } catch (e) { return [] } }
                             delegate: Column {
@@ -2984,7 +2907,6 @@ Item {
 
                         ListRow {
                             width: parent.width
-                            visible: Qt.platform.os !== "osx"
                             iconPath: Icons.lock
                             title: qsTr("Sync copied passwords")
                             description: qsTr("Also sends what password managers mark private. It leaves the phone's clipboard after a minute where Android allows it, and is never kept in history.")
@@ -2994,10 +2916,7 @@ Item {
                                 onToggled: (on) => Preferences.syncPasswords = on
                             }
                         }
-                        Divider {
-                            width: parent.width
-                            visible: Qt.platform.os !== "osx"
-                        }
+                        Divider { width: parent.width }
 
                         // Row 1: Clipboard history | Notification history
                         Item {
@@ -3482,20 +3401,6 @@ Item {
                                 ]
                                 value: Preferences.updateChannel
                                 onPicked: (value) => Preferences.updateChannel = value
-                            }
-                        }
-                        ListRow {
-                            width: parent.width
-                            visible: AppController.canUpdate
-                            enabled: Preferences.autoUpdate
-                            opacity: enabled ? 1 : 0.5
-                            iconPath: Icons.download
-                            title: qsTr("Install updates automatically")
-                            description: qsTr("When nobody is using the PC and nothing is in progress.")
-                            Toggle {
-                                label: qsTr("Install updates automatically")
-                                checked: Preferences.installUpdates
-                                onToggled: (on) => Preferences.installUpdates = on
                             }
                         }
                     }

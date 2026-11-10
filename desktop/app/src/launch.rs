@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! What another launch of G7 Link asks the running one to do: show its
-//! window (Start menu, shortcuts), send files (Explorer's "Send to") or
-//! quit (the installer, before replacing or removing the app).
+//! window (the app menu, shortcuts), send files (a file manager's "Send to"),
+//! share, run a launcher action, or quit (`--quit`, `--uninstall`).
 //!
 //! The launch writes a request file into the data folder, then wakes the
 //! running instance (`win::single_instance`), which drains the folder. The
@@ -29,7 +29,7 @@ pub enum Request {
     Show,
     /// Send files to a paired device.
     Send { device: String, paths: Vec<PathBuf> },
-    /// Share files, a link, or text from the Windows Share sheet or `--share`.
+    /// Share files, a link, or text from the desktop entry or `--share`.
     Share {
         #[serde(default)]
         files: Vec<PathBuf>,
@@ -44,7 +44,7 @@ pub enum Request {
         device: Option<String>,
         task: g7link_core::TaskNotify,
     },
-    /// Run a taskbar Jump List task (`--task <action>`).
+    /// Run an action from the app's launcher menu (`--task <action>`).
     Task { action: String },
     /// Quit.
     Quit,

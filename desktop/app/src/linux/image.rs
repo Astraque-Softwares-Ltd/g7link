@@ -11,10 +11,7 @@ pub struct Bitmap {
 }
 
 const BITMAPFILEHEADER_SIZE: usize = 14;
-const BITMAPV5HEADER_SIZE: u32 = 124;
-const BI_RGB: u32 = 0;
 const BI_BITFIELDS: u32 = 3;
-const LCS_SRGB: u32 = 0x7352_4742;
 
 const PNG_SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -1068,43 +1065,6 @@ pub fn bmp_from_dib(dib: &[u8]) -> Option<Vec<u8>> {
     Some(bmp)
 }
 
-pub fn dibv5(bitmap: &Bitmap) -> Vec<u8> {
-    let row_bytes = (bitmap.width as usize) * 4;
-    let image_bytes = row_bytes * (bitmap.height as usize);
-    let mut out = Vec::with_capacity((BITMAPV5HEADER_SIZE as usize) + image_bytes);
-
-    let neg_height = -i32::try_from(bitmap.height).unwrap_or(i32::MAX);
-    out.extend_from_slice(&BITMAPV5HEADER_SIZE.to_le_bytes());
-    out.extend_from_slice(&(bitmap.width as i32).to_le_bytes());
-    out.extend_from_slice(&neg_height.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&32u16.to_le_bytes());
-    out.extend_from_slice(&BI_BITFIELDS.to_le_bytes());
-    out.extend_from_slice(&(image_bytes as u32).to_le_bytes());
-    out.extend_from_slice(&2835i32.to_le_bytes());
-    out.extend_from_slice(&2835i32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0x00FF_0000u32.to_le_bytes());
-    out.extend_from_slice(&0x0000_FF00u32.to_le_bytes());
-    out.extend_from_slice(&0x0000_00FFu32.to_le_bytes());
-    out.extend_from_slice(&0xFF00_0000u32.to_le_bytes());
-    out.extend_from_slice(&LCS_SRGB.to_le_bytes());
-    out.extend_from_slice(&[0u8; 36]);
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&4u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    debug_assert_eq!(out.len(), BITMAPV5HEADER_SIZE as usize);
-
-    let _ = BI_RGB;
-    out.extend_from_slice(&bitmap.bgra[..image_bytes]);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1162,15 +1122,6 @@ mod tests {
         let decoded = decode(&square_jpg).expect("decode cropped jpeg");
         assert_eq!(decoded.width, 24);
         assert_eq!(decoded.height, 24);
-    }
-
-    #[test]
-    fn dibv5_through_bmp_round_trips_pixels() {
-        let original = sample_bitmap(8, 6);
-        let dib = dibv5(&original);
-        let bmp = bmp_from_dib(&dib).expect("bmp_from_dib");
-        let decoded = decode(&bmp).expect("decode bmp");
-        assert_eq!(decoded, original);
     }
 
     #[test]

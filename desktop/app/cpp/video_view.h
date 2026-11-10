@@ -27,8 +27,6 @@ class VideoView : public QQuickItem
     Q_PROPERTY(quint64 frames READ frames NOTIFY framesChanged)
     // Optional PNG icon file URL/path for the containing window and taskbar button.
     Q_PROPERTY(QString windowIcon READ windowIcon WRITE setWindowIcon NOTIFY windowIconChanged)
-    // Optional Windows AppUserModelID so each app window gets its own taskbar identity.
-    Q_PROPERTY(QString windowAppId READ windowAppId WRITE setWindowAppId NOTIFY windowAppIdChanged)
     // Whether text from input methods (the emoji panel, IMEs for Chinese and
     // other languages) is taken, and given out through `textCommitted`.
     Q_PROPERTY(bool acceptsText READ acceptsText WRITE setAcceptsText NOTIFY acceptsTextChanged)
@@ -43,8 +41,6 @@ public:
     quint64 frames() const { return m_frames; }
     QString windowIcon() const { return m_windowIcon; }
     void setWindowIcon(const QString &icon);
-    QString windowAppId() const { return m_windowAppId; }
-    void setWindowAppId(const QString &appId);
     bool acceptsText() const { return m_acceptsText; }
     void setAcceptsText(bool on);
 
@@ -59,7 +55,6 @@ signals:
     void frameSizeChanged();
     void framesChanged();
     void windowIconChanged();
-    void windowAppIdChanged();
     void acceptsTextChanged();
     // An input method finished some text (an emoji, a word in Chinese...).
     void textCommitted(const QString &text);
@@ -80,7 +75,6 @@ private:
     // The serial of the picture on screen.
     quint64 m_shown = 0;
     QString m_windowIcon;
-    QString m_windowAppId;
     bool m_acceptsText = false;
     std::atomic_bool m_framePending{false};
 };

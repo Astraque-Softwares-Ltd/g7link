@@ -14,7 +14,7 @@ On Windows, **Settings** uses a two-pane layout with 9 categories in the left na
 
 ### 1. Appearance
 
-Controls the visual theme, light/dark mode, accent palette, OLED black surfaces, and Windows 11 Mica backdrop.
+Controls the visual theme, light/dark mode, accent palette, and OLED black surfaces.
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
@@ -22,8 +22,7 @@ Controls the visual theme, light/dark mode, accent palette, OLED black surfaces,
 | **Mode** | `System` (default), `Light`, `Dark` | Follows Windows 11's system light/dark mode or locks G7 Link to Light or Dark. |
 | **Color** *(shown in Bloom and Glass)* | **Wallpaper** (default), **Honey**, **Lavender**, **Ocean**, **Sage**, **Black**, **Media artwork**, or **Phone color pills** | Picks the accent seed color. **Wallpaper** extracts colors from your desktop wallpaper. **Media artwork** dynamically adapts the app's palette to the album art of whatever song is currently playing. **Phone color pills** sync live with each paired phone's Material You wallpaper palette. |
 | **Pure black (AMOLED)** | **Off** (default) | Shown inline as an **AMOLED** pill when the **Black** color swatch is selected in Bloom/Glass, or as a dedicated row in **Graphite Dark**. Replaces dark gray backgrounds with pure `#000000` black for OLED monitors. |
-| **Animated comb** *(Hive)* | **On** (default) | Lets Hive's honeycomb breathe and pulse. It also holds still while animations are off in Windows, while energy saver is on, and while the window isn't in front. Shown in place of **Mica backdrop**, which Hive doesn't use. |
-| **Mica backdrop** | **On** (default) | Uses Windows 11's native Desktop Window Manager (DWM) Mica material to subtly tint the window background with your desktop wallpaper. |
+| **Animated comb** *(Hive)* | **On** (default) | Lets Hive's honeycomb breathe and pulse. It also holds still while animations are off in Windows, while energy saver is on, and while the window isn't in front. |
 
 ---
 
@@ -109,13 +108,12 @@ Configures **Phone as speaker**, call media pausing, the **G7 Link Webcam** virt
 
 ### 5. Notifications
 
-Configures Do Not Disturb synchronization, PC-to-phone notification forwarding, Windows Quiet Hours, and per-app notification rules.
+Configures Do Not Disturb synchronization, PC-to-phone notification forwarding, and per-app notification rules.
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
 | **Follow phone Do not disturb** | **Off** (default) | Mutes Windows notification popups on this PC whenever your phone is in Do Not Disturb mode (notifications still wait quietly in the G7 Link feed). |
 | **Forward PC notifications** | **Off** (default) | Forwards Windows desktop notifications to your connected phone while you are away from your desk. |
-| **Quiet hours** | **Set a schedule** button | Opens Windows 11 **System › Notifications** settings to configure automatic Focus / Do Not Disturb schedules. |
 | **Per-app notification rules** | `Show` (default), `No pop-ups`, `Hide` | For every phone app that has posted a notification: **Show** displays both Windows popups and feed cards; **No pop-ups** keeps alerts in the G7 Link feed without desktop popups; **Hide** blocks that app's notifications completely. |
 
 ---
@@ -191,7 +189,6 @@ Provides network diagnostics, **Connect over mobile data**, Wake-on-LAN readines
 | **G7 Link `<version>`** | **Check for updates** and **Open logs** buttons | Shows the app version and this PC's device name, checks GitHub Releases for SHA-256 verified updates, or opens the local diagnostic logs folder. |
 | **Check for updates** | **On** (shown on installed copies) | Checks the update channel's feed over HTTPS (`https://raw.githubusercontent.com/Astraque-Softwares-Ltd/g7link/channels/<channel>.json`) 30 seconds after startup, then every 12 hours on **Stable** and every 2 hours on **Nightly** (twice as long on battery), and tells your phone when there's a new build. A check of an unchanged feed is a few hundred bytes. |
 | **Update channel** | **Stable** (**Nightly** on a nightly build) | **Stable** gets releases. **Nightly** gets a build from the latest code every couple of hours when it changes, with the newest fixes and features and sometimes new bugs, and releases too. Switching back to **Stable** keeps the nightly installed until the next release is newer. An install stays on its channel when it takes a release, until you change it. |
-| **Install updates automatically** | **On** | Installs a newer release by itself when nobody has used the PC for 10 minutes and nothing is in progress (no mirroring, app window, transfer, call, screen sharing or webcam). No administrator prompt: the installer sets up a task that does it. Turn it off to install from the notification or **Check for updates** when you choose. |
 | **Setup walkthrough & Features guide** | Action buttons / Command Palette entries | Reopens the first-run setup walkthrough or the interactive in-app Features Guide at any time. |
 
 ---

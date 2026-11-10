@@ -99,7 +99,6 @@ The desktop client for Windows and Linux, combining a Rust service host with a Q
   - `win/ble_beacon.rs`: Bluetooth LE beacon for waking the phone's connection.
   - `local_api.rs`: Opt-in localhost HTTP/SSE server (`127.0.0.1:53320`) for CLI, PowerToys, Raycast, and Stream Deck integrations.
   - `win/share_target.rs` and `send_to.rs`: Windows Share Target activation, and files sent from File Explorer's or a Linux file manager's **Send to**.
-  - `setup.rs` (with `bridge/setup.rs` and `qml/setup/`): The installer's and uninstaller's window. The NSIS installer (`desktop/installer/g7link.nsi`) unpacks the app and starts it with `--setup`; the uninstall entry starts the installed app with `--remove`. The window runs the NSIS installer or uninstaller silently with administrator rights and shows its progress.
   - `updater.rs` and `feed.rs`: Update checks against the channel feed (see the [security model](security-model.md#automatic-updates-and-release-verification)), SHA-256 verified downloads, and the installer or package for the kind of install.
 
 ### 6. `desktop/vcam` (`g7link-vcam`)
