@@ -860,18 +860,13 @@ mod tests {
                 Asset {
                     name: "G7Link-9.0.0-x86_64.AppImage".into(),
                     browser_download_url:
-                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup".into(),
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/appimage-x64"
+                            .into(),
                 },
                 Asset {
                     name: "G7Link-9.0.0-aarch64.AppImage".into(),
                     browser_download_url:
-                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup-arm64"
-                            .into(),
-                },
-                Asset {
-                    name: "G7Link-9.0.0-x86_64.AppImage".into(),
-                    browser_download_url:
-                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/appimage-x64"
+                        "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/appimage-arm64"
                             .into(),
                 },
                 Asset {
@@ -934,14 +929,14 @@ mod tests {
         let x64 = newer_release_for(release("v9.0.0"), "0.0.1", "-x86_64.AppImage").unwrap();
         assert_eq!(
             (x64.version.as_str(), x64.installer_url.as_str()),
-            ("9.0.0", "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup")
+            ("9.0.0", "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/appimage-x64")
         );
         let arm64 = newer_release_for(release("v9.0.0"), "0.0.1", "-aarch64.AppImage").unwrap();
         assert_eq!(
             (arm64.installer_name.as_str(), arm64.installer_url.as_str()),
             (
                 "G7Link-9.0.0-aarch64.AppImage",
-                "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/setup-arm64"
+                "https://github.com/Astraque-Softwares-Ltd/g7link/releases/download/v9/appimage-arm64"
             )
         );
         assert!(newer_release(release("v0.0.1"), "0.0.1").is_none());

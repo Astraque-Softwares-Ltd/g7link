@@ -46,14 +46,7 @@ mod imp {
 
     /// Apps (by player ID or name) that play music, never a video worth
     /// watching on a phone, unless they say otherwise.
-    const MUSIC_APPS: &[&str] = &[
-        "spotify",
-        "tidal",
-        "deezer",
-        "amazonmusic",
-        "youtube music",
-        "soundcloud",
-    ];
+    const MUSIC_APPS: &[&str] = &["spotify", "tidal", "deezer", "amazonmusic", "youtube music", "soundcloud"];
 
     /// Whether a player looks like it plays a video: it says so, or it is
     /// anything but a music app (browsers say "music" for every video).

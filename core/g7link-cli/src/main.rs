@@ -5553,10 +5553,7 @@ fn default_command_title(first_token: &str) -> String {
 
 enum TaskTransport {
     DesktopDir(PathBuf),
-    Standalone {
-        node: Node,
-        targets: Vec<DeviceId>,
-    },
+    Standalone { node: Node, targets: Vec<DeviceId> },
 }
 
 impl TaskTransport {
