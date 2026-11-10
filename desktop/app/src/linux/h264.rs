@@ -257,10 +257,6 @@ pub(crate) fn ensure_mf_started() -> Result<()> {
 }
 
 impl Decoder {
-    pub fn new() -> Result<Decoder> {
-        Self::new_for_codec("h264")
-    }
-
     pub fn new_for_codec(codec: &str) -> Result<Decoder> {
         ensure_mf_started()?;
         let (codec_name, c_name) = if codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265")
@@ -966,7 +962,7 @@ mod tests {
 
     #[test]
     fn decoder_decodes_real_h264_keyframe_immediately() {
-        let mut dec = Decoder::new().expect("H.264 decoder should initialize on Linux");
+        let mut dec = Decoder::new_for_codec("h264").expect("H.264 decoder should initialize on Linux");
         let pics = dec.decode(SAMPLE_H264_KEYFRAME_64X64, 0).expect("H.264 keyframe should decode");
         assert_eq!(pics.len(), 1, "expected immediate zero-delay decoded frame");
         let pic = &pics[0];

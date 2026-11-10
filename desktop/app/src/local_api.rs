@@ -54,17 +54,11 @@ pub struct ApiTokenFile {
 /// Handle to a running loopback API server instance.
 #[derive(Debug)]
 pub struct ServerHandle {
-    addr: SocketAddr,
     port: u16,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl ServerHandle {
-    /// Returns the bound loopback socket address (`127.0.0.1:<port>`).
-    pub fn local_addr(&self) -> SocketAddr {
-        self.addr
-    }
-
     /// Stops the server loop.
     pub fn stop(&mut self) {
         if let Some(tx) = self.shutdown.take() {
@@ -249,7 +243,7 @@ pub async fn start_on_port(port: u16, token: String) -> std::io::Result<(SocketA
         }
     });
 
-    Ok((addr, ServerHandle { addr, port: actual_port, shutdown: Some(tx) }))
+    Ok((addr, ServerHandle { port: actual_port, shutdown: Some(tx) }))
 }
 
 #[derive(Debug)]

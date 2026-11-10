@@ -50,7 +50,6 @@ pub struct BluezDeviceCandidate {
     pub address: Option<String>,
     pub name: Option<String>,
     pub alias: Option<String>,
-    pub rssi: Option<i16>,
     pub uuids: Vec<String>,
     pub mfg_payload: Option<Vec<u8>>,
 }
@@ -420,7 +419,6 @@ fn poll_bluez_devices(objects: &ManagedObjects, own_prefix: &[u8; 8], tracker: &
             address: props.get("Address").and_then(extract_string),
             name: props.get("Name").and_then(extract_string),
             alias: props.get("Alias").and_then(extract_string),
-            rssi: Some(rssi),
             uuids: props.get("UUIDs").map(extract_string_list).unwrap_or_default(),
             mfg_payload: props.get("ManufacturerData").and_then(extract_mfg_ffff),
         };
@@ -574,7 +572,6 @@ mod tests {
             address: Some("11:22:33:44:55:66".into()),
             name: Some("Sony WH-1000XM5".into()),
             alias: Some("Sony WH-1000XM5".into()),
-            rssi: Some(-90),
             uuids: vec!["0000110b-0000-1000-8000-00805f9b34fb".into()],
             mfg_payload: None,
         };
@@ -585,7 +582,6 @@ mod tests {
             address: Some("AA:BB:CC:DD:EE:FF".into()),
             name: Some("pixel 9 pro".into()),
             alias: None,
-            rssi: Some(-65),
             uuids: Vec::new(),
             mfg_payload: None,
         };
@@ -596,7 +592,6 @@ mod tests {
             address: Some("AA:BB:CC:DD:EE:FF".into()),
             name: Some("Android".into()),
             alias: None,
-            rssi: Some(-65),
             uuids: vec![G7LINK_BLE_UUID.to_uppercase()],
             mfg_payload: None,
         };

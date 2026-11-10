@@ -89,17 +89,6 @@ fn set_in(config_dir: &Path, enabled: bool, exe: &Path) -> io::Result<()> {
     }
 }
 
-fn is_enabled_in(config_dir: &Path) -> bool {
-    let path = autostart_file_path_in(config_dir);
-    let Ok(contents) = fs::read_to_string(path) else {
-        return false;
-    };
-    !contents.lines().any(|line| {
-        let t = line.trim();
-        t.eq_ignore_ascii_case("Hidden=true") || t.eq_ignore_ascii_case("X-GNOME-Autostart-enabled=false")
-    })
-}
-
 /// Adds or removes the XDG autostart `.desktop` entry for `exe`.
 pub fn set(enabled: bool, exe: &Path) -> io::Result<()> {
     let path = autostart_file_path()?;
@@ -108,17 +97,6 @@ pub fn set(enabled: bool, exe: &Path) -> io::Result<()> {
     } else {
         Err(io::Error::new(io::ErrorKind::NotFound, "invalid XDG autostart path"))
     }
-}
-
-/// Alias for checking whether the XDG autostart entry is currently present and enabled.
-pub fn is_enabled() -> bool {
-    dirs::config_dir().as_deref().is_some_and(is_enabled_in)
-}
-
-/// Alias for enabling or disabling XDG autostart for the current executable.
-pub fn set_enabled(enabled: bool) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    set(enabled, &exe).map_err(|e| e.to_string())
 }
 
 /// Whether `exe` is installed in a standard Linux application location (rather
@@ -154,6 +132,19 @@ pub fn is_installed(exe: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether the autostart entry in `config_dir` is there and turned on.
+    fn is_enabled_in(config_dir: &Path) -> bool {
+        let path = autostart_file_path_in(config_dir);
+        let Ok(contents) = fs::read_to_string(path) else {
+            return false;
+        };
+        !contents.lines().any(|line| {
+            let t = line.trim();
+            t.eq_ignore_ascii_case("Hidden=true")
+                || t.eq_ignore_ascii_case("X-GNOME-Autostart-enabled=false")
+        })
+    }
 
     #[test]
     fn writes_and_removes_xdg_autostart_desktop_file() {

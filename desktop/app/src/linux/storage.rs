@@ -777,7 +777,6 @@ fn parent_and_name(rel_path: &str) -> (&str, &str) {
 }
 
 struct MountedDevice {
-    device: DeviceId,
     device_name: String,
     mount_path: PathBuf,
     stop: Arc<AtomicBool>,
@@ -827,17 +826,6 @@ fn get_mounted_device(device: &DeviceId) -> Option<Arc<MountedDevice>> {
 
 pub fn mounted_path_for(device: &DeviceId) -> Option<PathBuf> {
     get_mounted_device(device).filter(|m| !m.is_dead()).map(|m| m.mount_path.clone())
-}
-
-pub fn sync_root_path_for(device: &DeviceId) -> Option<PathBuf> {
-    mounted_path_for(device)
-}
-
-pub fn open_in_explorer(device: &DeviceId) -> bool {
-    let Some(path) = mounted_path_for(device) else {
-        return false;
-    };
-    super::shell::open_folder(&path).is_ok()
 }
 
 fn gtk_bookmarks_path() -> Option<PathBuf> {
@@ -2044,7 +2032,6 @@ fn reconcile(desired: &[DesiredMount], disabled: &[(DeviceId, String)]) {
         let stop = Arc::new(AtomicBool::new(false));
         let fuse_state = Arc::new(Mutex::new(FuseState::new(*device)));
         let mounted = Arc::new(MountedDevice {
-            device: *device,
             device_name: name.clone(),
             mount_path,
             stop,

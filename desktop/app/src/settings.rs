@@ -134,7 +134,6 @@ fn normalize_webcam_camera(cam: &str) -> String {
 }
 
 static CLIPBOARD_AUTO_COPY_FILES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-static STREAM_PC_AUDIO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SHARE_PC_STORAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static FORWARD_PC_NOTIFICATIONS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static FLOW_FOLLOW_CLIPBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -192,12 +191,7 @@ pub fn set_open_shared_files(on: bool) {
     OPEN_SHARED_FILES.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn stream_pc_audio_to_phone() -> bool {
-    STREAM_PC_AUDIO.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 pub fn set_stream_pc_audio_to_phone(on: bool) {
-    STREAM_PC_AUDIO.store(on, std::sync::atomic::Ordering::Relaxed);
     crate::pc_audio_stream::set_enabled(on);
     crate::deck::broadcast_live_state();
 }
@@ -894,7 +888,6 @@ mod tests {
         assert_eq!(def.local_api_port, 53320);
         def.apply_runtime();
         assert!(flow_follow_clipboard());
-        assert!(!stream_pc_audio_to_phone());
 
         let settings = Settings {
             theme: Theme::Graphite,
