@@ -235,6 +235,9 @@ struct Options {
     ui_check: bool,
     /// `--version` / `-V`: print the version and exit.
     version: bool,
+    /// `--phone-app`: print where to get the Android app, with a QR code to
+    /// scan, and exit.
+    phone_app: bool,
 }
 
 /// How long `--ui-check` keeps the window open: long enough for the window
@@ -276,6 +279,10 @@ fn parse_options_from<I: IntoIterator<Item = std::ffi::OsString>>(iter: I) -> Op
             Some("--version" | "-V") => {
                 in_share = false;
                 options.version = true;
+            }
+            Some("--phone-app") => {
+                in_share = false;
+                options.phone_app = true;
             }
             Some(updater::UPDATED_ARG) => {
                 in_share = false;
@@ -381,6 +388,26 @@ fn uninstall() {
     startup::remove();
 }
 
+/// The Android app released with this build.
+fn phone_app_url() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    format!("{}v{version}/G7Link-{version}-android.apk", feed::RELEASE_DOWNLOADS)
+}
+
+/// Prints where to get the Android app, and a QR code of it to scan with the
+/// phone.
+fn print_phone_app() {
+    use std::io::IsTerminal;
+
+    let url = phone_app_url();
+    match qr::terminal(&url, std::io::stdout().is_terminal()) {
+        Ok(code) => print!("{code}"),
+        Err(e) => eprintln!("g7link: couldn't draw the QR code: {e}"),
+    }
+    println!("Scan it with your phone's camera to get the G7 Link app, or open:");
+    println!("{url}");
+}
+
 fn install_panic_logging() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -393,6 +420,10 @@ fn main() -> ExitCode {
     let options = parse_options();
     if options.version {
         println!("g7link-desktop {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    if options.phone_app {
+        print_phone_app();
         return ExitCode::SUCCESS;
     }
     if options.register_vcam {
@@ -661,16 +692,16 @@ mod tests {
     #[test]
     fn parse_options_recognizes_share_flag() {
         let opts = parse_options_from(
-            ["--data-dir", r"C:\Temp\g7link-test", "--share", r"C:\photo.jpg", "https://example.com"]
+            ["--data-dir", "/tmp/g7link-test", "--share", "/tmp/photo.jpg", "https://example.com"]
                 .into_iter()
                 .map(OsString::from),
         );
-        assert_eq!(opts.data_dir, Some(PathBuf::from(r"C:\Temp\g7link-test")));
+        assert_eq!(opts.data_dir, Some(PathBuf::from("/tmp/g7link-test")));
         assert!(opts.minimized);
         assert_eq!(
             opts.share,
             Some(sys::share_target::SharedPayload {
-                files: vec![PathBuf::from(r"C:\photo.jpg")],
+                files: vec![PathBuf::from("/tmp/photo.jpg")],
                 url: Some("https://example.com".into()),
                 text: None,
             })
@@ -680,34 +711,44 @@ mod tests {
     #[test]
     fn parse_options_recognizes_ui_check_flag() {
         let opts = parse_options_from(
-            ["--ui-check", "--data-dir", r"C:\Temp\g7link-test"].into_iter().map(OsString::from),
+            ["--ui-check", "--data-dir", "/tmp/g7link-test"].into_iter().map(OsString::from),
         );
         assert!(opts.ui_check);
         assert!(!opts.minimized);
-        assert_eq!(opts.data_dir, Some(PathBuf::from(r"C:\Temp\g7link-test")));
+        assert_eq!(opts.data_dir, Some(PathBuf::from("/tmp/g7link-test")));
         assert!(!parse_options_from(["--minimized"].into_iter().map(OsString::from)).ui_check);
     }
 
     #[test]
     fn parse_options_recognizes_task_flag() {
         let find_opts = parse_options_from(
-            ["--data-dir", r"C:\Temp\g7link-test", "--task", "find-phone"].into_iter().map(OsString::from),
+            ["--data-dir", "/tmp/g7link-test", "--task", "find-phone"].into_iter().map(OsString::from),
         );
-        assert_eq!(find_opts.data_dir, Some(PathBuf::from(r"C:\Temp\g7link-test")));
+        assert_eq!(find_opts.data_dir, Some(PathBuf::from("/tmp/g7link-test")));
         assert_eq!(find_opts.task.as_deref(), Some("find-phone"));
         assert!(find_opts.minimized);
 
         let timeline_opts = parse_options_from(
-            ["--data-dir", r"C:\Temp\g7link-test", "--task", "open-timeline"].into_iter().map(OsString::from),
+            ["--data-dir", "/tmp/g7link-test", "--task", "open-timeline"].into_iter().map(OsString::from),
         );
         assert_eq!(timeline_opts.task.as_deref(), Some("open-timeline"));
         assert!(!timeline_opts.minimized);
     }
 
     #[test]
+    fn the_phone_app_is_the_apk_released_with_this_version() {
+        let version = env!("CARGO_PKG_VERSION");
+        let url = phone_app_url();
+        assert!(url.starts_with(feed::RELEASE_DOWNLOADS));
+        assert!(url.ends_with(&format!("/v{version}/G7Link-{version}-android.apk")), "{url}");
+    }
+
+    #[test]
     fn parse_options_recognizes_version_and_positional_desktop_uris() {
         let ver = parse_options_from(["--version"].into_iter().map(OsString::from));
         assert!(ver.version);
+        let phone_app = parse_options_from(["--phone-app"].into_iter().map(OsString::from));
+        assert!(phone_app.phone_app);
 
         let web_opts = parse_options_from(["https://example.com"].into_iter().map(OsString::from));
         assert!(web_opts.minimized);

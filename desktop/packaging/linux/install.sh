@@ -486,9 +486,36 @@ setup_firewall() {
 
 finish() {
     printf '\n%sG7 Link %s is ready.%s\n' "$BOLD" "$VERSION" "$RESET"
-    echo "Open it from your app menu, or run g7link-desktop. Then install the"
-    echo "Android app and pair: https://github.com/$REPO#get-started"
+    echo "Open it from your app menu, or run g7link-desktop."
     echo "It updates itself from now on. If it was already open, quit and open it again."
+    show_phone_app
+}
+
+# Where to get the Android app: the installed app prints a QR code of it to
+# scan with the phone. Any time later: g7link-desktop --phone-app
+show_phone_app() {
+    printf '\n%sOn your phone%s\n' "$BOLD" "$RESET"
+    app="$(find_app)"
+    if [ -n "$app" ] && "$app" --phone-app; then
+        echo "Then open G7 Link on the phone and pair. To see this again: g7link-desktop --phone-app"
+    else
+        echo "Get the Android app: https://github.com/$REPO/releases/download/v$VERSION/G7Link-$VERSION-android.apk"
+        echo "Then open G7 Link on the phone and pair."
+    fi
+}
+
+# The installed app, wherever this or an older installer put it; empty when
+# it isn't there.
+find_app() {
+    user_share="${XDG_DATA_HOME:-$TARGET_HOME/.local/share}"
+    for candidate in "$(command -v g7link-desktop 2>/dev/null || true)" /usr/bin/g7link-desktop \
+        /usr/local/bin/g7link-desktop /opt/g7link/g7link-desktop "$TARGET_HOME/.local/bin/g7link-desktop" \
+        "$user_share/g7link-app/g7link-desktop"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
 }
 
 # Has the installed app undo what it set up for the user (the file managers'
@@ -496,13 +523,7 @@ finish() {
 # computer) and quit if it's running. As the user, not root: those are in
 # their home. Whatever happens, the uninstall goes on.
 app_cleanup() {
-    user_share="${XDG_DATA_HOME:-$TARGET_HOME/.local/share}"
-    app=""
-    for candidate in "$(command -v g7link-desktop 2>/dev/null || true)" /usr/bin/g7link-desktop \
-        /usr/local/bin/g7link-desktop /opt/g7link/g7link-desktop "$TARGET_HOME/.local/bin/g7link-desktop" \
-        "$user_share/g7link-app/g7link-desktop"; do
-        if [ -n "$candidate" ] && [ -x "$candidate" ]; then app="$candidate"; break; fi
-    done
+    app="$(find_app)"
     if [ -z "$app" ]; then
         say "The app isn't here, so it can't clean up after itself."
         return 0
