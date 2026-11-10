@@ -2273,7 +2273,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!("Guide", "Install and first-time setup"),
             tr!(
                 "Guide",
-                "1. Install G7 Link on your PC (Windows 11 or Linux) and your Android phone (Android 8.0 or newer).\n\
+                "1. Install G7 Link on your Linux PC and your Android phone (Android 8.0 or newer).\n\
              2. Connect both devices to the same Wi-Fi network, or plug your phone into your PC with a USB cable.\n\
              3. Open the Pair step in the setup walkthrough, or click + (Pair a new device) at the bottom of the left rail.\n\
              4. Scan the QR code from the G7 Link Android app, or select your phone from the nearby devices list and confirm that the 6-digit code matches on both screens.\n\
@@ -2312,7 +2312,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
                 "Guide",
                 "If your phone and PC do not see each other:\n\n\
              1. Open Connection Doctor from Settings › Connection & About or the Command Palette.\n\
-             2. Check that your Wi-Fi network profile in Windows is set to Private rather than Public, or click Fix in Connection Doctor to allow G7 Link through Windows Firewall.\n\
+             2. Check that your firewall (ufw or firewalld) lets G7 Link through and that NetworkManager doesn't put your Wi-Fi in the public firewall zone. Click Fix in Connection Doctor to open the port.\n\
              3. Verify that both devices are on the same subnet and that guest Wi-Fi client isolation is turned off on your router.\n\
              4. You can also connect over a USB cable with USB debugging enabled; G7 Link automatically sets up a local tunnel."
             ),
@@ -2324,7 +2324,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
                 "Local by default\n\
              Your phone and PC talk directly over your local network or USB cable. When Connect over mobile data is on, encrypted traffic can use a relay when away from home. Automatic update checks contact GitHub Releases and can be turned off in Settings › Connection & About › Check for updates.\n\n\
              End-to-end encrypted\n\
-             Every connection uses QUIC with TLS 1.3 and Ed25519 device certificates verified during pairing. Device keys are protected by Windows DPAPI and the Android Keystore.\n\n\
+             Every connection uses QUIC with TLS 1.3 and Ed25519 device certificates verified during pairing. Device keys are kept in your desktop keyring (or a file only your account can read) and in the Android Keystore.\n\n\
              Per-device sharing controls\n\
              Sensitive capabilities such as Share PC folders, Remote input, and Reverse PC screen mirroring are turned off by default for each paired device until you turn them on."
             ),
@@ -2334,7 +2334,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Mirrors your phone notifications to the Home feed and Windows notification pop-ups. You can reply inline to messages, click action buttons, dismiss individual notifications or groups, and undo a recent dismissal.\n\n\
+             Mirrors your phone notifications to the Home feed and your desktop's notifications. You can reply inline to messages, click action buttons, dismiss individual notifications or groups, and undo a recent dismissal.\n\n\
              Where to find it\n\
              - Home › Notifications.\n\
              - Settings › Notifications for per-app rules (Show, Silent, or Hidden) and Do Not Disturb sync.\n\
@@ -2394,7 +2394,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
              Sends files, folders, links, and text between your phone and PC at local network speed. If your phone is offline when you send, G7 Link places the item in the Waiting to send queue and delivers it automatically as soon as your phone reconnects.\n\n\
              Where to find it\n\
              - Home › Send files button, drag-and-drop anywhere on the window, Waiting to send card, and Transfers list.\n\
-             - Windows File Explorer › right-click › Send to.\n\n\
+             - Right-click files in your file manager › Send to (your phone). In GNOME Files it's under Scripts. Turn it on or off in Settings › Files & Sync › File manager Send to.\n\n\
              What it needs\n\
              - Paired phone and the per-device Files toggle enabled."
             ),
@@ -2404,7 +2404,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Browses recent photos, camera shots, and screenshots on your phone without copying your entire library first. You can view full-resolution images, copy them to the clipboard, save them to disk, or drag them directly into other Windows apps.\n\n\
+             Browses recent photos, camera shots, and screenshots on your phone without copying your entire library first. You can view full-resolution images, copy them to the clipboard, save them to disk, or drag them directly into other apps.\n\n\
              Where to find it\n\
              - Left navigation rail › Photos.\n\
              - Shelf edge panel (Ctrl+Alt+S) › Latest photo and screenshot.\n\n\
@@ -2445,13 +2445,13 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Streams your phone camera into the G7 Link Virtual Camera on Windows so Zoom, Teams, Meet, Discord, and OBS can use your phone's rear or front camera at up to 4K.\n\n\
+             Streams your phone camera into the G7 Link Webcam virtual camera so Zoom, Teams, Meet, Discord, and OBS can use your phone's rear or front camera.\n\n\
              Where to find it\n\
              - Home › Phone as webcam.\n\
              - Settings › Camera & Audio › Start webcam.\n\n\
              What it needs\n\
              - Camera permission on your phone.\n\
-             - For other apps to see it: Virtual camera add-on in Settings › Camera & Audio."
+             - For other apps to see it: the v4l2loopback kernel module from your distribution, then Set up next to Virtual camera add-on in Settings › Camera & Audio (asks for your password once)."
             ),
         ),
         "continuity-camera" => (
@@ -2459,9 +2459,9 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Triggers your phone camera from any Windows app to snap a photo or scan a document, then copies the result to the Windows clipboard and pastes it into the active window.\n\n\
+             Triggers your phone camera from your PC to snap a photo or scan a document, then copies the result to your clipboard and pastes it into the window you were using. Where your desktop doesn't let G7 Link see that window, press Ctrl+V yourself.\n\n\
              Where to find it\n\
-             - Global hotkeys Ctrl+Alt+C (Take photo with phone) and Ctrl+Alt+D (Scan document with phone).\n\
+             - Global shortcuts Ctrl+Alt+C (Take photo with phone) and Ctrl+Alt+D (Scan document with phone). Your desktop may ask you to confirm them once.\n\
              - Home › Continuity Camera.\n\n\
              What it needs\n\
              - Camera permission on your phone."
@@ -2498,7 +2498,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Syncs media playback between your phone and PC, switches Windows audio output and microphone devices, and turns your phone into a customizable grid of shortcut tiles, macros, and volume sliders.\n\n\
+             Syncs media playback between your phone and PC, switches your PC's audio output and microphone (PipeWire or PulseAudio), and turns your phone into a customizable grid of shortcut tiles, macros, and volume sliders.\n\n\
              Where to find it\n\
              - Left navigation rail › Deck.\n\n\
              What it needs\n\
@@ -2549,7 +2549,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Opens a lightweight slide-out panel at the edge of your monitor showing your phone's latest photo, latest screenshot, recent clipboard items, and recent received files. Drag items out into any app, or drop files onto the Shelf to send them to your phone.\n\n\
+             Opens a lightweight panel showing your phone's latest photo, latest screenshot, recent clipboard items, and recent received files. Drag items out into any app, or drop files onto the Shelf to send them to your phone.\n\n\
              Where to find it\n\
              - Global hotkey Ctrl+Alt+S.\n\
              - Command Palette › Open Shelf.\n\
@@ -2563,7 +2563,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Displays a compact pill at the top center of your primary monitor for incoming calls, live file transfer progress, media playback, and optional notification previews.\n\n\
+             Displays a compact floating pill for incoming calls, live file transfer progress, media playback, and optional notification previews.\n\n\
              Where to find it\n\
              - Settings › General › G7 Island.\n\n\
              What it needs\n\
@@ -2618,7 +2618,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
              - Settings › Connection & About › Wake from your phone.\n\
              - On your phone: Home › Wake, shown while the PC is offline.\n\n\
              What it needs\n\
-             - A network adapter with Wake-on-LAN enabled in Windows Device Manager and BIOS/UEFI (wired Ethernet is most reliable)."
+             - A network adapter with Wake-on-LAN turned on in BIOS/UEFI and in Linux, with NetworkManager or ethtool (wired Ethernet is most reliable)."
             ),
         ),
         "folder-sync" => (
@@ -2676,7 +2676,7 @@ fn load_guide_doc_content(raw_key: &str) -> (String, String) {
             tr!(
                 "Guide",
                 "What it does\n\
-             Inspects Windows Firewall rules, network profile type (Private vs Public), UDP discovery sockets, and paired phone reachability, and offers one-click fixes.\n\n\
+             Inspects your firewall (ufw or firewalld), whether NetworkManager puts your network in the public firewall zone, UDP discovery sockets, and paired phone reachability, and offers one-click fixes.\n\n\
              Where to find it\n\
              - Settings › Connection & About › Connection Doctor.\n\
              - Command Palette › Connection Doctor.\n\n\
