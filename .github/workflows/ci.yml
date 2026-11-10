@@ -145,6 +145,8 @@ jobs:
         run: cargo test --locked -p g7link-desktop -p g7link-vcam
       - name: Video adapter fallback
         run: bash desktop/app/tests/linux_video_dispatch_test.sh
+      - name: Waiting on the Qt thread
+        run: bash desktop/app/tests/qt_thread_sync_test.sh
       - name: Check without the optional FFmpeg backend
         env:
           LIBAVCODEC_NO_PKG_CONFIG: "1"

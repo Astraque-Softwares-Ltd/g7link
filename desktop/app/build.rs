@@ -313,6 +313,7 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN:$ORIGIN/lib:$ORIGIN/../lib:$ORIGIN/../lib/g7link");
     println!("cargo:rerun-if-changed=cpp/app_helpers.h");
     println!("cargo:rerun-if-changed=cpp/app_helpers.cpp");
+    println!("cargo:rerun-if-changed=cpp/qt_thread_sync.h");
     println!("cargo:rerun-if-changed=cpp/native_window.h");
     println!("cargo:rerun-if-changed=cpp/native_window.cpp");
     println!("cargo:rerun-if-changed=cpp/video_view.h");

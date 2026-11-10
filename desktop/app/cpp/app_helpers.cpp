@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "app_helpers.h"
+#include "qt_thread_sync.h"
 #include "video_view.h"
 
 #include <QtCore/QCoreApplication>
@@ -654,28 +655,7 @@ bool runOnQtMainThreadSync(F &&fn, uint32_t timeout_ms = 500)
     }
     if (!qtEventLoopRunning().load(std::memory_order_acquire))
         return false;
-    struct SyncState {
-        std::mutex mutex;
-        std::condition_variable cv;
-        bool done = false;
-    };
-    auto state = std::make_shared<SyncState>();
-    auto task = std::make_shared<std::decay_t<F>>(std::forward<F>(fn));
-    QMetaObject::invokeMethod(
-        app,
-        [state, task]() {
-            (*task)();
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->done = true;
-            }
-            state->cv.notify_all();
-        },
-        Qt::QueuedConnection);
-    std::unique_lock<std::mutex> lock(state->mutex);
-    return state->cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&state]() {
-        return state->done;
-    });
+    return runOnThreadAndWait(app, std::forward<F>(fn), timeout_ms);
 }
 } // namespace
 #endif
