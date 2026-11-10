@@ -268,6 +268,7 @@
     <string name="peer_kind_tablet">Tablet</string>
     <string name="action_unpair">Desparear</string>
     <string name="action_pair_new">Parear outro PC</string>
+    <string name="action_pair_with_pc">Parear com PC</string>
     <string name="action_refresh">Atualizar</string>
     <string name="action_update">Atualizar</string>
     <string name="update_title">O G7 Link %1$s está disponível</string>
@@ -294,7 +295,7 @@
     <string name="action_reconnect">Reconectar</string>
     <string name="wake_waking">Acordando %1$s…</string>
     <string name="wake_timeout_title">%1$s ainda não acordou</string>
-    <string name="wake_timeout_text">Confira se:\n• O Wake-on-LAN está ativado na BIOS/UEFI e nas configurações do adaptador de rede no Windows (Gerenciamento de Energia e Wake on Magic Packet).\n• %1$s está no cabo de rede, se foi desligado (acordar pelo Wi-Fi quase nunca funciona com o PC desligado).\n• Este celular está na mesma rede que %1$s.</string>
+    <string name="wake_timeout_text">Confira se:\n• O Wake-on-LAN está ativado na BIOS/UEFI e no adaptador de rede do PC (Wake on Magic Packet).\n• %1$s está no cabo de rede, se foi desligado (acordar pelo Wi-Fi quase nunca funciona com o PC desligado).\n• Este celular está na mesma rede que %1$s.</string>
     <string name="wake_not_ready">Conecte-se a %1$s uma vez para que o celular reconheça o endereço de rede dele.</string>
     <string name="pc_locked">%1$s foi bloqueado.</string>
     <string name="pc_sleeping">%1$s está entrando em suspensão.</string>
@@ -470,16 +471,16 @@
 
     <!-- Phone storage in File Explorer -->
     <string name="storage_all_files_title">Acesso a todos os arquivos</string>
-    <string name="storage_all_files_on">Ativado. Os PCs que você autorizar podem ver, abrir e copiar os arquivos deste celular no Explorador de Arquivos.</string>
-    <string name="storage_all_files_off">Navegue pelas pastas deste celular no Explorador de Arquivos do PC. Precisa do Acesso a todos os arquivos, ou escolha pastas específicas abaixo.</string>
+    <string name="storage_all_files_on">Ativado. Os PCs que você autorizar podem ver, abrir e copiar os arquivos deste celular no gerenciador de arquivos.</string>
+    <string name="storage_all_files_off">Navegue pelas pastas deste celular no gerenciador de arquivos do PC. Precisa do Acesso a todos os arquivos, ou escolha pastas específicas abaixo.</string>
     <string name="storage_saf_title">Somente pastas selecionadas</string>
     <string name="storage_saf_hint">Compartilhe somente as pastas que você escolher.</string>
     <string name="storage_add_folder">Adicionar pasta</string>
     <string name="storage_remove_folder">Remover</string>
-    <string name="storage_pc_toggle">Explorar o armazenamento deste celular pelo Explorador de Arquivos</string>
+    <string name="storage_pc_toggle">Explorar o armazenamento deste celular pelo gerenciador de arquivos</string>
     <string name="storage_pc_toggle_hint">Desativado por padrão. Permite que este PC liste, abra, envie, renomeie e exclua os arquivos compartilhados.</string>
     <string name="storage_request_title">%1$s quer acessar o armazenamento deste celular</string>
-    <string name="storage_request_text">Permitir que %1$s acesse o armazenamento compartilhado (ou as pastas selecionadas) pelo Explorador de Arquivos?</string>
+    <string name="storage_request_text">Permitir que %1$s acesse o armazenamento compartilhado (ou as pastas selecionadas) pelo gerenciador de arquivos?</string>
     <string name="action_not_now">Agora não</string>
 
     <!-- Phone as webcam to PC -->
@@ -779,7 +780,7 @@
     <string name="walkthrough_welcome_lan_title">Conexão direta por Wi-Fi, Ethernet ou USB</string>
     <string name="walkthrough_welcome_lan_body">O tráfego fica na sua rede. O retransmissor só é usado quando Conectar usando dados móveis está ativado.</string>
     <string name="walkthrough_welcome_local_title">Sem conta e sem nuvem</string>
-    <string name="walkthrough_welcome_local_body">As chaves dos dispositivos ficam protegidas pelo Windows DPAPI e pelo Android Keystore.</string>
+    <string name="walkthrough_welcome_local_body">As chaves dos dispositivos ficam nos seus aparelhos: no chaveiro do PC (ou em um arquivo que só a sua conta pode ler) e no Android Keystore.</string>
 
     <string name="walkthrough_permissions_title">Permissões</string>
     <string name="walkthrough_permissions_subtitle">Conceda só o que você usa. Dá para mudar qualquer permissão depois em Configurações.</string>
@@ -820,8 +821,8 @@
     <string name="walkthrough_perm_photos_does">Veja as fotos recentes do celular no PC e salve os arquivos originais.</string>
     <string name="walkthrough_perm_photos_requires">O Android exige acesso a Fotos e vídeos.</string>
 
-    <string name="walkthrough_perm_storage_title">Armazenamento no Explorador de Arquivos</string>
-    <string name="walkthrough_perm_storage_does">Explore as pastas do celular pelo Explorador de Arquivos no PC.</string>
+    <string name="walkthrough_perm_storage_title">Armazenamento no gerenciador de arquivos</string>
+    <string name="walkthrough_perm_storage_does">Explore as pastas do celular pelo gerenciador de arquivos do PC.</string>
     <string name="walkthrough_perm_storage_requires">O Android exige o Acesso a todos os arquivos ou pastas selecionadas.</string>
 
     <string name="walkthrough_perm_access_title">Assist</string>
@@ -1072,15 +1073,15 @@
     <string name="guide_share_limits">Somente tipos seguros de documentos abrem automaticamente; os demais arquivos são salvos em Downloads.</string>
 
     <!-- 10. Storage in File Explorer -->
-    <string name="guide_storage_title">Armazenamento no Explorador de Arquivos</string>
-    <string name="guide_storage_summary">Explore o armazenamento compartilhado ou as pastas selecionadas deste celular no Explorador de Arquivos do Windows.</string>
+    <string name="guide_storage_title">Armazenamento no gerenciador de arquivos</string>
+    <string name="guide_storage_summary">Explore o armazenamento compartilhado ou as pastas selecionadas deste celular no gerenciador de arquivos do PC.</string>
     <string name="guide_storage_where">Configurações › Permissões › Fotos e vídeos (e Configurações › Dispositivos)</string>
     <string name="guide_storage_needs">Acesso a todos os arquivos (ou às pastas selecionadas) e opção de compartilhamento do armazenamento ativada para cada PC</string>
     <string name="guide_storage_need_1">Acesso a todos os arquivos ou pastas selecionadas em Configurações › Permissões › Fotos e vídeos.</string>
-    <string name="guide_storage_need_2">A opção Explorar o armazenamento deste celular pelo Explorador de Arquivos precisa estar ativada para o PC em Configurações › Dispositivos.</string>
+    <string name="guide_storage_need_2">A opção Explorar o armazenamento deste celular pelo gerenciador de arquivos precisa estar ativada para o PC em Configurações › Dispositivos.</string>
     <string name="guide_storage_phone_1">Permita o acesso a todos os arquivos ou selecione pastas em Configurações › Permissões › Fotos e vídeos.</string>
     <string name="guide_storage_phone_2">Ative o compartilhamento do armazenamento para seu PC em Configurações › Dispositivos.</string>
-    <string name="guide_storage_pc_1">Abra o armazenamento do celular pelo G7 Link ou pelo Explorador de Arquivos do Windows no PC.</string>
+    <string name="guide_storage_pc_1">Abra o armazenamento do celular pelo G7 Link ou pela pasta G7Link na barra lateral do gerenciador de arquivos.</string>
     <string name="guide_storage_opt_1">Acesso a todos os arquivos / Somente pastas selecionadas: compartilhe todo o armazenamento ou apenas as pastas selecionadas pelo seletor do Android.</string>
     <string name="guide_storage_privacy">O acesso ao armazenamento fica desativado para todos os PCs até que você o ative.</string>
     <string name="guide_storage_limits">O Android bloqueia o acesso às pastas privadas dos apps em /Android/data.</string>
@@ -1265,9 +1266,9 @@
     <string name="guide_wake_where">Início › cartão do PC pareado › Acordar</string>
     <string name="guide_wake_needs">PC pareado com Wake-on-LAN ativado na BIOS e no adaptador de rede</string>
     <string name="guide_wake_need_1">O PC pareado precisa ter se conectado pela rede local pelo menos uma vez, para o G7 Link aprender o endereço MAC dele.</string>
-    <string name="guide_wake_need_2">Wake-on-LAN ativado nas configurações do adaptador de rede do Windows e na BIOS/UEFI.</string>
+    <string name="guide_wake_need_2">Wake-on-LAN ativado na BIOS/UEFI e no adaptador de rede do PC.</string>
     <string name="guide_wake_phone_1">Quando o PC pareado aparecer offline na tela Início, toque em Acordar no cartão dele.</string>
-    <string name="guide_wake_pc_1">Ative o despertar por pacote Wake-on-LAN em Gerenciador de Dispositivos › Adaptadores de rede › Gerenciamento de Energia.</string>
+    <string name="guide_wake_pc_1">No G7 Link do PC, confira se Configurações › Conexão e sobre › Acordar pelo celular mostra Wake on Magic Packet pronto.</string>
     <string name="guide_wake_opt_1">Acordar: envia um pacote Wake-on-LAN pela rede local.</string>
     <string name="guide_wake_privacy">Usa o endereço MAC aprendido numa sessão autenticada anterior na rede local.</string>
     <string name="guide_wake_limits">Exige Ethernet ou um adaptador Wi-Fi compatível com Wake on Wireless LAN.</string>
@@ -1337,7 +1338,7 @@
     <string name="home_whats_new_guide">Novidade: Guia de recursos</string>
     <string name="home_guide_card_body">Explore todos os recursos do G7 Link, confira as permissões ao vivo ou toque em Mostrar para ir direto a qualquer controle.</string>
     <string name="home_no_pc_paired">Nenhum PC pareado ainda</string>
-    <string name="home_no_pc_body">Abra o G7 Link no seu PC com Windows ou Linux para parear por código QR ou pela rede local, ou reabra o passo a passo de configuração.</string>
+    <string name="home_no_pc_body">Abra o G7 Link no seu PC com Linux para parear por código QR ou pela rede local, ou reabra o passo a passo de configuração.</string>
     <string name="home_background_clipboard_title">Área de transferência em segundo plano e controle completo</string>
     <string name="home_background_clipboard_body">Sincronize a área de transferência em segundo plano e ative o controle por toque pela Depuração por Wi-Fi.</string>
     <string name="home_section_screen">Tela, câmera e controle</string>

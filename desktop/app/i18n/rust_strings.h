@@ -65,7 +65,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Clipboard", "Update G7 Link on %1 to send it images."), // desktop/app/src/clipboard.rs
     QT_TRANSLATE_NOOP("Clipboard", "What you copied is marked private by its app, so it wasn't sent."), // desktop/app/src/clipboard.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Browse all 28 features, live capability status, and where to find them"), // desktop/app/src/command_palette.rs
-    QT_TRANSLATE_NOOP("CommandPalette", "Browse phone storage in File Explorer"), // desktop/app/src/command_palette.rs
+    QT_TRANSLATE_NOOP("CommandPalette", "Browse phone storage in the file manager"), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Call %1"), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Calling %1 on %2…"), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Capture a photo on your phone and paste it into the active window"), // desktop/app/src/command_palette.rs
@@ -94,7 +94,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("CommandPalette", "No physical network adapter found for Wake-on-LAN."), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Open %1"), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Open %1 in a window from %2"), // desktop/app/src/command_palette.rs
-    QT_TRANSLATE_NOOP("CommandPalette", "Open %1's Cloud Files folder in Explorer"), // desktop/app/src/command_palette.rs
+    QT_TRANSLATE_NOOP("CommandPalette", "Open %1's folder in your file manager"), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Open Shelf"), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Open conversation on %1"), // desktop/app/src/command_palette.rs
     QT_TRANSLATE_NOOP("CommandPalette", "Open copied link on phone"), // desktop/app/src/command_palette.rs

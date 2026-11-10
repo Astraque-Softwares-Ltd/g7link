@@ -268,6 +268,7 @@
     <string name="peer_kind_tablet">Tablet</string>
     <string name="action_unpair">Entkoppeln</string>
     <string name="action_pair_new">Weiteren PC koppeln</string>
+    <string name="action_pair_with_pc">Mit PC koppeln</string>
     <string name="action_refresh">Aktualisieren</string>
     <string name="action_update">Aktualisieren</string>
     <string name="update_title">G7 Link %1$s ist verfügbar</string>
@@ -294,7 +295,7 @@
     <string name="action_reconnect">Neu verbinden</string>
     <string name="wake_waking">%1$s wird aufgeweckt…</string>
     <string name="wake_timeout_title">%1$s ist noch nicht aufgewacht</string>
-    <string name="wake_timeout_text">Prüfe Folgendes:\n• Wake-on-LAN ist im BIOS/UEFI sowie in den Windows-Einstellungen des Netzwerkadapters aktiviert (Energieverwaltung und „Aktivierungsfunktion über Magic Packet“).\n• %1$s ist per LAN-Kabel verbunden, falls er heruntergefahren war (Aufwecken über WLAN funktioniert aus dem ausgeschalteten Zustand selten).\n• Dieses Gerät befindet sich im selben Netzwerk wie %1$s.</string>
+    <string name="wake_timeout_text">Prüfe Folgendes:\n• Wake-on-LAN ist im BIOS/UEFI und am Netzwerkadapter des PCs aktiviert („Aktivierung über Magic Packet“).\n• %1$s ist per LAN-Kabel verbunden, falls er heruntergefahren war (Aufwecken über WLAN funktioniert aus dem ausgeschalteten Zustand selten).\n• Dieses Gerät befindet sich im selben Netzwerk wie %1$s.</string>
     <string name="wake_not_ready">Verbinde dich einmal mit %1$s, damit dieses Gerät seine Netzwerkadresse lernt.</string>
     <string name="pc_locked">%1$s ist gesperrt.</string>
     <string name="pc_sleeping">%1$s wechselt in den Energiesparmodus.</string>
@@ -470,16 +471,16 @@
 
     <!-- Phone storage in File Explorer -->
     <string name="storage_all_files_title">Zugriff auf alle Dateien</string>
-    <string name="storage_all_files_on">Ein: Von dir autorisierte PCs können die Dateien dieses Geräts im Datei-Explorer durchsuchen, öffnen und kopieren.</string>
-    <string name="storage_all_files_off">Durchsuche die Ordner dieses Geräts im Datei-Explorer auf deinem PC. Benötigt „Zugriff auf alle Dateien“ oder wähle unten bestimmte Ordner aus.</string>
+    <string name="storage_all_files_on">Ein: Von dir autorisierte PCs können die Dateien dieses Geräts im Dateimanager durchsuchen, öffnen und kopieren.</string>
+    <string name="storage_all_files_off">Durchsuche die Ordner dieses Geräts im Dateimanager deines PCs. Benötigt „Zugriff auf alle Dateien“ oder wähle unten bestimmte Ordner aus.</string>
     <string name="storage_saf_title">Nur ausgewählte Ordner</string>
     <string name="storage_saf_hint">Teile nur die Ordner, die du auswählst.</string>
     <string name="storage_add_folder">Ordner hinzufügen</string>
     <string name="storage_remove_folder">Entfernen</string>
-    <string name="storage_pc_toggle">Speicher dieses Geräts im Datei-Explorer durchsuchen</string>
+    <string name="storage_pc_toggle">Speicher dieses Geräts im Dateimanager durchsuchen</string>
     <string name="storage_pc_toggle_hint">Standardmäßig aus. Erlaubt diesem PC, deine freigegebenen Dateien aufzulisten, zu öffnen, hochzuladen, umzubenennen und zu löschen.</string>
     <string name="storage_request_title">%1$s möchte den Speicher dieses Geräts durchsuchen</string>
-    <string name="storage_request_text">%1$s erlauben, deinen freigegebenen Speicher (oder ausgewählte Ordner) im Datei-Explorer zu durchsuchen?</string>
+    <string name="storage_request_text">%1$s erlauben, deinen freigegebenen Speicher (oder ausgewählte Ordner) im Dateimanager zu durchsuchen?</string>
     <string name="action_not_now">Jetzt nicht</string>
 
     <!-- Phone as webcam to PC -->
@@ -780,7 +781,7 @@
     <string name="walkthrough_welcome_lan_title">Direkt über WLAN, Ethernet oder USB</string>
     <string name="walkthrough_welcome_lan_body">Der Datenverkehr bleibt in deinem Netzwerk. Ein Relay wird nur genutzt, wenn „Über mobile Daten verbinden“ aktiv ist.</string>
     <string name="walkthrough_welcome_local_title">Kein Konto und kein Cloud-Speicher</string>
-    <string name="walkthrough_welcome_local_body">Geräteschlüssel werden durch Windows DPAPI und den Android Keystore geschützt.</string>
+    <string name="walkthrough_welcome_local_body">Geräteschlüssel bleiben auf deinen Geräten: im Schlüsselbund deines PCs (oder in einer Datei, die nur dein Konto lesen kann) und im Android Keystore.</string>
 
     <string name="walkthrough_permissions_title">Berechtigungen</string>
     <string name="walkthrough_permissions_subtitle">Erteile nur, was du nutzt. Du kannst jede Berechtigung später in den Einstellungen ändern.</string>
@@ -821,8 +822,8 @@
     <string name="walkthrough_perm_photos_does">Aktuelle Gerätefotos auf deinem PC durchsuchen und Originale speichern.</string>
     <string name="walkthrough_perm_photos_requires">Android benötigt den Zugriff auf Fotos und Videos.</string>
 
-    <string name="walkthrough_perm_storage_title">Speicher im Datei-Explorer</string>
-    <string name="walkthrough_perm_storage_does">Deine Geräteordner vom PC aus im Datei-Explorer durchsuchen.</string>
+    <string name="walkthrough_perm_storage_title">Speicher im Dateimanager</string>
+    <string name="walkthrough_perm_storage_does">Deine Geräteordner im Dateimanager deines PCs durchsuchen.</string>
     <string name="walkthrough_perm_storage_requires">Android benötigt den Zugriff auf alle Dateien oder ausgewählte Ordner.</string>
 
     <string name="walkthrough_perm_access_title">Assistenz</string>
@@ -1073,15 +1074,15 @@
     <string name="guide_share_limits">Nur sichere Dokumenttypen öffnen sich automatisch; alle anderen Dateien werden unter „Downloads“ gespeichert.</string>
 
     <!-- 10. Storage in File Explorer -->
-    <string name="guide_storage_title">Speicher im Datei-Explorer</string>
-    <string name="guide_storage_summary">Durchsuche den freigegebenen Speicher dieses Geräts oder ausgewählte Ordner im Windows-Datei-Explorer.</string>
+    <string name="guide_storage_title">Speicher im Dateimanager</string>
+    <string name="guide_storage_summary">Durchsuche den freigegebenen Speicher dieses Geräts oder ausgewählte Ordner im Dateimanager deines PCs.</string>
     <string name="guide_storage_where">Einstellungen › Berechtigungen › Fotos und Videos (sowie Einstellungen › Geräte)</string>
     <string name="guide_storage_needs">Zugriff auf alle Dateien (oder ausgewählte Ordner) und Speicher-Schalter pro PC</string>
     <string name="guide_storage_need_1">Zugriff auf alle Dateien oder ausgewählte Ordner unter Einstellungen › Berechtigungen › Fotos und Videos.</string>
-    <string name="guide_storage_need_2">„Gerätespeicher im Datei-Explorer durchsuchen“ für den PC unter Einstellungen › Geräte aktiviert.</string>
+    <string name="guide_storage_need_2">„Speicher dieses Geräts im Dateimanager durchsuchen“ für den PC unter Einstellungen › Geräte aktiviert.</string>
     <string name="guide_storage_phone_1">Erteile den Zugriff auf alle Dateien oder wähle Ordner unter Einstellungen › Berechtigungen › Fotos und Videos aus.</string>
     <string name="guide_storage_phone_2">Aktiviere den Speicherschalter für deinen PC unter Einstellungen › Geräte.</string>
-    <string name="guide_storage_pc_1">Öffne deinen Gerätespeicher über G7 Link oder den Windows-Datei-Explorer auf deinem PC.</string>
+    <string name="guide_storage_pc_1">Öffne deinen Gerätespeicher über G7 Link oder über den Ordner G7Link in der Seitenleiste deines Dateimanagers.</string>
     <string name="guide_storage_opt_1">Zugriff auf alle Dateien / Nur ausgewählte Ordner: Gib den gesamten Speicher oder nur ausgewählte SAF-Ordner frei.</string>
     <string name="guide_storage_privacy">Das Durchsuchen des Speichers ist für jeden PC standardmäßig deaktiviert, bis du es einschaltest.</string>
     <string name="guide_storage_limits">Android blockiert den Zugriff auf private App-Verzeichnisse unter /Android/data.</string>
@@ -1266,9 +1267,9 @@
     <string name="guide_wake_where">Startseite › Karte des gekoppelten PCs › Aufwecken</string>
     <string name="guide_wake_needs">Gekoppelter PC mit im BIOS und im Netzwerkadapter aktiviertem Wake-on-LAN</string>
     <string name="guide_wake_need_1">Gekoppelter PC, der mindestens einmal über das lokale Netzwerk verbunden war, damit G7 Link seine MAC-Adresse kennt.</string>
-    <string name="guide_wake_need_2">Wake-on-LAN in den Windows-Netzwerkadaptereinstellungen und im BIOS/UEFI aktiviert.</string>
+    <string name="guide_wake_need_2">Wake-on-LAN im BIOS/UEFI und am Netzwerkadapter des PCs aktiviert.</string>
     <string name="guide_wake_phone_1">Wenn dein gekoppelter PC auf der Startseite offline ist, tippe auf seiner Karte auf „Aufwecken“.</string>
-    <string name="guide_wake_pc_1">Aktiviere das Aufwecken per Wake-on-LAN-Paket im Geräte-Manager › Netzwerkadapter › Energieverwaltung.</string>
+    <string name="guide_wake_pc_1">Prüfe in G7 Link auf deinem PC, dass unter Einstellungen › Verbindung &amp; Info › Vom Gerät aus aufwecken „Wake on Magic Packet bereit“ steht.</string>
     <string name="guide_wake_opt_1">Aufwecken: Sendet ein Wake-on-LAN-Paket im lokalen Netzwerk.</string>
     <string name="guide_wake_privacy">Verwendet die MAC-Adresse, die während einer früheren authentifizierten LAN-Sitzung gelernt wurde.</string>
     <string name="guide_wake_limits">Erfordert Ethernet oder einen WLAN-Adapter, der Wake on Wireless LAN unterstützt.</string>
@@ -1338,7 +1339,7 @@
     <string name="home_whats_new_guide">Neu: Funktionsübersicht</string>
     <string name="home_guide_card_body">Entdecke jede Funktion von G7 Link, prüfe aktive Berechtigungen oder tippe auf „Zeig es mir“, um direkt zur jeweiligen Einstellung zu springen.</string>
     <string name="home_no_pc_paired">Noch kein PC gekoppelt</string>
-    <string name="home_no_pc_body">Öffne G7 Link auf deinem Windows- oder Linux-PC, um per QR-Code oder lokaler Erkennung zu koppeln, oder starte den Einrichtungsassistenten erneut.</string>
+    <string name="home_no_pc_body">Öffne G7 Link auf deinem Linux-PC, um per QR-Code oder lokaler Erkennung zu koppeln, oder starte den Einrichtungsassistenten erneut.</string>
     <string name="home_background_clipboard_title">Hintergrund-Zwischenablage &amp; volle Steuerung</string>
     <string name="home_background_clipboard_body">Synchronisiere die Zwischenablage im Hintergrund und aktiviere die Touch-Steuerung über Kabelloses Debugging.</string>
     <string name="home_section_screen">Bildschirm, Kamera &amp; Eingabe</string>

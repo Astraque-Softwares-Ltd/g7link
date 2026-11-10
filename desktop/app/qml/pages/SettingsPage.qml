@@ -3328,7 +3328,7 @@ Item {
                                     return qsTr("No active network adapter found.")
                                 if (state === "enabled")
                                     return qsTr("%1 · Wake on Magic Packet ready.").arg(adapter)
-                                return qsTr("%1 · Enable Wake on Magic Packet in Device Manager.").arg(adapter)
+                                return qsTr("%1 · Wake on Magic Packet is off. Turn it on with NetworkManager or ethtool.").arg(adapter)
                             }
                             Row {
                                 spacing: 6

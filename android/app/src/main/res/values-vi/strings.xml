@@ -267,6 +267,7 @@
 <string name="peer_kind_tablet">Máy tính bảng</string>
 <string name="action_unpair">Hủy ghép nối</string>
 <string name="action_pair_new">Ghép nối PC khác</string>
+<string name="action_pair_with_pc">Ghép nối với PC</string>
 <string name="action_refresh">Làm mới</string>
 <string name="action_update">Cập nhật</string>
 <string name="update_title">G7 Link %1$s đã có sẵn</string>
@@ -293,7 +294,7 @@
 <string name="action_reconnect">Kết nối lại</string>
 <string name="wake_waking">Đang đánh thức %1$s…</string>
 <string name="wake_timeout_title">%1$s vẫn chưa thức dậy</string>
-<string name="wake_timeout_text">Kiểm tra rằng:\n• Đã bật Wake-on-LAN trong BIOS/UEFI và trong cài đặt bộ điều hợp mạng trên Windows (Power Management và Wake on Magic Packet).\n• %1$s đang dùng Ethernet nếu máy đã tắt nguồn (đánh thức qua Wi-Fi hiếm khi hoạt động từ trạng thái tắt).\n• Điện thoại này nằm trên cùng mạng với %1$s.</string>
+<string name="wake_timeout_text">Kiểm tra rằng:\n• Đã bật Wake-on-LAN trong BIOS/UEFI và trên bộ điều hợp mạng của PC (Wake on Magic Packet).\n• %1$s đang dùng Ethernet nếu máy đã tắt nguồn (đánh thức qua Wi-Fi hiếm khi hoạt động từ trạng thái tắt).\n• Điện thoại này nằm trên cùng mạng với %1$s.</string>
 <string name="wake_not_ready">Hãy kết nối với %1$s ít nhất một lần để điện thoại này ghi nhớ địa chỉ mạng của nó.</string>
 <string name="pc_locked">%1$s đã bị khóa.</string>
 <string name="pc_sleeping">%1$s sắp chuyển sang chế độ ngủ.</string>
@@ -464,16 +465,16 @@
 <string name="pc_audio_use_phone_mic_on">PC đang nghe micrô của điện thoại này</string>
 <!-- Phone storage in File Explorer -->
 <string name="storage_all_files_title">Quyền truy cập mọi tệp</string>
-<string name="storage_all_files_on">Đã bật. Các PC bạn cho phép có thể duyệt, mở và sao chép tệp trên điện thoại này trong File Explorer.</string>
-<string name="storage_all_files_off">Duyệt các thư mục của điện thoại này trong File Explorer trên PC. Cần quyền truy cập mọi tệp, hoặc chọn thư mục cụ thể bên dưới.</string>
+<string name="storage_all_files_on">Đã bật. Các PC bạn cho phép có thể duyệt, mở và sao chép tệp trên điện thoại này trong trình quản lý tệp.</string>
+<string name="storage_all_files_off">Duyệt các thư mục của điện thoại này trong trình quản lý tệp trên PC. Cần quyền truy cập mọi tệp, hoặc chọn thư mục cụ thể bên dưới.</string>
 <string name="storage_saf_title">Chỉ thư mục được chọn</string>
 <string name="storage_saf_hint">Chỉ chia sẻ các thư mục bạn chọn.</string>
 <string name="storage_add_folder">Thêm thư mục</string>
 <string name="storage_remove_folder">Xóa</string>
-<string name="storage_pc_toggle">Duyệt bộ nhớ của điện thoại này trong File Explorer</string>
+<string name="storage_pc_toggle">Duyệt bộ nhớ của điện thoại này trong trình quản lý tệp</string>
 <string name="storage_pc_toggle_hint">Tắt theo mặc định. Cho phép PC này liệt kê, mở, tải lên, đổi tên và xóa các tệp bạn đã chia sẻ.</string>
 <string name="storage_request_title">%1$s muốn duyệt bộ nhớ của điện thoại này</string>
-<string name="storage_request_text">Cho phép %1$s duyệt bộ nhớ đã chia sẻ của bạn (hoặc các thư mục đã chọn) trong File Explorer?</string>
+<string name="storage_request_text">Cho phép %1$s duyệt bộ nhớ đã chia sẻ của bạn (hoặc các thư mục đã chọn) trong trình quản lý tệp?</string>
 <string name="action_not_now">Để sau</string>
 <!-- Phone as webcam to PC -->
 <string name="action_webcam_pc">Webcam</string>
@@ -752,7 +753,7 @@
 <string name="walkthrough_welcome_lan_title">Trực tiếp qua Wi-Fi, Ethernet hoặc USB</string>
 <string name="walkthrough_welcome_lan_body">Lưu lượng ở lại trong mạng của bạn. Máy chủ chuyển tiếp chỉ được dùng khi “Connect over mobile data” đang bật.</string>
 <string name="walkthrough_welcome_local_title">Không cần tài khoản hay lưu trữ đám mây</string>
-<string name="walkthrough_welcome_local_body">Khóa thiết bị được bảo vệ bởi Windows DPAPI và Android Keystore.</string>
+<string name="walkthrough_welcome_local_body">Khóa thiết bị luôn nằm trên thiết bị của bạn: trong keyring của PC (hoặc một tệp chỉ tài khoản của bạn đọc được) và trong Android Keystore.</string>
 <string name="walkthrough_permissions_title">Quyền</string>
 <string name="walkthrough_permissions_subtitle">Chỉ cấp những quyền bạn dùng. Bạn có thể thay đổi bất kỳ quyền nào sau này trong Cài đặt.</string>
 <string name="walkthrough_permissions_granted_badge">Đã cấp %1$d trên %2$d</string>
@@ -787,8 +788,8 @@
 <string name="walkthrough_perm_photos_title">Ảnh</string>
 <string name="walkthrough_perm_photos_does">Duyệt ảnh gần đây trên điện thoại từ PC và lưu bản gốc.</string>
 <string name="walkthrough_perm_photos_requires">Android yêu cầu quyền truy cập Ảnh và video.</string>
-<string name="walkthrough_perm_storage_title">Lưu trữ trong File Explorer</string>
-<string name="walkthrough_perm_storage_does">Duyệt các thư mục trên điện thoại từ PC trong File Explorer.</string>
+<string name="walkthrough_perm_storage_title">Lưu trữ trong trình quản lý tệp</string>
+<string name="walkthrough_perm_storage_does">Duyệt các thư mục trên điện thoại từ trình quản lý tệp trên PC.</string>
 <string name="walkthrough_perm_storage_requires">Android yêu cầu quyền Truy cập mọi tệp hoặc các thư mục đã chọn.</string>
 <string name="walkthrough_perm_access_title">Assist</string>
 <string name="walkthrough_perm_access_does">Điều khiển màn hình điện thoại đang phản chiếu từ PC bằng chuột và bàn phím.</string>
@@ -1021,15 +1022,15 @@
 <string name="guide_share_privacy">Tệp thực thi và script không bao giờ được tự động mở trên PC.</string>
 <string name="guide_share_limits">Chỉ các loại tài liệu an toàn được tự động mở; mọi tệp khác lưu vào Downloads.</string>
 <!-- 10. Storage in File Explorer -->
-<string name="guide_storage_title">Lưu trữ trong File Explorer</string>
-<string name="guide_storage_summary">Duyệt bộ nhớ chia sẻ của điện thoại này hoặc các thư mục đã chọn trong Windows File Explorer.</string>
+<string name="guide_storage_title">Lưu trữ trong trình quản lý tệp</string>
+<string name="guide_storage_summary">Duyệt bộ nhớ chia sẻ của điện thoại này hoặc các thư mục đã chọn trong trình quản lý tệp trên PC.</string>
 <string name="guide_storage_where">Cài đặt › Quyền › Ảnh và video (và Cài đặt › Thiết bị)</string>
 <string name="guide_storage_needs">Quyền truy cập tất cả tệp (hoặc các thư mục đã chọn) và công tắc lưu trữ theo từng PC</string>
 <string name="guide_storage_need_1">Quyền truy cập tất cả tệp hoặc các thư mục đã chọn trong Cài đặt › Quyền › Ảnh và video.</string>
-<string name="guide_storage_need_2">Duyệt bộ nhớ của điện thoại này trong File Explorer được bật cho PC trong Cài đặt › Thiết bị.</string>
+<string name="guide_storage_need_2">Duyệt bộ nhớ của điện thoại này trong trình quản lý tệp được bật cho PC trong Cài đặt › Thiết bị.</string>
 <string name="guide_storage_phone_1">Cấp quyền truy cập Tất cả tệp hoặc chọn thư mục trong Cài đặt › Quyền › Ảnh và video.</string>
 <string name="guide_storage_phone_2">Bật công tắc lưu trữ cho PC trong Cài đặt › Thiết bị.</string>
-<string name="guide_storage_pc_1">Mở bộ nhớ điện thoại từ G7 Link hoặc Windows File Explorer trên PC.</string>
+<string name="guide_storage_pc_1">Mở bộ nhớ điện thoại từ G7 Link, hoặc từ thư mục G7Link ở thanh bên của trình quản lý tệp.</string>
 <string name="guide_storage_opt_1">Tất cả tệp / Chỉ thư mục đã chọn: Chia sẻ toàn bộ bộ nhớ hoặc chỉ các thư mục SAF đã chọn.</string>
 <string name="guide_storage_privacy">Duyệt bộ nhớ mặc định tắt cho mọi PC cho đến khi bạn bật lên.</string>
 <string name="guide_storage_limits">Android chặn truy cập các thư mục riêng tư của ứng dụng trong /Android/data.</string>
@@ -1200,9 +1201,9 @@
 <string name="guide_wake_where">Trang chủ › Thẻ PC đã ghép nối › Đánh thức</string>
 <string name="guide_wake_needs">PC đã ghép nối với Wake-on-LAN được bật trong BIOS và card mạng</string>
 <string name="guide_wake_need_1">PC đã ghép nối kết nối qua LAN ít nhất một lần để G7 Link ghi nhận địa chỉ MAC.</string>
-<string name="guide_wake_need_2">Đã bật Wake-on-LAN trong cài đặt card mạng Windows và BIOS/UEFI.</string>
+<string name="guide_wake_need_2">Đã bật Wake-on-LAN trong BIOS/UEFI và trên bộ điều hợp mạng của PC.</string>
 <string name="guide_wake_phone_1">Khi PC đã ghép nối ngoại tuyến trên Trang chủ, chạm Đánh thức trên thẻ của nó.</string>
-<string name="guide_wake_pc_1">Bật gói đánh thức Wake-on-LAN trong Device Manager › Network adapters › Power Management.</string>
+<string name="guide_wake_pc_1">Trong G7 Link trên PC, kiểm tra Cài đặt › Kết nối và giới thiệu › Đánh thức PC từ điện thoại của bạn hiển thị Wake on Magic Packet sẵn sàng.</string>
 <string name="guide_wake_opt_1">Đánh thức: Gửi gói Wake-on-LAN trên mạng cục bộ.</string>
 <string name="guide_wake_privacy">Dùng địa chỉ MAC học được trong phiên LAN đã xác thực trước đó.</string>
 <string name="guide_wake_limits">Cần Ethernet hoặc card Wi-Fi hỗ trợ Wake on Wireless LAN.</string>
@@ -1269,7 +1270,7 @@
 <string name="home_guide_card_body">Khám phá mọi tính năng của G7 Link, kiểm tra quyền theo thời gian thực, hoặc chạm Cho tôi xem để nhảy thẳng đến bất kỳ điều khiển nào.</string>
 <string name="home_no_pc_paired">Chưa ghép nối PC nào</string>
 
-<string name="home_no_pc_body">Mở G7 Link trên máy tính Windows hoặc Linux của bạn để ghép nối bằng mã QR hoặc tự động phát hiện trong mạng nội bộ, hoặc mở lại hướng dẫn thiết lập.</string>
+<string name="home_no_pc_body">Mở G7 Link trên máy tính Linux của bạn để ghép nối bằng mã QR hoặc tự động phát hiện trong mạng nội bộ, hoặc mở lại hướng dẫn thiết lập.</string>
 <string name="home_background_clipboard_title">Bảng nhớ tạm nền &amp; toàn quyền điều khiển</string>
 <string name="home_background_clipboard_body">Đồng bộ bảng nhớ tạm ở chế độ nền và bật điều khiển cảm ứng qua Gỡ lỗi không dây.</string>
 <string name="home_section_screen">Màn hình, Máy ảnh &amp; Nhập liệu</string>

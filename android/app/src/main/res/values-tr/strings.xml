@@ -268,6 +268,7 @@
     <string name="peer_kind_tablet">Tablet</string>
     <string name="action_unpair">Eşleştirmeyi kaldır</string>
     <string name="action_pair_new">Başka bir bilgisayar eşleştir</string>
+    <string name="action_pair_with_pc">Bilgisayarla eşleştir</string>
     <string name="action_refresh">Yenile</string>
     <string name="action_update">Güncelle</string>
     <string name="update_title">G7 Link %1$s kullanılabilir</string>
@@ -294,7 +295,7 @@
     <string name="action_reconnect">Yeniden bağlan</string>
     <string name="wake_waking">%1$s uyandırılıyor…</string>
     <string name="wake_timeout_title">%1$s henüz uyanmadı</string>
-    <string name="wake_timeout_text">Şunları kontrol edin:\n• Wake-on-LAN, BIOS/UEFI\'de ve Windows\'ta ağ bağdaştırıcısının ayarlarında (Güç Yönetimi ve Wake on Magic Packet) etkin.\n• %1$s kapatıldıysa Ethernet\'e bağlı (Wi-Fi ile uyandırma, kapalı durumdan nadiren çalışır).\n• Bu telefon %1$s ile aynı ağda.</string>
+    <string name="wake_timeout_text">Şunları kontrol edin:\n• Wake-on-LAN, BIOS/UEFI\'de ve bilgisayarın ağ bağdaştırıcısında (Wake on Magic Packet) etkin.\n• %1$s kapatıldıysa Ethernet\'e bağlı (Wi-Fi ile uyandırma, kapalı durumdan nadiren çalışır).\n• Bu telefon %1$s ile aynı ağda.</string>
     <string name="wake_not_ready">Bu telefonun ağ adresini öğrenmesi için %1$s cihazına bir kez bağlanın.</string>
     <string name="pc_locked">%1$s kilitlendi.</string>
     <string name="pc_sleeping">%1$s uyku moduna geçiyor.</string>
@@ -470,16 +471,16 @@
 
     <!-- Phone storage in File Explorer -->
     <string name="storage_all_files_title">Tüm dosyalara erişim</string>
-    <string name="storage_all_files_on">Açık. İzin verdiğiniz bilgisayarlar bu telefonun dosyalarına Dosya Gezgini\'nde göz atabilir, açabilir ve kopyalayabilir.</string>
-    <string name="storage_all_files_off">Bu telefonun klasörlerine bilgisayarınızdaki Dosya Gezgini\'nden göz atın. Tüm dosyalara erişim gerekir; ya da aşağıdan belirli klasörleri seçin.</string>
+    <string name="storage_all_files_on">Açık. İzin verdiğiniz bilgisayarlar bu telefonun dosyalarına dosya yöneticisinde göz atabilir, açabilir ve kopyalayabilir.</string>
+    <string name="storage_all_files_off">Bu telefonun klasörlerine bilgisayarınızdaki dosya yöneticisinden göz atın. Tüm dosyalara erişim gerekir; ya da aşağıdan belirli klasörleri seçin.</string>
     <string name="storage_saf_title">Yalnızca seçili klasörler</string>
     <string name="storage_saf_hint">Yalnızca seçtiğiniz klasörleri paylaşın.</string>
     <string name="storage_add_folder">Klasör ekle</string>
     <string name="storage_remove_folder">Kaldır</string>
-    <string name="storage_pc_toggle">Bu telefonun depolama alanına Dosya Gezgini\'nden göz at</string>
+    <string name="storage_pc_toggle">Bu telefonun depolama alanına dosya yöneticisinden göz at</string>
     <string name="storage_pc_toggle_hint">Varsayılan olarak kapalı. Bu bilgisayarın paylaşılan dosyalarınızı listelemesine, açmasına, yüklemesine, yeniden adlandırmasına ve silmesine olanak tanır.</string>
     <string name="storage_request_title">%1$s bu telefonun depolama alanına göz atmak istiyor</string>
-    <string name="storage_request_text">%1$s, paylaşılan depolama alanınıza (veya seçili klasörlere) Dosya Gezgini\'nden göz atabilsin mi?</string>
+    <string name="storage_request_text">%1$s, paylaşılan depolama alanınıza (veya seçili klasörlere) dosya yöneticisinden göz atabilsin mi?</string>
     <string name="action_not_now">Şimdi değil</string>
 
     <!-- Phone as webcam to PC -->
@@ -779,7 +780,7 @@
     <string name="walkthrough_welcome_lan_title">Wi-Fi, Ethernet veya USB üzerinden doğrudan</string>
     <string name="walkthrough_welcome_lan_body">Trafik ağınızda kalır. Aktarma sunucusu yalnızca Mobil veri üzerinden bağlan açıkken kullanılır.</string>
     <string name="walkthrough_welcome_local_title">Hesap veya bulut depolama yok</string>
-    <string name="walkthrough_welcome_local_body">Cihaz anahtarları Windows DPAPI ve Android Keystore ile korunur.</string>
+    <string name="walkthrough_welcome_local_body">Cihaz anahtarları cihazlarınızda kalır: bilgisayarınızın anahtarlığında (veya yalnızca hesabınızın okuyabildiği bir dosyada) ve Android Keystore\'da.</string>
 
     <string name="walkthrough_permissions_title">İzinler</string>
     <string name="walkthrough_permissions_subtitle">Yalnızca kullandıklarınıza izin verin. Herhangi bir izni daha sonra Ayarlar\'dan değiştirebilirsiniz.</string>
@@ -820,8 +821,8 @@
     <string name="walkthrough_perm_photos_does">Son telefon fotoğraflarına bilgisayarınızdan göz atın ve orijinallerini kaydedin.</string>
     <string name="walkthrough_perm_photos_requires">Android, Fotoğraflar ve videolar erişimi gerektirir.</string>
 
-    <string name="walkthrough_perm_storage_title">Dosya Gezgini\'nde depolama</string>
-    <string name="walkthrough_perm_storage_does">Telefon klasörlerinize bilgisayarınızdan Dosya Gezgini\'nde göz atın.</string>
+    <string name="walkthrough_perm_storage_title">Dosya yöneticisinde depolama</string>
+    <string name="walkthrough_perm_storage_does">Telefon klasörlerinize bilgisayarınızın dosya yöneticisinden göz atın.</string>
     <string name="walkthrough_perm_storage_requires">Android, Tüm dosyalara erişim veya seçili klasörler gerektirir.</string>
 
     <string name="walkthrough_perm_access_title">Yardımcı</string>
@@ -1072,15 +1073,15 @@
     <string name="guide_share_limits">Yalnızca güvenli belge türleri otomatik açılır; diğer tüm dosyalar İndirilenler\'e kaydedilir.</string>
 
     <!-- 10. Storage in File Explorer -->
-    <string name="guide_storage_title">Dosya Gezgini\'nde depolama</string>
-    <string name="guide_storage_summary">Bu telefonun paylaşılan depolama alanına veya seçili klasörlerine Windows Dosya Gezgini\'nden göz atın.</string>
+    <string name="guide_storage_title">Dosya yöneticisinde depolama</string>
+    <string name="guide_storage_summary">Bu telefonun paylaşılan depolama alanına veya seçili klasörlerine bilgisayarınızın dosya yöneticisinden göz atın.</string>
     <string name="guide_storage_where">Ayarlar › İzinler › Fotoğraflar ve videolar (ve Ayarlar › Cihazlar)</string>
     <string name="guide_storage_needs">Tüm dosyalara erişim (veya seçili klasörler) ve bilgisayar başına depolama anahtarı</string>
     <string name="guide_storage_need_1">Ayarlar › İzinler › Fotoğraflar ve videolar bölümünde Tüm dosyalara erişim veya seçili klasörler.</string>
-    <string name="guide_storage_need_2">Ayarlar › Cihazlar bölümünde bilgisayar için Bu telefonun depolama alanına Dosya Gezgini\'nden göz at etkin.</string>
+    <string name="guide_storage_need_2">Ayarlar › Cihazlar bölümünde bilgisayar için Bu telefonun depolama alanına dosya yöneticisinden göz at etkin.</string>
     <string name="guide_storage_phone_1">Ayarlar › İzinler › Fotoğraflar ve videolar bölümünde Tüm dosyalara erişim izni verin veya klasör seçin.</string>
     <string name="guide_storage_phone_2">Ayarlar › Cihazlar bölümünde bilgisayarınız için depolama anahtarını açın.</string>
-    <string name="guide_storage_pc_1">Telefon depolama alanınızı bilgisayarınızda G7 Link\'ten veya Windows Dosya Gezgini\'nden açın.</string>
+    <string name="guide_storage_pc_1">Telefon depolama alanınızı G7 Link\'ten veya dosya yöneticinizin kenar çubuğundaki G7Link klasöründen açın.</string>
     <string name="guide_storage_opt_1">Tüm dosyalara erişim / Yalnızca seçili klasörler: Tüm depolamayı veya yalnızca seçilen SAF klasörlerini paylaşın.</string>
     <string name="guide_storage_privacy">Depolamaya göz atma, siz açana kadar her bilgisayar için varsayılan olarak kapalıdır.</string>
     <string name="guide_storage_limits">Android, /Android/data içindeki özel uygulama dizinlerine erişimi engeller.</string>
@@ -1265,9 +1266,9 @@
     <string name="guide_wake_where">Ana Sayfa › Eşleştirilmiş bilgisayar kartı › Uyandır</string>
     <string name="guide_wake_needs">BIOS\'ta ve ağ bağdaştırıcısında Wake-on-LAN etkin, eşleştirilmiş bilgisayar</string>
     <string name="guide_wake_need_1">G7 Link\'in MAC adresini öğrenebilmesi için en az bir kez yerel ağ üzerinden bağlanmış eşleştirilmiş bilgisayar.</string>
-    <string name="guide_wake_need_2">Windows ağ bağdaştırıcısı ayarlarında ve BIOS/UEFI\'de Wake-on-LAN etkin.</string>
+    <string name="guide_wake_need_2">BIOS/UEFI\'de ve bilgisayarın ağ bağdaştırıcısında Wake-on-LAN etkin.</string>
     <string name="guide_wake_phone_1">Eşleştirilmiş bilgisayarınız Ana Sayfa\'da çevrimdışı göründüğünde kartındaki Uyandır\'a dokunun.</string>
-    <string name="guide_wake_pc_1">Aygıt Yöneticisi › Ağ bağdaştırıcıları › Güç Yönetimi bölümünde Wake-on-LAN paketiyle uyandırmayı etkinleştirin.</string>
+    <string name="guide_wake_pc_1">Bilgisayarınızdaki G7 Link\'te Ayarlar › Bağlantı ve Hakkında › Telefonunuzdan uyandırma bölümünde Wake on Magic Packet hazır yazdığını kontrol edin.</string>
     <string name="guide_wake_opt_1">Uyandır: Yerel ağda bir Wake-on-LAN paketi gönderir.</string>
     <string name="guide_wake_privacy">Daha önceki, kimliği doğrulanmış bir yerel ağ oturumunda öğrenilen MAC adresini kullanır.</string>
     <string name="guide_wake_limits">Ethernet veya Wake on Wireless LAN destekleyen bir Wi-Fi bağdaştırıcısı gerektirir.</string>
@@ -1337,7 +1338,7 @@
     <string name="home_whats_new_guide">Yenilikler: Özellik rehberi</string>
     <string name="home_guide_card_body">Tüm G7 Link özelliklerini keşfedin, izinleri canlı olarak kontrol edin veya herhangi bir kontrole doğrudan gitmek için Göster\'e dokunun.</string>
     <string name="home_no_pc_paired">Henüz eşleştirilmiş bilgisayar yok</string>
-    <string name="home_no_pc_body">QR kodu veya yerel keşifle eşleştirmek için Windows ya da Linux bilgisayarınızda G7 Link\'i açın veya kurulum rehberini yeniden açın.</string>
+    <string name="home_no_pc_body">QR kodu veya yerel keşifle eşleştirmek için Linux bilgisayarınızda G7 Link\'i açın veya kurulum rehberini yeniden açın.</string>
     <string name="home_background_clipboard_title">Arka planda pano ve tam kontrol</string>
     <string name="home_background_clipboard_body">Panoyu arka planda eşitleyin ve Kablosuz hata ayıklama ile dokunmatik kontrolü etkinleştirin.</string>
     <string name="home_section_screen">Ekran, Kamera ve Giriş</string>

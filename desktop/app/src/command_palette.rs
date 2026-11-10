@@ -731,8 +731,8 @@ fn build_candidates() -> Vec<PaletteCandidate> {
         });
         out.push(PaletteCandidate {
             id: format!("action:phone_storage:{dev_id}"),
-            title: tr!("CommandPalette", "Browse phone storage in File Explorer"),
-            subtitle: tr!("CommandPalette", "Open %1's Cloud Files folder in Explorer", dev_name),
+            title: tr!("CommandPalette", "Browse phone storage in the file manager"),
+            subtitle: tr!("CommandPalette", "Open %1's folder in your file manager", dev_name),
             category: "Actions".into(),
             icon: "folder".into(),
             badge: dev_name.clone(),

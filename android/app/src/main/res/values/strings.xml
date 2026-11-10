@@ -270,6 +270,7 @@
     <string name="peer_kind_tablet">Tablet</string>
     <string name="action_unpair">Unpair</string>
     <string name="action_pair_new">Pair another PC</string>
+    <string name="action_pair_with_pc">Pair with PC</string>
     <string name="action_refresh">Refresh</string>
     <string name="action_update">Update</string>
     <string name="update_title">G7 Link %1$s is available</string>
@@ -296,7 +297,7 @@
     <string name="action_reconnect">Reconnect</string>
     <string name="wake_waking">Waking %1$s…</string>
     <string name="wake_timeout_title">%1$s hasn\'t woken up yet</string>
-    <string name="wake_timeout_text">Check that:\n• Wake-on-LAN is enabled in BIOS/UEFI and in the network adapter\'s settings in Windows (Power Management and Wake on Magic Packet).\n• %1$s is on Ethernet if it was shut down (Wi-Fi wake rarely works from shutdown).\n• This phone is on the same network as %1$s.</string>
+    <string name="wake_timeout_text">Check that:\n• Wake-on-LAN is enabled in BIOS/UEFI and on the PC\'s network adapter (Wake on Magic Packet).\n• %1$s is on Ethernet if it was shut down (Wi-Fi wake rarely works from shutdown).\n• This phone is on the same network as %1$s.</string>
     <string name="wake_not_ready">Connect to %1$s once so this phone learns its network address.</string>
     <string name="pc_locked">%1$s is locked.</string>
     <string name="pc_sleeping">%1$s is going to sleep.</string>
@@ -472,16 +473,16 @@
 
     <!-- Phone storage in File Explorer -->
     <string name="storage_all_files_title">All files access</string>
-    <string name="storage_all_files_on">On. PCs you allow can browse, open and copy this phone\'s files in File Explorer.</string>
-    <string name="storage_all_files_off">Browse this phone\'s folders in File Explorer on your PC. Needs All files access, or pick specific folders below.</string>
+    <string name="storage_all_files_on">On. PCs you allow can browse, open and copy this phone\'s files in their file manager.</string>
+    <string name="storage_all_files_off">Browse this phone\'s folders in your PC\'s file manager. Needs All files access, or pick specific folders below.</string>
     <string name="storage_saf_title">Selected folders only</string>
     <string name="storage_saf_hint">Share only the folders you pick.</string>
     <string name="storage_add_folder">Add folder</string>
     <string name="storage_remove_folder">Remove</string>
-    <string name="storage_pc_toggle">Browse this phone’s storage in File Explorer</string>
+    <string name="storage_pc_toggle">Browse this phone’s storage in the file manager</string>
     <string name="storage_pc_toggle_hint">Off by default. Lets this PC list, open, upload, rename and delete your shared files.</string>
     <string name="storage_request_title">%1$s wants to browse this phone’s storage</string>
-    <string name="storage_request_text">Allow %1$s to browse your shared storage (or selected folders) in File Explorer?</string>
+    <string name="storage_request_text">Allow %1$s to browse your shared storage (or selected folders) in its file manager?</string>
     <string name="action_not_now">Not now</string>
 
     <!-- Phone as webcam to PC -->
@@ -781,7 +782,7 @@
     <string name="walkthrough_welcome_lan_title">Direct over Wi-Fi, Ethernet, or USB</string>
     <string name="walkthrough_welcome_lan_body">Traffic stays on your network. A relay is used only when Connect over mobile data is on.</string>
     <string name="walkthrough_welcome_local_title">No account or cloud storage</string>
-    <string name="walkthrough_welcome_local_body">Device keys are protected by Windows DPAPI and the Android Keystore.</string>
+    <string name="walkthrough_welcome_local_body">Device keys stay on your devices: in your PC\'s keyring (or a file only your account can read) and in the Android Keystore.</string>
 
     <string name="walkthrough_permissions_title">Permissions</string>
     <string name="walkthrough_permissions_subtitle">Grant only what you use. Change any permission later in Settings.</string>
@@ -823,8 +824,8 @@
     <string name="walkthrough_perm_photos_does">Browse recent phone photos on your PC and save originals.</string>
     <string name="walkthrough_perm_photos_requires">Android requires Photos and videos access.</string>
 
-    <string name="walkthrough_perm_storage_title">Storage in File Explorer</string>
-    <string name="walkthrough_perm_storage_does">Browse your phone folders from your PC in File Explorer.</string>
+    <string name="walkthrough_perm_storage_title">Storage in your file manager</string>
+    <string name="walkthrough_perm_storage_does">Browse your phone folders from your PC’s file manager.</string>
     <string name="walkthrough_perm_storage_requires">Android requires All files access or selected folders.</string>
 
     <string name="walkthrough_perm_access_title">Assist</string>
@@ -1075,15 +1076,15 @@
     <string name="guide_share_limits">Only safe document types auto-open; all other files save to Downloads.</string>
 
     <!-- 10. Storage in File Explorer -->
-    <string name="guide_storage_title">Storage in File Explorer</string>
-    <string name="guide_storage_summary">Browse this phone\'s shared storage or selected folders in Windows File Explorer.</string>
+    <string name="guide_storage_title">Storage in your file manager</string>
+    <string name="guide_storage_summary">Browse this phone\'s shared storage or selected folders in your PC\'s file manager.</string>
     <string name="guide_storage_where">Settings › Permissions › Photos and videos (and Settings › Devices)</string>
     <string name="guide_storage_needs">All files access (or selected folders) and per-PC storage toggle</string>
     <string name="guide_storage_need_1">All files access or selected folders in Settings › Permissions › Photos and videos.</string>
-    <string name="guide_storage_need_2">Browse this phone\'s storage in File Explorer enabled for the PC in Settings › Devices.</string>
+    <string name="guide_storage_need_2">“Browse this phone’s storage in the file manager” turned on for the PC in Settings › Devices.</string>
     <string name="guide_storage_phone_1">Grant All files access or pick folders in Settings › Permissions › Photos and videos.</string>
     <string name="guide_storage_phone_2">Turn on the storage switch for your PC in Settings › Devices.</string>
-    <string name="guide_storage_pc_1">Open your phone storage from G7 Link or Windows File Explorer on your PC.</string>
+    <string name="guide_storage_pc_1">Open your phone storage from G7 Link, or from the G7Link folder in your file manager\'s sidebar.</string>
     <string name="guide_storage_opt_1">All files access / Selected folders only: Share full storage or only picked SAF folders.</string>
     <string name="guide_storage_privacy">Storage browsing is off by default for every PC until you turn it on.</string>
     <string name="guide_storage_limits">Android blocks access to private app directories in /Android/data.</string>
@@ -1268,9 +1269,9 @@
     <string name="guide_wake_where">Home › Paired PC card › Wake</string>
     <string name="guide_wake_needs">Paired PC with Wake-on-LAN enabled in BIOS and network adapter</string>
     <string name="guide_wake_need_1">Paired PC connected over LAN at least once so G7 Link learns its MAC address.</string>
-    <string name="guide_wake_need_2">Wake-on-LAN enabled in Windows network adapter settings and BIOS/UEFI.</string>
+    <string name="guide_wake_need_2">Wake-on-LAN enabled in BIOS/UEFI and on the PC\'s network adapter.</string>
     <string name="guide_wake_phone_1">When your paired PC is offline on Home, tap Wake on its card.</string>
-    <string name="guide_wake_pc_1">Enable Wake-on-LAN packet wake in Device Manager › Network adapters › Power Management.</string>
+    <string name="guide_wake_pc_1">In G7 Link on your PC, check Settings › Connection &amp; About › Wake from your phone shows Wake on Magic Packet ready.</string>
     <string name="guide_wake_opt_1">Wake: Sends a Wake-on-LAN packet on the local network.</string>
     <string name="guide_wake_privacy">Uses the MAC address learned during a previous authenticated LAN session.</string>
     <string name="guide_wake_limits">Requires Ethernet or a Wi-Fi adapter that supports Wake on Wireless LAN.</string>
@@ -1340,7 +1341,7 @@
     <string name="home_whats_new_guide">What is new: Features guide</string>
     <string name="home_guide_card_body">Explore every G7 Link feature, check live permissions, or tap Show me to jump straight to any control.</string>
     <string name="home_no_pc_paired">No PC paired yet</string>
-    <string name="home_no_pc_body">Open G7 Link on your Windows or Linux PC to pair by QR code or local discovery, or reopen the setup walkthrough.</string>
+    <string name="home_no_pc_body">Open G7 Link on your Linux PC to pair by QR code or local discovery, or reopen the setup walkthrough.</string>
     <string name="home_background_clipboard_title">Background clipboard &amp; full control</string>
     <string name="home_background_clipboard_body">Sync clipboard in the background and enable touch control via Wireless Debugging.</string>
     <string name="home_section_screen">Screen, Camera &amp; Input</string>

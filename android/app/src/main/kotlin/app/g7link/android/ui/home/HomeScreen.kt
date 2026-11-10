@@ -941,7 +941,7 @@ private fun NoPairedPcCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Button(onClick = onPairNew) {
-                Text(stringResource(R.string.action_pair_new))
+                Text(stringResource(R.string.action_pair_with_pc))
             }
             FilledTonalButton(onClick = onOpenWalkthrough) {
                 Text(stringResource(R.string.guide_open_walkthrough))
