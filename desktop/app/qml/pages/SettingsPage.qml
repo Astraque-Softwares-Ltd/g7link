@@ -2534,7 +2534,7 @@ Item {
                                         radius: Theme.radiusSm
                                         color: Theme.surfaceContainerHighest
                                         border.width: paletteHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: paletteHotkeyInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                                        border.color: paletteHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                         TextInput {
                                             id: paletteHotkeyInput
                                             anchors.fill: parent
@@ -2609,7 +2609,7 @@ Item {
                                         radius: Theme.radiusSm
                                         color: Theme.surfaceContainerHighest
                                         border.width: shelfHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: shelfHotkeyInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                                        border.color: shelfHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                         TextInput {
                                             id: shelfHotkeyInput
                                             anchors.fill: parent
@@ -2680,7 +2680,7 @@ Item {
                                         radius: Theme.radiusSm
                                         color: Theme.surfaceContainerHighest
                                         border.width: photoHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: photoHotkeyInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                                        border.color: photoHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                         TextInput {
                                             id: photoHotkeyInput
                                             anchors.fill: parent
@@ -2755,7 +2755,7 @@ Item {
                                         radius: Theme.radiusSm
                                         color: Theme.surfaceContainerHighest
                                         border.width: scanHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: scanHotkeyInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                                        border.color: scanHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                         TextInput {
                                             id: scanHotkeyInput
                                             anchors.fill: parent
@@ -2881,7 +2881,7 @@ Item {
                                 radius: Theme.radiusSm
                                 color: Theme.surfaceContainerHighest
                                 border.width: obsPortEdit.activeFocus ? 2 : 1
-                                border.color: obsPortEdit.activeFocus ? Theme.primary : Theme.outlineVariant
+                                border.color: obsPortEdit.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                 TextInput {
                                     id: obsPortEdit
                                     anchors.fill: parent
@@ -2912,7 +2912,7 @@ Item {
                                 radius: Theme.radiusSm
                                 color: Theme.surfaceContainerHighest
                                 border.width: obsPasswordEdit.activeFocus ? 2 : 1
-                                border.color: obsPasswordEdit.activeFocus ? Theme.primary : Theme.outlineVariant
+                                border.color: obsPasswordEdit.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                 TextInput {
                                     id: obsPasswordEdit
                                     anchors.fill: parent
@@ -3365,7 +3365,7 @@ Item {
                                     radius: Theme.radiusSm
                                     color: Theme.surfaceContainerHighest
                                     border.width: localApiPortEdit.activeFocus ? 2 : 1
-                                    border.color: localApiPortEdit.activeFocus ? Theme.primary : Theme.outlineVariant
+                                    border.color: localApiPortEdit.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                     TextInput {
                                         id: localApiPortEdit
                                         anchors.fill: parent
@@ -3629,7 +3629,7 @@ Item {
                 radius: Theme.radiusMd
                 color: Theme.surfaceContainerHighest
                 border.width: phoneFolderInput.activeFocus ? 2 : 1
-                border.color: phoneFolderInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                border.color: phoneFolderInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
                 TextInput {
                     id: phoneFolderInput
                     anchors.fill: parent

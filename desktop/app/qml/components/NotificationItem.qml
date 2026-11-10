@@ -553,7 +553,7 @@ Item {
             radius: Theme.graphite ? Theme.radiusSm : height / 2
             color: Theme.graphite ? "transparent" : Theme.surfaceContainerHighest
             border.width: input.activeFocus ? 2 : 1
-            border.color: input.activeFocus ? Theme.primary : Theme.outlineVariant
+            border.color: input.activeFocus ? Theme.focusRing : Theme.outlineVariant
 
             TextInput {
                 id: input

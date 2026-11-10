@@ -833,7 +833,7 @@ pub(crate) async fn deliver_queued_files(
 
     let entries: Vec<FileEntry> = opened.iter().map(|(e, _)| e.clone()).collect();
     let tl_detail = if open_on_arrival {
-        "Handoff document".into()
+        "Handoff".into()
     } else {
         transfer_timeline_detail(&entries, recording, &markers)
     };
@@ -1109,7 +1109,7 @@ async fn send_inner(
     };
     let id = transfer.id.clone();
     let tl_detail = if open_on_arrival {
-        "Handoff document".into()
+        "Handoff".into()
     } else {
         transfer_timeline_detail(&entries, recording, &transfer.markers)
     };
@@ -1756,7 +1756,7 @@ async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendStream, mut 
                         n => format!("{n} photos"),
                     }
                 } else if open_on_arrival {
-                    "Handoff document".into()
+                    "Handoff".into()
                 } else {
                     transfer_timeline_detail(&offer.files, offer.recording, &offer.markers)
                 };

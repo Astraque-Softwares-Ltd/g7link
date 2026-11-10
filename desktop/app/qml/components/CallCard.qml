@@ -69,6 +69,58 @@ Card {
         }
     }
 
+    // A wide round button for answering or ending the call.
+    component RoundAction: FocusScope {
+        id: action
+        property string iconPath
+        property string label
+        property color fill
+        property color content
+        signal clicked
+        width: 72; height: 44
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: label
+        Accessible.onPressAction: action.clicked()
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                action.clicked()
+                event.accepted = true
+            }
+        }
+        Rectangle {
+            id: actionBody
+            anchors.fill: parent
+            radius: Theme.pill(height)
+            color: action.fill
+            scale: actionTap.pressed ? Theme.pressScale : 1
+            Behavior on scale { SpringAnimation { spring: Theme.springSnappy; damping: Theme.dampingSnappy } }
+            Rectangle {
+                anchors.fill: parent
+                radius: parent.radius
+                color: action.content
+                opacity: actionTap.pressed ? 0.16 : (actionHover.hovered ? 0.08 : 0)
+            }
+            Icon {
+                anchors.centerIn: parent
+                width: 22; height: 22
+                path: action.iconPath
+                color: action.content
+            }
+        }
+        Rectangle {
+            anchors.fill: actionBody
+            anchors.margins: -3
+            radius: actionBody.radius + 3
+            color: "transparent"
+            border.width: 2
+            border.color: Theme.focusRing
+            visible: Theme.focusVisible(action)
+        }
+        HoverHandler { id: actionHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { id: actionTap; onTapped: action.clicked() }
+    }
+
     Column {
         width: parent.width
         spacing: 14
@@ -76,7 +128,7 @@ Card {
         Item {
             width: parent.width
             height: heading.height
-            Txt { id: heading; text: qsTr("On a call"); role: "label"; muted: true }
+            Txt { id: heading; text: PhoneCall.ringing ? qsTr("Incoming call") : qsTr("On a call"); role: "label"; muted: true }
             Txt {
                 anchors.right: parent.right
                 role: "label"
@@ -245,58 +297,31 @@ Card {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: 18
             IconButton {
+                visible: !PhoneCall.ringing
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: Icons.volumeDown
                 label: qsTr("Call volume down")
                 onClicked: PhoneCall.volume(false)
             }
-            FocusScope {
-                id: end
+            RoundAction {
                 anchors.verticalCenter: parent.verticalCenter
-                width: 72; height: 44
-                activeFocusOnTab: true
-                Accessible.role: Accessible.Button
-                Accessible.name: qsTr("End call")
-                Accessible.onPressAction: PhoneCall.end()
-                Keys.onPressed: (event) => {
-                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                        PhoneCall.end()
-                        event.accepted = true
-                    }
-                }
-                Rectangle {
-                    id: endBody
-                    anchors.fill: parent
-                    radius: Theme.pill(height)
-                    color: Theme.error
-                    scale: endTap.pressed ? Theme.pressScale : 1
-                    Behavior on scale { SpringAnimation { spring: Theme.springSnappy; damping: Theme.dampingSnappy } }
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: parent.radius
-                        color: Theme.errorContent
-                        opacity: endTap.pressed ? 0.16 : (endHover.hovered ? 0.08 : 0)
-                    }
-                    Icon {
-                        anchors.centerIn: parent
-                        width: 22; height: 22
-                        path: Icons.callEnd
-                        color: Theme.errorContent
-                    }
-                }
-                Rectangle {
-                    anchors.fill: endBody
-                    anchors.margins: -3
-                    radius: endBody.radius + 3
-                    color: "transparent"
-                    border.width: 2
-                    border.color: Theme.focusRing
-                    visible: Theme.focusVisible(end)
-                }
-                HoverHandler { id: endHover; cursorShape: Qt.PointingHandCursor }
-                TapHandler { id: endTap; onTapped: PhoneCall.end() }
+                iconPath: Icons.callEnd
+                label: PhoneCall.ringing ? qsTr("Decline") : qsTr("End call")
+                fill: Theme.error
+                content: Theme.errorContent
+                onClicked: PhoneCall.end()
+            }
+            RoundAction {
+                visible: PhoneCall.ringing
+                anchors.verticalCenter: parent.verticalCenter
+                iconPath: Icons.call
+                label: qsTr("Answer")
+                fill: Theme.primary
+                content: Theme.primaryContent
+                onClicked: PhoneCall.answer()
             }
             IconButton {
+                visible: !PhoneCall.ringing
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: Icons.volumeUp
                 label: qsTr("Call volume up")

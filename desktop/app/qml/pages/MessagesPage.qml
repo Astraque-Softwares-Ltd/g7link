@@ -313,7 +313,7 @@ Item {
             radius: Theme.graphite ? Theme.radiusSm : height / 2
             color: Theme.graphite ? "transparent" : (Theme.glass ? Theme.tileColor : Theme.surfaceContainerHighest)
             border.width: search.activeFocus ? 2 : (Theme.graphite || Theme.glass ? 1 : 0)
-            border.color: search.activeFocus ? Theme.primary : (Theme.glass ? Theme.cardBorder : Theme.outlineVariant)
+            border.color: search.activeFocus ? Theme.focusRing : (Theme.glass ? Theme.cardBorder : Theme.outlineVariant)
             Icon {
                 id: searchIcon
                 anchors.left: parent.left
@@ -902,7 +902,7 @@ Item {
             radius: Theme.graphite ? Theme.radiusSm : 24
             color: Theme.graphite ? "transparent" : Theme.surfaceContainerHighest
             border.width: input.activeFocus ? 2 : 1
-            border.color: input.activeFocus ? Theme.primary : Theme.outlineVariant
+            border.color: input.activeFocus ? Theme.focusRing : Theme.outlineVariant
 
             IconButton {
                 id: attachButton

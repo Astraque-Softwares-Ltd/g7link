@@ -2492,7 +2492,7 @@ Item {
                         radius: Theme.radiusMd
                         color: Theme.graphite ? "transparent" : Theme.surfaceContainerHigh
                         border.width: activeFocus ? 2 : 1
-                        border.color: activeFocus ? Theme.primary : Theme.outlineVariant
+                        border.color: activeFocus ? Theme.focusRing : Theme.outlineVariant
                         activeFocusOnTab: typeOnPhoneCard.activeHere
                         // Screen readers can find and focus the box the keys go through.
                         Accessible.role: Accessible.EditableText
@@ -2803,7 +2803,7 @@ Item {
                 radius: Theme.radiusMd
                 color: Theme.surfaceContainerHighest
                 border.width: nicknameInput.activeFocus ? 2 : 1
-                border.color: nicknameInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                border.color: nicknameInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
 
                 TextInput {
                     id: nicknameInput
@@ -2875,7 +2875,7 @@ Item {
                 radius: Theme.graphite ? Theme.radiusSm : height / 2
                 color: Theme.graphite ? "transparent" : Theme.surfaceContainerHighest
                 border.width: historySearch.activeFocus ? 2 : 1
-                border.color: historySearch.activeFocus ? Theme.primary : Theme.outlineVariant
+                border.color: historySearch.activeFocus ? Theme.focusRing : Theme.outlineVariant
                 Icon {
                     id: searchIcon
                     anchors.left: parent.left
@@ -3005,7 +3005,7 @@ Item {
                 radius: Theme.graphite ? Theme.radiusSm : height / 2
                 color: Theme.graphite ? "transparent" : Theme.surfaceContainerHighest
                 border.width: clipboardSearch.activeFocus ? 2 : 1
-                border.color: clipboardSearch.activeFocus ? Theme.primary : Theme.outlineVariant
+                border.color: clipboardSearch.activeFocus ? Theme.focusRing : Theme.outlineVariant
                 Icon {
                     id: clipSearchIcon
                     anchors.left: parent.left

@@ -686,7 +686,7 @@ Item {
                 radius: Theme.radiusMd
                 color: Theme.surfaceContainerLow
                 border.width: searchInput.activeFocus ? 2 : 1
-                border.color: searchInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                border.color: searchInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
 
                 RowLayout {
                     anchors.fill: parent

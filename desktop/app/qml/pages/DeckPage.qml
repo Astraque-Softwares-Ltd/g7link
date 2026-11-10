@@ -783,7 +783,7 @@ Item {
                         radius: Theme.radiusSm
                         color: Theme.surfaceContainerHigh
                         border.width: paramInput.activeFocus ? 2 : 1
-                        border.color: paramInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                        border.color: paramInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
 
                         TextInput {
                             id: paramInput
@@ -836,7 +836,7 @@ Item {
                     radius: Theme.radiusSm
                     color: Theme.surfaceContainerHigh
                     border.width: labelInput.activeFocus ? 2 : 1
-                    border.color: labelInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                    border.color: labelInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
 
                     TextInput {
                         id: labelInput
@@ -1014,7 +1014,7 @@ Item {
                 radius: Theme.radiusSm
                 color: Theme.surfaceContainerHigh
                 border.width: pageNameInput.activeFocus ? 2 : 1
-                border.color: pageNameInput.activeFocus ? Theme.primary : Theme.outlineVariant
+                border.color: pageNameInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
 
                 TextInput {
                     id: pageNameInput
