@@ -12,7 +12,7 @@ use ab_glyph::{Font, FontRef, GlyphId, PxScale, ScaleFont, point};
 /// The mapping the camera output and the app share.
 pub const DEFAULT_MAPPING_NAME: &str = "vcam_frame_v2";
 /// A second mapping, used when the default one can't be created.
-pub const LOCAL_MAPPING_NAME: &str = "vcam_frame_v2_local";
+pub const LOCAL_MAPPING_NAME: &str = "vcam_frame_local_v2";
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 pub const MAX_FRAME_BYTES: usize = (MAX_WIDTH as usize) * (MAX_HEIGHT as usize) * 4;
