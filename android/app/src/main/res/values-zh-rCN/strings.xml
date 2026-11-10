@@ -1137,7 +1137,7 @@
     <string name="guide_wake_need_1">已配对电脑至少通过局域网连接过一次，以便 G7 Link 获取其 MAC 地址。</string>
     <string name="guide_wake_need_2">已在 BIOS/UEFI 和电脑的网卡上启用网络唤醒。</string>
     <string name="guide_wake_phone_1">当已配对电脑在首页显示离线时，点击其卡片上的唤醒。</string>
-    <string name="guide_wake_pc_1">在电脑上的 G7 Link 中，确认 设置 › 连接与关于 › 从手机唤醒 显示 Magic Packet 网络唤醒已就绪。</string>
+    <string name="guide_wake_pc_1">在电脑上的 G7 Link 中，确认 设置 › 连接与关于 › 从手机唤醒 显示网卡已就绪。</string>
     <string name="guide_wake_opt_1">唤醒：在局域网中发送网络唤醒数据包。</string>
     <string name="guide_wake_privacy">使用先前经过身份验证的局域网会话中获取的 MAC 地址。</string>
     <string name="guide_wake_limits">需要以太网，或支持无线局域网唤醒的 Wi-Fi 网卡。</string>

@@ -1203,7 +1203,7 @@
 <string name="guide_wake_need_1">PC đã ghép nối kết nối qua LAN ít nhất một lần để G7 Link ghi nhận địa chỉ MAC.</string>
 <string name="guide_wake_need_2">Đã bật Wake-on-LAN trong BIOS/UEFI và trên bộ điều hợp mạng của PC.</string>
 <string name="guide_wake_phone_1">Khi PC đã ghép nối ngoại tuyến trên Trang chủ, chạm Đánh thức trên thẻ của nó.</string>
-<string name="guide_wake_pc_1">Trong G7 Link trên PC, kiểm tra Cài đặt › Kết nối và giới thiệu › Đánh thức PC từ điện thoại của bạn hiển thị Wake on Magic Packet sẵn sàng.</string>
+<string name="guide_wake_pc_1">Trong G7 Link trên PC, kiểm tra Cài đặt › Kết nối và giới thiệu › Đánh thức PC từ điện thoại của bạn hiển thị bộ điều hợp mạng đã sẵn sàng.</string>
 <string name="guide_wake_opt_1">Đánh thức: Gửi gói Wake-on-LAN trên mạng cục bộ.</string>
 <string name="guide_wake_privacy">Dùng địa chỉ MAC học được trong phiên LAN đã xác thực trước đó.</string>
 <string name="guide_wake_limits">Cần Ethernet hoặc card Wi-Fi hỗ trợ Wake on Wireless LAN.</string>

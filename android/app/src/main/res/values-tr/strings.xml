@@ -1268,7 +1268,7 @@
     <string name="guide_wake_need_1">G7 Link\'in MAC adresini öğrenebilmesi için en az bir kez yerel ağ üzerinden bağlanmış eşleştirilmiş bilgisayar.</string>
     <string name="guide_wake_need_2">BIOS/UEFI\'de ve bilgisayarın ağ bağdaştırıcısında Wake-on-LAN etkin.</string>
     <string name="guide_wake_phone_1">Eşleştirilmiş bilgisayarınız Ana Sayfa\'da çevrimdışı göründüğünde kartındaki Uyandır\'a dokunun.</string>
-    <string name="guide_wake_pc_1">Bilgisayarınızdaki G7 Link\'te Ayarlar › Bağlantı ve Hakkında › Telefonunuzdan uyandırma bölümünde Wake on Magic Packet hazır yazdığını kontrol edin.</string>
+    <string name="guide_wake_pc_1">Bilgisayarınızdaki G7 Link\'te Ayarlar › Bağlantı ve Hakkında › Telefonunuzdan uyandırma bölümünün ağ bağdaştırıcınızı hazır gösterdiğini kontrol edin.</string>
     <string name="guide_wake_opt_1">Uyandır: Yerel ağda bir Wake-on-LAN paketi gönderir.</string>
     <string name="guide_wake_privacy">Daha önceki, kimliği doğrulanmış bir yerel ağ oturumunda öğrenilen MAC adresini kullanır.</string>
     <string name="guide_wake_limits">Ethernet veya Wake on Wireless LAN destekleyen bir Wi-Fi bağdaştırıcısı gerektirir.</string>

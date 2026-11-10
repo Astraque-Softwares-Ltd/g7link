@@ -1269,7 +1269,7 @@
     <string name="guide_wake_need_1">Gekoppelter PC, der mindestens einmal über das lokale Netzwerk verbunden war, damit G7 Link seine MAC-Adresse kennt.</string>
     <string name="guide_wake_need_2">Wake-on-LAN im BIOS/UEFI und am Netzwerkadapter des PCs aktiviert.</string>
     <string name="guide_wake_phone_1">Wenn dein gekoppelter PC auf der Startseite offline ist, tippe auf seiner Karte auf „Aufwecken“.</string>
-    <string name="guide_wake_pc_1">Prüfe in G7 Link auf deinem PC, dass unter Einstellungen › Verbindung &amp; Info › Vom Gerät aus aufwecken „Wake on Magic Packet bereit“ steht.</string>
+    <string name="guide_wake_pc_1">Prüfe in G7 Link auf deinem PC, dass Einstellungen › Verbindung &amp; Info › Vom Gerät aus aufwecken deinen Netzwerkadapter als bereit anzeigt.</string>
     <string name="guide_wake_opt_1">Aufwecken: Sendet ein Wake-on-LAN-Paket im lokalen Netzwerk.</string>
     <string name="guide_wake_privacy">Verwendet die MAC-Adresse, die während einer früheren authentifizierten LAN-Sitzung gelernt wurde.</string>
     <string name="guide_wake_limits">Erfordert Ethernet oder einen WLAN-Adapter, der Wake on Wireless LAN unterstützt.</string>

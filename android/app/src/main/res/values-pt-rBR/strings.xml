@@ -1268,7 +1268,7 @@
     <string name="guide_wake_need_1">O PC pareado precisa ter se conectado pela rede local pelo menos uma vez, para o G7 Link aprender o endereço MAC dele.</string>
     <string name="guide_wake_need_2">Wake-on-LAN ativado na BIOS/UEFI e no adaptador de rede do PC.</string>
     <string name="guide_wake_phone_1">Quando o PC pareado aparecer offline na tela Início, toque em Acordar no cartão dele.</string>
-    <string name="guide_wake_pc_1">No G7 Link do PC, confira se Configurações › Conexão e sobre › Acordar pelo celular mostra Wake on Magic Packet pronto.</string>
+    <string name="guide_wake_pc_1">No G7 Link do PC, confira se Configurações › Conexão e sobre › Acordar pelo celular mostra o adaptador de rede como pronto.</string>
     <string name="guide_wake_opt_1">Acordar: envia um pacote Wake-on-LAN pela rede local.</string>
     <string name="guide_wake_privacy">Usa o endereço MAC aprendido numa sessão autenticada anterior na rede local.</string>
     <string name="guide_wake_limits">Exige Ethernet ou um adaptador Wi-Fi compatível com Wake on Wireless LAN.</string>

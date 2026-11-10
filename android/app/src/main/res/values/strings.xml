@@ -1271,7 +1271,7 @@
     <string name="guide_wake_need_1">Paired PC connected over LAN at least once so G7 Link learns its MAC address.</string>
     <string name="guide_wake_need_2">Wake-on-LAN enabled in BIOS/UEFI and on the PC\'s network adapter.</string>
     <string name="guide_wake_phone_1">When your paired PC is offline on Home, tap Wake on its card.</string>
-    <string name="guide_wake_pc_1">In G7 Link on your PC, check Settings › Connection &amp; About › Wake from your phone shows Wake on Magic Packet ready.</string>
+    <string name="guide_wake_pc_1">In G7 Link on your PC, check that Settings › Connection &amp; About › Wake from your phone shows your network adapter as ready.</string>
     <string name="guide_wake_opt_1">Wake: Sends a Wake-on-LAN packet on the local network.</string>
     <string name="guide_wake_privacy">Uses the MAC address learned during a previous authenticated LAN session.</string>
     <string name="guide_wake_limits">Requires Ethernet or a Wi-Fi adapter that supports Wake on Wireless LAN.</string>
