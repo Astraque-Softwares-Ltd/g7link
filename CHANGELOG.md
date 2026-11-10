@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## 0.1.6 (unreleased)
+## 0.1.6 (2026-11-11)
 
 The first release of G7 Link: the phone companion for G7 Linux, on a Linux PC
 and an Android phone.
@@ -23,6 +23,9 @@ and an Android phone.
 - **G7's look.** Both apps follow G7's design: dark first, G7's colors and
   glyphs, Geist Mono for code, and no card boxes. The Cobalt theme and a bottom
   dock are new on the desktop; the other themes stay in Settings.
+- **The phone app is one scan away.** The installer ends with a QR code to scan
+  with the phone's camera for the Android app; `g7link-desktop --phone-app`
+  shows it again.
 - **Full screen.** The app opens full screen, and phone and app windows can go
   full screen too.
 - **Answer a ringing call from Home.**

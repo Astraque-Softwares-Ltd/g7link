@@ -14,7 +14,7 @@ members = [
 exclude = ["third_party"]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.97"
 authors = ["The G7 Link contributors"]
@@ -26,10 +26,10 @@ repository = "https://github.com/Astraque-Softwares-Ltd/g7link"
 name = "Pollen"
 
 [workspace.dependencies]
-g7link-adb = { path = "core/g7link-adb", version = "0.1.5" }
-g7link-protocol = { path = "core/g7link-protocol", version = "0.1.5" }
-g7link-core = { path = "core/g7link-core", version = "0.1.5" }
-g7link-vcam = { path = "desktop/vcam", version = "0.1.5" }
+g7link-adb = { path = "core/g7link-adb", version = "0.1.6" }
+g7link-protocol = { path = "core/g7link-protocol", version = "0.1.6" }
+g7link-core = { path = "core/g7link-core", version = "0.1.6" }
+g7link-vcam = { path = "desktop/vcam", version = "0.1.6" }
 
 anyhow = "1"
 ciborium = "0.2"
