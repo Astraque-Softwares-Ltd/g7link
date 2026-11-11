@@ -276,6 +276,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     private val startGuard = StartGuard()
     private val wakeTimers = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
+    @Volatile private var interactive = false
+    private val interactiveLock = Any()
+
     @Volatile private var lastBattery: app.g7link.core.Battery? = null
     @Volatile private var lastSignal: SignalSnapshot = SignalSnapshot()
     @Volatile private var lastReportedBattery: app.g7link.core.Battery? = null
@@ -448,6 +451,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 node = started
                 isRunning = true
             }
+            applyInteractive(started)
             val devices = runCatching { started.pairedDevices() }.getOrDefault(emptyList())
             val pcToggles = perPcToggles(started, devices.map { it.id })
             val clipHistEnabled = runCatching { started.clipboardHistoryEnabled() }.getOrDefault(true)
@@ -1458,6 +1462,23 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 peerId = pcId,
             ),
         )
+    }
+
+    /**
+     * Whether the user has the app open: the core checks its links every 5 s
+     * then instead of every 15 s, and right away when it opens.
+     */
+    fun setInteractive(on: Boolean) {
+        interactive = on
+        val current = node ?: return
+        scope.launch { applyInteractive(current) }
+    }
+
+    /** Hands the node the latest value, so calls that run out of order can't leave an older one. */
+    private fun applyInteractive(target: G7LinkNode) {
+        synchronized(interactiveLock) {
+            runCatching { target.setInteractive(interactive) }
+        }
     }
 
     // ---- LocalSend interop & Mobile Data (Away mode) ----

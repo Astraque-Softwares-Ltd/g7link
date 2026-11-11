@@ -8,7 +8,7 @@ use crate::i18n::tr;
 use std::{
     future::Future,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -33,6 +33,8 @@ pub struct CoreHost {
 }
 
 static HOST: OnceLock<CoreHost> = OnceLock::new();
+/// Whether the main window is showing, for a node that starts later.
+static INTERACTIVE: Mutex<bool> = Mutex::new(false);
 
 /// The running host. Panics if called before [`start`].
 pub fn host() -> &'static CoreHost {
@@ -62,6 +64,17 @@ pub async fn wait_for_node() -> Option<Node> {
             return None;
         }
         started.await;
+    }
+}
+
+/// Tells the node whether the main window is showing (it checks links more
+/// often then), now or once it has started. Only an atomic store in the node,
+/// so it's fine on the GUI thread.
+pub fn set_interactive(on: bool) {
+    let mut interactive = INTERACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+    *interactive = on;
+    if let Some(node) = node() {
+        node.set_interactive(on);
     }
 }
 
@@ -235,6 +248,11 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
         max_entries: g7link_core::DEFAULT_TIMELINE_MAX_ENTRIES,
     });
     let _ = host.node.set(node);
+    if let Some(node) = host.node.get() {
+        // Under the lock, so a change from the window in between isn't lost.
+        let interactive = INTERACTIVE.lock().unwrap_or_else(|e| e.into_inner());
+        node.set_interactive(*interactive);
+    }
     host.hub.update(|s| {
         let mut changes = s.set_devices(devices);
         for m in matrices {

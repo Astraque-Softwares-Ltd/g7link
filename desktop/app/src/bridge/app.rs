@@ -325,6 +325,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshToastsEnabled"]
         fn refresh_toasts_enabled(self: Pin<&mut AppController>);
+        /// Whether the main window is showing (not hidden to the tray or
+        /// minimized): links to devices are checked more often then.
+        #[qinvokable]
+        #[cxx_name = "setInteractive"]
+        fn set_interactive(self: &AppController, on: bool);
 
         /// Opens the Connection Doctor and checks the connection.
         #[qinvokable]
@@ -1872,6 +1877,10 @@ impl qobject::AppController {
 
     pub fn is_ui_check(&self) -> bool {
         UI_CHECK.load(Ordering::Acquire)
+    }
+
+    pub fn set_interactive(&self, on: bool) {
+        core_host::set_interactive(on);
     }
 
     pub fn recheck_doctor(self: Pin<&mut Self>) {

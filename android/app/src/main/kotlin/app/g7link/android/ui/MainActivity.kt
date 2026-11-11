@@ -219,6 +219,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Links to PCs are checked every 5 s instead of 15 s while the app is on screen.
+        (application as G7LinkApplication).core.setInteractive(true)
+    }
+
+    override fun onStop() {
+        (application as G7LinkApplication).core.setInteractive(false)
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         // Back from Settings, maybe with notification access changed.

@@ -4372,6 +4372,12 @@ impl G7LinkNode {
         self.run(async move { node.refresh().await }).await;
     }
 
+    /// Whether the user has the app open: links are checked every 5 s
+    /// instead of every 15 s then, and right away when it opens.
+    pub fn set_interactive(&self, on: bool) {
+        self.node.set_interactive(on);
+    }
+
     /// Call when connectivity changes (Android doesn't tell native code).
     pub async fn network_changed(&self) {
         let node = self.node.clone();

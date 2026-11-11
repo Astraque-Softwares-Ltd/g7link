@@ -176,6 +176,8 @@ pub(crate) struct Shared {
     /// The last capability matrix emitted per device, to emit only changes.
     matrices: Mutex<HashMap<DeviceId, CapabilityMatrix>>,
     pub(crate) away_mode: std::sync::atomic::AtomicBool,
+    /// Whether the user has the app open: heartbeats ping more often then.
+    pub(crate) interactive: Arc<crate::session::Interactive>,
     memory: MemoryLookup,
     /// This device's notifications, when it mirrors them (phones).
     pub notifications: Feed,
@@ -1698,6 +1700,7 @@ impl Node {
             dial_failures: Mutex::new(HashMap::new()),
             matrices: Mutex::new(HashMap::new()),
             away_mode: std::sync::atomic::AtomicBool::new(config.away_mode),
+            interactive: Default::default(),
             memory,
             notifications: Feed::default(),
             notification_history: Mutex::new(Vec::new()),
@@ -1893,6 +1896,13 @@ impl Node {
     pub fn add_known_addrs(&self, peer: DeviceId, addrs: &[SocketAddr]) {
         self.shared.remember_addrs(&peer, addrs);
         self.shared.wake_supervisor(&peer);
+    }
+
+    /// Tells the core whether the user has the app open. Links are then
+    /// checked every 5 s instead of every 15 s, so one that died shows
+    /// sooner; turning it on checks them right away.
+    pub fn set_interactive(&self, on: bool) {
+        self.shared.interactive.set(on);
     }
 
     /// Tells the core the network may have changed (Wi-Fi switched, resumed

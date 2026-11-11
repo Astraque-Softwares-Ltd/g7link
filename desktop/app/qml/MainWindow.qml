@@ -391,7 +391,16 @@ NativeWindow {
             if (window.visible && !window.restoringGeometry
                 && (window.visibility === Window.Windowed || window.visibility === Window.Maximized))
                 geometrySaveTimer.restart()
+            window.updateInteractive()
         }
+    }
+    onVisibleChanged: updateInteractive()
+
+    // Links to devices are checked every 5 s instead of 15 s while this
+    // window is showing, so one that dropped shows sooner.
+    function updateInteractive() {
+        AppController.setInteractive(window.visible && window.visibility !== Window.Minimized
+                                     && window.visibility !== Window.Hidden)
     }
 
     Connections {
@@ -412,6 +421,7 @@ NativeWindow {
         }
     }
     Component.onCompleted: {
+        updateInteractive()
         if (!window.activeFocusItem && window.contentItem)
             window.contentItem.forceActiveFocus()
         if (currentDeviceId.length > 0)

@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -16,7 +16,7 @@ use g7link_protocol::{
     negotiate_version, read_frame, write_frame,
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream, VarInt};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -35,6 +35,9 @@ pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// a peer that stopped answering. A link that dropped is QUIC's to notice
 /// (`IDLE_TIMEOUT` in node.rs); pinging every 2.5 s kept phones awake.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+/// How often while the user has the app open (`Node::set_interactive`), so a
+/// link that died shows within seconds instead of after sends wait on it.
+const INTERACTIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(3000);
 const HEARTBEAT_RETRY_TIMEOUT: Duration = Duration::from_millis(1500);
 const OUTBOX_CAPACITY: usize = 256;
@@ -754,12 +757,53 @@ pub(crate) async fn probe_after_network_change(shared: &Arc<Shared>, session: &A
     }
 }
 
+/// How long the heartbeat waits between pings.
+fn heartbeat_period(interactive: bool) -> Duration {
+    if interactive { INTERACTIVE_HEARTBEAT_INTERVAL } else { HEARTBEAT_INTERVAL }
+}
+
+/// Whether the user has the app open (`Node::set_interactive`): heartbeats
+/// then ping every 5 s instead of every 15 s.
+#[derive(Debug, Default)]
+pub(crate) struct Interactive {
+    on: AtomicBool,
+    /// Wakes heartbeats waiting out a background period when the app opens.
+    opened: Notify,
+}
+
+impl Interactive {
+    pub(crate) fn set(&self, on: bool) {
+        if !self.on.swap(on, Ordering::SeqCst) && on {
+            self.opened.notify_waiters();
+        }
+    }
+
+    pub(crate) fn get(&self) -> bool {
+        self.on.load(Ordering::SeqCst)
+    }
+
+    /// Waits until the next ping is due: one period for the current mode, or
+    /// until the app opens, so opening it checks the link right away.
+    async fn wait_for_next_ping(&self) {
+        // Created before reading the mode, so an opening in between isn't missed.
+        let opened = self.opened.notified();
+        tokio::select! {
+            _ = tokio::time::sleep(heartbeat_period(self.get())) => {}
+            _ = opened => {}
+        }
+    }
+}
+
 async fn heartbeat(session: &Arc<Session>, shared: &Weak<Shared>) {
     let started = Instant::now();
-    let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let interactive = shared.upgrade().map(|s| s.interactive.clone()).unwrap_or_default();
+    // The first ping goes out right away, for the round-trip time.
+    let mut first = true;
     loop {
-        interval.tick().await;
+        if !first {
+            interactive.wait_for_next_ping().await;
+        }
+        first = false;
         if let Some(shared_arc) = shared.upgrade()
             && !shared_arc.is_connection_allowed(&session.conn)
         {
@@ -813,8 +857,15 @@ fn received_bytes(session: &Session) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_lan_ip, is_lan_peer_ip, is_same_ipv6_subnet, is_tailnet_ip, pcm_frame_ok};
-    use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+    use super::{
+        Interactive, heartbeat_period, is_lan_ip, is_lan_peer_ip, is_same_ipv6_subnet, is_tailnet_ip,
+        pcm_frame_ok,
+    };
+    use std::{
+        net::{IpAddr, Ipv6Addr, SocketAddr},
+        sync::Arc,
+        time::Duration,
+    };
 
     #[test]
     fn lan_ip_accepts_private_local_and_tailnet_and_rejects_wan() {
@@ -896,5 +947,60 @@ mod tests {
         assert!(!pcm_frame_ok(4_000_000_000, 2, 4));
         assert!(!pcm_frame_ok(48_000, 3, 6));
         assert!(!pcm_frame_ok(48_000, 0, 4));
+    }
+
+    #[test]
+    fn heartbeat_pings_every_5_s_with_the_app_open_and_every_15_s_otherwise() {
+        assert_eq!(heartbeat_period(true), Duration::from_secs(5));
+        assert_eq!(heartbeat_period(false), Duration::from_secs(15));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_waits_out_the_period_for_the_current_mode() {
+        let interactive = Interactive::default();
+        let started = tokio::time::Instant::now();
+        interactive.wait_for_next_ping().await;
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_secs(15) && waited < Duration::from_millis(15_100), "{waited:?}");
+
+        interactive.set(true);
+        let started = tokio::time::Instant::now();
+        interactive.wait_for_next_ping().await;
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_secs(5) && waited < Duration::from_millis(5_100), "{waited:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn opening_the_app_ends_a_background_wait_right_away() {
+        let interactive = Arc::new(Interactive::default());
+        let waiting = tokio::spawn({
+            let interactive = interactive.clone();
+            async move { interactive.wait_for_next_ping().await }
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(!waiting.is_finished(), "a background wait lasts 15 s");
+
+        let opened_at = tokio::time::Instant::now();
+        interactive.set(true);
+        waiting.await.expect("the wait finishes");
+        assert!(opened_at.elapsed() < Duration::from_secs(1), "woke after {:?}", opened_at.elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closing_the_app_doesnt_cut_a_wait_short() {
+        let interactive = Arc::new(Interactive::default());
+        interactive.set(true);
+        let waiting = tokio::spawn({
+            let interactive = interactive.clone();
+            async move { interactive.wait_for_next_ping().await }
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        interactive.set(false);
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        tokio::time::advance(Duration::from_secs(4)).await;
+        waiting.await.expect("the wait finishes");
     }
 }
