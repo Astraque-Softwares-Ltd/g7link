@@ -1252,6 +1252,8 @@ NativeWindow {
         running: window.uiCheck && AppController.status === "ready"
         onTriggered: {
             const n = stops.length
+            // Info, not a warning: it shows in CI's log which stops were reached.
+            console.info("ui-check: tour step", step, step < n ? stops[step] : "")
             if (step < n) {
                 window.page = stops[step]
             } else if (step === n) {
