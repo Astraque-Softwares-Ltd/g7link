@@ -461,7 +461,58 @@ fn phone_name(device: DeviceId) -> String {
     core_host::host().hub.read(|s| s.name_of(&device)).unwrap_or_else(|| "your phone".into())
 }
 
+/// Caller photos written for ringing notifications, by call, with a hash of
+/// the photo: the call ringing again (a name came in) doesn't write it again.
+static CALLER_PHOTOS: Mutex<Option<HashMap<String, (u64, PathBuf)>>> = Mutex::new(None);
+/// Calls whose photo is kept in [`CALLER_PHOTOS`].
+const MAX_CALLER_PHOTOS: usize = 16;
+
+fn caller_photos<T>(f: impl FnOnce(&mut HashMap<String, (u64, PathBuf)>) -> T) -> T {
+    f(CALLER_PHOTOS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
+}
+
+/// The ringing notification. A caller photo not written yet is written off
+/// the core's event loop, and the notification shows once it's there.
 fn show_ringing(device: DeviceId, call: &CallState, silenced: bool) {
+    let Some(photo) = &call.photo else {
+        return toast::show(ringing_toast(device, call, silenced, None));
+    };
+    let toast_key = key(device, &call.id);
+    let hash = crate::photos::fingerprint_bytes(photo);
+    let cached = caller_photos(|p| p.get(&toast_key).cloned());
+    if let Some((_, path)) = cached.filter(|(h, _)| *h == hash) {
+        return toast::show(ringing_toast(device, call, silenced, Some(path)));
+    }
+    let photo = photo.clone();
+    let call_id = call.id.clone();
+    core_host::spawn(async move {
+        let photo_key = toast_key.clone();
+        let saving = tokio::task::spawn_blocking(move || save_photo(&photo_key, &photo));
+        let written = saving.await.ok().flatten();
+        if let Some(path) = &written {
+            caller_photos(|p| {
+                if p.len() >= MAX_CALLER_PHOTOS {
+                    p.clear();
+                }
+                p.insert(toast_key, (hash, path.clone()));
+            });
+        }
+        // Answered or over meanwhile, or a newer photo came: nothing to show.
+        let Some(call) = ringing(|r| r.get(&device).filter(|c| c.id == call_id).cloned()) else { return };
+        if call.photo.as_deref().map(crate::photos::fingerprint_bytes) != Some(hash) {
+            return;
+        }
+        let toast = ringing_toast(device, &call, silenced, written);
+        // Under the lock that stops the ringing, so it can't show after that.
+        ringing(|r| {
+            if r.get(&device).is_some_and(|c| c.id == call_id) {
+                toast::show(toast);
+            }
+        });
+    });
+}
+
+fn ringing_toast(device: DeviceId, call: &CallState, silenced: bool, icon: Option<PathBuf>) -> Toast {
     let mut actions = Vec::new();
     if can_control(device) {
         actions.push((CALL_ANSWER.to_owned(), "Answer".to_owned()));
@@ -477,13 +528,13 @@ fn show_ringing(device: DeviceId, call: &CallState, silenced: bool) {
         }
         _ => tr!("Calls", "Calling %1", phone_name(device)),
     };
-    toast::show(Toast {
+    Toast {
         device: TOAST_GROUP.into(),
         key: key(device, &call.id),
         title: caller(call),
         body,
         attribution: "G7 Link".into(),
-        icon: call.photo.as_deref().and_then(|photo| save_photo(device, &call.id, photo)),
+        icon,
         image: None,
         actions,
         reply: None,
@@ -492,7 +543,7 @@ fn show_ringing(device: DeviceId, call: &CallState, silenced: bool) {
         silent: silenced || crate::pc_audio_stream::is_enabled(),
         progress: None,
         call: true,
-    });
+    }
 }
 
 /// A quiet notification for the call in progress: mute, speaker, end
@@ -558,10 +609,11 @@ fn show_missed(device: DeviceId, call: &CallState) {
     });
 }
 
-/// The caller's photo as a file, for the notification.
-fn save_photo(device: DeviceId, call: &str, photo: &[u8]) -> Option<PathBuf> {
+/// The caller's photo as a file, for the notification of the call `key`.
+/// Blocking.
+fn save_photo(key: &str, photo: &[u8]) -> Option<PathBuf> {
     let dir = crate::notifications::images_dir();
-    let path = dir.join(format!("call-{:016x}.jpg", crate::photos::fingerprint(&key(device, call))));
+    let path = dir.join(format!("call-{:016x}.jpg", crate::photos::fingerprint(key)));
     match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, photo)) {
         Ok(()) => Some(path),
         Err(e) => {

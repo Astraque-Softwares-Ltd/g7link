@@ -7,9 +7,11 @@
 use crate::i18n::tr;
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -207,39 +209,73 @@ pub(crate) fn images_dir() -> std::path::PathBuf {
     core_host::host().data_dir.join("cache").join("images")
 }
 
-/// Saves the pictures an event's notifications carry; returns where each
-/// went by device and key, or `None` for a notification without one.
-fn save_images(event: &NodeEvent) -> Vec<((DeviceId, String), Option<std::path::PathBuf>)> {
+/// A notification, by phone and key.
+type NotificationKey = (DeviceId, String);
+
+/// A notification's picture still to be written.
+struct Picture {
+    key: NotificationKey,
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+/// The picture file each notification shows once it's written, so a picture
+/// written after its notification changed again isn't shown.
+static WANTED_PICTURES: Mutex<Option<HashMap<NotificationKey, PathBuf>>> = Mutex::new(None);
+
+fn wanted_pictures<T>(f: impl FnOnce(&mut HashMap<NotificationKey, PathBuf>) -> T) -> T {
+    f(WANTED_PICTURES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new))
+}
+
+/// An event's notifications without a picture (`None`, for the hub), and
+/// the pictures of the others, to write first. A picture is named after the
+/// notification and the picture: an update with a new picture gets a new
+/// file (the UI caches by name).
+fn pictures_of(event: &NodeEvent) -> (Vec<(NotificationKey, Option<PathBuf>)>, Vec<Picture>) {
     let (device, items): (DeviceId, Vec<&Notification>) = match event {
         NodeEvent::NotificationsReset { device, items } => (*device, items.iter().collect()),
         NodeEvent::NotificationPosted { device, notification } => (*device, vec![notification]),
-        _ => return Vec::new(),
+        _ => return (Vec::new(), Vec::new()),
     };
     let dir = images_dir();
-    items
-        .into_iter()
-        .filter_map(|n| {
-            let Some(image) = n.image.as_ref() else {
-                return Some(((device, n.key.clone()), None));
-            };
-            // Named after the notification and the picture: an update with a
-            // new picture gets a new file (the UI caches by name).
-            let name = format!(
-                "{:016x}.jpg",
-                fnv(&[device.to_string().as_bytes(), n.key.as_bytes(), image].concat())
-            );
-            let path = dir.join(name);
-            let saved = std::fs::create_dir_all(&dir)
-                .and_then(|()| if path.exists() { Ok(()) } else { std::fs::write(&path, image) });
-            match saved {
-                Ok(()) => Some(((device, n.key.clone()), Some(path))),
-                Err(e) => {
-                    tracing::debug!(error = %e, "can't save a notification picture");
-                    None
-                }
+    let mut without = Vec::new();
+    let mut pictures = Vec::new();
+    for n in items {
+        let key = (device, n.key.clone());
+        match &n.image {
+            None => without.push((key, None)),
+            Some(image) => {
+                let name = format!(
+                    "{:016x}.jpg",
+                    fnv(&[device.to_string().as_bytes(), n.key.as_bytes(), image].concat())
+                );
+                pictures.push(Picture { key, path: dir.join(name), bytes: image.clone() });
             }
-        })
-        .collect()
+        }
+    }
+    (without, pictures)
+}
+
+/// Writes pictures on the files thread; each shows on its notification once
+/// it's there.
+fn write_pictures(pictures: Vec<Picture>) {
+    let dir = images_dir();
+    for Picture { key, path, bytes } in pictures {
+        let saved = std::fs::create_dir_all(&dir)
+            .and_then(|()| if path.exists() { Ok(()) } else { std::fs::write(&path, &bytes) });
+        if let Err(e) = &saved {
+            tracing::debug!(error = %e, "can't save a notification picture");
+        }
+        wanted_pictures(|wanted| {
+            if wanted.get(&key) != Some(&path) {
+                return;
+            }
+            wanted.remove(&key);
+            if saved.is_ok() {
+                core_host::host().hub.update(|s| s.set_notification_image(key, path));
+            }
+        });
+    }
 }
 
 /// Deletes pictures older than [`KEEP_IMAGES`].
@@ -297,45 +333,122 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// Saves the app icons an event carries; returns where each app's went.
-fn save_icons(event: &NodeEvent) -> Vec<(String, std::path::PathBuf)> {
+/// The app icons an event carries: where those saved already are, and the
+/// others, to write first.
+fn icons_of(event: &NodeEvent) -> (Vec<(String, PathBuf)>, Vec<(String, Vec<u8>)>) {
     let items: Vec<&Notification> = match event {
         NodeEvent::NotificationsReset { items, .. } => items.iter().collect(),
         NodeEvent::NotificationPosted { notification, .. } => vec![notification],
-        _ => return Vec::new(),
+        _ => return (Vec::new(), Vec::new()),
     };
     let data_dir = &core_host::host().data_dir;
-    items
-        .into_iter()
-        .filter_map(|n| {
-            let icon = n.icon.as_ref()?;
-            match icons::save(data_dir, &n.app, icon) {
-                Ok(path) => Some((n.app.clone(), path)),
-                Err(e) => {
-                    tracing::debug!(app = %n.app, error = %e, "can't save an app icon");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
-/// Folds an event into the hub, saving icons first.
-pub fn apply(event: &NodeEvent) {
-    let icons = save_icons(event);
-    let images = save_images(event);
-    core_host::host().hub.update(|s| {
-        let mut changes = Changes::NONE;
-        for (app, path) in icons {
-            changes |= s.set_app_icon(&app, path);
+    let mut apps = HashSet::new();
+    let mut saved = Vec::new();
+    let mut new = Vec::new();
+    for n in items {
+        let Some(icon) = n.icon.as_ref() else { continue };
+        if !apps.insert(n.app.as_str()) {
+            continue;
         }
-        changes |= s.apply_with_images(event, images);
-        changes
-    });
+        match icons::already_saved(data_dir, &n.app, icon) {
+            Some(path) => saved.push((n.app.clone(), path)),
+            None => new.push((n.app.clone(), icon.clone())),
+        }
+    }
+    (saved, new)
 }
 
-/// Shows, updates or removes toasts after an event.
+/// Writes app icons on the files thread, and records where they went.
+fn write_icons(new: Vec<(String, Vec<u8>)>) {
+    let host = core_host::host();
+    for (app, png) in new {
+        match icons::save(&host.data_dir, &app, &png) {
+            Ok(path) => host.hub.update(|s| s.set_app_icon(&app, path)),
+            Err(e) => tracing::debug!(app = %app, error = %e, "can't save an app icon"),
+        }
+    }
+}
+
+type FilesJob = Box<dyn FnOnce() + Send>;
+
+/// Runs `job` on the thread that writes notifications' icons and pictures,
+/// after the jobs before it: the core's event loop doesn't wait on the disk,
+/// and a toast still comes after the files it shows.
+fn on_files_thread(job: impl FnOnce() + Send + 'static) {
+    static FILES: OnceLock<Option<mpsc::Sender<FilesJob>>> = OnceLock::new();
+    let files = FILES.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<FilesJob>();
+        let spawned = std::thread::Builder::new().name("notification-files".into()).spawn(move || {
+            for job in rx {
+                job();
+            }
+        });
+        spawned.ok().map(|_| tx)
+    });
+    let job: FilesJob = Box::new(job);
+    match files {
+        Some(tx) => {
+            // The thread is gone (a job panicked): done here instead.
+            if let Err(mpsc::SendError(job)) = tx.send(job) {
+                job();
+            }
+        }
+        None => job(),
+    }
+}
+
+/// Folds an event into the hub. Icons and pictures not saved yet are written
+/// on the files thread, and show once they're there.
+pub fn apply(event: &NodeEvent) {
+    let (icons, new_icons) = icons_of(event);
+    let (without_pictures, pictures) = pictures_of(event);
+    // Under the lock the written pictures are shown with, so an older one
+    // can't land after this.
+    wanted_pictures(|wanted| {
+        if let NodeEvent::DeviceRemoved(id) = event {
+            wanted.retain(|(device, _), _| device != id);
+        }
+        for (key, _) in &without_pictures {
+            wanted.remove(key);
+        }
+        for picture in &pictures {
+            wanted.insert(picture.key.clone(), picture.path.clone());
+        }
+        core_host::host().hub.update(|s| {
+            let mut changes = Changes::NONE;
+            for (app, path) in icons {
+                changes |= s.set_app_icon(&app, path);
+            }
+            changes |= s.apply_with_images(event, without_pictures);
+            changes
+        });
+    });
+    if !new_icons.is_empty() || !pictures.is_empty() {
+        on_files_thread(move || {
+            write_icons(new_icons);
+            write_pictures(pictures);
+        });
+    }
+}
+
+/// Shows, updates or removes toasts after an event, on the files thread:
+/// after the icon and picture they show are written.
 pub fn update_toasts(event: &NodeEvent) {
+    let for_toasts = matches!(
+        event,
+        NodeEvent::NotificationPosted { .. }
+            | NodeEvent::NotificationRemoved { .. }
+            | NodeEvent::NotificationsReset { .. }
+            | NodeEvent::PhoneToggles { .. }
+            | NodeEvent::DeviceRemoved(_)
+    );
+    if for_toasts {
+        let event = event.clone();
+        on_files_thread(move || toasts_after(&event));
+    }
+}
+
+fn toasts_after(event: &NodeEvent) {
     match event {
         NodeEvent::NotificationPosted { device, notification } => show(*device, notification),
         NodeEvent::NotificationRemoved { device, key } => {
