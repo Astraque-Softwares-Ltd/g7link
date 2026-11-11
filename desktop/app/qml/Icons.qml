@@ -4,8 +4,8 @@ import QtQuick
 
 // Stroke icons as SVG paths on a 24×24 grid (round caps and joins), drawn
 // by Icon when G7Glyphs has no filled glyph for them or another theme is on.
-// chevronLeft, sparkle (sparkles), island (picture-in-picture-top) and
-// hotspot (access-point) are Tabler Icons, MIT (LICENSES/MIT-Tabler-Icons.txt).
+// chevronLeft, sparkle, island, hotspot and the paths after shield are
+// Tabler Icons, MIT (LICENSES/MIT-Tabler-Icons.txt).
 QtObject {
     readonly property string home: "M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 21v-6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v6"
     readonly property string messages: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 8.5h8M8 12.5h5"
@@ -105,4 +105,14 @@ QtObject {
     readonly property string book: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15zM8 7h8M8 11h6"
     readonly property string compass: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM16.24 7.76l-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z"
     readonly property string shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4"
+    readonly property string tray: "M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2zM4 13h3l3 3h4l3 -3h3"
+    readonly property string lightbulb: "M3 12h1m8 -9v1m8 8h1m-15.4 -6.4l.7 .7m12.1 -.7l-.7 .7M9 16a5 5 0 1 1 6 0a3.5 3.5 0 0 0 -1 3a2 2 0 0 1 -4 0a3.5 3.5 0 0 0 -1 -3M9.7 17l4.6 0"
+    readonly property string bellOff: "M9.346 5.353c.21 -.129 .428 -.246 .654 -.353a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3m-1 3h-13a4 4 0 0 0 2 -3v-3a6.996 6.996 0 0 1 1.273 -3.707M9 17v1a3 3 0 0 0 6 0v-1M3 3l18 18"
+    readonly property string mouse: "M6 3m0 4a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v10a4 4 0 0 1 -4 4h-4a4 4 0 0 1 -4 -4zM12 7l0 4"
+    readonly property string gesture: "M8 13v-8.5a1.5 1.5 0 0 1 3 0v7.5M11 11.5v-2a1.5 1.5 0 0 1 3 0v2.5M14 10.5a1.5 1.5 0 0 1 3 0v1.5M17 11.5a1.5 1.5 0 0 1 3 0v4.5a6 6 0 0 1 -6 6h-2h.208a6 6 0 0 1 -5.012 -2.7l-.196 -.3c-.312 -.479 -1.407 -2.388 -3.286 -5.728a1.5 1.5 0 0 1 .536 -2.022a1.867 1.867 0 0 1 2.28 .28l1.47 1.47M5 3l-1 -1M4 7h-1M14 3l1 -1M15 6h1"
+    readonly property string screenshot: "M7 19a2 2 0 0 1 -2 -2M5 13v-2M5 7a2 2 0 0 1 2 -2M11 5h2M17 5a2 2 0 0 1 2 2M19 11v2M19 17v4M21 19h-4M13 19h-2"
+    readonly property string flip: "M12 3l0 18M16 7l0 10l5 0l-5 -10M8 7l0 10l-5 0l5 -10"
+    readonly property string toggles: "M16 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M2 6m0 6a6 6 0 0 1 6 -6h8a6 6 0 0 1 6 6v0a6 6 0 0 1 -6 6h-8a6 6 0 0 1 -6 -6z"
+    readonly property string channel: "M7 18m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M7 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M17 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M7 8l0 8M9 18h6a2 2 0 0 0 2 -2v-5M14 14l3 -3l3 3"
+    readonly property string doctor: "M3 12h4l3 8l4 -16l3 8h4"
 }

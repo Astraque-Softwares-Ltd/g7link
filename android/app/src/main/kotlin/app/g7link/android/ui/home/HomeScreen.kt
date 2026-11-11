@@ -79,9 +79,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -398,7 +395,7 @@ fun HomeScreen(
                     } else {
                         stringResource(R.string.ringing_title, from)
                     },
-                    icon = G7Icons.bell,
+                    icon = G7Icons.ring,
                     tint = tints.red,
                     actionLabel = stringResource(R.string.action_stop_ringing),
                     onAction = onStopRinging,
@@ -1125,7 +1122,7 @@ private fun PeerRows(
         )
         G7Row(
             label = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device),
-            icon = G7Icons.bell,
+            icon = G7Icons.ring,
             tint = tints.blue,
             enabled = device.online && device.has("pair.ring"),
             onClick = {
@@ -1776,14 +1773,14 @@ private fun SendQueueRow(
         item.kind == FfiQueueKind.HANDOFF_DOCUMENT ||
         item.kind == FfiQueueKind.RECORDING
     val kindIcon = when (item.kind) {
-        FfiQueueKind.CLIPBOARD, FfiQueueKind.CLIPBOARD_IMAGE -> ClipboardIcon
-        FfiQueueKind.LINK -> LinkChainIcon
+        FfiQueueKind.CLIPBOARD, FfiQueueKind.CLIPBOARD_IMAGE -> G7Icons.clipboard
+        FfiQueueKind.LINK -> G7Icons.link
+        FfiQueueKind.FOLDER -> G7Icons.folder
+        FfiQueueKind.RECORDING -> G7Icons.mic
+        FfiQueueKind.CAMERA_REQUEST -> G7Icons.camera
+        FfiQueueKind.TASK_NOTIFY -> G7Icons.bolt
         FfiQueueKind.FILES,
-        FfiQueueKind.FOLDER,
-        FfiQueueKind.HANDOFF_DOCUMENT,
-        FfiQueueKind.RECORDING,
-        FfiQueueKind.TASK_NOTIFY,
-        FfiQueueKind.CAMERA_REQUEST -> SendArrowIcon
+        FfiQueueKind.HANDOFF_DOCUMENT -> G7Icons.upload
     }
     val status = item.status
     val targetId = item.activeTransferId ?: item.id
@@ -1887,7 +1884,7 @@ private fun SendQueueRow(
                         modifier = Modifier.size(32.dp),
                     ) {
                         Icon(
-                            imageVector = CloseQueueIcon,
+                            imageVector = G7Icons.close,
                             contentDescription = stringResource(R.string.action_cancel),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp),
@@ -2792,53 +2789,6 @@ private fun openSavedPcFile(context: android.content.Context, uri: Uri, fileName
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(Intent.createChooser(view, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
-}
-
-private fun softContinuousVector(name: String, svgPath: String, strokeWidth: Float = 1.9f): ImageVector {
-    val nodes = androidx.compose.ui.graphics.vector.PathParser().parsePathString(svgPath).toNodes()
-    return ImageVector.Builder(
-        name = name,
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).addPath(
-        pathData = nodes,
-        fill = null,
-        stroke = SolidColor(Color.White),
-        strokeLineWidth = strokeWidth,
-        strokeLineCap = StrokeCap.Round,
-        strokeLineJoin = StrokeJoin.Round,
-    ).build()
-}
-
-
-private val SendArrowIcon: ImageVector by lazy {
-    softContinuousVector(
-        name = "SendArrow",
-        svgPath = "M12,16V4 M7,9L12,4L17,9 M4,20H20",
-    )
-}
-
-private val ClipboardIcon: ImageVector by lazy {
-    softContinuousVector(
-        name = "Clipboard",
-        svgPath = "M9,3.5H15A1.5,1.5 0 0,1 16.5,5V5.5A1.5,1.5 0 0,1 15,7H9A1.5,1.5 0 0,1 7.5,5.5V5A1.5,1.5 0 0,1 9,3.5Z M16.5,5H18A2.5,2.5 0 0,1 20.5,7.5V19A2.5,2.5 0 0,1 18,21.5H6A2.5,2.5 0 0,1 3.5,19V7.5A2.5,2.5 0 0,1 6,5H7.5",
-    )
-}
-
-private val LinkChainIcon: ImageVector by lazy {
-    softContinuousVector(
-        name = "LinkChain",
-        svgPath = "M10,14A4.5,4.5 0 0,0 16.4,14L19.2,11.2A4.5,4.5 0 0,0 12.8,4.8L11.2,6.4 M14,10A4.5,4.5 0 0,0 7.6,10L4.8,12.8A4.5,4.5 0 0,0 11.2,19.2L12.8,17.6",
-    )
-}
-
-private val CloseQueueIcon: ImageVector by lazy {
-    softContinuousVector(
-        name = "CloseQueue",
-        svgPath = "M6,6L18,18 M18,6L6,18",
-    )
 }
 
 /** The localized fallback label for a queue item whose title is empty. */

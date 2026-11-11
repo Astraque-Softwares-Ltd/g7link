@@ -310,7 +310,7 @@ fun WebcamScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             RoundButton(
-                icon = G7Icons.refresh,
+                icon = G7Icons.flipCamera,
                 label = stringResource(
                     if (session.camera == "front") R.string.webcam_switch_to_back else R.string.webcam_switch_to_front,
                 ),

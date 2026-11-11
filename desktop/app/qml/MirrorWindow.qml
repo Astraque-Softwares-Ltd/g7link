@@ -563,7 +563,7 @@ Window {
         const list = [
             { label: qsTr("Copy screenshot"), icon: Icons.copy, tint: Theme.tintBlue, keys: "Ctrl Shift C",
               run: () => Mirror.screenshotClipboard(win.mirrorKey) },
-            { label: qsTr("Save screenshot"), icon: Icons.camera, tint: Theme.tintBlue, keys: "Ctrl S",
+            { label: qsTr("Save screenshot"), icon: Icons.screenshot, tint: Theme.tintBlue, keys: "Ctrl S",
               run: () => Mirror.screenshotFile(win.mirrorKey) },
             { label: win.info.recording === true ? qsTr("Stop recording") : qsTr("Record video"),
               icon: win.info.recording === true ? Icons.stopSquare : Icons.record, tint: Theme.tintRed, keys: "Ctrl R",
@@ -578,7 +578,7 @@ Window {
         list.push({ label: qsTr("Lock phone"), icon: Icons.lock, tint: Theme.tintTeal, enabled: win.canControl,
                     run: () => Mirror.press(win.mirrorKey, "lock") })
         if (!win.canControl && !win.info.app)
-            list.push({ label: qsTr("Ask the phone for control"), icon: Icons.bell, tint: Theme.tintBlue,
+            list.push({ label: qsTr("Ask the phone for control"), icon: Icons.gesture, tint: Theme.tintBlue,
                         run: () => Mirror.requestControl(win.mirrorKey) })
         list.push({ label: win.visibility === Window.FullScreen ? qsTr("Leave full screen") : qsTr("Full screen"),
                     icon: win.visibility === Window.FullScreen ? Icons.fullscreenExit : Icons.fullscreen,
@@ -636,7 +636,7 @@ Window {
                 onClicked: Mirror.toggleSound()
             }
             IconButton {
-                iconPath: Icons.camera
+                iconPath: Icons.screenshot
                 iconSize: 16
                 iconColor: Theme.tintBlue
                 label: qsTr("Screenshot (Ctrl+S)")

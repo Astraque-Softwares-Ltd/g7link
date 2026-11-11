@@ -334,7 +334,7 @@ Item {
         {
             id: "remote_input",
             name: qsTr("Remote input"),
-            icon: Icons.laptop,
+            icon: Icons.mouse,
             area: "input_control",
             capKey: "remote_input",
             toggleKey: "remote_input",
@@ -360,7 +360,7 @@ Item {
         {
             id: "quick_actions",
             name: qsTr("Phone controls"),
-            icon: Icons.flashlight,
+            icon: Icons.toggles,
             area: "input_control",
             capKey: "find_device",
             toggleKey: "",
@@ -462,7 +462,7 @@ Item {
         {
             id: "doctor",
             name: qsTr("Connection Doctor"),
-            icon: Icons.bolt,
+            icon: Icons.doctor,
             area: "automation_network",
             capKey: "",
             toggleKey: "",

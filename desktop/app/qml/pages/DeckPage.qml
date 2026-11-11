@@ -127,7 +127,7 @@ Item {
         case "desktop": return Icons.desktop
         case "switch_window":
         case "window": return Icons.window
-        case "screenshot":
+        case "screenshot": return Icons.screenshot
         case "camera": return Icons.camera
         case "shortcut":
         case "keyboard": return Icons.keyboard
@@ -135,7 +135,7 @@ Item {
         case "text": return Icons.text
         case "app": return Icons.apps
         case "terminal": return Icons.terminal
-        case "sparkle":
+        case "sparkle": return Icons.sparkle
         case "bolt": return Icons.bolt
         case "star": return Icons.star
         case "music": return Icons.music

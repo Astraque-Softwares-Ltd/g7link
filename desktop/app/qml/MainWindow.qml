@@ -647,7 +647,7 @@ NativeWindow {
     readonly property var g7MenuActions: [
         { label: qsTr("Guide"), icon: Icons.book, tint: Theme.tintBlue, run: () => { window.page = "guide" } },
         { label: qsTr("Pair a phone"), icon: Icons.plus, tint: Theme.accent, run: () => window.openPairing() },
-        { label: qsTr("Check this PC"), icon: Icons.shield, tint: Theme.tintTeal, run: () => AppController.runDoctor() },
+        { label: qsTr("Check this PC"), icon: Icons.doctor, tint: Theme.tintTeal, run: () => AppController.runDoctor() },
         { label: qsTr("Command palette"), icon: Icons.search, tint: Theme.surfaceContentVariant, keys: "Ctrl K",
           run: () => AppController.openCommandPalette() },
         { label: qsTr("Quit G7 Link"), icon: Icons.power, tint: Theme.tintRed, run: () => {
@@ -1075,7 +1075,7 @@ NativeWindow {
             Avatar {
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: 56; height: 56
-                iconPath: Icons.phone
+                iconPath: Icons.mouse
                 emphasized: true
             }
             Txt {

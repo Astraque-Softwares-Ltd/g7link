@@ -485,7 +485,7 @@ Item {
                 { label: home.hasNickname ? qsTr("Change nickname") : qsTr("Set nickname"), icon: Icons.edit,
                   tint: Theme.surfaceContentVariant,
                   run: () => nicknameSheet.openFor(home.deviceId, home.name, home.rawName) },
-                { label: qsTr("Check the connection"), icon: Icons.shield, tint: Theme.tintTeal,
+                { label: qsTr("Check the connection"), icon: Icons.doctor, tint: Theme.tintTeal,
                   run: () => AppController.runDoctor() }
             )
             if (home.reconnect)
@@ -1219,10 +1219,11 @@ Item {
                 // ---- The phone: name, Android, network ----
                 Item {
                     width: parent.width
-                    height: Math.max(phoneGlyph.height, identity.implicitHeight)
+                    height: Math.max(phoneGlyph.y + phoneGlyph.height, identity.y + identity.implicitHeight)
+                    // The glyph sits on the name's line, not between the lines under it.
                     Icon {
                         id: phoneGlyph
-                        anchors.verticalCenter: parent.verticalCenter
+                        y: identity.y + Math.round((identityName.height - phoneGlyph.height) / 2)
                         width: 28; height: 28
                         path: home.kind === "phone" || home.kind === "tablet" ? Icons.phone : Icons.laptop
                         color: home.online ? Theme.accent : Theme.surfaceContentVariant
@@ -1232,8 +1233,9 @@ Item {
                         anchors.left: phoneGlyph.right
                         anchors.leftMargin: 12
                         anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
+                        y: Math.max(0, Math.round((phoneGlyph.height - identityName.height) / 2))
                         Row {
+                            id: identityName
                             width: parent.width
                             spacing: 4
                             Txt {

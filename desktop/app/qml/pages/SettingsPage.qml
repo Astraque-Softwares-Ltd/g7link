@@ -59,7 +59,7 @@ Item {
                         icon: Icons.refresh, tint: Theme.tintGreen, enabled: !AppController.updateBusy,
                         run: () => AppController.updateVersion.length > 0 ? AppController.installUpdate()
                                                                          : AppController.checkForUpdates() })
-        list.push({ label: qsTr("Connection Doctor"), icon: Icons.wifi, tint: Theme.tintBlue, run: () => AppController.runDoctor() })
+        list.push({ label: qsTr("Connection Doctor"), icon: Icons.doctor, tint: Theme.tintBlue, run: () => AppController.runDoctor() })
         list.push({ label: qsTr("Open logs"), icon: Icons.folder, tint: Theme.tintAmber,
                     run: () => Qt.openUrlExternally(AppController.logsUrl()) })
         list.push({ label: qsTr("Sync folders now"), icon: Icons.refresh, tint: Theme.tintAmber, run: () => Preferences.syncFoldersNow() })
@@ -94,7 +94,8 @@ Item {
     // Each setting's glyph draws in its own tint.
     function tintFor(path) {
         if (path === Icons.bell || path === Icons.messages || path === Icons.wifi || path === Icons.globe
-            || path === Icons.signal || path === Icons.desktop)
+            || path === Icons.signal || path === Icons.desktop || path === Icons.hotspot || path === Icons.bellOff
+            || path === Icons.doctor)
             return Theme.tintBlue
         if (path === Icons.call || path === Icons.person || path === Icons.speaker || path === Icons.lock
             || path === Icons.deck || path === Icons.laptop)
@@ -102,12 +103,13 @@ Item {
         if (path === Icons.photo || path === Icons.camera || path === Icons.video)
             return Theme.tintCoral
         if (path === Icons.mirror || path === Icons.music || path === Icons.island || path === Icons.screenOff
-            || path === Icons.phone)
+            || path === Icons.phone || path === Icons.flip)
             return Theme.tintPink
         if (path === Icons.folder || path === Icons.send || path === Icons.download || path === Icons.copy
-            || path === Icons.openExternal)
+            || path === Icons.openExternal || path === Icons.lightbulb)
             return Theme.tintAmber
-        if (path === Icons.battery || path === Icons.bolt || path === Icons.terminal || path === Icons.refresh)
+        if (path === Icons.battery || path === Icons.bolt || path === Icons.terminal || path === Icons.refresh
+            || path === Icons.usb)
             return Theme.tintGreen
         if (path === Icons.mic || path === Icons.power || path === Icons.trash || path === Icons.soundOff
             || path === Icons.pause)
@@ -434,16 +436,16 @@ Item {
         recordings: Icons.mic,
         media: Icons.music,
         photos: Icons.photo,
-        toggles: Icons.phone,
+        toggles: Icons.toggles,
         pc_actions: Icons.lock,
         mirroring: Icons.mirror,
         pc_mirror: Icons.laptop,
         webcam: Icons.video,
         mic: Icons.mic,
         storage: Icons.folder,
-        remote_input: Icons.deck,
+        remote_input: Icons.mouse,
         commands: Icons.terminal,
-        remote_files: Icons.globe
+        remote_files: Icons.folder
     })
 
     FolderDialog {
@@ -718,7 +720,7 @@ Item {
                                 id: hotspotRow
                                 width: parent.width
                                 property string network: AppController.hotspotNetwork(deviceCard.deviceId)
-                                iconPath: Icons.wifi
+                                iconPath: Icons.hotspot
                                 title: qsTr("Join its hotspot")
                                 description: hotspotRow.network.length > 0
                                     ? qsTr("Joins %1").arg(hotspotRow.network)
@@ -790,7 +792,7 @@ Item {
                         }
                         SettingRow {
                             width: parent.width
-                            iconPath: Icons.palette
+                            iconPath: Icons.text
                             title: qsTr("App size")
                             description: qsTr("After a restart")
                             Segmented {
@@ -1132,7 +1134,7 @@ Item {
                         SettingRow {
                             id: stayTrayRow
                             width: parent.width
-                            iconPath: Icons.window
+                            iconPath: Icons.tray
                             title: qsTr("Stay in system tray")
                             description: qsTr("Keep running when closed")
                             Toggle {
@@ -1284,7 +1286,7 @@ Item {
 
                         SettingRow {
                             width: parent.width
-                            iconPath: Icons.openExternal
+                            iconPath: Icons.lightbulb
                             title: qsTr("Suggest clipboard actions")
                             description: qsTr("Links, maps, numbers and emails")
                             Toggle {
@@ -1306,7 +1308,7 @@ Item {
                     width: parent.width
                     SettingRow {
                         width: parent.width
-                        iconPath: Icons.screenOff
+                        iconPath: Icons.mirror
                         title: qsTr("Mirror quality")
                         description: Preferences.mirrorQuality === "sharper"
                             ? qsTr("Full resolution · needs good Wi-Fi or USB")
@@ -1402,7 +1404,8 @@ Item {
 
                         SettingRow {
                             width: parent.width
-                            iconPath: Icons.speaker
+                            iconPath: Icons.mic
+                            iconColor: Theme.tintTeal
                             title: qsTr("Microphone volume")
                             description: qsTr("%1%").arg(PhoneMic.gain)
                             ValueSlider {
@@ -1494,7 +1497,7 @@ Item {
                         SettingRow {
                             id: mirrorCamRow
                             width: parent.width
-                            iconPath: Icons.mirror
+                            iconPath: Icons.flip
                             title: qsTr("Mirror image")
                             Toggle {
                                 label: qsTr("Mirror image")
@@ -1589,7 +1592,7 @@ Item {
 
                         SettingRow {
                             width: parent.width
-                            iconPath: Icons.bell
+                            iconPath: Icons.bellOff
                             title: qsTr("Quiet while this PC is locked")
                             description: qsTr("Still collected on Home")
                             Toggle {
@@ -1724,7 +1727,7 @@ Item {
 
                         SettingRow {
                             width: parent.width
-                            iconPath: Icons.globe
+                            iconPath: Icons.wifi
                             title: qsTr("LocalSend on local network")
                             description: qsTr("Nearby devices, no pairing")
                             Toggle {
@@ -2133,7 +2136,7 @@ Item {
                         SettingRow {
                             id: scanShortcutRow
                             width: parent.width
-                            iconPath: Icons.clipboardList
+                            iconPath: Icons.scan
                             title: qsTr("Scan document")
                             Row {
                                 spacing: 6
@@ -2608,7 +2611,7 @@ Item {
                         width: parent.width
                         SettingRow {
                             width: parent.width
-                            iconPath: Icons.wifi
+                            iconPath: Icons.doctor
                             title: qsTr("Connection Doctor")
                             description: qsTr("Firewall, network and VPN")
                             Button {
@@ -2794,7 +2797,7 @@ Item {
                         SettingRow {
                             width: parent.width
                             visible: AppController.canUpdate
-                            iconPath: Icons.moon
+                            iconPath: Icons.channel
                             title: qsTr("Update channel")
                             description: Preferences.updateChannel === "nightly"
                                          ? qsTr("Newest build, sometimes new bugs")
@@ -2877,7 +2880,7 @@ Item {
                     }
                     SettingRow {
                         width: parent.width
-                        iconPath: Icons.terminal
+                        iconPath: Icons.usb
                         title: qsTr("Install over USB")
                         description: page.adbCommand
                         TextAction {

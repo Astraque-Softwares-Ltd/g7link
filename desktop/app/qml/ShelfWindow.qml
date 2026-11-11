@@ -389,7 +389,7 @@ Window {
                                     slotKind: "screenshot",
                                     title: qsTr("Latest screenshot"),
                                     emptyText: qsTr("None yet"),
-                                    icon: Icons.camera,
+                                    icon: Icons.screenshot,
                                     tint: Theme.tintBlue,
                                     item: shelfWin.shelfData.latestScreenshot
                                 }

@@ -565,7 +565,7 @@ private fun guideIcon(id: String, tints: G7Tints): Pair<ImageVector, Color> = wh
     "timeline_history" -> G7Icons.history to tints.blue
     "localsend_lan" -> G7Icons.wifi to tints.green
     "phone_screen_mirroring" -> G7Icons.screen to tints.pink
-    "phone_app_windows" -> G7Icons.monitor to tints.pink
+    "phone_app_windows" -> G7Icons.window to tints.pink
     "phone_as_pc_webcam", "continuity_camera" -> G7Icons.camera to tints.coral
     "voice_recorder" -> G7Icons.mic to tints.red
     "control_pc_remote" -> G7Icons.pointer to tints.teal
@@ -574,8 +574,8 @@ private fun guideIcon(id: String, tints: G7Tints): Pair<ImageVector, Color> = wh
     "deck_control_surface" -> G7Icons.deck to tints.green
     "desk_mode" -> G7Icons.clock to tints.lavender
     "ring_lock_sleep_wake" -> G7Icons.power to tints.red
-    "phone_quick_toggles" -> G7Icons.moon to tints.lavender
+    "phone_quick_toggles" -> G7Icons.toggles to tints.lavender
     "away_mode_and_usb" -> G7Icons.signal to tints.teal
-    "connection_doctor" -> G7Icons.info to tints.blue
+    "connection_doctor" -> G7Icons.doctor to tints.blue
     else -> G7Icons.info to tints.muted
 }

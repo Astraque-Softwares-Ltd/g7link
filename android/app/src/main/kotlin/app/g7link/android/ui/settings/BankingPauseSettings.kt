@@ -12,6 +12,7 @@ import android.provider.Settings
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -41,8 +42,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -110,12 +114,19 @@ internal fun BankingPauseAccess() {
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 48.dp, end = 12.dp),
                 ) {
-                    AppIcon(app.icon)
-                    Text(
-                        app.label,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-                    )
+                    // The icon stays on the name's first line when the name wraps.
+                    Row(Modifier.weight(1f)) {
+                        AppIcon(app.icon)
+                        Text(
+                            app.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(
+                                start = 12.dp,
+                                end = 12.dp,
+                                top = firstLineInset(MaterialTheme.typography.bodyMedium),
+                            ),
+                        )
+                    }
                     if (canPin) {
                         TextButton(onClick = { OpenWithPauseActivity.pin(context, app.pkg, app.label) }) {
                             Text(stringResource(R.string.banking_shortcut))
@@ -178,16 +189,25 @@ private fun AppPicker(initial: Set<String>, onDone: (Set<String>) -> Unit, onCan
                 LazyColumn(Modifier.heightIn(max = 360.dp)) {
                     items(shown, key = { it.pkg }) { app ->
                         val on = app.pkg in selected
+                        // The box and icon stay on the name's first line when the name wraps.
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { selected = if (on) selected - app.pkg else selected + app.pkg }
                                 .padding(vertical = 4.dp),
                         ) {
-                            Checkbox(checked = on, onCheckedChange = null)
+                            Box(Modifier.height(APP_ICON_SIZE), contentAlignment = Alignment.Center) {
+                                Checkbox(checked = on, onCheckedChange = null)
+                            }
                             AppIcon(app.icon)
-                            Text(app.label, modifier = Modifier.padding(start = 12.dp))
+                            Text(
+                                app.label,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(
+                                    start = 12.dp,
+                                    top = firstLineInset(MaterialTheme.typography.bodyMedium),
+                                ),
+                            )
                         }
                     }
                 }
@@ -198,9 +218,18 @@ private fun AppPicker(initial: Set<String>, onDone: (Set<String>) -> Unit, onCan
     )
 }
 
+private val APP_ICON_SIZE = 28.dp
+
 @Composable
 private fun AppIcon(icon: ImageBitmap?) {
-    if (icon != null) Image(icon, contentDescription = null, modifier = Modifier.size(28.dp))
+    if (icon != null) Image(icon, contentDescription = null, modifier = Modifier.size(APP_ICON_SIZE))
+}
+
+/** How far down text in [style] starts so its first line is centred on an app icon beside it. */
+@Composable
+private fun firstLineInset(style: TextStyle): Dp {
+    val line = with(LocalDensity.current) { if (style.lineHeight.isSp) style.lineHeight.toDp() else APP_ICON_SIZE }
+    return ((APP_ICON_SIZE - line) / 2).coerceAtLeast(0.dp)
 }
 
 @Composable

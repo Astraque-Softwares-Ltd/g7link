@@ -356,7 +356,7 @@ fun SettingsScreen(
                     label = stringResource(R.string.settings_run_in_background),
                     checked = backgroundServiceEnabled,
                     onCheckedChange = onToggleBackgroundService,
-                    icon = G7Icons.moon,
+                    icon = G7Icons.always,
                     tint = tints.lavender,
                     highlighted = pulsing == "background",
                 )
@@ -411,7 +411,7 @@ fun SettingsScreen(
                     label = stringResource(R.string.settings_clipboard_suggestions),
                     checked = suggestClipboardActions,
                     onCheckedChange = onSetSuggestClipboardActions,
-                    icon = G7Icons.link,
+                    icon = G7Icons.lightbulb,
                     tint = tints.blue,
                 )
             }
