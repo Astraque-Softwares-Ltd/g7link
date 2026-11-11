@@ -64,9 +64,11 @@ pub struct Progress {
     pub label: String,
 }
 
+/// What the notification service says about a notification of ours.
+/// `ActivationToken` comes just before the `ActionInvoked` of a click: it is
+/// what lets a window of ours take the focus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MonitorSignal {
-    /// Sent just before `ActionInvoked`: what lets a window of ours take the focus.
     ActivationToken { id: u32, token: String },
     ActionInvoked { id: u32, action_key: String },
     NotificationReplied { id: u32, text: String },
