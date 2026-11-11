@@ -2,8 +2,8 @@
 import QtQuick
 import app.g7link
 
-// Calls: recent calls and contacts on the left, the active call and a
-// keypad dialer on the right. Audio stays on the phone; calls and texts
+// Calls: recent calls (all or missed) and contacts on the left, the active
+// call and a dialer on the right. Audio stays on the phone; calls and texts
 // started here go through the phone.
 Item {
     id: page
@@ -11,7 +11,7 @@ Item {
     // The phone shown (the one on Home).
     property string deviceId
     property string deviceName
-    // "recent" (call log) or "contacts".
+    // "recent", "missed" or "contacts".
     property string tab: "recent"
     // Contact shown above the keypad when picked from the list.
     property var selectedContact: null
@@ -20,16 +20,65 @@ Item {
 
     readonly property var callLog: { try { return JSON.parse(PhoneCall.callLog) } catch (e) { return [] } }
     readonly property var contacts: { try { return JSON.parse(PhoneCall.contacts) } catch (e) { return [] } }
+    readonly property var sims: { try { return JSON.parse(PhoneCall.sims || "[]") } catch (e) { return [] } }
     readonly property string query: search.text.trim().toLocaleLowerCase()
 
-    readonly property var shownCalls: query.length === 0 ? callLog
-        : callLog.filter(c => ((c.name || "") + " " + c.number).toLocaleLowerCase().indexOf(query) >= 0)
+    readonly property var shownCalls: callLog.filter(c => (tab !== "missed" || c.direction === "missed")
+        && (query.length === 0 || ((c.name || "") + " " + c.number).toLocaleLowerCase().indexOf(query) >= 0))
 
     readonly property var shownContacts: query.length === 0 ? contacts
         : contacts.filter(c => {
             const nums = (c.numbers || []).map(n => n.number + " " + (n.label || "")).join(" ")
             return (c.name + " " + nums).toLocaleLowerCase().indexOf(query) >= 0
         })
+
+    // The number Enter calls: the one in the dialer, or else the latest call.
+    readonly property string callBackNumber: dialInput.text.trim().length > 0 ? dialInput.text.trim()
+        : (callLog.length > 0 ? callLog[0].number : "")
+    readonly property bool canCall: callBackNumber.length > 0 && PhoneCall.canDial && !PhoneCall.dialing
+    readonly property bool typing: dialInput.activeFocus || search.input.activeFocus
+
+    // ---- Footer and Actions (Ctrl B) ----
+    readonly property string footerLabel: qsTr("Calls")
+    readonly property var primaryAction: ({
+        label: dialInput.text.trim().length > 0 ? qsTr("Call") : qsTr("Call back"),
+        keys: "Enter",
+        run: () => page.placeCall(page.callBackNumber)
+    })
+    readonly property var screenActions: {
+        const list = [
+            { label: dialInput.text.trim().length > 0 ? qsTr("Call %1").arg(dialInput.text.trim()) : qsTr("Call back"),
+              detail: page.callBackNumber, icon: Icons.call, tint: Theme.tintTeal, keys: "Enter",
+              enabled: page.canCall, run: () => page.placeCall(page.callBackNumber) },
+            { label: qsTr("Text this number"), detail: page.callBackNumber, icon: Icons.messages, tint: Theme.tintBlue,
+              enabled: page.callBackNumber.length > 0,
+              run: () => page.startText(page.callBackNumber, page.dialMatchedContact ? page.dialMatchedContact.name : "") },
+            { label: qsTr("All calls"), icon: Icons.history, tint: Theme.tintTeal, checked: page.tab === "recent",
+              run: () => { page.tab = "recent" } },
+            { label: qsTr("Missed calls"), icon: Icons.callMissed, tint: Theme.tintRed, checked: page.tab === "missed",
+              run: () => { page.tab = "missed" } },
+            { label: qsTr("Contacts"), icon: Icons.person, tint: Theme.tintTeal, checked: page.tab === "contacts",
+              run: () => { page.tab = "contacts" } },
+            { label: qsTr("Search"), icon: Icons.search, keys: "Ctrl F", run: () => search.input.forceActiveFocus() },
+            { label: qsTr("Clear number"), icon: Icons.close, enabled: dialInput.text.length > 0,
+              run: () => { dialInput.text = "" } },
+            { label: qsTr("Refresh"), icon: Icons.refresh,
+              enabled: PhoneCall.logStatus !== "loading" && PhoneCall.contactsStatus !== "loading",
+              run: () => PhoneCall.refresh() }
+        ]
+        if (PhoneCall.moreLog)
+            list.push({ label: qsTr("Load older calls"), icon: Icons.history, enabled: !PhoneCall.loadingOlder,
+                        run: () => PhoneCall.loadOlder() })
+        for (const s of page.sims)
+            list.push({ label: qsTr("Call with %1").arg(s.label), icon: Icons.signal, checked: PhoneCall.sim === s.id,
+                        enabled: PhoneCall.canDial, run: () => PhoneCall.chooseSim(s.id) })
+        if (!PhoneCall.hfpConnected && PhoneCall.hfpDetail.length > 0)
+            list.push(PhoneCall.hfpAvailable
+                ? { label: qsTr("Connect PC audio"), icon: Icons.speaker, tint: Theme.tintTeal, run: () => PhoneCall.connectPcAudio() }
+                : { label: qsTr("Open Bluetooth settings"), icon: Icons.bluetooth, tint: Theme.tintBlue,
+                    run: () => PhoneCall.openBluetoothSettings() })
+        return list
+    }
 
     // Digits for matching a typed number to a contact.
     function digits(s) {
@@ -52,7 +101,7 @@ Item {
         return null
     }
 
-    // A stable color for a contact (in Bloom).
+    // A stable color for a contact.
     function hueOf(name) {
         let h = 0
         for (let i = 0; i < name.length; i++)
@@ -149,7 +198,7 @@ Item {
     Shortcut {
         sequences: [StandardKey.Find]
         enabled: page.active && page.deviceId.length > 0
-        onActivated: search.forceActiveFocus()
+        onActivated: search.input.forceActiveFocus()
     }
     Shortcut {
         sequence: "Esc"
@@ -161,6 +210,11 @@ Item {
                 page.selectedContact = null
         }
     }
+    Shortcut {
+        sequences: ["Return", "Enter"]
+        enabled: page.active && !page.typing && page.canCall
+        onActivated: page.placeCall(page.callBackNumber)
+    }
 
     readonly property bool phoneOffline: page.deviceId.length === 0
         || (PhoneCall.logStatus === "offline" && PhoneCall.contactsStatus === "offline"
@@ -169,159 +223,110 @@ Item {
     // ---- No phone paired, or phone offline with nothing cached ----
     Column {
         anchors.centerIn: parent
-        width: Math.min(parent.width - Theme.contentPadding * 2, 420)
-        spacing: 12
+        width: Math.min(parent.width - 32, 380)
+        spacing: 8
         visible: page.phoneOffline
         Icon {
             anchors.horizontalCenter: parent.horizontalCenter
-            width: 40; height: 40
-            stroke: 1.5
+            width: 28; height: 28
             path: Icons.call
-            color: Theme.surfaceContentVariant
+            color: Theme.tintTeal
         }
         Txt {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            role: "title"
-            text: page.deviceId.length === 0 ? qsTr("Call from your PC")
+            weight: 500
+            text: page.deviceId.length === 0 ? qsTr("No phone paired")
                 : qsTr("%1 isn't connected").arg(page.deviceName)
-        }
-        Txt {
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            wrapMode: Text.WordWrap
-            role: "body"
-            muted: true
-            text: page.deviceId.length === 0 ? qsTr("Pair your phone to view calls and contacts.")
-                : qsTr("Connect %1 to view calls and contacts.").arg(page.deviceName)
         }
     }
 
-    // ---- Left pane: Recent calls and Contacts ----
+    // ---- Recent calls and contacts ----
     Item {
         id: list
         visible: !page.phoneOffline
-        width: Math.min(370, Math.max(280, page.width * 0.36))
+        anchors.left: parent.left
+        anchors.right: aside.left
         height: parent.height
 
         Item {
             id: listHeader
-            width: parent.width
-            height: 56
-            Segmented {
-                anchors.left: parent.left
-                anchors.leftMargin: 16
+            x: 8
+            y: 8
+            width: parent.width - 16
+            height: 36
+            Row {
+                id: tabs
+                x: Theme.rowPadding
                 anchors.verticalCenter: parent.verticalCenter
-                options: [
-                    { value: "recent", label: qsTr("Recent") },
-                    { value: "contacts", label: qsTr("Contacts") }
-                ]
-                value: page.tab
-                onPicked: (v) => page.tab = v
-            }
-            IconButton {
-                anchors.right: parent.right
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                iconPath: Icons.refresh
-                label: qsTr("Refresh")
-                enabled: PhoneCall.logStatus !== "loading" && PhoneCall.contactsStatus !== "loading"
-                onClicked: PhoneCall.refresh()
-            }
-        }
-
-        // Search: by name or number.
-        Rectangle {
-            id: searchBox
-            anchors.top: listHeader.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 16
-            anchors.rightMargin: 16
-            height: 38
-            radius: Theme.graphite ? Theme.radiusSm : height / 2
-            color: Theme.graphite ? "transparent" : (Theme.glass ? Theme.tileColor : Theme.surfaceContainerHighest)
-            border.width: search.activeFocus ? 2 : (Theme.graphite || Theme.glass ? 1 : 0)
-            border.color: search.activeFocus ? Theme.focusRing : (Theme.glass ? Theme.cardBorder : Theme.outlineVariant)
-            Icon {
-                id: searchIcon
-                anchors.left: parent.left
-                anchors.leftMargin: 12
-                anchors.verticalCenter: parent.verticalCenter
-                width: 16; height: 16
-                path: Icons.search
-                color: Theme.surfaceContentVariant
-            }
-            TextInput {
-                id: search
-                anchors.left: searchIcon.right
-                anchors.leftMargin: 8
-                anchors.right: clearSearch.left
-                anchors.verticalCenter: parent.verticalCenter
-                font.family: Theme.fontUi
-                font.pixelSize: 14
-                color: Theme.surfaceContent
-                selectionColor: Theme.primaryContainer
-                selectedTextColor: Theme.primaryContainerContent
-                clip: true
-                Accessible.name: page.tab === "recent" ? qsTr("Search calls") : qsTr("Search contacts")
-                Keys.onEscapePressed: (event) => {
-                    event.accepted = text.length > 0
-                    text = ""
-                }
+                spacing: 4
                 Txt {
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: search.text.length === 0
-                    role: "body"
+                    rightPadding: 6
+                    text: qsTr("Recent")
+                    role: "label"
                     muted: true
-                    text: page.tab === "recent" ? qsTr("Search calls") : qsTr("Search contacts")
+                }
+                TextAction {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("All")
+                    selected: page.tab === "recent"
+                    onClicked: page.tab = "recent"
+                }
+                TextAction {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Missed")
+                    selected: page.tab === "missed"
+                    onClicked: page.tab = "missed"
+                }
+                TextAction {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Contacts")
+                    selected: page.tab === "contacts"
+                    onClicked: page.tab = "contacts"
                 }
             }
-            IconButton {
-                id: clearSearch
+            // Search: by name or number.
+            Field {
+                id: search
                 anchors.right: parent.right
-                anchors.rightMargin: 2
                 anchors.verticalCenter: parent.verticalCenter
-                width: 32; height: 32
-                visible: search.text.length > 0
-                iconPath: Icons.close
-                label: qsTr("Clear search")
-                onClicked: search.text = ""
+                width: Math.max(120, Math.min(240, parent.width - tabs.width - 24))
+                height: 28
+                iconPath: Icons.search
+                placeholder: page.tab === "contacts" ? qsTr("Search contacts") : qsTr("Search calls")
+                Keys.onEscapePressed: (event) => {
+                    event.accepted = search.text.length > 0
+                    search.text = ""
+                }
             }
         }
 
-        // ---- Recent calls tab ----
+        // ---- Recent and missed calls ----
         Item {
-            anchors.top: searchBox.bottom
-            anchors.topMargin: 8
+            anchors.top: listHeader.bottom
+            anchors.topMargin: 4
             anchors.bottom: parent.bottom
-            width: parent.width
-            visible: page.tab === "recent"
+            x: 8
+            width: parent.width - 16
+            visible: page.tab !== "contacts"
 
             Spinner {
                 anchors.centerIn: parent
                 visible: PhoneCall.logStatus === "loading" && page.callLog.length === 0
             }
 
-            // Permission / toggle / error state for call log.
+            // Call log off, not allowed, or failed.
             Column {
                 anchors.centerIn: parent
                 width: parent.width - 40
-                spacing: 10
+                spacing: 8
                 visible: page.callLog.length === 0 && PhoneCall.logStatus !== "loading" && PhoneCall.logStatus !== "ready"
-                Icon {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 32; height: 32
-                    stroke: 1.5
-                    path: Icons.call
-                    color: Theme.surfaceContentVariant
-                }
                 Txt {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    role: "title"
-                    size: 15
+                    weight: 500
                     text: PhoneCall.logStatus === "off" ? qsTr("Calls are off for %1").arg(page.deviceName)
                         : PhoneCall.logStatus === "unsupported" ? qsTr("Allow call log on %1").arg(page.deviceName)
                         : PhoneCall.logStatus === "offline" ? qsTr("%1 isn't connected").arg(page.deviceName)
@@ -331,12 +336,10 @@ Item {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
+                    visible: PhoneCall.logStatus === "off"
                     role: "bodySmall"
                     muted: true
-                    text: PhoneCall.logStatus === "off" ? qsTr("Enable Calls in Settings.")
-                        : PhoneCall.logStatus === "unsupported" ? qsTr("Grant call log permission on %1.").arg(page.deviceName)
-                        : PhoneCall.logStatus === "offline" ? qsTr("Connect %1 to view recent calls.").arg(page.deviceName)
-                        : qsTr("Unable to load call log.")
+                    text: qsTr("Turn on Calls in Settings")
                 }
                 Button {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -357,31 +360,34 @@ Item {
                 model: page.shownCalls
                 onAtYEndChanged: if (atYEnd && PhoneCall.moreLog && count > 0) PhoneCall.loadOlder()
                 delegate: CallRow {
+                    required property var modelData
+                    required property int index
                     width: recentList.width
                     entry: modelData
                     previous: index > 0 ? page.shownCalls[index - 1] : null
                 }
                 footer: Item {
                     width: recentList.width
-                    height: PhoneCall.loadingOlder ? 44 : 0
+                    height: PhoneCall.loadingOlder ? 40 : 0
                     Spinner { anchors.centerIn: parent; visible: PhoneCall.loadingOlder }
                 }
                 Txt {
                     anchors.centerIn: parent
                     visible: PhoneCall.logStatus === "ready" && page.shownCalls.length === 0
-                    role: "body"
                     muted: true
-                    text: page.query.length > 0 ? qsTr("No calls match.") : qsTr("No recent calls.")
+                    text: page.query.length > 0 ? qsTr("No matches")
+                        : page.tab === "missed" ? qsTr("No missed calls") : qsTr("No recent calls")
                 }
             }
         }
 
-        // ---- Contacts tab ----
+        // ---- Contacts ----
         Item {
-            anchors.top: searchBox.bottom
-            anchors.topMargin: 8
+            anchors.top: listHeader.bottom
+            anchors.topMargin: 4
             anchors.bottom: parent.bottom
-            width: parent.width
+            x: 8
+            width: parent.width - 16
             visible: page.tab === "contacts"
 
             Spinner {
@@ -389,25 +395,16 @@ Item {
                 visible: PhoneCall.contactsStatus === "loading" && page.contacts.length === 0
             }
 
-            // Permission / toggle / error state for contacts.
             Column {
                 anchors.centerIn: parent
                 width: parent.width - 40
-                spacing: 10
+                spacing: 8
                 visible: page.contacts.length === 0 && PhoneCall.contactsStatus !== "loading" && PhoneCall.contactsStatus !== "ready"
-                Icon {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 32; height: 32
-                    stroke: 1.5
-                    path: Icons.person
-                    color: Theme.surfaceContentVariant
-                }
                 Txt {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    role: "title"
-                    size: 15
+                    weight: 500
                     text: PhoneCall.contactsStatus === "off" ? qsTr("Contacts are off for %1").arg(page.deviceName)
                         : PhoneCall.contactsStatus === "unsupported" ? qsTr("Allow contacts on %1").arg(page.deviceName)
                         : PhoneCall.contactsStatus === "offline" ? qsTr("%1 isn't connected").arg(page.deviceName)
@@ -417,12 +414,10 @@ Item {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
+                    visible: PhoneCall.contactsStatus === "off"
                     role: "bodySmall"
                     muted: true
-                    text: PhoneCall.contactsStatus === "off" ? qsTr("Enable Contacts in Settings.")
-                        : PhoneCall.contactsStatus === "unsupported" ? qsTr("Grant contacts permission on %1.").arg(page.deviceName)
-                        : PhoneCall.contactsStatus === "offline" ? qsTr("Connect %1 to view contacts.").arg(page.deviceName)
-                        : qsTr("Unable to load contacts.")
+                    text: qsTr("Turn on Contacts in Settings")
                 }
                 Button {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -442,6 +437,8 @@ Item {
                 boundsBehavior: Flickable.StopAtBounds
                 model: page.shownContacts
                 delegate: ContactRow {
+                    required property var modelData
+                    required property int index
                     width: contactList.width
                     contact: modelData
                     previous: index > 0 ? page.shownContacts[index - 1] : null
@@ -449,625 +446,484 @@ Item {
                 Txt {
                     anchors.centerIn: parent
                     visible: PhoneCall.contactsStatus === "ready" && page.shownContacts.length === 0
-                    role: "body"
                     muted: true
-                    text: page.query.length > 0 ? qsTr("No contacts match.") : qsTr("No contacts on this phone.")
+                    text: page.query.length > 0 ? qsTr("No matches") : qsTr("No contacts")
                 }
             }
         }
-
-        Divider { anchors.right: parent.right; width: 1; height: parent.height }
     }
 
-    // ---- Right pane: Active call, selected contact, and keypad dialer ----
+    // ---- Right column: the active call, a picked contact and the dialer ----
     Flickable {
-        id: rightPane
+        id: aside
         visible: !page.phoneOffline
-        anchors.left: list.right
         anchors.right: parent.right
+        width: page.phoneOffline ? 0 : Math.min(Theme.columnWidth + 20, Math.max(260, page.width * 0.4))
         height: parent.height
-        contentHeight: Math.max(height, rightColumn.height + Theme.contentPadding * 2)
+        contentHeight: asideColumn.height + 40
         boundsBehavior: Flickable.StopAtBounds
         clip: true
 
-        Column {
-            id: rightColumn
-            width: Math.min(380, rightPane.width - Theme.contentPadding * 2)
-            x: Math.max(Theme.contentPadding, (rightPane.width - width) / 2)
-            y: Math.max(Theme.contentPadding, (rightPane.height - height) / 2)
-            spacing: 16
+        Rectangle {
+            width: 1
+            height: Math.max(aside.height, aside.contentHeight)
+            color: Theme.line
+        }
 
-            // Active call on the phone (reuses CallCard).
+        Column {
+            id: asideColumn
+            x: 20
+            y: 20
+            width: aside.width - 40
+            spacing: 14
+
+            // The call in progress on the phone.
             CallCard {
                 width: parent.width
                 visible: PhoneCall.active && PhoneCall.device === page.deviceId
             }
 
-            // Selected contact details (when a contact with one or more numbers is clicked).
-            Card {
-                id: contactDetailCard
+            // A picked contact: each number, to copy, text or call.
+            Column {
                 width: parent.width
                 visible: page.selectedContact !== null
-                Column {
+                spacing: 2
+                Item {
                     width: parent.width
-                    spacing: 10
+                    height: 36
                     Item {
-                        width: parent.width
-                        height: 44
-                        Item {
-                            id: detailAvatar
-                            width: 40; height: 40
-                            anchors.verticalCenter: parent.verticalCenter
-                            RoundedImage {
-                                anchors.fill: parent
-                                radius: width / 2
-                                visible: (page.selectedContact ? page.selectedContact.photo : "").length > 0 && status === Image.Ready
-                                source: page.selectedContact ? page.selectedContact.photo : ""
-                                sourceSize: Qt.size(80, 80)
-                                fillMode: Image.PreserveAspectCrop
-                            }
-                            Avatar {
-                                anchors.fill: parent
-                                visible: !page.selectedContact || page.selectedContact.photo.length === 0
-                                name: page.selectedContact ? page.selectedContact.name : ""
-                                hue: page.selectedContact ? page.hueOf(page.selectedContact.name) : -1
-                            }
+                        id: detailFace
+                        width: 28; height: 28
+                        anchors.verticalCenter: parent.verticalCenter
+                        RoundedImage {
+                            anchors.fill: parent
+                            radius: width / 2
+                            visible: (page.selectedContact ? page.selectedContact.photo || "" : "").length > 0 && status === Image.Ready
+                            source: page.selectedContact ? page.selectedContact.photo || "" : ""
+                            sourceSize: Qt.size(56, 56)
+                            fillMode: Image.PreserveAspectCrop
                         }
-                        Column {
-                            anchors.left: detailAvatar.right
-                            anchors.leftMargin: 12
-                            anchors.right: closeDetail.left
-                            anchors.rightMargin: 8
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 2
-                            Row {
-                                spacing: 6
-                                Txt {
-                                    text: page.selectedContact ? page.selectedContact.name : ""
-                                    role: "title"
-                                    elide: Text.ElideRight
-                                }
-                                Icon {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    visible: !!(page.selectedContact && page.selectedContact.starred)
-                                    width: 14; height: 14
-                                    path: Icons.star
-                                    color: Theme.primary
-                                }
-                            }
-                        }
-                        IconButton {
-                            id: closeDetail
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 32; height: 32
-                            iconPath: Icons.close
-                            label: qsTr("Close contact")
-                            onClicked: page.selectedContact = null
-                        }
-                    }
-
-                    Repeater {
-                        model: page.selectedContact ? (page.selectedContact.numbers || []) : []
-                        delegate: Item {
-                            id: numRow
-                            required property var modelData
-                            width: parent.width
-                            height: 44
-                            Column {
-                                anchors.left: parent.left
-                                anchors.right: numActions.left
-                                anchors.rightMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                Txt {
-                                    width: parent.width
-                                    text: numRow.modelData.number
-                                    role: "body"
-                                    elide: Text.ElideRight
-                                }
-                                Txt {
-                                    width: parent.width
-                                    visible: (numRow.modelData.label || "").length > 0
-                                    text: numRow.modelData.label || ""
-                                    role: "caption"
-                                    muted: true
-                                    elide: Text.ElideRight
-                                }
-                            }
-                            Row {
-                                id: numActions
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 4
-                                IconButton {
-                                    width: 34; height: 34
-                                    iconPath: Icons.copy
-                                    label: qsTr("Copy number")
-                                    onClicked: PhoneCall.copy(numRow.modelData.number)
-                                }
-                                IconButton {
-                                    width: 34; height: 34
-                                    iconPath: Icons.messages
-                                    label: qsTr("Text %1").arg(numRow.modelData.number)
-                                    onClicked: page.startText(numRow.modelData.number, page.selectedContact ? page.selectedContact.name : "")
-                                }
-                                IconButton {
-                                    width: 34; height: 34
-                                    tonal: true
-                                    enabled: PhoneCall.canDial && !PhoneCall.dialing
-                                    iconPath: Icons.call
-                                    label: qsTr("Call %1").arg(numRow.modelData.number)
-                                    onClicked: {
-                                        dialInput.text = numRow.modelData.number
-                                        page.placeCall(numRow.modelData.number)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ---- Dialer / Keypad ----
-            Card {
-                id: dialerCard
-                width: parent.width
-
-                readonly property var dialFeature: AppController.capsRevision >= 0 && page.deviceId.length > 0
-                    ? AppController.featureState(page.deviceId, "calls.dial") : ({})
-
-                Column {
-                    width: parent.width
-                    spacing: 14
-
-                    // Number entry box + backspace.
-                    Rectangle {
-                        width: parent.width
-                        height: dialMatch.visible ? 64 : 52
-                        radius: Theme.graphite ? Theme.radiusSm : Theme.radiusLg
-                        color: Theme.graphite ? "transparent" : (Theme.glass ? Theme.tileColor : Theme.surfaceContainerHighest)
-                        border.width: dialInput.activeFocus ? 2 : (Theme.graphite || Theme.glass ? 1 : 0)
-                        border.color: dialInput.activeFocus ? Theme.focusRing : (Theme.glass ? Theme.cardBorder : Theme.outlineVariant)
-
-                        Column {
-                            anchors.left: parent.left
-                            anchors.leftMargin: 16
-                            anchors.right: backspaceButton.visible ? backspaceButton.left : parent.right
-                            anchors.rightMargin: 8
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 2
-
-                            TextInput {
-                                id: dialInput
-                                width: parent.width
-                                horizontalAlignment: TextInput.AlignHCenter
-                                font.family: Theme.fontMono
-                                font.pixelSize: 20
-                                font.weight: 600
-                                color: Theme.surfaceContent
-                                selectionColor: Theme.primaryContainer
-                                selectedTextColor: Theme.primaryContainerContent
-                                inputMethodHints: Qt.ImhDialableCharactersOnly
-                                clip: true
-                                Accessible.name: qsTr("Phone number to call")
-                                Keys.onReturnPressed: page.placeCall(dialInput.text)
-                                Keys.onEnterPressed: page.placeCall(dialInput.text)
-                                Txt {
-                                    anchors.centerIn: parent
-                                    visible: dialInput.text.length === 0
-                                    role: "body"
-                                    muted: true
-                                    text: qsTr("Enter a number")
-                                }
-                            }
-                            Txt {
-                                id: dialMatch
-                                width: parent.width
-                                horizontalAlignment: Text.AlignHCenter
-                                visible: page.dialMatchedContact !== null
-                                role: "caption"
-                                color: Theme.primary
-                                elide: Text.ElideRight
-                                text: page.dialMatchedContact
-                                    ? (page.dialMatchedContact.label.length > 0
-                                        ? page.dialMatchedContact.name + " · " + page.dialMatchedContact.label
-                                        : page.dialMatchedContact.name)
-                                    : ""
-                            }
-                        }
-
-                        IconButton {
-                            id: backspaceButton
-                            anchors.right: parent.right
-                            anchors.rightMargin: 6
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 36; height: 36
-                            visible: dialInput.text.length > 0
-                            iconPath: Icons.backspace
-                            label: qsTr("Backspace")
-                            onClicked: dialInput.text = dialInput.text.slice(0, -1)
-                        }
-                    }
-
-                    // 3x4 telephone keypad.
-                    Grid {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        columns: 3
-                        columnSpacing: 12
-                        rowSpacing: 10
-                        Repeater {
-                            model: [
-                                { digit: "1", sub: "" },
-                                { digit: "2", sub: "ABC" },
-                                { digit: "3", sub: "DEF" },
-                                { digit: "4", sub: "GHI" },
-                                { digit: "5", sub: "JKL" },
-                                { digit: "6", sub: "MNO" },
-                                { digit: "7", sub: "PQRS" },
-                                { digit: "8", sub: "TUV" },
-                                { digit: "9", sub: "WXYZ" },
-                                { digit: "*", sub: "" },
-                                { digit: "0", sub: "+" },
-                                { digit: "#", sub: "" }
-                            ]
-                            delegate: Rectangle {
-                                id: padKey
-                                required property var modelData
-                                width: 84; height: 50
-                                radius: Theme.pill(height)
-                                activeFocusOnTab: true
-                                color: padTap.pressed
-                                    ? Theme.secondaryContainer
-                                    : padHover.hovered
-                                      ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.glass ? 0.14 : 0.08)
-                                      : (Theme.graphite ? "transparent" : (Theme.glass ? Theme.tileColor : Theme.surfaceContainerHigh))
-                                border.width: Theme.focusVisible(padKey) ? 2 : (Theme.graphite || Theme.glass ? 1 : 0)
-                                border.color: Theme.focusVisible(padKey) ? Theme.primary : (Theme.glass ? Theme.cardBorder : Theme.outlineVariant)
-                                scale: padTap.pressed ? Theme.pressScale : 1
-                                Behavior on scale { enabled: !Theme.reduceMotion; SpringAnimation { spring: Theme.springSnappy; damping: Theme.dampingSnappy } }
-
-                                // In a call a digit is a tone for the call (a PIN, say),
-                                // not something to leave in the number box after it.
-                                function tapDigit(ch) {
-                                    if (PhoneCall.active && PhoneCall.controls)
-                                        PhoneCall.press(ch)
-                                    else
-                                        dialInput.text = dialInput.text + ch
-                                }
-
-                                Keys.onPressed: (event) => {
-                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                        tapDigit(modelData.digit)
-                                        event.accepted = true
-                                    }
-                                }
-
-                                Accessible.role: Accessible.Button
-                                Accessible.name: modelData.sub.length > 0 ? modelData.digit + " " + modelData.sub : modelData.digit
-                                Accessible.onPressAction: tapDigit(modelData.digit)
-
-                                Column {
-                                    anchors.centerIn: parent
-                                    spacing: -2
-                                    Txt {
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        role: "title"
-                                        size: 18
-                                        text: padKey.modelData.digit
-                                    }
-                                    Txt {
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        visible: padKey.modelData.sub.length > 0
-                                        role: "caption"
-                                        size: 9
-                                        muted: true
-                                        text: padKey.modelData.sub
-                                    }
-                                }
-                                HoverHandler { id: padHover; cursorShape: Qt.PointingHandCursor }
-                                TapHandler {
-                                    id: padTap
-                                    onTapped: padKey.tapDigit(padKey.modelData.digit)
-                                    onLongPressed: {
-                                        if (padKey.modelData.digit === "0")
-                                            padKey.tapDigit("+")
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Call and Text buttons.
-                    Row {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: 14
-
-                        Button {
-                            anchors.verticalCenter: parent.verticalCenter
-                            variant: "tonal"
-                            iconPath: Icons.messages
-                            text: qsTr("Text")
-                            enabled: dialInput.text.trim().length > 0
-                            onClicked: page.startText(
-                                dialInput.text,
-                                page.dialMatchedContact ? page.dialMatchedContact.name : ""
-                            )
-                        }
-
-                        Button {
-                            anchors.verticalCenter: parent.verticalCenter
-                            variant: "fill"
-                            iconPath: Icons.call
-                            text: PhoneCall.dialing ? qsTr("Calling…") : qsTr("Call")
-                            enabled: dialInput.text.trim().length > 0 && PhoneCall.canDial && !PhoneCall.dialing
-                            onClicked: page.placeCall(dialInput.text)
-                        }
-
-                        IconButton {
-                            anchors.verticalCenter: parent.verticalCenter
-                            visible: dialInput.text.length > 0
-                            iconPath: Icons.close
-                            label: qsTr("Clear number")
-                            onClicked: dialInput.text = ""
-                        }
-                    }
-
-                    // Which SIM calls go out on, when the phone has more than one
-                    // (otherwise Android asks on the phone, where nobody sees it).
-                    Row {
-                        id: simChoice
-                        readonly property var sims: { try { return JSON.parse(PhoneCall.sims || "[]") } catch (e) { return [] } }
-                        visible: sims.length > 1 && PhoneCall.canDial
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: 10
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: qsTr("Call with")
-                            role: "body"
-                            muted: true
-                        }
-                        Segmented {
-                            options: simChoice.sims.map(s => ({ value: s.id, label: s.label }))
-                            value: PhoneCall.sim
-                            onPicked: (v) => PhoneCall.chooseSim(v)
-                        }
-                    }
-
-                    LockChip {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        visible: !PhoneCall.canDial && label.length > 0
-                        feature: dialerCard.dialFeature
-                    }
-                }
-            }
-
-            // ---- Bluetooth HFP / PC call audio status banner ----
-            Card {
-                id: hfpBannerCard
-                width: parent.width
-                visible: !PhoneCall.active && PhoneCall.hfpDetail.length > 0
-                Column {
-                    width: parent.width
-                    spacing: 8
-                    Row {
-                        width: parent.width
-                        spacing: 8
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 16; height: 16
-                            path: Icons.speaker
-                            color: PhoneCall.hfpConnected ? Theme.primary : Theme.surfaceContentVariant
-                        }
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            role: "label"
-                            text: PhoneCall.hfpConnected ? qsTr("PC call audio connected")
-                                : PhoneCall.hfpAvailable ? qsTr("PC call audio ready")
-                                : qsTr("PC call audio (Bluetooth)")
+                        Avatar {
+                            anchors.fill: parent
+                            visible: !page.selectedContact || (page.selectedContact.photo || "").length === 0
+                            name: page.selectedContact ? page.selectedContact.name : ""
+                            hue: page.selectedContact ? page.hueOf(page.selectedContact.name) : -1
                         }
                     }
                     Txt {
-                        width: parent.width
-                        role: "caption"
-                        muted: true
-                        wrapMode: Text.WordWrap
-                        text: PhoneCall.hfpDetail
+                        anchors.left: detailFace.right
+                        anchors.leftMargin: 10
+                        anchors.right: detailStar.visible ? detailStar.left : closeDetail.left
+                        anchors.rightMargin: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: page.selectedContact ? page.selectedContact.name : ""
+                        weight: 500
                     }
-                    Button {
-                        visible: !PhoneCall.hfpConnected
-                        variant: "tonal"
-                        size: "sm"
-                        text: PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Open Bluetooth settings")
-                        onClicked: {
-                            if (PhoneCall.hfpAvailable)
-                                PhoneCall.connectPcAudio()
-                            else
-                                PhoneCall.openBluetoothSettings()
+                    Icon {
+                        id: detailStar
+                        anchors.right: closeDetail.left
+                        anchors.rightMargin: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !!(page.selectedContact && page.selectedContact.starred)
+                        width: 14; height: 14
+                        path: Icons.star
+                        color: Theme.tintAmber
+                    }
+                    IconButton {
+                        id: closeDetail
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        iconPath: Icons.close
+                        label: qsTr("Close contact")
+                        onClicked: page.selectedContact = null
+                    }
+                }
+                Repeater {
+                    model: page.selectedContact ? (page.selectedContact.numbers || []) : []
+                    delegate: ActionRow {
+                        id: numRow
+                        required property var modelData
+                        width: parent.width
+                        interactive: false
+                        title: modelData.number
+                        detail: modelData.label || ""
+                        IconButton {
+                            iconPath: Icons.copy
+                            label: qsTr("Copy number")
+                            onClicked: PhoneCall.copy(numRow.modelData.number)
                         }
+                        IconButton {
+                            iconPath: Icons.messages
+                            iconColor: Theme.tintBlue
+                            label: qsTr("Text %1").arg(numRow.modelData.number)
+                            onClicked: page.startText(numRow.modelData.number, page.selectedContact ? page.selectedContact.name : "")
+                        }
+                        IconButton {
+                            iconPath: Icons.call
+                            iconColor: Theme.tintTeal
+                            enabled: PhoneCall.canDial && !PhoneCall.dialing
+                            label: qsTr("Call %1").arg(numRow.modelData.number)
+                            onClicked: {
+                                dialInput.text = numRow.modelData.number
+                                page.placeCall(numRow.modelData.number)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Number or name to call.
+            Rectangle {
+                width: parent.width
+                height: dialMatch.visible ? 56 : 42
+                radius: Theme.rowRadius
+                color: Theme.raised
+                border.width: dialInput.activeFocus ? 1 : 0
+                border.color: Theme.focusRing
+
+                Column {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 36
+                    anchors.right: parent.right
+                    anchors.rightMargin: 36
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2
+
+                    TextInput {
+                        id: dialInput
+                        width: parent.width
+                        horizontalAlignment: TextInput.AlignHCenter
+                        font.family: Theme.fontUi
+                        font.pixelSize: 16
+                        color: Theme.surfaceContent
+                        selectionColor: Theme.selection
+                        selectedTextColor: Theme.surfaceContent
+                        inputMethodHints: Qt.ImhDialableCharactersOnly
+                        clip: true
+                        Accessible.name: qsTr("Phone number to call")
+                        Keys.onReturnPressed: page.placeCall(dialInput.text)
+                        Keys.onEnterPressed: page.placeCall(dialInput.text)
+                        Txt {
+                            anchors.centerIn: parent
+                            visible: dialInput.text.length === 0
+                            muted: true
+                            size: 16
+                            text: qsTr("Number")
+                        }
+                    }
+                    Txt {
+                        id: dialMatch
+                        width: parent.width
+                        horizontalAlignment: Text.AlignHCenter
+                        visible: page.dialMatchedContact !== null
+                        role: "bodySmall"
+                        color: Theme.tintTeal
+                        text: page.dialMatchedContact
+                            ? (page.dialMatchedContact.label.length > 0
+                                ? page.dialMatchedContact.name + " · " + page.dialMatchedContact.label
+                                : page.dialMatchedContact.name)
+                            : ""
+                    }
+                }
+                IconButton {
+                    anchors.right: parent.right
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: dialInput.text.length > 0
+                    iconPath: Icons.backspace
+                    label: qsTr("Backspace")
+                    onClicked: dialInput.text = dialInput.text.slice(0, -1)
+                }
+            }
+
+            // 3×4 keypad. In a call a key is a tone (a PIN, say), not a digit
+            // left in the number box.
+            Grid {
+                width: parent.width
+                columns: 3
+                columnSpacing: 6
+                rowSpacing: 6
+                Repeater {
+                    model: [
+                        { digit: "1", sub: "" }, { digit: "2", sub: "ABC" }, { digit: "3", sub: "DEF" },
+                        { digit: "4", sub: "GHI" }, { digit: "5", sub: "JKL" }, { digit: "6", sub: "MNO" },
+                        { digit: "7", sub: "PQRS" }, { digit: "8", sub: "TUV" }, { digit: "9", sub: "WXYZ" },
+                        { digit: "*", sub: "" }, { digit: "0", sub: "+" }, { digit: "#", sub: "" }
+                    ]
+                    delegate: Rectangle {
+                        id: padKey
+                        required property var modelData
+                        width: (asideColumn.width - 12) / 3
+                        height: 46
+                        radius: Theme.rowRadius
+                        activeFocusOnTab: true
+                        color: padTap.pressed ? Theme.selection : (padHover.hovered ? Theme.selection : Theme.raised)
+                        border.width: Theme.focusVisible(padKey) ? 2 : 0
+                        border.color: Theme.focusRing
+
+                        function tapDigit(ch) {
+                            if (PhoneCall.active && PhoneCall.controls)
+                                PhoneCall.press(ch)
+                            else
+                                dialInput.text = dialInput.text + ch
+                        }
+
+                        Keys.onPressed: (event) => {
+                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                tapDigit(modelData.digit)
+                                event.accepted = true
+                            }
+                        }
+
+                        Accessible.role: Accessible.Button
+                        Accessible.name: modelData.sub.length > 0 ? modelData.digit + " " + modelData.sub : modelData.digit
+                        Accessible.onPressAction: tapDigit(modelData.digit)
+
+                        Column {
+                            anchors.centerIn: parent
+                            Txt {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                size: 17
+                                text: padKey.modelData.digit
+                            }
+                            Txt {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                height: 13
+                                role: "caption"
+                                size: 10
+                                muted: true
+                                text: padKey.modelData.sub
+                            }
+                        }
+                        HoverHandler { id: padHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler {
+                            id: padTap
+                            onTapped: padKey.tapDigit(padKey.modelData.digit)
+                            onLongPressed: {
+                                if (padKey.modelData.digit === "0")
+                                    padKey.tapDigit("+")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Call: teal, the color of calls.
+            Rectangle {
+                id: callButton
+                readonly property bool usable: dialInput.text.trim().length > 0 && PhoneCall.canDial && !PhoneCall.dialing
+                width: parent.width
+                height: 40
+                radius: Theme.rowRadius
+                color: Theme.tintTeal
+                opacity: usable ? 1 : 0.38
+                activeFocusOnTab: usable
+                Accessible.role: Accessible.Button
+                Accessible.name: callLabel.text
+                Accessible.onPressAction: if (usable) page.placeCall(dialInput.text)
+                Keys.onPressed: (event) => {
+                    if (callButton.usable && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
+                        page.placeCall(dialInput.text)
+                        event.accepted = true
+                    }
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    radius: parent.radius
+                    color: Theme.surface
+                    opacity: callMouse.pressed ? 0.16 : (callMouse.containsMouse && callButton.usable ? 0.08 : 0)
+                }
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 8
+                    Icon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 16; height: 16
+                        path: Icons.call
+                        color: Theme.surface
+                    }
+                    Txt {
+                        id: callLabel
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: PhoneCall.dialing ? qsTr("Calling…") : qsTr("Call")
+                        weight: 500
+                        color: Theme.surface
+                    }
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: -3
+                    radius: parent.radius + 3
+                    color: "transparent"
+                    border.width: 2
+                    border.color: Theme.focusRing
+                    visible: Theme.focusVisible(callButton)
+                }
+                MouseArea {
+                    id: callMouse
+                    anchors.fill: parent
+                    enabled: callButton.usable
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.placeCall(dialInput.text)
+                }
+            }
+
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 6
+                TextAction {
+                    iconPath: Icons.messages
+                    iconColor: Theme.tintBlue
+                    text: qsTr("Text")
+                    enabled: dialInput.text.trim().length > 0
+                    onClicked: page.startText(dialInput.text, page.dialMatchedContact ? page.dialMatchedContact.name : "")
+                }
+                TextAction {
+                    visible: dialInput.text.length > 0
+                    iconPath: Icons.close
+                    iconColor: Theme.surfaceContentVariant
+                    text: qsTr("Clear")
+                    onClicked: dialInput.text = ""
+                }
+            }
+
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                role: "bodySmall"
+                muted: true
+                text: qsTr("Rings on your phone")
+            }
+
+            // Which SIM calls go out on, when the phone has more than one
+            // (otherwise Android asks on the phone, where nobody sees it).
+            Column {
+                width: parent.width
+                visible: page.sims.length > 1 && PhoneCall.canDial
+                spacing: 4
+                SectionLabel {
+                    width: parent.width
+                    text: qsTr("Call with")
+                }
+                Segmented {
+                    options: page.sims.map(s => ({ value: s.id, label: s.label }))
+                    value: PhoneCall.sim
+                    onPicked: (v) => PhoneCall.chooseSim(v)
+                }
+            }
+
+            LockChip {
+                anchors.horizontalCenter: parent.horizontalCenter
+                readonly property var dialFeature: AppController.capsRevision >= 0 && page.deviceId.length > 0
+                    ? AppController.featureState(page.deviceId, "calls.dial") : ({})
+                visible: !PhoneCall.canDial && label.length > 0
+                feature: dialFeature
+            }
+
+            // Bluetooth call audio on this PC.
+            Column {
+                width: parent.width
+                visible: !PhoneCall.active && PhoneCall.hfpDetail.length > 0
+                spacing: 2
+                ActionRow {
+                    width: parent.width
+                    interactive: false
+                    iconPath: Icons.speaker
+                    tint: PhoneCall.hfpConnected ? Theme.tintTeal : Theme.surfaceContentVariant
+                    title: PhoneCall.hfpConnected ? qsTr("PC call audio connected")
+                        : PhoneCall.hfpAvailable ? qsTr("PC call audio ready")
+                        : qsTr("PC call audio (Bluetooth)")
+                }
+                Txt {
+                    x: Theme.rowPadding
+                    width: parent.width - 2 * Theme.rowPadding
+                    role: "bodySmall"
+                    muted: true
+                    wrapMode: Text.WordWrap
+                    elide: Text.ElideNone
+                    text: PhoneCall.hfpDetail
+                }
+                TextAction {
+                    x: Theme.rowPadding - 8
+                    visible: !PhoneCall.hfpConnected
+                    text: PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Open Bluetooth settings")
+                    onClicked: {
+                        if (PhoneCall.hfpAvailable)
+                            PhoneCall.connectPcAudio()
+                        else
+                            PhoneCall.openBluetoothSettings()
                     }
                 }
             }
         }
     }
 
-    // ---- A row in the Recent calls list ----
-    component CallRow: Item {
+    // ---- A call in the log ----
+    component CallRow: Column {
         id: row
         property var entry
         property var previous: null
         readonly property bool newDay: !previous || new Date(previous.date).toDateString() !== new Date(entry.date).toDateString()
         readonly property bool missed: entry.direction === "missed"
         readonly property string displayName: (entry.name && entry.name.length > 0) ? entry.name : entry.number
-        readonly property bool named: !!(entry.name && entry.name.length > 0 && !/^[\d+(#*]/.test(entry.name))
         readonly property string durText: page.formatDuration(entry.duration)
         readonly property string dirLabel: entry.direction === "missed" ? qsTr("Missed")
             : entry.direction === "outgoing" ? qsTr("Outgoing")
             : entry.direction === "rejected" ? qsTr("Declined")
             : qsTr("Incoming")
 
-        height: dayHeader.height + 68
-        activeFocusOnTab: true
-        Accessible.role: Accessible.ListItem
-        Accessible.name: displayName + ", " + dirLabel + ", " + page.shortTime(entry.date)
-        Accessible.onPressAction: selectCall()
-
-        function selectCall() {
-            dialInput.text = entry.number
-        }
-
-        Keys.onPressed: (event) => {
-            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                selectCall()
-                event.accepted = true
-            }
-        }
-
-        // Day separator ("Today", "Yesterday", date).
-        Txt {
-            id: dayHeader
-            width: parent.width
-            height: row.newDay ? implicitHeight + 18 : 0
+        SectionLabel {
+            width: row.width
             visible: row.newDay
-            topPadding: 10
-            leftPadding: 20
-            role: "label"
-            muted: true
             text: row.newDay ? page.dayLabel(row.entry.date) : ""
         }
-
-        Item {
-            anchors.top: dayHeader.bottom
-            width: parent.width
-            height: 68
-
-            Rectangle {
-                anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 8
-                radius: Theme.radiusLg
-                color: callHover.hovered
-                    ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.06)
-                    : "transparent"
-                border.width: Theme.focusVisible(row) ? 2 : 0
-                border.color: Theme.focusRing
+        ActionRow {
+            id: callRow
+            width: row.width
+            iconPath: row.missed ? Icons.callMissed
+                : row.entry.direction === "outgoing" ? Icons.callOutgoing : Icons.callIncoming
+            tint: row.missed || row.entry.direction === "rejected" ? Theme.tintRed
+                : row.entry.direction === "outgoing" ? Theme.tintBlue : Theme.tintTeal
+            title: row.displayName
+            strong: true
+            titleColor: row.missed ? Theme.tintRed : Theme.surfaceContent
+            detail: row.durText.length > 0 ? row.dirLabel + " · " + row.durText : row.dirLabel
+            meta: page.shortTime(row.entry.date)
+            selected: dialInput.text.trim().length > 0 && dialInput.text.trim() === row.entry.number
+            accessibleName: row.displayName + ", " + row.dirLabel + ", " + page.shortTime(row.entry.date)
+            onClicked: dialInput.text = row.entry.number
+            IconButton {
+                visible: callRow.hovered || callRow.selected
+                iconPath: Icons.messages
+                iconColor: Theme.tintBlue
+                label: qsTr("Text %1").arg(row.displayName)
+                onClicked: page.startText(row.entry.number, row.entry.name || "")
             }
-
-            Item {
-                id: callFace
-                x: 20
-                anchors.verticalCenter: parent.verticalCenter
-                width: 40; height: 40
-                RoundedImage {
-                    anchors.fill: parent
-                    radius: width / 2
-                    visible: (row.entry.photo || "").length > 0 && status === Image.Ready
-                    source: row.entry.photo || ""
-                    sourceSize: Qt.size(80, 80)
-                    fillMode: Image.PreserveAspectCrop
-                }
-                Avatar {
-                    anchors.fill: parent
-                    visible: (row.entry.photo || "").length === 0
-                    name: row.named ? row.displayName : ""
-                    iconPath: row.named ? "" : Icons.person
-                    hue: row.named ? page.hueOf(row.displayName) : -1
-                    emphasized: row.missed
+            IconButton {
+                enabled: PhoneCall.canDial && !PhoneCall.dialing && row.entry.number.length > 0
+                iconPath: Icons.call
+                iconColor: Theme.tintTeal
+                label: qsTr("Call %1").arg(row.displayName)
+                onClicked: {
+                    dialInput.text = row.entry.number
+                    page.placeCall(row.entry.number)
                 }
             }
-
-            Column {
-                anchors.left: callFace.right
-                anchors.leftMargin: 12
-                anchors.right: callRowActions.left
-                anchors.rightMargin: 8
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                Txt {
-                    width: parent.width
-                    text: row.displayName
-                    role: "body"
-                    weight: row.missed ? 650 : 500
-                    color: row.missed ? Theme.error : Theme.surfaceContent
-                    elide: Text.ElideRight
-                }
-
-                Row {
-                    width: parent.width
-                    spacing: 5
-                    Icon {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 13; height: 13
-                        stroke: 2
-                        path: row.missed ? Icons.callMissed
-                            : row.entry.direction === "outgoing" ? Icons.callOutgoing
-                            : Icons.callIncoming
-                        color: row.missed ? Theme.error : Theme.surfaceContentVariant
-                    }
-                    Txt {
-                        width: parent.width - 18
-                        role: "bodySmall"
-                        color: row.missed ? Theme.error : Theme.surfaceContentVariant
-                        elide: Text.ElideRight
-                        text: {
-                            const parts = [row.dirLabel]
-                            if (row.durText.length > 0)
-                                parts.push(row.durText)
-                            parts.push(page.shortTime(row.entry.date))
-                            return parts.join(" · ")
-                        }
-                    }
-                }
-            }
-
-            Row {
-                id: callRowActions
-                anchors.right: parent.right
-                anchors.rightMargin: 14
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-                IconButton {
-                    width: 34; height: 34
-                    iconPath: Icons.messages
-                    label: qsTr("Text %1").arg(row.displayName)
-                    onClicked: page.startText(row.entry.number, row.entry.name || "")
-                }
-                IconButton {
-                    width: 34; height: 34
-                    tonal: callHover.hovered
-                    enabled: PhoneCall.canDial && !PhoneCall.dialing && row.entry.number.length > 0
-                    iconPath: Icons.call
-                    label: qsTr("Call %1").arg(row.displayName)
-                    onClicked: {
-                        dialInput.text = row.entry.number
-                        page.placeCall(row.entry.number)
-                    }
-                }
-            }
-
-            HoverHandler { id: callHover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: row.selectCall() }
         }
     }
 
-    // ---- A row in the Contacts list ----
-    component ContactRow: Item {
+    // ---- A contact ----
+    component ContactRow: Column {
         id: crow
         property var contact
         property var previous: null
         readonly property var primaryEntry: (contact.numbers && contact.numbers.length > 0) ? contact.numbers[0] : null
         readonly property string primaryNumber: primaryEntry ? primaryEntry.number : ""
         readonly property string primaryLabel: primaryEntry && primaryEntry.label ? primaryEntry.label : ""
-        readonly property bool selected: page.selectedContact !== null && page.selectedContact.id === contact.id
-        // Section header ("Favorites" / "All contacts") when not filtering.
+        // "Favorites" / "Contacts" when not filtering.
         readonly property bool showSection: page.query.length === 0
             && (!previous || previous.starred !== contact.starred)
-
-        height: sectionLabel.height + 68
-        activeFocusOnTab: true
-        Accessible.role: Accessible.ListItem
-        Accessible.name: contact.name + (primaryNumber.length > 0 ? ", " + primaryNumber : "")
-        Accessible.onPressAction: pickContact()
 
         function pickContact() {
             page.selectedContact = contact
@@ -1075,62 +931,38 @@ Item {
                 dialInput.text = primaryNumber
         }
 
-        Keys.onPressed: (event) => {
-            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                pickContact()
-                event.accepted = true
-            }
-        }
-
-        Row {
-            id: sectionLabel
-            x: 20
-            height: crow.showSection ? 28 : 0
+        SectionLabel {
+            width: crow.width
             visible: crow.showSection
-            spacing: 6
-            Icon {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: !!crow.contact.starred
-                width: 13; height: 13
-                path: Icons.star
-                color: Theme.primary
-            }
-            Txt {
-                anchors.verticalCenter: parent.verticalCenter
-                role: "label"
-                muted: true
-                text: crow.contact.starred ? qsTr("Favorites") : qsTr("Contacts")
-            }
+            text: crow.contact.starred ? qsTr("Favorites") : qsTr("Contacts")
         }
-
-        Item {
-            anchors.top: sectionLabel.bottom
-            width: parent.width
-            height: 68
-
-            Rectangle {
-                anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 8
-                radius: Theme.radiusLg
-                color: crow.selected ? Theme.secondaryContainer
-                    : contactHover.hovered ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.06)
-                    : "transparent"
-                border.width: Theme.focusVisible(crow) ? 2 : 0
-                border.color: Theme.focusRing
+        ActionRow {
+            id: contactRow
+            width: crow.width
+            title: crow.contact.name
+            strong: true
+            detail: {
+                const parts = []
+                if (crow.primaryLabel.length > 0)
+                    parts.push(crow.primaryLabel)
+                if (crow.primaryNumber.length > 0)
+                    parts.push(crow.primaryNumber)
+                const extra = (crow.contact.numbers ? crow.contact.numbers.length : 0) - 1
+                if (extra > 0)
+                    parts.push(qsTr("+%1 more").arg(extra))
+                return parts.join(" · ")
             }
-
-            Item {
-                id: contactFace
-                x: 20
-                anchors.verticalCenter: parent.verticalCenter
-                width: 40; height: 40
+            selected: page.selectedContact !== null && page.selectedContact.id === crow.contact.id
+            accessibleName: crow.contact.name + (crow.primaryNumber.length > 0 ? ", " + crow.primaryNumber : "")
+            onClicked: crow.pickContact()
+            leading: Item {
+                width: 24; height: 24
                 RoundedImage {
                     anchors.fill: parent
                     radius: width / 2
                     visible: (crow.contact.photo || "").length > 0 && status === Image.Ready
                     source: crow.contact.photo || ""
-                    sourceSize: Qt.size(80, 80)
+                    sourceSize: Qt.size(48, 48)
                     fillMode: Image.PreserveAspectCrop
                 }
                 Avatar {
@@ -1138,95 +970,42 @@ Item {
                     visible: (crow.contact.photo || "").length === 0
                     name: crow.contact.name
                     hue: page.hueOf(crow.contact.name)
-                    emphasized: !!crow.contact.starred
                 }
             }
-
-            Column {
-                anchors.left: contactFace.right
-                anchors.leftMargin: 12
-                anchors.right: contactActions.left
-                anchors.rightMargin: 8
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                Row {
-                    width: parent.width
-                    spacing: 6
-                    Txt {
-                        width: Math.min(implicitWidth, parent.width - (crow.contact.starred ? 20 : 0))
-                        text: crow.contact.name
-                        role: "body"
-                        weight: 500
-                        elide: Text.ElideRight
-                    }
-                    Icon {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: !!crow.contact.starred
-                        width: 13; height: 13
-                        path: Icons.star
-                        color: Theme.primary
-                    }
-                }
-
-                Txt {
-                    width: parent.width
-                    role: "bodySmall"
-                    muted: true
-                    elide: Text.ElideRight
-                    text: {
-                        const parts = []
-                        if (crow.primaryLabel.length > 0)
-                            parts.push(crow.primaryLabel)
-                        if (crow.primaryNumber.length > 0)
-                            parts.push(crow.primaryNumber)
-                        const extra = (crow.contact.numbers ? crow.contact.numbers.length : 0) - 1
-                        if (extra > 0)
-                            parts.push(qsTr("+%1 more").arg(extra))
-                        return parts.join(" · ")
-                    }
+            Icon {
+                visible: !!crow.contact.starred
+                width: 14; height: 14
+                path: Icons.star
+                color: Theme.tintAmber
+            }
+            IconButton {
+                visible: crow.primaryNumber.length > 0 && (contactRow.hovered || contactRow.selected)
+                iconPath: Icons.messages
+                iconColor: Theme.tintBlue
+                label: qsTr("Text %1").arg(crow.contact.name)
+                onClicked: page.startText(crow.primaryNumber, crow.contact.name)
+            }
+            IconButton {
+                visible: crow.primaryNumber.length > 0
+                enabled: PhoneCall.canDial && !PhoneCall.dialing
+                iconPath: Icons.call
+                iconColor: Theme.tintTeal
+                label: qsTr("Call %1").arg(crow.contact.name)
+                onClicked: {
+                    dialInput.text = crow.primaryNumber
+                    page.placeCall(crow.primaryNumber)
                 }
             }
-
-            Row {
-                id: contactActions
-                anchors.right: parent.right
-                anchors.rightMargin: 14
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-                IconButton {
-                    width: 34; height: 34
-                    visible: crow.primaryNumber.length > 0
-                    iconPath: Icons.messages
-                    label: qsTr("Text %1").arg(crow.contact.name)
-                    onClicked: page.startText(crow.primaryNumber, crow.contact.name)
-                }
-                IconButton {
-                    width: 34; height: 34
-                    visible: crow.primaryNumber.length > 0
-                    tonal: contactHover.hovered
-                    enabled: PhoneCall.canDial && !PhoneCall.dialing
-                    iconPath: Icons.call
-                    label: qsTr("Call %1").arg(crow.contact.name)
-                    onClicked: {
-                        dialInput.text = crow.primaryNumber
-                        page.placeCall(crow.primaryNumber)
-                    }
-                }
-            }
-
-            HoverHandler { id: contactHover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: crow.pickContact() }
         }
     }
 
     Rectangle {
         anchors.fill: parent
-        anchors.margins: 10
-        radius: Theme.radiusLg
+        anchors.margins: 4
+        radius: Theme.rowRadius
         color: "transparent"
         border.width: 2
-        border.color: Theme.primary
+        border.color: Theme.focusRing
         visible: opacity > 0
         opacity: AppController.highlightTarget === "calls:main" ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
