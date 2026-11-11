@@ -333,9 +333,12 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
 
+/// An app's icon still to be written: the package and its PNG.
+type NewIcon = (String, Vec<u8>);
+
 /// The app icons an event carries: where those saved already are, and the
 /// others, to write first.
-fn icons_of(event: &NodeEvent) -> (Vec<(String, PathBuf)>, Vec<(String, Vec<u8>)>) {
+fn icons_of(event: &NodeEvent) -> (Vec<(String, PathBuf)>, Vec<NewIcon>) {
     let items: Vec<&Notification> = match event {
         NodeEvent::NotificationsReset { items, .. } => items.iter().collect(),
         NodeEvent::NotificationPosted { notification, .. } => vec![notification],
@@ -359,7 +362,7 @@ fn icons_of(event: &NodeEvent) -> (Vec<(String, PathBuf)>, Vec<(String, Vec<u8>)
 }
 
 /// Writes app icons on the files thread, and records where they went.
-fn write_icons(new: Vec<(String, Vec<u8>)>) {
+fn write_icons(new: Vec<NewIcon>) {
     let host = core_host::host();
     for (app, png) in new {
         match icons::save(&host.data_dir, &app, &png) {
