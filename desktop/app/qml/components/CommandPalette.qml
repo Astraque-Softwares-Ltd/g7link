@@ -362,19 +362,12 @@ Item {
                 x: 14
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 12
-                Rectangle {
+                Icon {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: markText.implicitWidth + 10
-                    height: 20
-                    radius: 5
+                    width: 20; height: 20
+                    path: Icons.mark
                     color: Theme.accent
-                    Txt {
-                        id: markText
-                        anchors.centerIn: parent
-                        text: "G7"
-                        role: "label"
-                        color: Theme.accentContent
-                    }
+                    stroke: 2
                 }
                 Txt {
                     anchors.verticalCenter: parent.verticalCenter

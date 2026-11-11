@@ -40,7 +40,6 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -138,7 +137,7 @@ data class G7Tints(
 fun g7Tints(): G7Tints =
     if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) G7Tints.dark else G7Tints.light
 
-private fun strokeIcon(name: String, path: String): ImageVector =
+private fun strokeIcon(name: String, path: String, width: Float = 1.7f): ImageVector =
     ImageVector.Builder(
         name = name,
         defaultWidth = 24.dp,
@@ -149,13 +148,21 @@ private fun strokeIcon(name: String, path: String): ImageVector =
         pathData = PathParser().parsePathString(path).toNodes(),
         fill = null,
         stroke = SolidColor(Color.White),
-        strokeLineWidth = 1.7f,
+        strokeLineWidth = width,
         strokeLineCap = StrokeCap.Round,
         strokeLineJoin = StrokeJoin.Round,
     ).build()
 
 /** Line icons on a 24 grid, drawn in a tint with nothing behind them. */
 object G7Icons {
+    /** The G7 alone in one color, as G7 Linux's top bar and tray show it. */
+    val mark by lazy {
+        strokeIcon(
+            "mark",
+            "M21.12 4.08L8.64 4.08A6.48 6.48 0 0 0 8.64 17.04L10.56 17.04A2.88 2.88 0 0 0 10.56 11.28L7.92 11.28M21.12 4.08L16.32 21.12",
+            width = 2.2f,
+        )
+    }
     val home by lazy { strokeIcon("home", "M3,11L12,4L21,11 M5,10V20H19V10") }
     val guide by lazy { strokeIcon("guide", "M4,5A2,2 0 0,1 6,3H19V19H6A2,2 0 0,0 4,21Z M4,5V21") }
     val settings by lazy {
@@ -247,26 +254,15 @@ object G7Icons {
     val gesture by lazy { strokeIcon("gesture", "M12,3A3,3 0 1,0 12,9A3,3 0 1,0 12,3 M12,9V21 M7,14L12,12L17,14") }
 }
 
-/** The G7 mark: its name on a lavender tile. */
+/** The G7 mark in the accent color, with nothing behind it. */
 @Composable
 fun G7Mark(modifier: Modifier = Modifier, large: Boolean = false) {
-    val scheme = MaterialTheme.colorScheme
-    Box(
-        modifier = modifier
-            .then(if (large) Modifier.size(48.dp) else Modifier)
-            .clip(RoundedCornerShape(if (large) 12.dp else 6.dp))
-            .background(scheme.primary)
-            .then(if (large) Modifier else Modifier.padding(horizontal = 6.dp, vertical = 2.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "G7",
-            color = scheme.onPrimary,
-            fontWeight = FontWeight.Medium,
-            fontSize = if (large) 18.sp else 13.sp,
-            maxLines = 1,
-        )
-    }
+    Icon(
+        G7Icons.mark,
+        contentDescription = stringResource(R.string.app_name),
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = modifier.size(if (large) 48.dp else 24.dp),
+    )
 }
 
 /** A group's label: small, muted, sentence case. */

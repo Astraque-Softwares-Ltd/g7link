@@ -135,17 +135,11 @@ FocusScope {
 
             Row {
                 spacing: 14
-                Rectangle {
+                Icon {
                     width: 52; height: 52
-                    radius: 12
+                    path: Icons.mark
                     color: Theme.accent
-                    Txt {
-                        anchors.centerIn: parent
-                        text: "G7"
-                        size: 20
-                        weight: 500
-                        color: Theme.accentContent
-                    }
+                    stroke: 2
                 }
                 Column {
                     anchors.verticalCenter: parent.verticalCenter

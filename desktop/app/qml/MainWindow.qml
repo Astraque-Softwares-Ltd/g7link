@@ -839,18 +839,16 @@ NativeWindow {
             Rectangle {
                 id: mark
                 anchors.verticalCenter: parent.verticalCenter
-                width: markText.implicitWidth + 10
+                width: 20
                 height: 20
-                radius: 5
-                color: Theme.accent
+                color: "transparent"
                 Accessible.role: Accessible.ButtonMenu
                 Accessible.name: qsTr("G7 Link menu")
-                Txt {
-                    id: markText
-                    anchors.centerIn: parent
-                    text: "G7"
-                    role: "label"
-                    color: Theme.accentContent
+                Icon {
+                    anchors.fill: parent
+                    path: Icons.mark
+                    color: Theme.accent
+                    stroke: 2
                 }
                 MouseArea {
                     anchors.fill: parent
