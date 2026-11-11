@@ -2,9 +2,10 @@
 import QtQuick
 import app.g7link
 
-// Apps: every app on the phone, to open one in a window of its own on this PC
-// (Elevated: the phone runs it on a display of its own). Searchable; Enter
-// opens the first match. Apps already open here are marked.
+// Apps: the phone's whole screen in a window, and every app on the phone,
+// to open one in a window of its own on this PC (Elevated: the phone runs
+// it on a display of its own). Searchable; Enter opens the first match.
+// Apps already open here are marked.
 Item {
     id: page
     property bool active: false
@@ -13,7 +14,11 @@ Item {
 
     readonly property var feature: AppController.capsRevision >= 0 && deviceId.length > 0
         ? AppController.featureState(deviceId, "mirroring.app_windows") : ({})
+    readonly property var mirrorFeature: AppController.capsRevision >= 0 && deviceId.length > 0
+        ? AppController.featureState(deviceId, "mirroring.view") : ({})
     readonly property bool available: feature.state === "available" || feature.state === "partial"
+    readonly property bool mirrorLocked: mirrorFeature.state !== undefined
+        && mirrorFeature.state !== "available" && mirrorFeature.state !== "partial"
 
     readonly property var apps: {
         if (Mirror.appsDevice !== deviceId)
@@ -42,9 +47,47 @@ Item {
     readonly property var shown: query.length === 0 ? apps
         : apps.filter(a => a.label.toLocaleLowerCase().indexOf(query) >= 0 || a.pkg.indexOf(query) >= 0)
     readonly property string loadState: Mirror.appsDevice === deviceId ? Mirror.appsState : ""
+    readonly property string qualityName: Preferences.mirrorQuality === "sharper" ? qsTr("Sharper")
+        : Preferences.mirrorQuality === "smoother" ? qsTr("Smoother") : qsTr("Balanced")
+    // The app the keyboard is on (the grid's current cell), else the first match.
+    readonly property var currentApp: shown.length === 0 ? null
+        : shown[Math.max(0, Math.min(grid.currentIndex, shown.length - 1))]
 
     function launch(app) {
-        Mirror.startApp(deviceId, app.pkg, app.label)
+        if (app)
+            Mirror.startApp(deviceId, app.pkg, app.label)
+    }
+    function mirror() {
+        if (deviceId.length > 0)
+            Mirror.start(deviceId)
+    }
+
+    // ---- Footer and Actions (Ctrl B) ----
+    readonly property string footerLabel: apps.length > 0 ? qsTr("Apps · %1").arg(apps.length) : qsTr("Apps")
+    readonly property var primaryAction: available && shown.length > 0
+        ? { label: qsTr("Open in window"), keys: "Enter", run: () => page.launch(page.currentApp) }
+        : (deviceId.length > 0 ? { label: qsTr("Mirror screen"), keys: "Ctrl M", run: () => page.mirror() } : null)
+    readonly property var screenActions: {
+        const list = []
+        if (deviceId.length === 0)
+            return list
+        list.push({ label: qsTr("Mirror whole screen"), icon: Icons.phone, tint: Theme.accent, keys: "Ctrl M",
+                    enabled: !page.mirrorLocked, run: () => page.mirror() })
+        if (available) {
+            if (currentApp)
+                list.push({ label: qsTr("Open %1 in a window").arg(currentApp.label), icon: Icons.window,
+                            tint: Theme.tintPink, keys: "Enter", run: () => page.launch(page.currentApp) })
+            list.push({ label: qsTr("Search apps"), icon: Icons.search, tint: Theme.surfaceContentVariant,
+                        keys: "Ctrl F", run: () => search.forceActiveFocus() })
+            list.push({ label: qsTr("Refresh the app list"), icon: Icons.refresh, tint: Theme.tintBlue,
+                        enabled: page.loadState !== "loading", run: () => Mirror.loadApps(page.deviceId) })
+            for (const app of recent) {
+                const a = app
+                list.push({ label: qsTr("Open %1").arg(a.label), detail: qsTr("Recent"), icon: Icons.apps,
+                            tint: Theme.tintPink, run: () => page.launch(a) })
+            }
+        }
+        return list
     }
 
     // Loads the list the first time the page shows for a phone; Refresh reloads it.
@@ -59,141 +102,191 @@ Item {
     onAvailableChanged: loadIfNeeded()
     Component.onCompleted: loadIfNeeded()
 
-    // ---- No phone, or opening apps isn't available yet ----
+    Shortcut {
+        sequence: "Ctrl+M"
+        enabled: page.active && page.visible && page.deviceId.length > 0
+        onActivated: page.mirror()
+    }
+    Shortcut {
+        sequences: [StandardKey.Find]
+        enabled: page.active && page.visible && page.available
+        onActivated: search.forceActiveFocus()
+    }
+
+    // ---- No phone ----
     Column {
         anchors.centerIn: parent
-        width: Math.min(parent.width - Theme.contentPadding * 2, 420)
-        spacing: 12
-        visible: page.deviceId.length === 0 || !page.available
+        width: Math.min(parent.width - 32, 360)
+        spacing: 8
+        visible: page.deviceId.length === 0
         Icon {
             anchors.horizontalCenter: parent.horizontalCenter
-            width: 40; height: 40
-            stroke: 1.5
+            width: 24; height: 24
             path: Icons.apps
-            color: Theme.surfaceContentVariant
-        }
-        Txt {
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            role: "title"
-            text: page.deviceId.length === 0 ? qsTr("Phone apps")
-                : qsTr("Open %1's apps here").arg(page.deviceName)
+            color: Theme.tintPink
         }
         Txt {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            role: "body"
             muted: true
-            text: page.deviceId.length === 0
-                ? qsTr("Pair your phone to open its apps in windows on this PC.")
-                : page.feature.reason === "notOnThisDevice"
-                    ? qsTr("Opening apps in windows isn't supported on this phone.")
-                    : String(page.feature.reason || "").startsWith("android:")
-                        ? qsTr("Opening apps in windows needs Android %1 or newer on the phone.").arg(page.feature.reason.slice(8))
-                        : (page.feature.reason || qsTr("Set up Wireless debugging in G7 Link on the phone to open its apps here."))
-        }
-        LockChip {
-            anchors.horizontalCenter: parent.horizontalCenter
-            visible: page.deviceId.length > 0 && label.length > 0
-            feature: page.feature
+            text: qsTr("Pair a phone to open its apps here")
         }
     }
 
-    // ---- The apps ----
     Item {
         id: content
-        visible: page.deviceId.length > 0 && page.available
+        visible: page.deviceId.length > 0
         anchors.fill: parent
-        anchors.leftMargin: Theme.contentPadding
-        anchors.rightMargin: Theme.contentPadding
-        anchors.topMargin: 8
+        anchors.margins: 8
 
-        Row {
-            id: toolbar
+        // ---- The whole screen ----
+        Rectangle {
+            id: mirrorRow
+            y: 6
             width: parent.width
-            height: 40
-            spacing: 8
+            height: 44
+            radius: Theme.rowRadius
+            color: mirrorMouse.containsMouse && !page.mirrorLocked ? Theme.selection : Theme.raised
+            border.width: Theme.focusVisible(mirrorRow) ? 2 : 0
+            border.color: Theme.focusRing
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Button
+            Accessible.name: qsTr("Mirror whole screen")
+            Accessible.onPressAction: page.mirror()
+            Keys.onReturnPressed: page.mirror()
+            Keys.onEnterPressed: page.mirror()
+            Keys.onSpacePressed: page.mirror()
 
-            Rectangle {
-                width: parent.width - refresh.width - parent.spacing
-                height: parent.height
-                radius: Theme.graphite ? Theme.radiusSm : height / 2
-                color: Theme.graphite ? "transparent" : Theme.surfaceContainerHighest
-                border.width: search.activeFocus ? 2 : (Theme.graphite ? 1 : 0)
-                border.color: search.activeFocus ? Theme.focusRing : Theme.outlineVariant
+            MouseArea {
+                id: mirrorMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                enabled: !page.mirrorLocked
+                cursorShape: Qt.PointingHandCursor
+                onClicked: page.mirror()
+            }
+            Row {
+                x: Theme.rowPadding
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 12
                 Icon {
-                    id: searchIcon
-                    anchors.left: parent.left
-                    anchors.leftMargin: 14
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 18; height: 18
-                    path: Icons.search
-                    color: Theme.surfaceContentVariant
+                    width: 20; height: 20
+                    path: Icons.phone
+                    color: Theme.accent
                 }
-                TextInput {
-                    id: search
-                    anchors.left: searchIcon.right
-                    anchors.leftMargin: 10
-                    anchors.right: parent.right
-                    anchors.rightMargin: 14
+                Txt {
                     anchors.verticalCenter: parent.verticalCenter
-                    font.family: Theme.fontUi
-                    font.pixelSize: 14
-                    color: Theme.surfaceContent
-                    selectionColor: Theme.primaryContainer
-                    selectedTextColor: Theme.primaryContainerContent
-                    clip: true
-                    Accessible.name: qsTr("Search apps")
-                    Keys.onReturnPressed: if (page.shown.length > 0) page.launch(page.shown[0])
-                    Keys.onEnterPressed: if (page.shown.length > 0) page.launch(page.shown[0])
-                    Keys.onEscapePressed: text = ""
-                    Txt {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: search.text.length === 0
-                        role: "body"
-                        muted: true
-                        text: qsTr("Search %1's apps").arg(page.deviceName)
-                    }
+                    text: qsTr("Mirror whole screen")
+                    weight: 500
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    role: "bodySmall"
+                    muted: true
+                    text: Mirror.muted ? qsTr("%1 · sound off").arg(page.qualityName)
+                                       : qsTr("%1 · sound on").arg(page.qualityName)
                 }
             }
-            IconButton {
-                id: refresh
+            Row {
+                anchors.right: parent.right
+                anchors.rightMargin: Theme.rowPadding
                 anchors.verticalCenter: parent.verticalCenter
-                iconPath: Icons.refresh
-                label: qsTr("Refresh")
-                enabled: page.loadState !== "loading"
-                onClicked: Mirror.loadApps(page.deviceId)
+                spacing: 8
+                LockChip {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: page.mirrorLocked && label.length > 0
+                    feature: page.mirrorFeature
+                }
+                Keycap {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !page.mirrorLocked
+                    keys: "Ctrl M"
+                }
             }
         }
 
-        // Loading, failed or empty.
-        Column {
-            anchors.top: toolbar.bottom
-            anchors.topMargin: 48
+        // ---- Apps in their own windows ----
+        Item {
+            id: appsHeader
+            anchors.top: mirrorRow.bottom
+            anchors.topMargin: 10
             width: parent.width
-            visible: page.loadState !== "ready" || page.shown.length === 0
-            spacing: 12
+            height: 32
+
+            SectionLabel {
+                id: appsLabel
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Open an app in its own window")
+            }
+            Row {
+                anchors.right: parent.right
+                anchors.rightMargin: 2
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 10
+                Field {
+                    id: search
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: page.available
+                    width: Math.max(140, Math.min(240, appsHeader.width - appsLabel.implicitWidth - lock.width - 40))
+                    height: 28
+                    iconPath: Icons.search
+                    placeholder: qsTr("Search apps")
+                    onAccepted: if (page.shown.length > 0) page.launch(page.shown[0])
+                    Keys.onEscapePressed: search.text = ""
+                    Keys.onDownPressed: grid.forceActiveFocus()
+                    Accessible.name: qsTr("Search apps")
+                }
+                LockChip {
+                    id: lock
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: label.length > 0
+                    feature: page.feature
+                }
+            }
+        }
+
+        // Not available on this phone yet.
+        Txt {
+            anchors.top: appsHeader.bottom
+            anchors.topMargin: 4
+            x: Theme.rowPadding
+            width: parent.width - 2 * Theme.rowPadding
+            visible: !page.available
+            wrapMode: Text.WordWrap
+            muted: true
+            text: page.feature.reason === "notOnThisDevice"
+                ? qsTr("Not supported on this phone")
+                : String(page.feature.reason || "").startsWith("android:")
+                    ? qsTr("Needs Android %1 or newer").arg(page.feature.reason.slice(8))
+                    : (page.feature.reason || qsTr("Set up Wireless debugging in G7 Link on the phone"))
+        }
+
+        // Loading, failed or empty.
+        Row {
+            anchors.top: appsHeader.bottom
+            anchors.topMargin: 8
+            x: Theme.rowPadding
+            visible: page.available && (page.loadState !== "ready" || page.shown.length === 0)
+            spacing: 10
             Spinner {
-                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.verticalCenter: parent.verticalCenter
                 visible: page.loadState === "loading" || page.loadState === ""
-                width: 24; height: 24
+                width: 16; height: 16
             }
             Txt {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                role: "body"
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth, content.width - 160)
                 muted: true
                 text: page.loadState === "failed" ? Mirror.appsError
-                    : page.loadState === "ready" ? (page.query.length > 0 ? qsTr("No apps match.") : qsTr("No apps to open."))
+                    : page.loadState === "ready" ? (page.query.length > 0 ? qsTr("No apps match") : qsTr("No apps"))
                     : qsTr("Getting the phone's apps…")
             }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
+            TextAction {
+                anchors.verticalCenter: parent.verticalCenter
                 visible: page.loadState === "failed"
-                variant: "tonal"
-                size: "sm"
                 text: qsTr("Try again")
                 onClicked: Mirror.loadApps(page.deviceId)
             }
@@ -201,133 +294,104 @@ Item {
 
         GridView {
             id: grid
-            anchors.top: toolbar.bottom
-            anchors.topMargin: 12
+            anchors.top: appsHeader.bottom
+            anchors.topMargin: 2
             anchors.bottom: parent.bottom
             width: parent.width
-            visible: page.loadState === "ready" && page.shown.length > 0
+            visible: page.available && page.loadState === "ready" && page.shown.length > 0
             clip: true
             model: page.shown
-            cellWidth: Math.floor(width / Math.max(1, Math.floor(width / 120)))
-            cellHeight: 116
+            readonly property int columns: Math.max(1, Math.floor(width / 220))
+            cellWidth: Math.floor(width / columns)
+            cellHeight: Theme.rowHeight + 2
             boundsBehavior: Flickable.StopAtBounds
-            reuseItems: true
+            keyNavigationEnabled: true
+            currentIndex: 0
+            highlightFollowsCurrentItem: false
             cacheBuffer: 400
+            Keys.onReturnPressed: page.launch(page.currentApp)
+            Keys.onEnterPressed: page.launch(page.currentApp)
 
             header: Column {
                 width: grid.width
                 visible: page.query.length === 0 && page.recent.length > 0
                 height: visible ? implicitHeight : 0
-                spacing: 8
-                bottomPadding: 8
-
-                Txt {
-                    role: "label"
-                    muted: true
-                    text: qsTr("Recent")
-                }
-                Row {
+                Flow {
                     width: parent.width
-                    clip: true
-                    spacing: 0
                     Repeater {
                         model: page.recent
-                        delegate: AppCell {
+                        delegate: AppRow {
                             required property var modelData
                             app: modelData
                             width: grid.cellWidth
+                            note: qsTr("recent")
                         }
                     }
                 }
-                Divider {}
-                Txt {
-                    topPadding: 4
-                    role: "label"
-                    muted: true
+                SectionLabel {
+                    width: parent.width
                     text: qsTr("All apps")
                 }
             }
 
-            delegate: AppCell {
+            delegate: AppRow {
                 required property var modelData
+                required property int index
                 app: modelData
                 width: grid.cellWidth
+                current: grid.activeFocus && grid.currentIndex === index
             }
         }
     }
 
-    component AppCell: Item {
-        id: cell
+    // One app: its icon (or a tinted initial), its name, and "open" when it
+    // has a window on this PC.
+    component AppRow: ActionRow {
+        id: appRow
         property var app: ({})
+        property bool current: false
+        property string note: ""
         readonly property bool isOpen: page.openPkgs[app.pkg] === true
-        height: grid.cellHeight
-        activeFocusOnTab: true
-        Accessible.role: Accessible.Button
-        Accessible.name: isOpen ? qsTr("%1, open").arg(app.label) : app.label
-        Accessible.onPressAction: page.launch(app)
-        Keys.onReturnPressed: page.launch(app)
-        Keys.onEnterPressed: page.launch(app)
-        Keys.onSpacePressed: page.launch(app)
-
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: 4
-            radius: Theme.radiusMd
-            color: Theme.surfaceContent
-            opacity: tap.pressed ? 0.12 : (hover.hovered ? 0.06 : 0)
+        readonly property var tints: [Theme.tintTeal, Theme.tintBlue, Theme.tintCoral, Theme.tintPink,
+                                      Theme.tintGreen, Theme.tintLavender, Theme.tintAmber]
+        readonly property color appTint: {
+            const label = app.label || ""
+            let h = 0
+            for (let i = 0; i < label.length; ++i)
+                h = (h * 31 + label.charCodeAt(i)) % 7
+            return tints[h]
         }
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: 4
-            radius: Theme.radiusMd
-            color: "transparent"
-            border.width: Theme.focusVisible(cell) ? 2 : 0
-            border.color: Theme.focusRing
-        }
-        Column {
-            anchors.centerIn: parent
-            width: parent.width - 12
-            spacing: 8
-            Item {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 48; height: 48
-                Image {
-                    id: icon
-                    anchors.fill: parent
-                    source: cell.app.icon || ""
-                    sourceSize: Qt.size(96, 96)
-                    asynchronous: true
-                    smooth: true
-                    mipmap: true
-                    visible: status === Image.Ready
-                }
-                Avatar {
-                    anchors.fill: parent
-                    visible: icon.status !== Image.Ready
-                    name: cell.app.label || ""
-                }
-                // Open in a window on this PC.
-                Rectangle {
-                    visible: cell.isOpen
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.top: parent.bottom
-                    anchors.topMargin: 3
-                    width: 6; height: 6
-                    radius: 3
-                    color: Theme.primary
+        height: Theme.rowHeight
+        title: app.label || ""
+        meta: isOpen ? qsTr("open") : note
+        selected: current
+        activeFocusOnTab: false
+        accessibleName: isOpen ? qsTr("%1, open").arg(app.label) : (app.label || "")
+        onClicked: page.launch(appRow.app)
+        leading: Item {
+            width: 26; height: 26
+            Rectangle {
+                anchors.fill: parent
+                radius: 7
+                visible: appIcon.status !== Image.Ready
+                color: Theme.wash(appRow.appTint)
+                Txt {
+                    anchors.centerIn: parent
+                    text: (appRow.app.label || "?").charAt(0).toUpperCase()
+                    role: "label"
+                    color: appRow.appTint
                 }
             }
-            Txt {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                role: "bodySmall"
-                text: cell.app.label || ""
-                elide: Text.ElideRight
-                maximumLineCount: 2
-                wrapMode: Text.WordWrap
+            Image {
+                id: appIcon
+                anchors.fill: parent
+                source: appRow.app.icon || ""
+                sourceSize: Qt.size(52, 52)
+                asynchronous: true
+                smooth: true
+                mipmap: true
+                visible: status === Image.Ready
             }
         }
-        HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { id: tap; onTapped: page.launch(cell.app) }
     }
 }

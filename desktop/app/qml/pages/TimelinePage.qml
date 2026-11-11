@@ -4,36 +4,25 @@ import app.g7link
 
 // Timeline: searchable, paged local history of everything that moved between
 // this PC and paired devices (files, folders, clips, links, saved photos,
-// voice recordings, and screen mirroring / webcam sessions).
+// voice recordings, and screen mirroring / webcam sessions). One row each,
+// by day; the selected row's actions are in the footer and in Actions.
 Item {
     id: page
     property bool active: true
     property bool confirmClearAll: false
-    property bool deviceMenuOpen: false
-
-    onActiveChanged: if (!active) deviceMenuOpen = false
+    // The selected entry, as its row's roles (null when none).
+    property var current: null
 
     visible: active
 
-    Shortcut {
-        sequence: "Esc"
-        enabled: page.active && (page.deviceMenuOpen || page.confirmClearAll)
-        onActivated: {
-            if (page.deviceMenuOpen)
-                page.deviceMenuOpen = false
-            else if (page.confirmClearAll)
-                page.confirmClearAll = false
-        }
-    }
-
     readonly property var kindOptions: [
-        { key: "", label: qsTr("All"), icon: "" },
-        { key: "file", label: qsTr("Files"), icon: Icons.folder },
-        { key: "clip", label: qsTr("Clips"), icon: Icons.clipboard },
-        { key: "link", label: qsTr("Links"), icon: Icons.globe },
-        { key: "photo", label: qsTr("Photos"), icon: Icons.photo },
-        { key: "recording", label: qsTr("Recordings"), icon: Icons.mic },
-        { key: "session", label: qsTr("Sessions"), icon: Icons.mirror }
+        { key: "", label: qsTr("All") },
+        { key: "file", label: qsTr("Files") },
+        { key: "photo", label: qsTr("Photos") },
+        { key: "clip", label: qsTr("Clipboard") },
+        { key: "link", label: qsTr("Links") },
+        { key: "recording", label: qsTr("Recordings") },
+        { key: "session", label: qsTr("Sessions") }
     ]
 
     readonly property string selectedDeviceName: {
@@ -44,14 +33,133 @@ Item {
         return row >= 0 ? DeviceList.deviceNameAt(row) : qsTr("A removed device")
     }
 
+    // How long the timeline keeps things (from the data retention summary).
+    readonly property int retentionDays: {
+        const raw = AppController.dataRetentionSummary
+        if (!raw || raw.length === 0)
+            return 0
+        try {
+            return JSON.parse(raw).timelineRetentionDays || 0
+        } catch (e) {
+            return 0
+        }
+    }
+    onActiveChanged: if (active) AppController.refreshDataRetention()
+    Component.onCompleted: AppController.refreshDataRetention()
+
+    // ---- Footer and Actions (Ctrl B) ----
+    readonly property string footerLabel: retentionDays > 0
+        ? qsTr("Timeline · kept %n day(s)", "", retentionDays) : qsTr("Timeline")
+    readonly property var primaryAction: current && current.canOpen
+        ? { label: qsTr("Open"), keys: "Enter", run: () => page.openCurrent() } : null
+    readonly property var secondaryAction: current && current.canShowInFolder
+        ? { label: qsTr("Show in folder"), keys: "Ctrl O", run: () => page.revealCurrent() } : null
+    readonly property var screenActions: {
+        const list = []
+        const c = page.current
+        if (c) {
+            const id = c.entryId
+            if (c.canOpen)
+                list.push({ label: qsTr("Open"), detail: c.title, icon: c.kind === "link" ? Icons.openExternal : Icons.folder,
+                            tint: Theme.accent, keys: "Enter", run: () => TimelineModel.openEntry(id) })
+            if (c.canShowInFolder)
+                list.push({ label: qsTr("Show in folder"), detail: c.title, icon: Icons.folder, tint: Theme.tintAmber,
+                            keys: "Ctrl O", run: () => TimelineModel.revealEntry(id) })
+            if (c.canCopy)
+                list.push({ label: qsTr("Copy"), detail: c.title, icon: Icons.copy, tint: Theme.tintLavender,
+                            run: () => TimelineModel.copyEntry(id) })
+            if (c.canSendAgain)
+                list.push({ label: qsTr("Send again"), detail: c.title, icon: Icons.send, tint: Theme.tintAmber,
+                            run: () => TimelineModel.sendAgain(id, "") })
+            list.push({ label: qsTr("Remove from timeline"), detail: c.title, icon: Icons.close, tint: Theme.tintRed,
+                        keys: "Del", run: () => page.removeEntry(id) })
+        }
+        list.push({ label: qsTr("Search timeline"), icon: Icons.search, tint: Theme.surfaceContentVariant, keys: "Ctrl F",
+                    run: () => searchField.forceActiveFocus() })
+        for (const k of page.kindOptions) {
+            const key = k.key
+            list.push({ label: qsTr("Show: %1").arg(k.label), icon: page.iconForKind(key), tint: page.tintForKind(key),
+                        checked: TimelineModel.kindFilter === key, run: () => { TimelineModel.kindFilter = key } })
+        }
+        if (DeviceList.count > 1) {
+            list.push({ label: qsTr("Show: All devices"), icon: Icons.phone, tint: Theme.surfaceContentVariant,
+                        checked: TimelineModel.deviceFilter === "", run: () => { TimelineModel.deviceFilter = "" } })
+            for (let i = 0; i < DeviceList.count; ++i) {
+                const id = DeviceList.deviceIdAt(i)
+                list.push({ label: qsTr("Show: %1").arg(DeviceList.deviceNameAt(i)), icon: Icons.phone,
+                            tint: Theme.surfaceContentVariant, checked: TimelineModel.deviceFilter === id,
+                            run: () => { TimelineModel.deviceFilter = id } })
+            }
+        }
+        if (TimelineModel.hasMore)
+            list.push({ label: qsTr("Load more"), icon: Icons.download, tint: Theme.tintBlue, run: () => TimelineModel.loadMore() })
+        if (TimelineModel.count > 0)
+            list.push({ label: qsTr("Clear timeline"), detail: qsTr("Saved files stay on disk"), icon: Icons.trash,
+                        tint: Theme.tintRed, run: () => { page.confirmClearAll = true } })
+        return list
+    }
+
+    function openCurrent() {
+        if (current && current.canOpen)
+            TimelineModel.openEntry(current.entryId)
+    }
+    function revealCurrent() {
+        if (current && current.canShowInFolder)
+            TimelineModel.revealEntry(current.entryId)
+    }
+    function removeEntry(id) {
+        if (current && current.entryId === id)
+            current = null
+        TimelineModel.removeEntry(id)
+    }
+
+    Shortcut {
+        sequence: "Esc"
+        enabled: page.active && !menu.opened
+                 && (page.confirmClearAll || listView.activeFocus || searchField.input.activeFocus)
+        onActivated: {
+            if (page.confirmClearAll) {
+                page.confirmClearAll = false
+            } else if (searchField.text.length > 0) {
+                searchField.text = ""
+                TimelineModel.searchQuery = ""
+            } else if (page.current !== null) {
+                page.current = null
+                listView.currentIndex = -1
+            } else {
+                searchField.forceActiveFocus()
+            }
+        }
+    }
+    Shortcut {
+        sequences: ["Return", "Enter"]
+        enabled: page.active && listView.activeFocus && page.current !== null && page.current.canOpen
+        onActivated: page.openCurrent()
+    }
+    Shortcut {
+        sequence: "Ctrl+O"
+        enabled: page.active && page.current !== null && page.current.canShowInFolder
+        onActivated: page.revealCurrent()
+    }
+    Shortcut {
+        sequence: StandardKey.Delete
+        enabled: page.active && listView.activeFocus && page.current !== null
+        onActivated: page.removeEntry(page.current.entryId)
+    }
+    Shortcut {
+        sequences: [StandardKey.Find]
+        enabled: page.active
+        onActivated: searchField.forceActiveFocus()
+    }
+
     Connections {
         target: TimelineModel
         function onHasAnyChanged() {
             if (!TimelineModel.hasAny) {
                 page.confirmClearAll = false
-                page.deviceMenuOpen = false
-                if (searchInput.text.length > 0)
-                    searchInput.text = ""
+                page.current = null
+                if (searchField.text.length > 0)
+                    searchField.text = ""
                 if (TimelineModel.searchQuery.length > 0)
                     TimelineModel.searchQuery = ""
                 if (TimelineModel.kindFilter.length > 0)
@@ -60,16 +168,20 @@ Item {
                     TimelineModel.deviceFilter = ""
             }
         }
+        function onCountChanged() {
+            if (TimelineModel.count === 0)
+                page.current = null
+        }
+        function onKindFilterChanged() { page.current = null; listView.currentIndex = -1 }
+        function onDeviceFilterChanged() { page.current = null; listView.currentIndex = -1 }
+        function onSearchQueryChanged() { page.current = null; listView.currentIndex = -1 }
     }
 
     Connections {
         target: DeviceList
         function onCountChanged() {
-            if (DeviceList.count <= 1) {
-                page.deviceMenuOpen = false
-                if (TimelineModel.deviceFilter.length > 0)
-                    TimelineModel.deviceFilter = ""
-            }
+            if (DeviceList.count <= 1 && TimelineModel.deviceFilter.length > 0)
+                TimelineModel.deviceFilter = ""
         }
     }
 
@@ -111,6 +223,18 @@ Item {
         }
     }
 
+    function tintForKind(kind) {
+        switch (kind) {
+        case "file": return Theme.tintAmber
+        case "clip": return Theme.tintLavender
+        case "link": return Theme.tintBlue
+        case "photo": return Theme.tintCoral
+        case "recording": return Theme.tintRed
+        case "session": return Theme.tintPink
+        default: return Theme.surfaceContentVariant
+        }
+    }
+
     function iconForRow(kind, title) {
         if (kind === "file") {
             const t = (title || "").toLowerCase()
@@ -121,310 +245,223 @@ Item {
         return iconForKind(kind)
     }
 
-    Column {
-        id: headerCol
+    // "Phone → PC" / "PC → Phone", naming the device when there's more than one.
+    function directionText(incoming, deviceName) {
+        const other = DeviceList.count > 1 && deviceName.length > 0 ? deviceName : qsTr("Phone")
+        return incoming ? qsTr("%1 → PC").arg(other) : qsTr("PC → %1").arg(other)
+    }
+
+    function rowActions(row) {
+        const id = row.entryId
+        const list = []
+        if (row.canOpen)
+            list.push({ label: qsTr("Open"), icon: row.kind === "link" ? Icons.openExternal : Icons.folder,
+                        tint: Theme.accent, keys: "Enter", run: () => TimelineModel.openEntry(id) })
+        if (row.canShowInFolder)
+            list.push({ label: qsTr("Show in folder"), icon: Icons.folder, tint: Theme.tintAmber, keys: "Ctrl O",
+                        run: () => TimelineModel.revealEntry(id) })
+        if (row.canCopy)
+            list.push({ label: qsTr("Copy"), icon: Icons.copy, tint: Theme.tintLavender, run: () => TimelineModel.copyEntry(id) })
+        if (row.canSendAgain)
+            list.push({ label: qsTr("Send again"), icon: Icons.send, tint: Theme.tintAmber,
+                        run: () => TimelineModel.sendAgain(id, "") })
+        list.push({ label: qsTr("Remove from timeline"), icon: Icons.close, tint: Theme.tintRed, keys: "Del",
+                    run: () => page.removeEntry(id) })
+        return list
+    }
+
+    // ---- Filters, device, search ----
+    Item {
+        id: bar
         visible: TimelineModel.hasAny
-        width: Math.min(860, parent.width - Theme.contentPadding * 2)
-        x: Math.max(Theme.contentPadding, (parent.width - width) / 2)
-        y: Theme.contentPadding
-        spacing: 12
+        x: 8
+        y: 8
+        width: parent.width - 16
+        height: 32
 
-        // Search bar + Clear all button
-        Item {
-            width: parent.width
-            height: 40
-
-            Rectangle {
-                id: searchBox
-                anchors.left: parent.left
-                anchors.right: clearBtn.visible ? clearBtn.left : parent.right
-                anchors.rightMargin: clearBtn.visible ? 10 : 0
-                height: 40
-                radius: Theme.graphite ? Theme.radiusSm : height / 2
-                color: Theme.graphite ? "transparent" : Theme.surfaceContainerHigh
-                border.width: searchInput.activeFocus ? 2 : 1
-                border.color: searchInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
-
-                Icon {
-                    id: searchIcon
-                    x: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 16; height: 16
-                    path: Icons.search
-                    color: Theme.surfaceContentVariant
-                }
-                TextInput {
-                    id: searchInput
-                    anchors.left: searchIcon.right
-                    anchors.leftMargin: 10
-                    anchors.right: clearSearchBtn.visible ? clearSearchBtn.left : parent.right
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    font.family: Theme.fontUi
-                    font.pixelSize: 14
-                    color: Theme.surfaceContent
-                    selectionColor: Theme.primaryContainer
-                    selectedTextColor: Theme.primaryContainerContent
-                    clip: true
-                    text: TimelineModel.searchQuery
-                    onTextEdited: TimelineModel.searchQuery = text
-                    Accessible.name: qsTr("Search timeline")
-                    Keys.onEscapePressed: (event) => {
-                        event.accepted = text.length > 0
-                        text = ""
-                        TimelineModel.searchQuery = ""
-                    }
-                }
-                Txt {
-                    anchors.left: searchInput.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: searchInput.text.length === 0
-                    role: "body"
-                    muted: true
-                    text: qsTr("Search timeline…")
-                }
-                IconButton {
-                    id: clearSearchBtn
-                    anchors.right: parent.right
-                    anchors.rightMargin: 4
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 28; height: 28
-                    visible: searchInput.text.length > 0
-                    iconPath: Icons.close
-                    label: qsTr("Clear search")
-                    onClicked: {
-                        searchInput.text = ""
-                        TimelineModel.searchQuery = ""
-                    }
-                }
-            }
-
-            Button {
-                id: clearBtn
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                visible: TimelineModel.count > 0
-                    && TimelineModel.searchQuery.length === 0
-                    && TimelineModel.kindFilter.length === 0
-                    && TimelineModel.deviceFilter.length === 0
-                variant: "outline"
-                size: "sm"
-                iconPath: Icons.trash
-                text: qsTr("Clear all")
-                onClicked: page.confirmClearAll = true
-            }
-        }
-
-        // Single-line filter bar: kind chips on the left, compact device dropdown on the right
-        Item {
-            id: filterBar
-            width: parent.width
-            height: 30
-
+        Flickable {
+            id: kindTabs
+            anchors.left: parent.left
+            anchors.right: barRight.left
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            height: 26
+            contentWidth: kindRow.implicitWidth
+            interactive: contentWidth > width
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
             Row {
                 id: kindRow
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 6
-
+                x: 2
+                spacing: 4
                 Repeater {
                     model: page.kindOptions
-                    delegate: Chip {
+                    delegate: TextAction {
                         required property var modelData
-                        interactive: true
                         text: modelData.label
-                        iconPath: modelData.icon
                         selected: TimelineModel.kindFilter === modelData.key
-                        onClicked: {
-                            page.deviceMenuOpen = false
-                            TimelineModel.kindFilter = modelData.key
-                        }
+                        onClicked: TimelineModel.kindFilter = modelData.key
                     }
                 }
             }
-
-            Rectangle {
-                id: deviceDropdownBtn
-                visible: DeviceList.count > 1
-                anchors.right: parent.right
+        }
+        Row {
+            id: barRight
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+            TextAction {
+                id: deviceButton
                 anchors.verticalCenter: parent.verticalCenter
-                height: 30
-                readonly property real maxAllowedWidth: Math.max(110, filterBar.width - kindRow.width - 12)
-                width: Math.min(maxAllowedWidth, deviceBtnRow.implicitWidth + 22)
-                radius: Theme.pill(height)
-                activeFocusOnTab: true
-                readonly property bool filtered: TimelineModel.deviceFilter.length > 0
-                color: Theme.graphite
-                    ? (filtered ? Theme.surfaceContent : "transparent")
-                    : (filtered ? Theme.secondaryContainer : Theme.surfaceContainerHigh)
-                border.width: Theme.graphite || page.deviceMenuOpen ? 1 : 0
-                border.color: page.deviceMenuOpen
-                    ? Theme.primary
-                    : (filtered ? Theme.surfaceContent : Theme.outlineVariant)
-                Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-
+                visible: DeviceList.count > 1
+                text: page.selectedDeviceName
+                iconPath: Icons.phone
+                iconColor: Theme.surfaceContentVariant
+                selected: TimelineModel.deviceFilter.length > 0
                 Accessible.role: Accessible.ComboBox
                 Accessible.name: qsTr("Device filter: %1").arg(page.selectedDeviceName)
-                Accessible.onPressAction: page.deviceMenuOpen = !page.deviceMenuOpen
-                Keys.onPressed: (event) => {
-                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                        page.deviceMenuOpen = !page.deviceMenuOpen
-                        event.accepted = true
+                onClicked: {
+                    const list = [{ label: qsTr("All devices"), icon: Icons.phone, tint: Theme.surfaceContentVariant,
+                                    checked: TimelineModel.deviceFilter === "",
+                                    run: () => { TimelineModel.deviceFilter = "" } }]
+                    for (let i = 0; i < DeviceList.count; ++i) {
+                        const id = DeviceList.deviceIdAt(i)
+                        list.push({ label: DeviceList.deviceNameAt(i), icon: Icons.phone, tint: Theme.surfaceContentVariant,
+                                    checked: TimelineModel.deviceFilter === id,
+                                    run: () => { TimelineModel.deviceFilter = id } })
                     }
+                    menu.actions = list
+                    const p = deviceButton.mapToItem(page, deviceButton.width, deviceButton.height)
+                    menu.openAt(p.x, p.y, false, true)
                 }
-
-                Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: -3
-                    radius: parent.radius + 3
-                    color: "transparent"
-                    border.width: 2
-                    border.color: Theme.focusRing
-                    visible: Theme.focusVisible(deviceDropdownBtn)
-                }
-
-                Row {
-                    id: deviceBtnRow
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Icon {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 14; height: 14
-                        path: Icons.phone
-                        color: deviceBtnLabel.color
-                    }
-                    Txt {
-                        id: deviceBtnLabel
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: Math.min(implicitWidth, deviceDropdownBtn.maxAllowedWidth - 56)
-                        elide: Text.ElideRight
-                        role: "label"
-                        text: page.selectedDeviceName
-                        color: Theme.graphite
-                            ? (deviceDropdownBtn.filtered ? Theme.surface : Theme.surfaceContent)
-                            : (deviceDropdownBtn.filtered ? Theme.secondaryContainerContent : Theme.surfaceContent)
-                    }
-                    Icon {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 12; height: 12
-                        path: Icons.chevronDown
-                        color: deviceBtnLabel.color
-                    }
-                }
-
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: page.deviceMenuOpen = !page.deviceMenuOpen }
             }
-        }
-
-        // Confirmation bar for Clear all
-        Rectangle {
-            width: parent.width
-            height: confirmRow.height + 20
-            visible: page.confirmClearAll && TimelineModel.count > 0
-            radius: Theme.radiusMd
-            color: Theme.graphite ? "transparent" : Theme.surfaceContainerHigh
-            border.width: 1
-            border.color: Theme.outlineVariant
-
-            Item {
-                id: confirmRow
-                x: 14
+            Field {
+                id: searchField
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - 28
-                height: Math.max(confirmLabel.height, confirmBtns.height)
-
-                Txt {
-                    id: confirmLabel
-                    anchors.left: parent.left
-                    anchors.right: confirmBtns.left
-                    anchors.rightMargin: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    role: "bodySmall"
-                    wrapMode: Text.WordWrap
-                    text: qsTr("Clear timeline history? Saved files on disk are kept.")
-                }
-                Row {
-                    id: confirmBtns
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
-                    Button {
-                        variant: "text"
-                        size: "sm"
-                        text: qsTr("Cancel")
-                        onClicked: page.confirmClearAll = false
-                    }
-                    Button {
-                        variant: "tonal"
-                        size: "sm"
-                        iconPath: Icons.trash
-                        text: qsTr("Clear timeline")
-                        onClicked: {
-                            page.confirmClearAll = false
-                            page.deviceMenuOpen = false
-                            TimelineModel.clearAll()
-                        }
-                    }
+                width: Math.max(140, Math.min(240, bar.width * 0.3))
+                height: 28
+                iconPath: Icons.search
+                placeholder: qsTr("Search timeline")
+                text: TimelineModel.searchQuery
+                Accessible.name: qsTr("Search timeline")
+                Keys.onDownPressed: listView.forceActiveFocus()
+                Connections {
+                    target: searchField.input
+                    function onTextEdited() { TimelineModel.searchQuery = searchField.text }
                 }
             }
         }
     }
 
-    // Empty state
+    // Clear all, asked once more.
+    Item {
+        id: confirmBar
+        anchors.top: bar.bottom
+        anchors.topMargin: 4
+        x: 8
+        width: parent.width - 16
+        height: visible ? Theme.rowHeight : 0
+        visible: page.confirmClearAll && TimelineModel.count > 0
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.rowRadius
+            color: Theme.raised
+        }
+        Icon {
+            id: confirmIcon
+            x: Theme.rowPadding
+            anchors.verticalCenter: parent.verticalCenter
+            width: 18; height: 18
+            path: Icons.trash
+            color: Theme.tintRed
+        }
+        Txt {
+            anchors.left: confirmIcon.right
+            anchors.leftMargin: 10
+            anchors.right: confirmButtons.left
+            anchors.rightMargin: 10
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("Clear the timeline? Saved files stay on disk.")
+        }
+        Row {
+            id: confirmButtons
+            anchors.right: parent.right
+            anchors.rightMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 6
+            TextAction {
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Cancel")
+                onClicked: page.confirmClearAll = false
+            }
+            Button {
+                anchors.verticalCenter: parent.verticalCenter
+                size: "sm"
+                text: qsTr("Clear timeline")
+                onClicked: {
+                    page.confirmClearAll = false
+                    page.current = null
+                    TimelineModel.clearAll()
+                }
+            }
+        }
+    }
+
+    // ---- Nothing yet, or nothing matches ----
     Column {
         anchors.centerIn: parent
-        anchors.verticalCenterOffset: TimelineModel.hasAny ? 30 : 0
-        width: Math.min(420, parent.width - 48)
-        spacing: 10
+        width: Math.min(360, parent.width - 48)
+        spacing: 8
         visible: TimelineModel.count === 0
-
-        Rectangle {
+        Icon {
             anchors.horizontalCenter: parent.horizontalCenter
-            width: 48; height: 48; radius: 24
-            color: Theme.quiet ? "transparent" : Theme.graphite ? "transparent" : Theme.surfaceContainerHigh
-            border.width: Theme.graphite ? 1 : 0
-            border.color: Theme.outlineVariant
-            Icon {
-                anchors.centerIn: parent
-                width: 22; height: 22
-                path: Icons.history
-                color: Theme.surfaceContentVariant
-            }
+            width: 24; height: 24
+            path: Icons.history
+            color: Theme.tintLavender
         }
         Txt {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            role: "title"
-            text: TimelineModel.hasAny
-                  ? qsTr("No matching items")
-                  : qsTr("No recent activity")
-        }
-        Txt {
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            role: "bodySmall"
-            muted: true
             wrapMode: Text.WordWrap
-            text: TimelineModel.hasAny
-                  ? qsTr("Clear the search or filter.")
-                  : qsTr("Shared files, clips, links, and photos appear here.")
+            muted: true
+            text: TimelineModel.hasAny ? qsTr("Nothing matches") : qsTr("Files, clips, links and photos you share show up here")
+        }
+        TextAction {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: TimelineModel.hasAny
+            text: qsTr("Clear filters")
+            onClicked: {
+                searchField.text = ""
+                TimelineModel.searchQuery = ""
+                TimelineModel.kindFilter = ""
+                TimelineModel.deviceFilter = ""
+            }
         }
     }
 
-    // Paged timeline list
+    // ---- The entries, by day ----
     ListView {
         id: listView
-        anchors.top: headerCol.bottom
-        anchors.topMargin: 12
+        anchors.top: confirmBar.visible ? confirmBar.bottom : bar.bottom
+        anchors.topMargin: 4
         anchors.bottom: parent.bottom
-        width: headerCol.width
-        x: headerCol.x
+        x: 8
+        width: parent.width - 16
         clip: true
         boundsBehavior: Flickable.StopAtBounds
-        spacing: 8
         model: TimelineModel
         visible: TimelineModel.count > 0
+        currentIndex: -1
+        keyNavigationEnabled: true
+        highlightFollowsCurrentItem: false
+        Keys.onUpPressed: (event) => {
+            if (currentIndex <= 0) {
+                searchField.forceActiveFocus()
+                event.accepted = true
+            } else {
+                event.accepted = false
+            }
+        }
 
         onContentYChanged: {
             if (TimelineModel.hasMore && contentHeight > height && contentY + height >= contentHeight - 260)
@@ -454,335 +491,136 @@ Item {
             required property bool canSendAgain
 
             readonly property bool showDay: index === 0 || page.dayKey(timestamp) !== page.dayKey(prevTimestamp)
+            readonly property bool isCurrent: page.current !== null && page.current.entryId === entryId
+            // This row's roles, for the page's footer and Actions.
+            readonly property var info: ({ entryId: entryId, kind: kind, title: title, canOpen: canOpen,
+                                           canShowInFolder: canShowInFolder, canCopy: canCopy,
+                                           canSendAgain: canSendAgain })
+
+            function select() {
+                listView.currentIndex = index
+                page.current = info
+            }
+            // Keeps the page's copy current when this entry's roles change.
+            onInfoChanged: if (isCurrent) page.current = info
 
             width: listView.width
-            spacing: 6
 
-            Txt {
+            SectionLabel {
                 visible: rowRoot.showDay
-                topPadding: rowRoot.index === 0 ? 2 : 10
-                bottomPadding: 2
-                role: "label"
-                muted: true
+                width: parent.width
+                height: visible ? (rowRoot.index === 0 ? 30 : 38) : 0
                 text: rowRoot.showDay ? page.dayLabel(rowRoot.timestamp) : ""
             }
 
-            Rectangle {
-                id: itemCard
+            ActionRow {
+                id: entry
                 width: parent.width
-                height: Math.max(62, textCol.implicitHeight + 24)
-                radius: Theme.radiusMd
-                color: Theme.cardColor
-                border.width: Theme.graphite ? 1 : 0
-                border.color: Theme.cardBorder
-
-                // Leading thumbnail or kind icon
-                Item {
-                    id: leading
-                    x: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 40; height: 40
-
-                    RoundedImage {
-                        id: thumbImg
-                        anchors.fill: parent
-                        visible: rowRoot.thumbUrl.length > 0 && status === Image.Ready
-                        radius: Theme.radiusSm
-                        source: rowRoot.thumbUrl
-                        sourceSize: Qt.size(80, 80)
-                        fillMode: Image.PreserveAspectCrop
-                    }
-
-                    Rectangle {
-                        anchors.fill: parent
-                        visible: !thumbImg.visible
-                        radius: Theme.radiusSm
-                        color: Theme.graphite ? "transparent" : Theme.surfaceContainerHigh
-                        border.width: Theme.graphite ? 1 : 0
-                        border.color: Theme.outlineVariant
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 18; height: 18
-                            path: page.iconForRow(rowRoot.kind, rowRoot.title)
-                            color: Theme.primary
-                        }
-                    }
+                iconPath: page.iconForRow(rowRoot.kind, rowRoot.title)
+                tint: page.tintForKind(rowRoot.kind)
+                title: rowRoot.title
+                detail: rowRoot.subtitle
+                selected: rowRoot.isCurrent
+                activeFocusOnTab: false
+                onClicked: {
+                    rowRoot.select()
+                    listView.forceActiveFocus()
                 }
-
-                // Title & subtitle
-                Column {
-                    id: textCol
-                    anchors.left: leading.right
-                    anchors.leftMargin: 12
-                    anchors.right: actionsRow.left
-                    anchors.rightMargin: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 2
-
-                    Row {
-                        width: parent.width
-                        spacing: 8
-                        Txt {
-                            width: Math.min(implicitWidth, parent.width - timeText.implicitWidth - 10)
-                            role: "body"
-                            weight: 600
-                            elide: Text.ElideRight
-                            text: rowRoot.title
-                        }
-                        Txt {
-                            id: timeText
-                            anchors.verticalCenter: parent.verticalCenter
-                            role: "caption"
-                            muted: true
-                            text: page.timeOfDay(rowRoot.timestamp)
-                        }
-                    }
-
-                    Txt {
-                        width: parent.width
-                        role: "bodySmall"
-                        muted: true
-                        elide: Text.ElideRight
-                        text: rowRoot.subtitle
-                    }
+                onRightClicked: (x, y) => {
+                    rowRoot.select()
+                    menu.actions = page.rowActions(rowRoot.info)
+                    const p = entry.mapToItem(page, x, y)
+                    menu.openAt(p.x, p.y, false, false)
                 }
-
-                // Actions: Open / Show in folder / Copy / Send again / Remove
+                // Hover or selection shows the row's own buttons; otherwise
+                // where it went and when.
                 Row {
-                    id: actionsRow
-                    anchors.right: parent.right
-                    anchors.rightMargin: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
-
-                    Button {
-                        anchors.verticalCenter: parent.verticalCenter
+                    visible: entry.hovered || rowRoot.isCurrent
+                    spacing: 2
+                    RowButton {
                         visible: rowRoot.canOpen
-                        variant: "tonal"
-                        size: "sm"
-                        iconPath: rowRoot.kind === "link" ? Icons.openExternal : ""
-                        text: qsTr("Open")
+                        iconPath: Icons.openExternal
+                        label: qsTr("Open")
                         onClicked: TimelineModel.openEntry(rowRoot.entryId)
                     }
-                    Button {
-                        anchors.verticalCenter: parent.verticalCenter
+                    RowButton {
                         visible: rowRoot.canShowInFolder
-                        variant: "text"
-                        size: "sm"
                         iconPath: Icons.folder
-                        text: qsTr("Show in folder")
+                        label: qsTr("Show in folder")
                         onClicked: TimelineModel.revealEntry(rowRoot.entryId)
                     }
-                    Button {
-                        anchors.verticalCenter: parent.verticalCenter
+                    RowButton {
                         visible: rowRoot.canCopy
-                        variant: rowRoot.canOpen ? "text" : "tonal"
-                        size: "sm"
                         iconPath: Icons.copy
-                        text: qsTr("Copy")
+                        label: qsTr("Copy")
                         onClicked: TimelineModel.copyEntry(rowRoot.entryId)
                     }
-                    Button {
-                        anchors.verticalCenter: parent.verticalCenter
+                    RowButton {
                         visible: rowRoot.canSendAgain
-                        variant: "text"
-                        size: "sm"
                         iconPath: Icons.send
-                        text: qsTr("Send again")
+                        label: qsTr("Send again")
                         onClicked: TimelineModel.sendAgain(rowRoot.entryId, "")
                     }
-                    IconButton {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 30; height: 30
+                    RowButton {
                         iconPath: Icons.close
                         label: qsTr("Remove from timeline")
-                        onClicked: TimelineModel.removeEntry(rowRoot.entryId)
+                        onClicked: page.removeEntry(rowRoot.entryId)
                     }
+                }
+                Txt {
+                    visible: !(entry.hovered || rowRoot.isCurrent)
+                    role: "bodySmall"
+                    muted: true
+                    text: page.directionText(rowRoot.incoming, rowRoot.deviceName)
+                }
+                Txt {
+                    width: 64
+                    horizontalAlignment: Text.AlignRight
+                    role: "bodySmall"
+                    muted: true
+                    text: page.timeOfDay(rowRoot.timestamp)
                 }
             }
         }
 
+        // Keyboard moves the selection with the list's current row.
+        onCurrentItemChanged: {
+            if (currentItem && activeFocus)
+                page.current = currentItem.info
+        }
+
         footer: Item {
             width: listView.width
-            height: TimelineModel.hasMore ? 56 : 24
-            Button {
+            height: TimelineModel.hasMore ? 48 : 16
+            TextAction {
                 anchors.centerIn: parent
                 visible: TimelineModel.hasMore
-                variant: "tonal"
-                size: "sm"
                 text: qsTr("Load more")
                 onClicked: TimelineModel.loadMore()
             }
         }
     }
 
-    // Device filter dropdown menu overlay
-    Item {
-        id: deviceMenuBackdrop
-        anchors.fill: parent
-        z: 49
-        visible: page.deviceMenuOpen && TimelineModel.hasAny && DeviceList.count > 1
-        TapHandler { onTapped: page.deviceMenuOpen = false }
-    }
-
-    Rectangle {
-        id: deviceMenuCard
-        z: 50
-        visible: page.deviceMenuOpen && TimelineModel.hasAny && DeviceList.count > 1
-        width: Math.max(deviceDropdownBtn.width, 200)
-        height: deviceMenuCol.height + 10
-        x: headerCol.x + headerCol.width - width
-        y: headerCol.y + filterBar.y + filterBar.height + 6
-        radius: Theme.radiusMd
-        color: Theme.graphite ? Theme.surface : Theme.surfaceContainerHighest
-        border.width: 1
-        border.color: Theme.outlineVariant
-
-        Column {
-            id: deviceMenuCol
-            x: 5
-            y: 5
-            width: parent.width - 10
-            spacing: 2
-
-            Rectangle {
-                id: allDevItem
-                width: parent.width
-                height: 32
-                radius: Theme.radiusSm
-                activeFocusOnTab: true
-                color: allDevHover.hovered ? Theme.surfaceContainerHigh : "transparent"
-                border.width: Theme.focusVisible(allDevItem) ? 2 : 0
-                border.color: Theme.focusRing
-                Accessible.role: Accessible.MenuItem
-                Accessible.name: qsTr("All devices")
-                Accessible.onPressAction: {
-                    TimelineModel.deviceFilter = ""
-                    page.deviceMenuOpen = false
-                }
-                Keys.onPressed: (event) => {
-                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                        TimelineModel.deviceFilter = ""
-                        page.deviceMenuOpen = false
-                        event.accepted = true
-                    }
-                }
-
-                Row {
-                    x: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
-                    Icon {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 14; height: 14
-                        path: Icons.phone
-                        color: TimelineModel.deviceFilter === "" ? Theme.primary : Theme.surfaceContentVariant
-                    }
-                    Txt {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: deviceMenuCol.width - 56
-                        elide: Text.ElideRight
-                        role: "bodySmall"
-                        weight: TimelineModel.deviceFilter === "" ? 600 : 400
-                        text: qsTr("All devices")
-                    }
-                }
-                Icon {
-                    visible: TimelineModel.deviceFilter === ""
-                    anchors.right: parent.right
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 14; height: 14
-                    path: Icons.check
-                    color: Theme.primary
-                }
-                HoverHandler { id: allDevHover; cursorShape: Qt.PointingHandCursor }
-                TapHandler {
-                    onTapped: {
-                        TimelineModel.deviceFilter = ""
-                        page.deviceMenuOpen = false
-                    }
-                }
-            }
-
-            Repeater {
-                model: DeviceList.count > 1 ? DeviceList : null
-                delegate: Rectangle {
-                    id: devOptItem
-                    required property string deviceId
-                    required property string name
-                    required property string kind
-                    readonly property bool isCurrent: TimelineModel.deviceFilter === deviceId
-                    width: deviceMenuCol.width
-                    height: 32
-                    radius: Theme.radiusSm
-                    activeFocusOnTab: true
-                    color: devOptHover.hovered ? Theme.surfaceContainerHigh : "transparent"
-                    border.width: Theme.focusVisible(devOptItem) ? 2 : 0
-                    border.color: Theme.focusRing
-                    Accessible.role: Accessible.MenuItem
-                    Accessible.name: name
-                    Accessible.onPressAction: {
-                        TimelineModel.deviceFilter = deviceId
-                        page.deviceMenuOpen = false
-                    }
-                    Keys.onPressed: (event) => {
-                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                            TimelineModel.deviceFilter = deviceId
-                            page.deviceMenuOpen = false
-                            event.accepted = true
-                        }
-                    }
-
-                    Row {
-                        x: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 8
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 14; height: 14
-                            path: kind === "desktop" || kind === "laptop" ? Icons.laptop : Icons.phone
-                            color: isCurrent ? Theme.primary : Theme.surfaceContentVariant
-                        }
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: deviceMenuCol.width - 56
-                            elide: Text.ElideRight
-                            role: "bodySmall"
-                            weight: isCurrent ? 600 : 400
-                            text: name
-                        }
-                    }
-                    Icon {
-                        visible: isCurrent
-                        anchors.right: parent.right
-                        anchors.rightMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 14; height: 14
-                        path: Icons.check
-                        color: Theme.primary
-                    }
-                    HoverHandler { id: devOptHover; cursorShape: Qt.PointingHandCursor }
-                    TapHandler {
-                        onTapped: {
-                            TimelineModel.deviceFilter = deviceId
-                            page.deviceMenuOpen = false
-                        }
-                    }
-                }
-            }
-        }
+    PopupMenu {
+        id: menu
+        panelWidth: 260
     }
 
     Rectangle {
         anchors.fill: parent
-        anchors.margins: 10
+        anchors.margins: 6
         radius: Theme.radiusLg
         color: "transparent"
         border.width: 2
-        border.color: Theme.primary
+        border.color: Theme.focusRing
         visible: opacity > 0
         opacity: AppController.highlightTarget === "timeline:main" ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
+    }
+
+    component RowButton: IconButton {
+        width: 26
+        height: 26
+        iconSize: 15
     }
 }

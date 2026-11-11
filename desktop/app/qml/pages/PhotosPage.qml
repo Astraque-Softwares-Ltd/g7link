@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Dialogs
+import QtQuick.Window
 import app.g7link
 
-// Photos: the phone's gallery on the PC. Albums on the left, a virtualized
-// GridView of thumbnails grouped by day on the right, multi-select, Save (to
-// a chosen folder or Downloads/G7Link), Copy to clipboard, Open in the
-// default image viewer, and an in-app viewer with arrow-key navigation.
+// Photos: the phone's gallery on the PC. Albums as tabs along the top, a
+// virtualized grid of square thumbnails by day, multi-select, Save (to the
+// default folder or a chosen one), Copy, Open in the default viewer, Delete,
+// drag out, and an in-app viewer with arrow-key navigation.
 Item {
     id: page
     property bool active: false
@@ -41,6 +42,7 @@ Item {
         const id = selectedIds[0]
         return id.indexOf("video:") === 0
     }
+    readonly property bool canCopySelection: selectedCount === 1 && !singleSelectedIsVideo && !Photos.saving
 
     readonly property string currentAlbumName: {
         if (Photos.album.length === 0) return qsTr("All photos")
@@ -55,6 +57,12 @@ Item {
         for (let i = 0; i < albums.length; i++)
             sum += (albums[i].count || 0)
         return sum > 0 ? sum : Photos.count
+    }
+    // The default save folder's own name ("Pictures").
+    readonly property string saveFolderName: {
+        const f = Photos.saveFolder || ""
+        const parts = f.split(/[\\/]/).filter((p) => p.length > 0)
+        return parts.length > 0 ? parts[parts.length - 1] : f
     }
 
     function sameDay(a, b) {
@@ -182,6 +190,46 @@ Item {
         }
     }
 
+    // The row of the one selected item (to open it), or -1.
+    function selectedRow() {
+        if (selectedCount !== 1)
+            return lastClickedIndex
+        const id = selectedIds[0]
+        if (lastClickedIndex >= 0 && Photos.idAt(lastClickedIndex) === id)
+            return lastClickedIndex
+        for (let r = 0; r < Photos.count; r++) {
+            if (Photos.idAt(r) === id)
+                return r
+        }
+        return -1
+    }
+    // Space: opens the selected photo in the viewer, or closes the viewer.
+    function toggleViewer() {
+        if (viewerIndex >= 0) {
+            viewerIndex = -1
+            return
+        }
+        const row = selectedRow()
+        openViewer(row >= 0 ? row : 0)
+    }
+    function saveSelection() {
+        if (selectedCount === 0 || Photos.saving)
+            return
+        Photos.saveItems(selectedIds, "")
+        clearSelection()
+    }
+    function saveSelectionTo() {
+        if (selectedCount === 0 || Photos.saving)
+            return
+        saveToFolderPicker.pendingIds = selectedIds.slice()
+        saveToFolderPicker.open()
+    }
+    function selectAlbum(id) {
+        clearSelection()
+        viewerIndex = -1
+        Photos.selectAlbum(id)
+    }
+
     function load() {
         if (active && deviceId.length > 0)
             Photos.open(deviceId)
@@ -197,30 +245,142 @@ Item {
 
     visible: active
 
+    // The page's keys stay out of the way while something else, such as the
+    // Actions list or a text field elsewhere, has the keyboard.
+    readonly property bool keysHere: {
+        const f = Window.activeFocusItem
+        if (!f || f === Window.contentItem)
+            return true
+        for (let it = f; it; it = it.parent) {
+            if (it === page)
+                return true
+        }
+        return false
+    }
+
+    // ---- Footer and Actions (Ctrl B) ----
+    readonly property string footerLabel: {
+        const n = Photos.album.length === 0 ? totalPhotosCount : Photos.count
+        const name = Photos.album.length === 0 ? qsTr("Photos") : currentAlbumName
+        if (n <= 0)
+            return name
+        return Photos.more && Photos.album.length > 0
+            ? qsTr("%1 · %2+").arg(name).arg(Qt.locale().toString(n))
+            : qsTr("%1 · %2").arg(name).arg(Qt.locale().toString(n))
+    }
+    readonly property var primaryAction: Photos.count > 0
+        ? { label: viewerIndex >= 0 ? qsTr("Close") : qsTr("Open"), keys: "Space", run: () => page.toggleViewer() }
+        : null
+    readonly property var screenActions: {
+        const list = []
+        const one = page.viewerIndex >= 0 ? page.viewedItem : null
+        if (one) {
+            const id = one.id
+            if (!one.isVideo)
+                list.push({ label: qsTr("Copy"), detail: one.name, icon: Icons.copy, tint: Theme.tintLavender, keys: "Ctrl C",
+                            enabled: !Photos.saving, run: () => Photos.copyItem(id) })
+            list.push({ label: one.isVideo ? qsTr("Play video") : qsTr("Open in Photos"), detail: one.name,
+                        icon: one.isVideo ? Icons.play : Icons.openExternal, tint: Theme.tintBlue,
+                        enabled: !Photos.saving, run: () => Photos.openItem(id) })
+            list.push({ label: qsTr("Save to %1").arg(page.saveFolderName), icon: Icons.download, tint: Theme.accent,
+                        enabled: !Photos.saving, run: () => Photos.saveItems([id], "") })
+            list.push({ label: qsTr("Save to folder…"), icon: Icons.folder, tint: Theme.tintAmber, enabled: !Photos.saving,
+                        run: () => { saveToFolderPicker.pendingIds = [id]; saveToFolderPicker.open() } })
+            list.push({ label: qsTr("Previous photo"), icon: Icons.back, keys: "Left", enabled: page.viewerIndex > 0,
+                        run: () => page.stepViewer(-1) })
+            list.push({ label: qsTr("Next photo"), icon: Icons.chevronRight, keys: "Right",
+                        enabled: page.viewerIndex + 1 < Photos.count, run: () => page.stepViewer(1) })
+            list.push({ label: qsTr("Back to the photos"), icon: Icons.back, keys: "Esc", run: () => { page.viewerIndex = -1 } })
+            return list
+        }
+        if (Photos.count > 0)
+            list.push({ label: qsTr("Open"), icon: Icons.photo, tint: Theme.tintCoral, keys: "Space", run: () => page.toggleViewer() })
+        if (page.selectedCount > 0) {
+            const ids = page.selectedIds.slice()
+            list.push({ label: qsTr("Save to %1").arg(page.saveFolderName),
+                        detail: qsTr("%n selected", "", page.selectedCount), icon: Icons.download, tint: Theme.accent,
+                        enabled: !Photos.saving, run: () => page.saveSelection() })
+            list.push({ label: qsTr("Save to folder…"), icon: Icons.folder, tint: Theme.tintAmber, enabled: !Photos.saving,
+                        run: () => page.saveSelectionTo() })
+            if (page.selectedCount === 1) {
+                if (!page.singleSelectedIsVideo)
+                    list.push({ label: qsTr("Copy"), icon: Icons.copy, tint: Theme.tintLavender, keys: "Ctrl C",
+                                enabled: !Photos.saving, run: () => Photos.copyItem(ids[0]) })
+                list.push({ label: qsTr("Open in Photos"), icon: Icons.openExternal, tint: Theme.tintBlue,
+                            enabled: !Photos.saving, run: () => Photos.openItem(ids[0]) })
+            }
+            list.push({ label: qsTr("Delete"), detail: qsTr("Moves to the phone's trash"), icon: Icons.trash, tint: Theme.tintRed,
+                        enabled: !Photos.saving, run: () => { page.confirmDelete = true } })
+            list.push({ label: qsTr("Clear selection"), icon: Icons.close, keys: "Esc", run: () => page.clearSelection() })
+        }
+        if (Photos.count > 0) {
+            list.push({ label: Photos.count > 500 ? qsTr("Select first 500") : qsTr("Select all"), icon: Icons.check,
+                        keys: "Ctrl A", run: () => page.selectAllLoaded() })
+            if (!page.selectMode && page.selectedCount === 0)
+                list.push({ label: qsTr("Select"), detail: qsTr("Click photos to pick them"), icon: Icons.check,
+                            run: () => { page.selectMode = true } })
+        }
+        if (AppController.continuityCameraBusy) {
+            list.push({ label: qsTr("Cancel camera"), detail: AppController.continuityCameraStatus, icon: Icons.close,
+                        tint: Theme.tintRed, run: () => AppController.cancelContinuityCamera() })
+        } else {
+            list.push({ label: qsTr("Take photo with phone"), icon: Icons.camera, tint: Theme.tintBlue,
+                        run: () => AppController.startContinuityCamera("photo") })
+            list.push({ label: qsTr("Scan document with phone"), icon: Icons.clipboardList, tint: Theme.tintTeal,
+                        run: () => AppController.startContinuityCamera("scan") })
+        }
+        if (Photos.count > 0)
+            list.push({ label: qsTr("Default save folder"), detail: Photos.saveFolder || "", icon: Icons.folder,
+                        tint: Theme.tintAmber, run: () => defaultFolderPicker.open() })
+        list.push({ label: qsTr("Refresh"), icon: Icons.refresh, tint: Theme.tintBlue, enabled: Photos.status !== "loading",
+                    run: () => Photos.refresh() })
+        list.push({ label: qsTr("All photos"), detail: String(page.totalPhotosCount), icon: Icons.photo,
+                    tint: Theme.tintCoral, checked: Photos.album === "", run: () => page.selectAlbum("") })
+        for (const a of page.albums) {
+            const albumId = a.id
+            list.push({ label: a.name, detail: String(a.count || 0), icon: Icons.photo, tint: Theme.tintCoral,
+                        checked: Photos.album === albumId, run: () => page.selectAlbum(albumId) })
+        }
+        return list
+    }
+
     // Keyboard shortcuts for viewer navigation and selection.
     Shortcut {
         sequence: "Left"
-        enabled: page.active && page.viewerIndex > 0
+        enabled: page.active && page.keysHere && page.viewerIndex > 0
         onActivated: page.stepViewer(-1)
     }
     Shortcut {
         sequence: "Right"
-        enabled: page.active && page.viewerIndex >= 0 && page.viewerIndex + 1 < Photos.count
+        enabled: page.active && page.keysHere && page.viewerIndex >= 0 && page.viewerIndex + 1 < Photos.count
         onActivated: page.stepViewer(1)
     }
     Shortcut {
+        sequence: "Space"
+        enabled: page.active && page.keysHere && Photos.count > 0
+                 && (page.viewerIndex >= 0 || page.selectedCount === 1)
+        onActivated: page.toggleViewer()
+    }
+    Shortcut {
         sequence: "Esc"
-        enabled: page.active && (page.viewerIndex >= 0 || page.selectedCount > 0 || page.selectMode)
+        enabled: page.active && page.keysHere && (page.viewerIndex >= 0 || page.selectedCount > 0 || page.selectMode || page.confirmDelete)
         onActivated: {
             if (page.viewerIndex >= 0)
                 page.viewerIndex = -1
+            else if (page.confirmDelete)
+                page.confirmDelete = false
             else
                 page.clearSelection()
         }
     }
     Shortcut {
+        sequences: [StandardKey.SelectAll]
+        enabled: page.active && page.keysHere && page.viewerIndex < 0 && Photos.count > 0
+        onActivated: page.selectAllLoaded()
+    }
+    Shortcut {
         sequences: [StandardKey.Copy]
-        enabled: page.active && (
+        enabled: page.active && page.keysHere && (
             (page.viewerIndex >= 0 && page.viewedItem !== null && !page.viewedItem.isVideo)
             || (page.selectedCount === 1 && !page.singleSelectedIsVideo)
         )
@@ -236,7 +396,7 @@ Item {
 
     FolderDialog {
         id: defaultFolderPicker
-        title: qsTr("Choose default folder for saved photos")
+        title: qsTr("Default folder for saved photos")
         onAccepted: Photos.chooseSaveFolder(selectedFolder.toString())
     }
 
@@ -259,614 +419,381 @@ Item {
     // ---- No phone paired, or phone offline with nothing cached ----
     Column {
         anchors.centerIn: parent
-        width: Math.min(parent.width - Theme.contentPadding * 2, 420)
-        spacing: 12
+        width: Math.min(parent.width - 32, 360)
+        spacing: 8
         visible: page.phoneOffline
         Icon {
             anchors.horizontalCenter: parent.horizontalCenter
-            width: 40; height: 40
-            stroke: 1.5
+            width: 24; height: 24
             path: Icons.photo
-            color: Theme.surfaceContentVariant
-        }
-        Txt {
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            role: "title"
-            text: page.deviceId.length === 0 ? qsTr("Photos")
-                : qsTr("%1 isn't connected").arg(page.deviceName)
+            color: Theme.tintCoral
         }
         Txt {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            role: "body"
             muted: true
-            text: page.deviceId.length === 0
-                ? qsTr("Pair your phone to browse photos and albums.")
-                : qsTr("Connect %1 to view photos.").arg(page.deviceName)
+            text: page.deviceId.length === 0 ? qsTr("Pair a phone to see its photos")
+                : qsTr("%1 isn't connected").arg(page.deviceName)
         }
     }
 
-    // ---- Left pane: Albums list ----
+    // ---- Albums, selection and its actions ----
     Item {
-        id: albumPane
+        id: toolbar
         visible: !page.phoneOffline
-        width: page.width < 760 ? 200 : 248
-        height: parent.height
+        x: 16
+        y: 12
+        width: parent.width - 32
+        height: 28
 
-        Item {
-            id: albumHeader
-            width: parent.width
-            height: 56
-            Txt {
-                anchors.left: parent.left
-                anchors.leftMargin: 18
-                anchors.verticalCenter: parent.verticalCenter
-                role: "label"
-                muted: true
-                text: qsTr("Albums")
+        Flickable {
+            id: albumTabs
+            anchors.left: parent.left
+            anchors.right: toolbarRight.left
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            height: 26
+            contentWidth: albumRow.implicitWidth
+            interactive: contentWidth > width
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.HorizontalFlick
+            clip: true
+            Row {
+                id: albumRow
+                spacing: 4
+                TextAction {
+                    text: qsTr("All")
+                    selected: Photos.album === ""
+                    Accessible.name: qsTr("All photos, %1").arg(page.totalPhotosCount)
+                    onClicked: page.selectAlbum("")
+                }
+                Repeater {
+                    model: page.albums
+                    delegate: TextAction {
+                        required property var modelData
+                        text: modelData.name
+                        selected: Photos.album === modelData.id
+                        Accessible.name: qsTr("%1, %2").arg(modelData.name).arg(modelData.count || 0)
+                        onClicked: page.selectAlbum(modelData.id)
+                    }
+                }
             }
-            IconButton {
-                anchors.right: parent.right
-                anchors.rightMargin: 10
+        }
+
+        Row {
+            id: toolbarRight
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+
+            // The phone's camera at work for this PC.
+            Txt {
                 anchors.verticalCenter: parent.verticalCenter
-                iconPath: Icons.refresh
-                label: qsTr("Refresh")
-                enabled: Photos.status !== "loading"
+                visible: AppController.continuityCameraBusy
+                width: Math.min(implicitWidth, 260)
+                role: "bodySmall"
+                muted: true
+                text: AppController.continuityCameraStatus
+            }
+            TextAction {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: AppController.continuityCameraBusy
+                text: qsTr("Cancel")
+                onClicked: AppController.cancelContinuityCamera()
+            }
+
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: page.selectedCount > 0 || page.selectMode
+                role: "bodySmall"
+                muted: true
+                text: page.selectedCount > 0 ? qsTr("%n selected", "", page.selectedCount) : qsTr("Click photos to pick them")
+            }
+            TextAction {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: page.selectedCount > 0 || page.selectMode
+                text: qsTr("Clear")
+                onClicked: page.clearSelection()
+            }
+            Button {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !page.confirmDelete
+                variant: "outline"
+                size: "sm"
+                text: qsTr("Copy")
+                enabled: page.canCopySelection
+                onClicked: Photos.copyItem(page.selectedIds[0])
+            }
+            Button {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !page.confirmDelete
+                size: "sm"
+                busy: Photos.saving
+                enabled: page.selectedCount > 0 && !Photos.saving
+                text: page.saveFolderName.length > 0 ? qsTr("Save to %1").arg(page.saveFolderName) : qsTr("Save")
+                onClicked: page.saveSelection()
+            }
+
+            // Delete, asked once more: it reaches the phone's own gallery.
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: page.confirmDelete
+                role: "bodySmall"
+                color: Theme.tintRed
+                text: qsTr("Move %n to the phone's trash?", "", page.selectedCount)
+            }
+            TextAction {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: page.confirmDelete
+                text: qsTr("Cancel")
+                onClicked: page.confirmDelete = false
+            }
+            Button {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: page.confirmDelete
+                variant: "outline"
+                size: "sm"
+                iconPath: Icons.trash
+                text: qsTr("Delete")
+                enabled: page.selectedCount > 0 && !Photos.saving
+                onClicked: {
+                    Photos.deleteItems(page.selectedIds)
+                    page.clearSelection()
+                }
+            }
+        }
+    }
+
+    // ---- The photos ----
+    Item {
+        id: gridContainer
+        visible: !page.phoneOffline
+        anchors.top: toolbar.bottom
+        anchors.topMargin: 8
+        anchors.bottom: parent.bottom
+        x: 16
+        width: parent.width - 32
+
+        Row {
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.rowPadding
+            y: 40
+            visible: Photos.status === "loading" && Photos.count === 0
+            spacing: 10
+            Spinner { width: 16; height: 16; anchors.verticalCenter: parent.verticalCenter }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                muted: true
+                text: qsTr("Getting photos…")
+            }
+        }
+
+        // Off, not allowed, offline or failed.
+        Column {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 360)
+            spacing: 8
+            visible: Photos.count === 0 && Photos.status !== "loading" && Photos.status !== "ready"
+            Icon {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 24; height: 24
+                path: Icons.photo
+                color: Theme.tintCoral
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: Photos.status === "off" ? qsTr("Photos are off for %1").arg(page.deviceName)
+                    : Photos.status === "unsupported" ? qsTr("Allow photos on %1").arg(page.deviceName)
+                    : Photos.status === "offline" ? qsTr("%1 isn't connected").arg(page.deviceName)
+                    : qsTr("Couldn't load photos")
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                role: "bodySmall"
+                muted: true
+                visible: Photos.status === "off" || Photos.status === "unsupported"
+                text: Photos.status === "off" ? qsTr("Turn on Photos in Settings")
+                    : qsTr("Grant the photos permission on the phone")
+            }
+            LockChip {
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: label.length > 0
+                feature: page.photosFeature
+            }
+            TextAction {
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: Photos.status === "failed"
+                text: qsTr("Try again")
                 onClicked: Photos.refresh()
             }
         }
 
-        Flickable {
-            anchors.top: albumHeader.bottom
+        Txt {
+            anchors.centerIn: parent
+            visible: Photos.status === "ready" && Photos.count === 0
+            muted: true
+            text: qsTr("No photos or videos")
+        }
+
+        // The day at the top of the grid.
+        SectionLabel {
+            id: dayHeader
+            width: parent.width
+            visible: Photos.count > 0
+            text: grid.stickyDay
+        }
+
+        // Virtualized thumbnail grid; tiles that start a new day say so.
+        GridView {
+            id: grid
+            anchors.top: dayHeader.bottom
             anchors.bottom: parent.bottom
             width: parent.width
-            contentHeight: albumCol.height + 16
-            boundsBehavior: Flickable.StopAtBounds
+            bottomMargin: 16
+            visible: Photos.count > 0
             clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            cacheBuffer: height
+            // Auto-fill: as many ~130 px columns as fit, 6 px apart.
+            readonly property int columns: Math.max(2, Math.floor((width + 6) / 136))
+            cellWidth: Math.floor(width / columns)
+            cellHeight: cellWidth
+            model: Photos
 
-            Column {
-                id: albumCol
-                width: parent.width
-                spacing: 2
-
-                AlbumRow {
-                    width: albumCol.width
-                    albumId: ""
-                    title: qsTr("All photos")
-                    count: page.totalPhotosCount
-                    thumbUrl: page.albums.length > 0 ? (page.albums[0].thumb || "") : ""
-                    selected: Photos.album === ""
-                    onClicked: {
-                        page.clearSelection()
-                        page.viewerIndex = -1
-                        Photos.selectAlbum("")
-                    }
-                }
-
-                Repeater {
-                    model: page.albums
-                    delegate: AlbumRow {
-                        required property var modelData
-                        width: albumCol.width
-                        albumId: modelData.id
-                        title: modelData.name
-                        count: modelData.count || 0
-                        thumbUrl: modelData.thumb || ""
-                        selected: Photos.album === modelData.id
-                        onClicked: {
-                            page.clearSelection()
-                            page.viewerIndex = -1
-                            Photos.selectAlbum(modelData.id)
-                        }
-                    }
-                }
-            }
-        }
-
-        Divider { anchors.right: parent.right; width: 1; height: parent.height }
-    }
-
-    // ---- Right pane: Toolbar + Virtualized GridView ----
-    Item {
-        id: gridPane
-        visible: !page.phoneOffline
-        anchors.left: albumPane.right
-        anchors.right: parent.right
-        height: parent.height
-        readonly property bool compactBar: width < 540
-
-        // Top toolbar: album info OR multi-select actions.
-        Item {
-            id: toolbar
-            width: parent.width
-            height: 56
-
-            // Normal mode header (no selection active).
-            Row {
-                id: normalLeftRow
-                anchors.left: parent.left
-                anchors.leftMargin: 20
-                anchors.right: normalRightRow.visible ? normalRightRow.left : parent.right
-                anchors.rightMargin: 12
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 10
-                visible: page.selectedCount === 0 && !page.selectMode
-                clip: true
-
-                Txt {
-                    anchors.verticalCenter: parent.verticalCenter
-                    role: "title"
-                    size: 16
-                    elide: Text.ElideRight
-                    text: page.currentAlbumName
-                }
-                Txt {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: Photos.count > 0
-                    role: "caption"
-                    muted: true
-                    text: Photos.more
-                        ? qsTr("%1+ items").arg(Photos.count)
-                        : (Photos.count === 1 ? qsTr("1 item") : qsTr("%1 items").arg(Photos.count))
-                }
+            onAtYEndChanged: {
+                if (atYEnd && Photos.more && count > 0)
+                    Photos.loadOlder()
             }
 
-            Row {
-                id: normalRightRow
-                anchors.right: parent.right
-                anchors.rightMargin: 16
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 8
-                visible: page.selectedCount === 0 && !page.selectMode
-
-                Txt {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: AppController.continuityCameraBusy
-                    role: "caption"
-                    muted: true
-                    text: AppController.continuityCameraStatus
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: AppController.continuityCameraBusy
-                    variant: "outline"
-                    size: "sm"
-                    iconPath: Icons.close
-                    text: qsTr("Cancel")
-                    onClicked: AppController.cancelContinuityCamera()
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: !AppController.continuityCameraBusy
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.camera
-                    text: gridPane.compactBar ? qsTr("Photo") : qsTr("Take photo")
-                    onClicked: AppController.startContinuityCamera("photo")
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: !AppController.continuityCameraBusy
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.clipboardList
-                    text: gridPane.compactBar ? qsTr("Scan") : qsTr("Scan document")
-                    onClicked: AppController.startContinuityCamera("scan")
-                }
-
-                Chip {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: Photos.count > 0
-                    iconPath: Icons.folder
-                    interactive: true
-                    text: {
-                        const f = Photos.saveFolder || ""
-                        if (!gridPane.compactBar) return f
-                        const parts = f.split(/[\\/]/)
-                        return parts.length > 0 && parts[parts.length - 1].length > 0
-                            ? parts[parts.length - 1] : f
-                    }
-                    onClicked: defaultFolderPicker.open()
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: Photos.count > 0
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.check
-                    text: qsTr("Select")
-                    onClicked: page.selectMode = true
-                }
+            readonly property int topVisibleRow: Math.max(
+                0,
+                Math.floor(Math.max(0, contentY + 20) / Math.max(1, cellHeight)) * columns
+            )
+            readonly property string stickyDay: {
+                if (Photos.revision < 0 || Photos.count === 0) return ""
+                const row = Math.min(topVisibleRow, Photos.count - 1)
+                const ms = Photos.dateAt(row)
+                return ms > 0 ? page.dayLabel(ms) : ""
             }
 
-            // Selection mode toolbar.
-            Row {
-                anchors.left: parent.left
-                anchors.leftMargin: 12
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 8
-                visible: page.selectedCount > 0 || page.selectMode
-
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    iconPath: Icons.close
-                    label: qsTr("Cancel selection")
-                    onClicked: page.clearSelection()
-                }
-                Txt {
-                    anchors.verticalCenter: parent.verticalCenter
-                    role: "title"
-                    size: 15
-                    text: page.selectedCount > 0
-                        ? qsTr("%1 selected").arg(page.selectedCount)
-                        : (gridPane.compactBar ? qsTr("Select items") : qsTr("Click items to select"))
-                }
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: !gridPane.compactBar || page.selectedCount === 0
-                    variant: "text"
-                    size: "sm"
-                    // Selection stops at 500 (selectAllLoaded): say so past that.
-                    text: Photos.count > 500 ? qsTr("Select first 500") : qsTr("Select all")
-                    onClicked: page.selectAllLoaded()
-                }
+            delegate: PhotoTile {
+                width: grid.cellWidth
+                height: grid.cellHeight
             }
 
-            Row {
-                anchors.right: parent.right
-                anchors.rightMargin: 16
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 8
-                visible: page.selectedCount > 0 || page.selectMode
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: page.selectedCount === 1 && !page.singleSelectedIsVideo
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.copy
-                    text: qsTr("Copy")
-                    enabled: !Photos.saving
-                    onClicked: Photos.copyItem(page.selectedIds[0])
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: page.selectedCount === 1
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.openExternal
-                    text: qsTr("Open")
-                    enabled: !Photos.saving
-                    onClicked: Photos.openItem(page.selectedIds[0])
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: page.selectedCount > 0
-                    variant: page.confirmDelete ? "fill" : "tonal"
-                    size: "sm"
-                    iconPath: Icons.trash
-                    text: page.confirmDelete ? qsTr("Move to the phone's trash?") : qsTr("Delete")
-                    enabled: !Photos.saving
-                    onClicked: {
-                        if (!page.confirmDelete) {
-                            page.confirmDelete = true
-                            return
-                        }
-                        Photos.deleteItems(page.selectedIds)
-                        page.clearSelection()
-                    }
-                }
-
-                Button {
-                    anchors.verticalCenter: parent.verticalCenter
-                    variant: "fill"
-                    size: "sm"
-                    iconPath: Icons.download
-                    busy: Photos.saving
-                    enabled: page.selectedCount > 0 && !Photos.saving
-                    text: page.selectedCount > 1
-                        ? qsTr("Save (%1)").arg(page.selectedCount)
-                        : qsTr("Save")
-                    onClicked: {
-                        Photos.saveItems(page.selectedIds, "")
-                        page.clearSelection()
-                    }
-                }
-
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    tonal: true
-                    iconPath: Icons.folder
-                    label: qsTr("Save to folder…")
-                    enabled: page.selectedCount > 0 && !Photos.saving
-                    onClicked: {
-                        saveToFolderPicker.pendingIds = page.selectedIds.slice()
-                        saveToFolderPicker.open()
-                    }
-                }
-            }
-
-            Divider { anchors.bottom: parent.bottom; width: parent.width }
-        }
-
-        // Content area below toolbar.
-        Item {
-            id: gridContainer
-            anchors.top: toolbar.bottom
-            anchors.bottom: parent.bottom
-            width: parent.width
-
-            Spinner {
-                anchors.centerIn: parent
-                visible: Photos.status === "loading" && Photos.count === 0
-            }
-
-            // Permission / toggle / error state.
-            Column {
-                anchors.centerIn: parent
-                width: Math.min(parent.width - 48, 400)
-                spacing: 10
-                visible: Photos.count === 0 && Photos.status !== "loading" && Photos.status !== "ready"
-                Icon {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 34; height: 34
-                    stroke: 1.5
-                    path: Icons.photo
-                    color: Theme.surfaceContentVariant
-                }
-                Txt {
-                    width: parent.width
-                    horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.WordWrap
-                    role: "title"
-                    size: 16
-                    text: Photos.status === "off" ? qsTr("Photos are off for %1").arg(page.deviceName)
-                        : Photos.status === "unsupported" ? qsTr("Allow photos on %1").arg(page.deviceName)
-                        : Photos.status === "offline" ? qsTr("%1 isn't connected").arg(page.deviceName)
-                        : qsTr("Couldn't load photos")
-                }
-                Txt {
-                    width: parent.width
-                    horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.WordWrap
-                    role: "bodySmall"
-                    muted: true
-                    text: Photos.status === "off"
-                        ? qsTr("Enable Photos in Settings.")
-                        : Photos.status === "unsupported"
-                          ? qsTr("Grant photos permission on %1.").arg(page.deviceName)
-                          : Photos.status === "offline"
-                            ? qsTr("Connect %1 to view photos.").arg(page.deviceName)
-                            : qsTr("Unable to load photos.")
-                }
-                LockChip {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    visible: label.length > 0
-                    feature: page.photosFeature
-                }
-                Button {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    visible: Photos.status === "failed"
-                    variant: "tonal"
-                    size: "sm"
-                    text: qsTr("Try again")
-                    onClicked: Photos.refresh()
-                }
-            }
-
-            // Empty album / library state.
-            Column {
-                anchors.centerIn: parent
-                width: Math.min(parent.width - 48, 360)
-                spacing: 8
-                visible: Photos.status === "ready" && Photos.count === 0
-                Icon {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 32; height: 32
-                    stroke: 1.5
-                    path: Icons.photo
-                    color: Theme.surfaceContentVariant
-                }
-                Txt {
-                    width: parent.width
-                    horizontalAlignment: Text.AlignHCenter
-                    role: "title"
-                    size: 15
-                    text: qsTr("No photos or videos")
-                }
-            }
-
-            // Virtualized thumbnail grid grouped by day.
-            GridView {
-                id: grid
-                anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 8
-                topMargin: 44
-                bottomMargin: 24
-                visible: Photos.count > 0
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
-                cacheBuffer: height
-                readonly property int columns: Math.max(2, Math.floor((width - 8) / 164))
-                cellWidth: Math.floor((width - 8) / columns)
-                cellHeight: cellWidth
-                model: Photos
-
-                onAtYEndChanged: {
-                    if (atYEnd && Photos.more && count > 0)
-                        Photos.loadOlder()
-                }
-
-                // Current top-visible item's day label, shown in the sticky day banner.
-                readonly property int topVisibleRow: Math.max(
-                    0,
-                    Math.floor(Math.max(0, contentY + 20) / Math.max(1, cellHeight)) * columns
-                )
-                readonly property string stickyDay: {
-                    if (Photos.revision < 0 || Photos.count === 0) return ""
-                    const row = Math.min(topVisibleRow, Photos.count - 1)
-                    const ms = Photos.dateAt(row)
-                    return ms > 0 ? page.dayLabel(ms) : ""
-                }
-
-                delegate: PhotoTile {
-                    width: grid.cellWidth
-                    height: grid.cellHeight
-                }
-
-                footer: Item {
-                    width: grid.width
-                    height: Photos.loadingOlder ? 52 : 0
-                    Spinner {
-                        anchors.centerIn: parent
-                        visible: Photos.loadingOlder
-                    }
-                }
-            }
-
-            // Sticky day group banner at the top of the grid.
-            Rectangle {
-                anchors.top: parent.top
-                anchors.topMargin: 8
-                anchors.left: parent.left
-                anchors.leftMargin: 20
-                visible: Photos.count > 0 && grid.stickyDay.length > 0
-                height: 28
-                width: stickyDayTxt.implicitWidth + 24
-                radius: Theme.pill(height)
-                color: Qt.rgba(Theme.surfaceContainerHigh.r, Theme.surfaceContainerHigh.g, Theme.surfaceContainerHigh.b, 0.92)
-                border.width: Theme.graphite ? 1 : 0
-                border.color: Theme.outlineVariant
-                Txt {
-                    id: stickyDayTxt
+            footer: Item {
+                width: grid.width
+                height: Photos.loadingOlder ? 48 : 0
+                Spinner {
                     anchors.centerIn: parent
-                    role: "label"
-                    size: 12
-                    text: grid.stickyDay
+                    visible: Photos.loadingOlder
+                    width: 16; height: 16
                 }
             }
         }
     }
 
-    // ---- In-app Photo & Video Viewer Overlay ----
+    // ---- The viewer ----
     Rectangle {
         id: viewer
         readonly property bool opened: page.viewerIndex >= 0 && page.viewedItem !== null
         anchors.fill: parent
         visible: opacity > 0
         opacity: opened ? 1.0 : 0.0
-        scale: opened || Theme.reduceMotion ? 1.0 : 0.96
         Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast; easing.type: Easing.OutCubic } }
-        Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast; easing.type: Easing.OutCubic } }
         color: Theme.surface
         z: 10
 
         // Absorb background clicks.
         TapHandler { onTapped: {} }
 
-        // Viewer top bar.
         Item {
             id: viewerBar
             width: parent.width
-            height: 60
+            height: 48
 
             IconButton {
                 id: closeViewerBtn
                 anchors.left: parent.left
-                anchors.leftMargin: 16
+                anchors.leftMargin: 10
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: Icons.back
-                label: qsTr("Back to gallery")
+                label: qsTr("Back to the photos")
                 onClicked: page.viewerIndex = -1
             }
-
-            Column {
+            Txt {
+                id: viewerName
                 anchors.left: closeViewerBtn.right
-                anchors.leftMargin: 12
-                anchors.right: viewerActions.left
-                anchors.rightMargin: 16
+                anchors.leftMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-                Txt {
-                    width: parent.width
-                    role: "title"
-                    size: 15
-                    elide: Text.ElideMiddle
-                    text: page.viewedItem ? page.viewedItem.name : ""
-                }
-                Txt {
-                    width: parent.width
-                    role: "caption"
-                    muted: true
-                    elide: Text.ElideRight
-                    text: {
-                        if (!page.viewedItem) return ""
-                        const parts = []
-                        parts.push((page.viewerIndex + 1) + " / " + Photos.count)
-                        if (page.viewedItem.date > 0) {
-                            const d = new Date(page.viewedItem.date)
-                            parts.push(page.dayLabel(page.viewedItem.date) + " " + d.toLocaleTimeString(Qt.locale(), Locale.ShortFormat))
-                        }
-                        if (page.viewedItem.width > 0 && page.viewedItem.height > 0)
-                            parts.push(page.viewedItem.width + " × " + page.viewedItem.height)
-                        if (page.viewedItem.size > 0)
-                            parts.push(page.formatBytes(page.viewedItem.size))
-                        return parts.join(" · ")
+                width: Math.min(implicitWidth, (viewerActions.x - x) * 0.5)
+                weight: 500
+                elide: Text.ElideMiddle
+                text: page.viewedItem ? page.viewedItem.name : ""
+            }
+            Txt {
+                anchors.left: viewerName.right
+                anchors.leftMargin: 10
+                anchors.right: viewerActions.left
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                role: "bodySmall"
+                muted: true
+                text: {
+                    if (!page.viewedItem) return ""
+                    const parts = []
+                    parts.push((page.viewerIndex + 1) + " / " + Photos.count)
+                    if (page.viewedItem.date > 0) {
+                        const d = new Date(page.viewedItem.date)
+                        parts.push(page.dayLabel(page.viewedItem.date) + " " + d.toLocaleTimeString(Qt.locale(), Locale.ShortFormat))
                     }
+                    if (page.viewedItem.width > 0 && page.viewedItem.height > 0)
+                        parts.push(page.viewedItem.width + " × " + page.viewedItem.height)
+                    if (page.viewedItem.size > 0)
+                        parts.push(page.formatBytes(page.viewedItem.size))
+                    return parts.join(" · ")
                 }
             }
 
             Row {
                 id: viewerActions
                 anchors.right: parent.right
-                anchors.rightMargin: 16
+                anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 8
 
                 Button {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: page.viewedItem !== null && !page.viewedItem.isVideo
-                    variant: "tonal"
+                    variant: "outline"
                     size: "sm"
-                    iconPath: Icons.copy
                     text: qsTr("Copy")
                     enabled: !Photos.saving
                     onClicked: if (page.viewedItem) Photos.copyItem(page.viewedItem.id)
                 }
-
                 Button {
                     anchors.verticalCenter: parent.verticalCenter
-                    variant: "tonal"
+                    variant: "outline"
                     size: "sm"
-                    iconPath: page.viewedItem && page.viewedItem.isVideo ? Icons.play : Icons.openExternal
                     text: page.viewedItem && page.viewedItem.isVideo ? qsTr("Play video") : qsTr("Open in Photos")
                     enabled: !Photos.saving
                     onClicked: if (page.viewedItem) Photos.openItem(page.viewedItem.id)
                 }
-
                 Button {
                     anchors.verticalCenter: parent.verticalCenter
-                    variant: "fill"
                     size: "sm"
-                    iconPath: Icons.download
                     busy: Photos.saving
                     enabled: !Photos.saving
-                    text: qsTr("Save")
+                    text: page.saveFolderName.length > 0 ? qsTr("Save to %1").arg(page.saveFolderName) : qsTr("Save")
                     onClicked: if (page.viewedItem) Photos.saveItems([page.viewedItem.id], "")
                 }
-
                 IconButton {
                     anchors.verticalCenter: parent.verticalCenter
-                    tonal: true
                     iconPath: Icons.folder
                     label: qsTr("Save to folder…")
                     enabled: !Photos.saving
@@ -879,10 +806,14 @@ Item {
                 }
             }
 
-            Divider { anchors.bottom: parent.bottom; width: parent.width }
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: Theme.line
+            }
         }
 
-        // Main photo/video stage.
         Item {
             anchors.top: viewerBar.bottom
             anchors.bottom: parent.bottom
@@ -891,7 +822,7 @@ Item {
             Image {
                 id: stageImage
                 anchors.fill: parent
-                anchors.margins: 32
+                anchors.margins: 24
                 asynchronous: true
                 fillMode: Image.PreserveAspectFit
                 smooth: true
@@ -904,21 +835,19 @@ Item {
                 }
             }
 
-            // Loading badge while full-resolution photo is downloading in background.
+            // Full resolution still on its way.
             Rectangle {
                 anchors.bottom: parent.bottom
-                anchors.bottomMargin: 20
+                anchors.bottomMargin: 16
                 anchors.horizontalCenter: parent.horizontalCenter
                 visible: page.viewedItem !== null
                     && !page.viewedItem.isVideo
                     && (!page.viewedItem.fullUrl || page.viewedItem.fullUrl.length === 0)
                     && Photos.busyItem === page.viewedItem.id
-                height: 32
-                width: loadingRow.implicitWidth + 24
-                radius: Theme.pill(height)
-                color: Theme.surfaceContainerHigh
-                border.width: Theme.graphite ? 1 : 0
-                border.color: Theme.outlineVariant
+                height: 28
+                width: loadingRow.implicitWidth + 20
+                radius: Theme.rowRadius
+                color: Theme.raised
                 Row {
                     id: loadingRow
                     anchors.centerIn: parent
@@ -926,76 +855,60 @@ Item {
                     Spinner { width: 14; height: 14; anchors.verticalCenter: parent.verticalCenter }
                     Txt {
                         anchors.verticalCenter: parent.verticalCenter
-                        role: "caption"
+                        role: "bodySmall"
+                        muted: true
                         text: qsTr("Loading full resolution…")
                     }
                 }
             }
 
-            // Video play button overlay in viewer.
+            // Play a video in the default player.
             Rectangle {
                 id: playOverlayBtn
                 anchors.centerIn: parent
                 visible: page.viewedItem !== null && !!page.viewedItem.isVideo
-                width: 76; height: 76
-                radius: 38
-                color: Qt.rgba(0, 0, 0, 0.68)
-                border.width: 2
-                border.color: "#ffffff"
-                scale: playTap.pressed ? Theme.pressScale : 1
-                Behavior on scale { enabled: !Theme.reduceMotion; SpringAnimation { spring: Theme.springSnappy; damping: Theme.dampingSnappy } }
+                width: 64; height: 64
+                radius: 32
+                color: Qt.rgba(0, 0, 0, 0.62)
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Button
                 Accessible.name: qsTr("Play video")
                 Accessible.onPressAction: if (page.viewedItem) Photos.openItem(page.viewedItem.id)
                 Keys.onPressed: (event) => {
-                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                         if (page.viewedItem)
                             Photos.openItem(page.viewedItem.id)
                         event.accepted = true
                     }
                 }
-                Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: -3
-                    radius: parent.radius + 3
-                    color: "transparent"
-                    border.width: 2
-                    border.color: Theme.focusRing
-                    visible: Theme.focusVisible(playOverlayBtn)
-                }
+                border.width: Theme.focusVisible(playOverlayBtn) ? 2 : 0
+                border.color: Theme.focusRing
                 Icon {
                     anchors.centerIn: parent
-                    width: 30; height: 30
+                    width: 26; height: 26
                     path: Icons.play
                     color: "#ffffff"
                 }
                 HoverHandler { cursorShape: Qt.PointingHandCursor }
                 TapHandler {
-                    id: playTap
                     onTapped: if (page.viewedItem) Photos.openItem(page.viewedItem.id)
                 }
             }
 
-            // Previous photo button (Left arrow).
             IconButton {
                 anchors.left: parent.left
-                anchors.leftMargin: 16
+                anchors.leftMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
-                width: 44; height: 44
                 tonal: true
                 visible: page.viewerIndex > 0
                 iconPath: Icons.back
                 label: qsTr("Previous photo")
                 onClicked: page.stepViewer(-1)
             }
-
-            // Next photo button (Right arrow).
             IconButton {
                 anchors.right: parent.right
-                anchors.rightMargin: 16
+                anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
-                width: 44; height: 44
                 tonal: true
                 visible: page.viewerIndex + 1 < Photos.count
                 iconPath: Icons.chevronRight
@@ -1005,97 +918,7 @@ Item {
         }
     }
 
-    // ---- Album row component ----
-    component AlbumRow: Item {
-        id: albumRow
-        property string albumId
-        property string title
-        property int count: 0
-        property string thumbUrl
-        property bool selected: false
-        signal clicked
-
-        height: 54
-        activeFocusOnTab: true
-        Accessible.role: Accessible.Button
-        Accessible.name: albumRow.title
-        Accessible.onPressAction: albumRow.clicked()
-        Keys.onReturnPressed: albumRow.clicked()
-        Keys.onEnterPressed: albumRow.clicked()
-        Keys.onSpacePressed: albumRow.clicked()
-
-        Rectangle {
-            anchors.fill: parent
-            anchors.leftMargin: 10
-            anchors.rightMargin: 10
-            anchors.topMargin: 2
-            anchors.bottomMargin: 2
-            radius: Theme.graphite ? Theme.radiusSm : Theme.radiusMd
-            color: albumRow.selected
-                ? Theme.secondaryContainer
-                : albumHover.hovered
-                  ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.06)
-                  : "transparent"
-            border.width: Theme.focusVisible(albumRow) ? 2 : (Theme.graphite && albumRow.selected ? 1 : 0)
-            border.color: Theme.focusVisible(albumRow) ? Theme.primary : Theme.surfaceContent
-
-            Item {
-                id: coverBox
-                x: 10
-                anchors.verticalCenter: parent.verticalCenter
-                width: 36; height: 36
-                Rectangle {
-                    anchors.fill: parent
-                    radius: Theme.radiusSm
-                    color: Theme.surfaceContainerHigh
-                    Icon {
-                        anchors.centerIn: parent
-                        width: 16; height: 16
-                        path: Icons.photo
-                        color: Theme.surfaceContentVariant
-                        visible: coverImg.status !== Image.Ready
-                    }
-                    Image {
-                        id: coverImg
-                        anchors.fill: parent
-                        asynchronous: true
-                        fillMode: Image.PreserveAspectCrop
-                        sourceSize: Qt.size(72, 72)
-                        source: albumRow.thumbUrl
-                        visible: status === Image.Ready
-                    }
-                }
-            }
-
-            Column {
-                anchors.left: coverBox.right
-                anchors.leftMargin: 10
-                anchors.right: parent.right
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 1
-                Txt {
-                    width: parent.width
-                    role: "body"
-                    elide: Text.ElideRight
-                    color: albumRow.selected ? Theme.secondaryContainerContent : Theme.surfaceContent
-                    text: albumRow.title
-                }
-                Txt {
-                    width: parent.width
-                    role: "caption"
-                    muted: !albumRow.selected
-                    color: albumRow.selected ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
-                    text: qsTr("%1").arg(albumRow.count)
-                }
-            }
-        }
-
-        HoverHandler { id: albumHover; cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: albumRow.clicked() }
-    }
-
-    // ---- Virtualized GridView cell component ----
+    // ---- One thumbnail ----
     component PhotoTile: Item {
         id: tile
         required property int index
@@ -1129,6 +952,8 @@ Item {
         Accessible.onPressAction: tile.activateTile()
         Keys.onReturnPressed: tile.activateTile()
         Keys.onEnterPressed: tile.activateTile()
+        // Space picks the tile (once one is picked, Space opens it instead);
+        // Ctrl+Space always picks.
         Keys.onSpacePressed: page.toggleSelect(tile.itemId, tile.index, false)
 
         function checkThumb() {
@@ -1152,28 +977,27 @@ Item {
                 Photos.dropThumb(requestedThumbId)
         }
 
-        Rectangle {
+        Item {
             id: cellCard
             anchors.fill: parent
-            anchors.margins: 4
-            radius: Theme.radiusSm
-            color: Theme.surfaceContainerHigh
-            border.width: tile.selected ? 3 : (Theme.focusVisible(tile) ? 2 : (Theme.graphite ? 1 : 0))
-            border.color: (tile.selected || Theme.focusVisible(tile)) ? Theme.primary : Theme.outlineVariant
-            clip: true
+            anchors.margins: 3
 
-            Icon {
-                anchors.centerIn: parent
-                width: 24; height: 24
-                path: tile.isVideo ? Icons.video : Icons.photo
-                color: Theme.surfaceContentVariant
-                visible: thumbImg.status !== Image.Ready
+            Rectangle {
+                anchors.fill: parent
+                radius: Theme.rowRadius
+                color: Theme.raised
+                Icon {
+                    anchors.centerIn: parent
+                    width: 22; height: 22
+                    path: tile.isVideo ? Icons.video : Icons.photo
+                    color: Theme.tintCoral
+                    visible: thumbImg.status !== Image.Ready
+                }
             }
 
             Image {
                 id: thumbImg
                 anchors.fill: parent
-                anchors.margins: tile.selected ? 3 : 0
                 asynchronous: true
                 fillMode: Image.PreserveAspectCrop
                 sourceSize: Qt.size(256, 256)
@@ -1182,78 +1006,90 @@ Item {
                 Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
             }
 
-            // Subtle dark scrim when hovered or selected.
+            // Hover darkens a little.
             Rectangle {
                 anchors.fill: parent
-                color: tile.selected
-                    ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.18)
-                    : (tileHover.hovered ? Qt.rgba(0, 0, 0, 0.14) : "transparent")
+                radius: Theme.rowRadius
+                color: tileHover.hovered && !tile.selected ? Qt.rgba(0, 0, 0, 0.14) : "transparent"
             }
 
-            // Day group pill on the first tile of each subsequent day.
+            // Rounds the corners: a ring in the page's ground just outside
+            // the tile, its inner edge an 8 px radius.
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -3
+                radius: Theme.rowRadius + 3
+                color: "transparent"
+                border.width: 3
+                border.color: Theme.surface
+            }
+
+            // Selected, or keyboard focus: a 2 px outline.
+            Rectangle {
+                anchors.fill: parent
+                radius: Theme.rowRadius
+                color: "transparent"
+                border.width: tile.selected || Theme.focusVisible(tile) ? 2 : 0
+                border.color: Theme.accent
+            }
+
+            // The first photo of each day says which day.
             Rectangle {
                 anchors.top: parent.top
                 anchors.topMargin: 6
                 anchors.left: parent.left
                 anchors.leftMargin: 6
                 visible: tile.firstOfDay && tile.index > 0 && tile.date > 0
-                height: 22
-                width: Math.min(parent.width - 40, dayBadgeTxt.implicitWidth + 14)
-                radius: 11
-                color: Qt.rgba(0, 0, 0, 0.68)
+                height: 18
+                width: Math.min(parent.width - 36, dayBadgeTxt.implicitWidth + 12)
+                radius: 5
+                color: Qt.rgba(0, 0, 0, 0.62)
                 Txt {
                     id: dayBadgeTxt
                     anchors.centerIn: parent
-                    width: parent.width - 12
+                    width: parent.width - 10
                     horizontalAlignment: Text.AlignHCenter
-                    elide: Text.ElideRight
                     role: "caption"
-                    size: 11
                     color: "#ffffff"
                     text: (tile.firstOfDay && tile.index > 0 && tile.date > 0)
                         ? page.shortDayLabel(tile.date) : ""
                 }
             }
 
-            // Play badge in center for video items.
+            // A video: a play mark and how long it runs.
             Rectangle {
                 anchors.centerIn: parent
                 visible: tile.isVideo
-                width: 36; height: 36
-                radius: 18
+                width: 30; height: 30
+                radius: 15
                 color: Qt.rgba(0, 0, 0, 0.62)
-                border.width: 1.5
-                border.color: "#ffffff"
                 Icon {
                     anchors.centerIn: parent
-                    width: 16; height: 16
+                    width: 14; height: 14
                     path: Icons.play
                     color: "#ffffff"
                 }
             }
-
-            // Video duration badge in bottom-right.
             Rectangle {
                 anchors.right: parent.right
                 anchors.rightMargin: 6
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 6
                 visible: tile.isVideo
-                height: 20
-                width: durTxt.implicitWidth + 12
-                radius: 10
-                color: Qt.rgba(0, 0, 0, 0.72)
+                height: 18
+                width: durTxt.implicitWidth + 10
+                radius: 5
+                color: Qt.rgba(0, 0, 0, 0.62)
                 Txt {
                     id: durTxt
                     anchors.centerIn: parent
                     role: "caption"
-                    size: 11
                     color: "#ffffff"
                     text: tile.isVideo ? page.formatVideoDuration(tile.duration) : ""
                 }
             }
 
-            // Selection checkbox circle in top-right.
+            // Select: a lavender check when picked, a ring on hover.
             Rectangle {
                 id: checkCircle
                 z: 2
@@ -1261,10 +1097,10 @@ Item {
                 anchors.topMargin: 6
                 anchors.right: parent.right
                 anchors.rightMargin: 6
-                width: 24; height: 24
-                radius: 12
+                width: 18; height: 18
+                radius: 9
                 visible: tile.selected || tileHover.hovered || page.selectMode || page.selectedCount > 0
-                color: tile.selected ? Theme.primary : Qt.rgba(0, 0, 0, 0.48)
+                color: tile.selected ? Theme.accent : Qt.rgba(0, 0, 0, 0.45)
                 border.width: tile.selected ? 0 : 1.5
                 border.color: "#ffffff"
                 Accessible.role: Accessible.CheckBox
@@ -1276,9 +1112,9 @@ Item {
                 Icon {
                     anchors.centerIn: parent
                     visible: tile.selected
-                    width: 14; height: 14
+                    width: 12; height: 12
                     path: Icons.check
-                    color: Theme.primaryContent
+                    color: Theme.accentContent
                 }
                 MouseArea {
                     anchors.fill: parent
@@ -1291,6 +1127,7 @@ Item {
             HoverHandler { id: tileHover; cursorShape: Qt.PointingHandCursor }
             // Under the selection circle (its z is higher). A MouseArea, as
             // a TapHandler's event point doesn't carry the keyboard modifiers.
+            // Dragging a tile out hands the photo to another app.
             MouseArea {
                 id: mouse
                 anchors.fill: parent
@@ -1327,11 +1164,11 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        anchors.margins: 10
+        anchors.margins: 6
         radius: Theme.radiusLg
         color: "transparent"
         border.width: 2
-        border.color: Theme.primary
+        border.color: Theme.focusRing
         visible: opacity > 0
         opacity: AppController.highlightTarget === "photos:main" ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
