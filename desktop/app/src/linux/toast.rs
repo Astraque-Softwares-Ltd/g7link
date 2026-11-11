@@ -464,10 +464,12 @@ pub fn show(toast: Toast) {
 }
 
 fn execute_show(toast: Toast) {
-    let image_str = toast.image.as_ref().map(|p| p.to_string_lossy().to_string());
+    // GNOME draws only the image hints for an app that has windows, so the
+    // phone app's icon goes there when the notification has no picture.
+    let image_str = toast.image.as_ref().or(toast.icon.as_ref()).map(|p| p.to_string_lossy().to_string());
     let title = format_summary(&toast.title, &toast.attribution);
     let markup = capabilities().body_markup;
-    let body = format_body(&toast.title, &toast.body, &toast.attribution, toast.progress.as_ref(), markup);
+    let body = format_body(&toast.body, toast.progress.as_ref(), markup);
 
     let Some(mutex) = TOASTER.get() else {
         let icon_str = toast
@@ -558,7 +560,7 @@ fn execute_update_progress(device: &str, key: &str, progress: Progress) {
 
     let summary = format_summary(&snapshot.title, &snapshot.attribution);
     let markup = capabilities().body_markup;
-    let body = format_body(&snapshot.title, &snapshot.body, &snapshot.attribution, Some(&progress), markup);
+    let body = format_body(&snapshot.body, Some(&progress), markup);
 
     let new_id = send_notification(
         replaces_id,
@@ -653,7 +655,7 @@ pub fn escape_notification_markup(s: &str) -> String {
 }
 
 /// The summary line: the title, or where the notification came from when
-/// there's no title (then [`format_body`] doesn't repeat it).
+/// there's no title.
 fn format_summary(title: &str, attribution: &str) -> String {
     if !title.trim().is_empty() {
         title.trim().to_string()
@@ -664,15 +666,9 @@ fn format_summary(title: &str, attribution: &str) -> String {
     }
 }
 
-/// The body: the text, a progress line, and where it came from, in italics
-/// when the server shows markup and as plain text when it doesn't.
-fn format_body(
-    title: &str,
-    body: &str,
-    attribution: &str,
-    progress: Option<&Progress>,
-    markup: bool,
-) -> String {
+/// The body: the message and a progress line, escaped when the server shows
+/// markup. Where it came from is the title's and the image's job.
+fn format_body(body: &str, progress: Option<&Progress>, markup: bool) -> String {
     let text = |s: &str| if markup { escape_notification_markup(s.trim()) } else { s.trim().to_owned() };
     let mut parts = Vec::new();
     if !body.trim().is_empty() {
@@ -699,10 +695,6 @@ fn format_body(
         if !prog_line.is_empty() {
             parts.push(prog_line);
         }
-    }
-    // Without a title the attribution is already the summary.
-    if !attribution.trim().is_empty() && !title.trim().is_empty() {
-        parts.push(if markup { format!("<i>{}</i>", text(attribution)) } else { text(attribution) });
     }
     parts.join("\n")
 }
@@ -942,19 +934,16 @@ mod tests {
     }
 
     #[test]
-    fn escapes_notification_markup_and_formats_attribution_in_italics() {
+    fn the_body_is_only_the_message_escaped_for_markup() {
         assert_eq!(escape_notification_markup("5 < 10 & 20 > 3"), "5 &lt; 10 &amp; 20 &gt; 3");
-        let formatted = format_body("Sam", "Meet at <Cafe & Bar>", "Messages & Co · Pixel 9", None, true);
-        assert_eq!(formatted, "Meet at &lt;Cafe &amp; Bar&gt;\n<i>Messages &amp; Co · Pixel 9</i>");
-        let plain = format_body("Sam", "Meet at <Cafe & Bar>", "Messages & Co · Pixel 9", None, false);
+        assert_eq!(format_body("Meet at <Cafe & Bar>", None, true), "Meet at &lt;Cafe &amp; Bar&gt;");
         assert_eq!(
-            plain, "Meet at <Cafe & Bar>\nMessages & Co · Pixel 9",
+            format_body("Meet at <Cafe & Bar>", None, false),
+            "Meet at <Cafe & Bar>",
             "no markup for servers without it"
         );
-        let untitled = format_body("", "Battery low", "Pixel 9", None, true);
-        assert_eq!(untitled, "Battery low", "the attribution is the summary then, not repeated");
         let prog = Progress { status: "Sending".into(), value: None, label: "photo.jpg".into() };
-        assert_eq!(format_body("Files", "", "", Some(&prog), false), "Sending · photo.jpg");
+        assert_eq!(format_body("", Some(&prog), false), "Sending · photo.jpg");
     }
 
     #[test]

@@ -411,9 +411,10 @@ fn show(device: DeviceId, n: &Notification) {
         otp_codes(|c| c.insert((device, n.key.clone()), code.clone()));
         maybe_auto_copy_otp(code);
     }
-    let (device_name, icon, rule, image, phone_dnd) = core_host::host().hub.read(|s| {
+    let (several_phones, device_name, icon, rule, image, phone_dnd) = core_host::host().hub.read(|s| {
         let dnd = s.toggles.get(&device).is_some_and(|t| t.dnd);
         (
+            s.devices.len() > 1,
             s.name_of(&device),
             s.app_icons.get(&n.app).cloned(),
             s.app_rule(&n.app),
@@ -449,12 +450,13 @@ fn show(device: DeviceId, n: &Notification) {
     let toast = Toast {
         device: device.to_string(),
         key: n.key.clone(),
-        title: n.title.clone().unwrap_or_else(|| n.app_name.clone()),
+        title: toast_title(
+            n.title.as_deref(),
+            &n.app_name,
+            device_name.filter(|_| several_phones).as_deref(),
+        ),
         body: n.text.clone().unwrap_or_default(),
-        attribution: match device_name {
-            Some(name) => format!("{} · {name}", n.app_name),
-            None => n.app_name.clone(),
-        },
+        attribution: n.app_name.clone(),
         icon,
         image,
         actions,
@@ -468,6 +470,16 @@ fn show(device: DeviceId, n: &Notification) {
         live_toasts(|l| l.insert(id));
     }
     toast::show(toast);
+}
+
+/// A phone notification's title on the PC: who or what it's about, or the
+/// app when it has no title, then the phone when more than one is paired.
+fn toast_title(title: Option<&str>, app_name: &str, phone: Option<&str>) -> String {
+    let main = title.map(str::trim).filter(|t| !t.is_empty()).unwrap_or(app_name.trim());
+    match phone.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(phone) => format!("{main} · {phone}"),
+        None => main.to_owned(),
+    }
 }
 
 /// What the user did with a toast.
@@ -732,5 +744,13 @@ mod tests {
         assert_eq!(p.status, "4 min");
         assert_eq!(p.value, Some(0.45));
         assert_eq!(p.label, "45%");
+    }
+
+    #[test]
+    fn toast_title_is_the_sender_and_names_the_phone_only_when_there_are_several() {
+        assert_eq!(toast_title(Some("Sharon Karwitha"), "WhatsApp", None), "Sharon Karwitha");
+        assert_eq!(toast_title(Some("  "), "WhatsApp", None), "WhatsApp");
+        assert_eq!(toast_title(None, "WhatsApp", Some("Pixel 8 Pro")), "WhatsApp · Pixel 8 Pro");
+        assert_eq!(toast_title(Some("Sharon"), "WhatsApp", Some(" ")), "Sharon");
     }
 }
