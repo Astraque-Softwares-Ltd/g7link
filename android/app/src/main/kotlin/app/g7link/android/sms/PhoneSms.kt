@@ -330,6 +330,10 @@ internal class PhoneSms(context: Context, private val onChange: () -> Unit) {
 
         fun hasAll(context: Context) = permissions.all { granted(context, it) }
 
+        /** The default SMS app's package name, so a PC can show its icon beside texts. */
+        fun defaultApp(context: Context): String? =
+            runCatching { Telephony.Sms.getDefaultSmsPackage(context) }.getOrNull()?.takeIf { it.isNotBlank() }
+
         /**
          * Checks whether `Telephony.Sms` already contains a message with `body`
          * within 60 seconds of `aroundTimeMs` (so notifications from the default

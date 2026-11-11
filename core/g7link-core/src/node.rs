@@ -3008,6 +3008,16 @@ impl Node {
 
     /// A paired phone's latest conversations, newest first.
     pub async fn sms_threads(&self, peer: DeviceId, limit: u32) -> Result<Vec<crate::SmsThread>> {
+        self.sms_threads_and_app(peer, limit).await.map(|(threads, _)| threads)
+    }
+
+    /// [`Node::sms_threads`], and the phone's default SMS app (a package
+    /// name) when it says which.
+    pub async fn sms_threads_and_app(
+        &self,
+        peer: DeviceId,
+        limit: u32,
+    ) -> Result<(Vec<crate::SmsThread>, Option<String>)> {
         let session = self.connected(&peer)?;
         crate::sms::threads(&self.shared, &session, limit).await
     }

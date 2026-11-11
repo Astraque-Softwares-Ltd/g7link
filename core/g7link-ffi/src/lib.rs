@@ -2746,6 +2746,9 @@ pub trait Platform: Send + Sync {
     fn phone_apps(&self) -> Vec<PhoneApp>;
     /// A PC asked for the latest conversations, newest first.
     fn sms_threads(&self, limit: u32) -> Vec<SmsThread>;
+    /// The default SMS app's package name, sent with the conversations so a
+    /// PC can show its icon. Null when unknown.
+    fn sms_app(&self) -> Option<String>;
     /// A PC asked for a conversation's messages before `before` (Unix ms;
     /// the latest when null), newest first.
     fn sms_messages(&self, thread: String, before: Option<i64>, limit: u32) -> Vec<SmsMessage>;
@@ -3003,6 +3006,9 @@ impl core::Platform for PlatformAdapter {
             .into_iter()
             .map(|a| core::PhoneApp { pkg: a.pkg, label: a.label, icon: a.icon })
             .collect())
+    }
+    fn sms_app(&self) -> Option<String> {
+        self.0.sms_app()
     }
     fn sms_threads(&self, limit: u32) -> Result<Vec<core::SmsThread>, String> {
         Ok(self

@@ -246,6 +246,9 @@ impl Platform for RecordingPlatform {
         };
         Ok((0..5).map(thread).take(limit as usize).collect())
     }
+    fn sms_app(&self) -> Option<String> {
+        Some("com.example.messaging".into())
+    }
     fn sms_messages(
         &self,
         thread: &str,
@@ -2308,6 +2311,9 @@ async fn the_pc_reads_and_sends_texts_through_the_phone() {
 
     let threads = with_timeout("threads", pc.node.sms_threads(phone_id, 3)).await.unwrap();
     assert_eq!(threads.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["0", "1", "2"]);
+    // With the phone's SMS app, for its icon.
+    let (_, app) = with_timeout("threads", pc.node.sms_threads_and_app(phone_id, 1)).await.unwrap();
+    assert_eq!(app.as_deref(), Some("com.example.messaging"));
 
     // Paging back through a conversation.
     let latest = pc.node.sms_messages(phone_id, "1".into(), None, 10).await.unwrap();

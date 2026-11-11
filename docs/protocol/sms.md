@@ -26,7 +26,7 @@ or `error`.
 
 ```
 t = "sms.threads"   id = n   b = { limit: uint }                          // 1 to 100
-t = "sms.threads"   re = n   b = { threads: [ thread ] }                  // newest first
+t = "sms.threads"   re = n   b = { threads: [ thread ], ? app: text }    // newest first; app: the default SMS app's package
 
 t = "sms.messages"  id = n   b = { thread: text, ? before: int, limit: uint }
 t = "sms.messages"  re = n   b = { messages: [ message ] }               // newest first

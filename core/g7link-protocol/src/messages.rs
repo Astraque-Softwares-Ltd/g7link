@@ -2178,6 +2178,9 @@ pub struct SmsThreadsGet {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmsThreads {
     pub threads: Vec<SmsThread>,
+    /// The phone's default SMS app (package name), so a PC can show its icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 /// Body of `sms.messages`: a conversation's messages before `before`

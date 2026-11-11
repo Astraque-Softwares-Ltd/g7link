@@ -257,6 +257,8 @@ internal class PhonePlatform(
 
     override fun smsThreads(limit: UInt): List<SmsThread> = sms().threads(limit.toInt())
 
+    override fun smsApp(): String? = PhoneSms.defaultApp(context)
+
     override fun smsMessages(thread: String, before: Long?, limit: UInt): List<SmsMessage> =
         sms().messages(thread, before, limit.toInt())
 

@@ -349,6 +349,12 @@ pub trait Platform: Send + Sync + 'static {
         Err("this device has no messages".into())
     }
 
+    /// This phone's default SMS app (its package name), sent with the
+    /// conversations so a PC can show its icon.
+    fn sms_app(&self) -> Option<String> {
+        None
+    }
+
     /// A conversation's messages before `before` (Unix ms; the latest when
     /// `None`), newest first.
     fn sms_messages(

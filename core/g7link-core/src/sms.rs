@@ -45,12 +45,17 @@ fn allowed(shared: &Shared, peer: &DeviceId) -> Result<()> {
     if shared.toggle_on(peer, TOGGLE) { Ok(()) } else { Err(Error::Denied) }
 }
 
-pub(crate) async fn threads(shared: &Shared, session: &Session, limit: u32) -> Result<Vec<SmsThread>> {
+/// The phone's latest conversations, and its default SMS app (a package name) when it says.
+pub(crate) async fn threads(
+    shared: &Shared,
+    session: &Session,
+    limit: u32,
+) -> Result<(Vec<SmsThread>, Option<String>)> {
     allowed(shared, &session.peer)?;
     let env = Envelope::new(types::SMS_THREADS, &SmsThreadsGet { limit: limit.min(sms::MAX_PAGE) })?;
-    let SmsThreads { threads } =
+    let SmsThreads { threads, app } =
         session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::SMS_THREADS)?;
-    Ok(threads)
+    Ok((threads, app.filter(|a| g7link_protocol::messages::is_package_name(a))))
 }
 
 pub(crate) async fn messages(
@@ -154,7 +159,10 @@ async fn answer(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Resu
                         t.photo = None;
                     }
                 }
-                fit(threads, |threads| Envelope::new(types::SMS_THREADS, &SmsThreads { threads }))
+                let app = platform.sms_app().filter(|a| g7link_protocol::messages::is_package_name(a));
+                fit(threads, |threads| {
+                    Envelope::new(types::SMS_THREADS, &SmsThreads { threads, app: app.clone() })
+                })
             }))
             .await
         }
