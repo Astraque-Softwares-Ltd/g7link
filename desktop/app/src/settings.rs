@@ -605,8 +605,9 @@ pub struct Settings {
     /// Last saved main window normal height in logical pixels.
     #[serde(default = "default_window_height", alias = "window_height")]
     pub window_height: u32,
-    /// Whether the main window was maximized when last open.
-    #[serde(default, alias = "window_maximized")]
+    /// Whether the main window was maximized when last open (it opens
+    /// maximized until the user restores it).
+    #[serde(default = "default_true", alias = "window_maximized")]
     pub window_maximized: bool,
 }
 
