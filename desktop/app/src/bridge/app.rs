@@ -509,6 +509,8 @@ static CONTROLLER: OnceLock<Mutex<Option<CxxQtThread<qobject::AppController>>>> 
 static SHELF_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static UI_CHECK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A power saver and notifications check is running.
+static PROBING_TOASTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Clone)]
 enum ToastAction {
@@ -797,6 +799,8 @@ impl cxx_qt::Initialize for qobject::AppController {
         }
         let initial_phone_colors = core_host::host().hub.read(|s| phone_colors_json(&s.devices));
         self.as_mut().set_phone_colors(QString::from(&initial_phone_colors));
+        // Until the background check answers: no "notifications are off" flash at start.
+        self.as_mut().set_toasts_enabled(true);
         self.as_mut().refresh_appearance();
         self.as_mut().refresh_localsend_state();
         let qt = self.qt_thread();
@@ -1416,8 +1420,8 @@ impl qobject::AppController {
     fn refresh_appearance(mut self: Pin<&mut Self>) {
         self.as_mut().set_system_dark(sys::system_dark());
         self.as_mut().set_reduce_motion(sys::reduce_motion());
-        self.as_mut().set_power_saver(sys::power_saver());
         refresh_wallpaper_colors(self.qt_thread());
+        // Power saver too.
         self.refresh_toasts_enabled();
     }
 
@@ -1566,12 +1570,28 @@ impl qobject::AppController {
         }
     }
 
-    pub fn refresh_toasts_enabled(mut self: Pin<&mut Self>) {
+    pub fn refresh_toasts_enabled(self: Pin<&mut Self>) {
         // Also when the window comes back to the front: battery saver may
-        // have changed meanwhile.
-        self.as_mut().set_power_saver(sys::power_saver());
-        self.set_toasts_enabled(sys::toast::enabled());
+        // have changed meanwhile. The probes ask D-Bus (and gsettings), so
+        // they run off the GUI thread, one at a time.
         core_host::spawn(core_host::refresh_wake());
+        if PROBING_TOASTS.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let qt = self.qt_thread();
+        let spawned = std::thread::Builder::new().name("toast-probes".into()).spawn(move || {
+            let probes = std::panic::catch_unwind(|| (sys::power_saver(), sys::toast::enabled()));
+            PROBING_TOASTS.store(false, Ordering::Release);
+            if let Ok((power_saver, toasts_enabled)) = probes {
+                let _ = qt.queue(move |mut object| {
+                    object.as_mut().set_power_saver(power_saver);
+                    object.set_toasts_enabled(toasts_enabled);
+                });
+            }
+        });
+        if spawned.is_err() {
+            PROBING_TOASTS.store(false, Ordering::Release);
+        }
     }
 
     pub fn ring(self: Pin<&mut Self>, device: &QString, on: bool) {

@@ -49,6 +49,7 @@ Column {
         property color fill
         signal clicked
         height: 38
+        opacity: enabled ? 1 : 0.6
         activeFocusOnTab: true
         Accessible.role: Accessible.Button
         Accessible.name: text
@@ -218,16 +219,19 @@ Column {
                 columnSpacing: 8
                 CallButton {
                     width: PhoneCall.ringing ? (parent.width - 8) / 2 : parent.width
+                    enabled: PhoneCall.pending === ""
                     iconPath: Icons.callEnd
-                    text: PhoneCall.ringing ? qsTr("Decline") : qsTr("End call")
+                    text: PhoneCall.pending === "end" ? qsTr("Ending…")
+                        : PhoneCall.ringing ? qsTr("Decline") : qsTr("End call")
                     fill: Theme.tintRed
                     onClicked: PhoneCall.end()
                 }
                 CallButton {
                     visible: PhoneCall.ringing
                     width: (parent.width - 8) / 2
+                    enabled: PhoneCall.pending === ""
                     iconPath: Icons.call
-                    text: qsTr("Answer")
+                    text: PhoneCall.pending === "answer" ? qsTr("Answering…") : qsTr("Answer")
                     fill: Theme.tintTeal
                     onClicked: PhoneCall.answer()
                 }

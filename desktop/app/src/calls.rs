@@ -11,8 +11,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use g7link_core::{
@@ -105,6 +106,137 @@ fn notified<T>(f: impl FnOnce(&mut HashMap<DeviceId, String>) -> T) -> T {
     f(NOTIFIED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
 }
 
+/// What the PC asked a phone to do with its call, shown until the phone says it's done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pending {
+    Answer,
+    End,
+}
+
+impl Pending {
+    /// Its name for QML.
+    pub fn name(self) -> &'static str {
+        match self {
+            Pending::Answer => "answer",
+            Pending::End => "end",
+        }
+    }
+
+    fn command(self) -> CallCommand {
+        match self {
+            Pending::Answer => CallCommand::Answer,
+            Pending::End => CallCommand::Decline,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingCommand {
+    call: String,
+    /// The call's state when it was asked: an update in another state is the phone's answer.
+    state: String,
+    action: Pending,
+    /// Tells this request from a later one, for its failure and timeout.
+    serial: u64,
+}
+
+impl PendingCommand {
+    fn settled_by(&self, call: &CallState) -> bool {
+        self.call != call.id || self.state != call.state
+    }
+}
+
+/// Longer than the core's 10 s request timeout, so a reply in time always wins.
+const PENDING_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// The answer or hang-up on its way, per phone.
+static PENDING: Mutex<Option<HashMap<DeviceId, PendingCommand>>> = Mutex::new(None);
+static PENDING_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+fn pending_commands<T>(f: impl FnOnce(&mut HashMap<DeviceId, PendingCommand>) -> T) -> T {
+    f(PENDING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
+}
+
+/// The answer or hang-up on its way for a phone's call `call`, if any.
+pub fn pending(device: DeviceId, call: &str) -> Option<Pending> {
+    pending_commands(|p| p.get(&device).filter(|p| p.call == call).map(|p| p.action))
+}
+
+/// The phone said something about its call: whatever was on its way for it is done.
+fn settle(device: DeviceId, call: &CallState) -> bool {
+    pending_commands(|p| {
+        let settled = p.get(&device).is_some_and(|p| p.settled_by(call));
+        if settled {
+            p.remove(&device);
+        }
+        settled
+    })
+}
+
+/// Drops request `serial` (failed, or timed out) unless a newer one replaced it.
+fn drop_pending(device: DeviceId, serial: u64) {
+    if take_pending(device, serial) {
+        core_host::host().hub.changed(Changes::CALLS);
+    }
+}
+
+fn take_pending(device: DeviceId, serial: u64) -> bool {
+    pending_commands(|p| {
+        let ours = p.get(&device).is_some_and(|p| p.serial == serial);
+        if ours {
+            p.remove(&device);
+        }
+        ours
+    })
+}
+
+fn forget_pending(device: DeviceId) {
+    if pending_commands(|p| p.remove(&device)).is_some() {
+        core_host::host().hub.changed(Changes::CALLS);
+    }
+}
+
+/// Answers or ends a phone's call, and shows it at once: the ringing
+/// notification goes and `pending` holds until the phone's update, a failure
+/// or a timeout. False when one is already on its way for that call.
+pub fn act(device: DeviceId, call: String, action: Pending) -> bool {
+    let Some(node) = core_host::node() else { return false };
+    let state = ringing(|r| r.get(&device).filter(|c| c.id == call).map(|c| c.state.clone()))
+        .or_else(|| in_progress(|c| c.get(&device).filter(|c| c.id == call).map(|c| c.state.clone())))
+        .unwrap_or_default();
+    let serial = PENDING_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+    let started = pending_commands(|p| {
+        if p.get(&device).is_some_and(|p| p.call == call) {
+            return false;
+        }
+        p.insert(device, PendingCommand { call: call.clone(), state, action, serial });
+        true
+    });
+    if !started {
+        return false;
+    }
+    toast::remove(TOAST_GROUP, &key(device, &call));
+    core_host::host().hub.changed(Changes::CALLS);
+    core_host::spawn(async move {
+        tokio::time::sleep(PENDING_TIMEOUT).await;
+        drop_pending(device, serial);
+    });
+    core_host::spawn(async move {
+        let Err(error) = node.call_command(device, call.clone(), action.command()).await else { return };
+        drop_pending(device, serial);
+        if matches!(error, Error::NotFound) {
+            show_message(tr!("Calls", "That call is over."));
+            return;
+        }
+        // Still ringing: its notification comes back (quietly) to try again.
+        if let Some(ringing) = ringing(|r| r.get(&device).filter(|c| c.id == call).cloned()) {
+            show_ringing(device, &ringing, true);
+        }
+        show_message(describe(&error));
+    });
+    true
+}
+
 /// A phone's call in progress, if any.
 pub fn active(device: DeviceId) -> Option<CallState> {
     in_progress(|c| c.get(&device).cloned())
@@ -176,6 +308,7 @@ pub fn on_event(event: &NodeEvent) {
             stop_ringing(*device);
             finish(*device);
             note_call_ended(*device);
+            forget_pending(*device);
             if Some(*device) == page_device {
                 page_state(|s| {
                     if s.log.is_empty() {
@@ -196,6 +329,7 @@ pub fn on_event(event: &NodeEvent) {
             stop_ringing(*device);
             finish(*device);
             note_call_ended(*device);
+            forget_pending(*device);
             forget_page_data(*device);
         }
         // A call can arrive before what the phone can do with it: once the
@@ -225,6 +359,9 @@ pub fn on_event(event: &NodeEvent) {
 }
 
 fn changed(device: DeviceId, call: &CallState) {
+    if settle(device, call) {
+        core_host::host().hub.changed(Changes::CALLS);
+    }
     match call.state.as_str() {
         "ringing" | "active" => note_call_ongoing(device),
         "ended" => note_call_ended(device),
@@ -415,9 +552,18 @@ pub fn on_toast(key: &str, action: &str) {
     };
     let Some((device, call)) = key.split_once(' ') else { return };
     let Ok(device) = device.parse::<DeviceId>() else { return };
+    match action {
+        CALL_ANSWER => {
+            act(device, call.to_owned(), Pending::Answer);
+            return;
+        }
+        CALL_DECLINE | CALL_END => {
+            act(device, call.to_owned(), Pending::End);
+            return;
+        }
+        _ => {}
+    }
     let command = match action {
-        CALL_ANSWER => CallCommand::Answer,
-        CALL_DECLINE | CALL_END => CallCommand::Decline,
         ACTION_SILENCE => CallCommand::Silence,
         ACTION_MUTE => CallCommand::Mute(true),
         ACTION_UNMUTE => CallCommand::Mute(false),
@@ -432,7 +578,6 @@ pub fn on_toast(key: &str, action: &str) {
         let call = call.to_owned();
         core_host::spawn(async move {
             match node.call_command(device, call.clone(), command).await {
-                Ok(()) if command == CallCommand::Decline => {}
                 Ok(()) => {
                     // The phone's new state comes as its own event, right after.
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -1107,6 +1252,59 @@ mod tests {
             since: None,
             controls: None,
         }
+    }
+
+    fn pending_answer(device: DeviceId, serial: u64) {
+        let action = Pending::Answer;
+        let pending = PendingCommand { call: "1".into(), state: "ringing".into(), action, serial };
+        pending_commands(|p| p.insert(device, pending));
+    }
+
+    #[test]
+    fn the_phones_update_settles_a_pending_answer() {
+        let device = DeviceId([41; 32]);
+        pending_answer(device, 1);
+        assert_eq!(pending(device, "1"), Some(Pending::Answer));
+        assert_eq!(pending(device, "2"), None);
+
+        // Still ringing (a name or photo came in): still on its way.
+        assert!(!settle(device, &call(Some("Sam"), None)));
+        assert_eq!(pending(device, "1"), Some(Pending::Answer));
+        // Another phone's call doesn't count.
+        let mut answered = call(None, None);
+        answered.state = "active".into();
+        assert!(!settle(DeviceId([42; 32]), &answered));
+        assert_eq!(pending(device, "1"), Some(Pending::Answer));
+
+        assert!(settle(device, &answered));
+        assert_eq!(pending(device, "1"), None);
+    }
+
+    #[test]
+    fn a_new_call_settles_a_pending_command_for_the_old_one() {
+        let device = DeviceId([43; 32]);
+        pending_answer(device, 1);
+        let mut next = call(None, None);
+        next.id = "2".into();
+        assert!(settle(device, &next));
+        assert_eq!(pending(device, "1"), None);
+    }
+
+    #[test]
+    fn a_late_failure_or_timeout_keeps_a_newer_request() {
+        let device = DeviceId([44; 32]);
+        pending_answer(device, 7);
+        assert!(!take_pending(device, 6));
+        assert_eq!(pending(device, "1"), Some(Pending::Answer));
+        assert!(take_pending(device, 7));
+        assert_eq!(pending(device, "1"), None);
+    }
+
+    #[test]
+    fn pending_names_match_qml() {
+        assert_eq!(Pending::Answer.name(), "answer");
+        assert_eq!(Pending::End.name(), "end");
+        assert_eq!(Pending::End.command(), CallCommand::Decline);
     }
 
     #[test]

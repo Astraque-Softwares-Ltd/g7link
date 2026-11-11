@@ -29,6 +29,8 @@ pub mod qobject {
         #[qproperty(bool, active)]
         /// Whether the call is currently ringing (incoming).
         #[qproperty(bool, ringing)]
+        /// What the PC asked of the call until the phone answers: "answer", "end" or "".
+        #[qproperty(QString, pending)]
         /// Who's on the call, as well as the phone knows.
         #[qproperty(QString, caller)]
         /// The number, when there's a name to show above it.
@@ -102,10 +104,10 @@ pub mod qobject {
         fn copy(self: &PhoneCall, text: &QString);
         /// Answers an incoming ringing call.
         #[qinvokable]
-        fn answer(self: &PhoneCall);
+        fn answer(self: Pin<&mut PhoneCall>);
         /// Hangs up or declines.
         #[qinvokable]
-        fn end(self: &PhoneCall);
+        fn end(self: Pin<&mut PhoneCall>);
         #[qinvokable]
         #[cxx_name = "setMute"]
         fn set_mute(self: &PhoneCall, on: bool);
@@ -137,6 +139,7 @@ pub struct PhoneCallRust {
     device: QString,
     active: bool,
     ringing: bool,
+    pending: QString,
     caller: QString,
     number: QString,
     since: f64,
@@ -270,6 +273,9 @@ impl qobject::PhoneCall {
         self.as_mut().set_can_hold(controls.can_hold);
         self.as_mut().set_ringing(is_ringing);
         self.as_mut().set_active(call.is_some());
+        // Cleared once the phone's update, a failure or the timeout settles it.
+        let pending = self.rust().call.as_ref().and_then(|(device, call)| calls::pending(*device, call));
+        self.as_mut().set_pending(QString::from(pending.map_or("", calls::Pending::name)));
 
         let hfp = calls::hfp_status(call_device);
         self.as_mut().set_hfp_available(hfp.available);
@@ -305,12 +311,20 @@ impl qobject::PhoneCall {
         }
     }
 
-    pub fn answer(&self) {
-        self.send(CallCommand::Answer);
+    /// Shows the answer or hang-up at once; the phone's update follows.
+    fn act(mut self: Pin<&mut Self>, action: calls::Pending) {
+        let Some((device, call)) = self.rust().call.clone() else { return };
+        if calls::act(device, call, action) {
+            self.as_mut().set_pending(QString::from(action.name()));
+        }
     }
 
-    pub fn end(&self) {
-        self.send(CallCommand::Decline);
+    pub fn answer(self: Pin<&mut Self>) {
+        self.act(calls::Pending::Answer);
+    }
+
+    pub fn end(self: Pin<&mut Self>) {
+        self.act(calls::Pending::End);
     }
 
     pub fn set_mute(&self, on: bool) {

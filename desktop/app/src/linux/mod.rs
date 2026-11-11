@@ -189,7 +189,6 @@ pub fn is_laptop() -> bool {
     false
 }
 
-/// Whether power-saver mode is active (`/sys/firmware/acpi/platform_profile` or `powerprofilesctl`).
 /// Whether this PC runs on its battery right now: it has one, and no mains
 /// supply says it's online.
 pub fn on_battery() -> bool {
@@ -210,21 +209,40 @@ pub fn on_battery() -> bool {
     battery
 }
 
+/// Whether power-saver mode is on (the platform profile, or power-profiles-daemon).
 pub fn power_saver() -> bool {
     if let Ok(profile) = fs::read_to_string("/sys/firmware/acpi/platform_profile")
         && profile.trim().eq_ignore_ascii_case("low-power")
     {
         return true;
     }
-    if let Ok(output) = Command::new("powerprofilesctl").arg("get").output()
-        && output.status.success()
-    {
-        let text = String::from_utf8_lossy(&output.stdout);
-        if text.trim().eq_ignore_ascii_case("power-saver") {
-            return true;
-        }
-    }
-    false
+    active_power_profile().is_some_and(|profile| saves_power(&profile))
+}
+
+/// power-profiles-daemon's bus name and path: the original one, then the one
+/// 0.20 and later use.
+const POWER_PROFILES: [(&str, &str); 2] = [
+    ("net.hadess.PowerProfiles", "/net/hadess/PowerProfiles"),
+    ("org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles"),
+];
+
+/// power-profiles-daemon's `ActiveProfile`, or `None` where it isn't running.
+fn active_power_profile() -> Option<String> {
+    non_tokio(|| {
+        let conn = zbus::blocking::connection::Builder::system()
+            .ok()?
+            .method_timeout(std::time::Duration::from_secs(1))
+            .build()
+            .ok()?;
+        POWER_PROFILES.into_iter().find_map(|(name, path)| {
+            let proxy = zbus::blocking::Proxy::new(&conn, name, path, name).ok()?;
+            proxy.get_property::<String>("ActiveProfile").ok()
+        })
+    })
+}
+
+fn saves_power(profile: &str) -> bool {
+    profile.trim().eq_ignore_ascii_case("power-saver")
 }
 
 /// Parses GTK_THEME, gsettings color-scheme, and kdeglobals ColorScheme to decide dark mode.
@@ -520,6 +538,15 @@ mod tests {
         let _ = system_dark();
         let _ = reduce_motion();
         assert!(work_area().is_some());
+    }
+
+    #[test]
+    fn only_the_power_saver_profile_saves_power() {
+        assert!(saves_power("power-saver"));
+        assert!(saves_power(" Power-Saver\n"));
+        assert!(!saves_power("balanced"));
+        assert!(!saves_power("performance"));
+        assert!(!saves_power(""));
     }
 
     #[test]

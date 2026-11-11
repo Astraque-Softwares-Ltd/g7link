@@ -517,13 +517,15 @@ Window {
                 // ---- A call: Decline and Answer while it rings, then Mute and Hang up ----
                 IslandPill {
                     visible: islandWin.mode === "call" && PhoneCall.ringing && PhoneCall.canEnd
-                    text: qsTr("Decline")
+                    enabled: PhoneCall.pending === ""
+                    text: PhoneCall.pending === "end" ? qsTr("Ending…") : qsTr("Decline")
                     fill: Theme.tintRed
                     onActivated: PhoneCall.end()
                 }
                 IslandPill {
                     visible: islandWin.mode === "call" && PhoneCall.ringing && PhoneCall.canEnd
-                    text: qsTr("Answer")
+                    enabled: PhoneCall.pending === ""
+                    text: PhoneCall.pending === "answer" ? qsTr("Answering…") : qsTr("Answer")
                     fill: Theme.tintTeal
                     onActivated: PhoneCall.answer()
                 }
@@ -536,7 +538,8 @@ Window {
                 }
                 IslandPill {
                     visible: islandWin.mode === "call" && !PhoneCall.ringing && PhoneCall.canEnd
-                    text: qsTr("Hang up")
+                    enabled: PhoneCall.pending === ""
+                    text: PhoneCall.pending === "end" ? qsTr("Ending…") : qsTr("Hang up")
                     fill: Theme.tintRed
                     onActivated: PhoneCall.end()
                 }
@@ -615,6 +618,7 @@ Window {
         width: ipText.implicitWidth + 24
         height: 28
         radius: 14
+        opacity: enabled ? 1 : 0.6
         color: ipHover.hovered ? Qt.lighter(fill, 1.08) : fill
         Accessible.role: Accessible.Button
         Accessible.name: text

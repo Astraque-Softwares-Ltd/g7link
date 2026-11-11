@@ -413,21 +413,30 @@ Item {
             historySheet.open()
         }
 
-        readonly property var primary: home.ringingHere
+        // While the phone takes an answer or hang-up: what's happening, nothing to press.
+        readonly property bool callPending: PhoneCall.pending !== ""
+        readonly property string pendingLabel: PhoneCall.pending === "answer" ? qsTr("Answering…") : qsTr("Ending…")
+        readonly property var primary: home.ringingHere && home.callPending
+            ? ({ label: home.pendingLabel, keys: "", run: () => {} })
+            : home.ringingHere
             ? ({ label: qsTr("Answer"), keys: "Ctrl Enter", run: () => PhoneCall.answer() })
             : ({ label: qsTr("Mirror screen"), keys: "Ctrl M", run: () => home.mirror() })
-        readonly property var secondary: home.ringingHere
+        readonly property var secondary: home.ringingHere && !home.callPending
             ? ({ label: qsTr("Decline"), keys: "Esc", run: () => PhoneCall.end() })
             : null
         readonly property var actionList: {
             const list = []
             if (home.callHere && PhoneCall.ringing) {
-                list.push({ label: qsTr("Answer"), icon: Icons.call, tint: Theme.tintTeal, keys: "Ctrl Enter",
-                            run: () => PhoneCall.answer() })
-                list.push({ label: qsTr("Decline"), icon: Icons.callEnd, tint: Theme.tintRed, keys: "Esc",
-                            run: () => PhoneCall.end() })
+                list.push({ label: PhoneCall.pending === "answer" ? qsTr("Answering…") : qsTr("Answer"),
+                            icon: Icons.call, tint: Theme.tintTeal, keys: "Ctrl Enter",
+                            enabled: !home.callPending, run: () => PhoneCall.answer() })
+                list.push({ label: PhoneCall.pending === "end" ? qsTr("Ending…") : qsTr("Decline"),
+                            icon: Icons.callEnd, tint: Theme.tintRed, keys: "Esc",
+                            enabled: !home.callPending, run: () => PhoneCall.end() })
             } else if (home.callHere && PhoneCall.canEnd) {
-                list.push({ label: qsTr("End call"), icon: Icons.callEnd, tint: Theme.tintRed, run: () => PhoneCall.end() })
+                list.push({ label: PhoneCall.pending === "end" ? qsTr("Ending…") : qsTr("End call"),
+                            icon: Icons.callEnd, tint: Theme.tintRed,
+                            enabled: !home.callPending, run: () => PhoneCall.end() })
             }
             list.push(
                 { label: qsTr("Mirror screen"), icon: Icons.mirror, tint: Theme.tintLavender, keys: "Ctrl M",
