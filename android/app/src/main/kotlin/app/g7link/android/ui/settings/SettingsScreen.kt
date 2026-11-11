@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.settings
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,39 +26,36 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import app.g7link.android.ui.AppLanguage
-import androidx.compose.material3.RadioButton
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -63,40 +64,53 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.contract.ActivityResultContracts
-import android.app.Activity
-import app.g7link.android.BuildConfig
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
 import app.g7link.android.calls.PhoneCalls
+import app.g7link.android.clipboard.PhoneClipboard
 import app.g7link.android.companion.PcCompanion
 import app.g7link.android.contacts.PhoneContacts
-import app.g7link.android.clipboard.PhoneClipboard
+import app.g7link.android.core.BackgroundAccess
+import app.g7link.android.core.CoreState
+import app.g7link.android.core.Device
 import app.g7link.android.elevated.Elevated
-import app.g7link.android.elevated.PairingNotification
 import app.g7link.android.elevated.ElevatedMethod
+import app.g7link.android.elevated.PairingNotification
 import app.g7link.android.elevated.ShizukuElevated
 import app.g7link.android.mirror.InputService
+import app.g7link.android.notifications.NotificationListener
 import app.g7link.android.photos.RecentPhotos
 import app.g7link.android.sms.PhoneSms
 import app.g7link.android.storage.PhoneStorage
 import app.g7link.android.toggles.PhoneToggles
-import app.g7link.android.update.AppUpdater
-import app.g7link.android.update.CheckForUpdates
-import app.g7link.android.core.BackgroundAccess
-import app.g7link.android.core.CoreState
-import app.g7link.android.core.Device
-import androidx.compose.ui.draw.drawBehind
-import app.g7link.android.notifications.NotificationListener
+import app.g7link.android.ui.AppLanguage
 import app.g7link.android.ui.guide.GuideHighlightTarget
 import app.g7link.android.ui.theme.Appearance
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7SectionLabel
+import app.g7link.android.ui.theme.G7SwitchRow
+import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.LocalGlassTheme
+import app.g7link.android.ui.theme.LocalQuietTheme
 import app.g7link.android.ui.theme.Tokens
+import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.theme.glassModalBlur
 import app.g7link.android.ui.theme.glassModalContainerColor
-import app.g7link.android.ui.theme.liquidGlassCard
+import app.g7link.android.update.AppUpdater
+import app.g7link.android.update.CheckForUpdates
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** Where each group sits in the list, for jumping to it from the Guide. */
+private object Items {
+    const val DEVICES = 1
+    const val ACCESS = 2
+    const val CONNECTION = 3
+    const val CLIPBOARD = 4
+    const val DATA = 7
+}
 
 @Composable
 fun SettingsScreen(
@@ -132,7 +146,6 @@ fun SettingsScreen(
     onToggleLocalSend: (Boolean) -> Unit = {},
     onToggleAwayMode: (Boolean) -> Unit = {},
     onOpenWalkthrough: () -> Unit = {},
-    onOpenFeaturesGuide: () -> Unit = {},
     highlightTarget: GuideHighlightTarget? = null,
     onHighlightConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -140,904 +153,454 @@ fun SettingsScreen(
     var confirmUnpair by remember { mutableStateOf<Device?>(null) }
     var confirmClearEverything by remember { mutableStateOf(false) }
     var pickLanguage by remember { mutableStateOf(false) }
-    var activeCategory by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("all") }
-    var pulsingSectionKey by remember { mutableStateOf<String?>(null) }
+    var openDeviceId by rememberSaveable { mutableStateOf<String?>(null) }
+    var powerOpen by rememberSaveable { mutableStateOf(false) }
+    var pulsing by remember { mutableStateOf<String?>(null) }
     var jumpToControl by remember { mutableStateOf(0) }
     val isGlass = LocalGlassTheme.current
+    val quiet = LocalQuietTheme.current
+    val tints = g7Tints()
     val anyDialogOpen = confirmUnpair != null || confirmClearEverything
 
-    val categories = remember {
-        listOf(
-            "all" to R.string.timeline_filter_all,
-            "appearance" to R.string.settings_appearance,
-            "devices" to R.string.settings_category_devices,
-            "permissions" to R.string.walkthrough_permissions_title,
-            "features" to R.string.settings_category_features,
-        )
-    }
-
-    val showAppearance = activeCategory == "all" || activeCategory == "appearance"
-    val showDevices = activeCategory == "all" || activeCategory == "devices"
-    val showPermissions = activeCategory == "all" || activeCategory == "permissions"
-    val showFeatures = activeCategory == "all" || activeCategory == "features"
-
-    // Keep a screen of cards composed on each side, so scrolling back does not rebuild them.
+    // Keep a screen of rows composed on each side, so scrolling back does not rebuild them.
     @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
     val listState = androidx.compose.foundation.lazy.rememberLazyListState(
         cacheWindow = androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow(aheadFraction = 1f, behindFraction = 1f),
     )
 
-    androidx.compose.runtime.LaunchedEffect(jumpToControl) {
+    LaunchedEffect(jumpToControl) {
         if (jumpToControl == 0) return@LaunchedEffect
-        activeCategory = "permissions"
-        pulsingSectionKey = "control"
+        powerOpen = true
+        pulsing = "control"
         delay(60)
-        runCatching { listState.animateScrollToItem(2) }
+        runCatching { listState.animateScrollToItem(Items.ACCESS) }
         delay(2200)
-        if (pulsingSectionKey == "control") pulsingSectionKey = null
+        if (pulsing == "control") pulsing = null
     }
 
-    androidx.compose.runtime.LaunchedEffect(highlightTarget) {
+    LaunchedEffect(highlightTarget) {
         val target = highlightTarget ?: return@LaunchedEffect
-        val mapping = when (target) {
-            GuideHighlightTarget.SETTINGS_DEVICES -> Triple("devices", "devices", 1)
-            GuideHighlightTarget.SETTINGS_NOTIFICATIONS -> Triple("permissions", "notifications", 1)
-            GuideHighlightTarget.SETTINGS_CONTROL -> Triple("permissions", "control", 2)
-            GuideHighlightTarget.SETTINGS_BACKGROUND -> Triple("permissions", "background", 3)
-            GuideHighlightTarget.SETTINGS_CALLS_CONTACTS -> Triple("permissions", "calls_contacts", 4)
-            GuideHighlightTarget.SETTINGS_PHOTOS_STORAGE -> Triple("permissions", "photos", 5)
-            GuideHighlightTarget.SETTINGS_CLIPBOARD -> Triple("features", "clipboard", 1)
-            GuideHighlightTarget.SETTINGS_LOCALSEND -> Triple("features", "localsend", 3)
-            GuideHighlightTarget.SETTINGS_DATA_STORAGE -> Triple("features", "data_storage", 4)
-            else -> null
+        onHighlightConsumed()
+        val (key, index) = when (target) {
+            GuideHighlightTarget.SETTINGS_DEVICES -> "devices" to Items.DEVICES
+            GuideHighlightTarget.SETTINGS_NOTIFICATIONS -> "notifications" to Items.ACCESS
+            GuideHighlightTarget.SETTINGS_CONTROL -> "control" to Items.ACCESS
+            GuideHighlightTarget.SETTINGS_CALLS_CONTACTS -> "calls_contacts" to Items.ACCESS
+            GuideHighlightTarget.SETTINGS_PHOTOS_STORAGE -> "photos" to Items.ACCESS
+            GuideHighlightTarget.SETTINGS_BACKGROUND -> "background" to Items.CONNECTION
+            GuideHighlightTarget.SETTINGS_LOCALSEND -> "localsend" to Items.CONNECTION
+            GuideHighlightTarget.SETTINGS_CLIPBOARD -> "clipboard" to Items.CLIPBOARD
+            GuideHighlightTarget.SETTINGS_DATA_STORAGE -> "data_storage" to Items.DATA
+            else -> return@LaunchedEffect
         }
-        if (mapping != null) {
-            val (category, sectionKey, indexInCat) = mapping
-            activeCategory = category
-            pulsingSectionKey = sectionKey
-            onHighlightConsumed()
-            delay(60)
-            runCatching { listState.animateScrollToItem(indexInCat) }
-            delay(2200)
-            if (pulsingSectionKey == sectionKey) {
-                pulsingSectionKey = null
-            }
-        } else {
-            onHighlightConsumed()
-        }
+        if (key == "control") powerOpen = true
+        pulsing = key
+        delay(60)
+        runCatching { listState.animateScrollToItem(index) }
+        delay(2200)
+        if (pulsing == key) pulsing = null
     }
 
     LazyColumn(
         state = listState,
         modifier = modifier.glassModalBlur(isGlass && anyDialogOpen),
-        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 104.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = if (quiet) 16.dp else 104.dp),
     ) {
         item(key = "header", contentType = "header") {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        stringResource(R.string.settings_title),
-                        style = MaterialTheme.typography.headlineMedium,
-                    )
-                    FilledTonalButton(onClick = onOpenFeaturesGuide) {
-                        Text(stringResource(R.string.guide_title))
-                    }
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    categories.forEach { (id, label) ->
-                        val selected = activeCategory == id
-                        FilterChip(
-                            selected = selected,
-                            onClick = { activeCategory = id },
-                            label = { Text(stringResource(label)) },
-                            // Solid like the cards: the row sits right on the
-                            // background (Hive's comb showed through).
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            ),
-                        )
-                    }
-                }
-            }
+            Text(
+                stringResource(R.string.settings_title),
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(start = 12.dp, top = 12.dp, bottom = 4.dp),
+            )
         }
 
-        if (showAppearance) {
-            item(key = "appearance", contentType = "section") {
-                Section(stringResource(R.string.settings_appearance)) {
-                    Label(stringResource(R.string.settings_theme))
-                    Choice(
-                        listOf(
-                            "quiet" to "G7",
-                            "hive" to stringResource(R.string.theme_hive),
-                            "bloom" to stringResource(R.string.theme_bloom),
-                            "glass" to "Glass",
-                            "graphite" to stringResource(R.string.theme_graphite),
-                        ),
-                        appearance.theme,
-                    ) { value -> onAppearance { it.copy(theme = value) } }
-                    Label(stringResource(R.string.settings_mode))
-                    Choice(
-                        listOf(
-                            "system" to stringResource(R.string.mode_system),
-                            "light" to stringResource(R.string.mode_light),
-                            "dark" to stringResource(R.string.mode_dark),
-                        ),
-                        appearance.mode,
-                    ) { value -> onAppearance { it.copy(mode = value) } }
-                    if (AppLanguage.supported) {
-                        // System and English, plus the language picked from the list (or More).
-                        val context = LocalContext.current
-                        val language = remember { AppLanguage.current(context) }
-                        val other = AppLanguage.languages.firstOrNull { it.first == language && it.first != "en" }
-                        Label(stringResource(R.string.settings_language))
-                        Choice(
-                            listOf(
-                                "" to stringResource(R.string.mode_system),
-                                "en" to "English",
-                                (other ?: (MORE_LANGUAGES to stringResource(R.string.settings_language_more))),
-                            ),
-                            language,
-                        ) { value ->
-                            if (value == "" || value == "en") AppLanguage.set(context, value) else pickLanguage = true
-                        }
-                    }
-                    if (appearance.theme == "hive") {
-                        SettingRowDivider()
-                        val combTitle = stringResource(R.string.settings_comb_motion)
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                Text(combTitle, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    stringResource(R.string.settings_comb_motion_hint),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = appearance.combMotion,
-                                onCheckedChange = { on -> onAppearance { it.copy(combMotion = on) } },
-                                colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                modifier = Modifier.semantics { contentDescription = combTitle },
-                            )
-                        }
-                    }
-                    if (appearance.theme == "graphite" && appearance.mode != "light") {
-                        SettingRowDivider()
-                        val amoledTitle = stringResource(R.string.settings_amoled)
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                Text(amoledTitle, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    stringResource(R.string.settings_amoled_hint),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = appearance.amoled,
-                                onCheckedChange = { on -> onAppearance { it.copy(amoled = on) } },
-                                colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                modifier = Modifier.semantics { contentDescription = amoledTitle },
-                            )
-                        }
-                    }
-                    if (appearance.theme == "bloom" || appearance.theme == "glass") {
-                        SettingRowDivider()
-                        val artworkSync = appearance.seed == "artwork"
-                        val artworkColorLabel = stringResource(R.string.settings_theme_artwork_color)
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                Text(stringResource(R.string.settings_theme_artwork_color), style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    stringResource(R.string.settings_theme_artwork_body),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = artworkSync,
-                                onCheckedChange = { on ->
-                                    onAppearance {
-                                        it.copy(seed = if (on) "artwork" else Tokens.DEFAULT_SEED)
+        item(key = "devices", contentType = "group") {
+            val context = LocalContext.current
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_devices))
+                state.devices.forEach { device ->
+                    val open = openDeviceId == device.id
+                    G7Row(
+                        label = device.name,
+                        icon = if (device.isAndroid) G7Icons.phone else G7Icons.monitor,
+                        tint = tints.lavender,
+                        note = stringResource(if (device.online) R.string.connected else R.string.not_connected),
+                        highlighted = pulsing == "devices",
+                        onClick = { openDeviceId = if (open) null else device.id },
+                    ) { Chevron(open) }
+                    if (open) {
+                        Column(Modifier.padding(start = 36.dp)) {
+                            G7SwitchRow(
+                                label = stringResource(R.string.storage_pc_toggle),
+                                checked = device.storageEnabled,
+                                onCheckedChange = { enabled ->
+                                    onSetStorageEnabled(device.id, enabled)
+                                    if (enabled && !state.storageAllFilesAccess && state.storageSafFolders.isEmpty()) {
+                                        runCatching { context.startActivity(PhoneStorage.allFilesAccessIntent(context)) }
                                     }
                                 },
-                                colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                modifier = Modifier.semantics { contentDescription = artworkColorLabel },
                             )
-                        }
-                        if (!artworkSync && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            SettingRowDivider()
-                            val dynamicColorTitle = stringResource(R.string.settings_dynamic_color)
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                    Text(dynamicColorTitle, style = MaterialTheme.typography.titleSmall)
-                                    Text(
-                                        stringResource(R.string.settings_dynamic_color_hint),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Switch(
-                                    checked = appearance.dynamicColor,
-                                    onCheckedChange = { on -> onAppearance { it.copy(dynamicColor = on) } },
-                                    colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                    modifier = Modifier.semantics { contentDescription = dynamicColorTitle },
-                                )
-                            }
-                        }
-                        if (!artworkSync) {
-                            SettingRowDivider()
-                            val blackSwatchSelected = (!appearance.dynamicColor || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) && appearance.seed == "black"
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Tokens.bloomSeeds.forEach { (name, seed) ->
-                                    val isSelected = (!appearance.dynamicColor || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) && appearance.seed == name
-                                    val seedLabel = stringResource(
-                                        when (name) {
-                                            "honey" -> R.string.settings_seed_honey
-                                            "lavender" -> R.string.settings_seed_lavender
-                                            "ocean" -> R.string.settings_seed_ocean
-                                            "sage" -> R.string.settings_seed_sage
-                                            "black" -> R.string.settings_seed_black
-                                            else -> R.string.settings_seed_honey
-                                        },
-                                    )
-                                    val isBlackSeed = name == "black"
-                                    val borderColor = when {
-                                        isSelected -> MaterialTheme.colorScheme.onSurface
-                                        isBlackSeed -> androidx.compose.ui.graphics.Color.White.copy(alpha = 0.28f)
-                                        else -> MaterialTheme.colorScheme.outlineVariant
-                                    }
-                                    val borderWidth = when {
-                                        isSelected -> 2.5.dp
-                                        isBlackSeed -> 1.2.dp
-                                        else -> 1.dp
-                                    }
-                                    androidx.compose.foundation.layout.Box(
-                                        contentAlignment = Alignment.Center,
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .drawBehind {
-                                                drawCircle(color = seed.color)
-                                                val strokePx = borderWidth.toPx()
-                                                drawCircle(
-                                                    color = borderColor,
-                                                    radius = (size.minDimension - strokePx) * 0.5f,
-                                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokePx),
-                                                )
-                                            }
-                                            .clickable {
-                                                onAppearance {
-                                                    it.copy(dynamicColor = false, seed = name)
-                                                }
-                                            }
-                                            .semantics {
-                                                role = Role.RadioButton
-                                                selected = isSelected
-                                                contentDescription = seedLabel
-                                            },
-                                    ) {
-                                        if (isSelected) {
-                                            Text(
-                                                text = "✓",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = if (isBlackSeed) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color.Black,
-                                            )
-                                        }
-                                    }
-                                }
-
-                                // Compact inline AMOLED toggle pill inside the swatch row when Black seed is selected
-                                if (blackSwatchSelected) {
-                                    val amoledLabel = stringResource(R.string.settings_amoled)
-                                    Surface(
-                                        shape = RoundedCornerShape(20.dp),
-                                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                        border = BorderStroke(
-                                            1.dp,
-                                            if (appearance.amoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                                        ),
-                                        modifier = Modifier.height(38.dp),
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(start = 12.dp, end = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        ) {
-                                            Text(
-                                                text = "AMOLED",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = if (appearance.amoled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                            Switch(
-                                                checked = appearance.amoled,
-                                                onCheckedChange = { on -> onAppearance { it.copy(amoled = on) } },
-                                                colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                                modifier = Modifier
-                                                    .graphicsLayer {
-                                                        scaleX = 0.76f
-                                                        scaleY = 0.76f
-                                                    }
-                                                    .semantics { contentDescription = amoledLabel },
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (showDevices) {
-            item(key = "devices", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_devices),
-                    highlighted = pulsingSectionKey == "devices",
-                ) {
-                    val context = LocalContext.current
-                    state.devices.forEachIndexed { index, device ->
-                        if (index > 0) {
-                            SettingRowDivider()
-                        }
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                    Text(device.name, style = MaterialTheme.typography.titleSmall)
-                                    val dotColor = if (device.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        Spacer(
-                                            modifier = Modifier
-                                                .size(8.dp)
-                                                .drawBehind { drawCircle(dotColor) },
-                                        )
-                                        Text(
-                                            stringResource(if (device.online) R.string.connected else R.string.not_connected),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                                OutlinedButton(onClick = { confirmUnpair = device }) { Text(stringResource(R.string.action_unpair)) }
-                            }
-                            val storageToggleTitle = stringResource(R.string.storage_pc_toggle)
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                    Text(storageToggleTitle, style = MaterialTheme.typography.bodyMedium)
-                                    Text(
-                                        stringResource(R.string.storage_pc_toggle_hint),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Switch(
-                                    checked = device.storageEnabled,
-                                    onCheckedChange = { enabled ->
-                                        onSetStorageEnabled(device.id, enabled)
-                                        if (enabled && !state.storageAllFilesAccess && state.storageSafFolders.isEmpty()) {
-                                            runCatching { context.startActivity(PhoneStorage.allFilesAccessIntent(context)) }
-                                        }
-                                    },
-                                    colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                    modifier = Modifier.semantics { contentDescription = storageToggleTitle },
-                                )
-                            }
                             if (!device.isAndroid) {
-                                val micToggleTitle = stringResource(R.string.mic_pc_toggle)
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                        Text(micToggleTitle, style = MaterialTheme.typography.bodyMedium)
-                                        Text(
-                                            stringResource(
-                                                if (device.id in startWithoutAsking) R.string.mic_pc_toggle_hint_auto else R.string.mic_pc_toggle_hint,
-                                            ),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                    Switch(
-                                        checked = device.micEnabled,
-                                        onCheckedChange = { enabled -> onSetMicEnabled(device.id, enabled) },
-                                        colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                        modifier = Modifier.semantics { contentDescription = micToggleTitle },
-                                    )
-                                }
-                                val autoStartTitle = stringResource(R.string.start_without_asking_toggle)
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                        Text(autoStartTitle, style = MaterialTheme.typography.bodyMedium)
-                                        Text(
-                                            stringResource(R.string.start_without_asking_hint),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                    Switch(
-                                        checked = device.id in startWithoutAsking,
-                                        onCheckedChange = { on -> onSetStartWithoutAsking(device.id, on) },
-                                        colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                                        modifier = Modifier.semantics { contentDescription = autoStartTitle },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    FilledTonalButton(onClick = onPairNew) { Text(stringResource(R.string.action_pair_new)) }
-                    SettingRowDivider()
-                    val mobileDataTitle = stringResource(R.string.guide_away_title)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(mobileDataTitle, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_mobile_data_body),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = state.awayMode,
-                            onCheckedChange = onToggleAwayMode,
-                            colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                            modifier = Modifier.semantics { contentDescription = mobileDataTitle },
-                        )
-                    }
-                }
-            }
-        }
-
-        if (showPermissions) {
-            item(key = "notifications", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_notifications),
-                    highlighted = pulsingSectionKey == "notifications",
-                ) {
-                    NotificationAccess(state.notificationAccess)
-                }
-            }
-
-            item(key = "control", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_control),
-                    highlighted = pulsingSectionKey == "control",
-                ) {
-                    ControlAccess(state.inputAccess)
-                    SettingRowDivider()
-                    ElevatedAccess()
-                    SettingRowDivider()
-                    BankingPauseAccess()
-                    SettingRowDivider()
-                    DndAccess(state.dndAccess)
-                    SettingRowDivider()
-                    WriteSettingsAccess(state.writeSettingsAccess || state.elevated)
-                }
-            }
-
-            item(key = "background", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_background_title),
-                    highlighted = pulsingSectionKey == "background",
-                ) {
-                    val runInBackgroundTitle = stringResource(R.string.settings_run_in_background)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(runInBackgroundTitle, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_run_in_background_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = backgroundServiceEnabled,
-                            onCheckedChange = onToggleBackgroundService,
-                            colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                            modifier = Modifier.semantics { contentDescription = runInBackgroundTitle },
-                        )
-                    }
-                    SettingRowDivider()
-                    BackgroundBatteryAccess(state.backgroundUnrestricted)
-                    SettingRowDivider()
-                    CompanionWakeAccess(
-                        associated = state.companionAssociated,
-                        devices = state.devices,
-                        onAccessChanged = onAccessChanged,
-                    )
-                }
-            }
-
-            item(key = "calls_contacts", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_calls_and_contacts),
-                    highlighted = pulsingSectionKey == "calls_contacts",
-                ) {
-                    RuntimePermissionAccess(
-                        title = stringResource(R.string.calls_title),
-                        textOn = stringResource(R.string.calls_on),
-                        textOff = stringResource(R.string.calls_off),
-                        granted = state.callAccess,
-                        permissions = PhoneCalls.permissions,
-                        onAccessChanged = onAccessChanged,
-                    )
-                    SettingRowDivider()
-                    RuntimePermissionAccess(
-                        title = stringResource(R.string.contacts_title),
-                        textOn = stringResource(R.string.contacts_on),
-                        textOff = stringResource(R.string.contacts_off),
-                        granted = state.contactsAccess,
-                        permissions = PhoneContacts.permissions,
-                        onAccessChanged = onAccessChanged,
-                    )
-                    SettingRowDivider()
-                    RuntimePermissionAccess(
-                        title = stringResource(R.string.sms_title),
-                        textOn = stringResource(R.string.sms_on),
-                        textOff = stringResource(R.string.sms_off),
-                        granted = state.smsAccess,
-                        permissions = PhoneSms.permissions,
-                        onAccessChanged = onAccessChanged,
-                    )
-                }
-            }
-
-            item(key = "photos", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_photos),
-                    highlighted = pulsingSectionKey == "photos",
-                ) {
-                    PhotosAccess(
-                        granted = state.photoAccess,
-                        partial = state.photoPartialAccess,
-                        onAccessChanged = onAccessChanged,
-                    )
-                    SettingRowDivider()
-                    StorageAccess(
-                        allFiles = state.storageAllFilesAccess,
-                        safFolders = state.storageSafFolders,
-                        onAddSafFolder = onAddSafFolder,
-                        onRemoveSafFolder = onRemoveSafFolder,
-                    )
-                }
-            }
-        }
-
-        if (showFeatures) {
-            item(key = "clipboard", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_clipboard_title),
-                    highlighted = pulsingSectionKey == "clipboard",
-                ) {
-                    val context = LocalContext.current
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(stringResource(R.string.settings_background_clipboard_title), style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                if (state.elevated) {
-                                    stringResource(R.string.settings_wireless_debugging_active)
-                                } else {
-                                    stringResource(R.string.settings_wireless_debugging_hint)
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        // Elevated's own section knows every way to start it.
-                        if (state.elevated) {
-                            OutlinedButton(onClick = { jumpToControl++ }) {
-                                Text(stringResource(R.string.action_manage))
-                            }
-                        } else {
-                            Button(onClick = { jumpToControl++ }) {
-                                Text(stringResource(R.string.elevated_set_up))
-                            }
-                        }
-                    }
-                    SettingRowDivider()
-                    var syncPasswords by remember { mutableStateOf(PhoneClipboard.syncPasswords(context)) }
-                    val syncPasswordsTitle = stringResource(R.string.settings_clipboard_passwords)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(syncPasswordsTitle, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_clipboard_passwords_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = syncPasswords,
-                            onCheckedChange = {
-                                syncPasswords = it
-                                PhoneClipboard.setSyncPasswords(context, it)
-                            },
-                            modifier = Modifier.semantics { contentDescription = syncPasswordsTitle },
-                        )
-                    }
-                    SettingRowDivider()
-                    val suggestionsTitle = stringResource(R.string.settings_clipboard_suggestions)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(suggestionsTitle, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_clipboard_suggestions_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = suggestClipboardActions,
-                            onCheckedChange = onSetSuggestClipboardActions,
-                            colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                            modifier = Modifier.semantics { contentDescription = suggestionsTitle },
-                        )
-                    }
-                }
-            }
-
-            item(key = "remote", contentType = "section") {
-                Section(stringResource(R.string.settings_remote)) {
-                    val sensitivityTitle = stringResource(R.string.settings_touchpad_sensitivity)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            sensitivityTitle,
-                            style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            stringResource(R.string.settings_touchpad_sensitivity_value, touchpadSensitivity),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Slider(
-                        value = touchpadSensitivity,
-                        onValueChange = onTouchpadSensitivity,
-                        valueRange = 0.5f..2.5f,
-                        modifier = Modifier.semantics { contentDescription = sensitivityTitle },
-                    )
-                    SettingRowDivider()
-                    val volumeKeysTitle = stringResource(R.string.settings_volume_keys_control_pc)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(volumeKeysTitle, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_volume_keys_control_pc_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = volumeKeysControlPc,
-                            onCheckedChange = onSetVolumeKeysControlPc,
-                            colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                            modifier = Modifier.semantics { contentDescription = volumeKeysTitle },
-                        )
-                    }
-                }
-            }
-
-            item(key = "localsend", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_localsend_title),
-                    highlighted = pulsingSectionKey == "localsend",
-                ) {
-                    val localsendTitle = stringResource(R.string.settings_localsend_title)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(localsendTitle, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_localsend_subtitle),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = state.localsendEnabled,
-                            onCheckedChange = onToggleLocalSend,
-                            colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                            modifier = Modifier.semantics { contentDescription = localsendTitle },
-                        )
-                    }
-                }
-            }
-
-            item(key = "data_storage", contentType = "section") {
-                Section(
-                    title = stringResource(R.string.settings_data_storage_title),
-                    highlighted = pulsingSectionKey == "data_storage",
-                ) {
-                    // 1. Notification history
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.data_notifications_title), style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            stringResource(R.string.data_notifications_subtitle),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    SettingRowDivider()
-
-                    // 2. Clipboard history
-                    val clipboardHistoryTitle = stringResource(R.string.data_clipboard_title)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(clipboardHistoryTitle, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.data_clipboard_subtitle),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            if (state.clipboardHistory.isNotEmpty()) {
-                                Text(
-                                    pluralStringResource(
-                                        R.plurals.data_clipboard_count,
-                                        state.clipboardHistory.size,
-                                        state.clipboardHistory.size,
-                                    ),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(top = 2.dp),
+                                G7SwitchRow(
+                                    label = stringResource(R.string.mic_pc_toggle),
+                                    checked = device.micEnabled,
+                                    onCheckedChange = { enabled -> onSetMicEnabled(device.id, enabled) },
+                                )
+                                G7SwitchRow(
+                                    label = stringResource(R.string.start_without_asking_toggle),
+                                    sublabel = stringResource(R.string.start_without_asking_hint),
+                                    checked = device.id in startWithoutAsking,
+                                    onCheckedChange = { on -> onSetStartWithoutAsking(device.id, on) },
                                 )
                             }
-                        }
-                        Switch(
-                            checked = state.clipboardHistoryEnabled,
-                            onCheckedChange = onSetClipboardHistoryEnabled,
-                            colors = app.g7link.android.ui.theme.g7SwitchColors(),
-                            modifier = Modifier.semantics { contentDescription = clipboardHistoryTitle },
-                        )
-                    }
-                    if (state.clipboardHistory.isNotEmpty()) {
-                        OutlinedButton(onClick = onClearClipboardHistory) {
-                            Text(stringResource(R.string.data_action_clear))
-                        }
-                    }
-                    SettingRowDivider()
-
-                    // 3. Timeline
-                    Text(stringResource(R.string.data_timeline_title), style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        stringResource(R.string.data_timeline_subtitle),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Choice(
-                        listOf(
-                            "30" to stringResource(R.string.timeline_retention_30d),
-                            "90" to stringResource(R.string.timeline_retention_90d),
-                            "365" to stringResource(R.string.timeline_retention_1y),
-                            "0" to stringResource(R.string.timeline_retention_all),
-                        ),
-                        state.timelineRetentionDays.toString(),
-                    ) { value -> value.toUIntOrNull()?.let(onSetTimelineRetentionDays) }
-                    if (state.timeline.isNotEmpty() || state.timelineTotal > 0u) {
-                        OutlinedButton(onClick = onClearTimeline) {
-                            Text(stringResource(R.string.data_action_clear))
-                        }
-                    }
-                    SettingRowDivider()
-
-                    // 4. Message cache
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(stringResource(R.string.data_messages_title), style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.data_messages_subtitle),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            G7Row(
+                                label = stringResource(R.string.action_unpair),
+                                icon = G7Icons.trash,
+                                tint = tints.red,
+                                onClick = { confirmUnpair = device },
                             )
                         }
-                        if (state.cachedMmsFiles > 0) {
-                            OutlinedButton(onClick = onClearMessageCache) {
-                                Text(stringResource(R.string.data_action_clear))
-                            }
-                        }
-                    }
-                    SettingRowDivider()
-
-                    // 5. Photo thumbnails & camera cache
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(stringResource(R.string.data_photos_title), style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.data_photos_subtitle),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (state.cachedPhotoFiles > 0) {
-                            OutlinedButton(onClick = onClearPhotoCache) {
-                                Text(stringResource(R.string.data_action_clear))
-                            }
-                        }
-                    }
-                    SettingRowDivider()
-
-                    // 6. Received-file history
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(stringResource(R.string.data_received_files_title), style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.data_received_files_subtitle),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        if (state.receivedFileRecords > 0 || state.transfers.isNotEmpty()) {
-                            OutlinedButton(onClick = onClearReceivedFileHistory) {
-                                Text(stringResource(R.string.data_action_clear))
-                            }
-                        }
-                    }
-                    SettingRowDivider()
-
-                    // 7. Clear everything
-                    Text(
-                        stringResource(R.string.data_clear_everything_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    OutlinedButton(onClick = { confirmClearEverything = true }) {
-                        Text(stringResource(R.string.data_clear_everything_button))
                     }
                 }
+                G7Row(
+                    label = stringResource(R.string.action_pair_new),
+                    icon = G7Icons.plus,
+                    tint = tints.muted,
+                    onClick = onPairNew,
+                )
             }
         }
 
-        if (showFeatures) {
-            item(key = "about", contentType = "section") {
-                Section(stringResource(R.string.settings_about)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(stringResource(R.string.guide_title), style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_guide_card_body),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        FilledTonalButton(onClick = onOpenFeaturesGuide) {
-                            Text(stringResource(R.string.clip_action_open))
-                        }
+        item(key = "access", contentType = "group") {
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_access))
+                G7Row(
+                    label = stringResource(R.string.walkthrough_done_power_label),
+                    icon = G7Icons.bolt,
+                    tint = tints.amber,
+                    note = stringResource(
+                        when {
+                            state.elevated -> R.string.walkthrough_power_elevated_title
+                            state.inputAccess -> R.string.walkthrough_power_assist_title
+                            else -> R.string.walkthrough_power_standard_title
+                        },
+                    ),
+                    highlighted = pulsing == "control",
+                    onClick = { powerOpen = !powerOpen },
+                ) { Chevron(powerOpen) }
+                if (powerOpen) {
+                    Column(Modifier.padding(start = 36.dp)) {
+                        ControlAccess(state.inputAccess)
+                        ElevatedAccess()
                     }
-                    SettingRowDivider()
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text(stringResource(R.string.guide_open_walkthrough), style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                stringResource(R.string.settings_walkthrough_body),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        OutlinedButton(onClick = onOpenWalkthrough) {
-                            Text(stringResource(R.string.clip_action_open))
-                        }
-                    }
-                    SettingRowDivider()
-                    Text(stringResource(R.string.about_version, BuildConfig.VERSION_NAME), style = MaterialTheme.typography.bodyMedium)
-                    CheckForUpdates(updater)
                 }
+                NotificationAccess(state.notificationAccess, highlighted = pulsing == "notifications")
+                RuntimePermissionAccess(
+                    title = stringResource(R.string.calls_title),
+                    icon = G7Icons.phone,
+                    tint = tints.teal,
+                    granted = state.callAccess,
+                    permissions = PhoneCalls.permissions,
+                    onAccessChanged = onAccessChanged,
+                    highlighted = pulsing == "calls_contacts",
+                )
+                RuntimePermissionAccess(
+                    title = stringResource(R.string.contacts_title),
+                    icon = G7Icons.person,
+                    tint = tints.blue,
+                    granted = state.contactsAccess,
+                    permissions = PhoneContacts.permissions,
+                    onAccessChanged = onAccessChanged,
+                    highlighted = pulsing == "calls_contacts",
+                )
+                RuntimePermissionAccess(
+                    title = stringResource(R.string.sms_title),
+                    icon = G7Icons.message,
+                    tint = tints.blue,
+                    granted = state.smsAccess,
+                    permissions = PhoneSms.permissions,
+                    onAccessChanged = onAccessChanged,
+                    highlighted = pulsing == "calls_contacts",
+                )
+                PhotosAccess(
+                    granted = state.photoAccess,
+                    partial = state.photoPartialAccess,
+                    onAccessChanged = onAccessChanged,
+                    highlighted = pulsing == "photos",
+                )
+                StorageAccess(
+                    allFiles = state.storageAllFilesAccess,
+                    safFolders = state.storageSafFolders,
+                    onAddSafFolder = onAddSafFolder,
+                    onRemoveSafFolder = onRemoveSafFolder,
+                    highlighted = pulsing == "photos",
+                )
+                DndAccess(state.dndAccess)
+                WriteSettingsAccess(state.writeSettingsAccess || state.elevated)
+                BankingPauseAccess()
+            }
+        }
+
+        item(key = "connection", contentType = "group") {
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_connection))
+                G7SwitchRow(
+                    label = stringResource(R.string.guide_away_title),
+                    checked = state.awayMode,
+                    onCheckedChange = onToggleAwayMode,
+                    icon = G7Icons.wifi,
+                    tint = tints.teal,
+                )
+                G7SwitchRow(
+                    label = stringResource(R.string.settings_run_in_background),
+                    checked = backgroundServiceEnabled,
+                    onCheckedChange = onToggleBackgroundService,
+                    icon = G7Icons.moon,
+                    tint = tints.lavender,
+                    highlighted = pulsing == "background",
+                )
+                BackgroundBatteryAccess(state.backgroundUnrestricted, highlighted = pulsing == "background")
+                CompanionWakeAccess(
+                    associated = state.companionAssociated,
+                    devices = state.devices,
+                    onAccessChanged = onAccessChanged,
+                )
+                G7SwitchRow(
+                    label = stringResource(R.string.settings_localsend_title),
+                    checked = state.localsendEnabled,
+                    onCheckedChange = onToggleLocalSend,
+                    icon = G7Icons.upload,
+                    tint = tints.green,
+                    highlighted = pulsing == "localsend",
+                )
+            }
+        }
+
+        item(key = "clipboard", contentType = "group") {
+            val context = LocalContext.current
+            var syncPasswords by remember { mutableStateOf(PhoneClipboard.syncPasswords(context)) }
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_clipboard_title))
+                // Elevated's own row knows every way to start it.
+                G7Row(
+                    label = stringResource(R.string.settings_background_clipboard_title),
+                    icon = G7Icons.clipboard,
+                    tint = tints.lavender,
+                    highlighted = pulsing == "clipboard",
+                    onClick = { jumpToControl++ },
+                ) {
+                    if (state.elevated) {
+                        AllowedText()
+                    } else {
+                        G7RowAction(label = stringResource(R.string.elevated_set_up), onClick = { jumpToControl++ })
+                    }
+                }
+                G7SwitchRow(
+                    label = stringResource(R.string.settings_clipboard_passwords),
+                    sublabel = stringResource(R.string.settings_clipboard_passwords_hint),
+                    checked = syncPasswords,
+                    onCheckedChange = {
+                        syncPasswords = it
+                        PhoneClipboard.setSyncPasswords(context, it)
+                    },
+                    icon = G7Icons.shield,
+                    tint = tints.amber,
+                )
+                G7SwitchRow(
+                    label = stringResource(R.string.settings_clipboard_suggestions),
+                    checked = suggestClipboardActions,
+                    onCheckedChange = onSetSuggestClipboardActions,
+                    icon = G7Icons.link,
+                    tint = tints.blue,
+                )
+            }
+        }
+
+        item(key = "remote", contentType = "group") {
+            val sensitivityTitle = stringResource(R.string.settings_touchpad_sensitivity)
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_remote))
+                G7Row(
+                    label = sensitivityTitle,
+                    icon = G7Icons.pointer,
+                    tint = tints.teal,
+                    note = stringResource(R.string.settings_touchpad_sensitivity_value, touchpadSensitivity),
+                )
+                Slider(
+                    value = touchpadSensitivity,
+                    onValueChange = onTouchpadSensitivity,
+                    valueRange = 0.5f..2.5f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = tints.teal,
+                        activeTrackColor = tints.teal,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                    modifier = Modifier
+                        .padding(start = 48.dp, end = 12.dp)
+                        .semantics { contentDescription = sensitivityTitle },
+                )
+                G7SwitchRow(
+                    label = stringResource(R.string.settings_volume_keys_control_pc),
+                    checked = volumeKeysControlPc,
+                    onCheckedChange = onSetVolumeKeysControlPc,
+                    icon = G7Icons.volume,
+                    tint = tints.teal,
+                )
+            }
+        }
+
+        item(key = "appearance", contentType = "group") {
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_appearance))
+                ChoiceRow(
+                    label = stringResource(R.string.settings_theme),
+                    icon = G7Icons.palette,
+                    tint = tints.lavender,
+                    options = listOf(
+                        "quiet" to "G7",
+                        "hive" to stringResource(R.string.theme_hive),
+                        "bloom" to stringResource(R.string.theme_bloom),
+                        "glass" to "Glass",
+                        "graphite" to stringResource(R.string.theme_graphite),
+                    ),
+                    selected = appearance.theme,
+                ) { value -> onAppearance { it.copy(theme = value) } }
+                ChoiceRow(
+                    label = stringResource(R.string.settings_mode),
+                    icon = G7Icons.moon,
+                    tint = tints.blue,
+                    options = listOf(
+                        "system" to stringResource(R.string.mode_system),
+                        "light" to stringResource(R.string.mode_light),
+                        "dark" to stringResource(R.string.mode_dark),
+                    ),
+                    selected = appearance.mode,
+                ) { value -> onAppearance { it.copy(mode = value) } }
+                if (AppLanguage.supported) {
+                    // System and English, plus the language picked from the list (or More).
+                    val context = LocalContext.current
+                    val language = remember { AppLanguage.current(context) }
+                    val other = AppLanguage.languages.firstOrNull { it.first == language && it.first != "en" }
+                    ChoiceRow(
+                        label = stringResource(R.string.settings_language),
+                        icon = G7Icons.globe,
+                        tint = tints.teal,
+                        options = listOf(
+                            "" to stringResource(R.string.mode_system),
+                            "en" to "English",
+                            (other ?: (MORE_LANGUAGES to stringResource(R.string.settings_language_more))),
+                        ),
+                        selected = language,
+                    ) { value ->
+                        if (value == "" || value == "en") AppLanguage.set(context, value) else pickLanguage = true
+                    }
+                }
+                ThemeExtras(appearance = appearance, onAppearance = onAppearance)
+            }
+        }
+
+        item(key = "data_storage", contentType = "group") {
+            val highlighted = pulsing == "data_storage"
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_data_storage_title))
+                G7Row(
+                    label = stringResource(R.string.data_notifications_title),
+                    sublabel = stringResource(R.string.data_notifications_subtitle),
+                    icon = G7Icons.bell,
+                    tint = tints.muted,
+                    highlighted = highlighted,
+                )
+                G7SwitchRow(
+                    label = stringResource(R.string.data_clipboard_title),
+                    sublabel = stringResource(R.string.data_clipboard_subtitle),
+                    checked = state.clipboardHistoryEnabled,
+                    onCheckedChange = onSetClipboardHistoryEnabled,
+                    icon = G7Icons.clipboard,
+                    tint = tints.muted,
+                )
+                if (state.clipboardHistory.isNotEmpty()) {
+                    G7Row(
+                        label = pluralStringResource(
+                            R.plurals.data_clipboard_count,
+                            state.clipboardHistory.size,
+                            state.clipboardHistory.size,
+                        ),
+                        modifier = Modifier.padding(start = 36.dp),
+                    ) {
+                        G7RowAction(label = stringResource(R.string.data_action_clear), onClick = onClearClipboardHistory)
+                    }
+                }
+                G7Row(
+                    label = stringResource(R.string.data_timeline_title),
+                    sublabel = stringResource(R.string.data_timeline_subtitle),
+                    icon = G7Icons.history,
+                    tint = tints.muted,
+                ) {
+                    if (state.timeline.isNotEmpty() || state.timelineTotal > 0u) {
+                        G7RowAction(label = stringResource(R.string.data_action_clear), onClick = onClearTimeline)
+                    }
+                }
+                Choice(
+                    options = listOf(
+                        "30" to stringResource(R.string.timeline_retention_30d),
+                        "90" to stringResource(R.string.timeline_retention_90d),
+                        "365" to stringResource(R.string.timeline_retention_1y),
+                        "0" to stringResource(R.string.timeline_retention_all),
+                    ),
+                    selected = state.timelineRetentionDays.toString(),
+                    onSelect = { value -> value.toUIntOrNull()?.let(onSetTimelineRetentionDays) },
+                    modifier = Modifier.padding(start = 48.dp, end = 12.dp, bottom = 6.dp),
+                )
+                G7Row(
+                    label = stringResource(R.string.data_messages_title),
+                    sublabel = stringResource(R.string.data_messages_subtitle),
+                    icon = G7Icons.message,
+                    tint = tints.muted,
+                ) {
+                    if (state.cachedMmsFiles > 0) {
+                        G7RowAction(label = stringResource(R.string.data_action_clear), onClick = onClearMessageCache)
+                    }
+                }
+                G7Row(
+                    label = stringResource(R.string.data_photos_title),
+                    sublabel = stringResource(R.string.data_photos_subtitle),
+                    icon = G7Icons.photo,
+                    tint = tints.muted,
+                ) {
+                    if (state.cachedPhotoFiles > 0) {
+                        G7RowAction(label = stringResource(R.string.data_action_clear), onClick = onClearPhotoCache)
+                    }
+                }
+                G7Row(
+                    label = stringResource(R.string.data_received_files_title),
+                    sublabel = stringResource(R.string.data_received_files_subtitle),
+                    icon = G7Icons.download,
+                    tint = tints.muted,
+                ) {
+                    if (state.receivedFileRecords > 0 || state.transfers.isNotEmpty()) {
+                        G7RowAction(label = stringResource(R.string.data_action_clear), onClick = onClearReceivedFileHistory)
+                    }
+                }
+                G7Row(
+                    label = stringResource(R.string.data_clear_everything_button),
+                    sublabel = stringResource(R.string.data_clear_everything_hint),
+                    icon = G7Icons.trash,
+                    tint = tints.red,
+                    onClick = { confirmClearEverything = true },
+                )
+            }
+        }
+
+        item(key = "about", contentType = "group") {
+            Column {
+                G7SectionLabel(stringResource(R.string.settings_about))
+                CheckForUpdates(updater)
+                G7Row(
+                    label = stringResource(R.string.guide_open_walkthrough),
+                    icon = G7Icons.guide,
+                    tint = tints.muted,
+                    onClick = onOpenWalkthrough,
+                )
             }
         }
     }
@@ -1049,7 +612,11 @@ fun SettingsScreen(
             title = { Text(stringResource(R.string.unpair_title, device.name)) },
             text = { Text(stringResource(R.string.unpair_text)) },
             confirmButton = {
-                TextButton(onClick = { onUnpair(device.id); confirmUnpair = null }) {
+                TextButton(onClick = {
+                    onUnpair(device.id)
+                    confirmUnpair = null
+                    openDeviceId = null
+                }) {
                     Text(stringResource(R.string.action_unpair))
                 }
             },
@@ -1115,6 +682,110 @@ fun SettingsScreen(
     }
 }
 
+/** A theme's own options: Hive's comb, Graphite's black, Bloom and Glass's colors. */
+@Composable
+private fun ThemeExtras(appearance: Appearance, onAppearance: ((Appearance) -> Appearance) -> Unit) {
+    if (appearance.theme == "hive") {
+        G7SwitchRow(
+            label = stringResource(R.string.settings_comb_motion),
+            checked = appearance.combMotion,
+            onCheckedChange = { on -> onAppearance { it.copy(combMotion = on) } },
+        )
+    }
+    if (appearance.theme == "graphite" && appearance.mode != "light") {
+        G7SwitchRow(
+            label = stringResource(R.string.settings_amoled),
+            checked = appearance.amoled,
+            onCheckedChange = { on -> onAppearance { it.copy(amoled = on) } },
+        )
+    }
+    if (appearance.theme != "bloom" && appearance.theme != "glass") return
+    val artworkSync = appearance.seed == "artwork"
+    G7SwitchRow(
+        label = stringResource(R.string.settings_theme_artwork_color),
+        checked = artworkSync,
+        onCheckedChange = { on -> onAppearance { it.copy(seed = if (on) "artwork" else Tokens.DEFAULT_SEED) } },
+    )
+    if (artworkSync) return
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        G7SwitchRow(
+            label = stringResource(R.string.settings_dynamic_color),
+            checked = appearance.dynamicColor,
+            onCheckedChange = { on -> onAppearance { it.copy(dynamicColor = on) } },
+        )
+    }
+    val swatchesActive = !appearance.dynamicColor || Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Tokens.bloomSeeds.forEach { (name, seed) ->
+            val isSelected = swatchesActive && appearance.seed == name
+            val seedLabel = stringResource(
+                when (name) {
+                    "honey" -> R.string.settings_seed_honey
+                    "lavender" -> R.string.settings_seed_lavender
+                    "ocean" -> R.string.settings_seed_ocean
+                    "sage" -> R.string.settings_seed_sage
+                    "black" -> R.string.settings_seed_black
+                    else -> R.string.settings_seed_honey
+                },
+            )
+            val isBlackSeed = name == "black"
+            val borderColor = when {
+                isSelected -> MaterialTheme.colorScheme.onSurface
+                isBlackSeed -> Color.White.copy(alpha = 0.28f)
+                else -> MaterialTheme.colorScheme.outlineVariant
+            }
+            val borderWidth = when {
+                isSelected -> 2.5.dp
+                isBlackSeed -> 1.2.dp
+                else -> 1.dp
+            }
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(38.dp)
+                    .drawBehind {
+                        drawCircle(color = seed.color)
+                        val strokePx = borderWidth.toPx()
+                        drawCircle(
+                            color = borderColor,
+                            radius = (size.minDimension - strokePx) * 0.5f,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokePx),
+                        )
+                    }
+                    .clickable { onAppearance { it.copy(dynamicColor = false, seed = name) } }
+                    .semantics {
+                        role = Role.RadioButton
+                        selected = isSelected
+                        contentDescription = seedLabel
+                    },
+            ) {
+                if (isSelected) {
+                    Text(
+                        text = "✓",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (isBlackSeed) Color.White else Color.Black,
+                    )
+                }
+            }
+        }
+    }
+    // Pure black goes with the Black swatch.
+    if (swatchesActive && appearance.seed == "black") {
+        G7SwitchRow(
+            label = stringResource(R.string.settings_amoled),
+            checked = appearance.amoled,
+            onCheckedChange = { on -> onAppearance { it.copy(amoled = on) } },
+        )
+    }
+}
+
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is android.content.ContextWrapper -> baseContext.findActivity()
@@ -1147,87 +818,107 @@ private fun openDeveloperOptionsSettings(context: Context) {
     }
 }
 
+@Composable
+private fun Chevron(open: Boolean) {
+    Icon(
+        imageVector = G7Icons.chevronDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = if (open) 180f else 0f },
+    )
+}
+
+@Composable
+private fun AllowedText() {
+    Text(
+        stringResource(R.string.access_allowed),
+        style = MaterialTheme.typography.labelLarge,
+        color = g7Tints().teal,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+    )
+}
+
 /**
- * Notification access, which mirroring needs. Android shows the switch in
- * its own settings; sideloaded apps on Android 13+ must first be allowed
- * "restricted settings" there.
+ * Something Android must allow: Allowed (tap to manage it in Android's settings)
+ * or an Allow button.
  */
 @Composable
-private fun NotificationAccess(granted: Boolean) {
-    val context = LocalContext.current
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.notifications_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(if (granted) R.string.notifications_on else R.string.notifications_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        val open = { runCatching { context.startActivity(NotificationListener.settingsIntent(context)) }.let {} }
-        if (granted) {
-            OutlinedButton(onClick = open) { Text(stringResource(R.string.action_manage)) }
-        } else {
-            Button(onClick = open) { Text(stringResource(R.string.action_allow)) }
-        }
-    }
-    if (!granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text(
-                stringResource(R.string.notifications_restricted),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(onClick = { openAppInfoSettings(context) }) { Text(stringResource(R.string.action_app_info)) }
-        }
+private fun AccessRow(
+    label: String,
+    icon: ImageVector,
+    tint: Color,
+    granted: Boolean,
+    onAllow: () -> Unit,
+    onManage: () -> Unit,
+    sublabel: String? = null,
+    highlighted: Boolean = false,
+    allowLabel: String = stringResource(R.string.action_allow),
+) {
+    G7Row(
+        label = label,
+        icon = icon,
+        tint = tint,
+        sublabel = sublabel,
+        highlighted = highlighted,
+        onClick = if (granted) onManage else onAllow,
+    ) {
+        if (granted) AllowedText() else G7RowAction(label = allowLabel, onClick = onAllow)
     }
 }
 
-/** Unrestricted background execution and OEM-specific battery settings. */
+/**
+ * Android holds some settings back for apps installed from a file: where to
+ * allow them.
+ */
 @Composable
-private fun BackgroundBatteryAccess(unrestricted: Boolean) {
+private fun RestrictedRow() {
+    val context = LocalContext.current
+    G7Row(
+        label = stringResource(R.string.action_app_info),
+        sublabel = stringResource(R.string.notifications_restricted),
+        icon = G7Icons.shield,
+        tint = g7Tints().muted,
+        onClick = { openAppInfoSettings(context) },
+    )
+}
+
+/** Notification access, which mirroring needs. Android shows the switch in its own settings. */
+@Composable
+private fun NotificationAccess(granted: Boolean, highlighted: Boolean) {
+    val context = LocalContext.current
+    val open = { runCatching { context.startActivity(NotificationListener.settingsIntent(context)) }.let {} }
+    AccessRow(
+        label = stringResource(R.string.notifications_title),
+        icon = G7Icons.bell,
+        tint = g7Tints().blue,
+        granted = granted,
+        onAllow = open,
+        onManage = open,
+        highlighted = highlighted,
+    )
+    if (!granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) RestrictedRow()
+}
+
+/** Unrestricted background execution and the phone maker's own battery settings. */
+@Composable
+private fun BackgroundBatteryAccess(unrestricted: Boolean, highlighted: Boolean) {
     val context = LocalContext.current
     val oemGuide = BackgroundAccess.oemGuideResId()?.let { stringResource(it) }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(stringResource(R.string.background_title), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    stringResource(if (unrestricted) R.string.background_on else R.string.background_text),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (!unrestricted) {
-                Button(onClick = {
-                    runCatching { context.startActivity(BackgroundAccess.requestIntent(context)) }
-                }) {
-                    Text(stringResource(R.string.action_allow))
-                }
-            } else {
-                OutlinedButton(onClick = {
-                    runCatching { context.startActivity(BackgroundAccess.oemSettingsIntent(context)) }
-                }) {
-                    Text(stringResource(R.string.battery_open_oem_settings))
-                }
-            }
-        }
-        if (oemGuide != null) {
-            Text(
-                oemGuide,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (!unrestricted) {
-            OutlinedButton(onClick = {
-                runCatching { context.startActivity(BackgroundAccess.oemSettingsIntent(context)) }
-            }) {
-                Text(stringResource(R.string.battery_open_oem_settings))
-            }
-        }
-    }
+    AccessRow(
+        label = stringResource(R.string.background_title),
+        icon = G7Icons.battery,
+        tint = g7Tints().green,
+        granted = unrestricted,
+        onAllow = { runCatching { context.startActivity(BackgroundAccess.requestIntent(context)) } },
+        onManage = { runCatching { context.startActivity(BackgroundAccess.oemSettingsIntent(context)) } },
+        highlighted = highlighted,
+    )
+    G7Row(
+        label = stringResource(R.string.battery_open_oem_settings),
+        sublabel = oemGuide,
+        modifier = Modifier.padding(start = 36.dp),
+        onClick = { runCatching { context.startActivity(BackgroundAccess.oemSettingsIntent(context)) } },
+    )
 }
 
 /** Companion Device Manager association for waking when a PC BLE beacon is nearby. */
@@ -1246,126 +937,87 @@ private fun CompanionWakeAccess(
         }
         onAccessChanged()
     }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.companion_wake_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(if (associated) R.string.companion_wake_on else R.string.companion_wake_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val primaryPc = devices.firstOrNull { it.online } ?: devices.firstOrNull()
+    val triggerAssociate = {
+        val activity = context.findActivity()
+        if (activity != null) {
+            PcCompanion.requestAssociation(
+                activity = activity,
+                pcName = primaryPc?.name ?: "PC",
+                pcDeviceId = primaryPc?.id,
+                onResult = { onAccessChanged() },
+                onLauncherFallback = { sender ->
+                    runCatching {
+                        chooserLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                    }
+                },
             )
         }
-        val primaryPc = devices.firstOrNull { it.online } ?: devices.firstOrNull()
-        val triggerAssociate = {
-            val activity = context.findActivity()
-            if (activity != null) {
-                PcCompanion.requestAssociation(
-                    activity = activity,
-                    pcName = primaryPc?.name ?: "PC",
-                    pcDeviceId = primaryPc?.id,
-                    onResult = { onAccessChanged() },
-                    onLauncherFallback = { sender ->
-                        runCatching {
-                            chooserLauncher.launch(IntentSenderRequest.Builder(sender).build())
-                        }
-                    },
-                )
-            }
-        }
-        if (associated) {
-            OutlinedButton(onClick = triggerAssociate) {
-                Text(stringResource(R.string.action_manage))
-            }
-        } else {
-            Button(onClick = triggerAssociate) {
-                Text(stringResource(R.string.companion_wake_associate))
-            }
-        }
     }
+    AccessRow(
+        label = stringResource(R.string.companion_wake_title),
+        icon = G7Icons.monitor,
+        tint = g7Tints().blue,
+        granted = associated,
+        onAllow = { triggerAssociate() },
+        onManage = { triggerAssociate() },
+        allowLabel = stringResource(R.string.companion_wake_associate),
+    )
 }
 
 /** Do Not Disturb and silent ringer control from a PC. */
 @Composable
 private fun DndAccess(granted: Boolean) {
     val context = LocalContext.current
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.dnd_access_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(if (granted) R.string.dnd_access_on else R.string.dnd_access_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        val open = { runCatching { context.startActivity(PhoneToggles.dndSettingsIntent()) }.let {} }
-        if (granted) {
-            OutlinedButton(onClick = open) { Text(stringResource(R.string.action_manage)) }
-        } else {
-            Button(onClick = open) { Text(stringResource(R.string.action_allow)) }
-        }
-    }
+    val open = { runCatching { context.startActivity(PhoneToggles.dndSettingsIntent()) }.let {} }
+    AccessRow(
+        label = stringResource(R.string.dnd_access_title),
+        icon = G7Icons.moon,
+        tint = g7Tints().lavender,
+        granted = granted,
+        onAllow = open,
+        onManage = open,
+    )
 }
 
 /** Screen brightness control from a PC (Modify system settings, or Elevated). */
 @Composable
 private fun WriteSettingsAccess(granted: Boolean) {
     val context = LocalContext.current
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.write_settings_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(if (granted) R.string.write_settings_on else R.string.write_settings_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        val open = { runCatching { context.startActivity(PhoneToggles.writeSettingsIntent(context)) }.let {} }
-        if (granted) {
-            OutlinedButton(onClick = open) { Text(stringResource(R.string.action_manage)) }
-        } else {
-            Button(onClick = open) { Text(stringResource(R.string.action_allow)) }
-        }
-    }
+    val open = { runCatching { context.startActivity(PhoneToggles.writeSettingsIntent(context)) }.let {} }
+    AccessRow(
+        label = stringResource(R.string.write_settings_title),
+        icon = G7Icons.sun,
+        tint = g7Tints().amber,
+        granted = granted,
+        onAllow = open,
+        onManage = open,
+    )
 }
 
-/** Control from the PC: G7 Link's accessibility service, turned on in Android's settings. */
+/** Assist: G7 Link's accessibility service, turned on in Android's settings. */
 @Composable
 private fun ControlAccess(on: Boolean) {
     val context = LocalContext.current
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.control_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(if (on) R.string.control_on else R.string.control_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        val open = { runCatching { context.startActivity(InputService.settingsIntent()) }.let {} }
-        if (on) {
-            OutlinedButton(onClick = open) { Text(stringResource(R.string.action_manage)) }
-        } else {
-            Button(onClick = open) { Text(stringResource(R.string.action_allow)) }
-        }
-    }
-    if (!on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text(
-                stringResource(R.string.notifications_restricted),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f).padding(end = 12.dp),
-            )
-            OutlinedButton(onClick = { openAppInfoSettings(context) }) { Text(stringResource(R.string.action_app_info)) }
-        }
-    }
+    val open = { runCatching { context.startActivity(InputService.settingsIntent()) }.let {} }
+    AccessRow(
+        label = stringResource(R.string.walkthrough_power_assist_title),
+        sublabel = stringResource(R.string.control_title),
+        icon = G7Icons.pointer,
+        tint = g7Tints().pink,
+        granted = on,
+        onAllow = open,
+        onManage = open,
+    )
+    if (!on && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) RestrictedRow()
 }
 
-/** Elevated through the phone's own wireless debugging: real touch and keys. */
+/** Elevated, through the phone's own wireless debugging, Shizuku or root: real touch and keys. */
 @Composable
 private fun ElevatedAccess() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val tints = g7Tints()
     val state by Elevated.state.collectAsStateWithLifecycle()
     var steps by remember { mutableStateOf(false) }
     val shizukuInstalled = remember { ShizukuElevated.installed(context) }
@@ -1390,88 +1042,92 @@ private fun ElevatedAccess() {
             ElevatedMethod.Root -> scope.launch { Elevated.setUpWithRoot() }
         }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(stringResource(R.string.elevated_title), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    stringResource(
-                        when (state) {
-                            Elevated.State.NotSetUp -> R.string.elevated_not_set_up
-                            Elevated.State.Waiting ->
-                                if (Elevated.usesShizuku()) R.string.elevated_shizuku_waiting else R.string.elevated_waiting
-                            Elevated.State.Starting -> R.string.elevated_starting
-                            Elevated.State.Running -> when {
-                                Elevated.rootActive -> R.string.elevated_running_root
-                                Elevated.shizukuActive -> R.string.elevated_running_shizuku
-                                else -> R.string.elevated_running
-                            }
-                            is Elevated.State.Failed -> when ((state as Elevated.State.Failed).reason) {
-                                Elevated.Reason.NotPaired -> R.string.elevated_not_paired
-                                Elevated.Reason.RootDenied -> R.string.elevated_root_failed
-                                Elevated.Reason.ShizukuNotRunning -> R.string.elevated_shizuku_not_running
-                                Elevated.Reason.ShizukuDenied -> R.string.elevated_shizuku_denied
-                                Elevated.Reason.ShizukuRoot -> R.string.elevated_shizuku_root
-                                else -> R.string.elevated_failed
-                            }
-                        },
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            when (state) {
-                Elevated.State.NotSetUp, is Elevated.State.Failed -> Button(onClick = { setUp() }) {
-                    Text(stringResource(R.string.elevated_set_up))
-                }
-                Elevated.State.Waiting -> Button(onClick = {
+    val status = when (state) {
+        Elevated.State.Waiting ->
+            if (Elevated.usesShizuku()) R.string.elevated_shizuku_waiting else R.string.elevated_waiting
+        Elevated.State.Starting -> R.string.elevated_starting
+        is Elevated.State.Failed -> when ((state as Elevated.State.Failed).reason) {
+            Elevated.Reason.NotPaired -> R.string.elevated_not_paired
+            Elevated.Reason.RootDenied -> R.string.elevated_root_failed
+            Elevated.Reason.ShizukuNotRunning -> R.string.elevated_shizuku_not_running
+            Elevated.Reason.ShizukuDenied -> R.string.elevated_shizuku_denied
+            Elevated.Reason.ShizukuRoot -> R.string.elevated_shizuku_root
+            else -> R.string.elevated_failed
+        }
+        Elevated.State.Running -> when {
+            Elevated.rootActive -> R.string.elevated_method_root
+            Elevated.shizukuActive -> R.string.elevated_method_shizuku
+            else -> R.string.elevated_method_wireless
+        }
+        else -> null
+    }
+    G7Row(
+        label = stringResource(R.string.walkthrough_power_elevated_title),
+        sublabel = status?.let { stringResource(it) },
+        icon = G7Icons.bolt,
+        tint = tints.amber,
+    ) {
+        when (state) {
+            Elevated.State.NotSetUp, is Elevated.State.Failed ->
+                G7RowAction(label = stringResource(R.string.elevated_set_up), onClick = { setUp() }, accent = true)
+            Elevated.State.Waiting -> G7RowAction(
+                label = stringResource(R.string.elevated_try_again),
+                onClick = {
                     // Picked another way while waiting for this one.
                     val waitingFor =
                         if (Elevated.usesShizuku()) ElevatedMethod.Shizuku else ElevatedMethod.WirelessDebugging
                     if (method != waitingFor) {
                         setUp()
-                        return@Button
-                    }
-                    scope.launch {
-                        if (Elevated.usesShizuku()) {
-                            if (!Elevated.start() && !ShizukuElevated.running()) openShizuku(context)
-                            return@launch
-                        }
-                        PairingNotification.show(context)
-                        if (!Elevated.start()) {
-                            openDeveloperOptionsSettings(context)
+                    } else {
+                        scope.launch {
+                            if (Elevated.usesShizuku()) {
+                                if (!Elevated.start() && !ShizukuElevated.running()) openShizuku(context)
+                            } else {
+                                PairingNotification.show(context)
+                                if (!Elevated.start()) openDeveloperOptionsSettings(context)
+                            }
                         }
                     }
-                }) {
-                    Text(stringResource(R.string.elevated_try_again))
-                }
-                Elevated.State.Running -> OutlinedButton(onClick = { scope.launch { Elevated.forget() } }) {
-                    Text(stringResource(R.string.elevated_turn_off))
-                }
-                Elevated.State.Starting -> {}
-            }
+                },
+            )
+            Elevated.State.Running -> G7RowAction(
+                label = stringResource(R.string.elevated_turn_off),
+                onClick = { scope.launch { Elevated.forget() } },
+            )
+            Elevated.State.Starting -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
         }
-        if (state == Elevated.State.Waiting || state is Elevated.State.Failed) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (viaShizuku && shizukuInstalled) {
-                    OutlinedButton(onClick = { openShizuku(context) }) {
-                        Text(stringResource(R.string.elevated_open_shizuku))
-                    }
-                } else {
-                    OutlinedButton(onClick = {
-                        PairingNotification.show(context)
-                        openDeveloperOptionsSettings(context)
-                    }) {
-                        Text(stringResource(R.string.elevated_open_developer))
-                    }
-                }
-            }
+    }
+    if (state == Elevated.State.Waiting || state is Elevated.State.Failed) {
+        if (viaShizuku && shizukuInstalled) {
+            G7Row(
+                label = stringResource(R.string.elevated_open_shizuku),
+                modifier = Modifier.padding(start = 36.dp),
+                onClick = { openShizuku(context) },
+            )
+        } else {
+            G7Row(
+                label = stringResource(R.string.elevated_open_developer),
+                modifier = Modifier.padding(start = 36.dp),
+                onClick = {
+                    PairingNotification.show(context)
+                    openDeveloperOptionsSettings(context)
+                },
+            )
         }
-        // Shizuku and root only show when the phone has them, and nothing asks for
-        // either until the user picks it and taps Set up. To change the way it
-        // started, turn it off first.
-        if (methods.size > 1 && state != Elevated.State.Running && state != Elevated.State.Starting) {
-            Text(stringResource(R.string.elevated_start_with), style = MaterialTheme.typography.labelMedium)
+    }
+    // Shizuku and root only show when the phone has them, and nothing asks for
+    // either until the user picks it and taps Set up. To change the way it
+    // started, turn it off first.
+    if (methods.size > 1 && state != Elevated.State.Running && state != Elevated.State.Starting) {
+        Column(
+            modifier = Modifier.padding(start = 48.dp, end = 12.dp, bottom = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                stringResource(R.string.elevated_start_with),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Choice(
                 options = methods.map { option ->
                     option.name to stringResource(
@@ -1521,11 +1177,12 @@ private fun ElevatedAccess() {
 @Composable
 private fun RuntimePermissionAccess(
     title: String,
-    textOn: String,
-    textOff: String,
+    icon: ImageVector,
+    tint: Color,
     granted: Boolean,
     permissions: Array<String>,
     onAccessChanged: () -> Unit,
+    highlighted: Boolean = false,
 ) {
     val context = LocalContext.current
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -1534,23 +1191,15 @@ private fun RuntimePermissionAccess(
             openAppInfoSettings(context)
         }
     }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(
-                if (granted) textOn else textOff,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (granted) {
-            OutlinedButton(onClick = { openAppInfoSettings(context) }) {
-                Text(stringResource(R.string.action_manage))
-            }
-        } else {
-            Button(onClick = { ask.launch(permissions) }) { Text(stringResource(R.string.action_allow)) }
-        }
-    }
+    AccessRow(
+        label = title,
+        icon = icon,
+        tint = tint,
+        granted = granted,
+        onAllow = { ask.launch(permissions) },
+        onManage = { openAppInfoSettings(context) },
+        highlighted = highlighted,
+    )
 }
 
 @Composable
@@ -1558,6 +1207,7 @@ private fun PhotosAccess(
     granted: Boolean,
     partial: Boolean,
     onAccessChanged: () -> Unit,
+    highlighted: Boolean,
 ) {
     val context = LocalContext.current
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -1566,33 +1216,16 @@ private fun PhotosAccess(
             openAppInfoSettings(context)
         }
     }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.photos_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(
-                    when {
-                        partial -> R.string.photos_partial
-                        granted -> R.string.photos_on
-                        else -> R.string.photos_off
-                    },
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        when {
-            partial -> OutlinedButton(onClick = { ask.launch(RecentPhotos.permissions) }) {
-                Text(stringResource(R.string.action_select_photos))
-            }
-            granted -> OutlinedButton(onClick = { openAppInfoSettings(context) }) {
-                Text(stringResource(R.string.action_manage))
-            }
-            else -> Button(onClick = { ask.launch(RecentPhotos.permissions) }) {
-                Text(stringResource(R.string.action_allow))
-            }
-        }
-    }
+    AccessRow(
+        label = stringResource(R.string.photos_title),
+        icon = G7Icons.photo,
+        tint = g7Tints().coral,
+        granted = granted && !partial,
+        onAllow = { ask.launch(RecentPhotos.permissions) },
+        onManage = { openAppInfoSettings(context) },
+        highlighted = highlighted,
+        allowLabel = stringResource(if (partial) R.string.action_select_photos else R.string.action_allow),
+    )
 }
 
 @Composable
@@ -1601,115 +1234,67 @@ private fun StorageAccess(
     safFolders: List<String>,
     onAddSafFolder: (Uri) -> Unit,
     onRemoveSafFolder: (String) -> Unit,
+    highlighted: Boolean,
 ) {
     val context = LocalContext.current
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) onAddSafFolder(uri)
     }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.storage_all_files_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(if (allFiles) R.string.storage_all_files_on else R.string.storage_all_files_off),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        val open = { runCatching { context.startActivity(PhoneStorage.allFilesAccessIntent(context)) }.let {} }
-        if (allFiles) {
-            OutlinedButton(onClick = open) { Text(stringResource(R.string.action_manage)) }
-        } else {
-            Button(onClick = open) { Text(stringResource(R.string.action_allow)) }
-        }
-    }
+    val open = { runCatching { context.startActivity(PhoneStorage.allFilesAccessIntent(context)) }.let {} }
+    AccessRow(
+        label = stringResource(R.string.storage_all_files_title),
+        icon = G7Icons.folder,
+        tint = g7Tints().amber,
+        granted = allFiles,
+        onAllow = open,
+        onManage = open,
+        highlighted = highlighted,
+    )
     if (!allFiles) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(stringResource(R.string.storage_saf_title), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    stringResource(R.string.storage_saf_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            OutlinedButton(onClick = { pickFolder.launch(null) }) {
-                Text(stringResource(R.string.storage_add_folder))
-            }
+        G7Row(
+            label = stringResource(R.string.storage_saf_title),
+            modifier = Modifier.padding(start = 36.dp),
+        ) {
+            G7RowAction(label = stringResource(R.string.storage_add_folder), onClick = { pickFolder.launch(null) })
         }
         safFolders.forEach { name ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text(name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = { onRemoveSafFolder(name) }) {
-                    Text(stringResource(R.string.storage_remove_folder))
-                }
+            G7Row(label = name, modifier = Modifier.padding(start = 36.dp)) {
+                G7RowAction(label = stringResource(R.string.storage_remove_folder), onClick = { onRemoveSafFolder(name) })
             }
         }
     }
 }
 
+/** A setting picked from a few choices: its row, and the choices under it. */
 @Composable
-private fun SettingRowDivider() {
-    val isGlass = LocalGlassTheme.current
-    HorizontalDivider(
-        color = if (isGlass) {
-            MaterialTheme.colorScheme.outlineVariant
-        } else {
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-        },
-    )
-}
-
-@Composable
-private fun Section(
-    title: String,
-    highlighted: Boolean = false,
-    content: @Composable () -> Unit,
+private fun ChoiceRow(
+    label: String,
+    icon: ImageVector,
+    tint: Color,
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
 ) {
-    val isGlass = LocalGlassTheme.current
-    val scheme = MaterialTheme.colorScheme
-    Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (highlighted) scheme.primary else scheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp),
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .liquidGlassCard(
-                    cornerRadius = if (isGlass) 24.dp else 16.dp,
-                    isGlass = isGlass,
-                    baseColor = if (highlighted) scheme.secondaryContainer else scheme.surfaceContainer,
-                    tintColor = scheme.primary,
-                    outlineColor = when {
-                        highlighted -> scheme.primary
-                        isGlass -> scheme.outlineVariant
-                        else -> androidx.compose.ui.graphics.Color.Transparent
-                    },
-                )
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            content()
-        }
-    }
-}
-
-@Composable
-private fun Label(text: String) {
-    Text(text, style = MaterialTheme.typography.titleSmall)
+    G7Row(label = label, icon = icon, tint = tint)
+    Choice(options, selected, onSelect, Modifier.padding(start = 48.dp, end = 12.dp, bottom = 6.dp))
 }
 
 /** The third language choice when it isn't a picked language: opens the list. */
 private const val MORE_LANGUAGES = "more"
 
-/** A row of choices, one picked. */
+/** A row of choices, one picked: text tabs in G7, segmented buttons in the other themes. */
 @Composable
-internal fun Choice(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+internal fun Choice(
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (LocalQuietTheme.current) {
+        G7Tabs(options = options, selected = selected, onSelect = onSelect, modifier = modifier.fillMaxWidth())
+        return
+    }
+    SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
         options.forEachIndexed { index, (value, label) ->
             SegmentedButton(
                 selected = value == selected,
@@ -1719,4 +1304,3 @@ internal fun Choice(options: List<Pair<String, String>>, selected: String, onSel
         }
     }
 }
-

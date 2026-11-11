@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.pairing
 
+import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.Color
+import app.g7link.android.ui.theme.G7Colors
+import app.g7link.android.ui.theme.G7Header
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7PrimaryButton
+import app.g7link.android.ui.theme.G7RaisedButton
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7StatusDot
+import app.g7link.android.ui.theme.g7Tints
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -82,7 +95,6 @@ fun PairingScreen(
     cancellable: Boolean,
     onDone: () -> Unit,
 ) {
-    var nearby by rememberSaveable { mutableStateOf(false) }
     var showing by rememberSaveable { mutableStateOf(false) }
     val pairing = state.pairing
     val reducedMotion = LocalReducedMotion.current
@@ -99,29 +111,27 @@ fun PairingScreen(
         }
     }
 
-    Column(
-        Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Spacer(Modifier.height(24.dp))
-        Text(
-            text = when (pairing) {
+    val tints = g7Tints()
+    Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+        G7Header(
+            title = when (pairing) {
                 is PairingState.Comparing, is PairingState.Confirmed -> stringResource(R.string.pair_check_code)
                 is PairingState.Paired -> stringResource(R.string.pair_done_title)
                 is PairingState.Failed -> stringResource(R.string.pair_failed_title)
-                else -> when {
-                    showing -> stringResource(R.string.pair_show_title)
-                    nearby -> stringResource(R.string.pair_nearby_title)
-                    else -> stringResource(R.string.pair_title)
-                }
+                else -> if (showing) stringResource(R.string.pair_show_title) else stringResource(R.string.action_pair_with_pc)
             },
-            style = MaterialTheme.typography.headlineMedium,
-            textAlign = TextAlign.Center,
+            onBack = if (cancellable && pairing !is PairingState.Paired) {
+                {
+                    actions.reset()
+                    onDone()
+                }
+            } else {
+                null
+            },
         )
-        Spacer(Modifier.height(20.dp))
 
         AnimatedContent(
-            targetState = Triple(pairing, nearby, showing),
+            targetState = pairing to showing,
             transitionSpec = {
                 if (reducedMotion) {
                     EnterTransition.None togetherWith ExitTransition.None
@@ -129,48 +139,68 @@ fun PairingScreen(
                     fadeIn() togetherWith fadeOut()
                 }
             },
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             label = "pairing",
-        ) { (current, showNearby, showCode) ->
+        ) { (current, showCode) ->
             when (current) {
-                PairingState.Idle -> when {
-                    showCode -> ShowCode(actions)
-                    showNearby -> NearbyList(state.discovered, actions::pairNearby)
-                    else -> Scan(actions::join)
+                PairingState.Idle -> if (showCode) {
+                    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 12.dp)) {
+                        ShowCode(actions)
+                    }
+                } else {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                    ) {
+                        Scan(actions::join)
+                        NearbyList(state.discovered, actions::pairNearby)
+                    }
                 }
-                PairingState.Joining -> Working(stringResource(R.string.pair_joining))
-                is PairingState.Connecting ->
-                    Working(stringResource(R.string.pair_connecting, state.nameOf(current.peer) ?: ""))
-                is PairingState.Comparing -> Compare(state.nameOf(current.peer), current.code, actions::confirm)
-                is PairingState.Confirmed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CodeDigits(current.code)
-                    Spacer(Modifier.height(24.dp))
-                    Working(stringResource(R.string.pair_waiting, state.nameOf(current.peer) ?: ""))
-                }
-                is PairingState.Paired -> Outcome(true, stringResource(R.string.pair_done, current.name))
-                is PairingState.Failed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Outcome(false, failureText(current.failure))
-                    Spacer(Modifier.height(16.dp))
-                    Button(onClick = actions::reset) { Text(stringResource(R.string.action_try_again)) }
+                else -> Column(
+                    Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    when (current) {
+                        PairingState.Joining -> Working(stringResource(R.string.pair_joining))
+                        is PairingState.Connecting ->
+                            Working(stringResource(R.string.pair_connecting, state.nameOf(current.peer) ?: ""))
+                        is PairingState.Comparing -> Compare(state.nameOf(current.peer), current.code, actions::confirm)
+                        is PairingState.Confirmed -> {
+                            CodeDigits(current.code)
+                            Spacer(Modifier.height(24.dp))
+                            Working(stringResource(R.string.pair_waiting, state.nameOf(current.peer) ?: ""))
+                        }
+                        is PairingState.Paired -> Outcome(true, stringResource(R.string.pair_done, current.name))
+                        is PairingState.Failed -> {
+                            Outcome(false, failureText(current.failure))
+                            Spacer(Modifier.height(20.dp))
+                            G7PrimaryButton(label = stringResource(R.string.action_try_again), onClick = actions::reset)
+                        }
+                        PairingState.Idle -> Unit
+                    }
                 }
             }
         }
 
         if (pairing == PairingState.Idle) {
-            if (!showing) {
-                FilledTonalButton(onClick = { nearby = !nearby }) {
-                    Text(stringResource(if (nearby) R.string.action_scan_instead else R.string.action_pair_nearby))
+            Column(Modifier.padding(start = 10.dp, end = 10.dp, bottom = 16.dp)) {
+                if (!showing) {
+                    Text(
+                        stringResource(R.string.pair_none_showing),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
                 }
+                G7Row(
+                    label = stringResource(if (showing) R.string.action_scan_instead else R.string.action_show_code),
+                    icon = if (showing) G7Icons.camera else G7Icons.phone,
+                    tint = tints.muted,
+                    onClick = { showing = !showing },
+                )
             }
-            TextButton(onClick = {
-                showing = !showing
-                nearby = false
-            }) {
-                Text(stringResource(if (showing) R.string.action_scan_instead else R.string.action_show_code))
-            }
-        }
-        if (cancellable && pairing !is PairingState.Paired) {
-            TextButton(onClick = { actions.reset(); onDone() }) { Text(stringResource(R.string.action_cancel)) }
         }
     }
 }
@@ -240,25 +270,29 @@ private fun QrCode(text: String) {
 
 @Composable
 private fun Scan(onLink: (String) -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    val scheme = MaterialTheme.colorScheme
+    Box(
+        modifier = Modifier
+            .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 12.dp)
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
+            .background(G7Colors.deepGround),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            stringResource(R.string.pair_scan_hint),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(16.dp))
-        QrScanner(
-            onLink = onLink,
-            modifier = Modifier
-                .weight(1f, fill = false)
-                .fillMaxWidth()
+        QrScanner(onLink = onLink, modifier = Modifier.fillMaxSize())
+        Box(
+            Modifier
+                .fillMaxWidth(0.58f)
                 .aspectRatio(1f)
-                .clip(MaterialTheme.shapes.extraLarge)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                .border(2.dp, scheme.primary, androidx.compose.foundation.shape.RoundedCornerShape(12.dp)),
+        )
+        Text(
+            stringResource(R.string.pair_point_at),
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(0xFFA1A1A8),
+            textAlign = TextAlign.Center,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 16.dp, vertical = 14.dp),
         )
     }
 }
@@ -266,59 +300,36 @@ private fun Scan(onLink: (String) -> Unit) {
 @Composable
 private fun NearbyList(devices: List<DiscoveredDevice>, onPair: (String) -> Unit) {
     val reducedMotion = LocalReducedMotion.current
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val tints = g7Tints()
+    Row(
+        modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Text(
-            stringResource(R.string.pair_nearby_hint),
-            style = MaterialTheme.typography.bodyMedium,
+            stringResource(R.string.pair_nearby_label),
+            style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(6.dp))
-        if (devices.isEmpty()) {
-            Surface(
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(20.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (reducedMotion) {
-                        CircularProgressIndicator(
-                            progress = { 0.75f },
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                        )
-                    } else {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        stringResource(R.string.pair_looking),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+        G7StatusDot(tints.teal)
+    }
+    if (devices.isEmpty()) {
+        G7Row(label = stringResource(R.string.pair_looking), icon = G7Icons.monitor, tint = tints.muted) {
+            if (reducedMotion) {
+                CircularProgressIndicator(progress = { 0.75f }, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             }
         }
-        devices.forEach { device ->
-            Surface(
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        device.name ?: stringResource(R.string.your_pc),
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Button(onClick = { onPair(device.id) }) { Text(stringResource(R.string.action_pair)) }
-                }
-            }
+    }
+    devices.forEach { device ->
+        G7Row(
+            label = device.name ?: stringResource(R.string.your_pc),
+            icon = G7Icons.monitor,
+            tint = tints.lavender,
+            onClick = { onPair(device.id) },
+        ) {
+            G7RowAction(label = stringResource(R.string.action_pair), onClick = { onPair(device.id) }, accent = true)
         }
     }
 }
@@ -335,13 +346,13 @@ private fun Compare(peerName: String?, code: String, onConfirm: (Boolean) -> Uni
         Spacer(Modifier.height(24.dp))
         CodeDigits(code)
         Spacer(Modifier.height(32.dp))
-        Button(onClick = { onConfirm(true) }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-            Text(stringResource(R.string.action_codes_match))
-        }
+        G7PrimaryButton(label = stringResource(R.string.action_codes_match), onClick = { onConfirm(true) })
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = { onConfirm(false) }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-            Text(stringResource(R.string.action_codes_differ))
-        }
+        G7RaisedButton(
+            label = stringResource(R.string.action_codes_differ),
+            onClick = { onConfirm(false) },
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -354,11 +365,11 @@ private fun CodeDigits(code: String) {
         code.forEach { digit ->
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                color = MaterialTheme.colorScheme.surfaceContainer,
                 modifier = Modifier.size(width = 44.dp, height = 56.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(digit.toString(), fontFamily = LocalAppFonts.current.mono, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                    Text(digit.toString(), fontFamily = LocalAppFonts.current.mono, fontSize = 26.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
@@ -387,7 +398,7 @@ private fun Outcome(success: Boolean, text: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = CircleShape,
-            color = if (success) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = MaterialTheme.colorScheme.surfaceContainer,
             modifier = Modifier.size(64.dp),
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -395,7 +406,7 @@ private fun Outcome(success: Boolean, text: String) {
                     if (success) "✓" else "!",
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (success) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                    color = if (success) g7Tints().teal else g7Tints().red,
                 )
             }
         }

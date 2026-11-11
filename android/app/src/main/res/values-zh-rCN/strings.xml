@@ -1287,4 +1287,20 @@
     <string name="guide_state_off">关闭</string>
     <string name="update_up_to_date">已是最新</string>
     <string name="update_check_failed_short">无法检查</string>
+
+    <!-- G7 redesign: Settings -->
+    <string name="settings_access">访问权限</string>
+    <string name="settings_connection">连接</string>
+
+    <!-- G7 redesign: pairing -->
+    <string name="pair_point_at">对准电脑上 G7 Link 中的二维码</string>
+    <string name="pair_nearby_label">附近</string>
+    <string name="pair_none_showing">没有看到电脑？在电脑上打开 G7 Link，选择“配对手机”。</string>
+
+    <!-- G7 redesign: remote, webcam, recorder -->
+    <string name="remote_mode_media">媒体</string>
+    <string name="remote_media_nothing">未在播放</string>
+    <string name="webcam_live_on">正在 %1$s 上直播</string>
+    <string name="recorder_saves_to">保存到 %1$s</string>
+    <string name="recorder_save">保存</string>
 </resources>

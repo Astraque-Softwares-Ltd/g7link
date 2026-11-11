@@ -1428,4 +1428,20 @@
     <string name="guide_state_off">Aus</string>
     <string name="update_up_to_date">Aktuell</string>
     <string name="update_check_failed_short">Prüfung fehlgeschlagen</string>
+
+    <!-- G7 redesign: Settings -->
+    <string name="settings_access">Zugriff</string>
+    <string name="settings_connection">Verbindung</string>
+
+    <!-- G7 redesign: pairing -->
+    <string name="pair_point_at">Auf den Code in G7 Link auf deinem PC richten</string>
+    <string name="pair_nearby_label">In der Nähe</string>
+    <string name="pair_none_showing">Kein PC zu sehen? Öffne dort G7 Link und wähle Smartphone koppeln.</string>
+
+    <!-- G7 redesign: remote, webcam, recorder -->
+    <string name="remote_mode_media">Medien</string>
+    <string name="remote_media_nothing">Keine Wiedergabe</string>
+    <string name="webcam_live_on">Live auf %1$s</string>
+    <string name="recorder_saves_to">Speichert auf %1$s</string>
+    <string name="recorder_save">Speichern</string>
 </resources>

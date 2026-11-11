@@ -1357,4 +1357,20 @@
     <string name="guide_state_off">Tắt</string>
     <string name="update_up_to_date">Mới nhất</string>
     <string name="update_check_failed_short">Không thể kiểm tra</string>
+
+    <!-- G7 redesign: Settings -->
+    <string name="settings_access">Quyền truy cập</string>
+    <string name="settings_connection">Kết nối</string>
+
+    <!-- G7 redesign: pairing -->
+    <string name="pair_point_at">Hướng vào mã trong G7 Link trên PC của bạn</string>
+    <string name="pair_nearby_label">Ở gần</string>
+    <string name="pair_none_showing">Không thấy PC? Mở G7 Link trên PC và chọn Ghép nối điện thoại.</string>
+
+    <!-- G7 redesign: remote, webcam, recorder -->
+    <string name="remote_mode_media">Đa phương tiện</string>
+    <string name="remote_media_nothing">Không có gì đang phát</string>
+    <string name="webcam_live_on">Đang phát trên %1$s</string>
+    <string name="recorder_saves_to">Lưu vào %1$s</string>
+    <string name="recorder_save">Lưu</string>
 </resources>

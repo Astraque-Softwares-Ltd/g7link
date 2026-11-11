@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.settings
 
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.g7Tints
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -69,44 +73,43 @@ internal fun BankingPauseAccess() {
         onPauseOrDispose {}
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(stringResource(R.string.banking_title), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (chosen.isEmpty()) {
-                        stringResource(R.string.banking_text)
-                    } else {
-                        pluralStringResource(R.plurals.banking_chosen, chosen.size, chosen.size)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            OutlinedButton(onClick = { picking = true }) { Text(stringResource(R.string.banking_choose)) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        G7Row(
+            label = stringResource(R.string.banking_title),
+            sublabel = if (chosen.isEmpty()) null else pluralStringResource(R.plurals.banking_chosen, chosen.size, chosen.size),
+            icon = G7Icons.shield,
+            tint = g7Tints().green,
+            onClick = { picking = true },
+        ) {
+            G7RowAction(label = stringResource(R.string.banking_choose), onClick = { picking = true })
         }
 
         if (chosen.isNotEmpty()) {
             when {
                 !canChange -> Note(stringResource(R.string.banking_needs_elevated))
-                !usage -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Note(stringResource(R.string.banking_needs_usage), Modifier.weight(1f).padding(end = 12.dp))
-                    Button(onClick = {
-                        // Through Elevated when it's running, else Android's own page.
-                        if (!Elevated.grantUsageAccess()) openUsageAccessSettings(context)
-                        usage = BankingPause.hasUsageAccess(context)
-                    }) { Text(stringResource(R.string.action_allow)) }
+                !usage -> G7Row(label = stringResource(R.string.banking_needs_usage), modifier = Modifier.padding(start = 36.dp)) {
+                    G7RowAction(
+                        label = stringResource(R.string.action_allow),
+                        onClick = {
+                            // Through Elevated when it's running, else Android's own page.
+                            if (!Elevated.grantUsageAccess()) openUsageAccessSettings(context)
+                            usage = BankingPause.hasUsageAccess(context)
+                        },
+                    )
                 }
-                paused -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Note(stringResource(R.string.banking_paused_now), Modifier.weight(1f).padding(end = 12.dp))
-                    TextButton(onClick = { BankingPause.resume(context) }) {
-                        Text(stringResource(R.string.banking_turn_back_on))
-                    }
+                paused -> G7Row(label = stringResource(R.string.banking_paused_now), modifier = Modifier.padding(start = 36.dp)) {
+                    G7RowAction(
+                        label = stringResource(R.string.banking_turn_back_on),
+                        onClick = { BankingPause.resume(context) },
+                    )
                 }
             }
             val canPin = remember { OpenWithPauseActivity.canPin(context) }
             for (app in remember(chosen) { describe(context, chosen) }) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 48.dp, end = 12.dp),
+                ) {
                     AppIcon(app.icon)
                     Text(
                         app.label,
@@ -202,7 +205,12 @@ private fun AppIcon(icon: ImageBitmap?) {
 
 @Composable
 private fun Note(text: String, modifier: Modifier = Modifier) {
-    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = modifier)
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.padding(start = 48.dp, end = 12.dp, bottom = 6.dp),
+    )
 }
 
 /** Apps with a launcher icon, by name, G7 Link left out. */

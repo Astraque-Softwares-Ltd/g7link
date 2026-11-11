@@ -1427,4 +1427,20 @@
     <string name="guide_state_off">Desligado</string>
     <string name="update_up_to_date">Atualizado</string>
     <string name="update_check_failed_short">Não foi possível verificar</string>
+
+    <!-- G7 redesign: Settings -->
+    <string name="settings_access">Acesso</string>
+    <string name="settings_connection">Conexão</string>
+
+    <!-- G7 redesign: pairing -->
+    <string name="pair_point_at">Aponte para o código no G7 Link do seu PC</string>
+    <string name="pair_nearby_label">Por perto</string>
+    <string name="pair_none_showing">Nenhum PC aparece? Abra o G7 Link nele e escolha Parear um celular.</string>
+
+    <!-- G7 redesign: remote, webcam, recorder -->
+    <string name="remote_mode_media">Mídia</string>
+    <string name="remote_media_nothing">Nada tocando</string>
+    <string name="webcam_live_on">Ao vivo em %1$s</string>
+    <string name="recorder_saves_to">Salva em %1$s</string>
+    <string name="recorder_save">Salvar</string>
 </resources>

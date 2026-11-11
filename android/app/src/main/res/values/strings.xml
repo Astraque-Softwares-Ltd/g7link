@@ -1431,4 +1431,20 @@
     <string name="guide_state_off">Off</string>
     <string name="update_up_to_date">Up to date</string>
     <string name="update_check_failed_short">Couldn\'t check</string>
+
+    <!-- G7 redesign: Settings -->
+    <string name="settings_access">Access</string>
+    <string name="settings_connection">Connection</string>
+
+    <!-- G7 redesign: pairing -->
+    <string name="pair_point_at">Point at the code in G7 Link on your PC</string>
+    <string name="pair_nearby_label">Nearby</string>
+    <string name="pair_none_showing">No PC showing? Open G7 Link on it and choose Pair a phone.</string>
+
+    <!-- G7 redesign: remote, webcam, recorder -->
+    <string name="remote_mode_media">Media</string>
+    <string name="remote_media_nothing">Nothing playing</string>
+    <string name="webcam_live_on">Live on %1$s</string>
+    <string name="recorder_saves_to">Saves to %1$s</string>
+    <string name="recorder_save">Save</string>
 </resources>

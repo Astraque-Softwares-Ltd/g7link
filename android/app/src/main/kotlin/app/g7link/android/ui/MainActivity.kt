@@ -957,7 +957,6 @@ private fun App(
                                         preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
                                         manualWalkthroughOpen = true
                                     },
-                                    onOpenFeaturesGuide = { tab = Tab.Guide },
                                     highlightTarget = pendingHighlightTarget,
                                     onHighlightConsumed = { pendingHighlightTarget = null },
                                     modifier = Modifier.fillMaxSize(),

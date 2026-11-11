@@ -236,6 +236,14 @@ object G7Icons {
     }
     val trash by lazy { strokeIcon("trash", "M4,7H20 M9,7V4H15V7 M6,7L7,20H17L18,7") }
     val send by lazy { strokeIcon("send", "M4,12L20,4L14,20L11,13Z M11,13L20,4") }
+    val person by lazy { strokeIcon("person", "M12,4A4,4 0 1,0 12,12A4,4 0 1,0 12,4 M4,21A8,8 0 0,1 20,21") }
+    val sun by lazy {
+        strokeIcon(
+            "sun",
+            "M12,8A4,4 0 1,0 12,16A4,4 0 1,0 12,8 M12,2V4 M12,20V22 M2,12H4 M20,12H22 M4.9,4.9L6.3,6.3 M17.7,17.7L19.1,19.1 M4.9,19.1L6.3,17.7 M17.7,6.3L19.1,4.9",
+        )
+    }
+    val torch by lazy { strokeIcon("torch", "M8,3H16L14,9H10Z M10,9V21H14V9 M12,13V15") }
     val gesture by lazy { strokeIcon("gesture", "M12,3A3,3 0 1,0 12,9A3,3 0 1,0 12,3 M12,9V21 M7,14L12,12L17,14") }
 }
 
@@ -493,7 +501,7 @@ fun G7IconButton(
 @Composable
 fun G7Header(
     title: String,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
     note: String? = null,
     noteColor: Color = Color.Unspecified,
@@ -504,11 +512,15 @@ fun G7Header(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        G7IconButton(
-            icon = G7Icons.back,
-            contentDescription = stringResource(R.string.action_back),
-            onClick = onBack,
-        )
+        if (onBack != null) {
+            G7IconButton(
+                icon = G7Icons.back,
+                contentDescription = stringResource(R.string.action_back),
+                onClick = onBack,
+            )
+        } else {
+            Box(Modifier.size(8.dp))
+        }
         Row(
             modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,

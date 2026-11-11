@@ -1427,4 +1427,20 @@
     <string name="guide_state_off">Kapalı</string>
     <string name="update_up_to_date">Güncel</string>
     <string name="update_check_failed_short">Denetlenemedi</string>
+
+    <!-- G7 redesign: Settings -->
+    <string name="settings_access">Erişim</string>
+    <string name="settings_connection">Bağlantı</string>
+
+    <!-- G7 redesign: pairing -->
+    <string name="pair_point_at">Bilgisayarınızdaki G7 Link kodunu gösterin</string>
+    <string name="pair_nearby_label">Yakındakiler</string>
+    <string name="pair_none_showing">Bilgisayar görünmüyor mu? Onda G7 Link\'i açıp Telefon eşleştir\'i seçin.</string>
+
+    <!-- G7 redesign: remote, webcam, recorder -->
+    <string name="remote_mode_media">Medya</string>
+    <string name="remote_media_nothing">Çalan bir şey yok</string>
+    <string name="webcam_live_on">%1$s üzerinde canlı</string>
+    <string name="recorder_saves_to">%1$s cihazına kaydedilir</string>
+    <string name="recorder_save">Kaydet</string>
 </resources>
