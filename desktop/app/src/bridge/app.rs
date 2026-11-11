@@ -329,6 +329,10 @@ pub mod qobject {
         /// Opens the Connection Doctor and checks the connection.
         #[qinvokable]
         fn run_doctor(self: Pin<&mut AppController>);
+        /// Whether this run is `--ui-check` (the main window then tours every
+        /// screen once).
+        #[qinvokable]
+        fn is_ui_check(self: &AppController) -> bool;
         /// Checks the connection and this PC again without opening the
         /// Doctor (the welcome screen's checks).
         #[qinvokable]
@@ -504,6 +508,7 @@ pub struct AppControllerRust {
 static CONTROLLER: OnceLock<Mutex<Option<CxxQtThread<qobject::AppController>>>> = OnceLock::new();
 static SHELF_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UI_CHECK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Clone)]
 enum ToastAction {
@@ -629,6 +634,11 @@ pub fn request_quit() {
     if let Some(qt) = controller() {
         let _ = qt.queue(|object| object.quit_requested());
     }
+}
+
+/// Marks this run as `--ui-check`, so the main window tours every screen.
+pub fn set_ui_check() {
+    UI_CHECK.store(true, Ordering::Release);
 }
 
 /// Whether [`request_quit`] has already been called (for example by a signal
@@ -1838,6 +1848,10 @@ impl qobject::AppController {
     pub fn run_doctor(mut self: Pin<&mut Self>) {
         self.as_mut().doctor_requested();
         diagnose_in_background(self, None);
+    }
+
+    pub fn is_ui_check(&self) -> bool {
+        UI_CHECK.load(Ordering::Acquire)
     }
 
     pub fn recheck_doctor(self: Pin<&mut Self>) {

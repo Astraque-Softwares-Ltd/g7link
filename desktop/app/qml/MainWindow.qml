@@ -1241,7 +1241,7 @@ NativeWindow {
     // `--ui-check`: visit every page, the menus, the palette, the Shelf,
     // the Island and the welcome screen once, so a QML error on any of them
     // fails the check.
-    readonly property bool uiCheck: Qt.application.arguments.indexOf("--ui-check") >= 0
+    readonly property bool uiCheck: AppController.isUiCheck()
     property bool uiCheckWelcome: false
     Timer {
         id: uiCheckTour
