@@ -3,11 +3,15 @@
 //! model, plus the commands QML runs on them.
 
 use crate::i18n::tr;
-use std::pin::Pin;
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    path::PathBuf,
+    pin::Pin,
+};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QVariant};
-use g7link_core::DeviceId;
+use g7link_core::{DeviceId, Notification};
 
 use super::{Edit, diff};
 use crate::{
@@ -166,8 +170,14 @@ struct Row {
     icon_url: String,
     /// The notification's picture as a file URL, or "".
     image_url: String,
-    /// Replies sent from this PC.
-    replies: Vec<SentReply>,
+    /// Buttons other than the reply, as JSON: [{ "id", "title" }].
+    actions: String,
+    /// Replies sent from this PC, as JSON: [{ "text", "pending" }].
+    replies: String,
+    /// A one-time code in the notification, or "".
+    otp_code: String,
+    /// A Live Update's progress as JSON, or "".
+    live: String,
     /// Total notifications in this `(device, app)` group (`1` if ungrouped or live).
     group_count: i32,
     /// Index within the `(device, app)` group (`0` is the newest / lead item).
@@ -176,6 +186,81 @@ struct Row {
     group_expanded: bool,
     /// Short preview of older notifications in the group when collapsed.
     group_summary: String,
+}
+
+/// Where a row is in its `(device, app)` group.
+#[derive(Debug, Default)]
+struct Group {
+    count: i32,
+    index: i32,
+    expanded: bool,
+    summary: String,
+}
+
+impl Row {
+    /// Works out what QML reads from the row once, not on every read.
+    fn new(
+        view: NotificationView,
+        device_name: String,
+        icon_url: String,
+        image_url: String,
+        replies: &[SentReply],
+        group: Group,
+    ) -> Self {
+        let n = &view.notification;
+        Self {
+            actions: actions_json(n),
+            replies: replies_json(replies),
+            otp_code: crate::notifications::notification_otp(n).unwrap_or_default(),
+            live: live_json(n),
+            view,
+            device_name,
+            icon_url,
+            image_url,
+            group_count: group.count,
+            group_index: group.index,
+            group_expanded: group.expanded,
+            group_summary: group.summary,
+        }
+    }
+}
+
+fn actions_json(n: &Notification) -> String {
+    let mut actions = Vec::new();
+    for a in n.actions.iter().filter(|a| !a.reply) {
+        actions.push(serde_json::json!({ "id": a.id, "title": a.title }));
+    }
+    serde_json::Value::from(actions).to_string()
+}
+
+fn replies_json(replies: &[SentReply]) -> String {
+    let mut out = Vec::with_capacity(replies.len());
+    for r in replies {
+        out.push(serde_json::json!({ "text": r.text, "pending": r.pending }));
+    }
+    serde_json::Value::from(out).to_string()
+}
+
+fn live_json(n: &Notification) -> String {
+    let Some(live) = &n.live else { return String::new() };
+    serde_json::json!({
+        "progress": live.progress.unwrap_or(0),
+        "max": live.max.unwrap_or(0),
+        "indeterminate": live.indeterminate,
+        "chip": live.chip.as_deref().unwrap_or_default(),
+        "segments": live.segments.iter().map(|s| serde_json::json!({
+            "length": s.length,
+            "color": s.color.map(|c| format!("#{:06X}", c & 0x00FF_FFFF)).unwrap_or_default(),
+        })).collect::<Vec<_>>(),
+        "points": live.points.iter().map(|p| serde_json::json!({
+            "position": p.position,
+            "color": p.color.map(|c| format!("#{:06X}", c & 0x00FF_FFFF)).unwrap_or_default(),
+        })).collect::<Vec<_>>(),
+        "chronometer": live.chronometer,
+        "countdown": live.countdown,
+        "when": n.when,
+    })
+    .to_string()
 }
 
 #[derive(Default)]
@@ -231,55 +316,14 @@ fn role_value(row: &Row, role: &str) -> QVariant {
         "when" => QVariant::from(&(n.when as f64)),
         "iconUrl" => text(&row.icon_url),
         "imageUrl" => text(&row.image_url),
-        // Buttons other than the reply, as JSON: [{ "id", "title" }].
-        "actions" => text(
-            &serde_json::Value::from(
-                n.actions
-                    .iter()
-                    .filter(|a| !a.reply)
-                    .map(|a| serde_json::json!({ "id": a.id, "title": a.title }))
-                    .collect::<Vec<_>>(),
-            )
-            .to_string(),
-        ),
+        "actions" => text(&row.actions),
         "replyAction" => text(reply.map_or("", |a| a.id.as_str())),
         "replyLabel" => text(reply.map_or("", |a| a.title.as_str())),
         "silent" => QVariant::from(&n.silent),
         "ongoing" => QVariant::from(&n.ongoing),
-        // As JSON: [{ "text", "pending" }].
-        "replies" => text(
-            &serde_json::Value::from(
-                row.replies
-                    .iter()
-                    .map(|r| serde_json::json!({ "text": r.text, "pending": r.pending }))
-                    .collect::<Vec<_>>(),
-            )
-            .to_string(),
-        ),
-        "otpCode" => text(&crate::notifications::notification_otp(n).unwrap_or_default()),
-        "live" => match &n.live {
-            Some(live) => text(
-                &serde_json::json!({
-                    "progress": live.progress.unwrap_or(0),
-                    "max": live.max.unwrap_or(0),
-                    "indeterminate": live.indeterminate,
-                    "chip": live.chip.as_deref().unwrap_or_default(),
-                    "segments": live.segments.iter().map(|s| serde_json::json!({
-                        "length": s.length,
-                        "color": s.color.map(|c| format!("#{:06X}", c & 0x00FF_FFFF)).unwrap_or_default(),
-                    })).collect::<Vec<_>>(),
-                    "points": live.points.iter().map(|p| serde_json::json!({
-                        "position": p.position,
-                        "color": p.color.map(|c| format!("#{:06X}", c & 0x00FF_FFFF)).unwrap_or_default(),
-                    })).collect::<Vec<_>>(),
-                    "chronometer": live.chronometer,
-                    "countdown": live.countdown,
-                    "when": n.when,
-                })
-                .to_string(),
-            ),
-            None => text(""),
-        },
+        "replies" => text(&row.replies),
+        "otpCode" => text(&row.otp_code),
+        "live" => text(&row.live),
         "groupCount" => QVariant::from(&row.group_count),
         "groupIndex" => QVariant::from(&row.group_index),
         "groupExpanded" => QVariant::from(&row.group_expanded),
@@ -315,83 +359,121 @@ fn apps_json(s: &AppState) -> String {
     .to_string()
 }
 
-fn make_row(
-    s: &AppState,
-    view: &NotificationView,
-    group_count: i32,
-    group_index: i32,
-    group_expanded: bool,
-    group_summary: String,
-) -> Row {
-    Row {
-        device_name: s.name_of(&view.device).unwrap_or_default(),
-        icon_url: s.app_icons.get(&view.notification.app).map(|p| icons::file_url(p)).unwrap_or_default(),
-        image_url: s
-            .notification_images
-            .get(&(view.device, view.notification.key.clone()))
-            .map(|p| icons::file_url(p))
-            .unwrap_or_default(),
-        replies: s.replies.get(&(view.device, view.notification.key.clone())).cloned().unwrap_or_default(),
-        view: view.clone(),
-        group_count,
-        group_index,
-        group_expanded,
-        group_summary,
+/// What the rows are made from, copied out of the shared state so they're
+/// made after its lock is let go.
+#[derive(Debug, Default)]
+struct Snapshot {
+    /// Notifications whose app isn't hidden, newest first.
+    views: Vec<NotificationView>,
+    device_names: HashMap<DeviceId, String>,
+    icons: HashMap<String, PathBuf>,
+    images: HashMap<(DeviceId, String), PathBuf>,
+    replies: HashMap<(DeviceId, String), Vec<SentReply>>,
+    /// Apps whose groups are expanded.
+    expanded: HashSet<String>,
+}
+
+impl Snapshot {
+    fn of(s: &AppState) -> Self {
+        let mut snapshot = Self::default();
+        let mut apps = HashSet::new();
+        for view in &s.notifications {
+            let n = &view.notification;
+            if s.app_rule(&n.app) == AppRule::Hidden {
+                continue;
+            }
+            if apps.insert(n.app.as_str()) {
+                if let Some(icon) = s.app_icons.get(&n.app) {
+                    snapshot.icons.insert(n.app.clone(), icon.clone());
+                }
+                if s.is_app_expanded(&n.app) {
+                    snapshot.expanded.insert(n.app.clone());
+                }
+            }
+            snapshot
+                .device_names
+                .entry(view.device)
+                .or_insert_with(|| s.name_of(&view.device).unwrap_or_default());
+            let key = (view.device, n.key.clone());
+            if let Some(image) = s.notification_images.get(&key) {
+                snapshot.images.insert(key.clone(), image.clone());
+            }
+            if let Some(replies) = s.replies.get(&key) {
+                snapshot.replies.insert(key, replies.clone());
+            }
+            snapshot.views.push(view.clone());
+        }
+        snapshot
     }
 }
 
-/// Builds display rows from [`AppState`], keeping Live Updates ungrouped at the top
-/// and grouping regular notifications by `(device, app)` in order of each app's
-/// newest notification. Collapsed groups emit only their lead item (`group_index == 0`).
-fn build_rows(s: &AppState) -> Vec<Row> {
-    let visible: Vec<&NotificationView> =
-        s.notifications.iter().filter(|view| s.app_rule(&view.notification.app) != AppRule::Hidden).collect();
-    let mut rows = Vec::with_capacity(visible.len());
-    let mut seen_groups: std::collections::HashSet<(DeviceId, String)> = std::collections::HashSet::new();
+fn make_row(snapshot: &Snapshot, view: &NotificationView, group: Group) -> Row {
+    let n = &view.notification;
+    let key = (view.device, n.key.clone());
+    Row::new(
+        view.clone(),
+        snapshot.device_names.get(&view.device).cloned().unwrap_or_default(),
+        snapshot.icons.get(&n.app).map(|p| icons::file_url(p)).unwrap_or_default(),
+        snapshot.images.get(&key).map(|p| icons::file_url(p)).unwrap_or_default(),
+        snapshot.replies.get(&key).map(Vec::as_slice).unwrap_or_default(),
+        group,
+    )
+}
 
-    for view in &visible {
+/// Builds display rows, keeping Live Updates ungrouped and grouping regular
+/// notifications by `(device, app)` in order of each app's newest
+/// notification. Collapsed groups emit only their lead item (`group_index == 0`).
+fn build_rows(snapshot: &Snapshot) -> Vec<Row> {
+    // A Live Update alone, or a group's notifications newest first, each
+    // where its newest notification is.
+    let mut slots: Vec<Vec<&NotificationView>> = Vec::new();
+    let mut groups: HashMap<(DeviceId, &str), usize> = HashMap::new();
+    for view in &snapshot.views {
         if view.notification.live.is_some() {
-            rows.push(make_row(s, view, 1, 0, false, String::new()));
+            slots.push(vec![view]);
             continue;
         }
-        let group_key = (view.device, view.notification.app.clone());
-        if !seen_groups.insert(group_key.clone()) {
-            continue;
+        match groups.entry((view.device, view.notification.app.as_str())) {
+            Entry::Occupied(slot) => slots[*slot.get()].push(view),
+            Entry::Vacant(slot) => {
+                slot.insert(slots.len());
+                slots.push(vec![view]);
+            }
         }
-        let members: Vec<&NotificationView> = visible
-            .iter()
-            .copied()
-            .filter(|v| {
-                v.notification.live.is_none() && v.device == group_key.0 && v.notification.app == group_key.1
-            })
-            .collect();
-        let group_count = members.len() as i32;
-        let group_expanded = group_count > 1 && s.is_app_expanded(&group_key.1);
-        let group_summary = if group_count > 1 {
-            members[1..]
-                .iter()
-                .filter_map(|v| {
-                    v.notification
-                        .title
-                        .as_deref()
-                        .filter(|t| !t.trim().is_empty())
-                        .or_else(|| v.notification.text.as_deref().filter(|t| !t.trim().is_empty()))
-                })
-                .map(str::trim)
-                .take(2)
-                .collect::<Vec<_>>()
-                .join(" · ")
-        } else {
-            String::new()
-        };
-        rows.push(make_row(s, members[0], group_count, 0, group_expanded, group_summary));
-        if group_expanded {
-            for (idx, member) in members.iter().enumerate().skip(1) {
-                rows.push(make_row(s, member, group_count, idx as i32, true, String::new()));
+    }
+
+    let mut rows = Vec::with_capacity(snapshot.views.len());
+    for members in &slots {
+        let Some((lead, older)) = members.split_first() else { continue };
+        let count = members.len() as i32;
+        let expanded = count > 1 && snapshot.expanded.contains(&lead.notification.app);
+        let summary = group_summary(older);
+        rows.push(make_row(snapshot, lead, Group { count, index: 0, expanded, summary }));
+        if expanded {
+            for (index, member) in older.iter().enumerate() {
+                let group = Group { count, index: index as i32 + 1, expanded, summary: String::new() };
+                rows.push(make_row(snapshot, member, group));
             }
         }
     }
     rows
+}
+
+/// A collapsed group's older notifications, in brief.
+fn group_summary(older: &[&NotificationView]) -> String {
+    older
+        .iter()
+        .filter_map(|v| {
+            v.notification
+                .title
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| v.notification.text.as_deref().filter(|t| !t.trim().is_empty()))
+        })
+        .map(str::trim)
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn key_of(row: &Row) -> (DeviceId, String) {
@@ -410,9 +492,10 @@ impl cxx_qt::Initialize for qobject::NotificationList {
 
 impl qobject::NotificationList {
     fn refresh(mut self: Pin<&mut Self>) {
-        let (new, apps, history, undo_label): (Vec<Row>, String, bool, String) = core_host::host()
+        let (snapshot, apps, history, undo_label) = core_host::host()
             .hub
-            .read(|s| (build_rows(s), apps_json(s), s.history_enabled, s.last_dismissed_label.clone()));
+            .read(|s| (Snapshot::of(s), apps_json(s), s.history_enabled, s.last_dismissed_label.clone()));
+        let new = build_rows(&snapshot);
         if String::from(&self.apps) != apps {
             self.as_mut().set_apps(QString::from(&apps));
         }
@@ -650,8 +733,8 @@ mod tests {
 
     #[test]
     fn roles_describe_the_notification() {
-        let row = Row {
-            view: NotificationView {
+        let row = Row::new(
+            NotificationView {
                 device: DeviceId([7; 32]),
                 notification: Notification {
                     key: "k".into(),
@@ -683,15 +766,12 @@ mod tests {
                     conversation: None,
                 },
             },
-            device_name: "Pixel".into(),
-            icon_url: String::new(),
-            image_url: "file:///C:/data/cache/images/1.jpg".into(),
-            replies: vec![SentReply { text: "On my way".into(), pending: true }],
-            group_count: 3,
-            group_index: 0,
-            group_expanded: false,
-            group_summary: "Alex · Taylor".into(),
-        };
+            "Pixel".into(),
+            String::new(),
+            "file:///C:/data/cache/images/1.jpg".into(),
+            &[SentReply { text: "On my way".into(), pending: true }],
+            Group { count: 3, index: 0, expanded: false, summary: "Alex · Taylor".into() },
+        );
         let text = |role| role_value(&row, role).value::<QString>().map(String::from).unwrap_or_default();
         assert_eq!(text("title"), "Sam");
         assert_eq!(text("text"), "Your verification code is 482913");
@@ -745,7 +825,7 @@ mod tests {
         });
 
         // Collapsed by default: 2 rows (lead chat + mail), total count 4.
-        let collapsed = build_rows(&s);
+        let collapsed = build_rows(&Snapshot::of(&s));
         assert_eq!(collapsed.len(), 2);
         assert_eq!(collapsed[0].view.notification.key, "c3");
         assert_eq!(collapsed[0].group_count, 3);
@@ -757,12 +837,112 @@ mod tests {
 
         // Expanding com.chat reveals all 3 chat notifications in newest-first order before mail.
         s.toggle_app_expanded("com.chat");
-        let expanded = build_rows(&s);
+        let expanded = build_rows(&Snapshot::of(&s));
         assert_eq!(expanded.len(), 4);
         let keys: Vec<&str> = expanded.iter().map(|r| r.view.notification.key.as_str()).collect();
         assert_eq!(keys, ["c3", "c2", "c1", "m1"]);
         assert!(expanded[0].group_expanded);
         assert_eq!(expanded[1].group_index, 1);
         assert_eq!(expanded[2].group_index, 2);
+    }
+
+    /// The rows as they were made before, filtering every notification again
+    /// for each group, with the shared state locked.
+    fn rows_as_before(s: &AppState) -> Vec<Row> {
+        let snapshot = Snapshot::of(s);
+        let visible: Vec<&NotificationView> = s
+            .notifications
+            .iter()
+            .filter(|view| s.app_rule(&view.notification.app) != AppRule::Hidden)
+            .collect();
+        let mut rows = Vec::new();
+        let mut seen_groups = HashSet::new();
+        for view in &visible {
+            if view.notification.live.is_some() {
+                rows.push(make_row(&snapshot, view, Group { count: 1, ..Group::default() }));
+                continue;
+            }
+            let group_key = (view.device, view.notification.app.clone());
+            if !seen_groups.insert(group_key.clone()) {
+                continue;
+            }
+            let members: Vec<&NotificationView> = visible
+                .iter()
+                .copied()
+                .filter(|v| {
+                    v.notification.live.is_none()
+                        && v.device == group_key.0
+                        && v.notification.app == group_key.1
+                })
+                .collect();
+            let count = members.len() as i32;
+            let expanded = count > 1 && s.is_app_expanded(&group_key.1);
+            let summary = group_summary(&members[1..]);
+            rows.push(make_row(&snapshot, members[0], Group { count, index: 0, expanded, summary }));
+            if expanded {
+                for (idx, member) in members.iter().enumerate().skip(1) {
+                    let group = Group { count, index: idx as i32, expanded: true, summary: String::new() };
+                    rows.push(make_row(&snapshot, member, group));
+                }
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn rows_are_grouped_as_before() {
+        let (phone, tablet) = (DeviceId([1; 32]), DeviceId([2; 32]));
+        let make = |key: &str, app: &str, title: &str, when: i64| Notification {
+            key: key.into(),
+            app: app.into(),
+            app_name: app.into(),
+            title: Some(title.into()),
+            text: Some("Your verification code is 482913".into()),
+            sub: None,
+            when,
+            actions: vec![NotificationAction { id: "m".into(), title: "Mute".into(), reply: false }],
+            silent: false,
+            ongoing: false,
+            icon: None,
+            image: None,
+            live: None,
+            conversation: None,
+        };
+        let post = |s: &mut AppState, device: DeviceId, notification: Notification| {
+            s.apply(&NodeEvent::NotificationPosted { device, notification });
+        };
+        let mut s = AppState::default();
+        // Three notifications from two apps on one phone.
+        post(&mut s, phone, make("c1", "com.chat", "Ann", 10));
+        post(&mut s, phone, make("m1", "com.mail", "Invoice", 20));
+        post(&mut s, phone, make("c2", "com.chat", "Ben", 30));
+        assert_eq!(build_rows(&Snapshot::of(&s)), rows_as_before(&s));
+        let rows = build_rows(&Snapshot::of(&s));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].group_count, 2);
+        assert_eq!(rows[0].group_summary, "Ann");
+        assert_eq!(rows[0].otp_code, "482913");
+
+        // The same app on another phone is its own group; a Live Update stands alone.
+        post(&mut s, tablet, make("c3", "com.chat", "Cy", 40));
+        let mut ride = make("r1", "com.ride", "Ride", 50);
+        ride.live = Some(g7link_core::NotificationLive {
+            v: 1,
+            progress: Some(1),
+            max: Some(4),
+            indeterminate: false,
+            chip: None,
+            segments: Vec::new(),
+            points: Vec::new(),
+            chronometer: false,
+            countdown: false,
+        });
+        post(&mut s, phone, ride);
+        assert_eq!(build_rows(&Snapshot::of(&s)), rows_as_before(&s));
+
+        s.toggle_app_expanded("com.chat");
+        let expanded = build_rows(&Snapshot::of(&s));
+        assert_eq!(expanded, rows_as_before(&s));
+        assert_eq!(expanded.len(), 5);
     }
 }
