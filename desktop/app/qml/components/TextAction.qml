@@ -5,12 +5,13 @@ import app.g7link
 // A small, quiet text button: "Clear all", "Mark as read", "New". Muted
 // until hovered; `selected` gives it the selection fill (filter tabs). An
 // `imageSource` (an app's icon) shows in place of the `iconPath` glyph once
-// it has loaded.
+// it has loaded; a `badge` (a count) follows the text, muted.
 FocusScope {
     id: action
     property string text
     property string iconPath
     property url imageSource
+    property string badge
     property color iconColor: Theme.accent
     property bool selected: false
     property bool muted: !selected
@@ -22,7 +23,7 @@ FocusScope {
     opacity: enabled ? 1 : 0.38
 
     Accessible.role: Accessible.Button
-    Accessible.name: text
+    Accessible.name: badge.length > 0 ? text + " " + badge : text
     Accessible.onPressAction: if (enabled) action.clicked()
     Keys.onPressed: (event) => {
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
@@ -63,6 +64,13 @@ FocusScope {
             text: action.text
             role: "bodySmall"
             color: action.muted && !mouse.containsMouse ? Theme.surfaceContentVariant : Theme.surfaceContent
+        }
+        Txt {
+            visible: action.badge.length > 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: action.badge
+            role: "bodySmall"
+            color: Theme.surfaceContentVariant
         }
     }
     MouseArea {

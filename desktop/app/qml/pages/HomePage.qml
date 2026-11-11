@@ -177,6 +177,17 @@ Item {
         return new Date(unixSeconds * 1000).toLocaleDateString(Qt.locale(), Locale.ShortFormat)
     }
 
+    // When a notification came: "now", minutes, the time today, or the date.
+    // `clock` is there to be re-read every minute.
+    function shortWhen(when, clock) {
+        const minutes = Math.round((Date.now() - when) / 60000)
+        if (minutes < 1) return qsTr("now")
+        if (minutes < 60) return qsTr("%n min", "", minutes)
+        const date = new Date(when)
+        if (Date.now() - when < 24 * 3600 * 1000) return date.toLocaleTimeString(Qt.locale(), Locale.ShortFormat)
+        return date.toLocaleDateString(Qt.locale(), Locale.ShortFormat)
+    }
+
     function formatChargeEta(minutes) {
         if (!minutes || minutes <= 0)
             return ""
@@ -564,294 +575,117 @@ Item {
 
         readonly property real sideWidth: Math.round(Math.min(Theme.columnWidth, Math.max(240, width * 0.36)))
 
-        // ================= Left: notifications and actions =================
-        Flickable {
-            id: leftScroll
+        // The feed follows the phone on screen; Rust filters and groups it.
+        Binding { target: NotificationList; property: "device"; value: home.deviceId; when: home.visible; restoreMode: Binding.RestoreNone }
+
+        // Ticks every minute so "5 min" ages without new events.
+        Timer {
+            id: feedClock
+            property int minutes: 0
+            interval: 60000
+            repeat: true
+            running: feed.count > 0
+            onTriggered: minutes++
+        }
+
+        // ================= Top: the actions, always in view =================
+        Item {
+            id: actionBar
             anchors.left: parent.left
+            anchors.right: parent.right
             anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: parent.width - home.sideWidth - 1
-            contentHeight: leftCol.height + 24
-            boundsBehavior: Flickable.StopAtBounds
-            clip: true
+            height: barColumn.height + 20
+            // A feature an action needs, when clicking it greyed out asks why.
+            property var lockFeature: ({})
+            function showLock(f) { lockFeature = lockFeature === f ? ({}) : f }
 
             Column {
-                id: leftCol
-                x: 8
-                y: 8
-                width: leftScroll.width - 16
-                spacing: 2
-
-                // ---- Notice: an invitation to try Hive, until answered ----
-                ActionRow {
-                    id: hiveInvite
+                id: barColumn
+                x: 12
+                y: 10
+                width: parent.width - 24
+                spacing: 8
+                Flow {
                     width: parent.width
-                    visible: Preferences.walkthroughCompleted && !Preferences.hiveInviteDismissed
-                             && !Theme.hive && !Theme.quiet
-                    iconPath: Icons.sparkle
-                    tint: Theme.tintAmber
-                    title: qsTr("Try Hive")
-                    detail: qsTr("Honey on charcoal, with a living honeycomb")
-                    onClicked: {
-                        Preferences.hiveInviteDismissed = true
-                        Preferences.theme = "hive"
+                    spacing: 4
+                    Accessible.role: Accessible.ToolBar
+                    Accessible.name: qsTr("Actions")
+                    BarAction {
+                        label: qsTr("Mirror screen")
+                        iconPath: Icons.mirror
+                        tint: Theme.tintLavender
+                        keys: "Ctrl M"
+                        available: home.usable("mirroring.view")
+                        active: home.mirroring
+                        onTriggered: home.mirror()
+                        onLockedClicked: actionBar.showLock(home.feature("mirroring.view"))
                     }
-                    TextAction {
-                        text: qsTr("Not now")
-                        onClicked: Preferences.hiveInviteDismissed = true
+                    BarAction {
+                        label: qsTr("Send files")
+                        iconPath: Icons.send
+                        tint: Theme.tintAmber
+                        available: home.usable("files.send", true)
+                        onTriggered: filePicker.open()
+                        onLockedClicked: actionBar.showLock(home.feature("files.send"))
                     }
-                }
-
-                // ---- Notifications ----
-                Item {
-                    id: feed
-                    width: parent.width
-                    height: 30
-                    readonly property var state: home.feature("notifications.mirror")
-                    readonly property int count: NotificationList.count >= 0 ? NotificationList.countFor(home.deviceId) : 0
-                    Txt {
-                        x: Theme.rowPadding
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Notifications")
-                        role: "label"
-                        muted: true
+                    BarAction {
+                        label: qsTr("Send clipboard")
+                        iconPath: Icons.clipboard
+                        tint: Theme.tintCoral
+                        available: home.usable("clipboard.pc_to_phone", true)
+                        onTriggered: AppController.sendClipboard(home.deviceId)
+                        onLockedClicked: actionBar.showLock(home.feature("clipboard.pc_to_phone"))
                     }
-                    Row {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-                        TextAction {
-                            visible: NotificationList.historyEnabled && NotificationHistory.count > 0
-                            text: qsTr("History")
-                            Accessible.description: qsTr("Notification history (last 24 hours)")
-                            onClicked: home.openNotificationHistory()
-                        }
-                        TextAction {
-                            text: AppController.notificationsPaused ? qsTr("Resume pop-ups") : qsTr("Pause pop-ups")
-                            selected: AppController.notificationsPaused
-                            onClicked: AppController.toggleNotificationsPaused()
-                        }
-                        TextAction {
-                            visible: feed.count > 0
-                            text: qsTr("Clear all")
-                            onClicked: NotificationList.dismissAll(home.deviceId)
-                        }
-                    }
-                }
-                // Undo, after dismissing a notification or an app's group.
-                ActionRow {
-                    width: parent.width
-                    visible: NotificationList.undoLabel.length > 0
-                    interactive: false
-                    iconPath: Icons.check
-                    tint: Theme.surfaceContentVariant
-                    title: NotificationList.undoLabel
-                    Timer {
-                        id: undoTimer
-                        interval: 6000
-                        running: NotificationList.undoLabel.length > 0
-                        onTriggered: NotificationList.clearUndo()
-                    }
-                    Connections {
-                        target: NotificationList
-                        function onUndoLabelChanged() {
-                            if (NotificationList.undoLabel.length > 0)
-                                undoTimer.restart()
-                        }
-                    }
-                    TextAction {
-                        text: qsTr("Undo")
-                        onClicked: NotificationList.undoDismiss()
-                    }
-                    IconButton {
-                        width: 24; height: 24
-                        iconSize: 14
-                        iconPath: Icons.close
-                        label: qsTr("Dismiss")
-                        onClicked: NotificationList.clearUndo()
-                    }
-                }
-                // The desktop hides every app's notifications when they're
-                // off or Do Not Disturb is on: say so.
-                ActionRow {
-                    width: parent.width
-                    visible: !AppController.toastsEnabled && feed.state.state === "available"
-                    interactive: false
-                    iconPath: Icons.bell
-                    tint: Theme.tintAmber
-                    title: qsTr("Desktop pop-ups are off")
-                    detail: qsTr("Turn them on in the system's notification settings")
-                }
-                // Ticks every minute so "5 min" ages without new events.
-                Timer {
-                    id: feedClock
-                    property int minutes: 0
-                    interval: 60000
-                    repeat: true
-                    running: feed.count > 0
-                    onTriggered: minutes++
-                }
-                Column {
-                    id: list
-                    width: parent.width
-                    spacing: 2
-                    Repeater {
-                        model: NotificationList
-                        delegate: NotificationItem {
-                            width: list.width
-                            clock: feedClock.minutes
-                            visible: deviceId === home.deviceId
-                            height: visible ? implicitHeight : 0
-                            selected: key === page.selectedNotification
-                            canOpenApp: home.feature("mirroring.app_windows").state === "available" && app.length > 0
-                            onSelectRequested: page.selectedNotification = selected ? "" : key
-                            onOpenAppRequested: Mirror.startApp(deviceId, app, appName.length > 0 ? appName : app)
-                            onOptionsRequested: appSheet.openFor(app, appName)
-                            onImageClicked: (url) => imagePreviewSheet.openFor(url, title.length > 0 ? title : appName)
-                        }
-                    }
-                }
-                // Empty: say why, and what turns it on.
-                Item {
-                    width: parent.width
-                    height: Theme.rowHeight
-                    visible: feed.count === 0
-                    Txt {
-                        x: Theme.rowPadding
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: !lockedHint.visible
-                        muted: true
-                        text: feed.state.state === "available"
-                              ? qsTr("No notifications")
-                              : home.lastSeen > 0 || home.online
-                                ? qsTr("Notifications unavailable")
-                                : qsTr("Connect %1 to see notifications").arg(home.name)
-                    }
-                    LockChip {
-                        id: lockedHint
-                        x: Theme.rowPadding
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: label.length > 0
-                        maxWidth: 260
-                        feature: feed.state
-                    }
-                }
-
-                // ---- Actions ----
-                SectionLabel {
-                    width: parent.width
-                    text: qsTr("Actions")
-                }
-                PhoneAction {
-                    deviceOnline: home.online
-                    title: qsTr("Mirror screen")
-                    iconPath: Icons.mirror
-                    glyphTint: Theme.tintLavender
-                    keys: "Ctrl M"
-                    feature: home.feature("mirroring.view")
-                    active: home.mirroring
-                    meta: home.mirroring ? qsTr("On") : ""
-                    onClicked: home.mirror()
-                    IconButton {
-                        visible: home.feature("mirroring.app_windows").state === "available"
-                        width: 26; height: 26
-                        iconSize: 14
-                        iconPath: Icons.apps
-                        label: qsTr("Open an app in a window")
-                        onClicked: appsSheet.openFor(home.deviceId, home.name)
-                    }
-                }
-                PhoneAction {
-                    id: sendFilesAction
-                    deviceOnline: home.online
-                    title: qsTr("Send files")
-                    iconPath: Icons.send
-                    glyphTint: Theme.tintAmber
-                    queueable: true
-                    feature: home.feature("files.send")
-                    onClicked: filePicker.open()
-                    IconButton {
-                        visible: sendFilesAction.available
-                        width: 26; height: 26
-                        iconSize: 14
-                        iconPath: Icons.folder
-                        label: qsTr("Send a folder")
-                        onClicked: folderPicker.open()
-                    }
-                }
-                PhoneAction {
-                    deviceOnline: home.online
-                    title: qsTr("Send clipboard")
-                    iconPath: Icons.clipboard
-                    glyphTint: Theme.tintCoral
-                    queueable: true
-                    feature: home.feature("clipboard.pc_to_phone")
-                    onClicked: AppController.sendClipboard(home.deviceId)
-                    IconButton {
-                        visible: Preferences.clipboardHistory
-                        width: 26; height: 26
-                        iconSize: 14
-                        iconPath: Icons.clipboardList
-                        label: qsTr("Clipboard history")
-                        onClicked: home.openClipboardHistory()
-                    }
-                }
-                PhoneAction {
-                    deviceOnline: home.online
-                    title: qsTr("Take photo with phone")
-                    iconPath: Icons.camera
-                    glyphTint: Theme.tintBlue
-                    keys: page.keycap(Preferences.continuityPhotoHotkey)
-                    queueable: true
-                    feature: home.feature("camera.continuity")
-                    active: AppController.continuityCameraBusy
-                    detail: AppController.continuityCameraBusy ? AppController.continuityCameraStatus : ""
-                    onClicked: AppController.startContinuityCamera("photo")
-                    IconButton {
-                        width: 26; height: 26
-                        iconSize: 14
-                        iconPath: AppController.continuityCameraBusy ? Icons.close : Icons.scan
-                        label: AppController.continuityCameraBusy ? qsTr("Cancel") : qsTr("Scan document")
-                        onClicked: {
+                    BarAction {
+                        label: AppController.continuityCameraBusy ? qsTr("Cancel photo") : qsTr("Take photo")
+                        iconPath: AppController.continuityCameraBusy ? Icons.close : Icons.camera
+                        tint: Theme.tintBlue
+                        keys: AppController.continuityCameraBusy ? "" : page.keycap(Preferences.continuityPhotoHotkey)
+                        available: AppController.continuityCameraBusy || home.usable("camera.continuity", true)
+                        active: AppController.continuityCameraBusy
+                        onTriggered: {
                             if (AppController.continuityCameraBusy)
                                 AppController.cancelContinuityCamera()
                             else
-                                AppController.startContinuityCamera("scan")
+                                AppController.startContinuityCamera("photo")
                         }
+                        onLockedClicked: actionBar.showLock(home.feature("camera.continuity"))
+                    }
+                    BarAction {
+                        label: home.typingHere ? qsTr("Stop typing") : qsTr("Type on phone")
+                        iconPath: Icons.keyboard
+                        tint: Theme.tintPink
+                        // Starts whenever the phone is connected; the phone says if it needs more.
+                        available: home.online
+                        active: home.typingHere
+                        onTriggered: home.toggleTyping()
+                        onLockedClicked: actionBar.showLock(home.feature("mirroring.control"))
+                    }
+                    BarAction {
+                        label: home.ringing ? qsTr("Stop ringing") : qsTr("Find phone")
+                        iconPath: Icons.ring
+                        tint: Theme.tintRed
+                        available: home.usable("device.find_phone")
+                        active: home.ringing
+                        onTriggered: home.findPhone()
+                        onLockedClicked: actionBar.showLock(home.feature("device.find_phone"))
                     }
                 }
-                PhoneAction {
-                    deviceOnline: home.online
-                    title: home.webcamHere ? qsTr("Stop webcam") : qsTr("Phone as webcam")
-                    iconPath: Icons.video
-                    glyphTint: Theme.tintCoral
-                    addonOk: true
-                    feature: home.feature("camera.webcam")
-                    active: home.webcamHere
-                    forceAvailable: home.webcamHere
-                    detail: home.webcamHere ? (Webcam.statusText.length > 0 ? Webcam.statusText : qsTr("Streaming")) : ""
-                    onClicked: home.toggleWebcam()
+                // Why an action can't run yet, after clicking it.
+                LockChip {
+                    visible: label.length > 0
+                    feature: actionBar.lockFeature
+                    maxWidth: parent.width
                 }
-                PhoneAction {
-                    id: typeAction
-                    deviceOnline: home.online
-                    title: home.typingHere ? qsTr("Stop typing on phone") : qsTr("Type on phone")
-                    iconPath: Icons.keyboard
-                    glyphTint: Theme.tintPink
-                    feature: home.feature("mirroring.control")
-                    // Starts whenever the phone is connected; the phone says
-                    // if it needs more.
-                    forceAvailable: home.online
-                    active: home.typingHere
-                    detail: home.typingHere && typeBox.lastSent.length > 0 ? qsTr("Sent: %1").arg(typeBox.lastSent) : ""
-                    onClicked: home.toggleTyping()
-                    LockChip {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: home.online && typeAction.feature.state !== "available" && label.length > 0
-                        feature: typeAction.feature
-                        maxWidth: 200
-                    }
+                // The phone's camera at work.
+                Txt {
+                    width: parent.width
+                    visible: AppController.continuityCameraBusy && AppController.continuityCameraStatus.length > 0
+                    role: "bodySmall"
+                    muted: true
+                    text: AppController.continuityCameraStatus
                 }
+
                 // While typing: the box the keys go through.
                 Rectangle {
                     id: remoteKeyCapture
@@ -956,13 +790,25 @@ Item {
 
                     Txt {
                         x: Theme.rowPadding
-                        anchors.right: pasteBtn.left
+                        anchors.right: sentText.left
                         anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
                         color: remoteKeyCapture.activeFocus ? Theme.surfaceContent : Theme.surfaceContentVariant
                         text: remoteKeyCapture.activeFocus
                             ? qsTr("Keys go to %1 · Ctrl V pastes · Esc stops").arg(home.name)
                             : qsTr("Click to type")
+                    }
+                    // What went over last.
+                    Txt {
+                        id: sentText
+                        anchors.right: pasteBtn.left
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, remoteKeyCapture.width / 3)
+                        visible: typeBox.lastSent.length > 0
+                        role: "bodySmall"
+                        muted: true
+                        text: qsTr("Sent: %1").arg(typeBox.lastSent)
                     }
                     TextAction {
                         id: pasteBtn
@@ -980,215 +826,354 @@ Item {
                         onTapped: remoteKeyCapture.forceActiveFocus()
                     }
                 }
-                PhoneAction {
-                    deviceOnline: home.online
-                    title: home.ringing ? qsTr("Stop ringing") : qsTr("Find phone")
-                    iconPath: Icons.ring
-                    glyphTint: Theme.tintRed
-                    feature: home.feature("device.find_phone")
-                    active: home.ringing
-                    onClicked: home.findPhone()
-                }
+            }
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: Theme.line
+            }
+        }
 
-                // ---- Waiting to send ----
+        // ================= Left: notifications, scrolling on their own =================
+        Item {
+            id: feed
+            anchors.left: parent.left
+            anchors.top: actionBar.bottom
+            anchors.bottom: parent.bottom
+            width: parent.width - home.sideWidth - 1
+            readonly property var state: home.feature("notifications.mirror")
+            readonly property int count: NotificationList.count >= 0 ? NotificationList.countFor(home.deviceId) : 0
+            readonly property var counts: {
+                try {
+                    return JSON.parse(NotificationList.categoryCounts || "{}")
+                } catch (e) {
+                    return ({})
+                }
+            }
+            readonly property var filters: [
+                { key: "", count: "all", label: qsTr("All") },
+                { key: "messages", count: "messages", label: qsTr("Messages") },
+                { key: "calls", count: "calls", label: qsTr("Calls") },
+                { key: "apps", count: "apps", label: qsTr("Apps") }
+            ]
+            // App groups past the bottom edge.
+            readonly property int moreBelow: {
+                const y = feedList.contentY + feedList.height - 2
+                const row = feedList.count > 0 ? feedList.itemAt(feedList.width / 2, y) : null
+                return row ? Math.max(0, NotificationList.groupTotal - 1 - row.groupOrdinal) : 0
+            }
+
+            Column {
+                id: feedHead
+                x: 8
+                y: 6
+                width: parent.width - 16
+                spacing: 2
+                // Notifications, the filters with their counts, and Clear all.
                 Item {
                     width: parent.width
-                    height: 30
-                    visible: sendQueueModel.count > 0
-                    Txt {
-                        x: Theme.rowPadding
+                    height: Math.max(30, filterFlow.height)
+                    Flow {
+                        id: filterFlow
+                        anchors.left: parent.left
+                        anchors.right: feedTools.left
+                        anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        role: "label"
-                        muted: true
-                        text: page.sendQueueWaiting > 0
-                              ? qsTr("Waiting to send · %1").arg(page.sendQueueWaiting)
-                              : qsTr("Waiting to send")
+                        spacing: 4
+                        Txt {
+                            height: 24
+                            leftPadding: Theme.rowPadding - 8
+                            rightPadding: 6
+                            text: qsTr("Notifications")
+                            role: "label"
+                            muted: true
+                        }
+                        Repeater {
+                            model: feed.filters
+                            delegate: TextAction {
+                                required property var modelData
+                                text: modelData.label
+                                badge: String(feed.counts[modelData.count] || 0)
+                                selected: NotificationList.category === modelData.key
+                                onClicked: NotificationList.category = modelData.key
+                            }
+                        }
                     }
                     Row {
+                        id: feedTools
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 2
                         TextAction {
-                            visible: TransferList.hasFailedOrExpiredQueue
-                            text: qsTr("Clear")
-                            onClicked: TransferList.clearFinishedQueue()
+                            visible: NotificationList.historyEnabled && NotificationHistory.count > 0
+                            text: qsTr("History")
+                            Accessible.description: qsTr("Notification history (last 24 hours)")
+                            onClicked: home.openNotificationHistory()
                         }
                         TextAction {
-                            visible: TransferList.waitingCount > 0
-                            text: qsTr("Cancel all")
-                            onClicked: TransferList.cancelAllQueued("")
-                        }
-                    }
-                }
-                Repeater {
-                    model: sendQueueModel
-                    delegate: ActionRow {
-                        id: queueRow
-                        required property var model
-                        readonly property string itemStatus: queueRow.model.status || "waiting"
-                        readonly property bool isFailedOrExpired: itemStatus === "failed" || itemStatus === "expired"
-                        readonly property real totalBytes: Number(queueRow.model.totalBytes || 0)
-                        readonly property real progress: Number(queueRow.model.progress || 0)
-                        width: leftCol.width
-                        interactive: false
-                        iconPath: queueRow.model.icon === "folder" ? Icons.folder
-                            : queueRow.model.icon === "clipboard" ? Icons.clipboard
-                            : queueRow.model.icon === "link" ? Icons.globe
-                            : queueRow.model.icon === "task" ? Icons.bolt
-                            : queueRow.model.icon === "camera" ? Icons.camera
-                            : Icons.send
-                        tint: isFailedOrExpired ? Theme.tintRed : Theme.tintAmber
-                        title: queueRow.model.title || ""
-                        detail: {
-                            const devName = (queueRow.model.deviceName && queueRow.model.deviceName.length > 0)
-                                ? queueRow.model.deviceName : home.name
-                            const sz = page.formatQueueSize(queueRow.totalBytes)
-                            if (queueRow.itemStatus === "sending") {
-                                if (queueRow.totalBytes > 0) {
-                                    const pct = Math.round(Math.max(0, Math.min(1, queueRow.progress)) * 100)
-                                    return qsTr("Sending to %1 · %2%").arg(devName).arg(pct)
-                                }
-                                return qsTr("Sending to %1…").arg(devName)
-                            }
-                            if (queueRow.itemStatus === "failed") {
-                                const reason = queueRow.model.reason || ""
-                                return reason.length > 0 ? qsTr("Failed · %1").arg(reason) : qsTr("Failed")
-                            }
-                            if (queueRow.itemStatus === "expired") {
-                                const reason = queueRow.model.reason || ""
-                                return reason.length > 0 ? reason : qsTr("Expired")
-                            }
-                            return sz.length > 0
-                                ? qsTr("Waiting for %1 · %2").arg(devName).arg(sz)
-                                : qsTr("Waiting for %1").arg(devName)
-                        }
-                        IconButton {
-                            visible: queueRow.isFailedOrExpired
-                            width: 26; height: 26
-                            iconSize: 14
-                            iconPath: Icons.refresh
-                            label: qsTr("Retry")
-                            onClicked: TransferList.retryQueueItem(queueRow.model.queueId)
-                        }
-                        IconButton {
-                            width: 26; height: 26
-                            iconSize: 14
-                            iconPath: Icons.close
-                            label: queueRow.isFailedOrExpired ? qsTr("Dismiss") : qsTr("Cancel")
-                            onClicked: TransferList.cancelQueueItem(queueRow.model.queueId)
+                            visible: feed.count > 0
+                            text: qsTr("Clear all")
+                            onClicked: NotificationList.dismissAll(home.deviceId)
                         }
                     }
                 }
 
-                // ---- Transfers ----
-                Item {
+                // ---- Notice: an invitation to try Hive, until answered ----
+                ActionRow {
+                    id: hiveInvite
                     width: parent.width
-                    height: 30
-                    visible: TransferList.count > 0
-                    Txt {
-                        x: Theme.rowPadding
-                        anchors.verticalCenter: parent.verticalCenter
-                        role: "label"
-                        muted: true
-                        text: qsTr("Transfers")
-                    }
-                    Row {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 2
-                        TextAction {
-                            text: qsTr("Timeline")
-                            onClicked: AppController.currentPage = "timeline"
-                        }
-                        TextAction {
-                            visible: TransferList.count > TransferList.active
-                            text: qsTr("Clear finished")
-                            onClicked: TransferList.clearFinished()
-                        }
-                    }
-                }
-                Repeater {
-                    model: TransferList
-                    delegate: TransferItem { width: leftCol.width }
-                }
-
-                // ---- LocalSend nearby ----
-                LocalSendSection {
-                    width: parent.width
-                    visible: AppController.localsendEnabled && page.localsendPeers.length > 0
-                }
-
-                // ---- Timeline: the latest across phones ----
-                Item {
-                    id: timelineHeader
-                    width: parent.width
-                    height: 30
-                    readonly property var previewItems: {
-                        try {
-                            return AppController.timelinePreview.length > 0
-                                ? JSON.parse(AppController.timelinePreview) : []
-                        } catch (e) {
-                            return []
-                        }
-                    }
-                    Txt {
-                        x: Theme.rowPadding
-                        anchors.verticalCenter: parent.verticalCenter
-                        role: "label"
-                        muted: true
-                        text: qsTr("Recent")
+                    visible: Preferences.walkthroughCompleted && !Preferences.hiveInviteDismissed
+                             && !Theme.hive && !Theme.quiet
+                    iconPath: Icons.sparkle
+                    tint: Theme.tintAmber
+                    title: qsTr("Try Hive")
+                    detail: qsTr("Honey on charcoal, with a living honeycomb")
+                    onClicked: {
+                        Preferences.hiveInviteDismissed = true
+                        Preferences.theme = "hive"
                     }
                     TextAction {
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Timeline")
-                        onClicked: AppController.currentPage = "timeline"
+                        text: qsTr("Not now")
+                        onClicked: Preferences.hiveInviteDismissed = true
                     }
                 }
+                // Undo, after dismissing a notification or an app's group.
+                ActionRow {
+                    width: parent.width
+                    visible: NotificationList.undoLabel.length > 0
+                    interactive: false
+                    iconPath: Icons.check
+                    tint: Theme.surfaceContentVariant
+                    title: NotificationList.undoLabel
+                    Timer {
+                        id: undoTimer
+                        interval: 6000
+                        running: NotificationList.undoLabel.length > 0
+                        onTriggered: NotificationList.clearUndo()
+                    }
+                    Connections {
+                        target: NotificationList
+                        function onUndoLabelChanged() {
+                            if (NotificationList.undoLabel.length > 0)
+                                undoTimer.restart()
+                        }
+                    }
+                    TextAction {
+                        text: qsTr("Undo")
+                        onClicked: NotificationList.undoDismiss()
+                    }
+                    IconButton {
+                        width: 24; height: 24
+                        iconSize: 14
+                        iconPath: Icons.close
+                        label: qsTr("Dismiss")
+                        onClicked: NotificationList.clearUndo()
+                    }
+                }
+                // The desktop hides every app's notifications when they're
+                // off or Do Not Disturb is on: say so.
+                ActionRow {
+                    width: parent.width
+                    visible: !AppController.toastsEnabled && feed.state.state === "available"
+                    interactive: false
+                    iconPath: Icons.bell
+                    tint: Theme.tintAmber
+                    title: qsTr("Desktop pop-ups are off")
+                    detail: qsTr("Turn them on in the system's notification settings")
+                }
+            }
+
+            ListView {
+                id: feedList
+                anchors.top: feedHead.bottom
+                anchors.topMargin: 4
+                anchors.bottom: parent.bottom
+                x: 8
+                width: parent.width - 16
+                clip: true
+                spacing: 2
+                boundsBehavior: Flickable.StopAtBounds
+                model: NotificationList
+                // An app's row; under an opened one, its latest notifications
+                // and what more can be done with them.
+                delegate: Item {
+                    id: feedRow
+                    required property string kind
+                    required property string deviceId
+                    required property string key
+                    required property string app
+                    required property string appName
+                    required property string title
+                    required property string text
+                    required property string sub
+                    required property real when
+                    required property string iconUrl
+                    required property string imageUrl
+                    required property string actions
+                    required property string replyAction
+                    required property string replyLabel
+                    required property string replies
+                    required property string otpCode
+                    required property string live
+                    required property bool ongoing
+                    required property int groupCount
+                    required property int groupIndex
+                    required property bool groupExpanded
+                    required property string groupSummary
+                    required property int groupOrdinal
+                    required property bool showingAll
+                    width: ListView.view.width
+                    height: rowLoader.height
+                    Loader {
+                        id: rowLoader
+                        width: parent.width
+                        sourceComponent: feedRow.kind === "group" ? groupRow : feedRow.kind === "more" ? moreRow : itemRow
+                    }
+                    Component {
+                        id: groupRow
+                        AppGroupRow {
+                            deviceId: feedRow.deviceId
+                            app: feedRow.app
+                            appName: feedRow.appName
+                            iconUrl: feedRow.iconUrl
+                            title: feedRow.title
+                            text: feedRow.text
+                            when: feedRow.when
+                            count: feedRow.groupCount
+                            expanded: feedRow.groupExpanded
+                            clock: feedClock.minutes
+                        }
+                    }
+                    Component {
+                        id: itemRow
+                        NotificationItem {
+                            deviceId: feedRow.deviceId
+                            key: feedRow.key
+                            app: feedRow.app
+                            appName: feedRow.appName
+                            title: feedRow.title
+                            text: feedRow.text
+                            sub: feedRow.sub
+                            when: feedRow.when
+                            iconUrl: feedRow.iconUrl
+                            imageUrl: feedRow.imageUrl
+                            actions: feedRow.actions
+                            replyAction: feedRow.replyAction
+                            replyLabel: feedRow.replyLabel
+                            replies: feedRow.replies
+                            otpCode: feedRow.otpCode
+                            live: feedRow.live
+                            ongoing: feedRow.ongoing
+                            groupCount: feedRow.groupCount
+                            groupIndex: feedRow.groupIndex
+                            groupExpanded: feedRow.groupExpanded
+                            groupSummary: feedRow.groupSummary
+                            clock: feedClock.minutes
+                            selected: feedRow.key === page.selectedNotification
+                            canOpenApp: home.feature("mirroring.app_windows").state === "available" && feedRow.app.length > 0
+                            onSelectRequested: page.selectedNotification = selected ? "" : feedRow.key
+                            onOpenAppRequested: Mirror.startApp(feedRow.deviceId, feedRow.app,
+                                                                feedRow.appName.length > 0 ? feedRow.appName : feedRow.app)
+                            onOptionsRequested: appSheet.openFor(feedRow.app, feedRow.appName)
+                            onImageClicked: (url) => imagePreviewSheet.openFor(url, feedRow.title.length > 0 ? feedRow.title : feedRow.appName)
+                        }
+                    }
+                    Component {
+                        id: moreRow
+                        Item {
+                            height: 32
+                            Row {
+                                x: 18 + Theme.rowPadding + 28
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 4
+                                TextAction {
+                                    // groupIndex: how many of the group show.
+                                    visible: feedRow.showingAll || feedRow.groupIndex < feedRow.groupCount
+                                    text: feedRow.showingAll ? qsTr("Show fewer") : qsTr("Show all %1").arg(feedRow.groupCount)
+                                    onClicked: NotificationList.showAll(feedRow.app, !feedRow.showingAll)
+                                }
+                                TextAction {
+                                    text: qsTr("Clear")
+                                    Accessible.description: qsTr("Dismiss %1 notifications from %2").arg(feedRow.groupCount).arg(feedRow.appName)
+                                    onClicked: NotificationList.dismissGroup(feedRow.deviceId, feedRow.app)
+                                }
+                                TextAction {
+                                    text: qsTr("Show less")
+                                    onClicked: NotificationList.toggleGroup(feedRow.app)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Empty: say why, and what turns it on.
+            Item {
+                anchors.top: feedHead.bottom
+                x: 8
+                width: parent.width - 16
+                height: Theme.rowHeight
+                visible: feedList.count === 0
                 Txt {
                     x: Theme.rowPadding
-                    height: Theme.rowHeight
-                    visible: timelineHeader.previewItems.length === 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !lockedHint.visible
                     muted: true
-                    text: qsTr("Nothing yet")
+                    text: feed.count > 0
+                          ? qsTr("None of these")
+                          : feed.state.state === "available"
+                            ? qsTr("No notifications")
+                            : home.lastSeen > 0 || home.online
+                              ? qsTr("Notifications unavailable")
+                              : qsTr("Connect %1 to see notifications").arg(home.name)
                 }
-                Repeater {
-                    model: timelineHeader.previewItems
-                    delegate: ActionRow {
-                        required property var modelData
-                        width: leftCol.width
-                        iconPath: modelData.kind === "file" ? Icons.folder
-                            : modelData.kind === "clip" ? Icons.clipboard
-                            : modelData.kind === "link" ? Icons.globe
-                            : modelData.kind === "photo" ? Icons.photo
-                            : modelData.kind === "recording" ? Icons.mic
-                            : Icons.mirror
-                        tint: modelData.kind === "file" ? Theme.tintAmber
-                            : modelData.kind === "clip" ? Theme.tintLavender
-                            : modelData.kind === "link" ? Theme.tintBlue
-                            : modelData.kind === "photo" ? Theme.tintCoral
-                            : modelData.kind === "recording" ? Theme.tintRed
-                            : Theme.tintPink
-                        title: modelData.title || ""
-                        detail: modelData.subtitle || ""
-                        onClicked: AppController.currentPage = "timeline"
-                    }
+                LockChip {
+                    id: lockedHint
+                    x: Theme.rowPadding
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: feed.count === 0 && label.length > 0
+                    maxWidth: 260
+                    feature: feed.state
+                }
+            }
+
+            // More apps further down: the list fades out and says how many.
+            Rectangle {
+                anchors.left: feedList.left
+                anchors.right: feedList.right
+                anchors.bottom: parent.bottom
+                height: 56
+                visible: feed.moreBelow > 0 && !feedList.atYEnd
+                gradient: Gradient {
+                    GradientStop { position: 0; color: Qt.rgba(Theme.surface.r, Theme.surface.g, Theme.surface.b, 0) }
+                    GradientStop { position: 1; color: Theme.surface }
+                }
+                Txt {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 8
+                    role: "bodySmall"
+                    muted: true
+                    text: qsTr("Scroll for %n more app(s)", "", feed.moreBelow)
                 }
             }
         }
 
         Rectangle {
-            x: leftScroll.width
+            x: feed.width
+            anchors.top: actionBar.bottom
+            anchors.bottom: parent.bottom
             width: 1
-            height: parent.height
             color: Theme.line
         }
+
 
         // ================= Right: the phone =================
         Flickable {
             id: sideScroll
             anchors.right: parent.right
-            anchors.top: parent.top
+            anchors.top: actionBar.bottom
             anchors.bottom: parent.bottom
             width: home.sideWidth
             contentHeight: side.height + 32
@@ -1730,6 +1715,197 @@ Item {
                         }
                     }
                 }
+
+                // On its way: waiting to send, transfers and LocalSend nearby, then
+                // the latest on the timeline.
+                Column {
+                    width: parent.width
+                    spacing: 2
+                    // ---- Waiting to send ----
+                    Item {
+                        width: parent.width
+                        height: 30
+                        visible: sendQueueModel.count > 0
+                        Txt {
+                            x: Theme.rowPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            role: "label"
+                            muted: true
+                            text: page.sendQueueWaiting > 0
+                                  ? qsTr("Waiting to send · %1").arg(page.sendQueueWaiting)
+                                  : qsTr("Waiting to send")
+                        }
+                        Row {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+                            TextAction {
+                                visible: TransferList.hasFailedOrExpiredQueue
+                                text: qsTr("Clear")
+                                onClicked: TransferList.clearFinishedQueue()
+                            }
+                            TextAction {
+                                visible: TransferList.waitingCount > 0
+                                text: qsTr("Cancel all")
+                                onClicked: TransferList.cancelAllQueued("")
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: sendQueueModel
+                        delegate: ActionRow {
+                            id: queueRow
+                            required property var model
+                            readonly property string itemStatus: queueRow.model.status || "waiting"
+                            readonly property bool isFailedOrExpired: itemStatus === "failed" || itemStatus === "expired"
+                            readonly property real totalBytes: Number(queueRow.model.totalBytes || 0)
+                            readonly property real progress: Number(queueRow.model.progress || 0)
+                            width: side.width
+                            interactive: false
+                            iconPath: queueRow.model.icon === "folder" ? Icons.folder
+                                : queueRow.model.icon === "clipboard" ? Icons.clipboard
+                                : queueRow.model.icon === "link" ? Icons.globe
+                                : queueRow.model.icon === "task" ? Icons.bolt
+                                : queueRow.model.icon === "camera" ? Icons.camera
+                                : Icons.send
+                            tint: isFailedOrExpired ? Theme.tintRed : Theme.tintAmber
+                            title: queueRow.model.title || ""
+                            detail: {
+                                const devName = (queueRow.model.deviceName && queueRow.model.deviceName.length > 0)
+                                    ? queueRow.model.deviceName : home.name
+                                const sz = page.formatQueueSize(queueRow.totalBytes)
+                                if (queueRow.itemStatus === "sending") {
+                                    if (queueRow.totalBytes > 0) {
+                                        const pct = Math.round(Math.max(0, Math.min(1, queueRow.progress)) * 100)
+                                        return qsTr("Sending to %1 · %2%").arg(devName).arg(pct)
+                                    }
+                                    return qsTr("Sending to %1…").arg(devName)
+                                }
+                                if (queueRow.itemStatus === "failed") {
+                                    const reason = queueRow.model.reason || ""
+                                    return reason.length > 0 ? qsTr("Failed · %1").arg(reason) : qsTr("Failed")
+                                }
+                                if (queueRow.itemStatus === "expired") {
+                                    const reason = queueRow.model.reason || ""
+                                    return reason.length > 0 ? reason : qsTr("Expired")
+                                }
+                                return sz.length > 0
+                                    ? qsTr("Waiting for %1 · %2").arg(devName).arg(sz)
+                                    : qsTr("Waiting for %1").arg(devName)
+                            }
+                            IconButton {
+                                visible: queueRow.isFailedOrExpired
+                                width: 26; height: 26
+                                iconSize: 14
+                                iconPath: Icons.refresh
+                                label: qsTr("Retry")
+                                onClicked: TransferList.retryQueueItem(queueRow.model.queueId)
+                            }
+                            IconButton {
+                                width: 26; height: 26
+                                iconSize: 14
+                                iconPath: Icons.close
+                                label: queueRow.isFailedOrExpired ? qsTr("Dismiss") : qsTr("Cancel")
+                                onClicked: TransferList.cancelQueueItem(queueRow.model.queueId)
+                            }
+                        }
+                    }
+
+                    // ---- Transfers ----
+                    Item {
+                        width: parent.width
+                        height: 30
+                        visible: TransferList.count > 0
+                        Txt {
+                            x: Theme.rowPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            role: "label"
+                            muted: true
+                            text: qsTr("Transfers")
+                        }
+                        Row {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+                            TextAction {
+                                text: qsTr("Timeline")
+                                onClicked: AppController.currentPage = "timeline"
+                            }
+                            TextAction {
+                                visible: TransferList.count > TransferList.active
+                                text: qsTr("Clear finished")
+                                onClicked: TransferList.clearFinished()
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: TransferList
+                        delegate: TransferItem { width: side.width }
+                    }
+
+                    // ---- LocalSend nearby ----
+                    LocalSendSection {
+                        width: parent.width
+                        visible: AppController.localsendEnabled && page.localsendPeers.length > 0
+                    }
+
+                    // ---- Timeline: the latest across phones ----
+                    Item {
+                        id: timelineHeader
+                        width: parent.width
+                        height: 30
+                        readonly property var previewItems: {
+                            try {
+                                return AppController.timelinePreview.length > 0
+                                    ? JSON.parse(AppController.timelinePreview) : []
+                            } catch (e) {
+                                return []
+                            }
+                        }
+                        Txt {
+                            x: Theme.rowPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            role: "label"
+                            muted: true
+                            text: qsTr("Recent")
+                        }
+                        TextAction {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Timeline")
+                            onClicked: AppController.currentPage = "timeline"
+                        }
+                    }
+                    Txt {
+                        x: Theme.rowPadding
+                        height: Theme.rowHeight
+                        visible: timelineHeader.previewItems.length === 0
+                        muted: true
+                        text: qsTr("Nothing yet")
+                    }
+                    Repeater {
+                        model: timelineHeader.previewItems
+                        delegate: ActionRow {
+                            required property var modelData
+                            width: side.width
+                            iconPath: modelData.kind === "file" ? Icons.folder
+                                : modelData.kind === "clip" ? Icons.clipboard
+                                : modelData.kind === "link" ? Icons.globe
+                                : modelData.kind === "photo" ? Icons.photo
+                                : modelData.kind === "recording" ? Icons.mic
+                                : Icons.mirror
+                            tint: modelData.kind === "file" ? Theme.tintAmber
+                                : modelData.kind === "clip" ? Theme.tintLavender
+                                : modelData.kind === "link" ? Theme.tintBlue
+                                : modelData.kind === "photo" ? Theme.tintCoral
+                                : modelData.kind === "recording" ? Theme.tintRed
+                                : Theme.tintPink
+                            title: modelData.title || ""
+                            detail: modelData.subtitle || ""
+                            onClicked: AppController.currentPage = "timeline"
+                        }
+                    }
+                }
             }
         }
     }
@@ -2224,30 +2400,204 @@ Item {
 
     // An action on the phone, as a row. Unavailable, it's muted and says what
     // unlocks it (or "When connected" until the phone has said).
-    component PhoneAction: ActionRow {
-        id: action
-        property var feature: ({})
-        property color glyphTint: Theme.surfaceContentVariant
-        property bool queueable: false
-        property bool addonOk: false
-        property bool forceAvailable: false
+    // An action in the bar over Home: glyph, name and keys. Greyed out when
+    // it can't run; a click then says why.
+    component BarAction: FocusScope {
+        id: bar
+        property string label
+        property string iconPath
+        property color tint: Theme.surfaceContentVariant
+        property string keys
+        property bool available: true
         property bool active: false
-        property bool deviceOnline: true
-        readonly property bool available: forceAvailable
-            || page.featureUsable(feature, deviceOnline, queueable, addonOk)
-        width: parent ? parent.width : 0
-        interactive: available
-        tint: available ? glyphTint : Theme.surfaceContentVariant
-        titleColor: available ? Theme.surfaceContent : Theme.surfaceContentVariant
-        selected: active
-        meta: available ? "" : (lock.visible ? "" : qsTr("When connected"))
-        LockChip {
-            id: lock
-            anchors.verticalCenter: parent.verticalCenter
-            visible: !action.available && label.length > 0 && (action.deviceOnline || action.feature.action !== "updateApp")
-            feature: action.feature
-            maxWidth: 200
+        signal triggered
+        signal lockedClicked
+
+        function press() {
+            if (bar.available)
+                bar.triggered()
+            else
+                bar.lockedClicked()
         }
+
+        implicitWidth: barRow.implicitWidth + 24
+        implicitHeight: 32
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: bar.label
+        Accessible.onPressAction: bar.press()
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                bar.press()
+                event.accepted = true
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.rowRadius
+            color: bar.active || (barHover.hovered && bar.available) ? Theme.selection : Theme.raised
+            border.width: Theme.focusVisible(bar) ? 2 : 0
+            border.color: Theme.focusRing
+        }
+        Row {
+            id: barRow
+            anchors.centerIn: parent
+            spacing: 8
+            Icon {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 16; height: 16
+                path: bar.iconPath
+                color: bar.available ? bar.tint : Theme.surfaceContentVariant
+            }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                text: bar.label
+                color: bar.available ? Theme.surfaceContent : Theme.surfaceContentVariant
+            }
+            Keycap {
+                anchors.verticalCenter: parent.verticalCenter
+                keys: bar.keys
+            }
+        }
+        HoverHandler { id: barHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: bar.press() }
+    }
+
+    // An app's notifications as one row: its icon (the one the phone sent, a
+    // glyph until then), name and count, then the newest and when. A click
+    // opens it in place.
+    component AppGroupRow: FocusScope {
+        id: group
+        property string deviceId
+        property string app
+        property string appName
+        property string iconUrl
+        property string title
+        property string text
+        property real when
+        property int count
+        property bool expanded
+        // Bumped every minute, so the time stays right.
+        property int clock: 0
+        readonly property string name: appName.length > 0 ? appName : app
+        readonly property string latest: title.length > 0 && text.length > 0
+            ? qsTr("%1: %2").arg(title).arg(text.replace(/\s*\n\s*/g, " "))
+            : (title.length > 0 ? title : text.replace(/\s*\n\s*/g, " "))
+        // A glyph tint of its own, from the app's name, when it has no icon.
+        readonly property color tint: {
+            const names = ["teal", "blue", "coral", "pink", "green", "lavender", "amber"]
+            let h = 0
+            for (let i = 0; i < name.length; i++)
+                h = (h * 31 + name.charCodeAt(i)) % 997
+            return Theme.tint(names[h % names.length])
+        }
+
+        implicitHeight: 50
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: qsTr("%1, %n notification(s)", "", count).arg(name) + ". " + latest
+        Accessible.onPressAction: NotificationList.toggleGroup(group.app)
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                NotificationList.toggleGroup(group.app)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Delete) {
+                NotificationList.dismissGroup(group.deviceId, group.app)
+                event.accepted = true
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.rowRadius
+            color: group.expanded || groupHover.hovered ? Theme.raised : "transparent"
+            border.width: Theme.focusVisible(group) ? 2 : 0
+            border.color: Theme.focusRing
+        }
+        // On the name's line.
+        Item {
+            id: groupIcon
+            x: Theme.rowPadding
+            y: appLabel.y + Math.round((appLabel.height - height) / 2)
+            width: 18; height: 18
+            Image {
+                id: groupImage
+                anchors.fill: parent
+                source: group.iconUrl
+                sourceSize: Qt.size(36, 36)
+                smooth: true
+                mipmap: true
+                visible: status === Image.Ready
+            }
+            Icon {
+                anchors.fill: parent
+                visible: groupImage.status !== Image.Ready
+                path: Icons.bell
+                color: group.tint
+            }
+        }
+        Txt {
+            id: appLabel
+            anchors.left: groupIcon.right
+            anchors.leftMargin: 10
+            y: 7
+            width: Math.min(implicitWidth, groupTrail.x - x - countBox.width - 16)
+            text: group.name
+            weight: 500
+        }
+        Rectangle {
+            id: countBox
+            anchors.left: appLabel.right
+            anchors.leftMargin: 8
+            anchors.verticalCenter: appLabel.verticalCenter
+            width: countLabel.implicitWidth + 10
+            height: 18
+            radius: 5
+            color: Theme.selection
+            Txt {
+                id: countLabel
+                anchors.centerIn: parent
+                text: String(group.count)
+                role: "caption"
+                muted: true
+            }
+        }
+        Row {
+            id: groupTrail
+            anchors.right: parent.right
+            anchors.rightMargin: 6
+            anchors.verticalCenter: appLabel.verticalCenter
+            spacing: 4
+            // Always there for keyboards and screen readers, shown on hover.
+            IconButton {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 24; height: 24
+                iconSize: 14
+                iconPath: Icons.close
+                label: qsTr("Dismiss %1 notifications from %2").arg(group.count).arg(group.name)
+                opacity: groupHover.hovered || activeFocus ? 1 : 0
+                onClicked: NotificationList.dismissGroup(group.deviceId, group.app)
+            }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                role: "bodySmall"
+                muted: true
+                text: page.shortWhen(group.when, group.clock)
+            }
+        }
+        Txt {
+            anchors.left: appLabel.left
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.rowPadding
+            anchors.top: appLabel.bottom
+            anchors.topMargin: 2
+            role: "bodySmall"
+            muted: true
+            text: group.latest
+        }
+        HoverHandler { id: groupHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: NotificationList.toggleGroup(group.app) }
     }
 
     // A phone setting you flip: glyph and name; on, it takes the accent.

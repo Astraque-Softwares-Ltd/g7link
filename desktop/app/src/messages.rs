@@ -555,6 +555,11 @@ fn chat_message_json(m: &ChatMessageRecord) -> Value {
 
 // ---- What the page asks ----
 
+/// The default SMS app (package name) of the phone Messages shows, when it said.
+pub fn sms_app() -> Option<String> {
+    state(|s| s.sms_app.clone())
+}
+
 /// Sets the active app filter (`""` for all, `"sms"` for SMS only, or package name).
 pub fn set_app_filter(app: String) {
     let app = app.trim().to_owned();

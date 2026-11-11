@@ -50,6 +50,15 @@ pub mod qobject {
         #[qproperty(QString, apps, READ, NOTIFY)]
         /// Non-empty when a recent dismissal can be undone in the feed.
         #[qproperty(QString, undo_label, cxx_name = "undoLabel", READ, NOTIFY)]
+        /// The phone whose notifications the rows hold ("": every phone's).
+        #[qproperty(QString, device)]
+        /// The filter: "" (all), "messages", "calls" or "apps".
+        #[qproperty(QString, category)]
+        /// How many notifications that phone has under each filter, as JSON:
+        /// { "all", "messages", "calls", "apps" }.
+        #[qproperty(QString, category_counts, cxx_name = "categoryCounts")]
+        /// How many app groups (and Live Updates) the rows hold.
+        #[qproperty(i32, group_total, cxx_name = "groupTotal")]
         type NotificationList = super::NotificationListRust;
     }
 
@@ -123,6 +132,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "toggleGroup"]
         fn toggle_group(self: &NotificationList, app: &QString);
+        /// Shows all of an expanded app group's notifications, or only the
+        /// latest few.
+        #[qinvokable]
+        #[cxx_name = "showAll"]
+        fn show_all(self: Pin<&mut NotificationList>, app: &QString, on: bool);
         /// Restores the most recently dismissed notification or group to the PC feed.
         #[qinvokable]
         #[cxx_name = "undoDismiss"]
@@ -161,12 +175,116 @@ pub mod qobject {
     impl cxx_qt::Initialize for NotificationList {}
 }
 
+/// What a row in the feed is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum Kind {
+    /// An app's notifications, as one row: its icon, name, count and newest.
+    Group,
+    /// A notification: in an opened group, or a Live Update on its own.
+    #[default]
+    Item,
+    /// Under an opened group: show all of it, or clear it.
+    More,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Group => "group",
+            Kind::Item => "item",
+            Kind::More => "more",
+        }
+    }
+}
+
+/// The feed's filters. Messages: chat apps and texts; Calls: the phone app;
+/// Apps: everything else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Category {
+    #[default]
+    All,
+    Messages,
+    Calls,
+    Apps,
+}
+
+impl Category {
+    fn named(name: &str) -> Category {
+        match name {
+            "messages" => Category::Messages,
+            "calls" => Category::Calls,
+            "apps" => Category::Apps,
+            _ => Category::All,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Category::All => "",
+            Category::Messages => "messages",
+            Category::Calls => "calls",
+            Category::Apps => "apps",
+        }
+    }
+}
+
+/// Chat and texting apps, by package, for when their notifications don't
+/// say so themselves (a conversation, or a reply box).
+const MESSAGING_APPS: &[&str] = &[
+    "ch.threema.app",
+    "com.android.messaging",
+    "com.android.mms",
+    "com.beeper.android",
+    "com.discord",
+    "com.facebook.mlite",
+    "com.facebook.orca",
+    "com.google.android.apps.dynamite",
+    "com.google.android.apps.messaging",
+    "com.kakao.talk",
+    "com.microsoft.teams",
+    "com.samsung.android.messaging",
+    "com.skype.raider",
+    "com.Slack",
+    "com.snapchat.android",
+    "com.tencent.mm",
+    "com.viber.voip",
+    "com.whatsapp",
+    "com.whatsapp.w4b",
+    "im.vector.app",
+    "jp.naver.line.android",
+    "org.telegram.messenger",
+    "org.telegram.messenger.web",
+    "org.thoughtcrime.securesms",
+];
+
+/// Phone (dialer and in-call) apps, by package.
+const PHONE_APPS: &[&str] = &["com.android.phone", "com.android.server.telecom"];
+
+/// Which filter an app's notifications are under: the phone app's under
+/// Calls; chat apps, texting apps and the phone's SMS app under Messages;
+/// the rest under Apps.
+fn category_of(app: &str, members: &[&NotificationView], sms_app: Option<&str>) -> Category {
+    if PHONE_APPS.contains(&app) || app.contains(".dialer") || app.contains("incallui") {
+        return Category::Calls;
+    }
+    let chat = members.iter().any(|v| {
+        v.notification.conversation.is_some() || v.notification.actions.iter().any(|a| a.reply)
+    });
+    if chat || MESSAGING_APPS.contains(&app) || sms_app == Some(app) {
+        Category::Messages
+    } else {
+        Category::Apps
+    }
+}
+
 /// A row: the notification plus what the UI needs to show it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Row {
+    kind: Kind,
+    category: Category,
     view: NotificationView,
     device_name: String,
-    /// A file URL, or "" (the UI then shows the app's initial).
+    /// A file URL, or "" (the UI then shows a glyph).
     icon_url: String,
     /// The notification's picture as a file URL, or "".
     image_url: String,
@@ -178,23 +296,32 @@ struct Row {
     otp_code: String,
     /// A Live Update's progress as JSON, or "".
     live: String,
-    /// Total notifications in this `(device, app)` group (`1` if ungrouped or live).
+    /// Notifications in this `(device, app)` group (`1` for a Live Update).
     group_count: i32,
-    /// Index within the `(device, app)` group (`0` is the newest / lead item).
+    /// Where an item is in its opened group, from `1`; on a More row, how
+    /// many of the group show; `0` on a group row and a Live Update.
     group_index: i32,
-    /// Whether this `(device, app)` group is currently expanded.
+    /// Whether this `(device, app)` group is opened.
     group_expanded: bool,
-    /// Short preview of older notifications in the group when collapsed.
+    /// The group's older notifications, in brief.
     group_summary: String,
+    /// Which app group (or Live Update) of the list this row belongs to, from `0`.
+    group_ordinal: i32,
+    /// An opened group shows all its notifications, not only the latest few.
+    showing_all: bool,
 }
 
-/// Where a row is in its `(device, app)` group.
+/// Where a row is in the list and its `(device, app)` group.
 #[derive(Debug, Default)]
 struct Group {
+    kind: Kind,
+    category: Category,
     count: i32,
     index: i32,
     expanded: bool,
     summary: String,
+    ordinal: i32,
+    showing_all: bool,
 }
 
 impl Row {
@@ -213,6 +340,8 @@ impl Row {
             replies: replies_json(replies),
             otp_code: crate::notifications::notification_otp(n).unwrap_or_default(),
             live: live_json(n),
+            kind: group.kind,
+            category: group.category,
             view,
             device_name,
             icon_url,
@@ -221,6 +350,8 @@ impl Row {
             group_index: group.index,
             group_expanded: group.expanded,
             group_summary: group.summary,
+            group_ordinal: group.ordinal,
+            showing_all: group.showing_all,
         }
     }
 }
@@ -269,11 +400,21 @@ pub struct NotificationListRust {
     history_enabled: bool,
     apps: QString,
     undo_label: QString,
+    device: QString,
+    category: QString,
+    category_counts: QString,
+    group_total: i32,
     rows: Vec<Row>,
+    /// Each phone's notifications here.
+    per_device: HashMap<DeviceId, i32>,
+    /// Opened groups showing all their notifications, by app.
+    show_all: HashSet<String>,
 }
 
 /// Model roles (Qt::UserRole + n).
 const ROLES: &[&str] = &[
+    "kind",
+    "category",
     "deviceId",
     "deviceName",
     "key",
@@ -297,6 +438,8 @@ const ROLES: &[&str] = &[
     "groupIndex",
     "groupExpanded",
     "groupSummary",
+    "groupOrdinal",
+    "showingAll",
 ];
 const USER_ROLE: i32 = 0x0100;
 
@@ -305,6 +448,8 @@ fn role_value(row: &Row, role: &str) -> QVariant {
     let n = &row.view.notification;
     let reply = n.actions.iter().find(|a| a.reply);
     match role {
+        "kind" => text(row.kind.name()),
+        "category" => text(row.category.name()),
         "deviceId" => text(&row.view.device.to_string()),
         "deviceName" => text(&row.device_name),
         "key" => text(&n.key),
@@ -328,6 +473,8 @@ fn role_value(row: &Row, role: &str) -> QVariant {
         "groupIndex" => QVariant::from(&row.group_index),
         "groupExpanded" => QVariant::from(&row.group_expanded),
         "groupSummary" => text(&row.group_summary),
+        "groupOrdinal" => QVariant::from(&row.group_ordinal),
+        "showingAll" => QVariant::from(&row.showing_all),
         _ => QVariant::default(),
     }
 }
@@ -420,15 +567,28 @@ fn make_row(snapshot: &Snapshot, view: &NotificationView, group: Group) -> Row {
     )
 }
 
-/// Builds display rows, keeping Live Updates ungrouped and grouping regular
-/// notifications by `(device, app)` in order of each app's newest
-/// notification. Collapsed groups emit only their lead item (`group_index == 0`).
-fn build_rows(snapshot: &Snapshot) -> Vec<Row> {
-    // A Live Update alone, or a group's notifications newest first, each
-    // where its newest notification is.
+/// How many of an opened group's notifications show before "Show all".
+const SHOWN: usize = 3;
+
+/// Which rows the feed shows.
+#[derive(Debug, Default)]
+struct Filter {
+    /// One phone's, or every phone's.
+    device: Option<DeviceId>,
+    category: Category,
+    /// Opened groups showing all their notifications, by app.
+    show_all: HashSet<String>,
+    /// The phone's default SMS app (its texts are under Messages).
+    sms_app: Option<String>,
+}
+
+/// `device`'s notifications (every phone's for `None`) in the order the feed
+/// shows them: a Live Update alone, or an app's notifications newest first,
+/// each where its newest notification is.
+fn slots(snapshot: &Snapshot, device: Option<DeviceId>) -> Vec<Vec<&NotificationView>> {
     let mut slots: Vec<Vec<&NotificationView>> = Vec::new();
     let mut groups: HashMap<(DeviceId, &str), usize> = HashMap::new();
-    for view in &snapshot.views {
+    for view in snapshot.views.iter().filter(|v| device.is_none_or(|d| v.device == d)) {
         if view.notification.live.is_some() {
             slots.push(vec![view]);
             continue;
@@ -441,22 +601,71 @@ fn build_rows(snapshot: &Snapshot) -> Vec<Row> {
             }
         }
     }
+    slots
+}
 
-    let mut rows = Vec::with_capacity(snapshot.views.len());
-    for members in &slots {
+/// Builds the feed's rows: one per app group, under the filter, newest app
+/// first. An opened group's latest few notifications follow it, then a More
+/// row; a Live Update is a row of its own.
+fn build_rows(snapshot: &Snapshot, filter: &Filter) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut ordinal = 0;
+    for members in slots(snapshot, filter.device) {
         let Some((lead, older)) = members.split_first() else { continue };
-        let count = members.len() as i32;
-        let expanded = count > 1 && snapshot.expanded.contains(&lead.notification.app);
-        let summary = group_summary(older);
-        rows.push(make_row(snapshot, lead, Group { count, index: 0, expanded, summary }));
-        if expanded {
-            for (index, member) in older.iter().enumerate() {
-                let group = Group { count, index: index as i32 + 1, expanded, summary: String::new() };
-                rows.push(make_row(snapshot, member, group));
-            }
+        let app = lead.notification.app.as_str();
+        let category = category_of(app, &members, filter.sms_app.as_deref());
+        if filter.category != Category::All && filter.category != category {
+            continue;
         }
+        let count = i32::try_from(members.len()).unwrap_or(i32::MAX);
+        if lead.notification.live.is_some() {
+            let group = Group { kind: Kind::Item, category, count, ordinal, ..Group::default() };
+            rows.push(make_row(snapshot, lead, group));
+            ordinal += 1;
+            continue;
+        }
+        let expanded = snapshot.expanded.contains(app);
+        let showing_all = expanded && filter.show_all.contains(app);
+        let group = |kind, index, summary| Group {
+            kind,
+            category,
+            count,
+            index,
+            expanded,
+            summary,
+            ordinal,
+            showing_all,
+        };
+        rows.push(make_row(snapshot, lead, group(Kind::Group, 0, group_summary(older))));
+        if expanded {
+            let shown = if showing_all { members.len() } else { SHOWN.min(members.len()) };
+            for (index, member) in members.iter().take(shown).enumerate() {
+                let index = i32::try_from(index).unwrap_or(i32::MAX - 1) + 1;
+                rows.push(make_row(snapshot, member, group(Kind::Item, index, String::new())));
+            }
+            let shown = i32::try_from(shown).unwrap_or(i32::MAX);
+            rows.push(make_row(snapshot, lead, group(Kind::More, shown, String::new())));
+        }
+        ordinal += 1;
     }
     rows
+}
+
+/// How many of `device`'s notifications are under each filter: all,
+/// messages, calls and apps.
+fn category_counts(snapshot: &Snapshot, device: Option<DeviceId>, sms_app: Option<&str>) -> [usize; 4] {
+    let mut counts = [0; 4];
+    for members in slots(snapshot, device) {
+        let Some(lead) = members.first() else { continue };
+        let at = match category_of(&lead.notification.app, &members, sms_app) {
+            Category::Messages => 1,
+            Category::Calls => 2,
+            Category::All | Category::Apps => 3,
+        };
+        counts[0] += members.len();
+        counts[at] += members.len();
+    }
+    counts
 }
 
 /// A collapsed group's older notifications, in brief.
@@ -476,12 +685,16 @@ fn group_summary(older: &[&NotificationView]) -> String {
         .join(" · ")
 }
 
-fn key_of(row: &Row) -> (DeviceId, String) {
-    (row.view.device, row.view.notification.key.clone())
+fn key_of(row: &Row) -> (Kind, DeviceId, String) {
+    let n = &row.view.notification;
+    let id = if row.kind == Kind::Item { &n.key } else { &n.app };
+    (row.kind, row.view.device, id.clone())
 }
 
 impl cxx_qt::Initialize for qobject::NotificationList {
-    fn initialize(self: Pin<&mut Self>) {
+    fn initialize(mut self: Pin<&mut Self>) {
+        self.as_mut().on_device_changed(|list| list.refresh()).release();
+        self.as_mut().on_category_changed(|list| list.refresh()).release();
         super::subscribe(
             self.qt_thread(),
             Changes::NOTIFICATIONS | Changes::DEVICES | Changes::APPS | Changes::HISTORY,
@@ -495,7 +708,29 @@ impl qobject::NotificationList {
         let (snapshot, apps, history, undo_label) = core_host::host()
             .hub
             .read(|s| (Snapshot::of(s), apps_json(s), s.history_enabled, s.last_dismissed_label.clone()));
-        let new = build_rows(&snapshot);
+        let filter = Filter {
+            device: String::from(&self.device).parse().ok(),
+            category: Category::named(&String::from(&self.category)),
+            show_all: self.show_all.clone(),
+            sms_app: crate::messages::sms_app(),
+        };
+        let new = build_rows(&snapshot, &filter);
+        let sms_app = filter.sms_app.as_deref();
+        let [all, chats, calls, others] = category_counts(&snapshot, filter.device, sms_app);
+        let counts = serde_json::json!({ "all": all, "messages": chats, "calls": calls, "apps": others });
+        let counts = counts.to_string();
+        if String::from(&self.category_counts) != counts {
+            self.as_mut().set_category_counts(QString::from(&counts));
+        }
+        let groups = new.last().map_or(0, |r| r.group_ordinal + 1);
+        if self.group_total != groups {
+            self.as_mut().set_group_total(groups);
+        }
+        let mut per_device = HashMap::new();
+        for view in &snapshot.views {
+            *per_device.entry(view.device).or_insert(0) += 1;
+        }
+        self.as_mut().rust_mut().per_device = per_device;
         if String::from(&self.apps) != apps {
             self.as_mut().set_apps(QString::from(&apps));
         }
@@ -531,8 +766,7 @@ impl qobject::NotificationList {
                 }
             }
         }
-        let count: i32 = self.rows.iter().filter(|r| r.group_index == 0).map(|r| r.group_count).sum();
-        self.set_count(count);
+        self.set_count(i32::try_from(snapshot.views.len()).unwrap_or(i32::MAX));
     }
 
     pub fn data(&self, index: &QModelIndex, role: i32) -> QVariant {
@@ -557,12 +791,8 @@ impl qobject::NotificationList {
     }
 
     pub fn count_for(&self, device: &QString) -> i32 {
-        let device = String::from(device);
-        self.rows
-            .iter()
-            .filter(|r| r.group_index == 0 && r.view.device.to_string() == device)
-            .map(|r| r.group_count)
-            .sum()
+        let device = String::from(device).parse::<DeviceId>().ok();
+        device.and_then(|d| self.per_device.get(&d).copied()).unwrap_or(0)
     }
 
     pub fn dismiss(&self, device: &QString, key: &QString) {
@@ -649,6 +879,18 @@ impl qobject::NotificationList {
     pub fn toggle_group(&self, app: &QString) {
         let app_str = String::from(app);
         core_host::host().hub.update(|s| s.toggle_app_expanded(&app_str));
+    }
+
+    pub fn show_all(mut self: Pin<&mut Self>, app: &QString, on: bool) {
+        let app = String::from(app);
+        let changed = if on {
+            self.as_mut().rust_mut().show_all.insert(app)
+        } else {
+            self.as_mut().rust_mut().show_all.remove(&app)
+        };
+        if changed {
+            self.refresh();
+        }
     }
 
     pub fn undo_dismiss(&self) {
@@ -770,7 +1012,7 @@ mod tests {
             String::new(),
             "file:///C:/data/cache/images/1.jpg".into(),
             &[SentReply { text: "On my way".into(), pending: true }],
-            Group { count: 3, index: 0, expanded: false, summary: "Alex · Taylor".into() },
+            Group { count: 3, summary: "Alex · Taylor".into(), ..Group::default() },
         );
         let text = |role| role_value(&row, role).value::<QString>().map(String::from).unwrap_or_default();
         assert_eq!(text("title"), "Sam");
@@ -787,11 +1029,8 @@ mod tests {
         assert_eq!(text("groupSummary"), "Alex · Taylor");
     }
 
-    #[test]
-    fn build_rows_groups_by_app_collapses_by_default_and_expands_on_toggle() {
-        let phone = DeviceId([1; 32]);
-        let mut s = AppState::default();
-        let make = |key: &str, app: &str, title: &str, when: i64| Notification {
+    fn note(key: &str, app: &str, title: &str, when: i64) -> Notification {
+        Notification {
             key: key.into(),
             app: app.into(),
             app_name: app.into(),
@@ -806,126 +1045,108 @@ mod tests {
             image: None,
             live: None,
             conversation: None,
-        };
-        s.apply(&NodeEvent::NotificationPosted {
-            device: phone,
-            notification: make("c1", "com.chat", "Oldest chat", 10),
-        });
-        s.apply(&NodeEvent::NotificationPosted {
-            device: phone,
-            notification: make("m1", "com.mail", "Mail 1", 20),
-        });
-        s.apply(&NodeEvent::NotificationPosted {
-            device: phone,
-            notification: make("c2", "com.chat", "Middle chat", 30),
-        });
-        s.apply(&NodeEvent::NotificationPosted {
-            device: phone,
-            notification: make("c3", "com.chat", "Newest chat", 40),
-        });
-
-        // Collapsed by default: 2 rows (lead chat + mail), total count 4.
-        let collapsed = build_rows(&Snapshot::of(&s));
-        assert_eq!(collapsed.len(), 2);
-        assert_eq!(collapsed[0].view.notification.key, "c3");
-        assert_eq!(collapsed[0].group_count, 3);
-        assert_eq!(collapsed[0].group_index, 0);
-        assert!(!collapsed[0].group_expanded);
-        assert_eq!(collapsed[0].group_summary, "Middle chat · Oldest chat");
-        assert_eq!(collapsed[1].view.notification.key, "m1");
-        assert_eq!(collapsed[1].group_count, 1);
-
-        // Expanding com.chat reveals all 3 chat notifications in newest-first order before mail.
-        s.toggle_app_expanded("com.chat");
-        let expanded = build_rows(&Snapshot::of(&s));
-        assert_eq!(expanded.len(), 4);
-        let keys: Vec<&str> = expanded.iter().map(|r| r.view.notification.key.as_str()).collect();
-        assert_eq!(keys, ["c3", "c2", "c1", "m1"]);
-        assert!(expanded[0].group_expanded);
-        assert_eq!(expanded[1].group_index, 1);
-        assert_eq!(expanded[2].group_index, 2);
+        }
     }
 
-    /// The rows as they were made before, filtering every notification again
-    /// for each group, with the shared state locked.
-    fn rows_as_before(s: &AppState) -> Vec<Row> {
-        let snapshot = Snapshot::of(s);
-        let visible: Vec<&NotificationView> = s
-            .notifications
-            .iter()
-            .filter(|view| s.app_rule(&view.notification.app) != AppRule::Hidden)
-            .collect();
-        let mut rows = Vec::new();
-        let mut seen_groups = HashSet::new();
-        for view in &visible {
-            if view.notification.live.is_some() {
-                rows.push(make_row(&snapshot, view, Group { count: 1, ..Group::default() }));
-                continue;
-            }
-            let group_key = (view.device, view.notification.app.clone());
-            if !seen_groups.insert(group_key.clone()) {
-                continue;
-            }
-            let members: Vec<&NotificationView> = visible
-                .iter()
-                .copied()
-                .filter(|v| {
-                    v.notification.live.is_none()
-                        && v.device == group_key.0
-                        && v.notification.app == group_key.1
-                })
-                .collect();
-            let count = members.len() as i32;
-            let expanded = count > 1 && s.is_app_expanded(&group_key.1);
-            let summary = group_summary(&members[1..]);
-            rows.push(make_row(&snapshot, members[0], Group { count, index: 0, expanded, summary }));
-            if expanded {
-                for (idx, member) in members.iter().enumerate().skip(1) {
-                    let group = Group { count, index: idx as i32, expanded: true, summary: String::new() };
-                    rows.push(make_row(&snapshot, member, group));
-                }
-            }
-        }
-        rows
+    fn post(s: &mut AppState, device: DeviceId, notification: Notification) {
+        s.apply(&NodeEvent::NotificationPosted { device, notification });
+    }
+
+    fn shape(rows: &[Row]) -> Vec<(&'static str, &str)> {
+        rows.iter()
+            .map(|r| {
+                let n = &r.view.notification;
+                (r.kind.name(), if r.kind == Kind::Item { n.key.as_str() } else { n.app.as_str() })
+            })
+            .collect()
     }
 
     #[test]
-    fn rows_are_grouped_as_before() {
-        let (phone, tablet) = (DeviceId([1; 32]), DeviceId([2; 32]));
-        let make = |key: &str, app: &str, title: &str, when: i64| Notification {
-            key: key.into(),
-            app: app.into(),
-            app_name: app.into(),
-            title: Some(title.into()),
-            text: Some("Your verification code is 482913".into()),
-            sub: None,
-            when,
-            actions: vec![NotificationAction { id: "m".into(), title: "Mute".into(), reply: false }],
-            silent: false,
-            ongoing: false,
-            icon: None,
-            image: None,
-            live: None,
-            conversation: None,
-        };
-        let post = |s: &mut AppState, device: DeviceId, notification: Notification| {
-            s.apply(&NodeEvent::NotificationPosted { device, notification });
-        };
+    fn one_row_per_app_newest_first_and_opening_shows_the_latest_few() {
+        let phone = DeviceId([1; 32]);
         let mut s = AppState::default();
-        // Three notifications from two apps on one phone.
-        post(&mut s, phone, make("c1", "com.chat", "Ann", 10));
-        post(&mut s, phone, make("m1", "com.mail", "Invoice", 20));
-        post(&mut s, phone, make("c2", "com.chat", "Ben", 30));
-        assert_eq!(build_rows(&Snapshot::of(&s)), rows_as_before(&s));
-        let rows = build_rows(&Snapshot::of(&s));
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].group_count, 2);
-        assert_eq!(rows[0].group_summary, "Ann");
-        assert_eq!(rows[0].otp_code, "482913");
+        for (i, key) in ["c1", "c2", "c3", "c4", "c5"].into_iter().enumerate() {
+            post(&mut s, phone, note(key, "com.chat", key, 10 * i as i64));
+        }
+        post(&mut s, phone, note("m1", "com.mail", "Invoice", 25));
+        let filter = Filter { device: Some(phone), ..Filter::default() };
 
-        // The same app on another phone is its own group; a Live Update stands alone.
-        post(&mut s, tablet, make("c3", "com.chat", "Cy", 40));
-        let mut ride = make("r1", "com.ride", "Ride", 50);
+        let rows = build_rows(&Snapshot::of(&s), &filter);
+        assert_eq!(shape(&rows), [("group", "com.chat"), ("group", "com.mail")]);
+        assert_eq!((rows[0].group_count, rows[0].view.notification.key.as_str()), (5, "c5"));
+        assert_eq!(rows[0].group_summary, "c4 · c3");
+        assert_eq!((rows[0].group_ordinal, rows[1].group_ordinal), (0, 1));
+
+        // Opened: the latest three, then Show all / Clear.
+        s.toggle_app_expanded("com.chat");
+        let rows = build_rows(&Snapshot::of(&s), &filter);
+        assert_eq!(
+            shape(&rows),
+            [
+                ("group", "com.chat"),
+                ("item", "c5"),
+                ("item", "c4"),
+                ("item", "c3"),
+                ("more", "com.chat"),
+                ("group", "com.mail")
+            ]
+        );
+        assert_eq!(rows[1].group_index, 1);
+        assert_eq!((rows[4].group_index, rows[4].group_count), (3, 5), "3 of 5 show");
+        assert!(rows.iter().take(5).all(|r| r.group_ordinal == 0 && r.group_expanded));
+
+        // Show all: every one of them.
+        let all = Filter { show_all: HashSet::from(["com.chat".to_owned()]), ..filter };
+        let rows = build_rows(&Snapshot::of(&s), &all);
+        assert_eq!(rows.iter().filter(|r| r.kind == Kind::Item).count(), 5);
+        assert!(rows[0].showing_all);
+    }
+
+    #[test]
+    fn filters_sort_apps_into_messages_calls_and_apps() {
+        let (phone, tablet) = (DeviceId([1; 32]), DeviceId([2; 32]));
+        let mut s = AppState::default();
+        post(&mut s, phone, note("w1", "com.whatsapp", "Amina", 10));
+        post(&mut s, phone, note("w2", "com.whatsapp", "Brian", 20));
+        post(&mut s, phone, note("d1", "com.google.android.dialer", "Missed call", 30));
+        post(&mut s, phone, note("g1", "com.google.android.gm", "Invoice", 40));
+        // A reply box makes an unknown app a chat app.
+        let mut chat = note("x1", "com.example.chat", "Sam", 50);
+        chat.actions = vec![NotificationAction { id: "r".into(), title: "Reply".into(), reply: true }];
+        post(&mut s, phone, chat);
+        // The phone's own SMS app, by what it reported.
+        post(&mut s, phone, note("t1", "com.example.sms", "Bank", 60));
+        // Another phone's don't count here.
+        post(&mut s, tablet, note("o1", "com.whatsapp", "Other", 70));
+
+        let snapshot = Snapshot::of(&s);
+        assert_eq!(category_counts(&snapshot, Some(phone), Some("com.example.sms")), [6, 4, 1, 1]);
+        assert_eq!(category_counts(&snapshot, Some(phone), None), [6, 3, 1, 2], "unknown SMS app: an app");
+        assert_eq!(category_counts(&snapshot, None, Some("com.example.sms"))[0], 7);
+
+        let apps = |category| {
+            let filter = Filter {
+                device: Some(phone),
+                category,
+                sms_app: Some("com.example.sms".into()),
+                ..Filter::default()
+            };
+            build_rows(&snapshot, &filter).iter().map(|r| r.view.notification.app.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(apps(Category::Messages), ["com.example.sms", "com.example.chat", "com.whatsapp"]);
+        assert_eq!(apps(Category::Calls), ["com.google.android.dialer"]);
+        assert_eq!(apps(Category::Apps), ["com.google.android.gm"]);
+        assert_eq!(apps(Category::All).len(), 5);
+        assert_eq!(Category::named("calls"), Category::Calls);
+        assert_eq!(Category::named(""), Category::All);
+    }
+
+    #[test]
+    fn a_live_update_is_a_row_of_its_own() {
+        let phone = DeviceId([1; 32]);
+        let mut s = AppState::default();
+        post(&mut s, phone, note("c1", "com.chat", "Ann", 10));
+        let mut ride = note("r1", "com.ride", "Ride", 50);
         ride.live = Some(g7link_core::NotificationLive {
             v: 1,
             progress: Some(1),
@@ -938,11 +1159,8 @@ mod tests {
             countdown: false,
         });
         post(&mut s, phone, ride);
-        assert_eq!(build_rows(&Snapshot::of(&s)), rows_as_before(&s));
-
-        s.toggle_app_expanded("com.chat");
-        let expanded = build_rows(&Snapshot::of(&s));
-        assert_eq!(expanded, rows_as_before(&s));
-        assert_eq!(expanded.len(), 5);
+        let rows = build_rows(&Snapshot::of(&s), &Filter::default());
+        assert_eq!(shape(&rows), [("item", "r1"), ("group", "com.chat")]);
+        assert_eq!((rows[0].group_count, rows[0].group_index, rows[1].group_ordinal), (1, 0, 1));
     }
 }

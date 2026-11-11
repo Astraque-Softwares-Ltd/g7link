@@ -267,6 +267,16 @@ Item {
             text: qsTr("Copy code")
             onClicked: NotificationList.copyCode(item.otpCode)
         }
+        // Where the phone offers a reply: right there, without opening it first.
+        TextAction {
+            visible: item.replyAction.length > 0 && !item.open && item.otpCode.length === 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: item.replyLabel.length > 0 ? item.replyLabel : qsTr("Reply")
+            onClicked: {
+                item.replying = true
+                replyField.input.forceActiveFocus()
+            }
+        }
         Txt {
             visible: item.liveRightLabel.length > 0
             anchors.verticalCenter: parent.verticalCenter
