@@ -142,11 +142,20 @@ void* create(Create create, Destroy destroy, char* error, size_t capacity)
         return nullptr;
     };
     try {
+        // Why the newest FFmpeg that loaded couldn't do it (no hardware encoder, say). The
+        // built-in one usually fails only because its FFmpeg isn't this system's, which
+        // says nothing about why there is no codec.
+        std::string reason;
         const auto& candidates = alternates();
         for (auto it = candidates.rbegin(); it != candidates.rend(); ++it) {
+            if (!it->get()) continue;
+            if (capacity) error[0] = '\0';
             if (auto* handle = attempt(it->get())) return handle;
+            if (reason.empty() && capacity && error[0]) reason = error;
         }
-        return attempt(&builtin);
+        if (auto* handle = attempt(&builtin)) return handle;
+        if (!reason.empty()) std::snprintf(error, capacity, "%s", reason.c_str());
+        return nullptr;
     } catch (const std::exception& failure) {
         if (capacity) std::snprintf(error, capacity, "%s", failure.what());
     }
