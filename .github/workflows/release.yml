@@ -4,12 +4,16 @@
 # with their SHA-256 sums, which the apps' updaters check, for a maintainer
 # to review and publish. Publishing it updates the stable channel's feed
 # (channels.yml).
+#
+# GitHub doesn't run it for a tag on a "[skip ci]" commit; start it by hand
+# on the tag then: gh workflow run release.yml --ref vX.Y.Z
 name: Release
 
 on:
   push:
     # Releases only: nightly tags (v1.2.3-nightly.N) are made by nightly.yml.
     tags: ["v*", "!v*-nightly.*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
