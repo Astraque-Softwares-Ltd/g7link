@@ -19,6 +19,10 @@ on:
         description: "The version to build: 1.2.3, or a nightly's 1.2.3-nightly.N"
         required: true
         type: string
+      android:
+        description: "Build the signed Android app; a run by hand has no keystore, so it skips it"
+        type: boolean
+        default: true
     secrets:
       ANDROID_KEYSTORE:
         required: true
@@ -180,7 +184,7 @@ jobs:
 
   android:
     # Signing needs the keystore, which only a release has.
-    if: github.event_name != 'workflow_dispatch'
+    if: inputs.android
     name: Android app (signed)
     runs-on: ubuntu-latest
     steps:
