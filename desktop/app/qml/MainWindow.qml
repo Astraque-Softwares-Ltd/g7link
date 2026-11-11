@@ -323,21 +323,18 @@ NativeWindow {
         height = fittedH
         x = sx + normalX
         y = sy + normalY
-        if (!leftFullScreen)
-            showFullScreen()
-        else if (Preferences.windowMaximized)
+        if (Preferences.windowMaximized)
             showMaximized()
         restoreCompleteTimer.restart()
     }
 
-    // The app opens filling the screen; once left, it stays out for this run.
-    property bool leftFullScreen: false
     function toggleFullScreen() {
-        leftFullScreen = window.visibility === Window.FullScreen
-        if (leftFullScreen)
-            showNormal()
-        else
+        if (window.visibility !== Window.FullScreen)
             showFullScreen()
+        else if (Preferences.windowMaximized)
+            showMaximized()
+        else
+            showNormal()
     }
 
     function saveWindowState() {
@@ -364,7 +361,7 @@ NativeWindow {
             normalY,
             normalWidth,
             normalHeight,
-            window.visibility === Window.Maximized
+            window.visibility === Window.Maximized || window.visibility === Window.FullScreen
         )
     }
 

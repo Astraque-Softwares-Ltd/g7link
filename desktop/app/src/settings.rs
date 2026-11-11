@@ -697,7 +697,7 @@ impl Default for Settings {
             window_y: None,
             window_width: DEFAULT_WINDOW_WIDTH,
             window_height: DEFAULT_WINDOW_HEIGHT,
-            window_maximized: false,
+            window_maximized: true,
         }
     }
 }
