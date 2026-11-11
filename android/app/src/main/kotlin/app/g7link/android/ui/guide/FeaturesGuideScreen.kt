@@ -1,6 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.guide
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7Tabs
+import app.g7link.android.ui.theme.G7Tints
+import app.g7link.android.ui.theme.LocalQuietTheme
+import app.g7link.android.ui.theme.g7Tints
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
@@ -96,7 +110,6 @@ private data class ResolvedGuideCard(
 @Composable
 fun FeaturesGuideScreen(
     state: CoreState,
-    onBack: () -> Unit,
     onShowMe: (GuideHighlightTarget) -> Unit,
     onOpenWalkthrough: () -> Unit,
     onPairNew: () -> Unit,
@@ -216,185 +229,127 @@ fun FeaturesGuideScreen(
     }
 
     val searchDesc = stringResource(R.string.guide_search_desc)
-    val showMeLabel = stringResource(R.string.guide_action_show_me)
-    val learnMoreLabel = stringResource(R.string.guide_action_learn_more)
-    val externalHeading = stringResource(R.string.guide_external_heading)
 
-    BackHandler(onBack = onBack)
-
-    Surface(
-        modifier = modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
+    val tints = g7Tints()
+    val scheme = MaterialTheme.colorScheme
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .glassModalBlur(isGlass && activeLearnMoreEntry != null),
+        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = if (LocalQuietTheme.current) 16.dp else 104.dp),
     ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .glassModalBlur(isGlass && activeLearnMoreEntry != null),
-            contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 36.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            item(key = "guide_header", contentType = "guide_header") {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        TextButton(
-                            onClick = onBack,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        ) {
-                            Text(stringResource(R.string.guide_back))
-                        }
-                        TextButton(
-                            onClick = onOpenWalkthrough,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                        ) {
-                            Text(stringResource(R.string.guide_open_walkthrough))
-                        }
-                    }
-                    Text(
-                        text = stringResource(R.string.guide_title),
-                        style = MaterialTheme.typography.headlineMedium,
+        item(key = "guide_header", contentType = "guide_header") {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(horizontal = 6.dp)) {
+                Text(
+                    text = stringResource(R.string.home_guide_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.padding(start = 6.dp, top = 12.dp),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(scheme.surfaceContainer)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = G7Icons.search,
+                        contentDescription = null,
+                        tint = scheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
                     )
-                    Text(
-                        text = stringResource(R.string.guide_subtitle),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    if (!hasConnectedPc) {
-                        Row(
+                    Box(Modifier.weight(1f)) {
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                stringResource(R.string.guide_search_placeholder),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = scheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = scheme.onSurface),
+                            cursorBrush = SolidColor(scheme.primary),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .bentoWell(
-                                    cornerRadius = 16.dp,
-                                    fillColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                )
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text(
-                                text = stringResource(R.string.guide_connect_pc_banner),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (state.devices.isEmpty()) {
-                                TextButton(
-                                    onClick = onPairNew,
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                ) {
-                                    Text(stringResource(R.string.guide_fix_pair))
-                                }
-                            }
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = { Text(stringResource(R.string.guide_search_placeholder)) },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics { contentDescription = searchDesc },
-                    )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        FeatureArea.entries.forEach { area ->
-                            val selected = area == selectedArea
-                            val chipBg = if (selected) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                Color.Transparent
-                            }
-                            val chipBorder = if (selected) {
-                                Color.Transparent
-                            } else {
-                                MaterialTheme.colorScheme.outlineVariant
-                            }
-                            val chipFg = if (selected) {
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .bentoWell(
-                                        cornerRadius = 10.dp,
-                                        fillColor = chipBg,
-                                        borderColor = chipBorder,
-                                    )
-                                    .clickable(role = Role.Tab) { selectedAreaId = area.id }
-                                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    text = stringResource(area.labelRes),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = chipFg,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (resolvedCards.isEmpty()) {
-                item(key = "guide_empty", contentType = "guide_empty") {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .liquidGlassCard(
-                                cornerRadius = 24.dp,
-                                isGlass = isGlass,
-                                baseColor = MaterialTheme.colorScheme.surfaceContainer,
-                                tintColor = MaterialTheme.colorScheme.primary,
-                                outlineColor = if (isGlass) MaterialTheme.colorScheme.outlineVariant else Color.Transparent,
-                            )
-                            .padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.guide_empty_title),
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        Text(
-                            text = stringResource(R.string.guide_empty_body),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                .semantics { contentDescription = searchDesc },
                         )
                     }
                 }
-            } else {
-                items(
-                    items = resolvedCards,
-                    key = { it.id },
-                    contentType = {
-                        (if (it.badge != null) 1 else 0) or
-                            (if (it.externalSteps.isNotEmpty()) 2 else 0) or
-                            (if (it.fixAction != null) 4 else 0)
-                    },
-                ) { card ->
-                    FeatureGuideCard(
-                        card = card,
-                        isGlass = isGlass,
-                        showMeLabel = showMeLabel,
-                        learnMoreLabel = learnMoreLabel,
-                        externalHeading = externalHeading,
-                        onShowMe = onShowMe,
-                        onRunFix = runFixAction,
-                        onLearnMore = { activeLearnMoreId = card.id },
-                    )
+                G7Tabs(
+                    options = FeatureArea.entries.map { it.id to stringResource(it.labelRes) },
+                    selected = selectedArea.id,
+                    onSelect = { selectedAreaId = it },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+
+        if (state.devices.isEmpty()) {
+            item(key = "guide_pair", contentType = "row") {
+                G7Row(
+                    label = stringResource(R.string.action_pair_with_pc),
+                    icon = G7Icons.plus,
+                    tint = tints.lavender,
+                    onClick = onPairNew,
+                )
+            }
+        }
+
+        if (resolvedCards.isEmpty()) {
+            item(key = "guide_empty", contentType = "row") {
+                G7Row(
+                    label = stringResource(R.string.guide_empty_title),
+                    sublabel = stringResource(R.string.guide_empty_body),
+                    icon = G7Icons.search,
+                    tint = tints.muted,
+                )
+            }
+        } else {
+            items(items = resolvedCards, key = { it.id }, contentType = { "row" }) { card ->
+                val (icon, tint) = guideIcon(card.id, tints)
+                G7Row(
+                    label = card.title,
+                    icon = icon,
+                    tint = tint,
+                    onClick = { activeLearnMoreId = card.id },
+                ) {
+                    val badge = card.badge
+                    if (badge != null) {
+                        Text(
+                            text = when (badge) {
+                                is FeatureLiveBadge.Available -> stringResource(R.string.guide_state_ready)
+                                is FeatureLiveBadge.NeedsPermission -> stringResource(R.string.action_allow)
+                                is FeatureLiveBadge.NeedsPowerLevel -> stringResource(badge.levelNameRes)
+                                is FeatureLiveBadge.ConnectPcToCheck -> stringResource(R.string.guide_state_off)
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = when (badge) {
+                                is FeatureLiveBadge.Available -> tints.teal
+                                is FeatureLiveBadge.NeedsPermission,
+                                is FeatureLiveBadge.NeedsPowerLevel,
+                                -> tints.amber
+                                is FeatureLiveBadge.ConnectPcToCheck -> scheme.onSurfaceVariant
+                            },
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
+        }
+
+        item(key = "guide_walkthrough", contentType = "row") {
+            G7Row(
+                label = stringResource(R.string.guide_open_walkthrough),
+                icon = G7Icons.info,
+                tint = tints.muted,
+                onClick = onOpenWalkthrough,
+            )
         }
     }
 
@@ -416,154 +371,6 @@ fun FeaturesGuideScreen(
                 onRunFix = runFixAction,
                 onClose = { activeLearnMoreId = null },
             )
-        }
-    }
-}
-
-@Composable
-private fun FeatureGuideCard(
-    card: ResolvedGuideCard,
-    isGlass: Boolean,
-    showMeLabel: String,
-    learnMoreLabel: String,
-    externalHeading: String,
-    onShowMe: (GuideHighlightTarget) -> Unit,
-    onRunFix: (GuideFixAction) -> Unit,
-    onLearnMore: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .liquidGlassCard(
-                cornerRadius = 26.dp,
-                isGlass = isGlass,
-                baseColor = MaterialTheme.colorScheme.surfaceContainer,
-                tintColor = MaterialTheme.colorScheme.primary,
-                outlineColor = if (isGlass) MaterialTheme.colorScheme.outlineVariant else Color.Transparent,
-            )
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        // Title on its own full-width line, with status badge directly underneath when shown
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                text = card.title,
-                style = MaterialTheme.typography.titleMedium,
-            )
-            if (card.badge != null && card.badgeText != null) {
-                FeatureBadgeChip(badge = card.badge, text = card.badgeText)
-            }
-        }
-
-        Text(
-            text = card.summary,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .bentoWell(
-                    cornerRadius = 16.dp,
-                    fillColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                )
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                text = card.whereLine,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = card.needsLine,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        if (card.externalSteps.isNotEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .bentoWell(
-                        cornerRadius = 16.dp,
-                        fillColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    text = externalHeading,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-                card.externalSteps.forEach { stepText ->
-                    Text(
-                        text = stepText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
-                }
-            }
-        }
-
-        // Single row of actions: "Show me" (tonal) and "Learn more" (text), plus filled action button when needed
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (card.showMeTarget != null) {
-                Box(
-                    modifier = Modifier
-                        .bentoWell(
-                            cornerRadius = 20.dp,
-                            fillColor = MaterialTheme.colorScheme.secondaryContainer,
-                        )
-                        .clickable(role = Role.Button) { onShowMe(card.showMeTarget) }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = showMeLabel,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
-                }
-            }
-            Box(
-                modifier = Modifier
-                    .clickable(role = Role.Button, onClick = onLearnMore)
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = learnMoreLabel,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            if (card.fixAction != null && card.fixButtonLabel != null) {
-                Box(
-                    modifier = Modifier
-                        .bentoWell(
-                            cornerRadius = 20.dp,
-                            fillColor = MaterialTheme.colorScheme.primary,
-                        )
-                        .clickable(role = Role.Button) { onRunFix(card.fixAction) }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = card.fixButtonLabel,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                }
-            }
         }
     }
 }
@@ -664,6 +471,13 @@ private fun FeatureLearnMoreSheetContent(
             },
         )
 
+        if (entry.externalStepResIds.isNotEmpty()) {
+            GuideSectionBlock(
+                heading = stringResource(R.string.guide_external_heading),
+                items = entry.externalStepResIds.map { stringResource(it) },
+            )
+        }
+
         GuideSectionBlock(
             heading = stringResource(R.string.guide_sheet_options),
             items = entry.optionsExplainedResIds.map { stringResource(it) },
@@ -733,4 +547,35 @@ private fun openDevOptions(context: Context) {
             context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
+}
+
+/** Each feature's icon and tint, as Home draws it. */
+private fun guideIcon(id: String, tints: G7Tints): Pair<ImageVector, Color> = when (id) {
+    "notification_mirroring" -> G7Icons.bell to tints.blue
+    "incoming_calls" -> G7Icons.phone to tints.teal
+    "media_and_pc_audio" -> G7Icons.music to tints.pink
+    "sms_mms_messages" -> G7Icons.message to tints.blue
+    "clipboard_sync", "quick_settings_clipboard_tile" -> G7Icons.clipboard to tints.lavender
+    "send_files_and_folders" -> G7Icons.upload to tints.amber
+    "waiting_to_send_queue" -> G7Icons.history to tints.amber
+    "share_sheet_handoff" -> G7Icons.send to tints.blue
+    "browse_phone_storage" -> G7Icons.folder to tints.amber
+    "browse_pc_files" -> G7Icons.download to tints.amber
+    "recent_photos" -> G7Icons.photo to tints.coral
+    "timeline_history" -> G7Icons.history to tints.blue
+    "localsend_lan" -> G7Icons.wifi to tints.green
+    "phone_screen_mirroring" -> G7Icons.screen to tints.pink
+    "phone_app_windows" -> G7Icons.monitor to tints.pink
+    "phone_as_pc_webcam", "continuity_camera" -> G7Icons.camera to tints.coral
+    "voice_recorder" -> G7Icons.mic to tints.red
+    "control_pc_remote" -> G7Icons.pointer to tints.teal
+    "control_phone_from_pc" -> G7Icons.gesture to tints.pink
+    "elevated_mode" -> G7Icons.bolt to tints.amber
+    "deck_control_surface" -> G7Icons.deck to tints.green
+    "desk_mode" -> G7Icons.clock to tints.lavender
+    "ring_lock_sleep_wake" -> G7Icons.power to tints.red
+    "phone_quick_toggles" -> G7Icons.moon to tints.lavender
+    "away_mode_and_usb" -> G7Icons.wifi to tints.teal
+    "connection_doctor" -> G7Icons.info to tints.blue
+    else -> G7Icons.info to tints.muted
 }

@@ -23,7 +23,9 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -90,7 +92,7 @@ import app.g7link.android.ui.theme.G7LinkTheme
 import app.g7link.android.ui.theme.glassBackdropSource
 import app.g7link.android.ui.theme.liquidGlass
 import app.g7link.android.ui.theme.liquidGlassCard
-import app.g7link.android.ui.walkthrough.WalkthroughScreen
+import app.g7link.android.ui.walkthrough.WelcomeScreen
 import app.g7link.android.ui.walkthrough.WalkthroughStep
 import app.g7link.android.ui.walkthrough.resolveStartupWalkthrough
 import app.g7link.android.ui.webcam.WebcamScreen
@@ -318,13 +320,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab { Home, Settings }
+private enum class Tab { Home, Guide, Settings }
 
 private sealed interface ScreenRoute {
     data object Starting : ScreenRoute
     data class Failed(val message: String) : ScreenRoute
     data object Walkthrough : ScreenRoute
-    data object FeaturesGuide : ScreenRoute
     data object Pairing : ScreenRoute
     data class Webcam(val pcId: String) : ScreenRoute
     data class Recorder(val pcId: String) : ScreenRoute
@@ -357,7 +358,6 @@ private fun App(
     var tab by rememberSaveable { mutableStateOf(Tab.Home) }
     var pairing by rememberSaveable { mutableStateOf(false) }
     var manualWalkthroughOpen by rememberSaveable { mutableStateOf(false) }
-    var featuresGuideOpen by rememberSaveable { mutableStateOf(false) }
     var pendingHighlightTarget by rememberSaveable { mutableStateOf<GuideHighlightTarget?>(null) }
     var remotePcId by rememberSaveable { mutableStateOf<String?>(null) }
     var remoteInitialMode by rememberSaveable { mutableStateOf(RemoteMode.Touchpad) }
@@ -381,6 +381,7 @@ private fun App(
         }
     }
     val snackbar = remember { SnackbarHostState() }
+    val appScope = androidx.compose.runtime.rememberCoroutineScope()
     val undoLabel = stringResource(R.string.send_queue_undo)
     LaunchedEffect(Unit) { core.messages.collect { snackbar.showSnackbar(it) } }
     LaunchedEffect(undoLabel) {
@@ -495,7 +496,6 @@ private fun App(
         state.status is CoreStatus.Starting -> ScreenRoute.Starting
         state.status is CoreStatus.Failed -> ScreenRoute.Failed(state.status.message)
         showWalkthrough -> ScreenRoute.Walkthrough
-        featuresGuideOpen -> ScreenRoute.FeaturesGuide
         pairing || state.pairing != PairingState.Idle -> ScreenRoute.Pairing
         webcamDevice != null -> ScreenRoute.Webcam(webcamDevice.id)
         recordDevice != null -> ScreenRoute.Recorder(recordDevice.id)
@@ -559,92 +559,18 @@ private fun App(
                 Text(stringResource(R.string.core_failed, route.message))
             }
             ScreenRoute.Walkthrough -> {
-                BackHandler(
-                    enabled = manualWalkthroughOpen && walkthroughPersistence.currentStep.previous == null,
-                ) {
-                    manualWalkthroughOpen = false
-                }
+                BackHandler(enabled = manualWalkthroughOpen) { manualWalkthroughOpen = false }
                 Scaffold(
                     snackbarHost = { SnackbarHost(snackbar) },
                 ) { padding ->
-                    WalkthroughScreen(
+                    WelcomeScreen(
                         state = state,
-                        step = walkthroughPersistence.currentStep,
-                        pairingActions = actions,
-                        onStepChange = { nextStep ->
-                            preferences.updateWalkthrough { it.goToStep(nextStep) }
-                        },
-                        onSkip = {
-                            core.resetPairing()
-                            pairing = false
-                            manualWalkthroughOpen = false
-                            preferences.updateWalkthrough { it.copy(completed = true) }
-                        },
-                        onFinishToHome = {
-                            core.resetPairing()
-                            pairing = false
+                        onPair = {
                             manualWalkthroughOpen = false
                             tab = Tab.Home
                             preferences.updateWalkthrough {
                                 it.copy(completed = true, currentStepIndex = WalkthroughStep.Done.index)
                             }
-                        },
-                        onOpenFeaturesGuide = {
-                            core.resetPairing()
-                            pairing = false
-                            manualWalkthroughOpen = false
-                            featuresGuideOpen = true
-                            preferences.updateWalkthrough {
-                                it.copy(completed = true, currentStepIndex = WalkthroughStep.Done.index)
-                            }
-                        },
-                        onAccessChanged = core::refreshNotificationAccess,
-                        modifier = Modifier.fillMaxSize().padding(padding),
-                    )
-                }
-            }
-            ScreenRoute.FeaturesGuide -> {
-                BackHandler { featuresGuideOpen = false }
-                Scaffold(
-                    snackbarHost = { SnackbarHost(snackbar) },
-                ) { padding ->
-                    FeaturesGuideScreen(
-                        state = state,
-                        onBack = { featuresGuideOpen = false },
-                        onShowMe = { target ->
-                            core.resetPairing()
-                            pairing = false
-                            featuresGuideOpen = false
-                            pendingHighlightTarget = target
-                            tab = when (target) {
-                                GuideHighlightTarget.HOME_PAIR_PC,
-                                GuideHighlightTarget.HOME_PC_CARD,
-                                GuideHighlightTarget.HOME_PC_AUDIO,
-                                GuideHighlightTarget.HOME_CLIPBOARD_HISTORY,
-                                GuideHighlightTarget.HOME_TIMELINE,
-                                GuideHighlightTarget.HOME_SEND_QUEUE,
-                                GuideHighlightTarget.HOME_SETUP_PERMISSIONS,
-                                GuideHighlightTarget.HOME_LOCALSEND -> Tab.Home
-                                GuideHighlightTarget.SETTINGS_DEVICES,
-                                GuideHighlightTarget.SETTINGS_NOTIFICATIONS,
-                                GuideHighlightTarget.SETTINGS_CONTROL,
-                                GuideHighlightTarget.SETTINGS_BACKGROUND,
-                                GuideHighlightTarget.SETTINGS_CALLS_CONTACTS,
-                                GuideHighlightTarget.SETTINGS_PHOTOS_STORAGE,
-                                GuideHighlightTarget.SETTINGS_CLIPBOARD,
-                                GuideHighlightTarget.SETTINGS_LOCALSEND,
-                                GuideHighlightTarget.SETTINGS_DATA_STORAGE -> Tab.Settings
-                            }
-                        },
-                        onOpenWalkthrough = {
-                            core.resetPairing()
-                            pairing = false
-                            featuresGuideOpen = false
-                            preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
-                            manualWalkthroughOpen = true
-                        },
-                        onPairNew = {
-                            featuresGuideOpen = false
                             pairing = true
                         },
                         onAccessChanged = core::refreshNotificationAccess,
@@ -753,19 +679,25 @@ private fun App(
                     androidx.compose.runtime.derivedStateOf { state.devices.count { it.online } }
                 }
                 val pairedCount = state.devices.size
+                val quiet = appearance.theme == "quiet"
+                BackHandler(enabled = tab != Tab.Home) { tab = Tab.Home }
                 Scaffold(
                     containerColor = androidx.compose.ui.graphics.Color.Transparent,
                     snackbarHost = { SnackbarHost(snackbar) },
                     bottomBar = {
-                        FloatingBottomPillDock(
-                            selectedTab = tab,
-                            onSelectTab = { tab = it },
-                            onlineCount = onlineCount,
-                            pairedCount = pairedCount,
-                            isGlass = isGlass,
-                            reducedMotion = reducedMotion,
-                            backdrop = glassBackdrop,
-                        )
+                        if (quiet) {
+                            G7BottomBar(selectedTab = tab, onSelectTab = { tab = it })
+                        } else {
+                            FloatingBottomPillDock(
+                                selectedTab = tab,
+                                onSelectTab = { tab = it },
+                                onlineCount = onlineCount,
+                                pairedCount = pairedCount,
+                                isGlass = isGlass,
+                                reducedMotion = reducedMotion,
+                                backdrop = glassBackdrop,
+                            )
+                        }
                     },
                 ) { padding ->
                     val context = LocalContext.current
@@ -815,7 +747,11 @@ private fun App(
                         },
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(top = padding.calculateTopPadding())
+                            .padding(
+                                top = padding.calculateTopPadding(),
+                                // The G7 bar sits under the content; the floating dock floats over it.
+                                bottom = if (quiet) padding.calculateBottomPadding() else 0.dp,
+                            )
                             .glassBackdropSource(glassBackdrop, enabled = isGlass),
                         label = "main_tab",
                     ) { shownTab ->
@@ -885,6 +821,9 @@ private fun App(
                                     onStopKeyboardFromPc = core::stopKeyboardFromPc,
                                     onListPcFiles = core::listPcFiles,
                                     onDownloadPcFile = core::downloadPcFile,
+                                    onOpenLink = { id, url ->
+                                        appScope.launch { snackbar.showSnackbar(core.openLinkOnPc(id, url)) }
+                                    },
                                     mirrorSession = mirrorSession,
                                     webcamSession = webcamSession,
                                     recorderSession = recorderSession,
@@ -924,7 +863,7 @@ private fun App(
                                     },
                                     onOpenFeaturesGuide = {
                                         preferences.updateWalkthrough { it.dismissWhatsNewGuide() }
-                                        featuresGuideOpen = true
+                                        tab = Tab.Guide
                                     },
                                     onOpenWalkthrough = {
                                         preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
@@ -932,6 +871,44 @@ private fun App(
                                     },
                                     highlightTarget = pendingHighlightTarget,
                                     onHighlightConsumed = { pendingHighlightTarget = null },
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                            }
+                            Tab.Guide -> saveableStateHolder.SaveableStateProvider("tab_guide") {
+                                FeaturesGuideScreen(
+                                    state = state,
+                                    onShowMe = { target ->
+                                        core.resetPairing()
+                                        pairing = false
+                                        pendingHighlightTarget = target
+                                        tab = when (target) {
+                                            GuideHighlightTarget.HOME_PAIR_PC,
+                                            GuideHighlightTarget.HOME_PC_CARD,
+                                            GuideHighlightTarget.HOME_PC_AUDIO,
+                                            GuideHighlightTarget.HOME_CLIPBOARD_HISTORY,
+                                            GuideHighlightTarget.HOME_TIMELINE,
+                                            GuideHighlightTarget.HOME_SEND_QUEUE,
+                                            GuideHighlightTarget.HOME_SETUP_PERMISSIONS,
+                                            GuideHighlightTarget.HOME_LOCALSEND -> Tab.Home
+                                            GuideHighlightTarget.SETTINGS_DEVICES,
+                                            GuideHighlightTarget.SETTINGS_NOTIFICATIONS,
+                                            GuideHighlightTarget.SETTINGS_CONTROL,
+                                            GuideHighlightTarget.SETTINGS_BACKGROUND,
+                                            GuideHighlightTarget.SETTINGS_CALLS_CONTACTS,
+                                            GuideHighlightTarget.SETTINGS_PHOTOS_STORAGE,
+                                            GuideHighlightTarget.SETTINGS_CLIPBOARD,
+                                            GuideHighlightTarget.SETTINGS_LOCALSEND,
+                                            GuideHighlightTarget.SETTINGS_DATA_STORAGE -> Tab.Settings
+                                        }
+                                    },
+                                    onOpenWalkthrough = {
+                                        core.resetPairing()
+                                        pairing = false
+                                        preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
+                                        manualWalkthroughOpen = true
+                                    },
+                                    onPairNew = { pairing = true },
+                                    onAccessChanged = core::refreshNotificationAccess,
                                     modifier = Modifier.fillMaxSize(),
                                 )
                             }
@@ -980,9 +957,7 @@ private fun App(
                                         preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
                                         manualWalkthroughOpen = true
                                     },
-                                    onOpenFeaturesGuide = {
-                                        featuresGuideOpen = true
-                                    },
+                                    onOpenFeaturesGuide = { tab = Tab.Guide },
                                     highlightTarget = pendingHighlightTarget,
                                     onHighlightConsumed = { pendingHighlightTarget = null },
                                     modifier = Modifier.fillMaxSize(),
@@ -1066,6 +1041,14 @@ private fun FloatingBottomPillDock(
                 reducedMotion = reducedMotion,
             )
             FloatingDockTabPill(
+                selected = selectedTab == Tab.Guide,
+                onClick = { onSelectTab(Tab.Guide) },
+                iconVector = app.g7link.android.ui.theme.G7Icons.guide,
+                label = stringResource(R.string.home_guide_title),
+                statusDotColor = null,
+                reducedMotion = reducedMotion,
+            )
+            FloatingDockTabPill(
                 selected = selectedTab == Tab.Settings,
                 onClick = { onSelectTab(Tab.Settings) },
                 iconRes = R.drawable.ic_settings,
@@ -1081,10 +1064,11 @@ private fun FloatingBottomPillDock(
 private fun FloatingDockTabPill(
     selected: Boolean,
     onClick: () -> Unit,
-    iconRes: Int,
+    iconRes: Int = 0,
     label: String,
     statusDotColor: androidx.compose.ui.graphics.Color?,
     reducedMotion: Boolean,
+    iconVector: androidx.compose.ui.graphics.vector.ImageVector? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     val scaleState = androidx.compose.animation.core.animateFloatAsState(
@@ -1141,12 +1125,21 @@ private fun FloatingDockTabPill(
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            painter = painterResource(iconRes),
-            contentDescription = null,
-            tint = contentColor,
-            modifier = Modifier.size(18.dp),
-        )
+        if (iconVector != null) {
+            Icon(
+                imageVector = iconVector,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(18.dp),
+            )
+        } else {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(18.dp),
+            )
+        }
         Text(
             text = label,
             color = contentColor,
@@ -1164,3 +1157,47 @@ private fun FloatingDockTabPill(
     }
 }
 
+/** G7's bottom bar: Home, Guide and Settings under a line, the picked one's icon in lavender. */
+@Composable
+private fun G7BottomBar(selectedTab: Tab, onSelectTab: (Tab) -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val line = scheme.outlineVariant
+    androidx.compose.foundation.layout.Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(scheme.background)
+            .drawBehind { drawRect(line, size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx())) }
+            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.navigationBars)
+            .padding(top = 6.dp, bottom = 6.dp)
+            .selectableGroup(),
+    ) {
+        listOf(
+            Triple(Tab.Home, app.g7link.android.ui.theme.G7Icons.home, R.string.home_title),
+            Triple(Tab.Guide, app.g7link.android.ui.theme.G7Icons.guide, R.string.home_guide_title),
+            Triple(Tab.Settings, app.g7link.android.ui.theme.G7Icons.settings, R.string.settings_title),
+        ).forEach { (item, icon, label) ->
+            val selected = item == selectedTab
+            androidx.compose.foundation.layout.Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .selectable(selected = selected, role = Role.Tab) { onSelectTab(item) }
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(3.dp),
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = if (selected) scheme.primary else scheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp),
+                )
+                Text(
+                    stringResource(label),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) scheme.onSurface else scheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}

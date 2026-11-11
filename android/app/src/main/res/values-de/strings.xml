@@ -1394,4 +1394,38 @@
     <string name="device_name_in_profile">%1$s (%2$s)</string>
     <string name="profile_work">Arbeit</string>
     <string name="profile_other">Zweites Profil</string>
+
+    <!-- G7 redesign: Welcome, Home, Guide -->
+    <string name="welcome_tagline">Dieses Smartphone, auf deinem Linux-PC</string>
+    <string name="welcome_allow_heading">Erlaube, was du nutzt</string>
+    <string name="welcome_private">Kein Konto. Nichts verlässt dein Netzwerk.</string>
+    <string name="welcome_notif_sub">Am PC sehen</string>
+    <string name="welcome_sms_sub">Vom PC aus schreiben</string>
+    <string name="welcome_calls_sub">Am PC annehmen</string>
+    <string name="welcome_photos_sub">Am PC durchsehen</string>
+    <string name="welcome_files_sub">Smartphone-Speicher am PC öffnen</string>
+    <string name="welcome_battery_title">Im Hintergrund laufen</string>
+    <string name="welcome_battery_sub">Auch gesperrt erreichbar</string>
+    <string name="welcome_control_title">Vom PC steuern</string>
+    <string name="welcome_control_sub">Maus und Tastatur auf diesem Smartphone</string>
+    <string name="access_allowed">Erlaubt</string>
+    <string name="home_send_to">An %1$s senden</string>
+    <string name="home_control">%1$s steuern</string>
+    <string name="home_this_phone">Dieses Smartphone</string>
+    <string name="home_files">Dateien</string>
+    <string name="home_folder">Ordner</string>
+    <string name="home_clipboard">Zwischenablage</string>
+    <string name="home_link">Link</string>
+    <string name="home_trackpad">Touchpad und Tastatur</string>
+    <string name="home_lock">Sperren</string>
+    <string name="home_voice_note">Sprachnotiz</string>
+    <string name="home_desk_mode">Schreibtischmodus</string>
+    <string name="home_access">Zugriff erlauben</string>
+    <string name="home_activity">Aktivität</string>
+    <string name="home_switch_pc">PC wechseln</string>
+    <string name="home_link_title">Link auf %1$s öffnen</string>
+    <string name="guide_state_ready">Bereit</string>
+    <string name="guide_state_off">Aus</string>
+    <string name="update_up_to_date">Aktuell</string>
+    <string name="update_check_failed_short">Prüfung fehlgeschlagen</string>
 </resources>

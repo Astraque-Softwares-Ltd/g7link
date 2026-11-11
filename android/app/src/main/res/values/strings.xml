@@ -1396,7 +1396,39 @@
     <string name="device_name_in_profile">%1$s (%2$s)</string>
     <string name="profile_work">Work</string>
     <string name="profile_other">Second profile</string>
+
+    <!-- G7 redesign: Welcome, Home, Guide -->
+    <string name="welcome_tagline">This phone, on your Linux PC</string>
+    <string name="welcome_allow_heading">Allow what you\'ll use</string>
+    <string name="welcome_private">No account. Nothing leaves your network.</string>
+    <string name="welcome_notif_sub">See them on the PC</string>
+    <string name="welcome_sms_sub">Text from the PC</string>
+    <string name="welcome_calls_sub">Answer on the PC</string>
+    <string name="welcome_photos_sub">Browse on the PC</string>
+    <string name="welcome_files_sub">Open phone storage on the PC</string>
+    <string name="welcome_battery_title">Run in background</string>
+    <string name="welcome_battery_sub">Stay reachable when locked</string>
+    <string name="welcome_control_title">Control from the PC</string>
+    <string name="welcome_control_sub">Mouse and keyboard on this phone</string>
+    <string name="access_allowed">Allowed</string>
+    <string name="home_send_to">Send to %1$s</string>
+    <string name="home_control">Control %1$s</string>
+    <string name="home_this_phone">This phone</string>
+    <string name="home_files">Files</string>
+    <string name="home_folder">Folder</string>
+    <string name="home_clipboard">Clipboard</string>
+    <string name="home_link">Link</string>
+    <string name="home_trackpad">Trackpad and keyboard</string>
+    <string name="home_lock">Lock</string>
+    <string name="home_voice_note">Voice note</string>
+    <string name="home_desk_mode">Desk mode</string>
+    <string name="home_access">Allow access</string>
+    <string name="home_activity">Activity</string>
+    <string name="home_switch_pc">Switch PC</string>
+    <string name="home_link_title">Open a link on %1$s</string>
+    <string name="home_link_hint" translatable="false">https://</string>
+    <string name="guide_state_ready">Ready</string>
+    <string name="guide_state_off">Off</string>
+    <string name="update_up_to_date">Up to date</string>
+    <string name="update_check_failed_short">Couldn\'t check</string>
 </resources>
-
-
-

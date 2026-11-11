@@ -1393,7 +1393,38 @@
     <string name="device_name_in_profile">%1$s (%2$s)</string>
     <string name="profile_work">İş</string>
     <string name="profile_other">İkinci profil</string>
+
+    <!-- G7 redesign: Welcome, Home, Guide -->
+    <string name="welcome_tagline">Bu telefon, Linux bilgisayarınızda</string>
+    <string name="welcome_allow_heading">Kullanacaklarınıza izin verin</string>
+    <string name="welcome_private">Hesap yok. Hiçbir şey ağınızdan çıkmaz.</string>
+    <string name="welcome_notif_sub">Bilgisayarda görün</string>
+    <string name="welcome_sms_sub">Bilgisayardan mesaj gönderin</string>
+    <string name="welcome_calls_sub">Bilgisayarda yanıtlayın</string>
+    <string name="welcome_photos_sub">Bilgisayarda göz atın</string>
+    <string name="welcome_files_sub">Telefon depolamasını bilgisayarda açın</string>
+    <string name="welcome_battery_title">Arka planda çalış</string>
+    <string name="welcome_battery_sub">Kilitliyken de erişilebilir kalın</string>
+    <string name="welcome_control_title">Bilgisayardan kontrol</string>
+    <string name="welcome_control_sub">Bu telefonda fare ve klavye</string>
+    <string name="access_allowed">İzin verildi</string>
+    <string name="home_send_to">%1$s cihazına gönder</string>
+    <string name="home_control">%1$s cihazını kontrol et</string>
+    <string name="home_this_phone">Bu telefon</string>
+    <string name="home_files">Dosyalar</string>
+    <string name="home_folder">Klasör</string>
+    <string name="home_clipboard">Pano</string>
+    <string name="home_link">Bağlantı</string>
+    <string name="home_trackpad">Dokunmatik yüzey ve klavye</string>
+    <string name="home_lock">Kilitle</string>
+    <string name="home_voice_note">Sesli not</string>
+    <string name="home_desk_mode">Masa modu</string>
+    <string name="home_access">Erişime izin ver</string>
+    <string name="home_activity">Etkinlik</string>
+    <string name="home_switch_pc">Bilgisayar değiştir</string>
+    <string name="home_link_title">%1$s üzerinde bağlantı aç</string>
+    <string name="guide_state_ready">Hazır</string>
+    <string name="guide_state_off">Kapalı</string>
+    <string name="update_up_to_date">Güncel</string>
+    <string name="update_check_failed_short">Denetlenemedi</string>
 </resources>
-
-
-

@@ -1253,4 +1253,38 @@
     <string name="device_name_in_profile">%1$s（%2$s）</string>
     <string name="profile_work">工作</string>
     <string name="profile_other">第二资料</string>
+
+    <!-- G7 redesign: Welcome, Home, Guide -->
+    <string name="welcome_tagline">这部手机，连上你的 Linux 电脑</string>
+    <string name="welcome_allow_heading">允许你会用到的</string>
+    <string name="welcome_private">无需账号，数据不出你的网络。</string>
+    <string name="welcome_notif_sub">在电脑上查看</string>
+    <string name="welcome_sms_sub">在电脑上发短信</string>
+    <string name="welcome_calls_sub">在电脑上接听</string>
+    <string name="welcome_photos_sub">在电脑上浏览</string>
+    <string name="welcome_files_sub">在电脑上打开手机存储</string>
+    <string name="welcome_battery_title">后台运行</string>
+    <string name="welcome_battery_sub">锁屏时也能连接</string>
+    <string name="welcome_control_title">从电脑控制</string>
+    <string name="welcome_control_sub">用鼠标和键盘操作这部手机</string>
+    <string name="access_allowed">已允许</string>
+    <string name="home_send_to">发送到 %1$s</string>
+    <string name="home_control">控制 %1$s</string>
+    <string name="home_this_phone">这部手机</string>
+    <string name="home_files">文件</string>
+    <string name="home_folder">文件夹</string>
+    <string name="home_clipboard">剪贴板</string>
+    <string name="home_link">链接</string>
+    <string name="home_trackpad">触控板和键盘</string>
+    <string name="home_lock">锁定</string>
+    <string name="home_voice_note">语音备忘</string>
+    <string name="home_desk_mode">桌面模式</string>
+    <string name="home_access">允许访问</string>
+    <string name="home_activity">动态</string>
+    <string name="home_switch_pc">切换电脑</string>
+    <string name="home_link_title">在 %1$s 上打开链接</string>
+    <string name="guide_state_ready">就绪</string>
+    <string name="guide_state_off">关闭</string>
+    <string name="update_up_to_date">已是最新</string>
+    <string name="update_check_failed_short">无法检查</string>
 </resources>

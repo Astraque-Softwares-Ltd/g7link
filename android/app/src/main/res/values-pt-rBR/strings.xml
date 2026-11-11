@@ -1393,7 +1393,38 @@
     <string name="device_name_in_profile">%1$s (%2$s)</string>
     <string name="profile_work">Trabalho</string>
     <string name="profile_other">Segundo perfil</string>
+
+    <!-- G7 redesign: Welcome, Home, Guide -->
+    <string name="welcome_tagline">Este celular, no seu PC Linux</string>
+    <string name="welcome_allow_heading">Permita o que for usar</string>
+    <string name="welcome_private">Sem conta. Nada sai da sua rede.</string>
+    <string name="welcome_notif_sub">Veja no PC</string>
+    <string name="welcome_sms_sub">Envie mensagens pelo PC</string>
+    <string name="welcome_calls_sub">Atenda no PC</string>
+    <string name="welcome_photos_sub">Veja no PC</string>
+    <string name="welcome_files_sub">Abra o armazenamento do celular no PC</string>
+    <string name="welcome_battery_title">Executar em segundo plano</string>
+    <string name="welcome_battery_sub">Continue acessível com a tela bloqueada</string>
+    <string name="welcome_control_title">Controlar pelo PC</string>
+    <string name="welcome_control_sub">Mouse e teclado neste celular</string>
+    <string name="access_allowed">Permitido</string>
+    <string name="home_send_to">Enviar para %1$s</string>
+    <string name="home_control">Controlar %1$s</string>
+    <string name="home_this_phone">Este celular</string>
+    <string name="home_files">Arquivos</string>
+    <string name="home_folder">Pasta</string>
+    <string name="home_clipboard">Área de transferência</string>
+    <string name="home_link">Link</string>
+    <string name="home_trackpad">Touchpad e teclado</string>
+    <string name="home_lock">Bloquear</string>
+    <string name="home_voice_note">Nota de voz</string>
+    <string name="home_desk_mode">Modo mesa</string>
+    <string name="home_access">Permitir acesso</string>
+    <string name="home_activity">Atividade</string>
+    <string name="home_switch_pc">Trocar de PC</string>
+    <string name="home_link_title">Abrir um link em %1$s</string>
+    <string name="guide_state_ready">Pronto</string>
+    <string name="guide_state_off">Desligado</string>
+    <string name="update_up_to_date">Atualizado</string>
+    <string name="update_check_failed_short">Não foi possível verificar</string>
 </resources>
-
-
-

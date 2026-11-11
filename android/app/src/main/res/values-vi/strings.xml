@@ -1323,4 +1323,38 @@
 <string name="device_name_in_profile">%1$s (%2$s)</string>
 <string name="profile_work">Công việc</string>
 <string name="profile_other">Hồ sơ thứ hai</string>
+
+    <!-- G7 redesign: Welcome, Home, Guide -->
+    <string name="welcome_tagline">Điện thoại này, trên PC Linux của bạn</string>
+    <string name="welcome_allow_heading">Cho phép những gì bạn sẽ dùng</string>
+    <string name="welcome_private">Không cần tài khoản. Không gì rời khỏi mạng của bạn.</string>
+    <string name="welcome_notif_sub">Xem trên PC</string>
+    <string name="welcome_sms_sub">Nhắn tin từ PC</string>
+    <string name="welcome_calls_sub">Trả lời trên PC</string>
+    <string name="welcome_photos_sub">Duyệt trên PC</string>
+    <string name="welcome_files_sub">Mở bộ nhớ điện thoại trên PC</string>
+    <string name="welcome_battery_title">Chạy nền</string>
+    <string name="welcome_battery_sub">Vẫn kết nối khi khóa màn hình</string>
+    <string name="welcome_control_title">Điều khiển từ PC</string>
+    <string name="welcome_control_sub">Chuột và bàn phím trên điện thoại này</string>
+    <string name="access_allowed">Đã cho phép</string>
+    <string name="home_send_to">Gửi đến %1$s</string>
+    <string name="home_control">Điều khiển %1$s</string>
+    <string name="home_this_phone">Điện thoại này</string>
+    <string name="home_files">Tệp</string>
+    <string name="home_folder">Thư mục</string>
+    <string name="home_clipboard">Bảng nhớ tạm</string>
+    <string name="home_link">Liên kết</string>
+    <string name="home_trackpad">Touchpad và bàn phím</string>
+    <string name="home_lock">Khóa</string>
+    <string name="home_voice_note">Ghi chú giọng nói</string>
+    <string name="home_desk_mode">Chế độ bàn làm việc</string>
+    <string name="home_access">Cho phép truy cập</string>
+    <string name="home_activity">Hoạt động</string>
+    <string name="home_switch_pc">Đổi PC</string>
+    <string name="home_link_title">Mở liên kết trên %1$s</string>
+    <string name="guide_state_ready">Sẵn sàng</string>
+    <string name="guide_state_off">Tắt</string>
+    <string name="update_up_to_date">Mới nhất</string>
+    <string name="update_check_failed_short">Không thể kiểm tra</string>
 </resources>

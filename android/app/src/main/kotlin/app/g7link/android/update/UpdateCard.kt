@@ -29,7 +29,12 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.BuildConfig
 import app.g7link.android.R
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7SwitchRow
 import app.g7link.android.ui.theme.LocalReducedMotion
+import app.g7link.android.ui.theme.g7Tints
 
 /** The update a state is about, if any. */
 private val AppUpdater.State.update: AppUpdater.Update?
@@ -50,124 +55,129 @@ fun UpdateCard(updater: AppUpdater, modifier: Modifier = Modifier) {
     UpdatePanel(updater, state, update, modifier)
 }
 
-/** One update's status, progress and actions, for the Home card and Settings. */
+/** One update's status, progress and actions, for Home and Settings. */
 @Composable
 private fun UpdatePanel(updater: AppUpdater, state: AppUpdater.State, update: AppUpdater.Update, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val failure = (state as? AppUpdater.State.Failed)?.reason
-    Surface(
-        shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        modifier = modifier,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(stringResource(R.string.update_title, update.title(context)), style = MaterialTheme.typography.titleMedium)
-            val status = when {
-                state is AppUpdater.State.Downloading && state.waitingForNetwork -> stringResource(R.string.update_waiting_network)
-                state is AppUpdater.State.Downloading && state.total > 0 -> stringResource(
-                    R.string.update_downloading_progress,
-                    Formatter.formatShortFileSize(context, state.done),
-                    Formatter.formatShortFileSize(context, state.total),
-                )
-                state is AppUpdater.State.Downloading -> stringResource(R.string.update_downloading)
-                state is AppUpdater.State.Installing -> stringResource(R.string.update_installing)
-                state is AppUpdater.State.NeedsPermission -> stringResource(R.string.update_not_allowed)
-                failure == AppUpdater.Reason.Damaged -> stringResource(R.string.update_damaged)
-                failure == AppUpdater.Reason.Install -> stringResource(R.string.update_install_failed)
-                failure != null -> stringResource(R.string.update_offline)
-                else -> stringResource(R.string.update_text)
-            }
-            Text(status, style = MaterialTheme.typography.bodyMedium)
-            when {
-                state is AppUpdater.State.Downloading && state.total > 0 && !state.waitingForNetwork -> LinearProgressIndicator(
-                    progress = { (state.done.toFloat() / state.total).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                state is AppUpdater.State.Downloading || state is AppUpdater.State.Installing ->
-                    if (LocalReducedMotion.current) {
-                        LinearProgressIndicator(progress = { 0.5f }, modifier = Modifier.fillMaxWidth())
-                    } else {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                    }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                when (state) {
-                    is AppUpdater.State.NeedsPermission -> Button(onClick = { context.startActivity(updater.allowInstallsIntent()) }) {
-                        Text(stringResource(R.string.action_allow))
-                    }
-                    is AppUpdater.State.Available, is AppUpdater.State.Failed -> Button(onClick = {
-                        updater.requestInstall(update)?.let(context::startActivity)
-                    }) {
-                        Text(stringResource(if (failure != null) R.string.action_try_again else R.string.action_update))
-                    }
-                    else -> Unit
+    val status = when {
+        state is AppUpdater.State.Downloading && state.waitingForNetwork -> stringResource(R.string.update_waiting_network)
+        state is AppUpdater.State.Downloading && state.total > 0 -> stringResource(
+            R.string.update_downloading_progress,
+            Formatter.formatShortFileSize(context, state.done),
+            Formatter.formatShortFileSize(context, state.total),
+        )
+        state is AppUpdater.State.Downloading -> stringResource(R.string.update_downloading)
+        state is AppUpdater.State.Installing -> stringResource(R.string.update_installing)
+        state is AppUpdater.State.NeedsPermission -> stringResource(R.string.update_not_allowed)
+        failure == AppUpdater.Reason.Damaged -> stringResource(R.string.update_damaged)
+        failure == AppUpdater.Reason.Install -> stringResource(R.string.update_install_failed)
+        failure != null -> stringResource(R.string.update_offline)
+        else -> null
+    }
+    Column(modifier.fillMaxWidth()) {
+        G7Row(
+            label = stringResource(R.string.update_title, update.title(context)),
+            sublabel = status,
+            icon = G7Icons.download,
+            tint = g7Tints().lavender,
+        )
+        val progressModifier = Modifier.fillMaxWidth().padding(start = 48.dp, end = 12.dp, bottom = 8.dp)
+        when {
+            state is AppUpdater.State.Downloading && state.total > 0 && !state.waitingForNetwork -> LinearProgressIndicator(
+                progress = { (state.done.toFloat() / state.total).coerceIn(0f, 1f) },
+                modifier = progressModifier,
+            )
+            state is AppUpdater.State.Downloading || state is AppUpdater.State.Installing ->
+                if (LocalReducedMotion.current) {
+                    LinearProgressIndicator(progress = { 0.5f }, modifier = progressModifier)
+                } else {
+                    LinearProgressIndicator(progressModifier)
                 }
-                TextButton(onClick = {
-                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, update.notesUrl.toUri())) }
-                }) {
-                    Text(stringResource(R.string.update_whats_new))
-                }
+        }
+        Row(
+            modifier = Modifier.padding(start = 48.dp, bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when (state) {
+                is AppUpdater.State.NeedsPermission -> G7RowAction(
+                    label = stringResource(R.string.action_allow),
+                    onClick = { context.startActivity(updater.allowInstallsIntent()) },
+                    accent = true,
+                )
+                is AppUpdater.State.Available, is AppUpdater.State.Failed -> G7RowAction(
+                    label = stringResource(if (failure != null) R.string.action_try_again else R.string.action_update),
+                    onClick = { updater.requestInstall(update)?.let(context::startActivity) },
+                    accent = true,
+                )
+                else -> Unit
             }
+            G7RowAction(
+                label = stringResource(R.string.update_whats_new),
+                onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, update.notesUrl.toUri())) } },
+            )
         }
     }
 }
 
-/** Updates in Settings: automatic installs on or off, the channel, a check, and what it found. */
+/**
+ * About in Settings: the version, which checks for updates when tapped, and,
+ * where this build updates itself, automatic installs and the channel.
+ */
 @Composable
 fun CheckForUpdates(updater: AppUpdater) {
-    if (!updater.enabled) return
+    val tints = g7Tints()
+    if (!updater.enabled) {
+        G7Row(
+            label = stringResource(R.string.about_version, BuildConfig.VERSION_NAME),
+            icon = G7Icons.info,
+            tint = tints.muted,
+        )
+        return
+    }
     val state by updater.state.collectAsStateWithLifecycle()
     val auto by updater.autoInstall.collectAsStateWithLifecycle()
     val channel by updater.channel.collectAsStateWithLifecycle()
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(stringResource(R.string.update_auto_title), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(R.string.update_auto_text),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Switch(
-            checked = auto,
-            onCheckedChange = updater::setAutoInstall,
-            colors = app.g7link.android.ui.theme.g7SwitchColors(),
-        )
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(stringResource(R.string.update_channel_title), style = MaterialTheme.typography.titleSmall)
-        app.g7link.android.ui.settings.Choice(
-            listOf(
-                AppUpdater.Channel.Stable.key to stringResource(R.string.update_channel_stable),
-                AppUpdater.Channel.Nightly.key to stringResource(R.string.update_channel_nightly),
-            ),
-            channel.key,
-        ) { key -> AppUpdater.Channel.parse(key)?.let(updater::setChannel) }
-        Text(
-            stringResource(if (channel == AppUpdater.Channel.Nightly) R.string.update_channel_nightly_text else R.string.update_channel_stable_text),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
     val update = state.update
     if (update != null) {
         UpdatePanel(updater, state, update, Modifier.fillMaxWidth())
-        return
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        OutlinedButton(enabled = state !is AppUpdater.State.Checking, onClick = updater::checkNow) {
-            Text(stringResource(R.string.update_check))
+    } else {
+        G7Row(
+            label = stringResource(R.string.about_version, BuildConfig.VERSION_NAME),
+            icon = G7Icons.info,
+            tint = tints.muted,
+            note = when (state) {
+                AppUpdater.State.UpToDate -> stringResource(R.string.update_up_to_date)
+                is AppUpdater.State.Failed -> stringResource(R.string.update_check_failed_short)
+                AppUpdater.State.Checking -> null
+                else -> stringResource(R.string.update_check)
+            },
+            enabled = state !is AppUpdater.State.Checking,
+            onClick = updater::checkNow,
+        ) {
+            if (state is AppUpdater.State.Checking) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
         }
-        if (state is AppUpdater.State.Checking) {
-            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-        }
     }
-    val result = when (state) {
-        AppUpdater.State.Checking -> stringResource(R.string.update_checking)
-        AppUpdater.State.UpToDate -> stringResource(R.string.update_up_to_date_version, BuildConfig.VERSION_NAME)
-        is AppUpdater.State.Failed -> stringResource(R.string.update_check_failed)
-        else -> stringResource(R.string.update_current_version, BuildConfig.VERSION_NAME)
-    }
-    Text(result, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    G7SwitchRow(
+        label = stringResource(R.string.update_auto_title),
+        checked = auto,
+        onCheckedChange = updater::setAutoInstall,
+        icon = G7Icons.download,
+        tint = tints.lavender,
+    )
+    G7Row(
+        label = stringResource(R.string.update_channel_title),
+        icon = G7Icons.refresh,
+        tint = tints.muted,
+        note = stringResource(
+            if (channel == AppUpdater.Channel.Nightly) R.string.update_channel_nightly else R.string.update_channel_stable,
+        ),
+        onClick = {
+            updater.setChannel(
+                if (channel == AppUpdater.Channel.Nightly) AppUpdater.Channel.Stable else AppUpdater.Channel.Nightly,
+            )
+        },
+    )
 }

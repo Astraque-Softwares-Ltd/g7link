@@ -19,15 +19,12 @@ class WalkthroughStateTest {
     @Test
     fun walkthroughStepsFollowExpectedOrderAndStorageKeys() {
         val steps = WalkthroughStep.entries
-        assertEquals(5, steps.size)
+        assertEquals(2, steps.size)
         assertEquals(WalkthroughStep.Welcome, steps.first())
         assertEquals(WalkthroughStep.Done, steps.last())
 
         assertNull(WalkthroughStep.Welcome.previous)
-        assertEquals(WalkthroughStep.Permissions, WalkthroughStep.Welcome.next)
-        assertEquals(WalkthroughStep.Pair, WalkthroughStep.Permissions.next)
-        assertEquals(WalkthroughStep.PowerLevel, WalkthroughStep.Pair.next)
-        assertEquals(WalkthroughStep.Done, WalkthroughStep.PowerLevel.next)
+        assertEquals(WalkthroughStep.Done, WalkthroughStep.Welcome.next)
         assertNull(WalkthroughStep.Done.next)
 
         for (step in steps) {
@@ -53,17 +50,17 @@ class WalkthroughStateTest {
         assertFalse(fresh.markCompletedAutomatically)
         assertFalse(fresh.showWhatsNewGuideBanner)
 
-        // 2. Resuming an interrupted walkthrough restores the saved step.
+        // 2. An unfinished walkthrough from the older five steps opens Welcome again.
         val resumed = resolveStartupWalkthrough(
             persistence = WalkthroughPersistence(
                 completed = false,
-                currentStepIndex = WalkthroughStep.Pair.index,
+                currentStepIndex = WalkthroughStep.fromIndex(3).index,
                 whatsNewGuideDismissed = false,
             ),
             hasPairedDevices = false,
         )
         assertTrue(resumed.showWalkthrough)
-        assertEquals(WalkthroughStep.Pair, resumed.initialStep)
+        assertEquals(WalkthroughStep.Welcome, resumed.initialStep)
         assertFalse(resumed.markCompletedAutomatically)
 
         // 3. Existing user upgrading with paired devices silently completes and shows What's New banner.

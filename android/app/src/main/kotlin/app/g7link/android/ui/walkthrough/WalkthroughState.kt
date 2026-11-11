@@ -2,14 +2,12 @@
 package app.g7link.android.ui.walkthrough
 
 /**
- * The 5 steps of the first-run setup walkthrough.
+ * First run: the Welcome screen (what to allow, then pairing), and done.
+ * Saved indexes from the older five-step walkthrough clamp to these.
  */
 enum class WalkthroughStep(val index: Int, val title: String) {
     Welcome(0, "Welcome"),
-    Permissions(1, "Permissions"),
-    Pair(2, "Pair with your PC"),
-    PowerLevel(3, "Choose your power level"),
-    Done(4, "Setup complete"),
+    Done(1, "Setup complete"),
     ;
 
     val next: WalkthroughStep?
@@ -88,10 +86,9 @@ data class StartupWalkthroughResolution(
 
 /**
  * Resolves walkthrough behavior once core state is ready:
- * - Fresh install (`!completed && step == 0 && !hasPairedDevices`) opens Walkthrough at Welcome.
- * - Mid-walkthrough (`!completed && step > 0`) resumes at `currentStep` even after pairing a PC in Step 2.
- * - Existing paired user upgrading (`!completed && step == 0 && hasPairedDevices`) skips forced walkthrough,
- *   marks `completed = true` automatically, and shows a dismissible Features guide card on Home.
+ * - Fresh install (`!completed && !hasPairedDevices`) opens the Welcome screen.
+ * - Existing paired user upgrading (`!completed && hasPairedDevices`) skips it,
+ *   marks `completed = true` automatically, and shows a dismissible Guide notice on Home.
  * - Completed user (`completed == true`) stays on Home.
  */
 fun resolveStartupWalkthrough(
@@ -104,14 +101,6 @@ fun resolveStartupWalkthrough(
             initialStep = WalkthroughStep.Welcome,
             markCompletedAutomatically = false,
             showWhatsNewGuideBanner = !persistence.whatsNewGuideDismissed && hasPairedDevices,
-        )
-    }
-    if (persistence.currentStepIndex > 0) {
-        return StartupWalkthroughResolution(
-            showWalkthrough = true,
-            initialStep = persistence.currentStep,
-            markCompletedAutomatically = false,
-            showWhatsNewGuideBanner = false,
         )
     }
     if (hasPairedDevices) {
