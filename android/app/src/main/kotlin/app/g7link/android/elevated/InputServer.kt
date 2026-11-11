@@ -52,7 +52,16 @@ object InputServer {
     private const val STREAM_MUSIC = 3
     private const val DEVICE_OUT_REMOTE_SUBMIX = 0x8000
     private const val SUBMIX_POLL_MS = 500L
-    private const val SUBMIX_PRESS_MS = 40L
+    private const val SHELL_PACKAGE = "com.android.shell"
+
+    /** `AudioDeviceAttributes.ROLE_OUTPUT`. */
+    private const val ROLE_OUTPUT = 2
+
+    /** `AudioDeviceInfo.TYPE_REMOTE_SUBMIX`. */
+    private const val TYPE_REMOTE_SUBMIX = 25
+
+    /** `AudioManager.DEVICE_VOLUME_BEHAVIOR_FULL`: always at full volume, whatever the media volume. */
+    private const val DEVICE_VOLUME_BEHAVIOR_FULL = 1
     private const val VOLUME_POLL_MS = 30L
     private const val VOLUME_SETTLE_MS = 600L
     private const val MAX_VOLUME_PRESSES = 200
@@ -337,7 +346,7 @@ object InputServer {
             if (!MessageDigest.isEqual(given.toByteArray(), token.toByteArray())) return
             val first = runCatching { reader.nextLine() }.getOrNull()
             if (first != null && first.startsWith("V ")) return appWindow(client, first, reader)
-            if (first == "A") return streamDeviceAudio(client.getOutputStream(), injector)
+            if (first == "A") return streamDeviceAudio(client.getOutputStream())
             val writer = java.io.OutputStreamWriter(client.getOutputStream(), Charsets.UTF_8)
             controlOut = writer
             try {
@@ -364,7 +373,7 @@ object InputServer {
      * socket closes.
      */
     @android.annotation.SuppressLint("MissingPermission", "PrivateApi", "DiscouragedPrivateApi")
-    private fun streamDeviceAudio(out: java.io.OutputStream, injector: Injector) {
+    private fun streamDeviceAudio(out: java.io.OutputStream) {
         val rate = 48_000
         val channelMask = android.media.AudioFormat.CHANNEL_IN_STEREO
         val encoding = android.media.AudioFormat.ENCODING_PCM_16BIT
@@ -420,13 +429,14 @@ object InputServer {
         val recorder = openRecorder() ?: return
         try {
             recorder.startRecording()
-            thread(isDaemon = true, name = "submix-volume") {
-                raiseSubmixVolume(injector) { recorder.recordingState == android.media.AudioRecord.RECORDSTATE_RECORDING }
+            thread(isDaemon = true, name = "submix-level") {
+                keepSubmixLevel { recorder.recordingState == android.media.AudioRecord.RECORDSTATE_RECORDING }
             }
             val buf = ByteArray(frameBytes)
             while (true) {
                 val n = recorder.read(buf, 0, buf.size)
                 if (n <= 0) break
+                SubmixLevel.amplify(buf, n, submixGain)
                 out.write(buf, 0, n)
                 out.flush()
             }
@@ -438,31 +448,103 @@ object InputServer {
         }
     }
 
+    /** How much the captured sound is turned up to make up for the submix's volume (see [SubmixLevel]). */
+    @Volatile private var submixGain = 1f
+
     /**
-     * The remote submix has a volume of its own, separate from the speaker's
-     * and low by default, so the PC would barely hear anything. Raises it once,
-     * with the volume key (the volume calls are ignored from here on Android
-     * 17), and only while the sound really goes to the submix: anywhere else
-     * this would turn up the phone's speaker.
+     * The remote submix has a media volume of its own, separate from the
+     * speaker's and low by default, so the PC would barely hear anything.
+     * It used to be raised with the volume key, which showed the volume
+     * panel on the phone and turned up whatever Android took the key for.
+     * Nothing the user hears or sees is touched now: the submix alone is
+     * asked to play at full volume, where Android lets the shell say so, and
+     * otherwise the captured samples are turned up by what Android turned
+     * them down ([submixGain]). Both are undone when the capture ends.
      */
     @android.annotation.SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun raiseSubmixVolume(injector: Injector, recording: () -> Boolean) {
-        runCatching {
-            val read = musicStreamReader()
+    private fun keepSubmixLevel(recording: () -> Boolean) {
+        var audio: Any? = null
+        var submix: Any? = null
+        // What the submix's volume did before, to put back; null when it was left alone.
+        var before: Int? = null
+        try {
+            val service = audioService()
+            audio = service
+            val read = { method: String ->
+                service.javaClass.getMethod(method, Int::class.javaPrimitiveType).invoke(service, STREAM_MUSIC) as Int
+            }
             // The sound moves to the submix once something plays, which may be later.
             while (recording() && read("getDeviceMaskForStream") and DEVICE_OUT_REMOTE_SUBMIX == 0) {
                 Thread.sleep(SUBMIX_POLL_MS)
             }
-            val max = read("getStreamMaxVolume")
-            var presses = 0
-            while (recording() && read("getDeviceMaskForStream") and DEVICE_OUT_REMOTE_SUBMIX != 0 &&
-                read("getStreamVolume") < max && presses++ <= max
+            if (!recording()) return
+            val device = runCatching { submixDevice() }.getOrNull()
+            submix = device
+            val was = device?.let { submixBehavior(service, it) }
+            if (device != null && was != null && was != DEVICE_VOLUME_BEHAVIOR_FULL &&
+                setSubmixBehavior(service, device, DEVICE_VOLUME_BEHAVIOR_FULL)
             ) {
-                injector.pressKey(KeyEvent.KEYCODE_VOLUME_UP)
-                Thread.sleep(SUBMIX_PRESS_MS)
+                before = was
             }
-        }.onFailure { System.err.println("can't raise the submix volume: $it") }
+            while (recording()) {
+                val onSubmix = read("getDeviceMaskForStream") and DEVICE_OUT_REMOTE_SUBMIX != 0
+                val full = device != null && submixBehavior(service, device) == DEVICE_VOLUME_BEHAVIOR_FULL
+                submixGain = if (!onSubmix || full) 1f else SubmixLevel.gainFor(submixVolumeDb(read("getStreamVolume")))
+                Thread.sleep(SUBMIX_POLL_MS)
+            }
+        } catch (e: Exception) {
+            System.err.println("can't keep the submix at full volume: $e")
+        } finally {
+            submixGain = 1f
+            val (service, device, behavior) = Triple(audio, submix, before)
+            if (service != null && device != null && behavior != null) setSubmixBehavior(service, device, behavior)
+        }
     }
+
+    @android.annotation.SuppressLint("PrivateApi", "DiscouragedPrivateApi")
+    private fun audioService(): Any {
+        val binder = Class.forName("android.os.ServiceManager")
+            .getMethod("getService", String::class.java).invoke(null, "audio") as android.os.IBinder
+        return Class.forName("android.media.IAudioService\$Stub")
+            .getMethod("asInterface", android.os.IBinder::class.java).invoke(null, binder)!!
+    }
+
+    /** The remote submix as an `AudioDeviceAttributes` (output, address "0"). */
+    @android.annotation.SuppressLint("PrivateApi", "DiscouragedPrivateApi")
+    private fun submixDevice(): Any {
+        val int = Int::class.javaPrimitiveType
+        return Class.forName("android.media.AudioDeviceAttributes")
+            .getConstructor(int, int, String::class.java)
+            .newInstance(ROLE_OUTPUT, TYPE_REMOTE_SUBMIX, "0")
+    }
+
+    /** How the submix's volume behaves (variable, full...), or null when Android won't say. */
+    private fun submixBehavior(audio: Any, submix: Any): Int? = runCatching {
+        audio.javaClass.getMethod("getDeviceVolumeBehavior", submix.javaClass).invoke(audio, submix) as Int
+    }.getOrNull()
+
+    /**
+     * Sets how the submix's volume behaves: full (always at full volume,
+     * whatever the media volume) or back to what it was. Only the submix: no
+     * other device's volume changes, and no volume panel shows. False when
+     * Android refuses (it takes MODIFY_AUDIO_ROUTING, which the shell has on
+     * stock Android).
+     */
+    private fun setSubmixBehavior(audio: Any, submix: Any, behavior: Int): Boolean = runCatching {
+        audio.javaClass
+            .getMethod("setDeviceVolumeBehavior", submix.javaClass, Int::class.javaPrimitiveType, String::class.java)
+            .invoke(audio, submix, behavior, SHELL_PACKAGE)
+        submixBehavior(audio, submix) == behavior
+    }.onFailure { System.err.println("the submix's volume stays as it is: ${it.cause ?: it}") }.getOrDefault(false)
+
+    /** How far below full volume the submix plays media at volume [index], in dB (NaN when unknown). */
+    @android.annotation.SuppressLint("PrivateApi", "DiscouragedPrivateApi")
+    private fun submixVolumeDb(index: Int): Float = runCatching {
+        val int = Int::class.javaPrimitiveType
+        Class.forName("android.media.AudioSystem")
+            .getMethod("getStreamVolumeDB", int, int, int)
+            .invoke(null, STREAM_MUSIC, index, DEVICE_OUT_REMOTE_SUBMIX) as Float
+    }.getOrDefault(Float.NaN)
 
     /** Brightness 0, remembering what it was, for a panel that can't be turned off. */
     private fun dimScreen() {
@@ -482,10 +564,7 @@ object InputServer {
     /** Reads a value of the music stream from the audio service, by the method's name. */
     @android.annotation.SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     private fun musicStreamReader(): (String) -> Int {
-        val binder = Class.forName("android.os.ServiceManager")
-            .getMethod("getService", String::class.java).invoke(null, "audio") as android.os.IBinder
-        val audio = Class.forName("android.media.IAudioService\$Stub")
-            .getMethod("asInterface", android.os.IBinder::class.java).invoke(null, binder)!!
+        val audio = audioService()
         return { method ->
             audio.javaClass.getMethod(method, Int::class.javaPrimitiveType).invoke(audio, STREAM_MUSIC) as Int
         }
