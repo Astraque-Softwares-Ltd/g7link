@@ -2340,6 +2340,23 @@ async fn the_pc_reads_and_sends_texts_through_the_phone() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_sender_name_takes_no_reply() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::SMS_SHOW]).await;
+    let mut phone =
+        device_with("Pixel", DeviceKind::Phone, &[g7link_core::SMS_READ, g7link_core::SMS_SEND]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+
+    let sent = with_timeout("send", pc.node.sms_send(phone_id, vec!["MPESA".into()], "Hi".into())).await;
+    assert!(matches!(sent, Err(Error::Protocol(_))), "{sent:?}");
+    assert!(phone.platform.texts.lock().unwrap().is_empty(), "nothing reached the phone's radio");
+
+    // A short code still takes a text.
+    with_timeout("send", pc.node.sms_send(phone_id, vec!["22141".into()], "STOP".into())).await.unwrap();
+    assert_eq!(*phone.platform.texts.lock().unwrap(), [(vec!["22141".to_owned()], "STOP".to_owned())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn calls_show_on_the_pc_which_can_answer_them() {
     use g7link_core::{CallCommand, CallState};
     let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CALLS_SHOW]).await;

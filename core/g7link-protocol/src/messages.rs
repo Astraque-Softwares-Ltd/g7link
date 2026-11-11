@@ -2047,6 +2047,42 @@ pub mod sms {
     pub const MAX_ATTACHMENT_BYTES: usize = MAX_PART_BYTES;
     /// A contact's photo with a conversation: a JPEG of at most this many bytes.
     pub const MAX_PHOTO_BYTES: usize = 16 * 1024;
+
+    /// Whether a text can be sent to an address.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ReplyKind {
+        /// A phone number (or an email address, for MMS).
+        Phone,
+        /// A short code ("22141"): texts reach it, and may be charged.
+        ShortCode,
+        /// A sender name ("M-PESA") or anything else no text can reach.
+        NoReply,
+    }
+
+    /// What `address` is, for sending it a text: names never take replies,
+    /// 3 to 6 digits are a short code, 7 digits or more a phone number.
+    pub fn reply_kind(address: &str) -> ReplyKind {
+        if address.contains('@') {
+            return ReplyKind::Phone;
+        }
+        let plain: String =
+            address.chars().filter(|&c| !c.is_whitespace() && !matches!(c, '-' | '(' | ')' | '.')).collect();
+        if plain.chars().any(char::is_alphabetic) {
+            return ReplyKind::NoReply;
+        }
+        let (plus, number) = match plain.strip_prefix('+') {
+            Some(rest) => (true, rest),
+            None => (false, plain.as_str()),
+        };
+        if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+            return ReplyKind::NoReply;
+        }
+        match number.len() {
+            7.. => ReplyKind::Phone,
+            3..=6 if !plus => ReplyKind::ShortCode,
+            _ => ReplyKind::NoReply,
+        }
+    }
 }
 
 /// A conversation, as `sms.threads` lists it.
@@ -2216,6 +2252,7 @@ impl SmsSend {
     pub fn is_valid(&self) -> bool {
         (1..=sms::MAX_RECIPIENTS).contains(&self.to.len())
             && self.to.iter().all(|a| (1..=64).contains(&a.trim().len()))
+            && self.to.iter().all(|a| sms::reply_kind(a) != sms::ReplyKind::NoReply)
             && (!self.body.trim().is_empty() || !self.attachments.is_empty())
             && self.body.len() <= sms::MAX_SEND_BYTES
             && self.attachments.len() <= sms::MAX_ATTACHMENTS
@@ -5062,6 +5099,24 @@ mod tests {
     }
 
     #[test]
+    fn only_numbers_take_replies() {
+        use sms::{ReplyKind, reply_kind};
+        for name in ["M-PESA", "MPESA", "Safaricom", "KCB", "Equity2"] {
+            assert_eq!(reply_kind(name), ReplyKind::NoReply, "{name}");
+        }
+        for number in ["+254712345678", "0712 345 678", "0712-345-678", "(555) 010.0100"] {
+            assert_eq!(reply_kind(number), ReplyKind::Phone, "{number}");
+        }
+        assert_eq!(reply_kind("user@example.com"), ReplyKind::Phone, "an email address, for MMS");
+        for code in ["22141", "100", "40404"] {
+            assert_eq!(reply_kind(code), ReplyKind::ShortCode, "{code}");
+        }
+        for nothing in ["", " ", "+", "12", "+123", "*144#"] {
+            assert_eq!(reply_kind(nothing), ReplyKind::NoReply, "{nothing:?}");
+        }
+    }
+
+    #[test]
     fn texts_to_send_are_checked() {
         let send =
             SmsSend { to: vec!["+15550100".into()], body: "On my way".into(), attachments: Vec::new() };
@@ -5071,6 +5126,8 @@ mod tests {
         assert!(!SmsSend { body: "  ".into(), ..send.clone() }.is_valid());
         assert!(!SmsSend { body: "x".repeat(sms::MAX_SEND_BYTES + 1), ..send.clone() }.is_valid());
         assert!(!SmsSend { to: vec!["1".into(); sms::MAX_RECIPIENTS + 1], ..send.clone() }.is_valid());
+        assert!(!SmsSend { to: vec!["MPESA".into()], ..send.clone() }.is_valid(), "a sender name");
+        assert!(SmsSend { to: vec!["22141".into()], ..send.clone() }.is_valid(), "a short code");
         let with_image = SmsSend {
             body: String::new(),
             attachments: vec![SmsAttachment { mime: "image/png".into(), data: vec![1, 2, 3] }],

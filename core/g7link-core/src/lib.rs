@@ -112,7 +112,8 @@ pub use g7link_protocol::{
         ringer_modes, screen_limits,
         sms::{
             MAX_ATTACHMENT_BYTES as SMS_MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS as SMS_MAX_ATTACHMENTS,
-            READ as SMS_READ, SEND as SMS_SEND, SHOW as SMS_SHOW,
+            READ as SMS_READ, ReplyKind as SmsReplyKind, SEND as SMS_SEND, SHOW as SMS_SHOW,
+            reply_kind as sms_reply_kind,
         },
         storage::{MOUNT as STORAGE_MOUNT, READ as STORAGE_READ, WRITE as STORAGE_WRITE},
         task_notify, toggle_ids,

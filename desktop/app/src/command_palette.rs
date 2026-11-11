@@ -12,7 +12,9 @@
 use crate::i18n::tr;
 use std::{collections::HashSet, path::PathBuf, sync::Mutex, time::Instant};
 
-use g7link_core::{ClipboardItemKind, DeviceId, LinkState, PhoneToggleValue, TimelineKind};
+use g7link_core::{
+    ClipboardItemKind, DeviceId, LinkState, PhoneToggleValue, SmsReplyKind, TimelineKind, sms_reply_kind,
+};
 use serde_json::{Value, json};
 
 use crate::{
@@ -953,6 +955,10 @@ fn build_candidates() -> Vec<PaletteCandidate> {
             if clean.is_empty() {
                 continue;
             }
+            // A sender name ("M-PESA") can't be texted.
+            if !thread_id.starts_with("chat:") && sms_reply_kind(&sub) == SmsReplyKind::NoReply {
+                continue;
+            }
             let key = clean.to_ascii_lowercase();
             if !seen_text.insert(key) {
                 continue;
@@ -1252,7 +1258,8 @@ fn synthesize_direct_command(candidates: &[PaletteCandidate], query: &str) -> Op
     for prefix in ["text ", "message ", "sms "] {
         if lower.starts_with(prefix) {
             let target = query[prefix.len()..].trim();
-            if !target.is_empty() {
+            // A contact is listed by name; anything else must be a number.
+            if !target.is_empty() && sms_reply_kind(target) != SmsReplyKind::NoReply {
                 return Some(PaletteCandidate {
                     id: format!("text_contact:{dev_id}:{target}\t{target}"),
                     title: tr!("CommandPalette", "Text %1", target),
@@ -1572,6 +1579,9 @@ mod tests {
         let text_res = filter_and_rank(&candidates, "Text +1 555 0199");
         assert_eq!(text_res[0].title, "Text +1 555 0199");
         assert!(text_res[0].id.starts_with("text_contact:"));
+
+        let to_name = filter_and_rank(&candidates, "Text M-PESA");
+        assert!(!to_name.iter().any(|c| c.title == "Text M-PESA"), "a sender name can't be texted");
 
         let call_res = filter_and_rank(&candidates, "Call +1 555 0199");
         assert_eq!(call_res[0].title, "Call +1 555 0199");

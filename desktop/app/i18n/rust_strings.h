@@ -355,6 +355,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Messages", "Group texts can't be sent from the PC yet."), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "Only image or voice-note audio files can be attached."), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "The text wasn't sent: this conversation isn't loaded yet. Try again in a moment."), // desktop/app/src/messages.rs
+    QT_TRANSLATE_NOOP("Messages", "This sender doesn't accept replies."), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Mirror", "Couldn't start recording."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Mirror recording"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Mirror screenshot"), // desktop/app/src/mirror.rs

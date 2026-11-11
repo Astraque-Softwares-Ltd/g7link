@@ -14,7 +14,7 @@ use std::{
 
 use g7link_core::{
     ChatMessageRecord, ChatThreadRecord, DeviceId, Error, LinkState, NodeEvent, SmsAttachment, SmsMessage,
-    SmsPart, SmsThread,
+    SmsPart, SmsReplyKind, SmsThread, sms_reply_kind,
 };
 use serde_json::{Value, json};
 
@@ -325,7 +325,11 @@ pub fn view() -> View {
             )
         } else {
             let sms_thread = open_id.and_then(|id| s.threads.iter().find(|t| t.id == id));
-            ("SMS".into(), true, sms_thread.is_some_and(|t| t.addresses.len() > 1))
+            (
+                "SMS".into(),
+                sms_thread.is_none_or(|t| takes_replies(&t.addresses)),
+                sms_thread.is_some_and(|t| t.addresses.len() > 1),
+            )
         };
 
         let messages = if current_is_chat {
@@ -409,10 +413,16 @@ fn thread_json(t: &SmsThread, photo: Option<&PathBuf>) -> Value {
         "app": "",
         "appName": "SMS",
         "appIcon": "",
-        "canReply": true,
+        "canReply": takes_replies(&t.addresses),
+        "shortCode": t.addresses.iter().any(|a| sms_reply_kind(a) == SmsReplyKind::ShortCode),
         "lastSender": "",
         "active": true,
     })
+}
+
+/// Whether a text can reach everyone in a conversation: not a sender name like "M-PESA".
+pub(crate) fn takes_replies(addresses: &[String]) -> bool {
+    addresses.iter().all(|a| sms_reply_kind(a) != SmsReplyKind::NoReply)
 }
 
 fn chat_thread_json(t: &ChatThreadRecord, photo: Option<&PathBuf>, app_icon: Option<&PathBuf>) -> Value {
@@ -441,11 +451,11 @@ fn now_ms() -> i64 {
 
 /// A group member's name, or their number.
 fn sender_of(thread: &SmsThread, address: &str) -> String {
-    let wanted = digits(address);
+    let wanted = match_key(address);
     thread
         .addresses
         .iter()
-        .position(|a| digits(a) == wanted)
+        .position(|a| match_key(a) == wanted)
         .and_then(|i| thread.names.get(i))
         .filter(|n| !n.trim().is_empty())
         .cloned()
@@ -764,7 +774,7 @@ pub fn start_chat(device: DeviceId, number: String, name: String) {
         return;
     }
     let name = name.trim().to_owned();
-    let wanted = digits(&number);
+    let wanted = match_key(&number);
     let existing = state(|s| {
         if s.device != Some(device) {
             *s = State { device: Some(device), generation: s.generation + 1, ..State::default() };
@@ -772,7 +782,7 @@ pub fn start_chat(device: DeviceId, number: String, name: String) {
         let found = (!wanted.is_empty()).then(|| {
             s.threads
                 .iter()
-                .find(|t| t.addresses.len() == 1 && digits(&t.addresses[0]) == wanted)
+                .find(|t| t.addresses.len() == 1 && match_key(&t.addresses[0]) == wanted)
                 .map(|t| t.id.clone())
         })?;
         if found.is_none() {
@@ -1160,16 +1170,17 @@ pub fn clear_attachment() {
     }
 }
 
-/// Why a text wasn't sent, for the page.
-pub fn send_problem(error: &Error) -> &'static str {
+/// Why a text to `to` wasn't sent, for the page.
+pub fn send_problem(error: &Error, to: &[String]) -> String {
     match error {
-        Error::Denied => "Messages are turned off for this phone.",
+        Error::Denied => "Messages are turned off for this phone.".into(),
         Error::Unsupported => {
-            "The phone doesn't send texts for this PC. Allow it in the G7 Link app on the phone."
+            "The phone doesn't send texts for this PC. Allow it in the G7 Link app on the phone.".into()
         }
-        Error::Offline | Error::NotPaired | Error::Timeout => "The phone isn't connected.",
-        Error::TooLarge => "That attachment or message is too large (MMS supports up to 900 KB).",
-        _ => "The phone couldn't send it.",
+        Error::Offline | Error::NotPaired | Error::Timeout => "The phone isn't connected.".into(),
+        Error::TooLarge => "That attachment or message is too large (MMS supports up to 900 KB).".into(),
+        Error::Protocol(_) if !takes_replies(to) => tr!("Messages", "This sender doesn't accept replies."),
+        _ => "The phone couldn't send it.".into(),
     }
 }
 
@@ -1324,7 +1335,7 @@ pub fn send_to(to: Vec<String>, body: String) {
                 tokio::time::sleep(std::time::Duration::from_millis(600)).await;
                 reload_after_send(&to);
             }
-            Err(e) => crate::bridge::app::show_message(send_problem(&e)),
+            Err(e) => crate::bridge::app::show_message(send_problem(&e, &to)),
         }
     });
 }
@@ -1333,7 +1344,7 @@ fn reload_after_send(to: &[String]) {
     let open = state(|s| s.thread.clone());
     if open.is_none() {
         // A new conversation: open it once the phone lists it.
-        let wanted: Vec<String> = to.iter().map(|a| digits(a)).collect();
+        let wanted: Vec<String> = to.iter().map(|a| match_key(a)).collect();
         PENDING_OPEN.lock().unwrap_or_else(|e| e.into_inner()).replace(wanted);
     }
     load_threads();
@@ -1342,13 +1353,23 @@ fn reload_after_send(to: &[String]) {
     }
 }
 
-/// A new conversation to open once it shows up, by its numbers' digits.
+/// A new conversation to open once it shows up, by its addresses' [`match_key`]s.
 static PENDING_OPEN: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 /// The last digits of a number, to match "+1 555-0100" with "5550100".
 pub(crate) fn digits(number: &str) -> String {
     let all: String = number.chars().filter(char::is_ascii_digit).collect();
     all[all.len().saturating_sub(9)..].to_owned()
+}
+
+/// What finds an address's conversation: a number's last digits, or a
+/// sender name ("M-PESA") without its case and punctuation.
+fn match_key(address: &str) -> String {
+    if address.chars().any(char::is_alphabetic) {
+        address.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    } else {
+        digits(address)
+    }
 }
 
 /// Reads the conversations and the open one again.
@@ -1444,7 +1465,7 @@ fn open_pending() {
         s.threads
             .iter()
             .find(|t| {
-                let have: Vec<String> = t.addresses.iter().map(|a| digits(a)).collect();
+                let have: Vec<String> = t.addresses.iter().map(|a| match_key(a)).collect();
                 have == wanted
             })
             .map(|t| t.id.clone())
@@ -1537,6 +1558,24 @@ mod tests {
     fn numbers_match_however_they_are_written() {
         assert_eq!(digits("+1 (555) 010-0100"), digits("5550100100"));
         assert_eq!(digits("12"), "12");
+        assert_eq!(match_key("+1 (555) 010-0100"), match_key("5550100100"));
+        assert_eq!(match_key("0712 345 678"), match_key("+254712345678"));
+        assert_eq!(match_key("M-PESA"), match_key("mpesa"));
+        assert_ne!(match_key("M-PESA"), match_key("KCB"));
+        assert!(!match_key("KCB").is_empty());
+    }
+
+    #[test]
+    fn only_conversations_with_numbers_take_replies() {
+        let replies = |addresses: &[&str]| thread_json(&thread(addresses, &[]), None)["canReply"] == true;
+        assert!(replies(&["+254712345678"]));
+        assert!(replies(&["22141"]));
+        assert!(!replies(&["M-PESA"]));
+        assert!(!replies(&["+254712345678", "Safaricom"]), "a group with a sender name");
+        assert_eq!(thread_json(&thread(&["22141"], &[]), None)["shortCode"], true);
+        assert_eq!(thread_json(&thread(&["+254712345678"], &[]), None)["shortCode"], false);
+        let refused = Error::Protocol("invalid text".into());
+        assert!(send_problem(&refused, &["KCB".to_owned()]).contains("replies"));
     }
 
     #[test]

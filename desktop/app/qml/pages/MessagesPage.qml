@@ -70,10 +70,10 @@ Item {
             { label: qsTr("Search conversations"), icon: Icons.search, keys: "Ctrl F",
               enabled: page.ready, run: () => search.input.forceActiveFocus() },
             { label: qsTr("Attach image or voice note"), icon: Icons.photo, tint: Theme.tintCoral,
-              enabled: page.chatOpen && !composer.isChat && !composer.groupSms && page.ready && !Messages.sending,
+              enabled: page.chatOpen && !composer.isChat && !composer.groupSms && !composer.smsReplyDisabled && page.ready && !Messages.sending,
               run: () => imageFileDialog.open() },
             { label: qsTr("Paste image from clipboard"), icon: Icons.clipboard, tint: Theme.tintLavender, keys: "Ctrl V",
-              enabled: page.chatOpen && !composer.isChat && !composer.groupSms,
+              enabled: page.chatOpen && !composer.isChat && !composer.groupSms && !composer.smsReplyDisabled,
               run: () => { if (Messages.pasteClipboardImage()) composer.focusText() } },
             { label: qsTr("Remove attachment"), icon: Icons.close, enabled: Messages.hasAttachment,
               run: () => Messages.clearAttachment() },
@@ -211,7 +211,7 @@ Item {
     }
     Shortcut {
         sequences: [StandardKey.Paste]
-        enabled: page.active && (!!page.openThread || page.composing) && !composer.isChat && !composer.groupSms && !input.activeFocus
+        enabled: page.active && (!!page.openThread || page.composing) && !composer.isChat && !composer.groupSms && !composer.smsReplyDisabled && !input.activeFocus
         onActivated: {
             if (Messages.pasteClipboardImage()) {
                 composer.focusText()
@@ -414,7 +414,7 @@ Item {
         DropArea {
             id: mmsDropArea
             anchors.fill: parent
-            enabled: (!!page.openThread || page.composing) && !composer.isChat && !composer.groupSms
+            enabled: (!!page.openThread || page.composing) && !composer.isChat && !composer.groupSms && !composer.smsReplyDisabled
             onDropped: (drop) => {
                 if (drop.hasUrls && drop.urls.length > 0) {
                     if (Messages.attachFile(drop.urls[0].toString())) {
@@ -854,12 +854,25 @@ Item {
                 text: qsTr("%1 characters · %n text(s)", "", page.smsCount(input.text)).arg(input.text.length)
             }
 
+            // Texts to a short code ("22141") can cost money.
+            Txt {
+                anchors.left: parent.left
+                anchors.leftMargin: 16
+                anchors.bottom: parent.top
+                anchors.bottomMargin: 4
+                visible: !composer.isChat && !!page.openThread && !!page.openThread.shortCode && !composer.inputDisabled
+                role: "bodySmall"
+                muted: true
+                text: qsTr("Short code. Replies may be charged.")
+            }
+
             Rectangle {
                 id: composer
                 readonly property bool isChat: Messages.currentIsChat && !page.composing
                 readonly property bool groupSms: !isChat && !!page.openThread && page.openThread.group
                 readonly property bool chatReplyDisabled: isChat && !Messages.currentCanReply
-                readonly property bool inputDisabled: groupSms || chatReplyDisabled
+                readonly property bool smsReplyDisabled: !isChat && !!page.openThread && !page.openThread.canReply
+                readonly property bool inputDisabled: groupSms || chatReplyDisabled || smsReplyDisabled
                 readonly property bool validAttachment: !isChat && Messages.hasAttachment && Messages.attachmentError.length === 0
                 readonly property bool hasAttachmentError: !isChat && Messages.hasAttachment && Messages.attachmentError.length > 0
                 readonly property bool canSend: !Messages.sending
@@ -902,7 +915,7 @@ Item {
                     anchors.leftMargin: 2
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 2
-                    visible: !composer.isChat && !composer.groupSms
+                    visible: !composer.isChat && !composer.groupSms && !composer.smsReplyDisabled
                     enabled: page.ready && !Messages.sending
                     iconPath: Icons.photo
                     iconColor: Theme.tintCoral
@@ -946,7 +959,7 @@ Item {
                             : qsTr("Text message")
                         // Enter sends; Shift+Enter starts a new line; Ctrl+V pastes a clipboard image.
                         Keys.onPressed: (event) => {
-                            if (!composer.isChat && !composer.groupSms
+                            if (!composer.isChat && !composer.groupSms && !composer.smsReplyDisabled
                                 && ((event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier))
                                     || event.matches(StandardKey.Paste))) {
                                 if (Messages.pasteClipboardImage()) {
@@ -973,12 +986,14 @@ Item {
                                 ? qsTr("Replies work while the notification is on your phone")
                                 : composer.isChat
                                     ? qsTr("Reply in %1").arg(Messages.currentAppName)
-                                    : composer.groupSms
-                                        ? qsTr("Group texts can't be sent from the PC yet")
-                                        : Messages.hasAttachment
-                                            ? qsTr("Caption (optional)")
-                                            : page.openThread ? qsTr("Text %1").arg(page.openThread.title)
-                                            : qsTr("Text message")
+                                    : composer.smsReplyDisabled
+                                        ? qsTr("%1 doesn't accept replies").arg(page.openThread.title)
+                                        : composer.groupSms
+                                            ? qsTr("Group texts can't be sent from the PC yet")
+                                            : Messages.hasAttachment
+                                                ? qsTr("Caption (optional)")
+                                                : page.openThread ? qsTr("Text %1").arg(page.openThread.title)
+                                                : qsTr("Text message")
                         }
                     }
                 }
