@@ -28,6 +28,7 @@ releases; those numbers went to test builds.
   F11 still makes it full screen.
 - **The phone asks for the camera only when you use it**, not when pairing.
 
+## 0.1.6 (2026-11-11)
 
 The first release of G7 Link: the phone companion for G7 Linux, on a Linux PC
 and an Android phone.
