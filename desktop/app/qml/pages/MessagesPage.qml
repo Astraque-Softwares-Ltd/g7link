@@ -1371,9 +1371,9 @@ Item {
                 property bool copied: false
                 text: copied ? qsTr("Copied") : qsTr("Copy code %1").arg(bubble.message.code || "")
                 onClicked: {
-                    Messages.copy(bubble.message.code)
                     copied = true
                     copiedTimer.restart()
+                    Messages.copy(bubble.message.code)
                 }
                 Timer { id: copiedTimer; interval: 2000; onTriggered: codeButton.copied = false }
             }

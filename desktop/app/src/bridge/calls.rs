@@ -224,9 +224,8 @@ impl qobject::PhoneCall {
     }
 
     pub fn copy(&self, text: &QString) {
-        if let Err(reason) = crate::sys::clipboard::write(&String::from(text)) {
-            tracing::warn!(reason, "can't copy");
-        }
+        crate::bridge::app::show_message(tr!("Copy", "Copied"));
+        crate::copy::copy_text(String::from(text));
     }
 
     pub fn connect_pc_audio(self: Pin<&mut Self>) {

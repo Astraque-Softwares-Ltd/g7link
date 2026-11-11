@@ -2132,24 +2132,9 @@ impl qobject::AppController {
                     match action_str.as_str() {
                         "folder" | "reveal" | "save" => crate::transfers::show_in_folder(p),
                         "copy" => {
-                            let mime = match p
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(str::to_ascii_lowercase)
-                                .as_deref()
-                            {
-                                Some("png") => "image/png",
-                                _ => "image/jpeg",
-                            };
-                            match std::fs::read(p)
-                                .map_err(|e| e.to_string())
-                                .and_then(|b| crate::sys::clipboard::write_image(mime, &b))
-                            {
-                                Ok(()) => show_message(tr!("App", "Copied to clipboard.")),
-                                Err(_) => {
-                                    show_message(tr!("App", "The photo couldn't be copied to the clipboard."))
-                                }
-                            }
+                            let failed = tr!("App", "The photo couldn't be copied to the clipboard.");
+                            let say = crate::copy::ImageCopy::new(failed);
+                            crate::copy::copy_image_file(p.to_path_buf(), say, |_| {});
                         }
                         _ => crate::transfers::open(p),
                     }

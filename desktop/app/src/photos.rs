@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 use crate::{
     bridge::app::{describe, show_message},
+    copy::ImageCopy,
     core_host,
     messages::Status,
     state::Changes,
@@ -479,31 +480,19 @@ pub(crate) fn free_path(dir: &Path, name: &str) -> PathBuf {
 }
 
 fn copy_file_to_clipboard(path: &Path, remove_after: bool, notify_ui: bool) {
-    let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-        Some("png") => "image/png",
-        _ => "image/jpeg",
+    let failed = if remove_after {
+        tr!("Photos", "The photo couldn't be copied. It's in Downloads\\G7Link.")
+    } else {
+        tr!("Photos", "The photo couldn't be copied to the clipboard.")
     };
-    let copied = std::fs::read(path)
-        .map_err(|e| e.to_string())
-        .and_then(|bytes| crate::sys::clipboard::write_image(mime, &bytes));
-    match copied {
-        Ok(()) => {
-            if remove_after {
-                let _ = std::fs::remove_file(path);
-            }
-            if notify_ui {
-                show_message(tr!("Photos", "Copied to clipboard."));
-            }
+    let say = ImageCopy::new(failed);
+    let say = if notify_ui { say } else { say.quiet() };
+    let copied_file = path.to_path_buf();
+    crate::copy::copy_image_file(path.to_path_buf(), say, move |copied| {
+        if copied && remove_after {
+            let _ = std::fs::remove_file(&copied_file);
         }
-        Err(reason) => {
-            tracing::warn!(reason, "can't copy a photo");
-            if remove_after {
-                show_message(tr!("Photos", "The photo couldn't be copied. It's in Downloads\\G7Link."));
-            } else {
-                show_message(tr!("Photos", "The photo couldn't be copied to the clipboard."));
-            }
-        }
-    }
+    });
 }
 
 // ---- Photos gallery page ----

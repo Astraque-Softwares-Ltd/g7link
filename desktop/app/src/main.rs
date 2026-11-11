@@ -12,6 +12,7 @@ mod calls;
 mod clipboard;
 mod command_palette;
 mod continuity_camera;
+mod copy;
 mod core_host;
 mod deck;
 mod doctor;

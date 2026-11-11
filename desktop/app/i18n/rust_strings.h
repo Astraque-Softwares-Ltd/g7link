@@ -172,6 +172,9 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("ContinuityCamera", "Pasted into %1"), // desktop/app/src/continuity_camera.rs
     QT_TRANSLATE_NOOP("ContinuityCamera", "Scan a document on %1…"), // desktop/app/src/continuity_camera.rs
     QT_TRANSLATE_NOOP("ContinuityCamera", "Take a photo on %1…"), // desktop/app/src/continuity_camera.rs
+    QT_TRANSLATE_NOOP("Copy", "Copied"), // desktop/app/src/bridge/calls.rs
+    QT_TRANSLATE_NOOP("Copy", "Copying…"), // desktop/app/src/copy.rs
+    QT_TRANSLATE_NOOP("Copy", "Couldn't copy"), // desktop/app/src/copy.rs
     QT_TRANSLATE_NOOP("CoreHost", "Dropped %1 queued item(s) for %2 (device unpaired)."), // desktop/app/src/core_host.rs
     QT_TRANSLATE_NOOP("Deck", "Alt + Tab"), // desktop/app/src/bridge/deck.rs
     QT_TRANSLATE_NOOP("Deck", "Choose a key for the shortcut."), // desktop/app/src/deck.rs
@@ -405,7 +408,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("PhotoBackup", "Waiting for %1"), // desktop/app/src/bridge/photo_backup.rs
     QT_TRANSLATE_NOOP("PhotoBackup", "Waiting for Wi-Fi"), // desktop/app/src/bridge/photo_backup.rs
     QT_TRANSLATE_NOOP("Photos", "%1 of %2 couldn't be moved to %3. They're in Downloads\\G7Link."), // desktop/app/src/photos.rs
-    QT_TRANSLATE_NOOP("Photos", "Copied to clipboard."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "Deleted %1 of %2."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "From %1"), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "New photo"), // desktop/app/src/photos.rs
@@ -443,7 +445,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Timeline", "Clip (removed from clipboard history)"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Copied image"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Copied link to clipboard."), // desktop/app/src/bridge/timeline.rs
-    QT_TRANSLATE_NOOP("Timeline", "Copied to clipboard."), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "From %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "In progress"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "No phone is paired yet."), // desktop/app/src/bridge/timeline.rs

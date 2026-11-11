@@ -7,7 +7,7 @@ use std::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
-use crate::{messages, state::Changes};
+use crate::{i18n::tr, messages, state::Changes};
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -233,9 +233,8 @@ impl qobject::Messages {
     }
 
     pub fn copy(&self, text: &QString) {
-        if let Err(reason) = crate::sys::clipboard::write(&String::from(text)) {
-            tracing::warn!(reason, "can't copy");
-        }
+        crate::bridge::app::show_message(tr!("Copy", "Copied"));
+        crate::copy::copy_text(String::from(text));
     }
 
     pub fn send_to(&self, to: &QString, body: &QString) {

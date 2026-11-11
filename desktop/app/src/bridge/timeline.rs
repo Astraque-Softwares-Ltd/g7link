@@ -16,6 +16,7 @@ use serde_json::json;
 use super::{Edit, diff};
 use crate::{
     bridge::app::{describe, show_message},
+    copy::ImageCopy,
     core_host,
     state::Changes,
 };
@@ -396,22 +397,9 @@ impl qobject::TimelineModel {
                 }
             }
             TimelineKind::Photo | TimelineKind::File => {
-                let path = Path::new(&row.primary_path);
-                if !path.exists() {
-                    return show_message(tr!("Timeline", "That photo was moved or deleted."));
-                }
-                let mime =
-                    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-                        Some("png") => "image/png",
-                        _ => "image/jpeg",
-                    };
-                match std::fs::read(path)
-                    .map_err(|e| e.to_string())
-                    .and_then(|bytes| crate::sys::clipboard::write_image(mime, &bytes))
-                {
-                    Ok(()) => show_message(tr!("Timeline", "Copied to clipboard.")),
-                    Err(_) => show_message(tr!("Timeline", "The photo couldn't be copied to the clipboard.")),
-                }
+                let say = ImageCopy::new(tr!("Timeline", "The photo couldn't be copied to the clipboard."))
+                    .when_missing(tr!("Timeline", "That photo was moved or deleted."));
+                crate::copy::copy_image_file(row.primary_path.clone().into(), say, |_| {});
             }
             _ => {}
         }
