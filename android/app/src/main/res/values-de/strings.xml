@@ -4,14 +4,10 @@
     <string name="app_name">G7 Link</string>
 
     <!-- Pairing -->
-    <string name="pair_title">Mit deinem PC koppeln</string>
     <string name="pair_show_title">Smartphone oder Tablet koppeln</string>
     <string name="pair_show_hint">Öffne G7 Link auf deinem anderen Smartphone oder Tablet, tippe auf „Koppeln“ und scanne diesen Code.</string>
     <string name="pair_show_qr_desc">Kopplungscode für ein anderes Smartphone oder Tablet</string>
     <string name="action_show_code">Stattdessen Smartphone oder Tablet koppeln</string>
-    <string name="pair_scan_hint">Öffne G7 Link auf deinem PC und richte die Kamera auf den angezeigten Code. Ein anderes Smartphone oder Tablet zeigt seinen Code unter „Smartphone oder Tablet koppeln“.</string>
-    <string name="pair_nearby_title">In der Nähe koppeln</string>
-    <string name="pair_nearby_hint">Öffne G7 Link auf deinem PC und lass den Kopplungsbildschirm geöffnet. Er erscheint dann hier.</string>
     <string name="pair_looking">Suche nach PCs…</string>
     <string name="pair_joining">Koppeln…</string>
     <string name="pair_connecting">%1$s wird verbunden…</string>
@@ -56,13 +52,9 @@
     <string name="settings_language">Sprache</string>
     <string name="settings_language_more">Mehr</string>
     <string name="settings_dynamic_color">Farben aus Hintergrundbild</string>
-    <string name="settings_dynamic_color_hint">Farben deines Hintergrundbilds verwenden.</string>
     <string name="settings_devices">PCs</string>
     <string name="settings_about">Info</string>
-    <string name="settings_notifications">Benachrichtigungen</string>
     <string name="notifications_title">Benachrichtigungen auf deinem PC anzeigen</string>
-    <string name="notifications_on">Ein: Benachrichtigungen erscheinen auf deinen gekoppelten PCs, wo du darauf antworten und sie verwerfen kannst.</string>
-    <string name="notifications_off">G7 Link benötigt Benachrichtigungszugriff, um die Benachrichtigungen dieses Geräts auf deinem PC anzuzeigen.</string>
     <string name="notifications_restricted">Schalter ausgegraut? Öffne „App-Info“, tippe auf ⋮, wähle „Eingeschränkte Einstellungen zulassen“ und versuche es erneut.</string>
     <string name="action_allow">Erlauben</string>
     <string name="clip_share_label">An PC senden</string>
@@ -75,37 +67,23 @@
     <string name="media_next">Nächster Titel</string>
     <string name="media_previous">Vorheriger Titel</string>
     <string name="action_send_files">Dateien senden</string>
-    <string name="action_send_folder">Ordner senden</string>
     <string name="input_service_label">G7 Link: Steuerung vom PC</string>
     <string name="input_service_description">Ermöglicht es Maus und Tastatur deines PCs, auf diesem Gerät zu tippen, zu wischen und zu schreiben, während du den Bildschirm mit einem gekoppelten PC teilst. Es werden keine anderen Inhalte gelesen.</string>
-    <string name="settings_control">Steuerung vom PC</string>
     <string name="control_title">Maus und Tastatur deines PCs verwenden</string>
-    <string name="control_on">Ein: Solange dein Bildschirm auf deinem PC angezeigt wird, kannst du von dort aus tippen, wischen und schreiben.</string>
-    <string name="control_off">Tippe, wische und schreibe von deinem PC aus, während er diesen Bildschirm anzeigt. Aktiviere G7 Link in den Bedienungshilfen.</string>
     <string name="dnd_access_title">Bitte nicht stören und Lautlos-Modus</string>
-    <string name="dnd_access_on">Ein: Dein PC kann „Bitte nicht stören“ ein- oder ausschalten und den Klingelton lautlos stellen.</string>
-    <string name="dnd_access_off">Erlaube deinem PC, „Bitte nicht stören“ ein- oder auszuschalten und den Klingelton lautlos zu stellen.</string>
     <string name="write_settings_title">Bildschirmhelligkeit</string>
-    <string name="write_settings_on">Ein: Dein PC kann die Bildschirmhelligkeit dieses Geräts anpassen.</string>
-    <string name="write_settings_off">Erlaube deinem PC, die Bildschirmhelligkeit dieses Geräts anzupassen.</string>
     <string name="local_network_title">Deinen PC in diesem Netzwerk erreichen</string>
-    <string name="local_network_text">Android fragt nach, bevor eine App mit Geräten in deinem Netzwerk kommuniziert. G7 Link benötigt dies, um deinen PC zu erreichen.</string>
     <string name="channel_elevated">Einrichtung für Kabelloses Debugging</string>
-    <string name="elevated_title">Echte Touch- und Tasteneingabe</string>
-    <string name="elevated_not_set_up">Echtzeit-Toucheingabe, alle Tasten sowie Stummschalten, Halten und Ziffernblock bei Anrufen direkt vom PC.</string>
     <string name="elevated_waiting">Warte auf Kabelloses Debugging. Aktiviere es in den Entwickleroptionen.</string>
     <string name="elevated_starting">Wird gestartet…</string>
-    <string name="elevated_running">Ein: Maus und Tastatur deines PCs funktionieren wie ein echter Touchscreen und eine echte Tastatur.</string>
     <string name="elevated_failed">Start fehlgeschlagen. Prüfe, ob Kabelloses Debugging aktiviert ist, und versuche es erneut.</string>
     <string name="elevated_not_paired">Das Gerät hat die Kopplung mit G7 Link vergessen. Richte sie erneut ein.</string>
     <string name="elevated_start_with">Starten mit</string>
     <string name="elevated_method_wireless">Drahtlos</string>
     <string name="elevated_set_up">Einrichten</string>
     <string name="elevated_root_hint">Dieses Gerät ist gerootet, daher kann der erweiterte Modus stattdessen über Root starten: ohne Kopplung, und er ist nach einem Neustart oder ohne WLAN von selbst wieder da. Er erhält dieselben Berechtigungen wie beim Kabellosen Debugging.</string>
-    <string name="elevated_running_root">Ein (über Root): Maus und Tastatur deines PCs funktionieren wie ein echter Touchscreen und eine echte Tastatur.</string>
     <string name="elevated_root_failed">Root-Zugriff wurde nicht gewährt oder dein Root-Manager kann den G7Link-Helfer nicht als Shell-Benutzer starten. Du kannst ihn stattdessen über Kabelloses Debugging einrichten.</string>
     <string name="elevated_shizuku_hint">Shizuku ist installiert, daher kann der erweiterte Modus stattdessen darüber starten: ohne eigene Kopplung, und er funktioniert auch ohne WLAN, solange Shizuku läuft. Er erhält dieselben Berechtigungen wie beim Kabellosen Debugging.</string>
-    <string name="elevated_running_shizuku">An, über Shizuku: Maus und Tastatur deines PCs funktionieren wie ein echter Touchscreen und eine echte Tastatur.</string>
     <string name="elevated_shizuku_waiting">Warte auf Shizuku. Starte es in der Shizuku-App und öffne dann G7 Link.</string>
     <string name="elevated_shizuku_not_running">Shizuku läuft nicht. Starte es in der Shizuku-App und versuche es dann erneut.</string>
     <string name="elevated_shizuku_denied">Shizuku hat G7 Link nicht zugelassen. Erlaube es in Shizuku (und aktualisiere Shizuku, falls es alt ist) und versuche es dann erneut.</string>
@@ -138,21 +116,10 @@
     </plurals>
     <string name="app_windows_text">Angezeigt auf %1$s. Sie laufen hier unabhängig neben deinem Gerätebildschirm.</string>
     <string name="action_close_all">Alle schließen</string>
-    <string name="settings_calls_and_contacts">Anrufe, Kontakte und Nachrichten</string>
     <string name="sms_title">SMS am PC schreiben</string>
-    <string name="sms_on">Ein: Unterhaltungen erscheinen auf deinem PC, wo du SMS lesen und senden kannst.</string>
-    <string name="sms_off">Lies und sende SMS an deinem PC. Benötigt Zugriff auf Nachrichten und Kontakte.</string>
     <string name="calls_title">Anrufe auf deinem PC</string>
-    <string name="calls_on">Ein: Dein PC zeigt eingehende und letzte Anrufe an und kann Anrufe starten oder annehmen.</string>
-    <string name="calls_off">Sieh am PC, wer anruft, und starte oder nimm Anrufe an. Der Ton bleibt auf dem Gerät. Benötigt Zugriff auf Telefon, Anrufliste und Kontakte.</string>
     <string name="contacts_title">Kontakte auf deinem PC</string>
-    <string name="contacts_on">Ein: Deine Kontakte stehen in „Anrufe“ und „Nachrichten“ auf deinem PC zur Verfügung.</string>
-    <string name="contacts_off">Durchsuche Kontakte und rufe vom PC aus an oder schreibe Nachrichten. Benötigt Zugriff auf Kontakte.</string>
-    <string name="settings_photos">Fotos und Videos</string>
     <string name="photos_title">Fotos und Videos auf deinem PC</string>
-    <string name="photos_on">Ein: Deine Fotos, Screenshots und Videos sind auf deinem PC verfügbar.</string>
-    <string name="photos_partial">Nur ausgewählte Fotos sind freigegeben. Erlaube alle, um deine gesamte Galerie am PC zu durchsuchen.</string>
-    <string name="photos_off">Durchsuche Fotos und Videos auf deinem PC und erhalte neue Screenshots sofort. Benötigt Zugriff auf Fotos und Videos.</string>
     <string name="action_select_photos">Alle erlauben</string>
     <string name="transfer_too_many">Dieser Ordner enthält zu viele Dateien, um sie auf einmal zu senden.</string>
     <string name="transfers_title">Übertragungen</string>
@@ -205,7 +172,6 @@
     <string name="settings_clipboard_passwords">Kopierte Passwörter synchronisieren</string>
     <string name="settings_clipboard_passwords_hint">Sendet auch, was Passwort-Manager als privat markieren. Es verschwindet nach einer Minute aus der Zwischenablage des PCs und landet nie im Verlauf.</string>
     <string name="settings_clipboard_suggestions">Aktionen für kopierten Text vorschlagen</string>
-    <string name="settings_clipboard_suggestions_hint">Aktionen für Text von deinem PC vorschlagen: Links öffnen, Karten, Anrufe, Sendungsverfolgung und E-Mail.</string>
     <string name="clip_received_from">Kopiert von %1$s</string>
     <string name="clip_action_open">Öffnen</string>
     <string name="clip_action_maps">In Karten öffnen</string>
@@ -213,13 +179,8 @@
     <string name="clip_action_track">Verfolgen</string>
     <string name="clip_action_email">E-Mail</string>
     <string name="background_title">Im Hintergrund erreichbar bleiben</string>
-    <string name="background_text">Android pausiert G7 Link, um Akku zu sparen, sodass dein PC es nicht erreichen kann. Erlaube die Ausführung im Hintergrund.</string>
-    <string name="background_on">Verbindung im Hintergrund erlaubt</string>
-    <string name="settings_background_title">Hintergrund &amp; Akku</string>
     <string name="settings_run_in_background">Im Hintergrund ausführen</string>
-    <string name="settings_run_in_background_hint">Hält dieses Gerät für deinen PC erreichbar. Wenn ausgeschaltet, verbindet sich G7 Link nur, solange die App geöffnet ist, und die Benachrichtigung wird ausgeblendet.</string>
     <string name="home_background_off_title">Hintergrundverbindung ist aus</string>
-    <string name="home_background_off_text">G7 Link verbindet sich nur, solange die App geöffnet ist. Schalte sie ein, damit dieses Gerät für deinen PC erreichbar bleibt.</string>
     <string name="battery_open_oem_settings">Akkueinstellungen</string>
     <string name="battery_guide_samsung">Auf Samsung: Öffne „App-Info › Akku › Nicht eingeschränkt“ und stelle unter „Gerätewartung › Akku › Grenzen der Hintergrundnutzung“ sicher, dass G7 Link nie in den Standby versetzt wird.</string>
     <string name="battery_guide_xiaomi">Auf Xiaomi / HyperOS / MIUI: Aktiviere „Autostart“ für G7 Link und wähle unter „App-Info › Energiesparmodus“ die Option „Keine Beschränkungen“.</string>
@@ -228,18 +189,14 @@
     <string name="battery_guide_vivo">Auf Vivo / Funtouch / OriginOS: Öffne „App-Info › Akku“, wähle „Nicht eingeschränkt (Hoher Hintergrundstromverbrauch)“ und erlaube „Autostart“.</string>
     <string name="battery_guide_huawei">Auf Huawei / Honor: Öffne „App-Start“ (Telefonmanager), deaktiviere „Automatisch verwalten“ für G7 Link und lasse „Auto-Start“, „Sekundärer Start“ und „Im Hintergrund ausführen“ aktiviert.</string>
     <string name="battery_guide_pixel">Auf Pixel: Öffne „App-Info › App-Akkunutzung“, tippe auf „Hintergrundnutzung zulassen“ und wähle „Uneingeschränkt“.</string>
-    <string name="action_manage">Verwalten</string>
     <string name="action_app_info">App-Info</string>
     <string name="theme_hive">Wabe</string>
     <string name="hive_invite_title">Probiere „Wabe“, das neue Design</string>
-    <string name="hive_invite_text">Honig auf Anthrazit oder warmem Wachs, mit einer lebendigen Bienenwabe im Hintergrund der App. Jederzeit in den Einstellungen änderbar.</string>
     <string name="hive_invite_try">Wabe ausprobieren</string>
-    <string name="hive_invite_dismiss">Jetzt nicht</string>
     <string name="star_channel">G7Link-Projekt</string>
     <string name="star_title">Gefällt dir G7 Link?</string>
     <string name="star_text">Tippe, um es auf GitHub mit einem Stern zu markieren. Das hilft anderen, es zu finden.</string>
     <string name="settings_comb_motion">Animierte Wabe</string>
-    <string name="settings_comb_motion_hint">Die Bienenwabe atmet und pulsiert sanft. Bei aktivierter Option „Animationen entfernen“ oder im Energiesparmodus bleibt sie ruhig.</string>
     <string name="theme_bloom">Blüte</string>
     <string name="theme_graphite">Graphit</string>
     <string name="mode_system">System</string>
@@ -252,14 +209,12 @@
 
     <!-- Actions -->
     <string name="action_pair">Koppeln</string>
-    <string name="action_pair_nearby">Stattdessen in der Nähe koppeln</string>
     <string name="action_scan_instead">Stattdessen Code scannen</string>
     <string name="action_codes_match">Codes stimmen überein</string>
     <string name="action_codes_differ">Stimmen nicht überein</string>
     <string name="action_try_again">Erneut versuchen</string>
     <string name="action_cancel">Abbrechen</string>
     <string name="action_allow_camera">Kamerazugriff erlauben</string>
-    <string name="action_ring_pc">PC anklingeln</string>
     <string name="action_stop_ringing">Klingeln beenden</string>
     <string name="action_stop_service">Ausschalten</string>
     <string name="action_turn_on">Einschalten</string>
@@ -272,7 +227,6 @@
     <string name="action_refresh">Aktualisieren</string>
     <string name="action_update">Aktualisieren</string>
     <string name="update_title">G7 Link %1$s ist verfügbar</string>
-    <string name="update_text">Hol dir die neuesten Verbesserungen und Fehlerbehebungen.</string>
     <string name="update_downloading">Wird heruntergeladen…</string>
     <string name="update_downloading_progress">Wird heruntergeladen · %1$s von %2$s</string>
     <string name="update_waiting_network">Warte auf eine Verbindung. Der Download wird dort fortgesetzt, wo er unterbrochen wurde.</string>
@@ -283,10 +237,6 @@
     <string name="update_install_failed">Android hat das Update nicht installiert. Versuche es erneut.</string>
     <string name="update_whats_new">Neuigkeiten</string>
     <string name="update_check">Nach Updates suchen</string>
-    <string name="update_checking">Suche nach Updates…</string>
-    <string name="update_up_to_date_version">G7 Link %1$s ist auf dem neuesten Stand.</string>
-    <string name="update_current_version">Du verwendest G7 Link %1$s.</string>
-    <string name="update_check_failed">Suche nach Updates fehlgeschlagen. Prüfe deine Internetverbindung.</string>
     <string name="action_lock_pc">PC sperren</string>
     <string name="action_sleep_pc">Energie sparen</string>
     <string name="action_wake_pc">Aufwecken</string>
@@ -342,7 +292,6 @@
     <string name="action_back">Zurück</string>
     <string name="settings_remote">Deinen PC steuern</string>
     <string name="settings_volume_keys_control_pc">Lautstärketasten steuern den PC</string>
-    <string name="settings_volume_keys_control_pc_hint">Während auf dem PC Musik oder ein Video läuft, ändern die Lautstärketasten des Smartphones die Lautstärke des PCs.</string>
     <string name="settings_touchpad_sensitivity">Touchpad-Geschwindigkeit</string>
     <string name="settings_touchpad_sensitivity_value">%1$.1f×</string>
     <string name="remote_mode_touchpad">Touchpad</string>
@@ -399,7 +348,6 @@
     <string name="pc_mirror_viewport_desc">Bildschirm von %1$s</string>
 
     <!-- Voice recorder to PC -->
-    <string name="action_record_pc">Aufnehmen</string>
     <string name="channel_recorder">Sprachrekorder</string>
     <!-- Phone as microphone. -->
     <string name="channel_mic">Gerätemikrofon für deinen PC</string>
@@ -409,17 +357,12 @@
     <string name="mic_request_title">%1$s möchte das Mikrofon dieses Geräts nutzen</string>
     <string name="mic_request_text">Tippe zum Starten. Es bleibt aktiv, bis du oder der PC es beenden.</string>
     <string name="mic_request_start">Starten</string>
-    <string name="mic_request_card_text">Es bleibt aktiv, bis du oder der PC es beenden.</string>
     <string name="mic_pc_toggle">Dieses Gerät als Mikrofon verwenden</string>
-    <string name="mic_pc_toggle_hint">Standardmäßig ein. Dieser PC kann das Mikrofon anfordern. Es schaltet sich erst ein, wenn du auf „Starten“ tippst.</string>
-    <string name="mic_pc_toggle_hint_auto">Standardmäßig ein. Dieser PC kann das Mikrofon anfordern, und es schaltet sich sofort ein.</string>
     <string name="start_without_asking_toggle">Kamera und Mikrofon ohne Nachfrage starten</string>
     <string name="start_without_asking_hint">Wenn dieser PC fragt, schalten sie sich sofort ein, ohne Tippen auf dem Telefon. Braucht Elevated. Ohne Elevated fragt das Telefon wie gewohnt.</string>
     <string name="recorder_notification_recording">Aufnahme für %1$s</string>
     <string name="recorder_notification_paused">Aufnahme pausiert (%1$s)</string>
     <string name="recorder_permission_title">Mikrofonzugriff erlauben</string>
-    <string name="recorder_permission_text">G7 Link verwendet das Mikrofon nur, während du eine Sprachnotiz zum Senden an %1$s aufnimmst.</string>
-    <string name="recorder_allow_mic">Mikrofon erlauben</string>
     <string name="recorder_offline_hint">Aufnahmen werden auf diesem Gerät gespeichert und automatisch gesendet, sobald %1$s verbunden ist.</string>
     <string name="recorder_status_ready">Aufnahmebereit für %1$s</string>
     <string name="recorder_status_recording">Aufnahme für %1$s</string>
@@ -442,7 +385,6 @@
 
     <!-- Deck (macro pad to PC) -->
     <string name="action_deck_pc">Deck</string>
-    <string name="action_desk_pc">Tischuhr</string>
     <string name="deck_fullscreen">Vollbild</string>
     <string name="deck_exit_fullscreen">Vollbild beenden</string>
     <string name="deck_playing">Wiedergabe</string>
@@ -453,7 +395,6 @@
     <string name="deck_empty_page">Noch keine Kacheln auf dieser Seite. Füge Kacheln in G7 Link auf %1$s hinzu.</string>
     <string name="deck_commands_denied_title">Befehle auf %1$s erlauben</string>
     <string name="deck_commands_denied_text">Um Shell-Befehle von diesem Gerät auszuführen, aktiviere „Deck-Befehle ausführen“ für dieses Gerät unter „G7 Link › Einstellungen › Geräte“ auf %1$s.</string>
-    <string name="deck_hint">Kacheln im Deck auf %1$s anpassen</string>
     <string name="pc_audio_volume">Lautstärke</string>
     <string name="pc_audio_mute">Stummschalten</string>
     <string name="pc_audio_unmute">Stummschaltung aufheben</string>
@@ -463,24 +404,15 @@
     <string name="pc_audio_default_badge">Standard</string>
     <string name="pc_audio_outputs_hint">Aktive Wiedergabegeräte auf %1$s.</string>
     <string name="pc_audio_use_phone_speaker">Gerät als Lautsprecher verwenden</string>
-    <string name="pc_audio_use_phone_speaker_sub">PC-Audio auf diesem Gerät wiedergeben</string>
-    <string name="pc_audio_use_phone_speaker_on">PC-Audio wird auf dieses Gerät gestreamt</string>
     <string name="pc_audio_use_phone_mic">Gerät als Mikrofon verwenden</string>
-    <string name="pc_audio_use_phone_mic_sub">Mikrofon dieses Geräts an den PC senden</string>
-    <string name="pc_audio_use_phone_mic_on">Der PC hört das Mikrofon dieses Geräts</string>
 
     <!-- Phone storage in File Explorer -->
     <string name="storage_all_files_title">Zugriff auf alle Dateien</string>
-    <string name="storage_all_files_on">Ein: Von dir autorisierte PCs können die Dateien dieses Geräts im Dateimanager durchsuchen, öffnen und kopieren.</string>
-    <string name="storage_all_files_off">Durchsuche die Ordner dieses Geräts im Dateimanager deines PCs. Benötigt „Zugriff auf alle Dateien“ oder wähle unten bestimmte Ordner aus.</string>
     <string name="storage_saf_title">Nur ausgewählte Ordner</string>
-    <string name="storage_saf_hint">Teile nur die Ordner, die du auswählst.</string>
     <string name="storage_add_folder">Ordner hinzufügen</string>
     <string name="storage_remove_folder">Entfernen</string>
     <string name="storage_pc_toggle">Speicher dieses Geräts im Dateimanager durchsuchen</string>
-    <string name="storage_pc_toggle_hint">Standardmäßig aus. Erlaubt diesem PC, deine freigegebenen Dateien aufzulisten, zu öffnen, hochzuladen, umzubenennen und zu löschen.</string>
     <string name="storage_request_title">%1$s möchte den Speicher dieses Geräts durchsuchen</string>
-    <string name="storage_request_text">%1$s erlauben, deinen freigegebenen Speicher (oder ausgewählte Ordner) im Dateimanager zu durchsuchen?</string>
     <string name="action_not_now">Jetzt nicht</string>
 
     <!-- Phone as webcam to PC -->
@@ -492,8 +424,6 @@
     <string name="webcam_request_title">%1$s möchte deine Kamera verwenden</string>
     <string name="webcam_request_text">Tippe, um die Webcam-Steuerung zu öffnen und den Stream zu starten.</string>
     <string name="webcam_permission_title">Kamerazugriff erlauben</string>
-    <string name="webcam_permission_text">G7 Link verwendet die Kamera nur, während du Video als Webcam an %1$s streamst.</string>
-    <string name="webcam_allow_camera">Kamera erlauben</string>
     <string name="webcam_status_connecting">Kamera wird mit %1$s verbunden…</string>
     <string name="webcam_status_ready">Bereit zum Streamen an %1$s</string>
     <string name="webcam_start">Webcam starten</string>
@@ -506,7 +436,6 @@
     <string name="webcam_turn_torch_off">Taschenlampe ausschalten</string>
     <string name="webcam_switch_camera">Kamera wechseln</string>
     <string name="webcam_zoom_label">Zoom %1$.1f×</string>
-    <string name="webcam_resolution_label">Auflösung</string>
     <string name="webcam_denied_text">Die Webcam ist für dieses Gerät auf %1$s deaktiviert.</string>
     <string name="webcam_offline_hint">Verbinde %1$s im selben Netzwerk, um deine Kamera zu streamen.</string>
 
@@ -565,7 +494,6 @@
 
     <!-- LocalSend -->
     <string name="settings_localsend_title">LocalSend</string>
-    <string name="settings_localsend_subtitle">Dateien mit LocalSend-Geräten in der Nähe senden und empfangen. Standardmäßig aus. Bei eingehenden Dateien wird immer zuerst gefragt.</string>
     <string name="localsend_card_title">LocalSend in der Nähe</string>
     <string name="localsend_card_empty">Noch keine LocalSend-Geräte in diesem WLAN gefunden.</string>
     <string name="localsend_nearby_device">Gerät in der Nähe</string>
@@ -621,7 +549,6 @@
     <string name="settings_seed_sage">Salbei</string>
     <string name="settings_seed_black">Schwarz</string>
     <string name="settings_amoled">Reines Schwarz (AMOLED)</string>
-    <string name="settings_amoled_hint">Echte dunkle Oberflächen in #000000 für OLED-Bildschirme.</string>
 
     <!-- Deck defaults & accessibility -->
     <string name="deck_tile_with_badge">%1$s, %2$s</string>
@@ -659,8 +586,6 @@
 
     <!-- Webcam formatting -->
     <string name="webcam_stream_spec">%1$d × %2$d · %3$d fps</string>
-    <string name="webcam_stream_camera_spec">%1$d × %2$d · %3$s</string>
-    <string name="webcam_status_streaming_camera">Streame %1$d × %2$d an %3$s · %4$s</string>
     <string name="webcam_res_720p">720p</string>
     <string name="webcam_res_1080p">1080p</string>
     <string name="webcam_res_4k">4K</string>
@@ -672,7 +597,6 @@
     <string name="transfer_receiving_progress">Empfange von %1$s · %2$s / %3$s</string>
     <string name="clipboard_history_meta">%1$s · %2$s</string>
     <string name="clipboard_history_meta_pinned">%1$s · %2$s · Angeheftet</string>
-    <string name="timeline_latest_summary">%1$s · %2$s</string>
     <string name="recorder_marker_chip">%1$s · %2$s</string>
 
     <!-- Rich Handoff -->
@@ -684,7 +608,6 @@
     <!-- Remote PC keyboard typing without mirroring -->
     <string name="keyboard_from_pc_banner">Tastatureingabe von %1$s</string>
     <string name="keyboard_stop">Tippen beenden</string>
-
 
     <!-- Home-screen PC widget -->
     <string name="widget_pc_title">PC-Schnellaktionen</string>
@@ -703,8 +626,6 @@
 
     <!-- Companion Device Manager proximity wake -->
     <string name="companion_wake_title">Aufwecken, wenn PC in der Nähe ist (Begleitgerät)</string>
-    <string name="companion_wake_on">Verknüpft · Android weckt G7 Link auf, wenn dein PC in der Nähe ist</string>
-    <string name="companion_wake_off">Verknüpfe deinen PC, damit Android G7 Link aufweckt, sobald sein BLE-Signal in Reichweite ist</string>
     <string name="companion_wake_associate">Verknüpfen</string>
 
     <!-- Flick to Send sheet -->
@@ -739,12 +660,6 @@
     <string name="mirror_allow_pc_control">PC-Maussteuerung erlauben</string>
     <string name="action_open_controls">Steuerung</string>
     <string name="remote_input_requested_title">Dein PC hat versucht, dieses Gerät zu steuern</string>
-    <string name="remote_input_requested_text">Aktiviere „G7 Link: Steuerung vom PC“ in den Bedienungshilfen, um Maus und Tastatur deines PCs auf diesem Gerät zu nutzen.</string>
-    <string name="permissions_setup_title">Berechtigungen &amp; Einrichtung (%1$d offen)</string>
-    <string name="permissions_setup_subtitle">Benachrichtigungen, Anrufe, SMS, Fotos und Hintergrundzugriff</string>
-    <string name="clipboard_preview_hidden">••••••••••••</string>
-    <string name="clipboard_preview_reveal">Anzeigen</string>
-    <string name="clipboard_preview_hide">Ausblenden</string>
 
     <!-- Send queue -->
     <string name="send_queue_title_count">Sendewarteschlange · %1$d</string>
@@ -763,142 +678,33 @@
     <string name="send_queue_dropped_unpair">%1$d Element(e) in der Warteschlange für %2$s verworfen (Gerät entkoppelt).</string>
 
     <!-- Setup Walkthrough -->
-    <string name="walkthrough_step_progress">Schritt %1$d von %2$d</string>
-    <string name="walkthrough_stage_desc">Waben-Einrichtungsstatus, Schritt %1$d von %2$d</string>
-    <string name="walkthrough_action_skip">Einrichtung überspringen</string>
-    <string name="walkthrough_action_back">Zurück</string>
-    <string name="walkthrough_action_get_started">Los geht’s</string>
-    <string name="walkthrough_action_continue">Weiter</string>
-    <string name="walkthrough_action_pair_later">Später koppeln</string>
-    <string name="walkthrough_action_done">Fertig</string>
-    <string name="walkthrough_action_open_guide">Funktionsübersicht öffnen</string>
-
-    <string name="walkthrough_welcome_title">Verbinde dein Gerät und deinen PC</string>
-    <string name="walkthrough_welcome_subtitle">Benachrichtigungen, Anrufe, Nachrichten, Dateien, Zwischenablage, Kamera und Bildschirm – geteilt mit deinem PC.</string>
-    <string name="walkthrough_welcome_card_heading">Datenschutz von Grund auf</string>
-    <string name="walkthrough_welcome_tls_title">Ende-zu-Ende-verschlüsselt (TLS 1.3)</string>
-    <string name="walkthrough_welcome_tls_body">Jede Verbindung nutzt gegenseitig geprüfte Gerätezertifikate.</string>
-    <string name="walkthrough_welcome_lan_title">Direkt über WLAN, Ethernet oder USB</string>
-    <string name="walkthrough_welcome_lan_body">Der Datenverkehr bleibt in deinem Netzwerk. Ein Relay wird nur genutzt, wenn „Über mobile Daten verbinden“ aktiv ist.</string>
-    <string name="walkthrough_welcome_local_title">Kein Konto und kein Cloud-Speicher</string>
-    <string name="walkthrough_welcome_local_body">Geräteschlüssel bleiben auf deinen Geräten: im Schlüsselbund deines PCs (oder in einer Datei, die nur dein Konto lesen kann) und im Android Keystore.</string>
-
-    <string name="walkthrough_permissions_title">Berechtigungen</string>
-    <string name="walkthrough_permissions_subtitle">Erteile nur, was du nutzt. Du kannst jede Berechtigung später in den Einstellungen ändern.</string>
-    <string name="walkthrough_permissions_granted_badge">%1$d von %2$d erteilt</string>
-    <string name="walkthrough_perm_counter">Berechtigung %1$d von %2$d</string>
-    <string name="walkthrough_perm_counter_optional">Berechtigung %1$d von %2$d · Optional</string>
-    <string name="walkthrough_perm_status_granted">Erteilt</string>
-    <string name="walkthrough_perm_status_not_granted">Nicht erteilt</string>
-    <string name="walkthrough_perm_action_grant">Erteilen</string>
-    <string name="walkthrough_perm_action_manage">Verwalten</string>
-    <string name="walkthrough_perm_action_next">Weiter</string>
-    <string name="walkthrough_perm_dot_desc">%1$s, %2$s</string>
 
     <string name="walkthrough_perm_notif_title">Benachrichtigungen</string>
-    <string name="walkthrough_perm_notif_does">Gerätebenachrichtigungen auf deinem PC sehen, verwerfen, direkt beantworten und Medien steuern.</string>
-    <string name="walkthrough_perm_notif_requires">Android benötigt den Benachrichtigungszugriff und die Benachrichtigungsberechtigung.</string>
     <string name="walkthrough_restricted_title">Android hat diese Einstellung blockiert</string>
-    <string name="walkthrough_restricted_body">Android hält einige Berechtigungen für Apps zurück, die aus einer Datei statt aus einem App-Store installiert wurden. So gibst du sie frei:</string>
-    <string name="walkthrough_restricted_step1">Tippe auf „App-Info öffnen“.</string>
     <string name="walkthrough_restricted_step2">Tippe oben rechts auf ⋮, wähle „Eingeschränkte Einstellungen zulassen“ und bestätige.</string>
-    <string name="walkthrough_restricted_step3">Kehre hierher zurück und tippe erneut auf „Erteilen“.</string>
-    <string name="walkthrough_restricted_note">Das Menü zeigt diese Option erst an, nachdem du einmal versucht hast, die Berechtigung zu erteilen. Auf manchen Geräten heißt die Option etwas anders.</string>
-    <string name="walkthrough_restricted_open">App-Info öffnen</string>
-
-    <string name="walkthrough_perm_battery_title">Uneingeschränkte Akkunutzung</string>
-    <string name="walkthrough_perm_battery_does">Hält dein Gerät erreichbar, wenn der Bildschirm ausgeschaltet ist.</string>
-    <string name="walkthrough_perm_battery_requires">Hält die Verbindung zu deinem PC aktiv, während das Gerät gesperrt ist.</string>
 
     <string name="walkthrough_perm_calls_title">Anrufe</string>
-    <string name="walkthrough_perm_calls_does">Eingehende Anrufe auf deinem PC sehen sowie direkt am Desktop annehmen, ablehnen oder wählen.</string>
-    <string name="walkthrough_perm_calls_requires">Android benötigt die Berechtigungen für Telefon und Anrufliste.</string>
 
     <string name="walkthrough_perm_sms_title">Nachrichten</string>
-    <string name="walkthrough_perm_sms_does">SMS- und MMS-Nachrichten mit Kontaktnamen auf deinem PC lesen und senden.</string>
-    <string name="walkthrough_perm_sms_requires">Android benötigt die Berechtigungen für SMS und Kontakte.</string>
 
     <string name="walkthrough_perm_photos_title">Fotos</string>
-    <string name="walkthrough_perm_photos_does">Aktuelle Gerätefotos auf deinem PC durchsuchen und Originale speichern.</string>
-    <string name="walkthrough_perm_photos_requires">Android benötigt den Zugriff auf Fotos und Videos.</string>
 
-    <string name="walkthrough_perm_storage_title">Speicher im Dateimanager</string>
-    <string name="walkthrough_perm_storage_does">Deine Geräteordner im Dateimanager deines PCs durchsuchen.</string>
-    <string name="walkthrough_perm_storage_requires">Android benötigt den Zugriff auf alle Dateien oder ausgewählte Ordner.</string>
-
-    <string name="walkthrough_perm_access_title">Assistenz</string>
-    <string name="walkthrough_perm_access_does">Deinen gespiegelten Gerätebildschirm vom PC aus mit Maus und Tastatur steuern.</string>
-    <string name="walkthrough_perm_access_requires">Android benötigt den G7Link-Bedienungshilfendienst oder den erweiterten Modus.</string>
-
-    <string name="walkthrough_pair_title">Mit deinem PC koppeln</string>
-    <string name="walkthrough_pair_subtitle">Öffne G7 Link auf deinem PC. Scanne den QR-Code oder wähle deinen PC unten aus.</string>
-    <string name="walkthrough_pair_ready_title">Gekoppelter PC</string>
-    <string name="walkthrough_pair_badge_paired">Gekoppelt</string>
-    <string name="walkthrough_pair_device_online">%1$s · Verbunden</string>
-    <string name="walkthrough_pair_device_offline">%1$s · Offline</string>
-    <string name="walkthrough_pair_scan_qr">QR-Code scannen</string>
-    <string name="walkthrough_pair_hide_qr">QR-Scanner ausblenden</string>
-    <string name="walkthrough_pair_nearby_heading">PCs in der Nähe</string>
-    <string name="walkthrough_pair_nearby_tap">Tippen, um im lokalen Netzwerk zu koppeln</string>
-    <string name="walkthrough_pair_usb_title">Automatische USB-Kopplung</string>
-    <string name="walkthrough_pair_usb_hint">Schließe ein USB-Kabel bei aktiviertem USB-Debugging an, um automatisch zu koppeln.</string>
-
-    <string name="walkthrough_power_title">Funktionsstufe wählen</string>
-    <string name="walkthrough_power_subtitle">Lege fest, wie viel Steuerung dein PC über dieses Gerät hat.</string>
-    <string name="walkthrough_power_current_badge">Aktuell: %1$s</string>
-    <string name="walkthrough_power_badge_active">Aktiv</string>
-    <string name="walkthrough_power_badge_available">Verfügbar</string>
-    <string name="walkthrough_power_badge_optional">Optional</string>
     <string name="walkthrough_power_standard_title">Standard</string>
-    <string name="walkthrough_power_standard_sub">Standardinstallation</string>
-    <string name="walkthrough_power_standard_desc">Benachrichtigungen, Anrufe, Nachrichten, Fotos, Dateien, die Kachel „Zwischenablage senden“ und Bildschirmspiegelung (nur Ansicht).</string>
     <string name="walkthrough_power_assist_title">Assistenz</string>
-    <string name="walkthrough_power_assist_sub">Bedienungshilfendienst</string>
-    <string name="walkthrough_power_assist_desc">Ermöglicht zusätzlich die Maus- und Tastatursteuerung vom PC während der Bildschirmspiegelung.</string>
-    <string name="walkthrough_power_assist_manage">Verwalten</string>
-    <string name="walkthrough_power_assist_open">Aktivieren</string>
     <string name="walkthrough_power_elevated_title">Erweitert</string>
-    <string name="walkthrough_power_elevated_sub">Kabelloses Debugging</string>
-    <string name="walkthrough_power_elevated_desc">Zwischenablage-Synchronisierung im Hintergrund, Apps in eigenen PC-Fenstern und Eingabe mit niedriger Latenz.</string>
-    <string name="walkthrough_power_elevated_reconnect">Erneut verbinden</string>
-    <string name="walkthrough_power_elevated_enable">Einrichten</string>
-    <string name="walkthrough_power_elevated_hide_steps">Schritte ausblenden</string>
-    <string name="walkthrough_power_elevated_show_steps">Schritte anzeigen</string>
-    <string name="walkthrough_power_elevated_steps_heading">Kabelloses Debugging einrichten</string>
-    <string name="walkthrough_power_elevated_step1">1. Tippe unter Einstellungen › Über das Telefon 7-mal auf „Build-Nummer“, um die Entwickleroptionen zu aktivieren.</string>
-    <string name="walkthrough_power_elevated_step2">2. Tippe auf „Einrichten“, um die Entwickleroptionen zu öffnen.</string>
-    <string name="walkthrough_power_elevated_step3">3. Aktiviere „Kabelloses Debugging“, tippe auf „Gerät mit Kopplungscode koppeln“ und gib den 6-stelligen Code in der Benachrichtigung ein.</string>
 
-    <string name="walkthrough_done_title">Einrichtung abgeschlossen</string>
-    <string name="walkthrough_done_subtitle">G7 Link ist bereit. Du kannst diesen Einrichtungsassistenten jederzeit unter Einstellungen › Info erneut öffnen.</string>
-    <string name="walkthrough_done_summary_heading">Deine Einrichtung</string>
-    <string name="walkthrough_done_paired_label">Gekoppelter PC</string>
-    <string name="walkthrough_done_no_pc">Noch keiner · jederzeit auf der Startseite koppeln</string>
     <string name="walkthrough_done_power_label">Funktionsstufe</string>
-    <string name="walkthrough_done_power_elevated">Erweitert (Kabelloses Debugging)</string>
-    <string name="walkthrough_done_power_assist">Assistenz (Bedienungshilfendienst)</string>
-    <string name="walkthrough_done_power_standard">Standard</string>
-    <string name="walkthrough_done_permissions_label">Berechtigungen</string>
-    <string name="walkthrough_done_no_permissions">Noch keine erteilt</string>
-    <string name="walkthrough_done_try_heading">Gleich ausprobieren</string>
-    <string name="walkthrough_done_try_1">1. Kopiere Text und tippe auf die Kachel „Zwischenablage senden“, um ihn auf deinem PC einzufügen.</string>
-    <string name="walkthrough_done_try_2">2. Teile eine beliebige Datei oder einen Link über das Android-Teilen-Menü mit G7 Link.</string>
 
     <!-- Features Guide Chrome -->
-    <string name="guide_back">Zurück</string>
     <string name="guide_open_walkthrough">Einrichtungsassistent</string>
-    <string name="guide_title">Funktionsübersicht</string>
-    <string name="guide_subtitle">Prüfe die Funktionsbereitschaft auf diesem Gerät oder springe direkt zu den Einstellungen.</string>
     <string name="guide_search_placeholder">Funktionen oder Berechtigungen suchen</string>
     <string name="guide_search_desc">Funktionen suchen</string>
-    <string name="guide_connect_pc_banner">Verbinde deinen PC, um zu sehen, welche Funktionen bereit sind</string>
     <string name="guide_empty_title">Keine passenden Funktionen</string>
     <string name="guide_empty_body">Versuche einen anderen Suchbegriff oder wähle „Alle“.</string>
     <string name="guide_where_prefix">Wo: %1$s</string>
     <string name="guide_needs_prefix">Benötigt: %1$s</string>
     <string name="guide_external_heading">Unter Android öffnen</string>
     <string name="guide_action_show_me">Zeig es mir</string>
-    <string name="guide_action_learn_more">Mehr erfahren</string>
     <string name="guide_action_done">Fertig</string>
     <string name="guide_sheet_where">Wo du es findest</string>
     <string name="guide_sheet_needs">Was du brauchst</string>
@@ -1326,32 +1132,18 @@
     <string name="update_done_title">G7 Link wurde auf %1$s aktualisiert</string>
     <string name="update_done_text">Tippe zum Öffnen. Deine PCs verbinden sich automatisch wieder.</string>
     <string name="update_auto_title">Updates automatisch installieren</string>
-    <string name="update_auto_text">Neue Versionen von GitHub werden im Hintergrund installiert.</string>
     <string name="update_nightly">Nightly %1$d</string>
     <string name="update_nightly_named">Nightly %1$d (%2$s)</string>
     <string name="update_channel_title">Update-Kanal</string>
     <string name="update_channel_stable">Stabil</string>
     <string name="update_channel_nightly">Nightly</string>
-    <string name="update_channel_stable_text">Veröffentlichte Versionen, getestet und seltener.</string>
-    <string name="update_channel_nightly_text">Der neueste Build, alle paar Stunden, mit den neuesten Korrekturen und Funktionen, manchmal auch mit neuen Fehlern. Zurück auf Stabil behält dieses Telefon seinen Build, bis die nächste Version neuer ist.</string>
 
     <string name="home_guide_title">Anleitung</string>
     <string name="home_whats_new_guide">Neu: Funktionsübersicht</string>
-    <string name="home_guide_card_body">Entdecke jede Funktion von G7 Link, prüfe aktive Berechtigungen oder tippe auf „Zeig es mir“, um direkt zur jeweiligen Einstellung zu springen.</string>
     <string name="home_no_pc_paired">Noch kein PC gekoppelt</string>
-    <string name="home_no_pc_body">Öffne G7 Link auf deinem Linux-PC, um per QR-Code oder lokaler Erkennung zu koppeln, oder starte den Einrichtungsassistenten erneut.</string>
     <string name="home_background_clipboard_title">Hintergrund-Zwischenablage &amp; volle Steuerung</string>
-    <string name="home_background_clipboard_body">Synchronisiere die Zwischenablage im Hintergrund und aktiviere die Touch-Steuerung über Kabelloses Debugging.</string>
-    <string name="home_section_screen">Bildschirm, Kamera &amp; Eingabe</string>
-    <string name="home_section_transfer">Schnellübertragung &amp; Zwischenablage</string>
-    <string name="home_section_system">System &amp; Energie</string>
-    <string name="settings_category_devices">Geräte</string>
-    <string name="settings_category_features">Funktionen &amp; Daten</string>
     <string name="settings_theme_artwork_color">Farbe aus Mediencover</string>
-    <string name="settings_mobile_data_body">Unterwegs ohne WLAN über LTE/5G oder Relay verbunden bleiben</string>
     <string name="settings_background_clipboard_title">Hintergrundzugriff auf Zwischenablage</string>
-    <string name="settings_guide_card_body">Durchsuche alle Funktionen, prüfe aktuelle Voraussetzungen oder springe direkt zu den Einstellungen.</string>
-    <string name="settings_walkthrough_body">Öffne den Einrichtungsassistenten für Berechtigungen, Kopplung und Funktionsstufen erneut.</string>
     <string name="desk_exit">Tischmodus beenden</string>
     <string name="desk_media_playing">PC-Medien · Wiedergabe</string>
     <string name="desk_media_audio">PC-Medien &amp; Audio</string>
@@ -1366,13 +1158,8 @@
     <string name="queue_kind_task_alert">Aufgabenbenachrichtigung</string>
     <string name="queue_kind_camera_request">Kameraanfrage</string>
 
-    <string name="settings_theme_artwork_body">App- &amp; Glasfarben an das aktuelle Mediencover anpassen</string>
-    <string name="settings_wireless_debugging_active">Elevated ist aktiv · Zwischenablage wird automatisch synchronisiert</string>
-    <string name="settings_wireless_debugging_hint">Richte Elevated ein (Kabelloses Debugging, Shizuku oder Root), damit die Zwischenablage im Hintergrund synchronisiert wird, oder nutze „Zwischenablage senden“ in der Benachrichtigung</string>
-
     <!-- Pause for banking apps -->
     <string name="banking_title">Für Banking-Apps pausieren</string>
-    <string name="banking_text">Einige Banking-Apps starten nicht, solange Entwickleroptionen, Debugging oder ein Bedienungshilfendienst aktiv sind. Wähle sie hier aus: G7 Link schaltet diese Funktionen aus, solange die Apps geöffnet sind, und beim Verlassen wieder ein.</string>
     <plurals name="banking_chosen">
         <item quantity="one">%1$d App ausgewählt</item>
         <item quantity="other">%1$d Apps ausgewählt</item>

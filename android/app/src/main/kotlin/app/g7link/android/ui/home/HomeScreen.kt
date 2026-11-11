@@ -1628,11 +1628,11 @@ private fun LocalSendCard(
                 tintColor = MaterialTheme.colorScheme.primary,
                 outlineColor = if (isGlass) MaterialTheme.colorScheme.outlineVariant else Color.Transparent,
             )
-            .padding(if (LocalQuietTheme.current) androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp) else androidx.compose.foundation.layout.PaddingValues(20.dp)),
+            .padding(if (LocalQuietTheme.current) androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp) else androidx.compose.foundation.layout.PaddingValues(20.dp)),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -1657,6 +1657,7 @@ private fun LocalSendCard(
                 stringResource(R.string.localsend_card_empty),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp),
             )
         } else {
             peers.forEach { peer ->

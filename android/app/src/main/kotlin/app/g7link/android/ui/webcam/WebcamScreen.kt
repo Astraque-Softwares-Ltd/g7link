@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.webcam
 
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.alpha
@@ -156,10 +157,13 @@ fun WebcamScreen(
 
     val tints = g7Tints()
     val scheme = MaterialTheme.colorScheme
+    // A deeper ground around the camera in G7's dark look; the controls sit on the usual one.
+    val deep = LocalQuietTheme.current && scheme.surface.luminance() < 0.5f
+    val raised = if (deep) scheme.surface else scheme.surfaceContainer
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(if (LocalQuietTheme.current) G7Colors.deepGround else scheme.background),
+            .background(if (deep) G7Colors.deepGround else scheme.background),
     ) {
         // Back, whether it's live, and what it streams
         Row(
@@ -277,7 +281,7 @@ fun WebcamScreen(
                     color = if (selected) scheme.onPrimary else scheme.onSurfaceVariant,
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
-                        .background(if (selected) scheme.primary else scheme.surface)
+                        .background(if (selected) scheme.primary else raised)
                         .clickable(role = Role.Button) { WebcamService.setZoomRatio(ratio.coerceAtMost(session.maxZoomRatio)) }
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
@@ -313,7 +317,7 @@ fun WebcamScreen(
                     if (session.camera == "front") R.string.webcam_switch_to_back else R.string.webcam_switch_to_front,
                 ),
                 size = 52.dp,
-                background = scheme.surface,
+                background = raised,
                 tint = scheme.onSurface,
                 onClick = {
                     val next = if (session.camera == "front") "back" else "front"
@@ -357,7 +361,7 @@ fun WebcamScreen(
                     icon = G7Icons.torch,
                     label = stringResource(if (session.torchOn) R.string.webcam_turn_torch_off else R.string.webcam_turn_torch_on),
                     size = 52.dp,
-                    background = if (session.torchOn) tints.amber else scheme.surface,
+                    background = if (session.torchOn) tints.amber else raised,
                     tint = if (session.torchOn) Color(0xFF2A1A00) else scheme.onSurface,
                     enabled = isStreamingHere,
                     onClick = { WebcamService.setTorch(!session.torchOn) },

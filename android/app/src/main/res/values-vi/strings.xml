@@ -3,14 +3,10 @@
 <resources>
 <string name="app_name">G7 Link</string>
 <!-- Pairing -->
-<string name="pair_title">Ghép nối với PC của bạn</string>
 <string name="pair_show_title">Ghép nối điện thoại hoặc máy tính bảng</string>
 <string name="pair_show_hint">Trên điện thoại hoặc máy tính bảng kia, mở G7 Link, chạm Ghép nối, rồi quét mã này.</string>
 <string name="pair_show_qr_desc">Mã ghép nối cho điện thoại hoặc máy tính bảng khác</string>
 <string name="action_show_code">Ghép nối điện thoại hoặc máy tính bảng thay vào đó</string>
-<string name="pair_scan_hint">Trên PC, mở G7 Link. Hướng camera vào mã nó hiển thị. Điện thoại hoặc máy tính bảng khác hiển thị mã của nó trong mục Ghép nối điện thoại hoặc máy tính bảng.</string>
-<string name="pair_nearby_title">Ghép nối lân cận</string>
-<string name="pair_nearby_hint">Trên PC, mở G7 Link và giữ màn hình ghép nối của nó mở. Nó sẽ xuất hiện ở đây.</string>
 <string name="pair_looking">Đang tìm PC…</string>
 <string name="pair_joining">Đang ghép nối…</string>
 <string name="pair_connecting">Đang kết nối tới %1$s…</string>
@@ -53,13 +49,9 @@
 <string name="settings_language">Ngôn ngữ</string>
 <string name="settings_language_more">Thêm</string>
 <string name="settings_dynamic_color">Màu từ ảnh nền</string>
-<string name="settings_dynamic_color_hint">Dùng màu của ảnh nền.</string>
 <string name="settings_devices">PC</string>
 <string name="settings_about">Giới thiệu</string>
-<string name="settings_notifications">Thông báo</string>
 <string name="notifications_title">Hiển thị thông báo trên PC của bạn</string>
-<string name="notifications_on">Bật. Thông báo sẽ xuất hiện trên các PC đã ghép nối, tại đó bạn có thể trả lời và bỏ qua chúng.</string>
-<string name="notifications_off">G7 Link cần quyền truy cập thông báo để hiển thị thông báo của điện thoại này trên PC của bạn.</string>
 <string name="notifications_restricted">Công tắc bị mờ? Mở Thông tin ứng dụng, chạm ⋮, chọn “Cho phép cài đặt bị hạn chế”, rồi thử lại.</string>
 <string name="action_allow">Cho phép</string>
 <string name="clip_share_label">Gửi đến PC</string>
@@ -72,27 +64,15 @@
 <string name="media_next">Bài tiếp</string>
 <string name="media_previous">Bài trước</string>
 <string name="action_send_files">Gửi tệp</string>
-<string name="action_send_folder">Gửi một thư mục</string>
 <string name="input_service_label">G7 Link: điều khiển từ PC của bạn</string>
 <string name="input_service_description">Cho phép chuột và bàn phím của PC chạm, vuốt và gõ trên điện thoại này khi bạn chia sẻ màn hình với một PC đã ghép nối. Nó không đọc bất cứ thứ gì khác.</string>
-<string name="settings_control">Điều khiển từ PC của bạn</string>
 <string name="control_title">Dùng chuột và bàn phím của PC</string>
-<string name="control_on">Bật: khi màn hình của bạn được hiển thị trên PC, bạn có thể chạm, vuốt và gõ từ đó.</string>
-<string name="control_off">Chạm, vuốt và gõ từ PC của bạn khi nó hiển thị màn hình này. Bật G7 Link trong Trợ năng.</string>
 <string name="dnd_access_title">Không làm phiền và chế độ im lặng</string>
-<string name="dnd_access_on">Bật: PC của bạn có thể bật hoặc tắt Không làm phiền và đặt chuông thành im lặng.</string>
-<string name="dnd_access_off">Cho phép PC của bạn bật hoặc tắt Không làm phiền và đặt chuông thành im lặng.</string>
 <string name="write_settings_title">Độ sáng màn hình</string>
-<string name="write_settings_on">Bật: PC của bạn có thể điều chỉnh độ sáng màn hình của điện thoại này.</string>
-<string name="write_settings_off">Cho phép PC của bạn điều chỉnh độ sáng màn hình của điện thoại này.</string>
 <string name="local_network_title">Truy cập PC của bạn trên mạng này</string>
-<string name="local_network_text">Android hỏi trước khi một ứng dụng nói chuyện với các thiết bị trên mạng của bạn. G7 Link cần quyền này để truy cập PC của bạn.</string>
 <string name="channel_elevated">Thiết lập gỡ lỗi không dây</string>
-<string name="elevated_title">Chạm và phím thật</string>
-<string name="elevated_not_set_up">Chạm theo thời gian thực, mọi phím, và tắt tiếng, giữ và bàn phím số khi gọi từ PC của bạn.</string>
 <string name="elevated_waiting">Đang chờ Gỡ lỗi không dây. Hãy bật nó trong Tùy chọn nhà phát triển.</string>
 <string name="elevated_starting">Đang khởi động…</string>
-<string name="elevated_running">Bật: chuột và bàn phím của PC hoạt động như màn hình cảm ứng và bàn phím thật.</string>
 <string name="elevated_failed">Không thể khởi động. Hãy kiểm tra Gỡ lỗi không dây đã bật chưa, rồi thử lại.</string>
 <string name="elevated_not_paired">Điện thoại đã quên ghép nối của G7 Link. Hãy thiết lập lại.</string>
 <string name="elevated_start_with">Khởi động bằng</string>
@@ -101,10 +81,8 @@
 <string name="elevated_method_root" translatable="false">Root</string>
 <string name="elevated_set_up">Thiết lập</string>
 <string name="elevated_root_hint">Điện thoại này đã root, nên Elevated có thể khởi động qua root: không cần ghép nối, và nó tự quay lại sau khi khởi động lại hoặc rời Wi-Fi. Nó có cùng quyền như khi dùng Gỡ lỗi không dây.</string>
-<string name="elevated_running_root">Bật, qua root: chuột và bàn phím của PC hoạt động như màn hình cảm ứng và bàn phím thật.</string>
 <string name="elevated_root_failed">Root không được cho phép, hoặc trình quản lý root của bạn không thể khởi động trình hỗ trợ của G7 Link dưới dạng người dùng shell. Bạn có thể thiết lập qua Gỡ lỗi không dây thay thế.</string>
 <string name="elevated_shizuku_hint">Shizuku đã được cài đặt, nên Elevated có thể khởi động qua nó: không cần ghép nối riêng, và nó vẫn hoạt động khi rời Wi-Fi miễn là Shizuku đang chạy. Nó có cùng quyền như khi dùng Gỡ lỗi không dây.</string>
-<string name="elevated_running_shizuku">Bật, qua Shizuku: chuột và bàn phím của PC hoạt động như màn hình cảm ứng và bàn phím thật.</string>
 <string name="elevated_shizuku_waiting">Đang chờ Shizuku. Hãy khởi động nó trong ứng dụng Shizuku, rồi mở G7 Link.</string>
 <string name="elevated_shizuku_not_running">Shizuku chưa chạy. Hãy khởi động nó trong ứng dụng Shizuku, rồi thử lại.</string>
 <string name="elevated_shizuku_denied">Shizuku không cho G7 Link vào. Hãy cho phép trong Shizuku (và cập nhật Shizuku nếu nó cũ), rồi thử lại.</string>
@@ -137,21 +115,10 @@
     </plurals>
 <string name="app_windows_text">Được hiển thị trên %1$s. Chúng chạy ở đây, bên cạnh những gì trên màn hình của bạn.</string>
 <string name="action_close_all">Đóng tất cả</string>
-<string name="settings_calls_and_contacts">Cuộc gọi, danh bạ và tin nhắn</string>
 <string name="sms_title">Nhắn tin từ PC của bạn</string>
-<string name="sms_on">Bật. Các cuộc trò chuyện xuất hiện trên PC của bạn, tại đó bạn có thể đọc và gửi tin nhắn.</string>
-<string name="sms_off">Đọc và gửi tin nhắn từ PC của bạn. Cần quyền truy cập tin nhắn và danh bạ.</string>
 <string name="calls_title">Cuộc gọi trên PC của bạn</string>
-<string name="calls_on">Bật. PC của bạn hiển thị các cuộc gọi đến và gần đây, và có thể bắt đầu hoặc trả lời cuộc gọi.</string>
-<string name="calls_off">Xem ai đang gọi và bắt đầu hoặc trả lời cuộc gọi từ PC của bạn. Âm thanh vẫn ở trên điện thoại. Cần quyền truy cập cuộc gọi, lịch sử cuộc gọi và danh bạ.</string>
 <string name="contacts_title">Danh bạ trên PC của bạn</string>
-<string name="contacts_on">Bật. Danh bạ của bạn khả dụng trong Cuộc gọi và Tin nhắn trên PC của bạn.</string>
-<string name="contacts_off">Tìm kiếm danh bạ và gọi hoặc nhắn tin từ PC của bạn. Cần quyền truy cập danh bạ.</string>
-<string name="settings_photos">Ảnh và video</string>
 <string name="photos_title">Ảnh và video trên PC của bạn</string>
-<string name="photos_on">Bật. Ảnh, ảnh chụp màn hình và video của bạn khả dụng trên PC của bạn.</string>
-<string name="photos_partial">Chỉ một số ảnh được chia sẻ. Cho phép tất cả để duyệt toàn bộ thư viện trên PC của bạn.</string>
-<string name="photos_off">Duyệt ảnh và video trên PC của bạn và nhận ảnh chụp màn hình mới ngay lập tức. Cần quyền truy cập ảnh và video.</string>
 <string name="action_select_photos">Cho phép tất cả</string>
 <string name="transfer_too_many">Thư mục đó có quá nhiều tệp để gửi cùng lúc.</string>
 <string name="transfers_title">Chuyển tệp</string>
@@ -204,7 +171,6 @@
 <string name="settings_clipboard_passwords">Đồng bộ mật khẩu đã sao chép</string>
 <string name="settings_clipboard_passwords_hint">Cũng gửi những gì trình quản lý mật khẩu đánh dấu là riêng tư. Nó rời bảng nhớ tạm của PC sau một phút, và không bao giờ được lưu trong lịch sử.</string>
 <string name="settings_clipboard_suggestions">Gợi ý hành động cho văn bản đã sao chép</string>
-<string name="settings_clipboard_suggestions_hint">Gợi ý hành động cho văn bản từ PC của bạn: mở liên kết, bản đồ, cuộc gọi, bưu kiện và email.</string>
 <string name="clip_received_from">Đã sao chép từ %1$s</string>
 <string name="clip_action_open">Mở</string>
 <string name="clip_action_maps">Mở trong Bản đồ</string>
@@ -212,13 +178,8 @@
 <string name="clip_action_track">Theo dõi</string>
 <string name="clip_action_email">Email</string>
 <string name="background_title">Luôn truy cập được trong nền</string>
-<string name="background_text">Android đang tạm dừng G7 Link để tiết kiệm pin, nên PC của bạn không thể truy cập nó. Hãy cho phép nó chạy trong nền.</string>
-<string name="background_on">Được phép giữ kết nối trong nền</string>
-<string name="settings_background_title">Chạy nền &amp; pin</string>
 <string name="settings_run_in_background">Chạy trong nền</string>
-<string name="settings_run_in_background_hint">Giữ điện thoại này luôn truy cập được từ PC của bạn. Khi tắt, G7 Link chỉ kết nối khi nó đang mở, và thông báo biến mất.</string>
 <string name="home_background_off_title">Kết nối nền đang tắt</string>
-<string name="home_background_off_text">G7 Link chỉ kết nối khi ứng dụng đang mở. Bật nó lên để giữ điện thoại này luôn truy cập được từ PC của bạn.</string>
 <string name="battery_open_oem_settings">Cài đặt pin</string>
 <string name="battery_guide_samsung">Trên Samsung: mở Thông tin ứng dụng › Pin › chọn Không giới hạn, và trong Device care › Pin › Giới hạn sử dụng nền hãy đảm bảo G7 Link không bao giờ bị đưa vào chế độ ngủ.</string>
 <string name="battery_guide_xiaomi">Trên Xiaomi / HyperOS / MIUI: bật Tự khởi động cho G7 Link, và trong Thông tin ứng dụng › Trình tiết kiệm pin chọn Không giới hạn.</string>
@@ -227,18 +188,14 @@
 <string name="battery_guide_vivo">Trên Vivo / Funtouch / OriginOS: mở Thông tin ứng dụng › Pin › chọn Không giới hạn (mức sử dụng điện nền cao) và cho phép Tự khởi động.</string>
 <string name="battery_guide_huawei">Trên Huawei / Honor: mở Khởi chạy ứng dụng (Phone Manager) › tắt Quản lý tự động cho G7 Link và giữ Tự khởi động, Khởi động phụ và Chạy nền được bật.</string>
 <string name="battery_guide_pixel">Trên Pixel: mở Thông tin ứng dụng › Mức sử dụng pin của ứng dụng › chạm Cho phép sử dụng nền và chọn Không giới hạn.</string>
-<string name="action_manage">Quản lý</string>
 <string name="action_app_info">Thông tin ứng dụng</string>
 <string name="theme_hive">Hive</string>
 <string name="hive_invite_title">Thử Hive, chủ đề mới</string>
-<string name="hive_invite_text">Mật ong trên nền than hoặc sáp ấm, với tổ ong sống động phía sau ứng dụng. Đổi bất cứ lúc nào trong Cài đặt.</string>
 <string name="hive_invite_try">Thử Hive</string>
-<string name="hive_invite_dismiss">Để sau</string>
 <string name="star_channel">Dự án G7 Link</string>
 <string name="star_title">Thích G7 Link?</string>
 <string name="star_text">Chạm để gắn sao trên GitHub. Nó giúp nhiều người khác tìm thấy.</string>
 <string name="settings_comb_motion">Tổ ong động</string>
-<string name="settings_comb_motion_hint">Tổ ong thở và đập. Nó sẽ đứng yên khi bật Loại bỏ hiệu ứng động hoặc trình tiết kiệm pin.</string>
 <string name="theme_bloom">Bloom</string>
 <string name="theme_graphite">Graphite</string>
 <string name="mode_system">Hệ thống</string>
@@ -250,7 +207,6 @@
 <string name="core_failed">G7 Link không thể khởi động: %1$s</string>
 <!-- Actions -->
 <string name="action_pair">Ghép nối</string>
-<string name="action_pair_nearby">Ghép nối lân cận thay thế</string>
 
 <string name="action_scan_instead">Quét mã thay vào đó</string>
 <string name="action_codes_match">Mã đã khớp</string>
@@ -258,7 +214,6 @@
 <string name="action_try_again">Thử lại</string>
 <string name="action_cancel">Hủy</string>
 <string name="action_allow_camera">Cho phép máy ảnh</string>
-<string name="action_ring_pc">Đổ chuông PC</string>
 <string name="action_stop_ringing">Ngừng đổ chuông</string>
 <string name="action_stop_service">Tắt</string>
 <string name="action_turn_on">Bật</string>
@@ -271,7 +226,6 @@
 <string name="action_refresh">Làm mới</string>
 <string name="action_update">Cập nhật</string>
 <string name="update_title">G7 Link %1$s đã có sẵn</string>
-<string name="update_text">Nhận các cải tiến và bản sửa lỗi mới nhất.</string>
 <string name="update_downloading">Đang tải xuống…</string>
 <string name="update_downloading_progress">Đang tải xuống · %1$s / %2$s</string>
 <string name="update_waiting_network">Đang chờ kết nối. Tải xuống sẽ tiếp tục từ chỗ đã dừng.</string>
@@ -282,10 +236,6 @@
 <string name="update_install_failed">Android không cài đặt được bản cập nhật. Hãy thử lại.</string>
 <string name="update_whats_new">Có gì mới</string>
 <string name="update_check">Kiểm tra cập nhật</string>
-<string name="update_checking">Đang kiểm tra cập nhật…</string>
-<string name="update_up_to_date_version">G7 Link %1$s đã là phiên bản mới nhất.</string>
-<string name="update_current_version">Bạn đang dùng G7 Link %1$s.</string>
-<string name="update_check_failed">Không thể kiểm tra cập nhật. Kiểm tra kết nối Internet của bạn.</string>
 <string name="action_lock_pc">Khóa PC</string>
 <string name="action_sleep_pc">Ngủ</string>
 <string name="action_wake_pc">Đánh thức</string>
@@ -339,7 +289,6 @@
 <string name="action_back">Quay lại</string>
 <string name="settings_remote">Điều khiển PC của bạn</string>
 <string name="settings_volume_keys_control_pc">Nút âm lượng điều khiển PC</string>
-<string name="settings_volume_keys_control_pc_hint">Khi PC đang phát nhạc hoặc video, nút âm lượng của điện thoại sẽ thay đổi âm lượng của PC.</string>
 <string name="settings_touchpad_sensitivity">Tốc độ Touchpad</string>
 <string name="settings_touchpad_sensitivity_value">%1$.1f×</string>
 <string name="remote_mode_touchpad">Touchpad</string>
@@ -395,7 +344,6 @@
 <string name="pc_mirror_quality_desc">Chất lượng phát: %1$s</string>
 <string name="pc_mirror_viewport_desc">Màn hình %1$s</string>
 <!-- Voice recorder to PC -->
-<string name="action_record_pc">Ghi âm</string>
 <string name="channel_recorder">Ghi âm giọng nói</string>
 <!-- Phone as microphone. -->
 <string name="channel_mic">Micrô cho PC của bạn</string>
@@ -405,17 +353,12 @@
 <string name="mic_request_title">%1$s muốn dùng micrô của điện thoại này</string>
 <string name="mic_request_text">Chạm để bắt đầu. Micrô sẽ bật cho đến khi bạn hoặc PC tắt.</string>
 <string name="mic_request_start">Bắt đầu</string>
-<string name="mic_request_card_text">Sẽ bật cho đến khi bạn hoặc PC tắt.</string>
 <string name="mic_pc_toggle">Dùng điện thoại này làm micrô</string>
-<string name="mic_pc_toggle_hint">Bật theo mặc định. PC này có thể xin dùng micrô. Micrô chỉ bật khi bạn chạm Bắt đầu.</string>
-<string name="mic_pc_toggle_hint_auto">Bật theo mặc định. PC này có thể xin dùng micrô và micrô sẽ bật ngay.</string>
 <string name="start_without_asking_toggle">Bật máy ảnh và micrô mà không cần hỏi</string>
 <string name="start_without_asking_hint">Khi PC này yêu cầu, chúng sẽ bật ngay mà không cần chạm trên điện thoại. Cần quyền Elevated. Nếu không có, điện thoại sẽ hỏi như thường lệ.</string>
 <string name="recorder_notification_recording">Đang ghi âm cho %1$s</string>
 <string name="recorder_notification_paused">Đã tạm dừng ghi âm (%1$s)</string>
 <string name="recorder_permission_title">Cho phép truy cập micrô</string>
-<string name="recorder_permission_text">G7 Link chỉ dùng micrô trong lúc bạn ghi âm giọng nói để gửi đến %1$s.</string>
-<string name="recorder_allow_mic">Cho phép micrô</string>
 <string name="recorder_offline_hint">Bản ghi được lưu trên điện thoại này và sẽ tự động gửi khi %1$s kết nối.</string>
 <string name="recorder_status_ready">Sẵn sàng ghi âm cho %1$s</string>
 <string name="recorder_status_recording">Đang ghi âm cho %1$s</string>
@@ -437,7 +380,6 @@
     </plurals>
 <!-- Deck (macro pad to PC) -->
 <string name="action_deck_pc">Deck</string>
-<string name="action_desk_pc">Đồng hồ để bàn</string>
 <string name="deck_fullscreen">Toàn màn hình</string>
 <string name="deck_exit_fullscreen">Thoát toàn màn hình</string>
 <string name="deck_playing">Đang phát</string>
@@ -448,7 +390,6 @@
 <string name="deck_empty_page">Chưa có ô nào trên trang này. Hãy thêm ô trong G7 Link trên %1$s.</string>
 <string name="deck_commands_denied_title">Cho phép lệnh trên %1$s</string>
 <string name="deck_commands_denied_text">Để chạy lệnh shell từ điện thoại này, hãy bật “Run Deck commands” cho điện thoại này trong G7 Link › Cài đặt › Thiết bị trên %1$s.</string>
-<string name="deck_hint">Tùy chỉnh các ô trong Deck trên %1$s</string>
 <string name="pc_audio_volume">Âm lượng</string>
 <string name="pc_audio_mute">Tắt tiếng</string>
 <string name="pc_audio_unmute">Bật tiếng</string>
@@ -458,23 +399,14 @@
 <string name="pc_audio_default_badge">Mặc định</string>
 <string name="pc_audio_outputs_hint">Các thiết bị phát đang hoạt động trên %1$s.</string>
 <string name="pc_audio_use_phone_speaker">Dùng điện thoại làm loa</string>
-<string name="pc_audio_use_phone_speaker_sub">Phát âm thanh của PC trên điện thoại này</string>
-<string name="pc_audio_use_phone_speaker_on">Đang phát trực tuyến âm thanh PC tới điện thoại này</string>
 <string name="pc_audio_use_phone_mic">Dùng điện thoại làm micrô</string>
-<string name="pc_audio_use_phone_mic_sub">Gửi micrô của điện thoại này đến PC</string>
-<string name="pc_audio_use_phone_mic_on">PC đang nghe micrô của điện thoại này</string>
 <!-- Phone storage in File Explorer -->
 <string name="storage_all_files_title">Quyền truy cập mọi tệp</string>
-<string name="storage_all_files_on">Đã bật. Các PC bạn cho phép có thể duyệt, mở và sao chép tệp trên điện thoại này trong trình quản lý tệp.</string>
-<string name="storage_all_files_off">Duyệt các thư mục của điện thoại này trong trình quản lý tệp trên PC. Cần quyền truy cập mọi tệp, hoặc chọn thư mục cụ thể bên dưới.</string>
 <string name="storage_saf_title">Chỉ thư mục được chọn</string>
-<string name="storage_saf_hint">Chỉ chia sẻ các thư mục bạn chọn.</string>
 <string name="storage_add_folder">Thêm thư mục</string>
 <string name="storage_remove_folder">Xóa</string>
 <string name="storage_pc_toggle">Duyệt bộ nhớ của điện thoại này trong trình quản lý tệp</string>
-<string name="storage_pc_toggle_hint">Tắt theo mặc định. Cho phép PC này liệt kê, mở, tải lên, đổi tên và xóa các tệp bạn đã chia sẻ.</string>
 <string name="storage_request_title">%1$s muốn duyệt bộ nhớ của điện thoại này</string>
-<string name="storage_request_text">Cho phép %1$s duyệt bộ nhớ đã chia sẻ của bạn (hoặc các thư mục đã chọn) trong trình quản lý tệp?</string>
 <string name="action_not_now">Để sau</string>
 <!-- Phone as webcam to PC -->
 <string name="action_webcam_pc">Webcam</string>
@@ -485,8 +417,6 @@
 <string name="webcam_request_title">%1$s muốn dùng máy ảnh của bạn</string>
 <string name="webcam_request_text">Chạm để mở điều khiển webcam và bắt đầu phát trực tuyến.</string>
 <string name="webcam_permission_title">Cho phép truy cập máy ảnh</string>
-<string name="webcam_permission_text">G7 Link chỉ dùng máy ảnh trong lúc bạn phát video tới %1$s như một webcam.</string>
-<string name="webcam_allow_camera">Cho phép máy ảnh</string>
 <string name="webcam_status_connecting">Đang kết nối máy ảnh tới %1$s…</string>
 <string name="webcam_status_ready">Sẵn sàng phát trực tuyến tới %1$s</string>
 <string name="webcam_start">Bật webcam</string>
@@ -499,7 +429,6 @@
 <string name="webcam_turn_torch_off">Tắt đèn pin</string>
 <string name="webcam_switch_camera">Đổi máy ảnh</string>
 <string name="webcam_zoom_label">Thu phóng %1$.1f×</string>
-<string name="webcam_resolution_label">Độ phân giải</string>
 <string name="webcam_denied_text">Webcam đã bị tắt cho điện thoại này trên %1$s.</string>
 <string name="webcam_offline_hint">Kết nối %1$s trong cùng mạng để bắt đầu phát trực tuyến máy ảnh của bạn.</string>
 <!-- Timeline -->
@@ -556,7 +485,6 @@
 <string name="data_cleared_everything_toast">Đã xóa toàn bộ dữ liệu cục bộ trên điện thoại này.</string>
 <!-- LocalSend -->
 <string name="settings_localsend_title">LocalSend</string>
-<string name="settings_localsend_subtitle">Gửi và nhận tệp với các thiết bị LocalSend ở gần. Mặc định tắt. Tệp gửi đến luôn được hỏi trước.</string>
 <string name="localsend_card_title">LocalSend ở gần</string>
 <string name="localsend_card_empty">Chưa tìm thấy thiết bị LocalSend nào trên mạng Wi-Fi này.</string>
 <string name="localsend_nearby_device">Thiết bị ở gần</string>
@@ -608,7 +536,6 @@
 <string name="settings_seed_sage">Sage</string>
 <string name="settings_seed_black">Black</string>
 <string name="settings_amoled">Đen tuyền (AMOLED)</string>
-<string name="settings_amoled_hint">Bề mặt tối thuần #000000 cho màn hình OLED.</string>
 <!-- Deck defaults & accessibility -->
 <string name="deck_tile_with_badge">%1$s, %2$s</string>
 <string name="deck_default_page_main">Chính</string>
@@ -643,8 +570,6 @@
 <string name="remote_key_paste">Dán</string>
 <!-- Webcam formatting -->
 <string name="webcam_stream_spec">%1$d × %2$d · %3$d fps</string>
-<string name="webcam_stream_camera_spec">%1$d × %2$d · %3$s</string>
-<string name="webcam_status_streaming_camera">Đang truyền %1$d × %2$d tới %3$s · %4$s</string>
 <string name="webcam_res_720p">720p</string>
 <string name="webcam_res_1080p">1080p</string>
 <string name="webcam_res_4k">4K</string>
@@ -655,7 +580,6 @@
 <string name="transfer_receiving_progress">Đang nhận từ %1$s · %2$s / %3$s</string>
 <string name="clipboard_history_meta">%1$s · %2$s</string>
 <string name="clipboard_history_meta_pinned">%1$s · %2$s · Đã ghim</string>
-<string name="timeline_latest_summary">%1$s · %2$s</string>
 <string name="recorder_marker_chip">%1$s · %2$s</string>
 <!-- Rich Handoff -->
 <string name="handoff_map_from">Bản đồ từ %1$s</string>
@@ -681,8 +605,6 @@
 <string name="widget_pc_waking_toast">Đang đánh thức %1$s…</string>
 <!-- Companion Device Manager proximity wake -->
 <string name="companion_wake_title">Đánh thức khi PC ở gần (Companion Device)</string>
-<string name="companion_wake_on">Đã liên kết · Android đánh thức G7 Link khi PC của bạn ở gần</string>
-<string name="companion_wake_off">Liên kết PC của bạn để Android đánh thức G7 Link khi beacon BLE của nó nằm trong phạm vi</string>
 <string name="companion_wake_associate">Liên kết</string>
 <!-- Flick to Send sheet -->
 <!-- PC notifications & Browse PC files -->
@@ -714,12 +636,6 @@
 <string name="mirror_allow_pc_control">Cho phép PC điều khiển chuột</string>
 <string name="action_open_controls">Điều khiển</string>
 <string name="remote_input_requested_title">PC của bạn đã cố điều khiển điện thoại này</string>
-<string name="remote_input_requested_text">Bật “G7 Link: control from your PC” trong Trợ năng để dùng chuột và bàn phím của PC trên điện thoại này.</string>
-<string name="permissions_setup_title">Quyền &amp; thiết lập (còn %1$d)</string>
-<string name="permissions_setup_subtitle">Thông báo, cuộc gọi, tin nhắn, ảnh và truy cập nền</string>
-<string name="clipboard_preview_hidden">••••••••••••</string>
-<string name="clipboard_preview_reveal">Hiện</string>
-<string name="clipboard_preview_hide">Ẩn</string>
 <!-- Send queue -->
 <string name="send_queue_title_count">Đang chờ gửi · %1$d</string>
 <string name="send_queue_cancel_all">Hủy tất cả</string>
@@ -736,131 +652,27 @@
 <string name="send_queue_full">Hàng đợi gửi đã đầy. Hãy xóa hoặc chờ các mục đang chờ hoàn tất.</string>
 <string name="send_queue_dropped_unpair">Đã loại bỏ %1$d mục xếp hàng cho %2$s (thiết bị đã hủy ghép nối).</string>
 <!-- Setup Walkthrough -->
-<string name="walkthrough_step_progress">Bước %1$d trên %2$d</string>
-<string name="walkthrough_stage_desc">Giai đoạn thiết lập Honeycomb, bước %1$d trên %2$d</string>
-<string name="walkthrough_action_skip">Bỏ qua thiết lập</string>
-<string name="walkthrough_action_back">Quay lại</string>
-<string name="walkthrough_action_get_started">Bắt đầu</string>
-<string name="walkthrough_action_continue">Tiếp tục</string>
-<string name="walkthrough_action_pair_later">Ghép nối sau</string>
-<string name="walkthrough_action_done">Xong</string>
-<string name="walkthrough_action_open_guide">Mở hướng dẫn tính năng</string>
-<string name="walkthrough_welcome_title">Liên kết điện thoại và PC của bạn</string>
-<string name="walkthrough_welcome_subtitle">Thông báo, cuộc gọi, tin nhắn, tệp, bảng nhớ tạm, máy ảnh và màn hình, được chia sẻ với PC của bạn.</string>
-<string name="walkthrough_welcome_card_heading">Riêng tư ngay từ thiết kế</string>
-<string name="walkthrough_welcome_tls_title">Mã hóa đầu cuối (TLS 1.3)</string>
-<string name="walkthrough_welcome_tls_body">Mọi kết nối đều dùng chứng chỉ thiết bị được xác minh lẫn nhau.</string>
-<string name="walkthrough_welcome_lan_title">Trực tiếp qua Wi-Fi, Ethernet hoặc USB</string>
-<string name="walkthrough_welcome_lan_body">Lưu lượng ở lại trong mạng của bạn. Máy chủ chuyển tiếp chỉ được dùng khi “Connect over mobile data” đang bật.</string>
-<string name="walkthrough_welcome_local_title">Không cần tài khoản hay lưu trữ đám mây</string>
-<string name="walkthrough_welcome_local_body">Khóa thiết bị luôn nằm trên thiết bị của bạn: trong keyring của PC (hoặc một tệp chỉ tài khoản của bạn đọc được) và trong Android Keystore.</string>
-<string name="walkthrough_permissions_title">Quyền</string>
-<string name="walkthrough_permissions_subtitle">Chỉ cấp những quyền bạn dùng. Bạn có thể thay đổi bất kỳ quyền nào sau này trong Cài đặt.</string>
-<string name="walkthrough_permissions_granted_badge">Đã cấp %1$d trên %2$d</string>
-<string name="walkthrough_perm_counter">Quyền %1$d trên %2$d</string>
-<string name="walkthrough_perm_counter_optional">Quyền %1$d trên %2$d · Tùy chọn</string>
-<string name="walkthrough_perm_status_granted">Đã cấp</string>
-<string name="walkthrough_perm_status_not_granted">Chưa cấp</string>
-<string name="walkthrough_perm_action_grant">Cấp</string>
-<string name="walkthrough_perm_action_manage">Quản lý</string>
-<string name="walkthrough_perm_action_next">Tiếp</string>
-<string name="walkthrough_perm_dot_desc">%1$s, %2$s</string>
-<string name="walkthrough_perm_pill_number" translatable="false">%1$d</string>
 <string name="walkthrough_perm_notif_title">Thông báo</string>
-<string name="walkthrough_perm_notif_does">Xem, bỏ qua và trả lời thông báo điện thoại, và điều khiển media trên PC của bạn.</string>
-<string name="walkthrough_perm_notif_requires">Android yêu cầu quyền Truy cập thông báo và quyền thông báo.</string>
 <string name="walkthrough_restricted_title">Android đã chặn cài đặt này</string>
-<string name="walkthrough_restricted_body">Android hạn chế một số quyền đối với ứng dụng được cài từ tệp thay vì từ cửa hàng ứng dụng. Để cho phép quyền này:</string>
-<string name="walkthrough_restricted_step1">Chạm vào Mở thông tin ứng dụng.</string>
 <string name="walkthrough_restricted_step2">Chạm vào ⋮ ở góc trên bên phải, rồi chọn Cho phép cài đặt bị hạn chế và xác nhận.</string>
-<string name="walkthrough_restricted_step3">Quay lại đây và chạm Cấp lần nữa.</string>
-<string name="walkthrough_restricted_note">Menu chỉ hiện tùy chọn này sau khi bạn đã thử cấp quyền một lần. Một số điện thoại diễn đạt khác đi.</string>
-<string name="walkthrough_restricted_open">Mở thông tin ứng dụng</string>
-<string name="walkthrough_perm_battery_title">Pin không giới hạn</string>
-<string name="walkthrough_perm_battery_does">Giữ điện thoại luôn sẵn sàng khi màn hình tắt.</string>
-<string name="walkthrough_perm_battery_requires">Giữ kết nối đến PC hoạt động khi điện thoại đang khóa.</string>
 <string name="walkthrough_perm_calls_title">Cuộc gọi</string>
-<string name="walkthrough_perm_calls_does">Xem cuộc gọi đến trên PC và trả lời, từ chối hoặc gọi từ máy tính của bạn.</string>
-<string name="walkthrough_perm_calls_requires">Android yêu cầu quyền Điện thoại và Nhật ký cuộc gọi.</string>
 <string name="walkthrough_perm_sms_title">Tin nhắn</string>
-<string name="walkthrough_perm_sms_does">Đọc và gửi tin nhắn SMS và MMS từ PC kèm tên liên hệ.</string>
-<string name="walkthrough_perm_sms_requires">Android yêu cầu quyền SMS và Danh bạ.</string>
 <string name="walkthrough_perm_photos_title">Ảnh</string>
-<string name="walkthrough_perm_photos_does">Duyệt ảnh gần đây trên điện thoại từ PC và lưu bản gốc.</string>
-<string name="walkthrough_perm_photos_requires">Android yêu cầu quyền truy cập Ảnh và video.</string>
-<string name="walkthrough_perm_storage_title">Lưu trữ trong trình quản lý tệp</string>
-<string name="walkthrough_perm_storage_does">Duyệt các thư mục trên điện thoại từ trình quản lý tệp trên PC.</string>
-<string name="walkthrough_perm_storage_requires">Android yêu cầu quyền Truy cập mọi tệp hoặc các thư mục đã chọn.</string>
-<string name="walkthrough_perm_access_title">Assist</string>
-<string name="walkthrough_perm_access_does">Điều khiển màn hình điện thoại đang phản chiếu từ PC bằng chuột và bàn phím.</string>
-<string name="walkthrough_perm_access_requires">Android yêu cầu dịch vụ Trợ năng G7 Link hoặc Elevated.</string>
-<string name="walkthrough_pair_title">Ghép nối với PC của bạn</string>
-<string name="walkthrough_pair_subtitle">Mở G7 Link trên PC của bạn. Quét mã QR của PC hoặc chọn PC bên dưới.</string>
-<string name="walkthrough_pair_ready_title">PC đã ghép nối</string>
-<string name="walkthrough_pair_badge_paired">Đã ghép nối</string>
-<string name="walkthrough_pair_device_online">%1$s · Đã kết nối</string>
-<string name="walkthrough_pair_device_offline">%1$s · Ngoại tuyến</string>
-<string name="walkthrough_pair_scan_qr">Quét mã QR</string>
-<string name="walkthrough_pair_hide_qr">Ẩn máy quét QR</string>
-<string name="walkthrough_pair_nearby_heading">Các PC ở gần</string>
-<string name="walkthrough_pair_nearby_tap">Chạm để ghép nối trên mạng nội bộ của bạn</string>
-<string name="walkthrough_pair_usb_title">Tự động ghép nối qua USB</string>
-<string name="walkthrough_pair_usb_hint">Cắm cáp USB có bật gỡ lỗi USB để tự động ghép nối.</string>
-<string name="walkthrough_power_title">Chọn mức độ kiểm soát</string>
-<string name="walkthrough_power_subtitle">Chọn mức độ PC của bạn được kiểm soát điện thoại này.</string>
-<string name="walkthrough_power_current_badge">Hiện tại: %1$s</string>
-<string name="walkthrough_power_badge_active">Đang bật</string>
-<string name="walkthrough_power_badge_available">Có sẵn</string>
-<string name="walkthrough_power_badge_optional">Tùy chọn</string>
 <string name="walkthrough_power_standard_title">Standard</string>
-<string name="walkthrough_power_standard_sub">Cài đặt mặc định</string>
-<string name="walkthrough_power_standard_desc">Thông báo, cuộc gọi, tin nhắn, ảnh, tệp, gạch Gửi bảng nhớ tạm và phản chiếu chỉ xem.</string>
 <string name="walkthrough_power_assist_title">Assist</string>
-<string name="walkthrough_power_assist_sub">Dịch vụ Trợ năng</string>
-<string name="walkthrough_power_assist_desc">Thêm khả năng điều khiển bằng chuột và bàn phím từ PC khi đang phản chiếu màn hình.</string>
-<string name="walkthrough_power_assist_manage">Quản lý</string>
-<string name="walkthrough_power_assist_open">Bật</string>
 <string name="walkthrough_power_elevated_title">Elevated</string>
-<string name="walkthrough_power_elevated_sub">Gỡ lỗi không dây</string>
-<string name="walkthrough_power_elevated_desc">Đồng bộ bảng nhớ tạm nền, ứng dụng trong cửa sổ riêng trên PC và nhập độ trễ thấp.</string>
-<string name="walkthrough_power_elevated_reconnect">Kết nối lại</string>
-<string name="walkthrough_power_elevated_enable">Thiết lập</string>
-<string name="walkthrough_power_elevated_hide_steps">Ẩn các bước</string>
-<string name="walkthrough_power_elevated_show_steps">Hiện các bước</string>
-<string name="walkthrough_power_elevated_steps_heading">Thiết lập gỡ lỗi không dây</string>
-<string name="walkthrough_power_elevated_step1">1. Trong Cài đặt › Giới thiệu điện thoại, chạm vào Số bản dựng 7 lần để bật Tùy chọn nhà phát triển.</string>
-<string name="walkthrough_power_elevated_step2">2. Chạm Thiết lập để mở Tùy chọn nhà phát triển.</string>
-<string name="walkthrough_power_elevated_step3">3. Bật Gỡ lỗi không dây, chạm Ghép nối thiết bị bằng mã ghép nối, rồi nhập mã 6 chữ số trong thông báo.</string>
-<string name="walkthrough_done_title">Hoàn tất thiết lập</string>
-<string name="walkthrough_done_subtitle">G7 Link đã sẵn sàng. Bạn có thể mở lại phần hướng dẫn này bất cứ lúc nào từ Cài đặt › Giới thiệu.</string>
 
-<string name="walkthrough_done_summary_heading">Thiết lập của bạn</string>
-<string name="walkthrough_done_paired_label">PC đã ghép nối</string>
-<string name="walkthrough_done_no_pc">Chưa có · ghép nối bất cứ lúc nào trong Home</string>
 <string name="walkthrough_done_power_label">Cấp độ quyền</string>
-<string name="walkthrough_done_power_elevated">Nâng cao (Gỡ lỗi không dây)</string>
-<string name="walkthrough_done_power_assist">Hỗ trợ (Dịch vụ trợ năng)</string>
-<string name="walkthrough_done_power_standard">Tiêu chuẩn</string>
-<string name="walkthrough_done_permissions_label">Quyền</string>
-<string name="walkthrough_done_no_permissions">Chưa có quyền nào được cấp</string>
-<string name="walkthrough_done_try_heading">Thử ngay</string>
-<string name="walkthrough_done_try_1">1. Sao chép văn bản rồi chạm vào ô Gửi bảng nhớ tạm để dán trên PC.</string>
-<string name="walkthrough_done_try_2">2. Chia sẻ bất kỳ tệp hoặc liên kết nào đến G7 Link từ bảng Chia sẻ của Android.</string>
 <!-- Features Guide Chrome -->
-<string name="guide_back">Quay lại</string>
 <string name="guide_open_walkthrough">Hướng dẫn thiết lập</string>
-<string name="guide_title">Hướng dẫn tính năng</string>
-<string name="guide_subtitle">Kiểm tra tính năng nào đã sẵn sàng trên điện thoại này, hoặc đi thẳng tới phần điều khiển.</string>
 <string name="guide_search_placeholder">Tìm tính năng hoặc quyền</string>
 <string name="guide_search_desc">Tìm tính năng</string>
-<string name="guide_connect_pc_banner">Kết nối PC của bạn để xem tính năng nào sẵn sàng</string>
 <string name="guide_empty_title">Không có tính năng phù hợp</string>
 <string name="guide_empty_body">Thử từ khóa khác hoặc chọn Tất cả.</string>
 <string name="guide_where_prefix">Ở đâu: %1$s</string>
 <string name="guide_needs_prefix">Cần: %1$s</string>
 <string name="guide_external_heading">Mở từ Android</string>
 <string name="guide_action_show_me">Chỉ cho tôi</string>
-<string name="guide_action_learn_more">Tìm hiểu thêm</string>
 <string name="guide_action_done">Xong</string>
 <string name="guide_sheet_where">Tìm ở đâu</string>
 <string name="guide_sheet_needs">Bạn cần gì</string>
@@ -1257,32 +1069,18 @@
 <string name="update_done_title">G7 Link đã được cập nhật lên %1$s</string>
 <string name="update_done_text">Chạm để mở. Các PC của bạn sẽ tự kết nối lại.</string>
 <string name="update_auto_title">Tự động cài đặt cập nhật</string>
-<string name="update_auto_text">Các phiên bản mới từ GitHub được cài đặt ở chế độ nền.</string>
 <string name="update_nightly">Nightly %1$d</string>
 <string name="update_nightly_named">Nightly %1$d (%2$s)</string>
 <string name="update_channel_title">Kênh cập nhật</string>
 <string name="update_channel_stable">Ổn định</string>
 <string name="update_channel_nightly">Nightly</string>
-<string name="update_channel_stable_text">Các bản phát hành, đã được kiểm thử và ít thường xuyên hơn.</string>
-<string name="update_channel_nightly_text">Bản dựng mới nhất cứ mỗi vài giờ, với các bản sửa lỗi và tính năng mới nhất, đôi khi kèm lỗi mới. Khi quay lại Ổn định, điện thoại này vẫn giữ bản dựng của mình cho đến khi bản phát hành tiếp theo mới hơn.</string>
 <string name="home_guide_title">Hướng dẫn</string>
 <string name="home_whats_new_guide">Có gì mới: Hướng dẫn tính năng</string>
-<string name="home_guide_card_body">Khám phá mọi tính năng của G7 Link, kiểm tra quyền theo thời gian thực, hoặc chạm Cho tôi xem để nhảy thẳng đến bất kỳ điều khiển nào.</string>
 <string name="home_no_pc_paired">Chưa ghép nối PC nào</string>
 
-<string name="home_no_pc_body">Mở G7 Link trên máy tính Linux của bạn để ghép nối bằng mã QR hoặc tự động phát hiện trong mạng nội bộ, hoặc mở lại hướng dẫn thiết lập.</string>
 <string name="home_background_clipboard_title">Bảng nhớ tạm nền &amp; toàn quyền điều khiển</string>
-<string name="home_background_clipboard_body">Đồng bộ bảng nhớ tạm ở chế độ nền và bật điều khiển cảm ứng qua Gỡ lỗi không dây.</string>
-<string name="home_section_screen">Màn hình, Máy ảnh &amp; Nhập liệu</string>
-<string name="home_section_transfer">Chuyển nhanh &amp; Bảng nhớ tạm</string>
-<string name="home_section_system">Hệ thống &amp; Nguồn</string>
-<string name="settings_category_devices">Thiết bị</string>
-<string name="settings_category_features">Tính năng &amp; Dữ liệu</string>
 <string name="settings_theme_artwork_color">Màu từ ảnh bìa media</string>
-<string name="settings_mobile_data_body">Giữ kết nối qua LTE/5G hoặc chuyển tiếp khi không có Wi-Fi</string>
 <string name="settings_background_clipboard_title">Truy cập bảng nhớ tạm ở chế độ nền</string>
-<string name="settings_guide_card_body">Duyệt mọi tính năng, kiểm tra yêu cầu trực tiếp hoặc chuyển thẳng đến các điều khiển của tính năng đó.</string>
-<string name="settings_walkthrough_body">Mở lại hướng dẫn thiết lập dành cho quyền, ghép nối và mức nguồn.</string>
 <string name="desk_exit">Thoát Chế độ Bàn làm việc</string>
 <string name="desk_media_playing">PC Media · Đang phát</string>
 <string name="desk_media_audio">PC Media &amp; Âm thanh</string>
@@ -1296,12 +1094,8 @@
 <string name="queue_kind_recording">Bản ghi</string>
 <string name="queue_kind_task_alert">Cảnh báo tác vụ</string>
 <string name="queue_kind_camera_request">Yêu cầu máy ảnh</string>
-<string name="settings_theme_artwork_body">Đồng bộ màu ứng dụng &amp; nền kính với ảnh bìa media đang phát</string>
-<string name="settings_wireless_debugging_active">Elevated đang bật · bảng nhớ tạm tự động đồng bộ</string>
-<string name="settings_wireless_debugging_hint">Thiết lập Elevated (Gỡ lỗi không dây, Shizuku hoặc root) để bảng nhớ tạm có thể đồng bộ ở chế độ nền, hoặc dùng Gửi bảng nhớ tạm trong thông báo</string>
 <!-- Pause for banking apps -->
 <string name="banking_title">Tạm dừng cho ứng dụng ngân hàng</string>
-<string name="banking_text">Một số ứng dụng ngân hàng sẽ không mở khi Tùy chọn nhà phát triển, gỡ lỗi hoặc một dịch vụ trợ năng đang bật. Hãy chọn chúng tại đây: G7 Link sẽ tắt các mục đó khi ứng dụng ngân hàng đang mở và bật lại khi bạn rời khỏi.</string>
 <plurals name="banking_chosen">
         <item quantity="one">%1$d ứng dụng đã chọn</item>
         <item quantity="other">%1$d ứng dụng đã chọn</item>

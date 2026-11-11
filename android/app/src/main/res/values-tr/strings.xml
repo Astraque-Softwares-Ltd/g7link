@@ -4,14 +4,10 @@
     <string name="app_name">G7 Link</string>
 
     <!-- Pairing -->
-    <string name="pair_title">Bilgisayarla eşleştir</string>
     <string name="pair_show_title">Telefon veya tablet eşleştir</string>
     <string name="pair_show_hint">Diğer telefonunuzda veya tabletinizde G7 Link\'i açın, Eşleştir\'e dokunun ve bu kodu tarayın.</string>
     <string name="pair_show_qr_desc">Başka bir telefon veya tablet için eşleştirme kodu</string>
     <string name="action_show_code">Bunun yerine telefon veya tablet eşleştir</string>
-    <string name="pair_scan_hint">Bilgisayarınızda G7 Link\'i açın. Kamerayı gösterdiği koda tutun. Başka bir telefon veya tablet kodunu Telefon veya tablet eşleştir bölümünde gösterir.</string>
-    <string name="pair_nearby_title">Yakındakiyle eşleştir</string>
-    <string name="pair_nearby_hint">Bilgisayarınızda G7 Link\'i açın ve eşleştirme ekranını açık tutun. Bilgisayarınız burada görünür.</string>
     <string name="pair_looking">Bilgisayarlar aranıyor…</string>
     <string name="pair_joining">Eşleştiriliyor…</string>
     <string name="pair_connecting">Bağlanılıyor: %1$s…</string>
@@ -56,13 +52,9 @@
     <string name="settings_language">Dil</string>
     <string name="settings_language_more">Daha fazla</string>
     <string name="settings_dynamic_color">Duvar kağıdından renkler</string>
-    <string name="settings_dynamic_color_hint">Duvar kağıdınızın renklerini kullanın.</string>
     <string name="settings_devices">Bilgisayarlar</string>
     <string name="settings_about">Hakkında</string>
-    <string name="settings_notifications">Bildirimler</string>
     <string name="notifications_title">Bildirimleri bilgisayarınızda göster</string>
-    <string name="notifications_on">Açık. Bildirimler eşleştirilmiş bilgisayarlarınızda görünür; oradan yanıtlayabilir ve kapatabilirsiniz.</string>
-    <string name="notifications_off">G7 Link\'in bu telefonun bildirimlerini bilgisayarınızda göstermesi için bildirim erişimine ihtiyacı var.</string>
     <string name="notifications_restricted">Anahtar gri mi görünüyor? Uygulama bilgileri\'ni açın, ⋮ simgesine dokunun, “Kısıtlanmış ayarlara izin ver”i seçin ve tekrar deneyin.</string>
     <string name="action_allow">İzin ver</string>
     <string name="clip_share_label">Bilgisayara gönder</string>
@@ -75,37 +67,23 @@
     <string name="media_next">Sonraki</string>
     <string name="media_previous">Önceki</string>
     <string name="action_send_files">Dosya gönder</string>
-    <string name="action_send_folder">Klasör gönder</string>
     <string name="input_service_label">G7 Link: bilgisayarınızdan kontrol</string>
     <string name="input_service_description">Ekranını eşleştirilmiş bir bilgisayarla paylaşırken bilgisayarınızın fare ve klavyesinin bu telefonda dokunmasına, kaydırmasına ve yazmasına olanak tanır. Başka hiçbir şeyi okumaz.</string>
-    <string name="settings_control">Bilgisayarınızdan kontrol</string>
     <string name="control_title">Bilgisayarınızın fare ve klavyesini kullanın</string>
-    <string name="control_on">Açık: ekranınız bilgisayarınızda gösterilirken oradan dokunabilir, kaydırabilir ve yazabilirsiniz.</string>
-    <string name="control_off">Bu ekranı gösterirken bilgisayarınızdan dokunun, kaydırın ve yazın. Erişilebilirlik bölümünde G7 Link\'i açın.</string>
     <string name="dnd_access_title">Rahatsız Etmeyin ve sessiz mod</string>
-    <string name="dnd_access_on">Açık: bilgisayarınız Rahatsız Etmeyin modunu açıp kapatabilir ve zili sessize alabilir.</string>
-    <string name="dnd_access_off">Bilgisayarınızın Rahatsız Etmeyin modunu açıp kapatmasına ve zili sessize almasına izin verin.</string>
     <string name="write_settings_title">Ekran parlaklığı</string>
-    <string name="write_settings_on">Açık: bilgisayarınız bu telefonun ekran parlaklığını ayarlayabilir.</string>
-    <string name="write_settings_off">Bilgisayarınızın bu telefonun ekran parlaklığını ayarlamasına izin verin.</string>
     <string name="local_network_title">Bu ağda bilgisayarınıza ulaşın</string>
-    <string name="local_network_text">Android, bir uygulama ağınızdaki cihazlarla iletişim kurmadan önce izin ister. G7 Link\'in bilgisayarınıza ulaşmak için bu izne ihtiyacı var.</string>
     <string name="channel_elevated">Kablosuz hata ayıklama kurulumu</string>
-    <string name="elevated_title">Gerçek dokunma ve tuşlar</string>
-    <string name="elevated_not_set_up">Bilgisayarınızdan gerçek zamanlı dokunma, tüm tuşlar ve aramalarda sessize alma, bekletme ve tuş takımı.</string>
     <string name="elevated_waiting">Kablosuz hata ayıklama bekleniyor. Geliştirici seçenekleri\'nden açın.</string>
     <string name="elevated_starting">Başlatılıyor…</string>
-    <string name="elevated_running">Açık: bilgisayarınızın faresi ve klavyesi gerçek bir dokunmatik ekran ve klavye gibi çalışır.</string>
     <string name="elevated_failed">Başlatılamadı. Kablosuz hata ayıklamanın açık olduğunu kontrol edip tekrar deneyin.</string>
     <string name="elevated_not_paired">Telefon G7 Link\'in eşleştirmesini unuttu. Yeniden kurun.</string>
     <string name="elevated_start_with">Şununla başlat</string>
     <string name="elevated_method_wireless">Kablosuz</string>
     <string name="elevated_set_up">Kur</string>
     <string name="elevated_root_hint">Bu telefon root\'lu, bu yüzden Yükseltilmiş mod bunun yerine root üzerinden başlayabilir: eşleştirme gerekmez ve yeniden başlatmadan sonra veya Wi-Fi dışındayken kendiliğinden geri gelir. Kablosuz hata ayıklamadakiyle aynı izinleri alır.</string>
-    <string name="elevated_running_root">Açık, root üzerinden: bilgisayarınızın faresi ve klavyesi gerçek bir dokunmatik ekran ve klavye gibi çalışır.</string>
     <string name="elevated_root_failed">Root izni verilmedi veya root yöneticiniz G7 Link\'in yardımcısını shell kullanıcısı olarak başlatamıyor. Bunun yerine Kablosuz hata ayıklama ile kurabilirsiniz.</string>
     <string name="elevated_shizuku_hint">Shizuku yüklü, bu yüzden Yükseltilmiş mod onun üzerinden başlayabilir: ayrıca eşleştirme gerekmez ve Shizuku çalıştığı sürece Wi-Fi dışındayken de çalışır. Kablosuz hata ayıklamadakiyle aynı izinleri alır.</string>
-    <string name="elevated_running_shizuku">Açık, Shizuku üzerinden: bilgisayarınızın faresi ve klavyesi gerçek bir dokunmatik ekran ve klavye gibi çalışır.</string>
     <string name="elevated_shizuku_waiting">Shizuku bekleniyor. Shizuku uygulamasından başlatın, sonra G7 Link\'i açın.</string>
     <string name="elevated_shizuku_not_running">Shizuku çalışmıyor. Shizuku uygulamasından başlatın, sonra tekrar deneyin.</string>
     <string name="elevated_shizuku_denied">Shizuku, G7 Link\'e izin vermedi. Shizuku\'da izin verin (Shizuku eskiyse güncelleyin), sonra tekrar deneyin.</string>
@@ -138,21 +116,10 @@
     </plurals>
     <string name="app_windows_text">%1$s cihazında gösteriliyor. Burada, ekranınızdakilerin yanında çalışırlar.</string>
     <string name="action_close_all">Tümünü kapat</string>
-    <string name="settings_calls_and_contacts">Aramalar, kişiler ve mesajlar</string>
     <string name="sms_title">Bilgisayarınızdan mesajlaşın</string>
-    <string name="sms_on">Açık. Konuşmalar bilgisayarınızda görünür; oradan mesaj okuyabilir ve gönderebilirsiniz.</string>
-    <string name="sms_off">Bilgisayarınızdan mesaj okuyun ve gönderin. Mesajlara ve kişilere erişim gerekir.</string>
     <string name="calls_title">Bilgisayarınızda aramalar</string>
-    <string name="calls_on">Açık. Bilgisayarınız gelen ve son aramaları gösterir, arama başlatabilir veya yanıtlayabilir.</string>
-    <string name="calls_off">Kimin aradığını görün ve bilgisayarınızdan arama başlatın veya yanıtlayın. Ses telefonda kalır. Aramalara, arama geçmişine ve kişilere erişim gerekir.</string>
     <string name="contacts_title">Bilgisayarınızda kişiler</string>
-    <string name="contacts_on">Açık. Kişileriniz bilgisayarınızdaki Aramalar ve Mesajlar bölümlerinde kullanılabilir.</string>
-    <string name="contacts_off">Bilgisayarınızdan kişilerde arayın, arama yapın veya mesaj gönderin. Kişilere erişim gerekir.</string>
-    <string name="settings_photos">Fotoğraflar ve videolar</string>
     <string name="photos_title">Bilgisayarınızda fotoğraflar ve videolar</string>
-    <string name="photos_on">Açık. Fotoğraflarınız, ekran görüntüleriniz ve videolarınız bilgisayarınızda kullanılabilir.</string>
-    <string name="photos_partial">Yalnızca bazı fotoğraflar paylaşılıyor. Tüm galerinize bilgisayarınızdan göz atmak için tümüne izin verin.</string>
-    <string name="photos_off">Fotoğraf ve videolara bilgisayarınızdan göz atın, yeni ekran görüntülerini anında alın. Fotoğraflara ve videolara erişim gerekir.</string>
     <string name="action_select_photos">Tümüne izin ver</string>
     <string name="transfer_too_many">Bu klasörde bir kerede gönderilemeyecek kadar çok dosya var.</string>
     <string name="transfers_title">Aktarımlar</string>
@@ -205,7 +172,6 @@
     <string name="settings_clipboard_passwords">Kopyalanan parolaları eşitle</string>
     <string name="settings_clipboard_passwords_hint">Parola yöneticilerinin özel olarak işaretlediklerini de gönderir. Bir dakika sonra PC\'nin panosundan silinir ve geçmişte hiç tutulmaz.</string>
     <string name="settings_clipboard_suggestions">Kopyalanan metin için eylem öner</string>
-    <string name="settings_clipboard_suggestions_hint">Bilgisayarınızdan gelen metin için eylem önerin: bağlantılar, haritalar, aramalar, kargo takibi ve e-posta.</string>
     <string name="clip_received_from">%1$s cihazından kopyalandı</string>
     <string name="clip_action_open">Aç</string>
     <string name="clip_action_maps">Haritalar\'da aç</string>
@@ -213,13 +179,8 @@
     <string name="clip_action_track">Takip et</string>
     <string name="clip_action_email">E-posta gönder</string>
     <string name="background_title">Arka planda ulaşılabilir kalın</string>
-    <string name="background_text">Android pil tasarrufu için G7 Link\'i duraklatıyor, bu yüzden bilgisayarınız ona ulaşamıyor. Arka planda çalışmasına izin verin.</string>
-    <string name="background_on">Arka planda bağlı kalmasına izin verildi</string>
-    <string name="settings_background_title">Arka plan ve pil</string>
     <string name="settings_run_in_background">Arka planda çalıştır</string>
-    <string name="settings_run_in_background_hint">Bu telefonu bilgisayarınızdan ulaşılabilir tutar. Kapalıyken G7 Link yalnızca açıkken bağlanır ve bildirim kaybolur.</string>
     <string name="home_background_off_title">Arka plan bağlantısı kapalı</string>
-    <string name="home_background_off_text">G7 Link yalnızca uygulama açıkken bağlanır. Bu telefonu bilgisayarınızdan ulaşılabilir tutmak için açın.</string>
     <string name="battery_open_oem_settings">Pil ayarları</string>
     <string name="battery_guide_samsung">Samsung\'da: Uygulama bilgileri › Pil › Kısıtlanmamış\'ı seçin ve Cihaz bakımı › Pil › Arka plan kullanım sınırları bölümünde G7 Link\'in asla uyku moduna alınmadığından emin olun.</string>
     <string name="battery_guide_xiaomi">Xiaomi / HyperOS / MIUI\'de: G7 Link için Otomatik başlat\'ı açın ve Uygulama bilgileri › Pil tasarrufu bölümünde Kısıtlama yok\'u seçin.</string>
@@ -228,18 +189,14 @@
     <string name="battery_guide_vivo">Vivo / Funtouch / OriginOS\'ta: Uygulama bilgileri › Pil bölümünü açın, Kısıtlanmamış\'ı (Yüksek arka plan güç kullanımı) seçin ve Otomatik başlat\'a izin verin.</string>
     <string name="battery_guide_huawei">Huawei / Honor\'da: Uygulama başlatma\'yı (Telefon Yöneticisi) açın, G7 Link için Otomatik olarak yönet\'i kapatın ve Otomatik başlatma, İkincil başlatma ve Arka planda çalıştır seçeneklerini açık tutun.</string>
     <string name="battery_guide_pixel">Pixel\'de: Uygulama bilgileri › Uygulama pil kullanımı bölümünü açın, Arka plan kullanımına izin ver\'e dokunun ve Kısıtlanmamış\'ı seçin.</string>
-    <string name="action_manage">Yönet</string>
     <string name="action_app_info">Uygulama bilgileri</string>
     <string name="theme_hive">Hive</string>
     <string name="hive_invite_title">Yeni tema Hive\'ı deneyin</string>
-    <string name="hive_invite_text">Kömür karası üzerinde bal ya da sıcak balmumu tonları, uygulamanın arkasında canlı bir petekle. İstediğiniz zaman Ayarlar\'dan değiştirin.</string>
     <string name="hive_invite_try">Hive\'ı dene</string>
-    <string name="hive_invite_dismiss">Şimdi değil</string>
     <string name="star_channel">G7 Link projesi</string>
     <string name="star_title">G7 Link\'i beğendin mi?</string>
     <string name="star_text">GitHub\'da yıldızlamak için dokun. Başkalarının bulmasına yardımcı olur.</string>
     <string name="settings_comb_motion">Hareketli petek</string>
-    <string name="settings_comb_motion_hint">Petek nefes alır ve atar. Animasyonları kaldır veya pil tasarrufu açıkken durağan kalır.</string>
     <string name="theme_bloom">Bloom</string>
     <string name="theme_graphite">Graphite</string>
     <string name="mode_system">Sistem</string>
@@ -252,14 +209,12 @@
 
     <!-- Actions -->
     <string name="action_pair">Eşleştir</string>
-    <string name="action_pair_nearby">Bunun yerine yakındakiyle eşleştir</string>
     <string name="action_scan_instead">Bunun yerine kod tara</string>
     <string name="action_codes_match">Kodlar eşleşiyor</string>
     <string name="action_codes_differ">Eşleşmiyor</string>
     <string name="action_try_again">Tekrar dene</string>
     <string name="action_cancel">İptal</string>
     <string name="action_allow_camera">Kameraya izin ver</string>
-    <string name="action_ring_pc">Bilgisayarı çaldır</string>
     <string name="action_stop_ringing">Çalmayı durdur</string>
     <string name="action_stop_service">Kapat</string>
     <string name="action_turn_on">Aç</string>
@@ -272,7 +227,6 @@
     <string name="action_refresh">Yenile</string>
     <string name="action_update">Güncelle</string>
     <string name="update_title">G7 Link %1$s kullanılabilir</string>
-    <string name="update_text">En son iyileştirmeleri ve düzeltmeleri edinin.</string>
     <string name="update_downloading">İndiriliyor…</string>
     <string name="update_downloading_progress">İndiriliyor · %1$s / %2$s</string>
     <string name="update_waiting_network">Bağlantı bekleniyor. İndirme kaldığı yerden devam eder.</string>
@@ -283,10 +237,6 @@
     <string name="update_install_failed">Android güncellemeyi kurmadı. Tekrar deneyin.</string>
     <string name="update_whats_new">Yenilikler</string>
     <string name="update_check">Güncellemeleri denetle</string>
-    <string name="update_checking">Güncellemeler denetleniyor…</string>
-    <string name="update_up_to_date_version">G7 Link %1$s güncel.</string>
-    <string name="update_current_version">G7 Link %1$s sürümü yüklü.</string>
-    <string name="update_check_failed">Güncellemeler denetlenemedi. İnternet bağlantınızı kontrol edin.</string>
     <string name="action_lock_pc">Bilgisayarı kilitle</string>
     <string name="action_sleep_pc">Uyut</string>
     <string name="action_wake_pc">Uyandır</string>
@@ -342,7 +292,6 @@
     <string name="action_back">Geri</string>
     <string name="settings_remote">Bilgisayarınızı kontrol edin</string>
     <string name="settings_volume_keys_control_pc">Ses düğmeleri bilgisayarınızı kontrol eder</string>
-    <string name="settings_volume_keys_control_pc_hint">Bilgisayarınız müzik veya video çalarken telefonunuzun ses düğmeleri bilgisayarın ses düzeyini değiştirir.</string>
     <string name="settings_touchpad_sensitivity">Dokunmatik yüzey hızı</string>
     <string name="settings_touchpad_sensitivity_value">%1$.1f×</string>
     <string name="remote_mode_touchpad">Dokunmatik yüzey</string>
@@ -399,7 +348,6 @@
     <string name="pc_mirror_viewport_desc">%1$s ekranı</string>
 
     <!-- Voice recorder to PC -->
-    <string name="action_record_pc">Kaydet</string>
     <string name="channel_recorder">Ses kaydedici</string>
     <!-- Phone as microphone. -->
     <string name="channel_mic">Bilgisayarınız için mikrofon</string>
@@ -409,17 +357,12 @@
     <string name="mic_request_title">%1$s bu telefonun mikrofonunu istiyor</string>
     <string name="mic_request_text">Başlatmak için dokunun. Siz veya bilgisayar durdurana kadar açık kalır.</string>
     <string name="mic_request_start">Başlat</string>
-    <string name="mic_request_card_text">Siz veya bilgisayar durdurana kadar açık kalır.</string>
     <string name="mic_pc_toggle">Bu telefonu mikrofon olarak kullan</string>
-    <string name="mic_pc_toggle_hint">Varsayılan olarak açık. Bu bilgisayar mikrofonu isteyebilir. Yalnızca Başlat\'a dokunduğunuzda açılır.</string>
-    <string name="mic_pc_toggle_hint_auto">Varsayılan olarak açık. Bu bilgisayar mikrofonu isteyebilir ve mikrofon hemen açılır.</string>
     <string name="start_without_asking_toggle">Kamerayı ve mikrofonu sormadan başlat</string>
     <string name="start_without_asking_hint">Bu bilgisayar istediğinde telefona dokunmadan hemen açılırlar. Elevated gerekir. Elevated olmadan telefon her zamanki gibi sorar.</string>
     <string name="recorder_notification_recording">%1$s için kaydediliyor</string>
     <string name="recorder_notification_paused">Kayıt duraklatıldı (%1$s)</string>
     <string name="recorder_permission_title">Mikrofon erişimine izin verin</string>
-    <string name="recorder_permission_text">G7 Link mikrofonu yalnızca %1$s cihazına göndermek üzere sesli not kaydederken kullanır.</string>
-    <string name="recorder_allow_mic">Mikrofona izin ver</string>
     <string name="recorder_offline_hint">Kayıtlar bu telefona kaydedilir ve %1$s bağlandığında otomatik olarak gönderilir.</string>
     <string name="recorder_status_ready">%1$s için kayda hazır</string>
     <string name="recorder_status_recording">%1$s için kaydediliyor</string>
@@ -442,7 +385,6 @@
 
     <!-- Deck (macro pad to PC) -->
     <string name="action_deck_pc">Deck</string>
-    <string name="action_desk_pc">Masa saati</string>
     <string name="deck_fullscreen">Tam ekran</string>
     <string name="deck_exit_fullscreen">Tam ekrandan çık</string>
     <string name="deck_playing">Oynatılıyor</string>
@@ -453,7 +395,6 @@
     <string name="deck_empty_page">Bu sayfada henüz kutucuk yok. %1$s üzerindeki G7 Link\'ten kutucuk ekleyin.</string>
     <string name="deck_commands_denied_title">%1$s üzerinde komutlara izin verin</string>
     <string name="deck_commands_denied_text">Bu telefondan kabuk komutları çalıştırmak için %1$s üzerinde G7 Link › Ayarlar › Cihazlar bölümünde bu telefon için “Deck kabuk komutlarını çalıştır” seçeneğini açın.</string>
-    <string name="deck_hint">Kutucukları %1$s üzerindeki Deck\'ten özelleştirin</string>
     <string name="pc_audio_volume">Ses düzeyi</string>
     <string name="pc_audio_mute">Sesi kapat</string>
     <string name="pc_audio_unmute">Sesi aç</string>
@@ -463,24 +404,15 @@
     <string name="pc_audio_default_badge">Varsayılan</string>
     <string name="pc_audio_outputs_hint">%1$s üzerindeki etkin oynatma cihazları.</string>
     <string name="pc_audio_use_phone_speaker">Telefonu hoparlör olarak kullan</string>
-    <string name="pc_audio_use_phone_speaker_sub">Bilgisayar sesini bu telefonda çal</string>
-    <string name="pc_audio_use_phone_speaker_on">Bilgisayar sesi bu telefona aktarılıyor</string>
     <string name="pc_audio_use_phone_mic">Telefonu mikrofon olarak kullan</string>
-    <string name="pc_audio_use_phone_mic_sub">Bu telefonun mikrofonunu bilgisayara gönder</string>
-    <string name="pc_audio_use_phone_mic_on">Bilgisayar bu telefonun mikrofonunu duyuyor</string>
 
     <!-- Phone storage in File Explorer -->
     <string name="storage_all_files_title">Tüm dosyalara erişim</string>
-    <string name="storage_all_files_on">Açık. İzin verdiğiniz bilgisayarlar bu telefonun dosyalarına dosya yöneticisinde göz atabilir, açabilir ve kopyalayabilir.</string>
-    <string name="storage_all_files_off">Bu telefonun klasörlerine bilgisayarınızdaki dosya yöneticisinden göz atın. Tüm dosyalara erişim gerekir; ya da aşağıdan belirli klasörleri seçin.</string>
     <string name="storage_saf_title">Yalnızca seçili klasörler</string>
-    <string name="storage_saf_hint">Yalnızca seçtiğiniz klasörleri paylaşın.</string>
     <string name="storage_add_folder">Klasör ekle</string>
     <string name="storage_remove_folder">Kaldır</string>
     <string name="storage_pc_toggle">Bu telefonun depolama alanına dosya yöneticisinden göz at</string>
-    <string name="storage_pc_toggle_hint">Varsayılan olarak kapalı. Bu bilgisayarın paylaşılan dosyalarınızı listelemesine, açmasına, yüklemesine, yeniden adlandırmasına ve silmesine olanak tanır.</string>
     <string name="storage_request_title">%1$s bu telefonun depolama alanına göz atmak istiyor</string>
-    <string name="storage_request_text">%1$s, paylaşılan depolama alanınıza (veya seçili klasörlere) dosya yöneticisinden göz atabilsin mi?</string>
     <string name="action_not_now">Şimdi değil</string>
 
     <!-- Phone as webcam to PC -->
@@ -492,8 +424,6 @@
     <string name="webcam_request_title">%1$s kameranızı kullanmak istiyor</string>
     <string name="webcam_request_text">Web kamerası kontrollerini açıp aktarımı başlatmak için dokunun.</string>
     <string name="webcam_permission_title">Kamera erişimine izin verin</string>
-    <string name="webcam_permission_text">G7 Link kamerayı yalnızca %1$s cihazına web kamerası olarak görüntü aktarırken kullanır.</string>
-    <string name="webcam_allow_camera">Kameraya izin ver</string>
     <string name="webcam_status_connecting">Kamera %1$s cihazına bağlanıyor…</string>
     <string name="webcam_status_ready">%1$s cihazına aktarmaya hazır</string>
     <string name="webcam_start">Web kamerasını başlat</string>
@@ -506,7 +436,6 @@
     <string name="webcam_turn_torch_off">Feneri kapat</string>
     <string name="webcam_switch_camera">Kamerayı çevir</string>
     <string name="webcam_zoom_label">Yakınlaştırma %1$.1f×</string>
-    <string name="webcam_resolution_label">Çözünürlük</string>
     <string name="webcam_denied_text">%1$s üzerinde bu telefon için web kamerası kapalı.</string>
     <string name="webcam_offline_hint">Kameranızı aktarmaya başlamak için %1$s ile aynı ağa bağlanın.</string>
 
@@ -565,7 +494,6 @@
 
     <!-- LocalSend -->
     <string name="settings_localsend_title">LocalSend</string>
-    <string name="settings_localsend_subtitle">Yakındaki LocalSend cihazlarıyla dosya gönderip alın. Varsayılan olarak kapalı. Gelen dosyalar için her zaman önce sorulur.</string>
     <string name="localsend_card_title">Yakındaki LocalSend cihazları</string>
     <string name="localsend_card_empty">Bu Wi-Fi ağında henüz LocalSend cihazı bulunamadı.</string>
     <string name="localsend_nearby_device">Yakındaki cihaz</string>
@@ -621,7 +549,6 @@
     <string name="settings_seed_sage">Adaçayı</string>
     <string name="settings_seed_black">Siyah</string>
     <string name="settings_amoled">Saf siyah (AMOLED)</string>
-    <string name="settings_amoled_hint">OLED ekranlar için kapkara #000000 koyu yüzeyler.</string>
 
     <!-- Deck defaults & accessibility -->
     <string name="deck_tile_with_badge">%1$s, %2$s</string>
@@ -659,8 +586,6 @@
 
     <!-- Webcam formatting -->
     <string name="webcam_stream_spec">%1$d × %2$d · %3$d fps</string>
-    <string name="webcam_stream_camera_spec">%1$d × %2$d · %3$s</string>
-    <string name="webcam_status_streaming_camera">%3$s cihazına %1$d × %2$d aktarılıyor · %4$s</string>
     <string name="webcam_res_720p">720p</string>
     <string name="webcam_res_1080p">1080p</string>
     <string name="webcam_res_4k">4K</string>
@@ -672,7 +597,6 @@
     <string name="transfer_receiving_progress">%1$s cihazından alınıyor · %2$s / %3$s</string>
     <string name="clipboard_history_meta">%1$s · %2$s</string>
     <string name="clipboard_history_meta_pinned">%1$s · %2$s · Sabitlendi</string>
-    <string name="timeline_latest_summary">%1$s · %2$s</string>
     <string name="recorder_marker_chip">%1$s · %2$s</string>
 
     <!-- Rich Handoff -->
@@ -702,8 +626,6 @@
 
     <!-- Companion Device Manager proximity wake -->
     <string name="companion_wake_title">Bilgisayar yakındayken uyandır (Companion Device)</string>
-    <string name="companion_wake_on">İlişkilendirildi · bilgisayarınız yakındayken Android G7 Link\'i uyandırır</string>
-    <string name="companion_wake_off">BLE işareti menzile girdiğinde Android\'in G7 Link\'i uyandırması için bilgisayarınızı ilişkilendirin</string>
     <string name="companion_wake_associate">İlişkilendir</string>
 
     <!-- Flick to Send sheet -->
@@ -738,12 +660,6 @@
     <string name="mirror_allow_pc_control">Bilgisayar faresiyle kontrole izin ver</string>
     <string name="action_open_controls">Kontroller</string>
     <string name="remote_input_requested_title">Bilgisayarınız bu telefonu kontrol etmeye çalıştı</string>
-    <string name="remote_input_requested_text">Bilgisayarınızın fare ve klavyesini bu telefonda kullanmak için Erişilebilirlik bölümünde “G7 Link: bilgisayarınızdan kontrol” seçeneğini açın.</string>
-    <string name="permissions_setup_title">İzinler ve kurulum (%1$d kaldı)</string>
-    <string name="permissions_setup_subtitle">Bildirimler, aramalar, mesajlar, fotoğraflar ve arka plan erişimi</string>
-    <string name="clipboard_preview_hidden">••••••••••••</string>
-    <string name="clipboard_preview_reveal">Göster</string>
-    <string name="clipboard_preview_hide">Gizle</string>
 
     <!-- Send queue -->
     <string name="send_queue_title_count">Gönderilmeyi bekliyor · %1$d</string>
@@ -762,142 +678,33 @@
     <string name="send_queue_dropped_unpair">%2$s için sıradaki %1$d öğe bırakıldı (cihaz eşleştirmesi kaldırıldı).</string>
 
     <!-- Setup Walkthrough -->
-    <string name="walkthrough_step_progress">Adım %1$d / %2$d</string>
-    <string name="walkthrough_stage_desc">Petek kurulum aşaması, adım %1$d / %2$d</string>
-    <string name="walkthrough_action_skip">Kurulumu atla</string>
-    <string name="walkthrough_action_back">Geri</string>
-    <string name="walkthrough_action_get_started">Başlayın</string>
-    <string name="walkthrough_action_continue">Devam</string>
-    <string name="walkthrough_action_pair_later">Daha sonra eşleştir</string>
-    <string name="walkthrough_action_done">Bitti</string>
-    <string name="walkthrough_action_open_guide">Özellik rehberini aç</string>
-
-    <string name="walkthrough_welcome_title">Telefonunuzu ve bilgisayarınızı bağlayın</string>
-    <string name="walkthrough_welcome_subtitle">Bildirimler, aramalar, mesajlar, dosyalar, pano, kamera ve ekran; bilgisayarınızla paylaşılır.</string>
-    <string name="walkthrough_welcome_card_heading">Tasarımı gereği gizli</string>
-    <string name="walkthrough_welcome_tls_title">Uçtan uca şifreli (TLS 1.3)</string>
-    <string name="walkthrough_welcome_tls_body">Her bağlantı karşılıklı doğrulanmış cihaz sertifikaları kullanır.</string>
-    <string name="walkthrough_welcome_lan_title">Wi-Fi, Ethernet veya USB üzerinden doğrudan</string>
-    <string name="walkthrough_welcome_lan_body">Trafik ağınızda kalır. Aktarma sunucusu yalnızca Mobil veri üzerinden bağlan açıkken kullanılır.</string>
-    <string name="walkthrough_welcome_local_title">Hesap veya bulut depolama yok</string>
-    <string name="walkthrough_welcome_local_body">Cihaz anahtarları cihazlarınızda kalır: bilgisayarınızın anahtarlığında (veya yalnızca hesabınızın okuyabildiği bir dosyada) ve Android Keystore\'da.</string>
-
-    <string name="walkthrough_permissions_title">İzinler</string>
-    <string name="walkthrough_permissions_subtitle">Yalnızca kullandıklarınıza izin verin. Herhangi bir izni daha sonra Ayarlar\'dan değiştirebilirsiniz.</string>
-    <string name="walkthrough_permissions_granted_badge">%1$d / %2$d izin verildi</string>
-    <string name="walkthrough_perm_counter">İzin %1$d / %2$d</string>
-    <string name="walkthrough_perm_counter_optional">İzin %1$d / %2$d · İsteğe bağlı</string>
-    <string name="walkthrough_perm_status_granted">İzin verildi</string>
-    <string name="walkthrough_perm_status_not_granted">İzin verilmedi</string>
-    <string name="walkthrough_perm_action_grant">İzin ver</string>
-    <string name="walkthrough_perm_action_manage">Yönet</string>
-    <string name="walkthrough_perm_action_next">Sonraki</string>
-    <string name="walkthrough_perm_dot_desc">%1$s, %2$s</string>
 
     <string name="walkthrough_perm_notif_title">Bildirimler</string>
-    <string name="walkthrough_perm_notif_does">Telefon bildirimlerini bilgisayarınızda görün, kapatın ve yanıtlayın; medyayı kontrol edin.</string>
-    <string name="walkthrough_perm_notif_requires">Android, Bildirim erişimi ve bildirim izni gerektirir.</string>
     <string name="walkthrough_restricted_title">Android bu ayarı engelledi</string>
-    <string name="walkthrough_restricted_body">Android, uygulama mağazası yerine bir dosyadan kurulan uygulamalar için bazı izinleri kısıtlar. Bu izni vermek için:</string>
-    <string name="walkthrough_restricted_step1">Uygulama bilgilerini aç\'a dokunun.</string>
     <string name="walkthrough_restricted_step2">Sağ üstteki ⋮ simgesine, ardından Kısıtlanmış ayarlara izin ver\'e dokunun ve onaylayın.</string>
-    <string name="walkthrough_restricted_step3">Buraya geri dönüp yeniden İzin ver\'e dokunun.</string>
-    <string name="walkthrough_restricted_note">Menü bu seçeneği yalnızca izni bir kez vermeyi denedikten sonra gösterir. Bazı telefonlarda farklı adlandırılmış olabilir.</string>
-    <string name="walkthrough_restricted_open">Uygulama bilgilerini aç</string>
-
-    <string name="walkthrough_perm_battery_title">Kısıtlanmamış pil</string>
-    <string name="walkthrough_perm_battery_does">Ekran kapalıyken telefonunuzu ulaşılabilir tutun.</string>
-    <string name="walkthrough_perm_battery_requires">Telefon kilitliyken bilgisayarınızla bağlantıyı etkin tutar.</string>
 
     <string name="walkthrough_perm_calls_title">Aramalar</string>
-    <string name="walkthrough_perm_calls_does">Gelen aramaları bilgisayarınızda görün; masaüstünüzden yanıtlayın, reddedin veya arama yapın.</string>
-    <string name="walkthrough_perm_calls_requires">Android, Telefon ve Arama kayıtları izinleri gerektirir.</string>
 
     <string name="walkthrough_perm_sms_title">Mesajlar</string>
-    <string name="walkthrough_perm_sms_does">Kişi adlarıyla birlikte SMS ve MMS mesajlarını bilgisayarınızdan okuyun ve gönderin.</string>
-    <string name="walkthrough_perm_sms_requires">Android, SMS ve Kişiler izinleri gerektirir.</string>
 
     <string name="walkthrough_perm_photos_title">Fotoğraflar</string>
-    <string name="walkthrough_perm_photos_does">Son telefon fotoğraflarına bilgisayarınızdan göz atın ve orijinallerini kaydedin.</string>
-    <string name="walkthrough_perm_photos_requires">Android, Fotoğraflar ve videolar erişimi gerektirir.</string>
 
-    <string name="walkthrough_perm_storage_title">Dosya yöneticisinde depolama</string>
-    <string name="walkthrough_perm_storage_does">Telefon klasörlerinize bilgisayarınızın dosya yöneticisinden göz atın.</string>
-    <string name="walkthrough_perm_storage_requires">Android, Tüm dosyalara erişim veya seçili klasörler gerektirir.</string>
-
-    <string name="walkthrough_perm_access_title">Yardımcı</string>
-    <string name="walkthrough_perm_access_does">Yansıtılan telefon ekranınızı bilgisayarınızdan fare ve klavyeyle kontrol edin.</string>
-    <string name="walkthrough_perm_access_requires">Android, G7 Link Erişilebilirlik hizmetini veya Yükseltilmiş modu gerektirir.</string>
-
-    <string name="walkthrough_pair_title">Bilgisayarınızla eşleştirin</string>
-    <string name="walkthrough_pair_subtitle">Bilgisayarınızda G7 Link\'i açın. QR kodunu tarayın veya aşağıdan bilgisayarınızı seçin.</string>
-    <string name="walkthrough_pair_ready_title">Eşleştirilmiş bilgisayar</string>
-    <string name="walkthrough_pair_badge_paired">Eşleştirildi</string>
-    <string name="walkthrough_pair_device_online">%1$s · Bağlı</string>
-    <string name="walkthrough_pair_device_offline">%1$s · Çevrimdışı</string>
-    <string name="walkthrough_pair_scan_qr">QR kodunu tara</string>
-    <string name="walkthrough_pair_hide_qr">QR tarayıcıyı gizle</string>
-    <string name="walkthrough_pair_nearby_heading">Yakındaki bilgisayarlar</string>
-    <string name="walkthrough_pair_nearby_tap">Yerel ağınızda eşleştirmek için dokunun</string>
-    <string name="walkthrough_pair_usb_title">USB ile otomatik eşleştirme</string>
-    <string name="walkthrough_pair_usb_hint">Otomatik eşleştirmek için USB hata ayıklama açıkken bir USB kablosu bağlayın.</string>
-
-    <string name="walkthrough_power_title">Yetki düzeyinizi seçin</string>
-    <string name="walkthrough_power_subtitle">Bilgisayarınızın bu telefon üzerinde ne kadar kontrole sahip olacağını seçin.</string>
-    <string name="walkthrough_power_current_badge">Geçerli: %1$s</string>
-    <string name="walkthrough_power_badge_active">Etkin</string>
-    <string name="walkthrough_power_badge_available">Kullanılabilir</string>
-    <string name="walkthrough_power_badge_optional">İsteğe bağlı</string>
     <string name="walkthrough_power_standard_title">Standart</string>
-    <string name="walkthrough_power_standard_sub">Varsayılan kurulum</string>
-    <string name="walkthrough_power_standard_desc">Bildirimler, aramalar, mesajlar, fotoğraflar, dosyalar, Panoyu gönder kutucuğu ve yalnızca görüntüleme amaçlı yansıtma.</string>
     <string name="walkthrough_power_assist_title">Yardımcı</string>
-    <string name="walkthrough_power_assist_sub">Erişilebilirlik hizmeti</string>
-    <string name="walkthrough_power_assist_desc">Ekran yansıtma sırasında bilgisayarınızdan fare ve klavye kontrolü ekler.</string>
-    <string name="walkthrough_power_assist_manage">Yönet</string>
-    <string name="walkthrough_power_assist_open">Aç</string>
     <string name="walkthrough_power_elevated_title">Yükseltilmiş</string>
-    <string name="walkthrough_power_elevated_sub">Kablosuz hata ayıklama</string>
-    <string name="walkthrough_power_elevated_desc">Arka planda pano eşitleme, kendi bilgisayar pencerelerinde açılan uygulamalar ve düşük gecikmeli giriş.</string>
-    <string name="walkthrough_power_elevated_reconnect">Yeniden bağlan</string>
-    <string name="walkthrough_power_elevated_enable">Kur</string>
-    <string name="walkthrough_power_elevated_hide_steps">Adımları gizle</string>
-    <string name="walkthrough_power_elevated_show_steps">Adımları göster</string>
-    <string name="walkthrough_power_elevated_steps_heading">Kablosuz hata ayıklama kurulumu</string>
-    <string name="walkthrough_power_elevated_step1">1. Geliştirici seçeneklerini açmak için Ayarlar › Telefon hakkında bölümünde Derleme numarası\'na 7 kez dokunun.</string>
-    <string name="walkthrough_power_elevated_step2">2. Geliştirici seçeneklerini açmak için Kur\'a dokunun.</string>
-    <string name="walkthrough_power_elevated_step3">3. Kablosuz hata ayıklamayı açın, Eşleme kodu ile cihazı eşle\'ye dokunun ve 6 haneli kodu bildirime girin.</string>
 
-    <string name="walkthrough_done_title">Kurulum tamamlandı</string>
-    <string name="walkthrough_done_subtitle">G7 Link hazır. Bu rehberi istediğiniz zaman Ayarlar › Hakkında bölümünden yeniden açabilirsiniz.</string>
-    <string name="walkthrough_done_summary_heading">Kurulumunuz</string>
-    <string name="walkthrough_done_paired_label">Eşleştirilmiş bilgisayar</string>
-    <string name="walkthrough_done_no_pc">Henüz yok · istediğiniz zaman Ana Sayfa\'dan eşleştirin</string>
     <string name="walkthrough_done_power_label">Yetki düzeyi</string>
-    <string name="walkthrough_done_power_elevated">Yükseltilmiş (Kablosuz hata ayıklama)</string>
-    <string name="walkthrough_done_power_assist">Yardımcı (Erişilebilirlik hizmeti)</string>
-    <string name="walkthrough_done_power_standard">Standart</string>
-    <string name="walkthrough_done_permissions_label">İzinler</string>
-    <string name="walkthrough_done_no_permissions">Henüz izin verilmedi</string>
-    <string name="walkthrough_done_try_heading">İlk önce deneyin</string>
-    <string name="walkthrough_done_try_1">1. Metin kopyalayın ve bilgisayarınızda yapıştırmak için Panoyu gönder kutucuğuna dokunun.</string>
-    <string name="walkthrough_done_try_2">2. Android Paylaş menüsünden herhangi bir dosya veya bağlantıyı G7 Link\'e paylaşın.</string>
 
     <!-- Features Guide Chrome -->
-    <string name="guide_back">Geri</string>
     <string name="guide_open_walkthrough">Kurulum rehberi</string>
-    <string name="guide_title">Özellik rehberi</string>
-    <string name="guide_subtitle">Bu telefondaki özelliklerin hazır olup olmadığını kontrol edin veya doğrudan kontrollerine gidin.</string>
     <string name="guide_search_placeholder">Özellik veya izin ara</string>
     <string name="guide_search_desc">Özellik ara</string>
-    <string name="guide_connect_pc_banner">Hangi özelliklerin hazır olduğunu görmek için bilgisayarınızı bağlayın</string>
     <string name="guide_empty_title">Eşleşen özellik yok</string>
     <string name="guide_empty_body">Başka bir anahtar kelime deneyin veya Tümü\'nü seçin.</string>
     <string name="guide_where_prefix">Nerede: %1$s</string>
     <string name="guide_needs_prefix">Gerekenler: %1$s</string>
     <string name="guide_external_heading">Android\'den açın</string>
     <string name="guide_action_show_me">Göster</string>
-    <string name="guide_action_learn_more">Daha fazla bilgi</string>
     <string name="guide_action_done">Bitti</string>
     <string name="guide_sheet_where">Nerede bulunur</string>
     <string name="guide_sheet_needs">Neye ihtiyacınız var</string>
@@ -1325,32 +1132,18 @@
     <string name="update_done_title">G7 Link %1$s sürümüne güncellendi</string>
     <string name="update_done_text">Açmak için dokunun. Bilgisayarlarınız kendiliğinden yeniden bağlanır.</string>
     <string name="update_auto_title">Güncellemeleri otomatik kur</string>
-    <string name="update_auto_text">GitHub\'daki yeni sürümler arka planda kurulur.</string>
     <string name="update_nightly">Nightly %1$d</string>
     <string name="update_nightly_named">Nightly %1$d (%2$s)</string>
     <string name="update_channel_title">Güncelleme kanalı</string>
     <string name="update_channel_stable">Kararlı</string>
     <string name="update_channel_nightly">Nightly</string>
-    <string name="update_channel_stable_text">Yayınlanan sürümler: test edilmiş ve daha seyrek.</string>
-    <string name="update_channel_nightly_text">Birkaç saatte bir çıkan en yeni derleme: en son düzeltmeler ve özellikler, bazen de yeni hatalar. Kararlı\'ya dönünce bu telefon, bir sonraki sürüm daha yeni olana kadar derlemesini korur.</string>
 
     <string name="home_guide_title">Rehber</string>
     <string name="home_whats_new_guide">Yenilikler: Özellik rehberi</string>
-    <string name="home_guide_card_body">Tüm G7 Link özelliklerini keşfedin, izinleri canlı olarak kontrol edin veya herhangi bir kontrole doğrudan gitmek için Göster\'e dokunun.</string>
     <string name="home_no_pc_paired">Henüz eşleştirilmiş bilgisayar yok</string>
-    <string name="home_no_pc_body">QR kodu veya yerel keşifle eşleştirmek için Linux bilgisayarınızda G7 Link\'i açın veya kurulum rehberini yeniden açın.</string>
     <string name="home_background_clipboard_title">Arka planda pano ve tam kontrol</string>
-    <string name="home_background_clipboard_body">Panoyu arka planda eşitleyin ve Kablosuz hata ayıklama ile dokunmatik kontrolü etkinleştirin.</string>
-    <string name="home_section_screen">Ekran, Kamera ve Giriş</string>
-    <string name="home_section_transfer">Hızlı Aktarım ve Pano</string>
-    <string name="home_section_system">Sistem ve Güç</string>
-    <string name="settings_category_devices">Cihazlar</string>
-    <string name="settings_category_features">Özellikler ve Veriler</string>
     <string name="settings_theme_artwork_color">Medya kapak görseli rengi</string>
-    <string name="settings_mobile_data_body">Wi-Fi\'dan uzaktayken LTE/5G veya aktarma sunucusu üzerinden bağlı kalın</string>
     <string name="settings_background_clipboard_title">Arka planda pano erişimi</string>
-    <string name="settings_guide_card_body">Tüm özelliklere göz atın, gereksinimleri canlı olarak kontrol edin veya doğrudan kontrollerine gidin.</string>
-    <string name="settings_walkthrough_body">İzinler, eşleştirme ve yetki düzeyleri için kurulum rehberini yeniden açın.</string>
     <string name="desk_exit">Masa Modundan çık</string>
     <string name="desk_media_playing">Bilgisayar medyası · Çalıyor</string>
     <string name="desk_media_audio">Bilgisayar medyası ve sesi</string>
@@ -1365,13 +1158,8 @@
     <string name="queue_kind_task_alert">Görev uyarısı</string>
     <string name="queue_kind_camera_request">Kamera isteği</string>
 
-    <string name="settings_theme_artwork_body">Uygulama ve cam renklerini çalan medyanın kapak görseliyle eşitle</string>
-    <string name="settings_wireless_debugging_active">Elevated açık · pano otomatik olarak eşitlenir</string>
-    <string name="settings_wireless_debugging_hint">Panonun arka planda eşitlenmesi için Elevated\'ı kur (Kablosuz hata ayıklama, Shizuku veya root) ya da bildirimdeki Panoyu gönder\'i kullan</string>
-
     <!-- Pause for banking apps -->
     <string name="banking_title">Bankacılık uygulamaları için duraklat</string>
-    <string name="banking_text">Bazı bankacılık uygulamaları Geliştirici seçenekleri, hata ayıklama veya bir erişilebilirlik hizmeti açıkken açılmaz. Bu uygulamaları burada seçin: G7 Link, onlar açıkken bu ayarları kapatır ve çıktığınızda yeniden açar.</string>
     <plurals name="banking_chosen">
         <item quantity="one">%1$d uygulama seçildi</item>
         <item quantity="other">%1$d uygulama seçildi</item>
