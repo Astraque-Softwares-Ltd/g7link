@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Window
-import QtQuick.Shapes
 import app.g7link
 
-// Dynamic Island-style floating pill anchored at the top-center of the primary
-// monitor (340×40px compact, expanding smoothly to 380×88px on hover or incoming call).
-// Stays hidden when idle and surfaces live activity:
-//   1. Incoming / active phone call (caller name + Answer / Mute / Speaker / Hang up)
-//   2. File transfer in progress (circular progress ring + transfer title & speed)
-//   3. Active media playback on Phone or PC (album art + scrolling song title + Play/Pause & Next)
+// A capsule at the top-center of the screen, hidden when idle, for live
+// activity on the phone:
+//   1. A call: caller, Decline / Answer while it rings, Mute / Hang up after
+//   2. A transfer: file name, a thin progress bar and its percentage
+//   3. Media playing on the phone: title, artist, Play / Pause, Previous / Next
+//   4. New notifications, and transfers waiting for the phone
 Window {
     id: islandWin
 
@@ -71,7 +70,7 @@ Window {
     property bool activeTransferIncoming: false
     property bool transferJustFinished: false
     property bool transferFailed: false
-    readonly property color transferEndColor: transferFailed ? "#F87171" : "#4ADE80"
+    readonly property color transferEndColor: transferFailed ? Theme.tintRed : Theme.tintGreen
 
     // ---- Transient notification toast (only when a new phone notification arrives) ----
     property bool notificationToastActive: false
@@ -251,8 +250,33 @@ Window {
     }
 
     readonly property bool expanded: pillHover.hovered || (Preferences.g7IslandCalls && PhoneCall.active && PhoneCall.ringing)
-    readonly property real pillWidth: expanded ? 380 : 340
-    readonly property real pillHeight: expanded ? 88 : 40
+    // Each activity has its own width (call 380, transfer 320, media and the
+    // rest 300); hovering widens it for the extra controls.
+    readonly property real pillWidth: (mode === "call" ? 380 : (mode === "transfer" ? 320 : 300)) + (expanded && mode !== "call" ? 60 : 0)
+    readonly property real pillHeight: 40
+    // The activity's glyph and its tint.
+    readonly property string glyph: mode === "call" ? Icons.call
+        : mode === "transfer" ? (transferJustFinished ? (transferFailed ? Icons.close : Icons.check)
+                                                      : (activeTransferIncoming ? Icons.download : Icons.send))
+        : mode === "media" ? Icons.music
+        : mode === "notification" ? Icons.bell
+        : mode === "waiting" ? Icons.send : Icons.phone
+    readonly property color glyphTint: mode === "call" ? Theme.tintTeal
+        : mode === "transfer" ? (transferJustFinished ? transferEndColor : Theme.tintAmber)
+        : mode === "media" ? Theme.tintPink
+        : mode === "notification" ? Theme.tintBlue : Theme.accent
+    // What follows the label in the capsule: "calling", the artist, or the
+    // secondary label when there's room for it.
+    readonly property string detailLabel: {
+        if (mode === "call")
+            return PhoneCall.ringing ? qsTr("calling") : secondaryLabel
+        if (mode === "transfer")
+            return transferJustFinished && TransferList.active === 0 ? finishedTransferTitle
+                : (expanded ? secondaryLabel : "")
+        if (mode === "media")
+            return mediaArtist.length > 0 ? mediaArtist : mediaApp
+        return expanded ? secondaryLabel : ""
+    }
     width: 400
     height: 104
     x: areaX + Math.round((areaW - width) / 2)
@@ -398,19 +422,9 @@ Window {
             easing.type: Easing.OutBack
         }
 
-        // Subtle outer ambient halo around the Dynamic Island capsule
-        Rectangle {
-            anchors.centerIn: pillBg
-            width: pillBg.width + 6
-            height: pillBg.height + 6
-            radius: height / 2
-            color: "transparent"
-            border.width: 1.5
-            border.color: islandWin.mode === "call"
-                ? Qt.rgba(0.29, 0.87, 0.50, 0.32)
-                : Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.24)
-        }
-
+        // One capsule on the ground color with a 1 px outline: a glyph in its
+        // tint, the label, muted detail, and the activity's controls on the
+        // right. Hovering widens it and shows the rest of the controls.
         Rectangle {
             id: pillBg
             anchors.top: parent.top
@@ -419,21 +433,14 @@ Window {
             width: islandWin.pillWidth
             height: islandWin.pillHeight
             radius: height / 2
-            // Authentic deep Dynamic Island obsidian surface with crisp specular glass border
-            color: Qt.rgba(0.05, 0.055, 0.075, Theme.glass ? 0.92 : 0.96)
+            color: Theme.surface
             border.width: 1
-            border.color: islandWin.mode === "call"
-                ? Qt.rgba(0.29, 0.87, 0.50, 0.55)
-                : Qt.rgba(1, 1, 1, 0.18)
+            border.color: Theme.line
             clip: true
 
             Behavior on width {
                 enabled: !Theme.reduceMotion
-                NumberAnimation { duration: 220; easing.type: Easing.OutBack }
-            }
-            Behavior on height {
-                enabled: !Theme.reduceMotion
-                NumberAnimation { duration: 220; easing.type: Easing.OutBack }
+                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
             }
 
             HoverHandler {
@@ -450,562 +457,199 @@ Window {
 
             TapHandler {
                 onTapped: (eventPoint) => {
-                    if (compactMediaControls.visible) {
-                        const p1 = compactMediaControls.mapFromItem(pillBg, eventPoint.position)
-                        if (p1.x >= 0 && p1.y >= 0 && p1.x <= compactMediaControls.width && p1.y <= compactMediaControls.height)
-                            return
-                    }
-                    if (expandedControlsRow.visible) {
-                        const p2 = expandedControlsRow.mapFromItem(pillBg, eventPoint.position)
-                        if (p2.x >= 0 && p2.y >= 0 && p2.x <= expandedControlsRow.width && p2.y <= expandedControlsRow.height)
-                            return
-                    }
+                    const p = controls.mapFromItem(pillBg, eventPoint.position)
+                    if (controls.visible && p.x >= 0 && p.y >= 0 && p.x <= controls.width && p.y <= controls.height)
+                        return
                     AppController.activateRequested()
                 }
             }
 
-            // ================================================================
-            // COMPACT PILL VIEW (340×40px)
-            // ================================================================
+            // The activity's glyph, or the song's artwork.
             Item {
-                id: compactView
-                anchors.fill: parent
-                anchors.leftMargin: 8
-                anchors.rightMargin: 10
-                visible: !islandWin.expanded
-                opacity: islandWin.expanded ? 0.0 : 1.0
-                Behavior on opacity { NumberAnimation { duration: 140 } }
-
-                // Left slot: Album Art / Progress Ring / Call Pulse / Brand Badge
-                Item {
-                    id: compactLeftSlot
-                    width: 26
-                    height: 26
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-
-                    // 1. Media album art squircle
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 8
-                        visible: islandWin.mode === "media"
-                        color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.24)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 14; height: 14
-                            visible: !(islandWin.mediaArt.length > 0 && compactArtImg.status === Image.Ready)
-                            path: Icons.music
-                            color: Theme.primary
-                        }
-                        RoundedImage {
-                            id: compactArtImg
-                            anchors.fill: parent
-                            radius: 8
-                            source: islandWin.mediaArt
-                            sourceSize: Qt.size(64, 64)
-                        }
-                    }
-
-                    // 2. Live file transfer circular progress ring
-                    Item {
-                        anchors.fill: parent
-                        visible: islandWin.mode === "transfer"
-
-                        Shape {
-                            anchors.fill: parent
-                            preferredRendererType: Shape.CurveRenderer
-
-                            ShapePath {
-                                strokeColor: Qt.rgba(1, 1, 1, 0.16)
-                                fillColor: "transparent"
-                                strokeWidth: 2.6
-                                capStyle: ShapePath.RoundCap
-                                PathAngleArc {
-                                    centerX: 13; centerY: 13
-                                    radiusX: 10.5; radiusY: 10.5
-                                    startAngle: 0; sweepAngle: 360
-                                }
-                            }
-                            ShapePath {
-                                strokeColor: islandWin.transferJustFinished ? islandWin.transferEndColor : Theme.primary
-                                fillColor: "transparent"
-                                strokeWidth: 2.6
-                                capStyle: ShapePath.RoundCap
-                                PathAngleArc {
-                                    centerX: 13; centerY: 13
-                                    radiusX: 10.5; radiusY: 10.5
-                                    startAngle: -90
-                                    sweepAngle: 360 * (islandWin.transferJustFinished ? 1.0 : Math.max(0.06, islandWin.activeTransferProgress))
-                                }
-                            }
-                        }
-
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 11; height: 11
-                            path: !islandWin.transferJustFinished ? Icons.send
-                                : (islandWin.transferFailed ? Icons.close : Icons.check)
-                            color: islandWin.transferJustFinished ? islandWin.transferEndColor : "#FFFFFF"
-                        }
-                    }
-
-                    // 3. Call / Notification / Waiting / Ready badge
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 13
-                        visible: islandWin.mode === "call" || islandWin.mode === "notification" || islandWin.mode === "waiting" || islandWin.mode === "ready"
-                        color: islandWin.mode === "call"
-                            ? Qt.rgba(0.29, 0.87, 0.50, 0.22)
-                            : Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.22)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 14; height: 14
-                            path: islandWin.mode === "call"
-                                ? Icons.call
-                                : (islandWin.mode === "notification"
-                                    ? Icons.bell
-                                    : (islandWin.mode === "waiting" ? Icons.send : Icons.phone))
-                            color: islandWin.mode === "call" ? "#4ADE80" : Theme.primary
-                        }
-                    }
+                id: lead
+                x: 14
+                anchors.verticalCenter: parent.verticalCenter
+                width: 18; height: 18
+                Icon {
+                    anchors.fill: parent
+                    visible: !(islandWin.mode === "media" && islandWin.mediaArt.length > 0 && artImage.status === Image.Ready)
+                    path: islandWin.glyph
+                    color: islandWin.glyphTint
                 }
-
-                // Right slot: Equalizer + inline quick transport controls (or % badge)
-                Row {
-                    id: compactMediaControls
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 4
-
-                    // Animated 3-bar equalizer in media mode
-                    Row {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 1.8
-                        height: 12
-                        visible: islandWin.mode === "media"
-                        Repeater {
-                            model: 3
-                            delegate: Rectangle {
-                                id: cEqBar
-                                required property int index
-                                width: 2.2
-                                radius: 1.1
-                                anchors.bottom: parent.bottom
-                                color: Theme.primary
-                                height: islandWin.mediaPlaying ? 8 : 3
-                                SequentialAnimation on height {
-                                    running: islandWin.visible && !islandWin.expanded && islandWin.mediaPlaying && !Theme.reduceMotion
-                                    loops: Animation.Infinite
-                                    NumberAnimation {
-                                        from: 3
-                                        to: cEqBar.index === 1 ? 12 : (cEqBar.index === 0 ? 9 : 10)
-                                        duration: 240 + cEqBar.index * 80
-                                        easing.type: Easing.InOutSine
-                                    }
-                                    NumberAnimation {
-                                        to: 3
-                                        duration: 220 + cEqBar.index * 70
-                                        easing.type: Easing.InOutSine
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Quick Play/Pause button right in the compact pill
-                    Rectangle {
-                        visible: islandWin.mode === "media"
-                        width: 24; height: 24
-                        radius: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: cPlayHover.hovered ? Qt.rgba(1, 1, 1, 0.18) : Qt.rgba(1, 1, 1, 0.08)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 12; height: 12
-                            path: islandWin.mediaPlaying ? Icons.pause : Icons.play
-                            color: "#FFFFFF"
-                        }
-                        HoverHandler { id: cPlayHover; cursorShape: Qt.PointingHandCursor }
-                        TapHandler {
-                            onTapped: MediaList.command(
-                                islandWin.mediaDeviceId,
-                                islandWin.mediaPlayerId,
-                                islandWin.mediaPlaying ? "pause" : "play",
-                                0
-                            )
-                        }
-                    }
-
-                    // Quick Next Track button right in the compact pill
-                    Rectangle {
-                        visible: islandWin.mode === "media" && islandWin.mediaCanNext
-                        width: 24; height: 24
-                        radius: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: cNextHover.hovered ? Qt.rgba(1, 1, 1, 0.18) : "transparent"
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 12; height: 12
-                            path: Icons.skipNext
-                            color: Qt.rgba(1, 1, 1, 0.85)
-                        }
-                        HoverHandler { id: cNextHover; cursorShape: Qt.PointingHandCursor }
-                        TapHandler {
-                            onTapped: MediaList.command(islandWin.mediaDeviceId, islandWin.mediaPlayerId, "next", 0)
-                        }
-                    }
-
-                    // Transfer percentage pill
-                    Txt {
-                        visible: islandWin.mode === "transfer" && !islandWin.transferJustFinished
-                        anchors.verticalCenter: parent.verticalCenter
-                        role: "caption"
-                        size: 11
-                        weight: Font.Bold
-                        color: Theme.primary
-                        text: Math.round(islandWin.activeTransferProgress * 100) + "%"
-                    }
-                }
-
-                // Center slot: Scrolling / crisp title + subtle artist/subtitle
-                Item {
-                    id: compactTitleClip
-                    anchors.left: compactLeftSlot.right
-                    anchors.leftMargin: 9
-                    anchors.right: compactMediaControls.left
-                    anchors.rightMargin: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: 24
-                    clip: true
-
-                    readonly property bool shouldMarquee: compactTitleMetrics.width > compactTitleClip.width
-                        && islandWin.visible && !islandWin.expanded && !Theme.reduceMotion
-
-                    TextMetrics {
-                        id: compactTitleMetrics
-                        font: compactTitleTxt.font
-                        text: islandWin.primaryLabel + (islandWin.mediaArtist.length > 0 && islandWin.mode === "media" ? "  ·  " + islandWin.mediaArtist : "")
-                    }
-
-                    Txt {
-                        id: compactTitleTxt
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: compactTitleClip.shouldMarquee ? compactTitleMetrics.width : compactTitleClip.width
-                        role: "label"
-                        size: 12
-                        weight: Font.DemiBold
-                        color: "#FFFFFF"
-                        elide: compactTitleClip.shouldMarquee ? Text.ElideNone : Text.ElideRight
-                        text: compactTitleMetrics.text
-
-                        SequentialAnimation on x {
-                            running: compactTitleClip.shouldMarquee && islandWin.visible && !islandWin.expanded
-                                     && !Theme.reduceMotion
-                            onRunningChanged: if (!running) compactTitleTxt.x = 0
-                            loops: Animation.Infinite
-                            PauseAnimation { duration: 1200 }
-                            NumberAnimation {
-                                from: 0
-                                to: -Math.max(0, compactTitleMetrics.width - compactTitleClip.width + 12)
-                                duration: Math.max(1800, (compactTitleMetrics.width - compactTitleClip.width) * 28)
-                                easing.type: Easing.InOutSine
-                            }
-                            PauseAnimation { duration: 900 }
-                            NumberAnimation {
-                                to: 0
-                                duration: 900
-                                easing.type: Easing.OutCubic
-                            }
-                        }
-                        onTextChanged: x = 0
-                    }
+                RoundedImage {
+                    id: artImage
+                    anchors.fill: parent
+                    visible: islandWin.mode === "media" && islandWin.mediaArt.length > 0
+                    radius: 5
+                    source: islandWin.mode === "media" ? islandWin.mediaArt : ""
+                    sourceSize: Qt.size(48, 48)
                 }
             }
 
-            // ================================================================
-            // EXPANDED PILL VIEW (380×88px on hover or incoming call)
-            // ================================================================
-            Item {
-                id: expandedView
-                anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
-                anchors.topMargin: 12
-                anchors.bottomMargin: 12
-                visible: islandWin.expanded
-                opacity: islandWin.expanded ? 1.0 : 0.0
-                Behavior on opacity { NumberAnimation { duration: 160 } }
+            Txt {
+                id: capsuleTitle
+                anchors.left: lead.right
+                anchors.leftMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth, Math.max(40, controls.x - x - 10 - (capsuleDetail.text.length > 0 ? Math.min(capsuleDetail.implicitWidth, 120) + 10 : 0)))
+                text: islandWin.primaryLabel
+                role: "bodySmall"
+                weight: 500
+            }
+            Txt {
+                id: capsuleDetail
+                anchors.left: capsuleTitle.right
+                anchors.leftMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.max(0, controls.x - x - 10)
+                text: islandWin.detailLabel
+                role: "bodySmall"
+                muted: true
+            }
 
-                // Left cover / artwork / progress dial (48×48px)
-                Item {
-                    id: expLeftSlot
-                    width: 48
-                    height: 48
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
+            Row {
+                id: controls
+                anchors.right: parent.right
+                anchors.rightMargin: islandWin.mode === "call" ? 6 : 14
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
 
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 12
-                        visible: islandWin.mode === "media"
-                        color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.24)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 22; height: 22
-                            visible: !(islandWin.mediaArt.length > 0 && expArtImg.status === Image.Ready)
-                            path: Icons.music
-                            color: Theme.primary
-                        }
-                        RoundedImage {
-                            id: expArtImg
-                            anchors.fill: parent
-                            radius: 12
-                            source: islandWin.mediaArt
-                            sourceSize: Qt.size(112, 112)
-                        }
-                    }
-
-                    Item {
-                        anchors.fill: parent
-                        visible: islandWin.mode === "transfer"
-
-                        Shape {
-                            anchors.fill: parent
-                            preferredRendererType: Shape.CurveRenderer
-                            ShapePath {
-                                strokeColor: Qt.rgba(1, 1, 1, 0.16)
-                                fillColor: "transparent"
-                                strokeWidth: 3.4
-                                capStyle: ShapePath.RoundCap
-                                PathAngleArc {
-                                    centerX: 24; centerY: 24
-                                    radiusX: 19; radiusY: 19
-                                    startAngle: 0; sweepAngle: 360
-                                }
-                            }
-                            ShapePath {
-                                strokeColor: islandWin.transferJustFinished ? islandWin.transferEndColor : Theme.primary
-                                fillColor: "transparent"
-                                strokeWidth: 3.4
-                                capStyle: ShapePath.RoundCap
-                                PathAngleArc {
-                                    centerX: 24; centerY: 24
-                                    radiusX: 19; radiusY: 19
-                                    startAngle: -90
-                                    sweepAngle: 360 * (islandWin.transferJustFinished ? 1.0 : Math.max(0.06, islandWin.activeTransferProgress))
-                                }
-                            }
-                        }
-
-                        Txt {
-                            anchors.centerIn: parent
-                            size: 10
-                            weight: Font.Bold
-                            color: "#FFFFFF"
-                            text: islandWin.transferJustFinished
-                                ? (islandWin.transferFailed ? "!" : "100%")
-                                : (Math.round(islandWin.activeTransferProgress * 100) + "%")
-                        }
-                    }
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 24
-                        visible: islandWin.mode === "call" || islandWin.mode === "notification" || islandWin.mode === "waiting" || islandWin.mode === "ready"
-                        color: islandWin.mode === "call"
-                            ? Qt.rgba(0.29, 0.87, 0.50, 0.22)
-                            : Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.22)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 22; height: 22
-                            path: islandWin.mode === "call"
-                                ? Icons.call
-                                : (islandWin.mode === "notification"
-                                    ? Icons.bell
-                                    : (islandWin.mode === "waiting" ? Icons.send : Icons.phone))
-                            color: islandWin.mode === "call" ? "#4ADE80" : Theme.primary
-                        }
-                    }
+                // ---- A call: Decline and Answer while it rings, then Mute and Hang up ----
+                IslandPill {
+                    visible: islandWin.mode === "call" && PhoneCall.ringing && PhoneCall.canEnd
+                    text: qsTr("Decline")
+                    fill: Theme.tintRed
+                    onActivated: PhoneCall.end()
+                }
+                IslandPill {
+                    visible: islandWin.mode === "call" && PhoneCall.ringing && PhoneCall.canEnd
+                    text: qsTr("Answer")
+                    fill: Theme.tintTeal
+                    onActivated: PhoneCall.answer()
+                }
+                IslandIcon {
+                    visible: islandWin.mode === "call" && !PhoneCall.ringing && PhoneCall.controls
+                    iconPath: PhoneCall.muted ? Icons.micOff : Icons.mic
+                    tint: PhoneCall.muted ? Theme.tintRed : Theme.surfaceContent
+                    label: PhoneCall.muted ? qsTr("Unmute") : qsTr("Mute")
+                    onActivated: PhoneCall.setMute(!PhoneCall.muted)
+                }
+                IslandPill {
+                    visible: islandWin.mode === "call" && !PhoneCall.ringing && PhoneCall.canEnd
+                    text: qsTr("Hang up")
+                    fill: Theme.tintRed
+                    onActivated: PhoneCall.end()
                 }
 
-                // Center title + subtitle + thin progress bar
-                Column {
-                    anchors.left: expLeftSlot.right
-                    anchors.leftMargin: 12
-                    anchors.right: expandedControlsRow.left
-                    anchors.rightMargin: 10
+                // ---- A transfer: a thin bar and its percentage; Cancel on hover ----
+                Rectangle {
+                    visible: islandWin.mode === "transfer"
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 3
-
-                    Txt {
-                        width: parent.width
-                        role: "title"
-                        size: 13
-                        weight: Font.DemiBold
-                        color: "#FFFFFF"
-                        elide: Text.ElideRight
-                        text: islandWin.primaryLabel
-                    }
-
-                    Txt {
-                        width: parent.width
-                        role: "caption"
-                        size: 11
-                        color: Qt.rgba(1, 1, 1, 0.68)
-                        elide: Text.ElideRight
-                        text: islandWin.secondaryLabel
-                    }
-
-                    // Sleek progress bar for media or transfer
+                    width: 60; height: 4; radius: 2
+                    color: Theme.selection
                     Rectangle {
-                        visible: (islandWin.mode === "media" && islandWin.mediaDuration > 0) || islandWin.mode === "transfer"
-                        width: parent.width
-                        height: 3.5
-                        radius: 1.75
-                        color: Qt.rgba(1, 1, 1, 0.16)
-
-                        Rectangle {
-                            height: parent.height
-                            radius: parent.radius
-                            color: islandWin.mode === "transfer" && islandWin.transferJustFinished ? islandWin.transferEndColor : Theme.primary
-                            width: {
-                                if (islandWin.mode === "transfer")
-                                    return parent.width * (islandWin.transferJustFinished ? 1.0 : Math.max(0.04, islandWin.activeTransferProgress))
-                                if (islandWin.mediaDuration > 0)
-                                    return parent.width * Math.max(0, Math.min(1, islandWin.mediaPositionNow / islandWin.mediaDuration))
-                                return 0
-                            }
-                            Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                        }
+                        height: parent.height
+                        radius: parent.radius
+                        color: islandWin.transferJustFinished ? islandWin.transferEndColor : Theme.tintAmber
+                        width: parent.width * (islandWin.transferJustFinished ? 1.0 : Math.max(0.04, islandWin.activeTransferProgress))
+                        Behavior on width { enabled: !Theme.reduceMotion; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                     }
                 }
-
-                // Right action buttons in expanded pill
-                Row {
-                    id: expandedControlsRow
-                    anchors.right: parent.right
+                Txt {
+                    visible: islandWin.mode === "transfer" && !islandWin.transferJustFinished
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
-
-                    // ---- Call controls: Answer (when ringing), Mute, Speaker, Hang up ----
-                    Rectangle {
-                        visible: islandWin.mode === "call" && PhoneCall.ringing && PhoneCall.canEnd
-                        width: 32; height: 32; radius: 16
-                        color: "#22C55E"
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 15; height: 15
-                            path: Icons.call
-                            color: "#FFFFFF"
-                        }
-                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                        TapHandler { onTapped: PhoneCall.answer() }
-                    }
-
-                    Rectangle {
-                        visible: islandWin.mode === "call" && !PhoneCall.ringing && PhoneCall.controls
-                        width: 30; height: 30; radius: 15
-                        color: PhoneCall.muted ? Qt.rgba(1, 1, 1, 0.26) : Qt.rgba(1, 1, 1, 0.12)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 14; height: 14
-                            path: PhoneCall.muted ? Icons.micOff : Icons.mic
-                            color: "#FFFFFF"
-                        }
-                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                        TapHandler { onTapped: PhoneCall.setMute(!PhoneCall.muted) }
-                    }
-
-                    Rectangle {
-                        visible: islandWin.mode === "call" && PhoneCall.canEnd
-                        width: 32; height: 32; radius: 16
-                        color: "#EF4444"
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 15; height: 15
-                            path: Icons.callEnd
-                            color: "#FFFFFF"
-                        }
-                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                        TapHandler { onTapped: PhoneCall.end() }
-                    }
-
-                    // ---- Media controls: Previous, Play/Pause, Next ----
-                    Rectangle {
-                        visible: islandWin.mode === "media" && islandWin.mediaCanPrev
-                        width: 28; height: 28; radius: 14
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: expPrevHover.hovered ? Qt.rgba(1, 1, 1, 0.20) : Qt.rgba(1, 1, 1, 0.08)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 13; height: 13
-                            path: Icons.skipPrevious
-                            color: "#FFFFFF"
-                        }
-                        HoverHandler { id: expPrevHover; cursorShape: Qt.PointingHandCursor }
-                        TapHandler {
-                            onTapped: MediaList.command(islandWin.mediaDeviceId, islandWin.mediaPlayerId, "previous", 0)
-                        }
-                    }
-
-                    Rectangle {
-                        visible: islandWin.mode === "media"
-                        width: 34; height: 34; radius: 17
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: Theme.primary
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 15; height: 15
-                            path: islandWin.mediaPlaying ? Icons.pause : Icons.play
-                            color: Theme.primaryContent
-                        }
-                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                        TapHandler {
-                            onTapped: MediaList.command(
-                                islandWin.mediaDeviceId,
-                                islandWin.mediaPlayerId,
-                                islandWin.mediaPlaying ? "pause" : "play",
-                                0
-                            )
-                        }
-                    }
-
-                    Rectangle {
-                        visible: islandWin.mode === "media" && islandWin.mediaCanNext
-                        width: 28; height: 28; radius: 14
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: expNextHover.hovered ? Qt.rgba(1, 1, 1, 0.20) : Qt.rgba(1, 1, 1, 0.08)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 13; height: 13
-                            path: Icons.skipNext
-                            color: "#FFFFFF"
-                        }
-                        HoverHandler { id: expNextHover; cursorShape: Qt.PointingHandCursor }
-                        TapHandler {
-                            onTapped: MediaList.command(islandWin.mediaDeviceId, islandWin.mediaPlayerId, "next", 0)
-                        }
-                    }
-
-                    // ---- Transfer cancel button ----
-                    Rectangle {
-                        visible: islandWin.mode === "transfer" && !islandWin.transferJustFinished && islandWin.activeTransferId.length > 0
-                        width: 28; height: 28; radius: 14
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: expCancelHover.hovered ? Qt.rgba(1, 0.3, 0.3, 0.28) : Qt.rgba(1, 1, 1, 0.10)
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 13; height: 13
-                            path: Icons.close
-                            color: "#FFFFFF"
-                        }
-                        HoverHandler { id: expCancelHover; cursorShape: Qt.PointingHandCursor }
-                        TapHandler {
-                            onTapped: TransferList.cancel(islandWin.activeTransferId)
-                        }
-                    }
+                    text: Math.round(islandWin.activeTransferProgress * 100) + "%"
+                    role: "bodySmall"
+                    muted: true
                 }
+                IslandIcon {
+                    visible: islandWin.expanded && islandWin.mode === "transfer" && !islandWin.transferJustFinished
+                             && islandWin.activeTransferId.length > 0
+                    iconPath: Icons.close
+                    label: qsTr("Cancel")
+                    onActivated: TransferList.cancel(islandWin.activeTransferId)
+                }
+
+                // ---- Media: Play or pause always; Previous and Next on hover ----
+                IslandIcon {
+                    visible: islandWin.expanded && islandWin.mode === "media" && islandWin.mediaCanPrev
+                    iconPath: Icons.skipPrevious
+                    label: qsTr("Previous")
+                    onActivated: MediaList.command(islandWin.mediaDeviceId, islandWin.mediaPlayerId, "previous", 0)
+                }
+                IslandIcon {
+                    visible: islandWin.mode === "media"
+                    iconPath: islandWin.mediaPlaying ? Icons.pause : Icons.play
+                    label: islandWin.mediaPlaying ? qsTr("Pause") : qsTr("Play")
+                    onActivated: MediaList.command(islandWin.mediaDeviceId, islandWin.mediaPlayerId,
+                                                   islandWin.mediaPlaying ? "pause" : "play", 0)
+                }
+                IslandIcon {
+                    visible: islandWin.mode === "media" && islandWin.mediaCanNext
+                    iconPath: Icons.skipNext
+                    label: qsTr("Next")
+                    onActivated: MediaList.command(islandWin.mediaDeviceId, islandWin.mediaPlayerId, "next", 0)
+                }
+            }
+
+            // Media: how far into the song, as a hairline along the bottom.
+            Rectangle {
+                visible: islandWin.mode === "media" && islandWin.mediaDuration > 0
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 1
+                x: 18
+                width: (parent.width - 36) * Math.max(0, Math.min(1, islandWin.mediaPositionNow / Math.max(1, islandWin.mediaDuration)))
+                height: 1
+                color: Theme.tintPink
             }
         }
+    }
+
+    // A filled pill: the call's Decline, Answer and Hang up.
+    component IslandPill: Rectangle {
+        id: ip
+        property string text
+        property color fill: Theme.accent
+        signal activated
+        anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+        width: ipText.implicitWidth + 24
+        height: 28
+        radius: 14
+        color: ipHover.hovered ? Qt.lighter(fill, 1.08) : fill
+        Accessible.role: Accessible.Button
+        Accessible.name: text
+        Txt {
+            id: ipText
+            anchors.centerIn: parent
+            text: ip.text
+            role: "bodySmall"
+            weight: 500
+            color: Theme.surface
+        }
+        HoverHandler { id: ipHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: ip.activated() }
+    }
+
+    // A bare glyph button.
+    component IslandIcon: Rectangle {
+        id: ii
+        property string iconPath
+        property string label
+        property color tint: Theme.surfaceContent
+        signal activated
+        anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+        width: 26; height: 26
+        radius: 13
+        color: iiHover.hovered ? Theme.selection : "transparent"
+        Accessible.role: Accessible.Button
+        Accessible.name: label
+        Icon {
+            anchors.centerIn: parent
+            width: 15; height: 15
+            path: ii.iconPath
+            color: ii.tint
+        }
+        HoverHandler { id: iiHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: ii.activated() }
     }
 }

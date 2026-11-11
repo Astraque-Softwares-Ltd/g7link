@@ -2,24 +2,60 @@
 import QtQuick
 import app.g7link
 
-// Fast, keyboard-first Command Palette modal overlay (PLAN.md §3.9 / §3.11 P1).
-// Loaded lazily via a Loader in MainWindow.qml only while open, so it costs
-// zero memory and zero CPU while closed.
+// The command palette: a 16 px search, results grouped under muted labels,
+// and a footer with the G7 mark, the phone and what Enter and Esc do.
+// Loaded by MainWindow only while open, so it costs nothing while closed.
 Item {
-    id: palette
+    id: commandPalette
     anchors.fill: parent
     z: 150
 
     property int selectedIndex: 0
+    // Results grouped by category, in the order each first appears (the
+    // best match's group first), each group's first row carrying its label.
     readonly property var items: {
         const raw = AppController.commandPaletteResults
         if (!raw || raw.length === 0)
             return []
+        let list = []
         try {
-            return JSON.parse(raw)
+            list = JSON.parse(raw)
         } catch (e) {
             return []
         }
+        const order = []
+        const groups = {}
+        for (const item of list) {
+            const key = item.category || ""
+            if (!(key in groups)) {
+                groups[key] = []
+                order.push(key)
+            }
+            groups[key].push(item)
+        }
+        const out = []
+        for (const key of order)
+            groups[key].forEach((item, i) => out.push(Object.assign({}, item, { firstOfGroup: i === 0 && key.length > 0 })))
+        return out
+    }
+
+    // Each result's glyph in its own tint: by its icon, else by its group.
+    function tintFor(item) {
+        const byIcon = {
+            camera: Theme.tintCoral, photo: Theme.tintCoral, clipboard: Theme.tintLavender,
+            clipboardList: Theme.tintLavender, apps: Theme.tintPink, mirror: Theme.tintPink, music: Theme.tintPink,
+            call: Theme.tintTeal, callIncoming: Theme.tintTeal, callOutgoing: Theme.tintTeal, person: Theme.tintTeal,
+            messages: Theme.tintBlue, bell: Theme.tintBlue, send: Theme.tintAmber, folder: Theme.tintAmber,
+            download: Theme.tintAmber, power: Theme.tintRed, callMissed: Theme.tintRed, lock: Theme.tintTeal,
+            deck: Theme.tintGreen, battery: Theme.tintGreen, settings: Theme.surfaceContentVariant
+        }
+        if (item.icon && byIcon[item.icon] !== undefined)
+            return byIcon[item.icon]
+        const byGroup = {
+            Calls: Theme.tintTeal, Messages: Theme.tintBlue, Clipboard: Theme.tintLavender,
+            "Mirror Apps": Theme.tintPink, Navigation: Theme.surfaceContentVariant
+        }
+        return byGroup[item.category] !== undefined ? byGroup[item.category] : Theme.accent
     }
 
     onItemsChanged: {
@@ -39,7 +75,7 @@ Item {
     ParallelAnimation {
         id: openAnim
         NumberAnimation {
-            target: palette
+            target: commandPalette
             property: "opacity"
             from: 0.45
             to: 1.0
@@ -65,14 +101,14 @@ Item {
 
     Shortcut {
         sequence: "Esc"
-        enabled: palette.visible
+        enabled: commandPalette.visible
         onActivated: AppController.closeCommandPalette()
     }
 
     Rectangle {
         id: scrim
         anchors.fill: parent
-        color: Qt.rgba(0, 0, 0, Theme.dark ? 0.52 : 0.28)
+        color: Theme.scrim
         TapHandler {
             onTapped: (eventPoint) => {
                 const p = card.mapFromItem(scrim, eventPoint.position)
@@ -86,310 +122,271 @@ Item {
     Rectangle {
         id: card
         anchors.horizontalCenter: parent.horizontalCenter
-        y: Math.max(56, Math.round(parent.height * 0.12))
-        width: Math.min(580, parent.width - 48)
-        height: cardColumn.height
-        radius: Theme.radiusLg
-        color: Theme.surfaceContainerHigh
+        y: Math.max(24, Math.round((parent.height - height) * 0.3))
+        width: Math.min(760, parent.width - 48)
+        height: Math.min(520, parent.height - 48)
+        radius: Theme.radiusXl
+        color: Theme.surface
         border.width: 1
-        border.color: Theme.outlineVariant
+        border.color: Theme.line
         clip: true
 
-        Column {
-            id: cardColumn
+        // ---- Search ----
+        Item {
+            id: searchBar
             width: parent.width
+            height: 56
 
-            // ---- Search bar ----
-            Item {
-                width: parent.width
-                height: 54
+            Txt {
+                anchors.left: searchInput.left
+                anchors.verticalCenter: parent.verticalCenter
+                visible: searchInput.text.length === 0
+                text: qsTr("Search contacts, messages, apps and actions")
+                size: 16
+                muted: true
+            }
 
-                Icon {
-                    id: searchIcon
-                    anchors.left: parent.left
-                    anchors.leftMargin: 18
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 18
-                    height: 18
-                    path: Icons.search
-                    color: Theme.surfaceContentVariant
+            TextInput {
+                id: searchInput
+                anchors.left: parent.left
+                anchors.leftMargin: 18
+                anchors.right: escBadge.left
+                anchors.rightMargin: 10
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                verticalAlignment: TextInput.AlignVCenter
+                font.family: Theme.fontUi
+                font.pixelSize: 16
+                color: Theme.surfaceContent
+                selectionColor: Theme.selection
+                selectedTextColor: Theme.surfaceContent
+                focus: true
+                clip: true
+                Accessible.name: qsTr("Command palette search")
+
+                onTextChanged: {
+                    commandPalette.selectedIndex = 0
+                    AppController.searchCommandPalette(searchInput.text)
                 }
 
-                Item {
-                    anchors.left: searchIcon.right
-                    anchors.leftMargin: 12
-                    anchors.right: escBadge.left
-                    anchors.rightMargin: 10
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-
-                    Txt {
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: searchInput.text.length === 0
-                        text: qsTr("Type a command, contact, or app…")
-                        role: "body"
-                        muted: true
-                    }
-
-                    TextInput {
-                        id: searchInput
-                        anchors.fill: parent
-                        verticalAlignment: TextInput.AlignVCenter
-                        font.family: Theme.fontUi
-                        font.pixelSize: 15
-                        color: Theme.surfaceContent
-                        selectionColor: Theme.primaryContainer
-                        selectedTextColor: Theme.primaryContainerContent
-                        focus: true
-                        clip: true
-                        Accessible.name: qsTr("Command palette search")
-
-                        onTextChanged: {
-                            palette.selectedIndex = 0
-                            AppController.searchCommandPalette(searchInput.text)
+                Keys.onPressed: (event) => {
+                    if (event.key === Qt.Key_Down) {
+                        if (commandPalette.items.length > 0) {
+                            commandPalette.selectedIndex = (commandPalette.selectedIndex + 1) % commandPalette.items.length
+                            resultsList.positionViewAtIndex(commandPalette.selectedIndex, ListView.Contain)
                         }
-
-                        Keys.onPressed: (event) => {
-                            if (event.key === Qt.Key_Down) {
-                                if (palette.items.length > 0) {
-                                    palette.selectedIndex = (palette.selectedIndex + 1) % palette.items.length
-                                    resultsList.positionViewAtIndex(palette.selectedIndex, ListView.Contain)
-                                }
-                                event.accepted = true
-                            } else if (event.key === Qt.Key_Up) {
-                                if (palette.items.length > 0) {
-                                    palette.selectedIndex = (palette.selectedIndex - 1 + palette.items.length) % palette.items.length
-                                    resultsList.positionViewAtIndex(palette.selectedIndex, ListView.Contain)
-                                }
-                                event.accepted = true
-                            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                                palette.runSelected()
-                                event.accepted = true
-                            } else if (event.key === Qt.Key_Escape) {
-                                AppController.closeCommandPalette()
-                                event.accepted = true
-                            }
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Up) {
+                        if (commandPalette.items.length > 0) {
+                            commandPalette.selectedIndex = (commandPalette.selectedIndex - 1 + commandPalette.items.length) % commandPalette.items.length
+                            resultsList.positionViewAtIndex(commandPalette.selectedIndex, ListView.Contain)
                         }
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        commandPalette.runSelected()
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Escape) {
+                        AppController.closeCommandPalette()
+                        event.accepted = true
                     }
+                }
+            }
+
+            // Clears the search, or closes the palette when it's empty.
+            Keycap {
+                id: escBadge
+                anchors.right: parent.right
+                anchors.rightMargin: 18
+                anchors.verticalCenter: parent.verticalCenter
+                keys: searchInput.text.length > 0 ? qsTr("Clear") : "Esc"
+                activeFocusOnTab: true
+
+                function activate() {
+                    if (searchInput.text.length > 0) {
+                        searchInput.text = ""
+                        searchInput.forceActiveFocus()
+                    } else {
+                        AppController.closeCommandPalette()
+                    }
+                }
+
+                Accessible.role: Accessible.Button
+                Accessible.name: searchInput.text.length > 0 ? qsTr("Clear search") : qsTr("Close command palette")
+                Accessible.onPressAction: escBadge.activate()
+                Keys.onPressed: (event) => {
+                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                        escBadge.activate()
+                        event.accepted = true
+                    }
+                }
+                border.width: Theme.focusVisible(escBadge) ? 2 : 0
+                border.color: Theme.focusRing
+
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: escBadge.activate() }
+            }
+
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: Theme.line
+            }
+        }
+
+        // ---- Results, grouped ----
+        ListView {
+            id: resultsList
+            anchors.top: searchBar.bottom
+            anchors.bottom: footer.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: 8
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            visible: commandPalette.items.length > 0
+            model: commandPalette.items
+
+            delegate: Item {
+                id: row
+                required property var modelData
+                required property int index
+                readonly property bool selected: index === commandPalette.selectedIndex
+                readonly property bool isEnabled: modelData.enabled !== false
+                readonly property bool firstOfGroup: modelData.firstOfGroup === true
+
+                width: resultsList.width
+                height: (firstOfGroup ? groupLabel.height : 0) + Theme.rowHeight
+
+                Txt {
+                    id: groupLabel
+                    visible: row.firstOfGroup
+                    x: Theme.rowPadding
+                    height: 28
+                    verticalAlignment: Text.AlignBottom
+                    bottomPadding: 4
+                    text: row.modelData.category || ""
+                    role: "label"
+                    muted: true
                 }
 
                 Rectangle {
-                    id: escBadge
-                    anchors.right: parent.right
-                    anchors.rightMargin: 16
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: escLabel.implicitWidth + 12
-                    height: 22
-                    radius: Theme.radiusXs
-                    color: Theme.surfaceContainerHighest
-                    border.width: 1
-                    border.color: Theme.outlineVariant
-                    activeFocusOnTab: true
+                    id: rowBody
+                    anchors.bottom: parent.bottom
+                    width: parent.width
+                    height: Theme.rowHeight
+                    radius: Theme.rowRadius
+                    color: row.selected ? Theme.selection : "transparent"
 
-                    function activate() {
-                        if (searchInput.text.length > 0) {
-                            searchInput.text = ""
-                            searchInput.forceActiveFocus()
-                        } else {
-                            AppController.closeCommandPalette()
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: (row.modelData.title || "") + (row.modelData.subtitle ? ", " + row.modelData.subtitle : "")
+                    Accessible.onPressAction: {
+                        commandPalette.selectedIndex = row.index
+                        AppController.runCommandPalette(row.modelData.id)
+                    }
+
+                    HoverHandler {
+                        cursorShape: Qt.PointingHandCursor
+                        onHoveredChanged: {
+                            if (hovered)
+                                commandPalette.selectedIndex = row.index
                         }
                     }
-
-                    Accessible.role: Accessible.Button
-                    Accessible.name: searchInput.text.length > 0 ? qsTr("Clear search") : qsTr("Close command palette")
-                    Accessible.onPressAction: escBadge.activate()
-
-                    Keys.onPressed: (event) => {
-                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                            escBadge.activate()
-                            event.accepted = true
-                        }
-                    }
-
-                    Rectangle {
-                        anchors.fill: parent
-                        anchors.margins: -3
-                        radius: parent.radius + 3
-                        color: "transparent"
-                        border.width: 2
-                        border.color: Theme.focusRing
-                        visible: Theme.focusVisible(escBadge)
-                    }
-
-                    Txt {
-                        id: escLabel
-                        anchors.centerIn: parent
-                        text: searchInput.text.length > 0 ? qsTr("Clear") : qsTr("Esc")
-                        role: "caption"
-                        size: 11
-                        muted: true
-                    }
-
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: escBadge.activate() }
-                }
-            }
-
-            Divider { width: parent.width }
-
-            // ---- Results list ----
-            Item {
-                width: parent.width
-                height: palette.items.length > 0 ? Math.min(resultsList.contentHeight + 12, 360) : 72
-
-                ListView {
-                    id: resultsList
-                    anchors.fill: parent
-                    anchors.margins: 6
-                    clip: true
-                    boundsBehavior: Flickable.StopAtBounds
-                    visible: palette.items.length > 0
-                    model: palette.items
-                    spacing: 2
-
-                    delegate: Rectangle {
-                        id: row
-                        required property var modelData
-                        required property int index
-                        readonly property bool selected: index === palette.selectedIndex
-                        readonly property bool isEnabled: modelData.enabled !== false
-
-                        width: resultsList.width
-                        height: 52
-                        radius: Theme.radiusSm
-                        color: selected
-                            ? Theme.secondaryContainer
-                            : rowHover.hovered
-                              ? Theme.surfaceContainerHighest
-                              : "transparent"
-
-                        Accessible.role: Accessible.ListItem
-                        Accessible.name: (modelData.title || "") + (modelData.subtitle ? ", " + modelData.subtitle : "")
-                        Accessible.onPressAction: {
-                            palette.selectedIndex = row.index
+                    TapHandler {
+                        onTapped: {
+                            commandPalette.selectedIndex = row.index
                             AppController.runCommandPalette(row.modelData.id)
                         }
+                    }
 
-                        HoverHandler {
-                            id: rowHover
-                            cursorShape: Qt.PointingHandCursor
-                            onHoveredChanged: {
-                                if (hovered)
-                                    palette.selectedIndex = row.index
-                            }
-                        }
-
-                        TapHandler {
-                            onTapped: {
-                                palette.selectedIndex = row.index
-                                AppController.runCommandPalette(row.modelData.id)
-                            }
-                        }
-
-                        Rectangle {
-                            id: iconBox
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 32
-                            height: 32
-                            radius: Theme.radiusSm
-                            color: Theme.quiet ? "transparent" : row.selected ? Theme.primaryContainer : Theme.surfaceContainerHighest
-
-                            Icon {
-                                anchors.centerIn: parent
-                                width: 16
-                                height: 16
-                                path: (row.modelData.icon && Icons[row.modelData.icon])
-                                    ? Icons[row.modelData.icon]
-                                    : Icons.terminal
-                                color: row.selected ? Theme.primaryContainerContent : Theme.surfaceContent
-                            }
-                        }
-
-                        Column {
-                            anchors.left: iconBox.right
-                            anchors.leftMargin: 12
-                            anchors.right: badgePill.visible ? badgePill.left : parent.right
-                            anchors.rightMargin: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 1
-                            opacity: row.isEnabled ? 1.0 : 0.6
-
-                            Txt {
-                                width: parent.width
-                                text: row.modelData.title || ""
-                                role: "label"
-                                size: 14
-                                color: row.selected ? Theme.secondaryContainerContent : Theme.surfaceContent
-                            }
-
-                            Txt {
-                                width: parent.width
-                                visible: (row.modelData.subtitle || "").length > 0
-                                text: row.modelData.subtitle || ""
-                                role: "caption"
-                                size: 12
-                                muted: !row.selected
-                                color: row.selected ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
-                            }
-                        }
-
-                        Rectangle {
-                            id: badgePill
-                            readonly property string badgeText: (row.modelData.badge && row.modelData.badge.length > 0)
-                                ? row.modelData.badge
-                                : (row.modelData.category || "")
-                            visible: badgeText.length > 0
-                            anchors.right: parent.right
-                            anchors.rightMargin: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: badgeLabel.implicitWidth + 14
-                            height: 22
-                            radius: Theme.pill(height)
-                            color: row.selected ? Theme.surfaceContainerHigh : Theme.surfaceContainerHighest
-
-                            Txt {
-                                id: badgeLabel
-                                anchors.centerIn: parent
-                                text: badgePill.badgeText
-                                role: "caption"
-                                size: 11
-                                muted: true
-                            }
-                        }
+                    Icon {
+                        id: glyph
+                        x: Theme.rowPadding
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 18; height: 18
+                        path: (row.modelData.icon && Icons[row.modelData.icon]) ? Icons[row.modelData.icon] : Icons.terminal
+                        color: commandPalette.tintFor(row.modelData)
+                        opacity: row.isEnabled ? 1.0 : 0.6
+                    }
+                    Txt {
+                        id: rowTitle
+                        anchors.left: glyph.right
+                        anchors.leftMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, kind.x - x - 12 - (rowSub.text.length > 0 ? Math.min(rowSub.implicitWidth, 160) + 10 : 0))
+                        text: row.modelData.title || ""
+                        opacity: row.isEnabled ? 1.0 : 0.6
+                    }
+                    Txt {
+                        id: rowSub
+                        anchors.left: rowTitle.right
+                        anchors.leftMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.max(0, kind.x - x - 12)
+                        text: row.modelData.subtitle || ""
+                        muted: true
+                    }
+                    Txt {
+                        id: kind
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.rowPadding
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: row.modelData.badge || ""
+                        role: "bodySmall"
+                        muted: true
                     }
                 }
-
-                Txt {
-                    anchors.centerIn: parent
-                    visible: palette.items.length === 0
-                    text: qsTr("No matching commands")
-                    role: "body"
-                    muted: true
-                }
             }
+        }
 
-            Divider { width: parent.width }
+        Txt {
+            anchors.centerIn: resultsList
+            visible: commandPalette.items.length === 0
+            text: qsTr("No matches")
+            muted: true
+        }
 
-            // ---- Footer ----
-            Item {
+        // ---- Footer: the mark, the phone, and what Enter and Esc do ----
+        Item {
+            id: footer
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 40
+
+            Rectangle {
                 width: parent.width
-                height: 32
-
-                Txt {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 16
+                height: 1
+                color: Theme.line
+            }
+            Row {
+                x: 14
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 12
+                Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("↑↓ to navigate · Enter to run · Esc to close")
-                    role: "caption"
-                    size: 11
+                    width: markText.implicitWidth + 10
+                    height: 20
+                    radius: 5
+                    color: Theme.accent
+                    Txt {
+                        id: markText
+                        anchors.centerIn: parent
+                        text: "G7"
+                        role: "label"
+                        color: Theme.accentContent
+                    }
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: text.length > 0
+                    text: DeviceList.count > 0
+                        ? DeviceList.deviceNameAt(Math.min(Math.max(0, AppController.currentDevice), DeviceList.count - 1))
+                        : ""
+                    role: "bodySmall"
                     muted: true
                 }
-
+                // How quickly it opened, beside its key.
                 Txt {
-                    anchors.right: parent.right
-                    anchors.rightMargin: 16
                     anchors.verticalCenter: parent.verticalCenter
                     text: {
                         const hk = Preferences.commandPaletteHotkey.length > 0
@@ -402,9 +399,36 @@ Item {
                             : String(Math.round(AppController.commandPaletteOpenMs))
                         return qsTr("%1 · %2 ms").arg(hk).arg(msText)
                     }
-                    role: "caption"
-                    size: 11
+                    role: "bodySmall"
                     muted: true
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: commandPalette.items.length > 0
+                    text: qsTr("Open")
+                    role: "bodySmall"
+                }
+                Keycap {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: commandPalette.items.length > 0
+                    keys: "Enter"
+                }
+                Item { width: 8; height: 1 }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Close")
+                    role: "bodySmall"
+                    muted: true
+                }
+                Keycap {
+                    anchors.verticalCenter: parent.verticalCenter
+                    keys: "Esc"
                 }
             }
         }

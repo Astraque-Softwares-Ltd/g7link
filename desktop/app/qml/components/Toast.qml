@@ -2,8 +2,8 @@
 import QtQuick
 import app.g7link
 
-// A short message at the bottom of the window that hides itself, with an
-// optional context action chip (e.g. "Open", "Call", "Track").
+// A short message on the raised surface just above the footer that hides
+// itself, with an optional action ("Open", "Call", "Track").
 Rectangle {
     id: toast
     property int timeout: 4000
@@ -31,17 +31,19 @@ Rectangle {
     visible: opacity > 0
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom
-    anchors.bottomMargin: shown || Theme.reduceMotion ? 24 : -height
-    Behavior on anchors.bottomMargin { enabled: !Theme.reduceMotion; SpringAnimation { spring: Theme.springStandard; damping: Theme.dampingStandard } }
+    anchors.bottomMargin: shown || Theme.reduceMotion ? Theme.footerHeight + 12 : Theme.footerHeight - 8
+    Behavior on anchors.bottomMargin { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeNormal; easing.type: Easing.OutCubic } }
     opacity: shown ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
     z: 200
 
     readonly property bool hasAction: actionText.length > 0
-    width: Math.min(contentRow.implicitWidth + (hasAction ? 28 : 40), parent.width - 48)
-    height: 44
-    radius: Theme.pill(height)
-    color: Theme.surfaceContent
+    width: Math.min(contentRow.implicitWidth + (hasAction ? 16 : 28), parent.width - 48)
+    height: 36
+    radius: Theme.rowRadius
+    color: Theme.raised
+    border.width: 1
+    border.color: Theme.line
 
     Accessible.role: Accessible.AlertMessage
     Accessible.name: hasAction ? (label.text + " " + actionText) : label.text
@@ -57,20 +59,16 @@ Rectangle {
             width: Math.min(implicitWidth, toast.parent.width - (toast.hasAction ? actionChip.width + 100 : 88))
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
-            role: "body"
-            color: Theme.surface
         }
 
         Rectangle {
             id: actionChip
             visible: toast.hasAction
             anchors.verticalCenter: parent.verticalCenter
-            width: chipLabel.implicitWidth + 24
-            height: 30
-            radius: Theme.pill(height)
-            color: chipHover.hovered
-                ? Qt.rgba(Theme.primaryContainer.r, Theme.primaryContainer.g, Theme.primaryContainer.b, 0.92)
-                : Theme.primaryContainer
+            width: chipLabel.implicitWidth + 20
+            height: 26
+            radius: Theme.radiusSm
+            color: chipHover.hovered ? Theme.selection : "transparent"
             activeFocusOnTab: toast.shown && toast.hasAction
 
             Accessible.role: Accessible.Button
@@ -105,7 +103,7 @@ Rectangle {
                 anchors.centerIn: parent
                 text: toast.actionText
                 role: "label"
-                color: Theme.primaryContainerContent
+                color: Theme.accent
             }
 
             HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }

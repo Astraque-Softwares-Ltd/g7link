@@ -34,7 +34,7 @@ Window {
             width: 48
             height: 48
             radius: 24
-            color: Theme.primary
+            color: Theme.accent
             opacity: 0.28
         }
 
@@ -43,7 +43,7 @@ Window {
             width: 28
             height: 28
             radius: 14
-            color: Theme.primary
+            color: Theme.accent
             opacity: 0.58
         }
 
@@ -52,7 +52,7 @@ Window {
             width: 14
             height: 14
             radius: 7
-            color: Theme.primary
+            color: Theme.accent
             border.width: 2
             border.color: "#FFFFFF"
         }

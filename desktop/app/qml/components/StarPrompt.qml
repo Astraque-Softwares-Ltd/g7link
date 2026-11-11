@@ -24,8 +24,8 @@ Item {
 
     anchors.right: parent ? parent.right : undefined
     anchors.bottom: parent ? parent.bottom : undefined
-    anchors.rightMargin: 20
-    anchors.bottomMargin: 20
+    anchors.rightMargin: 14
+    anchors.bottomMargin: Theme.footerHeight + 12
     width: pill.width
     height: pill.height
     visible: internal.phase !== "waiting" && internal.phase !== "gone"
@@ -67,8 +67,8 @@ Item {
         property real reveal: 0    // the question unfolding, 0 to 1
         property real burst: 0     // the sparks flying off, 0 to 1
 
-        readonly property color honeyColor: Theme.graphite ? Theme.surfaceContent : Theme.primary
-        readonly property color starColor: Theme.graphite ? Theme.surface : Theme.primaryContent
+        readonly property color honeyColor: Theme.accent
+        readonly property color starColor: Theme.accentContent
 
         // A pointy-topped hexagon filling a box of `size`.
         function hexagon(size) {
@@ -200,12 +200,12 @@ Item {
         id: pill
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: 48
+        height: 44
         width: 9 + prompt.cellSize + 9 + internal.reveal * unfolded.width
-        radius: Theme.pill(height)
-        color: Theme.surfaceContainerHigh
+        radius: Theme.radiusXl
+        color: Theme.raised
         border.width: 1
-        border.color: Theme.outlineVariant
+        border.color: Theme.line
 
         // Holds clicks, so they don't reach the page underneath.
         MouseArea {
@@ -294,7 +294,6 @@ Item {
                 Txt {
                     id: question
                     anchors.verticalCenter: parent.verticalCenter
-                    role: "body"
                     color: Theme.surfaceContent
                     text: internal.phase === "thanks" ? qsTr("Thank you!") : qsTr("Enjoying G7 Link?")
                     rightPadding: internal.phase === "thanks" ? 10 : 4
