@@ -6,11 +6,11 @@
 //! retained entries at once.
 
 use crate::i18n::tr;
-use std::{path::Path, pin::Pin};
+use std::{collections::HashMap, path::Path, pin::Pin};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QVariant};
-use g7link_core::{DeviceId, Error, LinkState, TimelineEntry, TimelineKind, TimelineQuery};
+use g7link_core::{DeviceId, Error, LinkState, Node, TimelineEntry, TimelineKind, TimelineQuery};
 use serde_json::json;
 
 use super::{Edit, diff};
@@ -160,6 +160,76 @@ pub struct TimelineModelRust {
     kind_filter: QString,
     device_filter: QString,
     rows: Vec<Row>,
+    /// How many entries to show: a page more with each "Load more", one
+    /// page again for a new search or filter.
+    limit: u32,
+    /// A load is on its way.
+    loading: bool,
+    loads: Loads,
+    /// The device names the rows were made with.
+    device_names: HashMap<DeviceId, String>,
+}
+
+/// Numbers the loads, so only the latest one's rows are shown: an older one
+/// can finish after it.
+#[derive(Debug, Default)]
+struct Loads {
+    latest: u64,
+}
+
+impl Loads {
+    fn start(&mut self) -> u64 {
+        self.latest = self.latest.wrapping_add(1);
+        self.latest
+    }
+
+    fn is_latest(&self, load: u64) -> bool {
+        load == self.latest
+    }
+}
+
+/// What a load read from the store, made into rows.
+struct Loaded {
+    rows: Vec<Row>,
+    has_more: bool,
+    has_any: bool,
+    device_names: HashMap<DeviceId, String>,
+}
+
+/// Reads up to `query.limit` entries from the start and makes their rows.
+/// Blocking: the store is SQLite, and each file row is looked for on disk.
+fn load_rows(node: &Node, query: &TimelineQuery) -> Loaded {
+    let limit = query.limit;
+    let mut entries = Vec::new();
+    let mut has_more = false;
+    let mut offset = 0u32;
+    while offset < limit {
+        let chunk = (limit - offset).min(g7link_core::MAX_TIMELINE_PAGE_LIMIT);
+        let page_query = TimelineQuery { offset, limit: chunk, ..query.clone() };
+        let Ok(page) = node.timeline_page(&page_query) else { break };
+        let fetched = page.entries.len() as u32;
+        has_more = page.has_more;
+        entries.extend(page.entries);
+        if !has_more || fetched == 0 {
+            break;
+        }
+        offset += fetched;
+    }
+    let has_any = if !entries.is_empty() {
+        true
+    } else if query.kind.is_none() && query.device.is_none() && query.search.is_none() {
+        false
+    } else {
+        node.timeline_page(&TimelineQuery { limit: 1, ..TimelineQuery::default() })
+            .is_ok_and(|p| !p.entries.is_empty())
+    };
+    let device_names = device_names();
+    let rows = build_rows(&entries, None, &device_names);
+    Loaded { rows, has_more, has_any, device_names }
+}
+
+fn device_names() -> HashMap<DeviceId, String> {
+    core_host::host().hub.read(|s| s.devices.iter().map(|d| (d.id, d.info.name.clone())).collect())
 }
 
 const ROLES: &[&str] = &[
@@ -216,11 +286,10 @@ impl cxx_qt::Initialize for qobject::TimelineModel {
         self.as_mut().on_kind_filter_changed(Self::reset_and_refresh).release();
         self.as_mut().on_device_filter_changed(Self::reset_and_refresh).release();
         self.as_mut().refresh();
-        super::subscribe(
-            self.qt_thread(),
-            Changes::TIMELINE | Changes::DEVICES | Changes::CLIPBOARD | Changes::STATUS,
-            Self::refresh,
-        );
+        // The node starting changes the timeline too; the clipboard's history
+        // setting decides the clips' thumbnails.
+        super::subscribe(self.qt_thread(), Changes::TIMELINE | Changes::CLIPBOARD, Self::refresh);
+        super::subscribe(self.qt_thread(), Changes::DEVICES, Self::refresh_if_renamed);
     }
 }
 
@@ -239,44 +308,39 @@ impl qobject::TimelineModel {
         }
     }
 
-    fn reset_and_refresh(self: Pin<&mut Self>) {
-        self.refresh_with_limit(PAGE_SIZE);
+    fn reset_and_refresh(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().limit = PAGE_SIZE;
+        self.refresh();
     }
 
-    fn refresh(self: Pin<&mut Self>) {
-        let loaded = (self.rows.len() as u32).clamp(PAGE_SIZE, 5_000);
-        self.refresh_with_limit(loaded);
-    }
-
-    fn refresh_with_limit(mut self: Pin<&mut Self>, limit: u32) {
+    /// Reads the entries shown again, off the GUI thread; the rows change
+    /// when they come.
+    fn refresh(mut self: Pin<&mut Self>) {
         let Some(node) = core_host::node() else { return };
-        let mut all_entries = Vec::new();
-        let mut has_more = false;
-        let mut offset = 0u32;
-        while offset < limit {
-            let chunk = (limit - offset).min(g7link_core::MAX_TIMELINE_PAGE_LIMIT);
-            let query = self.current_query(offset, chunk);
-            let Ok(page) = node.timeline_page(&query) else { break };
-            let fetched = page.entries.len() as u32;
-            has_more = page.has_more;
-            all_entries.extend(page.entries);
-            if !has_more || fetched == 0 {
-                break;
-            }
-            offset += fetched;
+        let query = self.current_query(0, self.limit.max(PAGE_SIZE));
+        let load = self.as_mut().rust_mut().loads.start();
+        self.as_mut().rust_mut().loading = true;
+        let qt = self.qt_thread();
+        core_host::spawn(async move {
+            let loaded = tokio::task::spawn_blocking(move || load_rows(&node, &query)).await;
+            let _ = qt.queue(move |model| model.show_load(load, loaded.ok()));
+        });
+    }
+
+    /// A phone's new name is on its rows; other device changes aren't.
+    fn refresh_if_renamed(self: Pin<&mut Self>) {
+        if device_names() != self.device_names {
+            self.refresh();
         }
-        let new = build_rows(&all_entries, None);
-        let has_any = if !all_entries.is_empty() {
-            true
-        } else {
-            let q = self.current_query(0, 1);
-            if q.kind.is_none() && q.device.is_none() && q.search.is_none() {
-                false
-            } else {
-                node.timeline_page(&TimelineQuery { limit: 1, ..TimelineQuery::default() })
-                    .is_ok_and(|p| !p.entries.is_empty())
-            }
-        };
+    }
+
+    fn show_load(mut self: Pin<&mut Self>, load: u64, loaded: Option<Loaded>) {
+        if !self.loads.is_latest(load) {
+            return;
+        }
+        self.as_mut().rust_mut().loading = false;
+        let Some(Loaded { rows: new, has_more, has_any, device_names }) = loaded else { return };
+        self.as_mut().rust_mut().device_names = device_names;
         self.as_mut().set_has_any(has_any);
         self.as_mut().set_has_more(has_more);
 
@@ -316,28 +380,13 @@ impl qobject::TimelineModel {
         if !self.has_more {
             return;
         }
-        let Some(node) = core_host::node() else { return };
-        let offset = self.rows.len() as u32;
-        let query = self.current_query(offset, PAGE_SIZE);
-        let Ok(page) = node.timeline_page(&query) else { return };
-        self.as_mut().set_has_more(page.has_more);
-
-        if page.entries.is_empty() {
+        let wanted = (self.rows.len() as u32).saturating_add(PAGE_SIZE);
+        // Scrolling asks again and again while the page is on its way.
+        if self.loading && self.limit >= wanted {
             return;
         }
-        let last_ts = self.rows.last().map(|r| r.entry.timestamp);
-        let appended = build_rows(&page.entries, last_ts);
-        let start = self.rows.len() as i32;
-        let end = start + (appended.len() as i32) - 1;
-        let root = QModelIndex::default();
-        // SAFETY: appending a contiguous slice at the end of `rows`.
-        unsafe {
-            self.as_mut().begin_insert_rows(&root, start, end);
-            self.as_mut().rust_mut().rows.extend(appended);
-            self.as_mut().end_insert_rows();
-        }
-        let count = self.rows.len() as i32;
-        self.set_count(count);
+        self.as_mut().rust_mut().limit = wanted;
+        self.refresh();
     }
 
     pub fn open_entry(&self, entry_id: &QString) {
@@ -529,10 +578,11 @@ fn existing_paths(target: &str) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn build_rows(entries: &[TimelineEntry], initial_prev_ts: Option<i64>) -> Vec<Row> {
-    let device_names: std::collections::HashMap<DeviceId, String> =
-        core_host::host().hub.read(|s| s.devices.iter().map(|d| (d.id, d.info.name.clone())).collect());
-
+fn build_rows(
+    entries: &[TimelineEntry],
+    initial_prev_ts: Option<i64>,
+    device_names: &HashMap<DeviceId, String>,
+) -> Vec<Row> {
     let mut rows = Vec::with_capacity(entries.len());
     let mut prev_ts = initial_prev_ts.unwrap_or(0);
     for entry in entries {
@@ -734,7 +784,7 @@ pub fn preview_json() -> String {
     let Ok(page) = node.timeline_page(&TimelineQuery { limit: 4, ..TimelineQuery::default() }) else {
         return "[]".into();
     };
-    let rows = build_rows(&page.entries, None);
+    let rows = build_rows(&page.entries, None, &device_names());
     let items: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|r| {
@@ -774,6 +824,18 @@ mod tests {
             clip_available: false,
             image_data_url: None,
         }
+    }
+
+    #[test]
+    fn only_the_latest_load_is_shown() {
+        let mut loads = Loads::default();
+        let older = loads.start();
+        let newer = loads.start();
+        assert!(!loads.is_latest(older), "an older load that finishes last is dropped");
+        assert!(loads.is_latest(newer));
+        let newest = loads.start();
+        assert!(!loads.is_latest(newer));
+        assert!(loads.is_latest(newest));
     }
 
     #[test]
