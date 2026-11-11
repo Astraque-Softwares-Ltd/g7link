@@ -853,7 +853,7 @@ fun PcMirrorView(
                                 val d = primaryChange.positionChange()
                                 totalMoved += hypot(d.x, d.y)
                                 scrollAccumY += (prev.y - cur.y) / scrollStepPx
-                                scrollAccumX += (cur.x - prev.x) / scrollStepPx
+                                scrollAccumX += (prev.x - cur.x) / scrollStepPx
                                 if (abs(scrollAccumX) > 0.05f || abs(scrollAccumY) > 0.05f) {
                                     didTwoFingerScroll = true
                                     val sendDx = scrollAccumX.coerceIn(-10f, 10f)

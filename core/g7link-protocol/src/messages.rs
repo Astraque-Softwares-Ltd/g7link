@@ -5329,6 +5329,10 @@ mod tests {
         assert_eq!(dgram[0], remote::DATAGRAM_TAG);
         assert_eq!(RemoteInput::from_datagram(&dgram).unwrap(), mv);
 
+        let scroll = RemoteInput::Scroll { dx: -0.25, dy: 1.375 };
+        assert!(scroll.is_valid() && scroll.is_datagram_allowed());
+        assert_eq!(RemoteInput::from_datagram(&scroll.to_datagram()).unwrap(), scroll);
+
         let laser = RemoteInput::Laser { on: true, x: 0.25, y: 0.75 };
         assert_eq!(RemoteInput::from_datagram(&laser.to_datagram()).unwrap(), laser);
         let laser_off = RemoteInput::Laser { on: false, x: 0.0, y: 0.0 };

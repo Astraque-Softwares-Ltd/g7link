@@ -89,9 +89,11 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -132,7 +134,10 @@ import app.g7link.android.core.WakeState
 import app.g7link.android.ui.theme.LocalReducedMotion
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen, Media }
 
@@ -528,6 +533,7 @@ private fun TouchpadSurface(
 ) {
     var dragging by remember { mutableStateOf(false) }
     var touchPoint by remember { mutableStateOf<Offset?>(null) }
+    val flingScope = rememberCoroutineScope()
     val primaryColor = MaterialTheme.colorScheme.primary
     val outlineColor = MaterialTheme.colorScheme.outlineVariant
     val touchpadDesc = stringResource(R.string.remote_mode_touchpad)
@@ -545,14 +551,18 @@ private fun TouchpadSurface(
                 val tapTimeoutMs = 240L
                 val doubleTapWindowMs = 260L
                 var lastSingleTapTime = 0L
+                var fling: Job? = null
 
                 awaitEachGesture {
                     val firstDown = awaitFirstDown(requireUnconsumed = false)
+                    // A touch catches a gliding scroll, like on a touchscreen.
+                    fling?.cancel()
+                    fling = null
                     val downTime = System.currentTimeMillis()
+                    var lastEventTime = firstDown.uptimeMillis
                     var maxPointers = 1
                     var totalMoved = 0f
-                    var scrollAccumX = 0f
-                    var scrollAccumY = 0f
+                    val twoFinger = TwoFingerGesture(tapSlop * toReference)
                     var isDragHold = (downTime - lastSingleTapTime) <= doubleTapWindowMs
                     var dragStarted = false
                     val ballistics = TouchpadBallistics()
@@ -571,6 +581,7 @@ private fun TouchpadSurface(
                                 pressedCount++
                             }
                         }
+                        if (changes.isNotEmpty()) lastEventTime = changes[0].uptimeMillis
                         if (pressedCount == 0 || firstPressed == null) break
 
                         if (pressedCount > maxPointers) {
@@ -623,16 +634,12 @@ private fun TouchpadSurface(
                             avgDy /= pressedCount
                             totalMoved += hypot(avgDx, avgDy)
 
-                            scrollAccumX += avgDx * toReference
-                            scrollAccumY += avgDy * toReference
-                            val stepPx = 18f
-                            if (abs(scrollAccumX) >= stepPx || abs(scrollAccumY) >= stepPx) {
-                                val notchesX = -(scrollAccumX / 48f)
-                                val notchesY = -(scrollAccumY / 36f)
-                                scrollAccumX = 0f
-                                scrollAccumY = 0f
-                                core.remoteScroll(pcId, notchesX, notchesY, fast = true)
-                            }
+                            val clicks = twoFinger.onMove(
+                                avgDx * toReference,
+                                avgDy * toReference,
+                                firstPressed.uptimeMillis,
+                            )
+                            if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
                         }
                     }
 
@@ -642,14 +649,19 @@ private fun TouchpadSurface(
                         core.remoteButton(pcId, "left", "up", onStatus)
                         dragging = false
                         lastSingleTapTime = 0L
-                    } else if (elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f) {
-                        if (maxPointers == 1) {
-                            lastSingleTapTime = System.currentTimeMillis()
-                            core.remoteButton(pcId, "left", "click", onStatus)
-                        } else if (maxPointers == 2) {
-                            lastSingleTapTime = 0L
+                    } else if (maxPointers >= 2) {
+                        lastSingleTapTime = 0L
+                        if (twoFinger.isScroll) {
+                            fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
+                                ?.let { flingScope.launchScrollFling(core, pcId, it) }
+                        } else if (maxPointers == 2 && totalMoved <= tapSlop * 1.5f &&
+                            twoFinger.onUp(elapsed, tapTimeoutMs) == TwoFingerRelease.RightClick
+                        ) {
                             core.remoteButton(pcId, "right", "click", onStatus)
                         }
+                    } else if (elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f) {
+                        lastSingleTapTime = System.currentTimeMillis()
+                        core.remoteButton(pcId, "left", "click", onStatus)
                     } else {
                         lastSingleTapTime = 0L
                     }
@@ -863,6 +875,17 @@ private fun TouchpadView(
     }
 }
 
+/** Glides a flicked scroll on after the fingers lift, one display frame at a time. */
+private fun CoroutineScope.launchScrollFling(core: Core, pcId: String, fling: ScrollFling): Job = launch {
+    var last = withFrameNanos { it }
+    while (true) {
+        val now = withFrameNanos { it }
+        val clicks = fling.step((now - last) / 1_000_000f) ?: break
+        last = now
+        if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+    }
+}
+
 /** The touchpad strip while the keyboard is open. */
 private val PAD_WHILE_TYPING = 96.dp
 
@@ -892,8 +915,11 @@ private fun AirMouseView(
     val hasGyro = gyroSensor != null
 
     var padHeld by remember { mutableStateOf(false) }
+    // While two fingers scroll, the phone's tilt leaves the pointer where the scroll is.
+    var twoFingerScrolling by remember { mutableStateOf(false) }
     var aimOffset by remember { mutableStateOf(Offset.Zero) }
     val filter = remember { AirMouseFilter() }
+    val flingScope = rememberCoroutineScope()
     val currentSensitivity by rememberUpdatedState(sensitivity)
 
     DisposableEffect(padHeld, pcId, hasGyro) {
@@ -914,6 +940,7 @@ private fun AirMouseView(
                     timestampNs = event.timestamp,
                     sensitivity = currentSensitivity,
                 )
+                if (twoFingerScrolling) return
                 if (abs(dx) >= 0.05f || abs(dy) >= 0.05f) {
                     core.remoteMove(pcId, dx, dy)
                     val nextX = (aimOffset.x + dx * 0.35f).coerceIn(-120f, 120f)
@@ -961,13 +988,19 @@ private fun AirMouseView(
                 .semantics { contentDescription = airDesc }
                 .pointerInput(pcId, hasGyro) {
                     val tapSlop = viewConfiguration.touchSlop
+                    val toReference = TOUCHPAD_REFERENCE_DENSITY / density
                     val tapTimeoutMs = 240L
+                    var fling: Job? = null
 
                     awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false)
+                        val firstDown = awaitFirstDown(requireUnconsumed = false)
+                        fling?.cancel()
+                        fling = null
                         val downTime = System.currentTimeMillis()
+                        var lastEventTime = firstDown.uptimeMillis
                         var maxPointers = 1
                         var totalMoved = 0f
+                        val twoFinger = TwoFingerGesture(tapSlop * toReference)
 
                         filter.reset()
                         aimOffset = Offset.Zero
@@ -977,27 +1010,48 @@ private fun AirMouseView(
                             val event = awaitPointerEvent()
                             val changes = event.changes
                             var pressedCount = 0
+                            var avgDx = 0f
+                            var avgDy = 0f
                             for (i in 0 until changes.size) {
                                 val c = changes[i]
                                 if (c.pressed) {
                                     pressedCount++
                                     val d = c.positionChange()
                                     totalMoved += hypot(d.x, d.y)
+                                    avgDx += d.x
+                                    avgDy += d.y
                                 }
                             }
+                            if (changes.isNotEmpty()) lastEventTime = changes[0].uptimeMillis
                             if (pressedCount == 0) break
                             if (pressedCount > maxPointers) maxPointers = pressedCount
+                            if (pressedCount >= 2) {
+                                val clicks = twoFinger.onMove(
+                                    avgDx / pressedCount * toReference,
+                                    avgDy / pressedCount * toReference,
+                                    lastEventTime,
+                                )
+                                twoFingerScrolling = twoFinger.isScroll
+                                if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+                                for (i in 0 until changes.size) changes[i].consume()
+                            }
                         }
 
                         padHeld = false
+                        twoFingerScrolling = false
                         filter.reset()
                         aimOffset = Offset.Zero
 
                         val elapsed = System.currentTimeMillis() - downTime
-                        if (elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f) {
+                        if (maxPointers >= 2 && twoFinger.isScroll) {
+                            fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
+                                ?.let { flingScope.launchScrollFling(core, pcId, it) }
+                        } else if (elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f) {
                             if (maxPointers == 1) {
                                 core.remoteButton(pcId, "left", "click", onStatus)
-                            } else if (maxPointers == 2) {
+                            } else if (maxPointers == 2 &&
+                                twoFinger.onUp(elapsed, tapTimeoutMs) == TwoFingerRelease.RightClick
+                            ) {
                                 core.remoteButton(pcId, "right", "click", onStatus)
                             }
                         }

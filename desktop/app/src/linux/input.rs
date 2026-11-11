@@ -17,6 +17,7 @@ use std::{
     io::Write,
     process::{Command, Stdio},
     sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use g7link_core::{ButtonAction, KeyMod, MouseButton, PowerAction, SlideAction, TouchAction};
@@ -32,6 +33,15 @@ const REL_X: u16 = 0x00;
 const REL_Y: u16 = 0x01;
 const REL_HWHEEL: u16 = 0x06;
 const REL_WHEEL: u16 = 0x08;
+const REL_WHEEL_HI_RES: u16 = 0x0b;
+const REL_HWHEEL_HI_RES: u16 = 0x0c;
+
+/// Hi-res wheel units in one wheel click (`REL_WHEEL_HI_RES`).
+const HI_RES_PER_CLICK: i32 = 120;
+/// A pause this long ends a scroll gesture: what's left of it doesn't carry into the next.
+const SCROLL_IDLE: Duration = Duration::from_millis(250);
+/// The most wheel clicks one scroll event moves.
+const MAX_SCROLL_CLICKS: f32 = 100.0;
 
 const BTN_LEFT: u16 = 0x110;
 const BTN_RIGHT: u16 = 0x111;
@@ -107,6 +117,10 @@ impl UinputDevice {
                     return None;
                 }
             }
+            // Smooth scrolling; without it the device still scrolls in whole clicks.
+            for rel in [REL_WHEEL_HI_RES, REL_HWHEEL_HI_RES] {
+                let _ = libc::ioctl(fd, UI_SET_RELBIT, c_int::from(rel));
+            }
 
             for btn in [BTN_LEFT, BTN_RIGHT, BTN_MIDDLE] {
                 if libc::ioctl(fd, UI_SET_KEYBIT, c_int::from(btn)) < 0 {
@@ -163,14 +177,11 @@ impl UinputDevice {
         self.emit(EV_KEY, btn, i32::from(down)) && self.syn()
     }
 
-    fn scroll(&self, nx: i32, ny: i32) -> bool {
+    /// Writes one frame of [`scroll_events`] and ends it with a report.
+    fn scroll(&self, events: &[(u16, u16, i32)]) -> bool {
         let mut ok = true;
-        if ny != 0 {
-            // In evdev, positive REL_WHEEL is scroll up; our `ny > 0` is scroll down.
-            ok &= self.emit(EV_REL, REL_WHEEL, -ny);
-        }
-        if nx != 0 {
-            ok &= self.emit(EV_REL, REL_HWHEEL, nx);
+        for &(type_, code, value) in events {
+            ok &= self.emit(type_, code, value);
         }
         ok && self.syn()
     }
@@ -679,6 +690,64 @@ fn has_executable_in_path(binary: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(binary).is_file()))
 }
 
+/// Where a smooth scroll on the virtual device stands: the fraction of a
+/// hi-res unit not sent yet, and the hi-res units sent since the last whole
+/// click (for programs that only read `REL_WHEEL`).
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+struct WheelState {
+    hi_res_rem_x: f32,
+    hi_res_rem_y: f32,
+    legacy_x: i32,
+    legacy_y: i32,
+    last: Option<Instant>,
+}
+
+impl WheelState {
+    const IDLE: Self = Self { hi_res_rem_x: 0.0, hi_res_rem_y: 0.0, legacy_x: 0, legacy_y: 0, last: None };
+}
+
+/// One axis: hi-res units to send for `clicks`, and the whole clicks that completes.
+fn wheel_axis(rem: &mut f32, legacy: &mut i32, clicks: f32) -> (i32, i32) {
+    let total = *rem + clicks.clamp(-MAX_SCROLL_CLICKS, MAX_SCROLL_CLICKS) * HI_RES_PER_CLICK as f32;
+    let hi_res = total.round() as i32;
+    *rem = total - hi_res as f32;
+    *legacy = legacy.saturating_add(hi_res);
+    let whole = *legacy / HI_RES_PER_CLICK;
+    *legacy -= whole * HI_RES_PER_CLICK;
+    (hi_res, whole)
+}
+
+/// The `EV_REL` events that scroll by (`dx`, `dy`) wheel clicks (`dy > 0` down,
+/// `dx > 0` right) in one frame: hi-res units for smooth scrolling, plus a
+/// legacy `REL_WHEEL`/`REL_HWHEEL` each time a whole click adds up. A pause of
+/// [`SCROLL_IDLE`] starts over, so one gesture's leftovers don't leak into the next.
+fn scroll_events(state: &mut WheelState, dx: f32, dy: f32, now: Instant) -> Vec<(u16, u16, i32)> {
+    if state.last.is_none_or(|last| now.saturating_duration_since(last) > SCROLL_IDLE) {
+        *state = WheelState::IDLE;
+    }
+    state.last = Some(now);
+    let mut events = Vec::with_capacity(4);
+    if !dx.is_finite() || !dy.is_finite() {
+        return events;
+    }
+    let (hi_y, whole_y) = wheel_axis(&mut state.hi_res_rem_y, &mut state.legacy_y, dy);
+    let (hi_x, whole_x) = wheel_axis(&mut state.hi_res_rem_x, &mut state.legacy_x, dx);
+    // In evdev a positive wheel value scrolls up; our `dy > 0` scrolls down.
+    if hi_y != 0 {
+        events.push((EV_REL, REL_WHEEL_HI_RES, -hi_y));
+    }
+    if whole_y != 0 {
+        events.push((EV_REL, REL_WHEEL, -whole_y));
+    }
+    if hi_x != 0 {
+        events.push((EV_REL, REL_HWHEEL_HI_RES, hi_x));
+    }
+    if whole_x != 0 {
+        events.push((EV_REL, REL_HWHEEL, whole_x));
+    }
+    events
+}
+
 /// Fractional remainders for sub-pixel pointer motion and sub-notch scrolling,
 /// plus which mouse buttons are currently held down by remote input.
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -687,6 +756,8 @@ struct InputState {
     move_rem_y: f32,
     scroll_rem_x: f32,
     scroll_rem_y: f32,
+    last_scroll: Option<Instant>,
+    wheel: WheelState,
     held_left: bool,
     held_right: bool,
     held_middle: bool,
@@ -703,7 +774,12 @@ impl InputState {
         (ix, iy)
     }
 
-    fn accumulate_scroll(&mut self, dx: f32, dy: f32) -> (i32, i32) {
+    fn accumulate_scroll(&mut self, dx: f32, dy: f32, now: Instant) -> (i32, i32) {
+        if self.last_scroll.is_none_or(|last| now.saturating_duration_since(last) > SCROLL_IDLE) {
+            self.scroll_rem_x = 0.0;
+            self.scroll_rem_y = 0.0;
+        }
+        self.last_scroll = Some(now);
         let total_x = self.scroll_rem_x + dx;
         let total_y = self.scroll_rem_y + dy;
         let nx = total_x.round() as i32;
@@ -731,6 +807,8 @@ impl InputState {
         self.move_rem_y = 0.0;
         self.scroll_rem_x = 0.0;
         self.scroll_rem_y = 0.0;
+        self.last_scroll = None;
+        self.wheel = WheelState::IDLE;
         held
     }
 }
@@ -740,6 +818,8 @@ static STATE: Mutex<InputState> = Mutex::new(InputState {
     move_rem_y: 0.0,
     scroll_rem_x: 0.0,
     scroll_rem_y: 0.0,
+    last_scroll: None,
+    wheel: WheelState::IDLE,
     held_left: false,
     held_right: false,
     held_middle: false,
@@ -1118,14 +1198,21 @@ pub fn scroll(dx: f32, dy: f32) {
     if !dx.is_finite() || !dy.is_finite() {
         return;
     }
+    let now = Instant::now();
+    if with_uinput(|_| true) {
+        let events = {
+            let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            scroll_events(&mut s.wheel, dx, dy, now)
+        };
+        if events.is_empty() || with_uinput(|u| u.scroll(&events)) {
+            return;
+        }
+    }
     let (nx, ny) = {
         let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
-        s.accumulate_scroll(dx, dy)
+        s.accumulate_scroll(dx, dy, now)
     };
     if nx == 0 && ny == 0 {
-        return;
-    }
-    if with_uinput(|u| u.scroll(nx, ny)) {
         return;
     }
     if with_wayland_portal(|p| p.scroll(nx, ny)) {
@@ -1649,8 +1736,43 @@ mod tests {
         assert_eq!(s.accumulate_move(0.4, -0.4), (1, -1));
         assert_eq!(s.accumulate_move(0.4, -0.4), (0, 0));
 
-        assert_eq!(s.accumulate_scroll(0.3, 0.3), (0, 0));
-        assert_eq!(s.accumulate_scroll(0.3, 0.3), (1, 1));
+        let now = Instant::now();
+        assert_eq!(s.accumulate_scroll(0.3, 0.3, now), (0, 0));
+        assert_eq!(s.accumulate_scroll(0.3, 0.3, now), (1, 1));
+        assert_eq!(s.accumulate_scroll(0.8, 0.8, now), (0, 0));
+        // After a pause the last gesture's 0.4 is gone: 0.4 + 0.2 would round to a click.
+        assert_eq!(s.accumulate_scroll(0.2, 0.2, now + Duration::from_millis(300)), (0, 0));
+    }
+
+    #[test]
+    fn scrolls_smoothly_with_a_whole_click_for_older_programs() {
+        let mut wheel = WheelState::IDLE;
+        let now = Instant::now();
+        let first = scroll_events(&mut wheel, 0.0, 0.5, now);
+        let second = scroll_events(&mut wheel, 0.0, 0.5, now + Duration::from_millis(16));
+        assert_eq!(first, [(EV_REL, REL_WHEEL_HI_RES, -60)]);
+        assert_eq!(second, [(EV_REL, REL_WHEEL_HI_RES, -60), (EV_REL, REL_WHEEL, -1)]);
+
+        let right = scroll_events(&mut wheel, 1.0, 0.0, now + Duration::from_millis(32));
+        assert_eq!(right, [(EV_REL, REL_HWHEEL_HI_RES, 120), (EV_REL, REL_HWHEEL, 1)]);
+
+        // Back and forth adds up, without a whole click.
+        let up = scroll_events(&mut wheel, 0.0, -0.75, now + Duration::from_millis(48));
+        let down = scroll_events(&mut wheel, 0.0, 0.75, now + Duration::from_millis(64));
+        assert_eq!(up, [(EV_REL, REL_WHEEL_HI_RES, 90)]);
+        assert_eq!(down, [(EV_REL, REL_WHEEL_HI_RES, -90)]);
+    }
+
+    #[test]
+    fn a_pause_starts_the_next_scroll_afresh() {
+        let mut wheel = WheelState::IDLE;
+        let now = Instant::now();
+        assert_eq!(scroll_events(&mut wheel, 0.0, 0.9, now), [(EV_REL, REL_WHEEL_HI_RES, -108)]);
+        // Without the pause this would complete a whole click.
+        let later = scroll_events(&mut wheel, 0.0, 0.2, now + Duration::from_millis(400));
+        assert_eq!(later, [(EV_REL, REL_WHEEL_HI_RES, -24)]);
+        assert!(scroll_events(&mut wheel, 0.0, 0.001, now + Duration::from_millis(410)).is_empty());
+        assert!(scroll_events(&mut wheel, f32::NAN, 1.0, now + Duration::from_millis(420)).is_empty());
     }
 
     #[test]

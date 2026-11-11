@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.remote
 
+import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.pow
 
 /**
  * Maps phone gyroscope angular velocity (`Sensor.TYPE_GYROSCOPE`, in rad/s)
@@ -227,5 +229,140 @@ internal class TouchpadBallistics {
         const val FAST_PX_PER_MS = 6f
         const val SLOW_GAIN = 0.75f
         const val FAST_GAIN = 2.6f
+    }
+}
+
+/** What lifting two fingers does: a right-click for a quick tap, nothing after a scroll. */
+internal enum class TwoFingerRelease { RightClick, None }
+
+/** Wheel clicks to scroll: positive [y] scrolls down, positive [x] scrolls right. */
+internal data class ScrollClicks(val x: Float, val y: Float) {
+    val isZero: Boolean get() = x == 0f && y == 0f
+
+    companion object {
+        val ZERO = ScrollClicks(0f, 0f)
+    }
+}
+
+/**
+ * Two fingers on the touchpad: a quick tap is a right-click, a drag scrolls.
+ * Movement is in reference pixels; scrolling follows the fingers like a
+ * touchscreen (fingers up scrolls down) and locks to the axis the drag mostly
+ * takes, so a vertical scroll doesn't drift sideways.
+ */
+internal class TwoFingerGesture(private val tapSlopPx: Float) {
+    private enum class Axis { Vertical, Horizontal, Both }
+
+    var isScroll: Boolean = false
+        private set
+    var totalMoved: Float = 0f
+        private set
+    private var axis = Axis.Both
+    private var heldX = 0f
+    private var heldY = 0f
+    private val recent = ArrayDeque<Sample>()
+
+    private class Sample(val timeMs: Long, val clicks: ScrollClicks)
+
+    /** Moves both fingers by ([dx], [dy]) at [timeMs]; returns what to scroll now. */
+    fun onMove(dx: Float, dy: Float, timeMs: Long): ScrollClicks {
+        if (!dx.isFinite() || !dy.isFinite()) return ScrollClicks.ZERO
+        totalMoved += hypot(dx, dy)
+        heldX += dx
+        heldY += dy
+        if (!isScroll) {
+            if (totalMoved <= tapSlopPx) return ScrollClicks.ZERO
+            isScroll = true
+            axis = when {
+                abs(heldY) >= abs(heldX) * AXIS_RATIO -> Axis.Vertical
+                abs(heldX) >= abs(heldY) * AXIS_RATIO -> Axis.Horizontal
+                else -> Axis.Both
+            }
+        }
+        val x = if (axis == Axis.Vertical) 0f else -heldX / PX_PER_CLICK_X
+        val y = if (axis == Axis.Horizontal) 0f else -heldY / PX_PER_CLICK_Y
+        heldX = 0f
+        heldY = 0f
+        val clicks = ScrollClicks(x, y)
+        if (!clicks.isZero) {
+            recent.addLast(Sample(timeMs, clicks))
+            while (recent.size > 1 && timeMs - recent.first().timeMs > VELOCITY_WINDOW_MS) recent.removeFirst()
+        }
+        return clicks
+    }
+
+    /** Fingers lifted [elapsedMs] after touching down. */
+    fun onUp(elapsedMs: Long, tapTimeoutMs: Long): TwoFingerRelease =
+        if (!isScroll && elapsedMs <= tapTimeoutMs && totalMoved <= tapSlopPx * 1.5f) {
+            TwoFingerRelease.RightClick
+        } else {
+            TwoFingerRelease.None
+        }
+
+    /**
+     * How fast the scroll was going when the fingers lifted at [upTimeMs], in
+     * clicks per millisecond; zero if they had stopped before lifting.
+     */
+    fun velocity(upTimeMs: Long): ScrollClicks {
+        if (!isScroll || recent.size < 2) return ScrollClicks.ZERO
+        val last = recent.last()
+        if (upTimeMs - last.timeMs > STOPPED_MS) return ScrollClicks.ZERO
+        val first = recent.first()
+        val spanMs = (last.timeMs - first.timeMs).coerceAtLeast(1L).toFloat()
+        // The first sample is the distance covered before the window opened.
+        var x = 0f
+        var y = 0f
+        for (i in 1 until recent.size) {
+            x += recent[i].clicks.x
+            y += recent[i].clicks.y
+        }
+        return ScrollClicks(
+            (x / spanMs).coerceIn(-MAX_CLICKS_PER_MS, MAX_CLICKS_PER_MS),
+            (y / spanMs).coerceIn(-MAX_CLICKS_PER_MS, MAX_CLICKS_PER_MS),
+        )
+    }
+
+    companion object {
+        const val PX_PER_CLICK_X = 48f
+        const val PX_PER_CLICK_Y = 36f
+        const val AXIS_RATIO = 1.2f
+        const val VELOCITY_WINDOW_MS = 100L
+        const val STOPPED_MS = 60L
+        const val MAX_CLICKS_PER_MS = 0.5f
+    }
+}
+
+/**
+ * The glide after a two-finger flick: starts at a velocity in clicks per
+ * millisecond and slows by [DECAY_PER_FRAME] each 16 ms frame.
+ */
+internal class ScrollFling(velocity: ScrollClicks) {
+    private var vx = velocity.x
+    private var vy = velocity.y
+
+    /** Whether the flick was fast enough to glide at all. */
+    val isMoving: Boolean get() = hypot(vx, vy) * FRAME_MS >= MIN_CLICKS_PER_FRAME
+
+    /** The clicks to scroll over the next [dtMs], or null once the glide has stopped. */
+    fun step(dtMs: Float): ScrollClicks? {
+        if (!isMoving) return null
+        val dt = dtMs.coerceIn(1f, MAX_STEP_MS)
+        val out = ScrollClicks(vx * dt, vy * dt)
+        val decay = DECAY_PER_FRAME.toDouble().pow((dt / FRAME_MS).toDouble()).toFloat()
+        vx *= decay
+        vy *= decay
+        return out
+    }
+
+    companion object {
+        /** A glide for a flick at [velocity], or null when the fingers were moving too slowly to throw. */
+        fun start(velocity: ScrollClicks): ScrollFling? =
+            if (hypot(velocity.x, velocity.y) >= MIN_START_CLICKS_PER_MS) ScrollFling(velocity) else null
+
+        const val MIN_START_CLICKS_PER_MS = 0.01f
+        const val FRAME_MS = 16f
+        const val DECAY_PER_FRAME = 0.9f
+        const val MIN_CLICKS_PER_FRAME = 0.02f
+        const val MAX_STEP_MS = 50f
     }
 }

@@ -3017,6 +3017,47 @@ async fn remote_input_needs_toggle_and_delivers_motion_keys_and_slides() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn smooth_scroll_reaches_the_pc_in_fractions_of_a_click() {
+    use g7link_core::{INPUT_INJECT, RemoteInput};
+
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    pc.node.update_power(PowerLevel::NotApplicable, vec!["media.control".into(), INPUT_INJECT.into()]).await;
+    wait_for(&mut phone, "input.remote available on phone", |e| match e {
+        NodeEvent::Capabilities(m)
+            if m.device == pc_id && m.state("input.remote") == Some(FeatureState::Available) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    pc.node.set_device_toggle(phone_id, "remote_input", true).unwrap();
+    with_timeout("remote_check allowed", phone.node.remote_check(pc_id)).await.unwrap();
+
+    // A two-finger scroll sends a little each frame, up, down and sideways.
+    let steps = [(0.0, 0.125), (0.0, -0.75), (0.25, 0.0), (-1.5, 2.5)];
+    for (dx, dy) in steps {
+        with_timeout("scroll", phone.node.remote_scroll_fast(pc_id, dx, dy)).await.unwrap();
+    }
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let recorded = pc.platform.remote_inputs.lock().unwrap().clone();
+        if steps.iter().all(|&(dx, dy)| recorded.contains(&RemoteInput::Scroll { dx, dy })) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for scrolls: {recorded:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // More than the protocol allows in one event never leaves the phone.
+    assert!(phone.node.remote_scroll_fast(pc_id, 0.0, 500.0).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn voice_recordings_arrive_with_markers_and_respect_capability_and_toggle() {
     use g7link_core::{RECORDER, RecordingMarker, TransferFailure};
 

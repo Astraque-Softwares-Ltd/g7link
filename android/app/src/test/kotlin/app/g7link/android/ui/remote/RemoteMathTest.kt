@@ -3,6 +3,7 @@ package app.g7link.android.ui.remote
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
@@ -299,5 +300,91 @@ class RemoteMathTest {
                 sawPhysicalLandscapeSinceEnter = true,
             ),
         )
+    }
+
+    @Test
+    fun aQuickTwoFingerTapRightClicks() {
+        val gesture = TwoFingerGesture(tapSlopPx = 20f)
+        assertTrue(gesture.onMove(3f, 4f, timeMs = 10).isZero)
+        assertFalse(gesture.isScroll)
+        assertEquals(TwoFingerRelease.RightClick, gesture.onUp(elapsedMs = 120, tapTimeoutMs = 240))
+        // Held too long, it's not a tap.
+        assertEquals(TwoFingerRelease.None, TwoFingerGesture(20f).onUp(elapsedMs = 400, tapTimeoutMs = 240))
+    }
+
+    @Test
+    fun aShortScrollNeverRightClicks() {
+        val gesture = TwoFingerGesture(tapSlopPx = 20f)
+        gesture.onMove(0f, -12f, timeMs = 0)
+        val clicks = gesture.onMove(0f, -12f, timeMs = 16)
+        assertTrue(gesture.isScroll)
+        assertTrue(clicks.y > 0f)
+        assertEquals(TwoFingerRelease.None, gesture.onUp(elapsedMs = 60, tapTimeoutMs = 240))
+    }
+
+    @Test
+    fun aMostlyVerticalDragOnlyScrollsVertically() {
+        val gesture = TwoFingerGesture(tapSlopPx = 10f)
+        var x = 0f
+        var y = 0f
+        for (frame in 0 until 10) {
+            val clicks = gesture.onMove(dx = 3f, dy = -20f, timeMs = frame * 16L)
+            x += clicks.x
+            y += clicks.y
+        }
+        assertEquals(0f, x, 0f)
+        // All 200 px of it, the part under the slop included.
+        assertEquals(200f / TwoFingerGesture.PX_PER_CLICK_Y, y, 1e-4f)
+
+        val sideways = TwoFingerGesture(tapSlopPx = 10f)
+        val clicks = sideways.onMove(dx = -30f, dy = 2f, timeMs = 0)
+        assertEquals(0f, clicks.y, 0f)
+        assertEquals(30f / TwoFingerGesture.PX_PER_CLICK_X, clicks.x, 1e-4f)
+    }
+
+    @Test
+    fun scrollingFollowsTheFingers() {
+        // Fingers up scrolls down (positive), fingers left scrolls right (positive).
+        val up = TwoFingerGesture(tapSlopPx = 5f).onMove(0f, -36f, timeMs = 0)
+        assertEquals(1f, up.y, 1e-6f)
+        val down = TwoFingerGesture(tapSlopPx = 5f).onMove(0f, 36f, timeMs = 0)
+        assertEquals(-1f, down.y, 1e-6f)
+        val left = TwoFingerGesture(tapSlopPx = 5f).onMove(-48f, 0f, timeMs = 0)
+        assertEquals(1f, left.x, 1e-6f)
+    }
+
+    @Test
+    fun aFlickGlidesAndSlowsToAStop() {
+        val gesture = TwoFingerGesture(tapSlopPx = 5f)
+        for (frame in 0..10) gesture.onMove(0f, -18f, timeMs = frame * 16L)
+        val velocity = gesture.velocity(upTimeMs = 165)
+        // 18 px a frame is half a click every 16 ms.
+        assertEquals(0.5f / 16f, velocity.y, 1e-4f)
+        assertEquals(0f, velocity.x, 0f)
+
+        val fling = ScrollFling.start(velocity)!!
+        var total = 0f
+        var previous = Float.MAX_VALUE
+        var frames = 0
+        while (true) {
+            val step = fling.step(16f) ?: break
+            assertTrue("each frame glides less", step.y < previous)
+            previous = step.y
+            total += step.y
+            frames++
+            assertTrue("the glide ends", frames < 200)
+        }
+        assertTrue("it went on for a while: $total clicks over $frames frames", total > 2f && frames > 10)
+    }
+
+    @Test
+    fun fingersThatStoppedBeforeLiftingDontGlide() {
+        val gesture = TwoFingerGesture(tapSlopPx = 5f)
+        for (frame in 0..10) gesture.onMove(0f, -18f, timeMs = frame * 16L)
+        assertTrue(gesture.velocity(upTimeMs = 160 + 300).isZero)
+        // A slow scroll ending doesn't throw either.
+        assertNull(ScrollFling.start(ScrollClicks(0f, 0.001f)))
+        // Nor does a tap.
+        assertTrue(TwoFingerGesture(tapSlopPx = 5f).velocity(upTimeMs = 0).isZero)
     }
 }
