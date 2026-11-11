@@ -3,11 +3,14 @@ import QtQuick
 import QtQuick.Dialogs
 import app.g7link
 
-// Deck editor: configure pages of one-tap control tiles for paired phones,
-// preview live PC states (volume, mic mute, media), and test actions locally.
+// Deck: the tiles your phone shows (pages of one-tap actions run on this
+// PC), edited here, with the PC's live sound state, both volumes and the
+// phone's microphone in the right column.
 Item {
     id: page
     property bool active: false
+    property string deviceId: ""
+    property string deviceName: ""
     onActiveChanged: DeckController.setPageActive(active)
     Component.onCompleted: if (active) DeckController.setPageActive(true)
     Component.onDestruction: DeckController.setPageActive(false)
@@ -26,10 +29,78 @@ Item {
     readonly property var currentPage: pagesList[Math.min(currentPageIndex, Math.max(0, pagesList.length - 1))] || { id: "main", name: qsTr("Main"), tiles: [] }
     readonly property var currentTiles: currentPage.tiles || []
     property int draggedTileIndex: -1
+    // The tile the footer's Edit tile and Actions act on: the last one
+    // focused or hovered.
+    property int selectedTileIndex: 0
+    readonly property var selectedTile: currentTiles.length > 0
+        ? currentTiles[Math.min(selectedTileIndex, currentTiles.length - 1)] : null
 
     onPagesListChanged: {
         if (currentPageIndex >= pagesList.length)
             currentPageIndex = Math.max(0, pagesList.length - 1)
+    }
+
+    // ---- Footer and Actions (MainWindow reads these) ----
+    readonly property string footerLabel: pagesList.length > 1
+        ? qsTr("Deck · %1").arg(currentPage.name) : qsTr("Deck")
+    readonly property var primaryAction: selectedTile
+        ? { label: qsTr("Edit tile"), keys: "Enter", run: () => page.openEditTile(page.selectedTile) }
+        : { label: qsTr("Add tile"), run: () => page.openAddTile() }
+    readonly property var screenActions: {
+        const list = [
+            { label: qsTr("Add tile"), icon: Icons.plus, tint: Theme.accent, enabled: currentTiles.length < 24,
+              run: () => page.openAddTile() }
+        ]
+        if (selectedTile) {
+            const tile = selectedTile
+            list.push({ label: qsTr("Edit tile"), detail: tile.label, icon: Icons.edit, tint: Theme.tintBlue, keys: "Enter",
+                        run: () => page.openEditTile(tile) })
+            list.push({ label: qsTr("Test tile"), detail: tile.label, icon: Icons.play, tint: Theme.tintGreen,
+                        run: () => DeckController.testTile(tile.id) })
+            list.push({ label: qsTr("Delete tile"), detail: tile.label, icon: Icons.trash, tint: Theme.tintRed,
+                        run: () => DeckController.removeTile(page.currentPage.id, tile.id) })
+        }
+        for (let i = 0; i < pagesList.length; ++i) {
+            const index = i
+            list.push({ label: qsTr("Show page %1").arg(pagesList[i].name), icon: Icons.deck, tint: Theme.tintGreen,
+                        checked: index === currentPageIndex, run: () => { page.currentPageIndex = index } })
+        }
+        list.push({ label: qsTr("New page"), icon: Icons.plus, tint: Theme.tintGreen, enabled: pagesList.length < 8,
+                    run: () => page.openNewPage() })
+        list.push({ label: qsTr("Rename page"), detail: currentPage.name, icon: Icons.edit, tint: Theme.surfaceContentVariant,
+                    run: () => page.openRenamePage() })
+        if (pagesList.length > 1)
+            list.push({ label: qsTr("Delete page"), detail: currentPage.name, icon: Icons.trash, tint: Theme.tintRed,
+                        run: () => DeckController.removePage(page.currentPage.id) })
+        list.push({ label: qsTr("Reset Deck to defaults"), icon: Icons.refresh, tint: Theme.tintAmber,
+                    run: () => resetConfirmSheet.open() })
+        list.push({ label: PhoneMic.phase === "off" ? qsTr("Use the phone as a microphone") : qsTr("Stop the phone's microphone"),
+                    icon: PhoneMic.phase === "off" ? Icons.mic : Icons.micOff, tint: Theme.tintCoral,
+                    enabled: PhoneMic.phase !== "off" || PhoneMic.device !== "",
+                    run: () => PhoneMic.phase === "off" ? PhoneMic.start(PhoneMic.device) : PhoneMic.stop() })
+        return list
+    }
+
+    function openNewPage() {
+        pageNameSheet.isNew = true
+        pageNameInput.text = qsTr("Page %1").arg(page.pagesList.length + 1)
+        pageNameSheet.open()
+    }
+    function openRenamePage() {
+        pageNameSheet.isNew = false
+        pageNameInput.text = page.currentPage.name
+        pageNameSheet.open()
+    }
+
+    // A tile's own color, as one of the glyph tints.
+    function tileTint(name) {
+        switch (name) {
+        case "violet": return Theme.tintLavender
+        case "slate": return Theme.surfaceContentVariant
+        case "amber": case "coral": case "red": case "teal": case "green": case "blue":
+            return Theme.tint(name)
+        default: return Theme.tintAmber
+        }
     }
 
     function iconPathFor(name, kind) {
@@ -126,6 +197,8 @@ Item {
     }
 
     function openEditTile(tile) {
+        if (!tile)
+            return
         editorSheet.tileId = tile.id
         editorSheet.actionKind = tile.kind
         editorSheet.tileLabel = tile.label
@@ -139,6 +212,29 @@ Item {
         editorSheet.modWin = !!tile.win
         editorSheet.errorText = ""
         editorSheet.open()
+    }
+
+    // The phone's media volume, from its last reported controls.
+    readonly property int phoneVolume: {
+        const _rev = AppController.phoneTogglesRevision
+        if (page.deviceId.length === 0)
+            return -1
+        try {
+            const raw = AppController.phoneToggles(page.deviceId)
+            if (raw.length === 0)
+                return -1
+            const t = JSON.parse(raw)
+            return typeof t.volume === "number" ? t.volume : -1
+        } catch (e) {
+            return -1
+        }
+    }
+    readonly property var micOutputs: {
+        try {
+            return JSON.parse(PhoneMic.outputs) || []
+        } catch (e) {
+            return []
+        }
     }
 
     FileDialog {
@@ -160,194 +256,84 @@ Item {
         }
     }
 
+    // ---- Tiles ----
     Flickable {
-        anchors.fill: parent
-        contentHeight: mainCol.height + Theme.contentPadding * 2
+        id: tilesView
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: side.left
+        contentHeight: tilesCol.height + 28
         boundsBehavior: Flickable.StopAtBounds
         clip: true
 
         Column {
-            id: mainCol
-            width: Math.min(960, parent.width - Theme.contentPadding * 2)
-            x: Math.max(Theme.contentPadding, (parent.width - width) / 2)
-            y: Theme.contentPadding
-            spacing: Theme.gutter
+            id: tilesCol
+            x: 16
+            y: 14
+            width: tilesView.width - 32
+            spacing: 10
 
-            // ---- Header & Live PC Status ----
-            Card {
+            SectionLabel {
                 width: parent.width
-                Column {
-                    width: parent.width
-                    spacing: 14
-
-                    Row {
-                        width: parent.width
-                        spacing: 12
-                        Column {
-                            width: parent.width - headerActions.width - 12
-                            spacing: 4
-                            Txt { text: qsTr("Control Deck"); role: "title" }
-                            Txt {
-                                width: parent.width
-                                wrapMode: Text.WordWrap
-                                role: "bodySmall"
-                                muted: true
-                                text: qsTr("Drag to reorder · click to edit.")
-                            }
-                        }
-                        Row {
-                            id: headerActions
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 8
-                            Button {
-                                variant: "outline"
-                                size: "sm"
-                                iconPath: Icons.refresh
-                                text: qsTr("Reset defaults")
-                                onClicked: resetConfirmSheet.open()
-                            }
-                            Button {
-                                variant: "fill"
-                                size: "sm"
-                                iconPath: Icons.plus
-                                text: qsTr("Add tile")
-                                onClicked: page.openAddTile()
-                            }
-                        }
-                    }
-
-                    Divider { width: parent.width }
-
-                    // Live status summary showing what phones see right now
-                    Flow {
-                        width: parent.width
-                        spacing: 16
-
-                        Row {
-                            spacing: 6
-                            Icon {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 15; height: 15
-                                path: DeckController.muted ? Icons.soundOff : Icons.speaker
-                                color: Theme.surfaceContentVariant
-                            }
-                            Txt {
-                                anchors.verticalCenter: parent.verticalCenter
-                                role: "bodySmall"
-                                muted: true
-                                text: DeckController.muted
-                                    ? qsTr("Speaker muted (%1%)").arg(DeckController.volume)
-                                    : qsTr("Speaker %1%").arg(DeckController.volume)
-                            }
-                        }
-                        Row {
-                            spacing: 6
-                            Icon {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 15; height: 15
-                                path: DeckController.micState === 1 ? Icons.micOff : Icons.mic
-                                color: Theme.surfaceContentVariant
-                            }
-                            Txt {
-                                anchors.verticalCenter: parent.verticalCenter
-                                role: "bodySmall"
-                                muted: true
-                                text: DeckController.micState === 1 ? qsTr("Mic muted")
-                                    : DeckController.micState === 0 ? qsTr("Mic live")
-                                    : qsTr("No mic")
-                            }
-                        }
-                        Row {
-                            spacing: 6
-                            Icon {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 15; height: 15
-                                path: DeckController.playing ? Icons.play : Icons.pause
-                                color: Theme.surfaceContentVariant
-                            }
-                            Txt {
-                                anchors.verticalCenter: parent.verticalCenter
-                                role: "bodySmall"
-                                muted: true
-                                text: DeckController.playing ? qsTr("Media playing") : qsTr("Media paused")
-                            }
-                        }
-                    }
-                }
+                text: qsTr("Tiles on your phone")
+                actionText: qsTr("Add tile")
+                actionIcon: Icons.plus
+                onActionClicked: page.openAddTile()
             }
 
-            // ---- Page Tabs & Page Management ----
+            // Pages: one tab each, then page actions.
             Item {
                 width: parent.width
-                height: 38
-
+                height: 26
                 Row {
-                    id: pageTabsRow
-                    anchors.left: parent.left
+                    spacing: 4
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
-
                     Repeater {
                         model: page.pagesList
-                        delegate: Chip {
+                        delegate: TextAction {
                             required property var modelData
                             required property int index
-                            interactive: true
                             selected: index === page.currentPageIndex
-                            text: "%1 (%2)".arg(modelData.name).arg((modelData.tiles || []).length)
+                            text: "%1 · %2".arg(modelData.name).arg((modelData.tiles || []).length)
                             onClicked: page.currentPageIndex = index
                         }
                     }
-
-                    Button {
+                    TextAction {
                         visible: page.pagesList.length < 8
-                        variant: "tonal"
-                        size: "sm"
-                        iconPath: Icons.plus
                         text: qsTr("New page")
-                        onClicked: {
-                            pageNameSheet.isNew = true
-                            pageNameInput.text = qsTr("Page %1").arg(page.pagesList.length + 1)
-                            pageNameSheet.open()
-                        }
+                        iconPath: Icons.plus
+                        onClicked: page.openNewPage()
                     }
                 }
-
                 Row {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 8
-
-                    Button {
-                        variant: "text"
-                        size: "sm"
-                        iconPath: Icons.edit
-                        text: qsTr("Rename page")
-                        onClicked: {
-                            pageNameSheet.isNew = false
-                            pageNameInput.text = page.currentPage.name
-                            pageNameSheet.open()
-                        }
+                    spacing: 4
+                    TextAction {
+                        text: qsTr("Rename")
+                        onClicked: page.openRenamePage()
                     }
-                    Button {
+                    TextAction {
                         visible: page.pagesList.length > 1
-                        variant: "text"
-                        size: "sm"
-                        iconPath: Icons.trash
                         text: qsTr("Delete page")
                         onClicked: DeckController.removePage(page.currentPage.id)
+                    }
+                    TextAction {
+                        text: qsTr("Reset")
+                        onClicked: resetConfirmSheet.open()
                     }
                 }
             }
 
-            // ---- Tile Grid (Phone Preview & Interactive Editor) ----
             Grid {
                 id: tileGrid
                 width: parent.width
-                columns: width >= 760 ? 4 : 3
-                spacing: 12
+                columns: width >= 560 ? 4 : 3
+                spacing: 8
 
                 readonly property real cellWidth: (width - spacing * (columns - 1)) / columns
+                readonly property real cellHeight: Math.min(150, Math.max(92, Math.round(cellWidth / 1.15)))
 
                 Repeater {
                     model: page.currentTiles
@@ -357,11 +343,13 @@ Item {
                         required property int index
 
                         width: tileGrid.cellWidth
-                        height: Theme.quiet ? 52 : 112
+                        height: tileGrid.cellHeight
                         activeFocusOnTab: true
                         Accessible.role: Accessible.Button
                         Accessible.name: modelData.label
+                        Accessible.description: modelData.subtitle || ""
                         Accessible.onPressAction: page.openEditTile(modelData)
+                        onActiveFocusChanged: if (activeFocus) page.selectedTileIndex = index
                         Keys.onPressed: (event) => {
                             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
                                 page.openEditTile(modelData)
@@ -371,197 +359,129 @@ Item {
 
                         readonly property bool isBeingDragged: page.draggedTileIndex === index
                         readonly property bool highlighted: page.isTileHighlighted(modelData.kind)
+                        readonly property color tint: page.tileTint(modelData.color)
 
                         Rectangle {
-                            id: tileCard
                             anchors.fill: parent
-                            radius: Theme.radiusMd
-                            color: Theme.graphite
-                                ? (tileHover.hovered ? Theme.surfaceContainer : "transparent")
-                                : (tileHover.hovered ? Theme.surfaceContainerHigh : Theme.tileColor)
-                            border.width: isBeingDragged || Theme.focusVisible(tileSlot) ? 2 : (Theme.graphite ? 1 : 0)
-                            border.color: isBeingDragged || Theme.focusVisible(tileSlot)
-                                ? Theme.primary
-                                : (tileSlot.highlighted ? Theme.surfaceContent : Theme.outlineVariant)
-                            scale: isBeingDragged ? Theme.pressScale : 1.0
+                            radius: 10
+                            color: tileHover.hovered || tileSlot.isBeingDragged ? Theme.selection : Theme.raised
+                            border.width: tileSlot.isBeingDragged || Theme.focusVisible(tileSlot) ? 2 : (tileSlot.highlighted ? 1 : 0)
+                            border.color: tileSlot.isBeingDragged || Theme.focusVisible(tileSlot) ? Theme.focusRing : tileSlot.tint
+                            scale: tileSlot.isBeingDragged ? Theme.pressScale : 1.0
                             Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast } }
-                            Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-
-                            // Top row: Icon badge + live status pill + quick test button
-                            Item {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: Theme.quiet ? undefined : parent.top
-                                anchors.verticalCenter: Theme.quiet ? parent.verticalCenter : undefined
-                                anchors.margins: 14
-                                height: 34
-
-                                Rectangle {
-                                    id: iconBadge
-                                    width: Theme.quiet ? 18 : 34; height: 34
-                                    radius: Theme.radiusSm
-                                    color: Theme.quiet ? "transparent" : tileSlot.highlighted
-                                        ? Theme.primaryContainer
-                                        : (Theme.graphite ? Theme.surfaceContainerHigh : Theme.secondaryContainer)
-                                    Icon {
-                                        anchors.centerIn: parent
-                                        width: 18; height: 18
-                                        path: page.iconPathFor(tileSlot.modelData.icon, tileSlot.modelData.kind)
-                                        color: tileSlot.highlighted
-                                            ? Theme.primaryContainerContent
-                                            : (Theme.graphite ? Theme.surfaceContent : Theme.secondaryContainerContent)
-                                    }
-                                }
-
-                                // Live status pill (e.g. "74%", "Muted", "Playing", "Live")
-                                Rectangle {
-                                    visible: (tileSlot.modelData.status || "").length > 0
-                                    anchors.left: Theme.quiet ? undefined : iconBadge.right
-                                    anchors.leftMargin: 8
-                                    anchors.right: Theme.quiet ? testBtn.left : undefined
-                                    anchors.rightMargin: 8
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    height: 22
-                                    width: statusLabel.implicitWidth + 12
-                                    radius: Theme.quiet ? Theme.radiusMd : 11
-                                    color: tileSlot.highlighted ? Theme.primaryContainer : Theme.surfaceContainerHigh
-                                    Txt {
-                                        id: statusLabel
-                                        anchors.centerIn: parent
-                                        text: tileSlot.modelData.status || ""
-                                        role: "mono"
-                                        size: 11
-                                        color: tileSlot.highlighted ? Theme.primaryContainerContent : Theme.surfaceContentVariant
-                                    }
-                                }
-
-                                // Quick "Test" button in top-right corner
-                                Rectangle {
-                                    id: testBtn
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 28; height: 28
-                                    radius: Theme.quiet ? Theme.radiusMd : 14
-                                    activeFocusOnTab: true
-                                    color: testHover.hovered ? Theme.surfaceContainerHighest : "transparent"
-                                    border.width: Theme.focusVisible(testBtn) ? 2 : 0
-                                    border.color: Theme.focusRing
-                                    opacity: tileHover.hovered || testHover.hovered || testBtn.activeFocus ? 1 : 0.55
-                                    Accessible.role: Accessible.Button
-                                    Accessible.name: qsTr("Test %1").arg(tileSlot.modelData.label)
-                                    Accessible.onPressAction: DeckController.testTile(tileSlot.modelData.id)
-                                    Keys.onPressed: (event) => {
-                                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                            DeckController.testTile(tileSlot.modelData.id)
-                                            event.accepted = true
-                                        }
-                                    }
-
-                                    Icon {
-                                        anchors.centerIn: parent
-                                        width: 14; height: 14
-                                        path: Icons.play
-                                        color: Theme.surfaceContentVariant
-                                    }
-                                    HoverHandler { id: testHover; cursorShape: Qt.PointingHandCursor }
-                                    TapHandler {
-                                        onTapped: DeckController.testTile(tileSlot.modelData.id)
-                                    }
-                                }
+                        }
+                        Icon {
+                            x: 12; y: 12
+                            width: 22; height: 22
+                            path: page.iconPathFor(tileSlot.modelData.icon, tileSlot.modelData.kind)
+                            color: tileSlot.tint
+                        }
+                        // Live state ("74%", "Muted", "Playing").
+                        Txt {
+                            visible: text.length > 0 && !testBtn.shown
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            y: 14
+                            text: tileSlot.modelData.status || ""
+                            role: "caption"
+                            color: tileSlot.highlighted ? tileSlot.tint : Theme.surfaceContentVariant
+                        }
+                        Column {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 12
+                            spacing: 0
+                            Txt {
+                                width: parent.width
+                                text: tileSlot.modelData.label
                             }
-
-                            // Bottom labels: Tile label + action subtitle
-                            Column {
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.quiet ? 44 : 14
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.quiet ? 84 : 14
-                                anchors.bottom: Theme.quiet ? undefined : parent.bottom
-                                anchors.bottomMargin: 14
-                                anchors.verticalCenter: Theme.quiet ? parent.verticalCenter : undefined
-                                spacing: 2
-
-                                Txt {
-                                    width: parent.width
-                                    text: tileSlot.modelData.label
-                                    role: "body"
-                                    weight: Font.DemiBold
-                                    elide: Text.ElideRight
-                                    color: Theme.surfaceContent
-                                }
-                                Txt {
-                                    visible: (tileSlot.modelData.subtitle || "").length > 0
-                                    width: parent.width
-                                    text: tileSlot.modelData.subtitle || ""
-                                    role: "bodySmall"
-                                    size: 11
-                                    elide: Text.ElideRight
-                                    muted: true
-                                }
+                            Txt {
+                                visible: text.length > 0
+                                width: parent.width
+                                text: tileSlot.modelData.subtitle || ""
+                                role: "caption"
+                                muted: true
                             }
+                        }
 
-                            HoverHandler { id: tileHover; cursorShape: Qt.PointingHandCursor }
+                        HoverHandler {
+                            id: tileHover
+                            cursorShape: Qt.PointingHandCursor
+                            onHoveredChanged: if (hovered) page.selectedTileIndex = tileSlot.index
+                        }
 
-                            // Drag-to-reorder and click-to-edit
-                            MouseArea {
-                                anchors.fill: parent
-                                anchors.rightMargin: 36 // Leave top-right test button clickable
-                                acceptedButtons: Qt.LeftButton
-                                pressAndHoldInterval: 180
-                                property point pressPos: Qt.point(0, 0)
-                                property bool dragging: false
+                        // Drag to reorder, click to edit.
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.LeftButton
+                            property point pressPos: Qt.point(0, 0)
+                            property bool dragging: false
 
-                                onPressed: (mouse) => {
-                                    pressPos = Qt.point(mouse.x, mouse.y)
-                                    dragging = false
+                            onPressed: (mouse) => {
+                                pressPos = Qt.point(mouse.x, mouse.y)
+                                dragging = false
+                            }
+                            onPositionChanged: (mouse) => {
+                                if (!pressed) return
+                                const dx = mouse.x - pressPos.x
+                                const dy = mouse.y - pressPos.y
+                                if (!dragging && (dx * dx + dy * dy > 64)) {
+                                    dragging = true
+                                    page.draggedTileIndex = tileSlot.index
                                 }
-                                onPositionChanged: (mouse) => {
-                                    if (!pressed) return
-                                    const dx = mouse.x - pressPos.x
-                                    const dy = mouse.y - pressPos.y
-                                    if (!dragging && (dx * dx + dy * dy > 64)) {
-                                        dragging = true
-                                        page.draggedTileIndex = tileSlot.index
-                                    }
-                                    if (dragging) {
-                                        const inGrid = tileSlot.mapToItem(tileGrid, mouse.x, mouse.y)
-                                        const col = Math.floor(inGrid.x / (tileGrid.cellWidth + tileGrid.spacing))
-                                        const row = Math.floor(inGrid.y / (tileSlot.height + tileGrid.spacing))
-                                        if (col >= 0 && col < tileGrid.columns && row >= 0) {
-                                            const targetIdx = row * tileGrid.columns + col
-                                            if (targetIdx >= 0 && targetIdx < page.currentTiles.length && targetIdx !== tileSlot.index) {
-                                                DeckController.moveTile(page.currentPage.id, tileSlot.index, targetIdx)
-                                                page.draggedTileIndex = targetIdx
-                                            }
+                                if (dragging) {
+                                    const inGrid = tileSlot.mapToItem(tileGrid, mouse.x, mouse.y)
+                                    const col = Math.floor(inGrid.x / (tileGrid.cellWidth + tileGrid.spacing))
+                                    const row = Math.floor(inGrid.y / (tileGrid.cellHeight + tileGrid.spacing))
+                                    if (col >= 0 && col < tileGrid.columns && row >= 0) {
+                                        const targetIdx = row * tileGrid.columns + col
+                                        if (targetIdx >= 0 && targetIdx < page.currentTiles.length && targetIdx !== tileSlot.index) {
+                                            DeckController.moveTile(page.currentPage.id, tileSlot.index, targetIdx)
+                                            page.draggedTileIndex = targetIdx
                                         }
                                     }
                                 }
-                                onReleased: {
-                                    if (!dragging) {
-                                        page.openEditTile(tileSlot.modelData)
-                                    }
-                                    dragging = false
-                                    page.draggedTileIndex = -1
-                                }
-                                onCanceled: {
-                                    dragging = false
-                                    page.draggedTileIndex = -1
-                                }
                             }
+                            onReleased: {
+                                if (!dragging)
+                                    page.openEditTile(tileSlot.modelData)
+                                dragging = false
+                                page.draggedTileIndex = -1
+                            }
+                            onCanceled: {
+                                dragging = false
+                                page.draggedTileIndex = -1
+                            }
+                        }
+
+                        // Run the tile here, to try it.
+                        IconButton {
+                            id: testBtn
+                            readonly property bool shown: tileHover.hovered || activeFocus
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 6
+                            opacity: shown ? 1 : 0
+                            iconPath: Icons.play
+                            iconSize: 14
+                            iconColor: tileSlot.tint
+                            label: qsTr("Test %1").arg(tileSlot.modelData.label)
+                            onClicked: DeckController.testTile(tileSlot.modelData.id)
                         }
                     }
                 }
 
-                // Add-tile card at the end of the grid
+                // Add a tile, at the end of the grid.
                 Rectangle {
+                    id: addTileBtn
                     visible: page.currentTiles.length < 24
                     width: tileGrid.cellWidth
-                    height: Theme.quiet ? 52 : 112
-                    radius: Theme.radiusMd
-                    color: addHover.hovered ? Theme.surfaceContainerHigh : "transparent"
+                    height: tileGrid.cellHeight
+                    radius: 10
+                    color: addHover.hovered ? Theme.raised : "transparent"
                     border.width: Theme.focusVisible(addTileBtn) ? 2 : 1
-                    border.color: Theme.focusVisible(addTileBtn) ? Theme.primary : Theme.outlineVariant
-                    id: addTileBtn
+                    border.color: Theme.focusVisible(addTileBtn) ? Theme.focusRing : Theme.line
                     activeFocusOnTab: true
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Add tile")
@@ -572,19 +492,18 @@ Item {
                             event.accepted = true
                         }
                     }
-
-                    Column {
+                    Row {
                         anchors.centerIn: parent
                         spacing: 6
                         Icon {
-                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 16; height: 16
                             path: Icons.plus
-                            color: Theme.surfaceContentVariant
+                            color: Theme.accent
                         }
                         Txt {
-                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.verticalCenter: parent.verticalCenter
                             text: qsTr("Add tile")
-                            role: "bodySmall"
                             muted: true
                         }
                     }
@@ -592,6 +511,185 @@ Item {
                     TapHandler { onTapped: page.openAddTile() }
                 }
             }
+
+            Txt {
+                width: parent.width
+                text: qsTr("Drag to reorder. The phone sees only labels and icons.")
+                role: "caption"
+                muted: true
+            }
+        }
+    }
+
+    // ---- Right column: sound ----
+    Flickable {
+        id: side
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: Math.min(Theme.columnWidth + 20, Math.max(240, page.width * 0.32))
+        contentHeight: sideCol.height + 28
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
+
+        Rectangle {
+            width: 1
+            height: Math.max(side.height, side.contentHeight)
+            color: Theme.line
+        }
+
+        Column {
+            id: sideCol
+            x: 12
+            y: 10
+            width: side.width - 24
+            spacing: 2
+
+            SectionLabel { width: parent.width; text: qsTr("This PC now") }
+            ActionRow {
+                width: parent.width
+                interactive: false
+                iconPath: DeckController.muted ? Icons.soundOff : Icons.speaker
+                tint: Theme.tintTeal
+                title: qsTr("Speaker")
+                meta: DeckController.muted ? qsTr("Muted · %1%").arg(DeckController.volume) : qsTr("%1%").arg(DeckController.volume)
+            }
+            ActionRow {
+                width: parent.width
+                interactive: false
+                iconPath: DeckController.micState === 1 ? Icons.micOff : Icons.mic
+                tint: Theme.tintCoral
+                title: qsTr("Microphone")
+                meta: DeckController.micState === 1 ? qsTr("Muted")
+                    : DeckController.micState === 0 ? qsTr("Live") : qsTr("None")
+            }
+            ActionRow {
+                width: parent.width
+                interactive: false
+                iconPath: DeckController.playing ? Icons.play : Icons.pause
+                tint: Theme.tintPink
+                title: qsTr("Media")
+                meta: DeckController.playing ? qsTr("Playing") : qsTr("Paused")
+            }
+
+            Item { width: 1; height: 8 }
+            SectionLabel { width: parent.width; text: qsTr("Volume") }
+            VolumeRow {
+                width: parent.width
+                name: qsTr("PC")
+                value: DeckController.volume
+                onMoved: (v) => MediaList.command("local", "", "volume", v)
+            }
+            VolumeRow {
+                width: parent.width
+                visible: page.phoneVolume >= 0
+                name: qsTr("Phone")
+                value: Math.max(0, page.phoneVolume)
+                onMoved: (v) => AppController.setPhoneToggle(page.deviceId, "volume", String(v))
+            }
+
+            Item { width: 1; height: 8 }
+            SectionLabel {
+                width: parent.width
+                text: qsTr("Phone as microphone")
+                actionText: qsTr("Refresh")
+                onActionClicked: PhoneMic.refresh()
+            }
+            ActionRow {
+                width: parent.width
+                iconPath: PhoneMic.phase === "off" ? Icons.mic : Icons.micOff
+                tint: Theme.tintCoral
+                enabled: PhoneMic.phase !== "off" || PhoneMic.device !== ""
+                title: PhoneMic.phase === "live" ? qsTr("Stop") : (PhoneMic.phase === "asking" ? qsTr("Cancel") : qsTr("Start"))
+                detail: PhoneMic.phase === "live" ? qsTr("Live from %1").arg(PhoneMic.deviceName)
+                    : PhoneMic.phase === "asking" ? qsTr("Tap Start on %1").arg(PhoneMic.deviceName)
+                    : PhoneMic.deviceName
+                onClicked: PhoneMic.phase === "off" ? PhoneMic.start(PhoneMic.device) : PhoneMic.stop()
+            }
+            Txt {
+                visible: page.micOutputs.length > 0
+                x: Theme.rowPadding
+                height: 24
+                text: qsTr("Plays into")
+                role: "caption"
+                muted: true
+            }
+            Repeater {
+                model: page.micOutputs
+                delegate: RadioRow {
+                    required property var modelData
+                    width: sideCol.width
+                    title: modelData.name
+                    checked: modelData.id === PhoneMic.output
+                    onClicked: PhoneMic.chooseOutput(modelData.id)
+                }
+            }
+            VolumeRow {
+                width: parent.width
+                visible: PhoneMic.maxGain > PhoneMic.minGain
+                name: qsTr("Gain")
+                from: PhoneMic.minGain
+                to: PhoneMic.maxGain
+                value: PhoneMic.gain
+                onMoved: (v) => PhoneMic.setLoudness(v)
+            }
+        }
+    }
+
+    // A radio choice: a lavender ring, filled when chosen.
+    component RadioRow: ActionRow {
+        id: radio
+        property bool checked: false
+        accessibleName: title
+        Accessible.role: Accessible.RadioButton
+        Accessible.checked: checked
+        leading: Rectangle {
+            width: 16; height: 16; radius: 8
+            color: "transparent"
+            border.width: radio.checked ? 5 : 1.5
+            border.color: radio.checked ? Theme.accent : Theme.surfaceContentVariant
+        }
+    }
+
+    // A labelled slider with its value, for the right column.
+    component VolumeRow: Item {
+        id: vol
+        property string name
+        property int value: 0
+        property int from: 0
+        property int to: 100
+        signal moved(int value)
+        height: 32
+        Txt {
+            id: volName
+            x: Theme.rowPadding
+            width: 56
+            anchors.verticalCenter: parent.verticalCenter
+            text: vol.name
+            role: "bodySmall"
+            muted: true
+        }
+        ValueSlider {
+            anchors.left: volName.right
+            anchors.right: volValue.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            from: vol.from
+            to: vol.to
+            value: vol.value
+            label: vol.name
+            valueText: qsTr("%1%").arg(vol.value)
+            onMoved: (v) => vol.moved(v)
+        }
+        Txt {
+            id: volValue
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.rowPadding
+            anchors.verticalCenter: parent.verticalCenter
+            width: 32
+            horizontalAlignment: Text.AlignRight
+            text: String(vol.value)
+            role: "bodySmall"
         }
     }
 
@@ -659,7 +757,7 @@ Item {
                         wrapMode: Text.WordWrap
                         role: "bodySmall"
                         muted: true
-                        text: qsTr("Phones see only each tile's label and icon. Paths and commands stay on this PC.")
+                        text: qsTr("The phone sees only the label and icon.")
                     }
                 }
 
@@ -667,22 +765,14 @@ Item {
                 Rectangle {
                     id: previewBox
                     width: 148; height: 68
-                    radius: Theme.radiusMd
-                    color: Theme.graphite ? "transparent" : Theme.tileColor
-                    border.width: Theme.graphite ? 1 : 0
-                    border.color: Theme.outlineVariant
+                    radius: 10
+                    color: Theme.raised
 
-                    Rectangle {
+                    Icon {
                         x: 10; y: 10
-                        width: 24; height: 24
-                        radius: Theme.radiusSm
-                        color: Theme.quiet ? "transparent" : Theme.graphite ? Theme.surfaceContainerHigh : Theme.secondaryContainer
-                        Icon {
-                            anchors.centerIn: parent
-                            width: 14; height: 14
-                            path: page.iconPathFor(editorSheet.tileIcon, editorSheet.actionKind)
-                            color: Theme.graphite ? Theme.surfaceContent : Theme.secondaryContainerContent
-                        }
+                        width: 20; height: 20
+                        path: page.iconPathFor(editorSheet.tileIcon, editorSheet.actionKind)
+                        color: page.tileTint(editorSheet.tileColor)
                     }
                     Txt {
                         anchors.left: parent.left
@@ -690,10 +780,7 @@ Item {
                         anchors.bottom: parent.bottom
                         anchors.margins: 10
                         text: editorSheet.tileLabel.length > 0 ? editorSheet.tileLabel : DeckController.defaultLabelFor(editorSheet.actionKind)
-                        role: "bodySmall"
-                        weight: Font.DemiBold
                         elide: Text.ElideRight
-                        color: Theme.surfaceContent
                     }
                 }
             }
@@ -780,10 +867,10 @@ Item {
                     Rectangle {
                         width: editorSheet.actionKind === "launch_app" ? parent.width - browseBtn.width - 8 : parent.width
                         height: 36
-                        radius: Theme.radiusSm
-                        color: Theme.surfaceContainerHigh
-                        border.width: paramInput.activeFocus ? 2 : 1
-                        border.color: paramInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
+                        radius: Theme.rowRadius
+                        color: Theme.raised
+                        border.width: paramInput.activeFocus ? 1 : 0
+                        border.color: Theme.focusRing
 
                         TextInput {
                             id: paramInput
@@ -793,11 +880,11 @@ Item {
                             verticalAlignment: TextInput.AlignVCenter
                             clip: true
                             color: Theme.surfaceContent
-                            selectionColor: Theme.primaryContainer
-                            selectedTextColor: Theme.primaryContainerContent
+                            selectionColor: Theme.selection
+                            selectedTextColor: Theme.surfaceContent
                             font.family: editorSheet.actionKind === "run_command" || editorSheet.actionKind === "shortcut"
                                 ? Theme.fontMono : Theme.fontUi
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.typography.body.size
                             text: editorSheet.paramValue
                             onTextEdited: editorSheet.paramValue = text
                             Accessible.name: qsTr("Action parameter")
@@ -821,7 +908,7 @@ Item {
                     wrapMode: Text.WordWrap
                     role: "bodySmall"
                     color: Theme.warning
-                    text: qsTr("Requires \"Allow running Deck commands\" to be turned on for the phone in Settings → Devices.")
+                    text: qsTr("Needs \"Allow running Deck commands\" for the phone in Settings.")
                 }
             }
 
@@ -833,10 +920,10 @@ Item {
                 Rectangle {
                     width: parent.width
                     height: 36
-                    radius: Theme.radiusSm
-                    color: Theme.surfaceContainerHigh
-                    border.width: labelInput.activeFocus ? 2 : 1
-                    border.color: labelInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
+                    radius: Theme.rowRadius
+                    color: Theme.raised
+                    border.width: labelInput.activeFocus ? 1 : 0
+                    border.color: Theme.focusRing
 
                     TextInput {
                         id: labelInput
@@ -846,10 +933,10 @@ Item {
                         verticalAlignment: TextInput.AlignVCenter
                         clip: true
                         color: Theme.surfaceContent
-                        selectionColor: Theme.primaryContainer
-                        selectedTextColor: Theme.primaryContainerContent
+                        selectionColor: Theme.selection
+                        selectedTextColor: Theme.surfaceContent
                         font.family: Theme.fontUi
-                        font.pixelSize: 14
+                        font.pixelSize: Theme.typography.body.size
                         text: editorSheet.tileLabel
                         onTextEdited: {
                             editorSheet.tileLabel = text
@@ -877,8 +964,8 @@ Item {
                             width: 27; height: 27
                             radius: Theme.radiusSm
                             activeFocusOnTab: true
-                            color: chosen ? Theme.secondaryContainer : Theme.surfaceContainerHigh
-                            border.width: chosen || Theme.focusVisible(iconCell) ? 2 : 0
+                            color: chosen ? Theme.selection : Theme.raised
+                            border.width: chosen || Theme.focusVisible(iconCell) ? 1 : 0
                             border.color: Theme.focusRing
                             Accessible.role: Accessible.RadioButton
                             Accessible.name: modelData
@@ -894,7 +981,7 @@ Item {
                                 anchors.centerIn: parent
                                 width: 15; height: 15
                                 path: page.iconPathFor(modelData, "")
-                                color: chosen ? Theme.secondaryContainerContent : Theme.surfaceContent
+                                color: chosen ? page.tileTint(editorSheet.tileColor) : Theme.surfaceContent
                             }
                             HoverHandler { cursorShape: Qt.PointingHandCursor }
                             TapHandler { onTapped: editorSheet.tileIcon = modelData }
@@ -1011,10 +1098,10 @@ Item {
             Rectangle {
                 width: parent.width
                 height: 38
-                radius: Theme.radiusSm
-                color: Theme.surfaceContainerHigh
-                border.width: pageNameInput.activeFocus ? 2 : 1
-                border.color: pageNameInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
+                radius: Theme.rowRadius
+                color: Theme.raised
+                border.width: pageNameInput.activeFocus ? 1 : 0
+                border.color: Theme.focusRing
 
                 TextInput {
                     id: pageNameInput
@@ -1024,10 +1111,10 @@ Item {
                     verticalAlignment: TextInput.AlignVCenter
                     clip: true
                     color: Theme.surfaceContent
-                    selectionColor: Theme.primaryContainer
-                    selectedTextColor: Theme.primaryContainerContent
+                    selectionColor: Theme.selection
+                    selectedTextColor: Theme.surfaceContent
                     font.family: Theme.fontUi
-                    font.pixelSize: 14
+                    font.pixelSize: Theme.typography.body.size
                     Accessible.name: qsTr("Page name")
                     Keys.onReturnPressed: pageNameSheet.submitPageName()
                     Keys.onEnterPressed: pageNameSheet.submitPageName()
@@ -1060,7 +1147,7 @@ Item {
                 wrapMode: Text.WordWrap
                 role: "body"
                 muted: true
-                text: qsTr("This replaces your custom pages and tiles with the default 11-tile Deck.")
+                text: qsTr("Your pages and tiles give way to the default 11 tiles.")
             }
             Row {
                 anchors.right: parent.right
@@ -1085,7 +1172,7 @@ Item {
         radius: Theme.radiusLg
         color: "transparent"
         border.width: 2
-        border.color: Theme.primary
+        border.color: Theme.focusRing
         visible: opacity > 0
         opacity: AppController.highlightTarget === "deck:main" ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }

@@ -2,9 +2,10 @@
 import QtQuick
 import app.g7link
 
-// Pairing a phone: a QR code to scan (refreshed automatically), nearby
-// pairing with a 6-digit code check, and the outcome. While `running`, this
-// PC is in pairing mode.
+// Pairing a phone: a QR code to scan (refreshed automatically) beside the
+// phones nearby, then the 6-digit code both screens show, and the outcome.
+// While `running`, this PC is in pairing mode. Side by side when there's
+// room, stacked when not.
 Item {
     id: panel
     property bool running: false
@@ -14,13 +15,18 @@ Item {
     signal finished
     signal cancelled
 
-    property bool showNearby: false
     readonly property string state_: Pairing.state
+    readonly property bool hosting: state_ === "hosting" || state_ === "starting" || state_ === "idle"
+    readonly property bool wide: width >= 600
+    // The left side shows the Android app's download QR instead.
+    property bool showApp: false
+    readonly property string releaseUrl: "https://github.com/Astraque-Softwares-Ltd/g7link/releases/latest"
 
+    implicitWidth: 760
     implicitHeight: content.implicitHeight
 
     onRunningChanged: {
-        showNearby = false
+        showApp = false
         // Nearby phones show up fast only while this is on screen.
         Pairing.setNearbyShown(running)
         if (running && state_ !== "comparing" && state_ !== "confirmed" && state_ !== "connecting")
@@ -43,6 +49,10 @@ Item {
         if (state_ === "hosting")
             Pairing.cancel()
     }
+    function retry() {
+        showApp = false
+        Pairing.start()
+    }
 
     // Leave the success message up briefly, then close.
     Timer {
@@ -51,7 +61,7 @@ Item {
         onTriggered: panel.finished()
     }
 
-    // Seconds left on the current code, for the "refreshes in" hint.
+    // Seconds left on the current code.
     property int secondsLeft: 0
     Timer {
         interval: 1000
@@ -61,312 +71,340 @@ Item {
         onTriggered: panel.secondsLeft = Math.max(0, Math.round((Pairing.expiresAt - Date.now()) / 1000))
     }
 
+    // Enter pairs the first phone nearby, or confirms matching codes.
+    Shortcut {
+        sequences: ["Return", "Enter"]
+        enabled: panel.running && panel.visible
+                 && (panel.state_ === "comparing" || (panel.hosting && Pairing.nearby.length > 0))
+        onActivated: {
+            if (panel.state_ === "comparing")
+                Pairing.confirm(true)
+            else
+                Pairing.pairNearby(Pairing.nearby[0].id)
+        }
+    }
+
     Column {
         id: content
         width: parent.width
-        spacing: panel.compact ? 10 : 14
+        spacing: 0
 
-        // ---- Header ----
-        Txt {
+        Flow {
+            id: sides
             width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            role: "displaySmall"
-            size: 24
-            wrapMode: Text.WordWrap
-            visible: !panel.compact || panel.state_ === "comparing" || panel.state_ === "paired" || panel.state_ === "failed" || panel.showNearby
-            text: {
-                switch (panel.state_) {
-                case "comparing": return qsTr("Check the code")
-                case "paired": return qsTr("Paired")
-                case "failed": return qsTr("Pairing didn't work")
-                default: return panel.showNearby ? qsTr("Pair nearby") : qsTr("Scan with your phone")
-                }
-            }
-        }
+            spacing: 0
 
-        // ---- QR code ----
-        Column {
-            width: parent.width
-            spacing: 12
-            visible: !panel.compact && (panel.state_ === "hosting" || panel.state_ === "starting" || panel.state_ === "idle") && !panel.showNearby
-
+            // ---- Scan ----
             Item {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 216; height: 216
-                QrCode {
-                    anchors.fill: parent
-                    visible: panel.state_ === "hosting"
-                    path: Pairing.qrPath
-                    modules: Pairing.qrSize
-                    Accessible.role: Accessible.Graphic
-                    Accessible.name: qsTr("Pairing QR code")
-                }
-                Spinner {
+                id: scanSide
+                width: panel.wide ? Math.floor(sides.width * 0.46) : sides.width
+                height: scanCol.implicitHeight + (panel.compact ? 24 : 40)
+
+                Column {
+                    id: scanCol
                     anchors.centerIn: parent
-                    visible: panel.state_ !== "hosting"
-                    width: 28; height: 28
-                }
-            }
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 14
-                Repeater {
-                    model: [qsTr("Install G7 Link"), qsTr("Tap “Pair with PC”"), qsTr("Scan this code")]
-                    delegate: Row {
-                        required property int index
-                        required property string modelData
-                        spacing: 6
-                        Rectangle {
-                            width: 20; height: 20; radius: Theme.graphite ? Theme.radiusXs : 10
-                            color: Theme.graphite ? "transparent" : Theme.secondaryContainer
-                            border.width: Theme.graphite ? 1 : 0
-                            border.color: Theme.outlineVariant
-                            Txt { anchors.centerIn: parent; text: index + 1; role: "caption"; weight: 700 }
+                    width: parent.width - 32
+                    spacing: 14
+
+                    Item {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        readonly property int side: panel.compact ? 164 : 200
+                        width: side; height: side
+                        QrCode {
+                            anchors.fill: parent
+                            visible: panel.showApp ? AppController.apkQrPath.length > 0 : panel.state_ === "hosting"
+                            path: panel.showApp ? AppController.apkQrPath : Pairing.qrPath
+                            modules: panel.showApp ? AppController.apkQrSize : Pairing.qrSize
+                            Accessible.role: Accessible.Graphic
+                            Accessible.name: panel.showApp ? qsTr("QR code for the Android app") : qsTr("Pairing QR code")
                         }
-                        Txt { anchors.verticalCenter: parent.verticalCenter; text: modelData; role: "bodySmall"; muted: true }
+                        Spinner {
+                            anchors.centerIn: parent
+                            visible: !panel.showApp && (panel.state_ === "starting" || panel.state_ === "idle"
+                                                        || panel.state_ === "connecting" || panel.state_ === "confirmed")
+                            width: 28; height: 28
+                        }
+                        Icon {
+                            anchors.centerIn: parent
+                            visible: !panel.showApp && (panel.state_ === "paired" || panel.state_ === "failed" || panel.state_ === "comparing")
+                            width: 40; height: 40
+                            path: panel.state_ === "paired" ? Icons.check
+                                : (panel.state_ === "failed" ? Icons.warning : Icons.lock)
+                            color: panel.state_ === "paired" ? Theme.tintTeal
+                                : (panel.state_ === "failed" ? Theme.tintRed : Theme.accent)
+                        }
+                    }
+                    Column {
+                        width: parent.width
+                        spacing: 4
+                        Txt {
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            weight: 500
+                            wrapMode: Text.WordWrap
+                            elide: Text.ElideNone
+                            text: panel.showApp ? qsTr("Scan to get G7 Link for Android")
+                                : panel.state_ === "paired" ? qsTr("Paired")
+                                : panel.state_ === "failed" ? qsTr("Pairing didn't work")
+                                : panel.state_ === "comparing" ? qsTr("Check the code")
+                                : qsTr("Scan with G7 Link on your phone")
+                        }
+                        Txt {
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            visible: !panel.showApp && panel.state_ === "hosting"
+                            role: "bodySmall"
+                            muted: true
+                            text: qsTr("Code changes in %1:%2")
+                                  .arg(Math.floor(panel.secondsLeft / 60)).arg(("0" + panel.secondsLeft % 60).slice(-2))
+                        }
+                        Row {
+                            visible: panel.showApp
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            spacing: 4
+                            TextAction {
+                                text: qsTr("Open release page")
+                                onClicked: Qt.openUrlExternally(panel.releaseUrl)
+                            }
+                            TextAction {
+                                id: copyLink
+                                property bool copied: false
+                                text: copied ? qsTr("Copied") : qsTr("Copy link")
+                                onClicked: {
+                                    AppController.copyText(panel.releaseUrl)
+                                    copied = true
+                                    copiedTimer.restart()
+                                }
+                                Timer {
+                                    id: copiedTimer
+                                    interval: 2000
+                                    onTriggered: copyLink.copied = false
+                                }
+                            }
+                            TextAction {
+                                text: qsTr("Back to pairing")
+                                onClicked: panel.showApp = false
+                            }
+                        }
                     }
                 }
             }
-            Txt {
-                anchors.horizontalCenter: parent.horizontalCenter
-                role: "caption"
-                muted: true
-                visible: panel.state_ === "hosting"
-                text: qsTr("Code refreshes in %1:%2 · Works on this network")
-                      .arg(Math.floor(panel.secondsLeft / 60)).arg(("0" + panel.secondsLeft % 60).slice(-2))
-            }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                variant: "tonal"
-                size: "sm"
-                iconPath: Icons.wifi
-                text: qsTr("Pair nearby instead")
-                onClicked: panel.showNearby = true
-            }
-        }
 
-        // ---- Compact horizontal QR layout (used in Walkthrough Step 4) ----
-        Row {
-            width: parent.width
-            spacing: 24
-            visible: panel.compact && (panel.state_ === "hosting" || panel.state_ === "starting" || panel.state_ === "idle") && !panel.showNearby
-
+            // ---- Nearby, then the code ----
             Item {
-                width: 164; height: 164
-                anchors.verticalCenter: parent.verticalCenter
-                QrCode {
-                    anchors.fill: parent
-                    visible: panel.state_ === "hosting"
-                    path: Pairing.qrPath
-                    modules: Pairing.qrSize
-                    Accessible.role: Accessible.Graphic
-                    Accessible.name: qsTr("Pairing QR code")
-                }
-                Spinner {
-                    anchors.centerIn: parent
-                    visible: panel.state_ !== "hosting"
-                    width: 28; height: 28
-                }
-            }
+                width: panel.wide ? sides.width - scanSide.width : sides.width
+                height: Math.max(panel.wide ? scanSide.height : 0, nearCol.implicitHeight + 32)
 
-            Column {
-                width: Math.max(180, parent.width - 188)
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 10
-
-                Txt {
+                Rectangle {
+                    visible: panel.wide
+                    width: 1
+                    height: parent.height
+                    color: Theme.line
+                }
+                Rectangle {
+                    visible: !panel.wide
                     width: parent.width
-                    role: "title"
-                    text: qsTr("Scan with your phone")
+                    height: 1
+                    color: Theme.line
                 }
 
                 Column {
-                    width: parent.width
-                    spacing: 6
-                    Repeater {
-                        model: [qsTr("Open G7 Link on your phone"), qsTr("Tap “Pair with PC”"), qsTr("Scan this QR code")]
-                        delegate: Row {
-                            required property int index
-                            required property string modelData
-                            spacing: 8
-                            Rectangle {
-                                width: 20; height: 20; radius: Theme.graphite ? Theme.radiusXs : 10
-                                color: Theme.graphite ? "transparent" : Theme.secondaryContainer
-                                border.width: Theme.graphite ? 1 : 0
-                                border.color: Theme.outlineVariant
-                                Txt { anchors.centerIn: parent; text: index + 1; role: "caption"; weight: 700 }
+                    id: nearCol
+                    x: 16
+                    y: 16
+                    width: parent.width - 32
+                    spacing: 2
+
+                    // Looking for phones running "Pair nearby".
+                    Item {
+                        visible: panel.hosting
+                        width: parent.width
+                        height: 30
+                        Txt {
+                            id: nearbyLabel
+                            x: Theme.rowPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Nearby")
+                            role: "label"
+                            muted: true
+                        }
+                        Rectangle {
+                            id: liveDot
+                            anchors.left: nearbyLabel.right
+                            anchors.leftMargin: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 6; height: 6; radius: 3
+                            color: Theme.tintTeal
+                            SequentialAnimation on opacity {
+                                running: panel.running && panel.hosting && !Theme.reduceMotion
+                                loops: Animation.Infinite
+                                NumberAnimation { from: 1; to: 0.3; duration: 900; easing.type: Easing.InOutSine }
+                                NumberAnimation { from: 0.3; to: 1; duration: 900; easing.type: Easing.InOutSine }
                             }
-                            Txt { anchors.verticalCenter: parent.verticalCenter; text: modelData; role: "bodySmall"; muted: true }
+                        }
+                        Txt {
+                            anchors.left: liveDot.right
+                            anchors.leftMargin: 8
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Looking on this network")
+                            role: "bodySmall"
+                            muted: true
                         }
                     }
-                }
-
-                Txt {
-                    width: parent.width
-                    role: "caption"
-                    muted: true
-                    visible: panel.state_ === "hosting"
-                    text: qsTr("Code refreshes in %1:%2 · Works on this network")
-                          .arg(Math.floor(panel.secondsLeft / 60)).arg(("0" + panel.secondsLeft % 60).slice(-2))
-                }
-
-                Button {
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.wifi
-                    text: qsTr("Pair nearby instead")
-                    onClicked: panel.showNearby = true
-                }
-            }
-        }
-
-        // ---- Nearby devices ----
-        Column {
-            width: parent.width
-            spacing: 10
-            visible: panel.showNearby && (panel.state_ === "hosting" || panel.state_ === "starting")
-
-            Txt {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                role: "body"
-                muted: true
-                text: qsTr("On your phone, open G7 Link and choose “Pair nearby”. It shows up here.")
-            }
-            Repeater {
-                model: Pairing.nearby
-                delegate: Rectangle {
-                    required property var modelData
-                    width: parent.width
-                    height: 56
-                    radius: Theme.radiusMd
-                    color: Theme.tileColor
-                    border.width: Theme.graphite ? 1 : 0
-                    border.color: Theme.outlineVariant
-                    Avatar {
-                        id: deviceIcon
-                        anchors.left: parent.left; anchors.leftMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        iconPath: Icons.phone
+                    Repeater {
+                        model: panel.hosting ? Pairing.nearby : []
+                        delegate: ActionRow {
+                            id: nearbyRow
+                            required property var modelData
+                            required property int index
+                            width: nearCol.width
+                            iconPath: Icons.phone
+                            tint: index === 0 ? Theme.accent : Theme.tintBlue
+                            title: modelData.name
+                            selected: index === 0
+                            onClicked: Pairing.pairNearby(modelData.id)
+                            Button {
+                                size: "sm"
+                                variant: nearbyRow.index === 0 ? "fill" : "outline"
+                                text: qsTr("Pair")
+                                onClicked: Pairing.pairNearby(nearbyRow.modelData.id)
+                            }
+                        }
                     }
                     Txt {
-                        anchors.left: deviceIcon.right; anchors.leftMargin: 12
-                        anchors.right: pairButton.left; anchors.rightMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.name
-                        role: "title"
+                        visible: panel.hosting && Pairing.nearby.length === 0
+                        x: Theme.rowPadding
+                        width: parent.width - 2 * Theme.rowPadding
+                        height: implicitHeight + 8
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                        role: "bodySmall"
+                        muted: true
+                        text: qsTr("On the phone, open G7 Link and choose Pair nearby.")
                     }
+
+                    // Connecting to, or waiting on, the phone.
+                    Row {
+                        visible: panel.state_ === "connecting" || panel.state_ === "confirmed"
+                        x: Theme.rowPadding
+                        height: Theme.rowHeight
+                        spacing: 10
+                        Spinner { width: 16; height: 16; anchors.verticalCenter: parent.verticalCenter }
+                        Txt {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: panel.state_ === "connecting"
+                                  ? qsTr("Connecting to %1…").arg(Pairing.peerName)
+                                  : qsTr("Waiting for %1…").arg(Pairing.peerName)
+                        }
+                    }
+
+                    // ---- The code ----
+                    Item { width: 1; height: 10 }
+                    Rectangle {
+                        width: parent.width
+                        height: 1
+                        color: Theme.line
+                        visible: panel.state_ !== "paired" && panel.state_ !== "failed"
+                    }
+                    Item { width: 1; height: 12 }
+                    Txt {
+                        visible: panel.state_ !== "paired" && panel.state_ !== "failed"
+                        x: Theme.rowPadding
+                        width: parent.width - 2 * Theme.rowPadding
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                        role: "bodySmall"
+                        muted: panel.state_ !== "comparing"
+                        text: panel.state_ === "comparing" || panel.state_ === "confirmed"
+                            ? qsTr("Same code on %1?").arg(Pairing.peerName.length > 0 ? Pairing.peerName : qsTr("the phone"))
+                            : qsTr("Next you'll compare a 6-digit code on both screens")
+                    }
+                    Item { width: 1; height: 8 }
+                    CodeDigits {
+                        visible: panel.state_ !== "paired" && panel.state_ !== "failed"
+                        x: Theme.rowPadding
+                        code: panel.state_ === "comparing" || panel.state_ === "confirmed" ? Pairing.code : "······"
+                        dim: !(panel.state_ === "comparing" || panel.state_ === "confirmed")
+                    }
+                    Item { width: 1; height: 12 }
+                    Row {
+                        visible: panel.state_ === "comparing"
+                        x: Theme.rowPadding
+                        spacing: 8
+                        Button { text: qsTr("Codes match"); onClicked: Pairing.confirm(true) }
+                        Button { variant: "outline"; text: qsTr("They don't match"); onClicked: Pairing.confirm(false) }
+                    }
+
+                    // ---- Outcome ----
+                    Txt {
+                        visible: panel.state_ === "paired" || panel.state_ === "failed"
+                        x: Theme.rowPadding
+                        width: parent.width - 2 * Theme.rowPadding
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                        muted: panel.state_ === "failed"
+                        text: {
+                            if (panel.state_ === "paired")
+                                return qsTr("%1 is paired with this PC.").arg(Pairing.peerName)
+                            switch (Pairing.failure) {
+                            // The other device's "They don't match" and Cancel look the same from here.
+                            case "rejected": return qsTr("Cancelled, or the codes didn't match. Nothing was paired.")
+                            case "declined": return qsTr("Declined on one of the devices.")
+                            case "unreachable": return qsTr("Couldn't reach the phone. Put both on the same network.")
+                            case "expired": return qsTr("The code expired.")
+                            default: return qsTr("Something went wrong.")
+                            }
+                        }
+                    }
+                    Item { width: 1; height: 8; visible: panel.state_ === "failed" }
                     Button {
-                        id: pairButton
-                        anchors.right: parent.right; anchors.rightMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        size: "sm"
-                        text: qsTr("Pair")
-                        onClicked: Pairing.pairNearby(modelData.id)
+                        visible: panel.state_ === "failed"
+                        x: Theme.rowPadding
+                        text: qsTr("Try again")
+                        iconPath: Icons.refresh
+                        onClicked: panel.retry()
                     }
                 }
             }
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 8
-                visible: Pairing.nearby.length === 0
-                Spinner { width: 16; height: 16; anchors.verticalCenter: parent.verticalCenter }
-                Txt { text: qsTr("Looking for devices…"); role: "bodySmall"; muted: true }
-            }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                variant: "text"
-                size: "sm"
-                text: qsTr("Show the QR code")
-                onClicked: panel.showNearby = false
-            }
         }
 
-        // ---- Working ----
-        Row {
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 10
-            visible: panel.state_ === "connecting" || panel.state_ === "confirmed"
-            Spinner { width: 18; height: 18; anchors.verticalCenter: parent.verticalCenter }
-            Txt {
+        // ---- Bottom line ----
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: Theme.line
+        }
+        Item {
+            width: parent.width
+            height: 40
+            Row {
+                x: 14
                 anchors.verticalCenter: parent.verticalCenter
-                role: "body"
-                text: panel.state_ === "connecting"
-                      ? qsTr("Connecting to %1…").arg(Pairing.peerName)
-                      : qsTr("Waiting for %1…").arg(Pairing.peerName)
-            }
-        }
-
-        // ---- Code check ----
-        Column {
-            width: parent.width
-            spacing: 16
-            visible: panel.state_ === "comparing" || panel.state_ === "confirmed"
-            Txt {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                role: "body"
-                muted: true
-                text: qsTr("Make sure %1 shows the same code. This keeps anyone else from pairing in between.")
-                      .arg(Pairing.peerName.length > 0 ? Pairing.peerName : qsTr("your phone"))
-            }
-            CodeDigits { anchors.horizontalCenter: parent.horizontalCenter; code: Pairing.code }
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 10
-                visible: panel.state_ === "comparing"
-                Button { variant: "outline"; text: qsTr("They don't match"); onClicked: Pairing.confirm(false) }
-                Button { text: qsTr("Codes match"); onClicked: Pairing.confirm(true) }
-            }
-        }
-
-        // ---- Outcome ----
-        Column {
-            width: parent.width
-            spacing: 12
-            visible: panel.state_ === "paired" || panel.state_ === "failed"
-            Avatar {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: 56; height: 56
-                emphasized: panel.state_ === "paired"
-                iconPath: panel.state_ === "paired" ? Icons.check : Icons.warning
-            }
-            Txt {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                role: "body"
-                muted: panel.state_ === "failed"
-                text: {
-                    if (panel.state_ === "paired")
-                        return qsTr("%1 is paired with this PC.").arg(Pairing.peerName)
-                    switch (Pairing.failure) {
-                    // The other device's "They don't match" and Cancel look the same from here.
-                    case "rejected": return qsTr("Pairing was cancelled or the codes didn't match, so nothing was paired. Try again.")
-                    case "declined": return qsTr("Pairing was declined on one of the devices.")
-                    case "unreachable": return qsTr("Couldn't reach the phone. Make sure both devices are on the same network.")
-                    case "expired": return qsTr("The code expired.")
-                    default: return qsTr("Something went wrong. Try again.")
-                    }
+                spacing: 8
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: panel.width >= 420
+                    text: qsTr("No G7 Link on the phone yet?")
+                    role: "bodySmall"
+                    muted: true
+                }
+                TextAction {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Get it for Android")
+                    muted: false
+                    selected: panel.showApp
+                    onClicked: panel.showApp = !panel.showApp
                 }
             }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                visible: panel.state_ === "failed"
-                text: qsTr("Try again")
-                iconPath: Icons.refresh
-                onClicked: { panel.showNearby = false; Pairing.start() }
+            TextAction {
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                visible: panel.cancellable && panel.state_ !== "paired"
+                text: qsTr("Cancel")
+                onClicked: panel.cancelled()
             }
-        }
-
-        Button {
-            anchors.horizontalCenter: parent.horizontalCenter
-            visible: panel.cancellable && panel.state_ !== "paired"
-            variant: "text"
-            text: qsTr("Cancel")
-            onClicked: panel.cancelled()
         }
     }
 }

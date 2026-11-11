@@ -3,9 +3,9 @@ import QtQuick
 import QtQuick.Layouts
 import app.g7link
 
-// In-app Features Guide page: searchable and filterable reference to every
-// G7 Link feature, live capability status when a phone is connected,
-// "Show me" navigation, and "Learn more" reader sheet with handbook tabs.
+// The Guide: every feature, grouped, with its live state on the phone on
+// screen (left), and the one you pick explained (right): where it is, what
+// it needs, Show me and the handbook chapter.
 Item {
     id: guide
 
@@ -21,6 +21,7 @@ Item {
     property string searchQuery: ""
     property string selectedArea: "all"
     property string activeDocKey: "overview"
+    property string selectedId: ""
 
     property var deviceTogglesMap: ({
         notifications: true,
@@ -94,6 +95,7 @@ Item {
         function onCapsRevisionChanged() { guide.syncSelectedDevice() }
         function onTogglesRevisionChanged() { guide.syncSelectedDevice() }
     }
+
 
     readonly property var guideChapters: [
         { key: "overview", label: qsTr("Overview") },
@@ -474,27 +476,45 @@ Item {
         }
     ]
 
-    property alias featuresModel: guide.allFeatures
+
 
     readonly property var areaChips: [
         { id: "all", label: qsTr("All") },
-        { id: "notifications_calls", label: qsTr("Notifications & Calls") },
+        { id: "notifications_calls", label: qsTr("Stay in touch") },
         { id: "messages", label: qsTr("Messages") },
-        { id: "clipboard_files", label: qsTr("Clipboard & Files") },
-        { id: "mirroring_apps", label: qsTr("Mirroring & Apps") },
-        { id: "camera_audio", label: qsTr("Camera & Audio") },
-        { id: "input_control", label: qsTr("Input & Control") },
-        { id: "surfaces", label: qsTr("Desktop Surfaces") },
-        { id: "automation_network", label: qsTr("Automation & Network") }
+        { id: "clipboard_files", label: qsTr("Move things") },
+        { id: "mirroring_apps", label: qsTr("Use the phone") },
+        { id: "camera_audio", label: qsTr("Camera and sound") },
+        { id: "input_control", label: qsTr("Control the PC") },
+        { id: "surfaces", label: qsTr("On the desktop") },
+        { id: "automation_network", label: qsTr("Network") }
     ]
+
+    // Each feature's glyph tint.
+    function tintFor(item) {
+        switch (item.id) {
+        case "notifications": case "messages": case "timeline": return Theme.tintBlue
+        case "calls": case "speaker": case "remote_input": case "doctor": return Theme.tintTeal
+        case "clipboard": case "command_palette": case "g7_island": return Theme.tintLavender
+        case "transfers": case "send_queue": case "folder_sync": case "shelf": return Theme.tintAmber
+        case "photos": case "webcam": case "continuity_camera": return Theme.tintCoral
+        case "mirroring": case "app_streams": case "now_playing": case "type_on_phone": return Theme.tintPink
+        case "deck": case "desk_mode": case "quick_actions": return Theme.tintGreen
+        case "wol": case "recordings": return Theme.tintRed
+        default: return Theme.tintBlue
+        }
+    }
+    function toneColor(tone) {
+        return tone === "available" ? Theme.tintTeal
+            : (tone === "basic" || tone === "warn") ? Theme.tintAmber : Theme.surfaceContentVariant
+    }
 
     readonly property var filteredFeatures: {
         let q = searchQuery.trim().toLowerCase()
-        let area = selectedArea
         let out = []
         for (let i = 0; i < allFeatures.length; i++) {
             let item = allFeatures[i]
-            if (area !== "all" && item.area !== area)
+            if (selectedArea !== "all" && item.area !== selectedArea)
                 continue
             if (q !== "") {
                 let hay = (item.name + " " + item.summary + " " + item.whereLabel + " " + item.needsLabel).toLowerCase()
@@ -505,6 +525,88 @@ Item {
         }
         return out
     }
+    // The shown features by area, in the areas' order.
+    readonly property var groups: {
+        const list = []
+        for (let a = 1; a < areaChips.length; a++) {
+            const rows = filteredFeatures.filter((f) => f.area === areaChips[a].id)
+            if (rows.length > 0)
+                list.push({ label: areaChips[a].label, rows: rows })
+        }
+        return list
+    }
+    readonly property var orderedFeatures: groups.reduce((all, g) => all.concat(g.rows), [])
+    readonly property var selectedFeature: {
+        const list = orderedFeatures
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].id === selectedId)
+                return list[i]
+        }
+        return list.length > 0 ? list[0] : null
+    }
+    readonly property var selectedStatus: selectedFeature ? statusForFeature(selectedFeature) : null
+    readonly property int readyCount: {
+        let n = 0
+        for (let i = 0; i < allFeatures.length; i++) {
+            if (statusForFeature(allFeatures[i]).tone === "available")
+                n++
+        }
+        return n
+    }
+
+    function step(delta) {
+        const list = orderedFeatures
+        if (list.length === 0)
+            return
+        let i = list.indexOf(selectedFeature)
+        i = Math.max(0, Math.min(list.length - 1, i + delta))
+        selectedId = list[i].id
+    }
+    function showSelected() {
+        if (selectedFeature)
+            guide.showMeRequested(selectedFeature.targetId)
+    }
+
+    // ---- Footer and Actions (MainWindow reads these) ----
+    readonly property string footerLabel: qsTr("Guide · %1 of %2 ready").arg(readyCount).arg(allFeatures.length)
+    readonly property var primaryAction: selectedFeature
+        ? { label: qsTr("Show me"), keys: "Enter", run: () => guide.showSelected() } : null
+    readonly property var secondaryAction: selectedFeature
+        ? { label: qsTr("Learn more"), run: () => guide.openDoc(guide.selectedFeature.docKey) } : null
+    readonly property var screenActions: {
+        const list = []
+        if (selectedFeature) {
+            const f = selectedFeature
+            list.push({ label: qsTr("Show me"), detail: f.name, icon: f.icon, tint: tintFor(f), keys: "Enter",
+                        run: () => guide.showMeRequested(f.targetId) })
+            list.push({ label: qsTr("Learn more"), detail: f.name, icon: Icons.book, tint: Theme.tintBlue,
+                        run: () => guide.openDoc(f.docKey) })
+        }
+        list.push({ label: qsTr("Search features"), icon: Icons.search, tint: Theme.surfaceContentVariant, keys: "Ctrl F",
+                    run: () => searchField.input.forceActiveFocus() })
+        for (let i = 0; i < guideChapters.length; i++) {
+            const key = guideChapters[i].key
+            list.push({ label: qsTr("Read: %1").arg(guideChapters[i].label), icon: Icons.book, tint: Theme.tintBlue,
+                        run: () => guide.openDoc(key) })
+        }
+        list.push({ label: qsTr("Setup walkthrough"), icon: Icons.compass, tint: Theme.tintTeal,
+                    run: () => guide.restartWalkthroughRequested() })
+        for (let a = 0; a < areaChips.length; a++) {
+            const id = areaChips[a].id
+            list.push({ label: qsTr("Show: %1").arg(areaChips[a].label), icon: Icons.apps, tint: Theme.surfaceContentVariant,
+                        checked: selectedArea === id, run: () => { guide.selectedArea = id } })
+        }
+        list.push({ label: qsTr("Back to Home"), icon: Icons.back, tint: Theme.surfaceContentVariant,
+                    run: () => { AppController.currentPage = "home" } })
+        return list
+    }
+
+    Shortcut {
+        sequences: [StandardKey.Find]
+        enabled: guide.visible && !readerSheet.opened
+        onActivated: searchField.input.forceActiveFocus()
+    }
+
 
     function statusForFeature(item) {
         let _caps = AppController.capsRevision
@@ -567,447 +669,262 @@ Item {
         return { label: qsTr("Ready"), tone: "available", visible: true }
     }
 
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.leftMargin: 28
-        anchors.rightMargin: 28
-        anchors.topMargin: 16
-        anchors.bottomMargin: 20
-        spacing: 14
-
-        // C.1 & C.5: Clean header without duplicate "Features guide" heading,
-        // with compact "Read the full guide ›" link and "Setup walkthrough" action.
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
-
-            Txt {
-                Layout.fillWidth: true
-                text: qsTr("Every feature in G7 Link, what it needs, and where to find it.")
-                role: "body"
-                color: Theme.surfaceContentVariant
-                wrapMode: Text.WordWrap
-            }
-
-            Rectangle {
-                implicitWidth: fullGuideRow.implicitWidth + 16
-                implicitHeight: 32
-                radius: Theme.radiusSm
-                color: fullGuideHover.hovered
-                    ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.12)
-                    : "transparent"
-
-                HoverHandler {
-                    id: fullGuideHover
-                    cursorShape: Qt.PointingHandCursor
-                }
-
-                TapHandler {
-                    onTapped: guide.openDoc("overview")
-                }
-
-                Accessible.role: Accessible.Button
-                Accessible.name: qsTr("Read the full guide")
-
-                RowLayout {
-                    id: fullGuideRow
-                    anchors.centerIn: parent
-                    spacing: 6
-
-                    Icon {
-                        path: Icons.book
-                        width: 15
-                        height: 15
-                        color: Theme.primary
-                    }
-
-                    Txt {
-                        text: qsTr("Read the full guide ›")
-                        role: "label"
-                        color: Theme.primary
-                    }
-                }
-            }
-
-            Button {
-                text: qsTr("Setup walkthrough")
-                iconPath: Icons.compass
-                variant: "tonal"
-                size: "sm"
-                Accessible.name: qsTr("Open the 7-step setup walkthrough")
-                onClicked: guide.restartWalkthroughRequested()
-            }
+    // ---- Top: back, and search ----
+    Item {
+        id: topRow
+        width: parent.width
+        height: 52
+        IconButton {
+            id: backButton
+            x: 12
+            anchors.verticalCenter: parent.verticalCenter
+            iconPath: Icons.back
+            label: qsTr("Back to Home")
+            onClicked: AppController.currentPage = "home"
         }
-
-        // C.2: Single calm banner when no phone is connected
+        Field {
+            id: searchField
+            anchors.left: backButton.right
+            anchors.leftMargin: 8
+            anchors.right: parent.right
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            iconPath: Icons.search
+            placeholder: qsTr("Search features")
+            onTextChanged: guide.searchQuery = text
+            onAccepted: guide.showSelected()
+            Keys.onDownPressed: { guide.step(1); list.forceActiveFocus() }
+            Keys.onEscapePressed: text = ""
+        }
         Rectangle {
-            Layout.fillWidth: true
-            implicitWidth: 640
-            implicitHeight: 42
-            radius: Theme.radiusMd
-            visible: !guide.hasConnectedPhone
-            color: Theme.surfaceContainerLow
-            border.width: 1
-            border.color: Theme.outlineVariant
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 14
-                anchors.rightMargin: 14
-                spacing: 10
-
-                Icon {
-                    path: Icons.phone
-                    width: 16
-                    height: 16
-                    color: Theme.primary
-                }
-
-                Txt {
-                    Layout.fillWidth: true
-                    text: qsTr("Connect your phone to see which features are ready")
-                    role: "body"
-                    color: Theme.surfaceContent
-                    elide: Text.ElideRight
-                }
-            }
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 1
+            color: Theme.line
         }
+    }
 
-        // Search input + area filter chips
-        ColumnLayout {
-            Layout.fillWidth: true
-            spacing: 10
+    // ---- Left: the features ----
+    Flickable {
+        id: listView
+        anchors.left: parent.left
+        anchors.top: topRow.bottom
+        anchors.bottom: parent.bottom
+        width: Math.max(300, Math.min(440, guide.width * 0.4))
+        contentHeight: list.height + 16
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
 
-            Rectangle {
-                Layout.fillWidth: true
-                height: 40
-                implicitWidth: 640
-                implicitHeight: 40
-                radius: Theme.radiusMd
-                color: Theme.surfaceContainerLow
-                border.width: searchInput.activeFocus ? 2 : 1
-                border.color: searchInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
-                    spacing: 10
-
-                    Icon {
-                        path: Icons.search
-                        width: 16
-                        height: 16
-                        color: Theme.surfaceContentVariant
-                    }
-
-                    TextInput {
-                        id: searchInput
-                        Layout.fillWidth: true
-                        color: Theme.surfaceContent
-                        font.family: Theme.fontUi
-                        font.pixelSize: 13
-                        selectByMouse: true
-                        clip: true
-                        Accessible.name: qsTr("Search features guide")
-                        onTextChanged: guide.searchQuery = text
-
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: qsTr("Search features by name, location, or permission...")
-                            role: "body"
-                            muted: true
-                            visible: searchInput.text.length === 0
-                        }
-                    }
-
-                    IconButton {
-                        iconPath: Icons.close
-                        iconSize: 13
-                        label: qsTr("Clear search")
-                        visible: searchInput.text.length > 0
-                        onClicked: {
-                            searchInput.text = ""
-                            guide.searchQuery = ""
-                        }
-                    }
+        FocusScope {
+            id: list
+            x: 8
+            y: 8
+            width: listView.width - 16
+            height: listCol.height
+            activeFocusOnTab: true
+            Keys.onPressed: (event) => {
+                if (event.key === Qt.Key_Down) {
+                    guide.step(1)
+                } else if (event.key === Qt.Key_Up) {
+                    guide.step(-1)
+                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    guide.showSelected()
+                } else {
+                    return
                 }
+                event.accepted = true
             }
 
-            Flow {
-                Layout.fillWidth: true
-                spacing: 8
-
-                Repeater {
-                    model: guide.areaChips
-                    delegate: Rectangle {
-                        required property var modelData
-                        readonly property bool selected: guide.selectedArea === modelData.id
-                        height: 30
-                        width: chipText.implicitWidth + 24
-                        implicitWidth: chipText.implicitWidth + 24
-                        implicitHeight: 30
-                        radius: Theme.quiet ? Theme.radiusMd : 15
-                        color: selected ? Theme.secondaryContainer : Theme.surfaceContainerLow
-                        border.width: 1
-                        border.color: selected ? Theme.primary : Theme.outlineVariant
-
-                        Txt {
-                            id: chipText
-                            anchors.centerIn: parent
-                            text: parent.modelData.label
-                            role: "caption"
-                            weight: parent.selected ? 600 : 500
-                            color: parent.selected ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
-                        }
-
-                        Accessible.role: Accessible.Button
-                        Accessible.name: qsTr("Filter by %1").arg(modelData.label)
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: guide.selectedArea = parent.modelData.id
-                        }
-                    }
-                }
-            }
-        }
-
-        // Scrollable list of feature cards
-        ListView {
-            id: featureList
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            clip: true
-            spacing: 12
-            boundsBehavior: Flickable.StopAtBounds
-            model: guide.filteredFeatures
-
-            delegate: Card {
-                required property var modelData
-                width: featureList.width
-                height: implicitHeight
-                padding: 16
-
-                readonly property var statusInfo: guide.statusForFeature(modelData)
-
-                ColumnLayout {
-                    width: parent.width
-                    spacing: 10
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 12
-
-                        Rectangle {
-                            width: 38
-                            height: 38
-                            implicitWidth: 38
-                            implicitHeight: 38
-                            radius: Theme.radiusMd
-                            color: Theme.quiet ? "transparent" : Theme.secondaryContainer
-
-                            Icon {
-                                anchors.centerIn: parent
-                                path: modelData.icon
-                                width: 18
-                                height: 18
-                                color: Theme.secondaryContainerContent
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 2
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 10
-
-                                Txt {
-                                    text: modelData.name
-                                    role: "title"
-                                }
-
-                                // C.2: Live status badge only when phone is connected or feature is PC-local
-                                Rectangle {
-                                    visible: Boolean(statusInfo.visible && statusInfo.label !== "")
-                                    height: 22
-                                    width: badgeLabel.implicitWidth + 16
-                                    implicitWidth: badgeLabel.implicitWidth + 16
-                                    implicitHeight: 22
-                                    radius: Theme.quiet ? Theme.radiusMd : 11
-                                    color: statusInfo.tone === "available"
-                                        ? Theme.secondaryContainer
-                                        : (statusInfo.tone === "warn"
-                                            ? Qt.rgba(Theme.warning.r, Theme.warning.g, Theme.warning.b, 0.16)
-                                            : Theme.surfaceContainerHigh)
-                                    border.width: 1
-                                    border.color: statusInfo.tone === "available"
-                                        ? Theme.primary
-                                        : (statusInfo.tone === "warn" ? Theme.warning : Theme.outlineVariant)
-
-                                    Txt {
-                                        id: badgeLabel
-                                        anchors.centerIn: parent
-                                        text: statusInfo.label
-                                        role: "caption"
-                                        weight: 600
-                                        color: statusInfo.tone === "available"
-                                            ? Theme.secondaryContainerContent
-                                            : (statusInfo.tone === "warn" ? Theme.warning : Theme.surfaceContentVariant)
-                                    }
-                                }
-
-                                Item { Layout.fillWidth: true }
-                            }
-
-                            Txt {
-                                Layout.fillWidth: true
-                                text: modelData.summary
-                                role: "bodySmall"
-                                muted: true
-                                wrapMode: Text.WordWrap
-                            }
-                        }
-
-                        // C.3: Quiet tonal "Show me" button + clean text link "Learn more ›"
-                        RowLayout {
-                            spacing: 10
-
-                            Rectangle {
-                                id: showBtn
-                                implicitWidth: showLabel.implicitWidth + 24
-                                implicitHeight: 30
-                                radius: Theme.radiusSm
-                                color: showHover.hovered
-                                    ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.18)
-                                    : Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.10)
-
-                                HoverHandler {
-                                    id: showHover
-                                    cursorShape: Qt.PointingHandCursor
-                                }
-
-                                TapHandler {
-                                    onTapped: guide.showMeRequested(modelData.targetId)
-                                }
-
-                                Accessible.role: Accessible.Button
-                                Accessible.name: qsTr("Show me %1").arg(modelData.name)
-
-                                Txt {
-                                    id: showLabel
-                                    anchors.centerIn: parent
-                                    text: qsTr("Show me")
-                                    role: "label"
-                                    color: Theme.primary
-                                }
-                            }
-
-                            Rectangle {
-                                id: learnBtn
-                                implicitWidth: learnLabel.implicitWidth + 12
-                                implicitHeight: 30
-                                radius: Theme.radiusSm
-                                color: "transparent"
-
-                                HoverHandler {
-                                    id: learnHover
-                                    cursorShape: Qt.PointingHandCursor
-                                }
-
-                                TapHandler {
-                                    onTapped: guide.openDoc(modelData.docKey)
-                                }
-
-                                Accessible.role: Accessible.Button
-                                Accessible.name: qsTr("Learn more about %1").arg(modelData.name)
-
-                                Txt {
-                                    id: learnLabel
-                                    anchors.centerIn: parent
-                                    text: qsTr("Learn more ›")
-                                    role: "label"
-                                    color: learnHover.hovered ? Theme.primary : Theme.surfaceContentVariant
-                                }
-                            }
-                        }
-                    }
-
-                    Divider { Layout.fillWidth: true }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 20
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 6
-
-                            Txt {
-                                text: qsTr("Where:")
-                                role: "caption"
-                                weight: 600
-                                muted: true
-                            }
-
-                            Txt {
-                                Layout.fillWidth: true
-                                text: modelData.whereLabel
-                                role: "caption"
-                                muted: true
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 6
-
-                            Txt {
-                                text: qsTr("Needs:")
-                                role: "caption"
-                                weight: 600
-                                muted: true
-                            }
-
-                            Txt {
-                                Layout.fillWidth: true
-                                text: modelData.needsLabel
-                                role: "caption"
-                                muted: true
-                                elide: Text.ElideRight
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Empty search state
-            ColumnLayout {
-                anchors.centerIn: parent
-                spacing: 8
-                visible: guide.filteredFeatures.length === 0
+            Column {
+                id: listCol
+                width: parent.width
+                spacing: 2
 
                 Txt {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: qsTr("No matching features")
-                    role: "title"
-                }
-
-                Txt {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: qsTr("Try another search term or select All above.")
+                    visible: !guide.hasConnectedPhone
+                    x: Theme.rowPadding
+                    width: parent.width - 2 * Theme.rowPadding
+                    height: 30
+                    text: qsTr("Connect a phone to see what's ready")
                     role: "bodySmall"
                     muted: true
+                }
+                Repeater {
+                    model: guide.groups
+                    delegate: Column {
+                        id: group
+                        required property var modelData
+                        width: listCol.width
+                        spacing: 2
+                        SectionLabel {
+                            width: parent.width
+                            text: group.modelData.label
+                        }
+                        Repeater {
+                            model: group.modelData.rows
+                            delegate: ActionRow {
+                                id: featureRow
+                                required property var modelData
+                                readonly property var status: guide.statusForFeature(modelData)
+                                width: group.width
+                                activeFocusOnTab: false
+                                iconPath: modelData.icon
+                                tint: guide.tintFor(modelData)
+                                title: modelData.name
+                                selected: guide.selectedFeature !== null && guide.selectedFeature.id === modelData.id
+                                onClicked: {
+                                    guide.selectedId = modelData.id
+                                    list.forceActiveFocus()
+                                }
+                                Txt {
+                                    visible: featureRow.status.visible && featureRow.status.label !== ""
+                                    text: featureRow.status.label
+                                    role: "bodySmall"
+                                    color: guide.toneColor(featureRow.status.tone)
+                                }
+                            }
+                        }
+                    }
+                }
+                Txt {
+                    visible: guide.orderedFeatures.length === 0
+                    x: Theme.rowPadding
+                    height: Theme.rowHeight
+                    text: qsTr("Nothing matches")
+                    muted: true
+                }
+
+                SectionLabel {
+                    width: parent.width
+                    text: qsTr("Handbook")
+                }
+                Repeater {
+                    model: guide.guideChapters
+                    delegate: ActionRow {
+                        required property var modelData
+                        width: listCol.width
+                        activeFocusOnTab: false
+                        iconPath: Icons.book
+                        tint: Theme.tintBlue
+                        title: modelData.label
+                        onClicked: guide.openDoc(modelData.key)
+                    }
+                }
+                ActionRow {
+                    width: listCol.width
+                    activeFocusOnTab: false
+                    iconPath: Icons.compass
+                    tint: Theme.tintTeal
+                    title: qsTr("Setup walkthrough")
+                    onClicked: guide.restartWalkthroughRequested()
+                }
+            }
+        }
+    }
+    Rectangle {
+        anchors.left: listView.right
+        anchors.top: topRow.bottom
+        anchors.bottom: parent.bottom
+        width: 1
+        color: Theme.line
+    }
+
+    // ---- Right: the feature picked ----
+    Flickable {
+        id: article
+        anchors.left: listView.right
+        anchors.leftMargin: 1
+        anchors.right: parent.right
+        anchors.top: topRow.bottom
+        anchors.bottom: parent.bottom
+        contentHeight: articleCol.height + 44
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
+
+        Column {
+            id: articleCol
+            visible: guide.selectedFeature !== null
+            x: 28
+            y: 22
+            width: Math.min(article.width - 56, 720)
+            spacing: 16
+
+            Row {
+                spacing: 12
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 24; height: 24
+                    path: guide.selectedFeature ? guide.selectedFeature.icon : ""
+                    color: guide.selectedFeature ? guide.tintFor(guide.selectedFeature) : Theme.surfaceContentVariant
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: guide.selectedFeature ? guide.selectedFeature.name : ""
+                    role: "headline"
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: guide.selectedStatus !== null && guide.selectedStatus.visible && guide.selectedStatus.label !== ""
+                    text: guide.selectedStatus ? guide.selectedStatus.label : ""
+                    role: "bodySmall"
+                    color: guide.toneColor(guide.selectedStatus ? guide.selectedStatus.tone : "")
+                }
+            }
+            Txt {
+                width: Math.min(parent.width, 560)
+                text: guide.selectedFeature ? guide.selectedFeature.summary : ""
+                muted: true
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+            }
+            Grid {
+                width: parent.width
+                columns: 2
+                columnSpacing: 16
+                rowSpacing: 8
+                Txt { width: 120; text: qsTr("Open"); muted: true }
+                Txt {
+                    width: parent.width - 136
+                    text: guide.selectedFeature ? guide.selectedFeature.whereLabel : ""
+                    wrapMode: Text.WordWrap
+                    elide: Text.ElideNone
+                }
+                Txt { width: 120; text: qsTr("Needs"); muted: true }
+                Txt {
+                    width: parent.width - 136
+                    text: guide.selectedFeature ? guide.selectedFeature.needsLabel : ""
+                    wrapMode: Text.WordWrap
+                    elide: Text.ElideNone
+                }
+                Txt {
+                    width: 120
+                    visible: guide.hasConnectedPhone
+                    text: qsTr("Phone")
+                    muted: true
+                }
+                Txt {
+                    width: parent.width - 136
+                    visible: guide.hasConnectedPhone
+                    text: guide.deviceName
+                }
+            }
+            Row {
+                spacing: 8
+                Button {
+                    text: qsTr("Show me")
+                    onClicked: guide.showSelected()
+                }
+                Button {
+                    variant: "outline"
+                    text: qsTr("Learn more")
+                    iconPath: Icons.book
+                    onClicked: if (guide.selectedFeature) guide.openDoc(guide.selectedFeature.docKey)
                 }
             }
         }
     }
 
-    // C.5: In-app reader sheet with topic tab bar for Overview, Setup, Permissions,
-    // Power levels, Troubleshooting, and FAQ
+    // The handbook reader: a chapter at a time, with tabs for the others.
     Sheet {
         id: readerSheet
         cardWidth: 640
@@ -1035,21 +952,11 @@ Item {
                 Layout.fillWidth: true
                 spacing: 12
 
-                Rectangle {
-                    width: 36
-                    height: 36
-                    implicitWidth: 36
-                    implicitHeight: 36
-                    radius: Theme.radiusMd
-                    color: Theme.quiet ? "transparent" : Theme.secondaryContainer
-
-                    Icon {
-                        anchors.centerIn: parent
-                        path: Icons.book
-                        width: 18
-                        height: 18
-                        color: Theme.secondaryContainerContent
-                    }
+                Icon {
+                    path: Icons.book
+                    width: 20
+                    height: 20
+                    color: Theme.tintBlue
                 }
 
                 Txt {
@@ -1073,37 +980,12 @@ Item {
 
                 Repeater {
                     model: guide.guideChapters
-                    delegate: Rectangle {
+                    delegate: TextAction {
                         required property var modelData
-                        readonly property bool activeTab: guide.activeDocKey === modelData.key
-                        implicitWidth: tabTxt.implicitWidth + 20
-                        implicitHeight: 28
-                        radius: Theme.quiet ? Theme.radiusMd : 14
-                        color: activeTab
-                            ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.16)
-                            : Theme.surfaceContainerLow
-                        border.width: 1
-                        border.color: activeTab ? Theme.primary : Theme.outlineVariant
-
-                        HoverHandler {
-                            cursorShape: Qt.PointingHandCursor
-                        }
-
-                        TapHandler {
-                            onTapped: guide.openDoc(modelData.key)
-                        }
-
-                        Accessible.role: Accessible.Button
-                        Accessible.name: qsTr("Read %1").arg(modelData.label + " chapter")
-
-                        Txt {
-                            id: tabTxt
-                            anchors.centerIn: parent
-                            text: modelData.label
-                            role: "caption"
-                            weight: activeTab ? 600 : 500
-                            color: activeTab ? Theme.primary : Theme.surfaceContentVariant
-                        }
+                        selected: guide.activeDocKey === modelData.key
+                        text: modelData.label
+                        Accessible.name: qsTr("Read %1").arg(modelData.label)
+                        onClicked: guide.openDoc(modelData.key)
                     }
                 }
             }
