@@ -128,6 +128,7 @@ cargo clippy --locked -p g7link-desktop -p g7link-vcam --all-targets -- -D warni
 cargo test --locked -p g7link-desktop -p g7link-vcam
 bash desktop/app/tests/linux_video_dispatch_test.sh
 bash desktop/app/tests/qt_thread_sync_test.sh
+bash desktop/app/tests/video_view_test.sh
 LIBAVCODEC_NO_PKG_CONFIG=1 cargo check --locked -p g7link-desktop --tests
 
 # Packages
@@ -144,7 +145,9 @@ cd android && ./gradlew testDebugUnitTest lintDebug assembleDebug
 
 `linux_video_dispatch_test.sh` checks that video falls back cleanly when the
 FFmpeg adapters can't load; `qt_thread_sync_test.sh` checks waiting on the Qt
-thread. The `cargo check` without `pkg-config` makes sure the app still builds
+thread; `video_view_test.sh` checks that a decoded picture is drawn in the
+right colors, on Qt's software renderer (with `G7LINK_TEST_PLATFORM=wayland`
+or `xcb` it runs the GPU's shader instead, off screen). The `cargo check` without `pkg-config` makes sure the app still builds
 without the FFmpeg backend.
 
 ### Targeted suites
@@ -159,4 +162,10 @@ cargo test -p g7link-ffi
 
 QML component tests (Qt Quick Test) live in
 [`desktop/app/tests/qml`](../../desktop/app/tests/qml), with stubs for the
-Rust singletons in `stubs/`. CI doesn't run them yet.
+Rust singletons in `stubs/`. CI doesn't run them yet. To run one, give
+`qmltestrunner` a module made of the app's QML and the stubs: copy
+`desktop/app/qml/*.qml`, `qml/components/*.qml` and `tests/qml/stubs/*.qml`
+into `<dir>/app/g7link/`, list them in a `qmldir` there (`module app.g7link`,
+then `<Name> 1.0 <Name>.qml` for each, `singleton` first for those with
+`pragma Singleton`), and run `QT_QPA_PLATFORM=offscreen qmltestrunner -import
+<dir> -input desktop/app/tests/qml/tst_mirrorwindow.qml`.

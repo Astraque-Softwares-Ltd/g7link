@@ -157,6 +157,8 @@ jobs:
         run: bash desktop/app/tests/linux_video_dispatch_test.sh
       - name: Waiting on the Qt thread
         run: bash desktop/app/tests/qt_thread_sync_test.sh
+      - name: Drawing the phone's picture
+        run: bash desktop/app/tests/video_view_test.sh
       - name: Check without the optional FFmpeg backend
         env:
           LIBAVCODEC_NO_PKG_CONFIG: "1"
