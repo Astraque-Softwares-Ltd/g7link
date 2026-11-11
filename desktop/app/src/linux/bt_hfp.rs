@@ -251,7 +251,8 @@ fn managed_objects(conn: &zbus::blocking::Connection) -> Option<ManagedObjectsMa
         if !super::dbus_name_has_owner(conn, BLUEZ) {
             return None;
         }
-        let reply = conn.call_method(Some(BLUEZ), "/", Some(OBJECT_MANAGER), "GetManagedObjects", &()).ok()?;
+        let reply =
+            conn.call_method(Some(BLUEZ), "/", Some(OBJECT_MANAGER), "GetManagedObjects", &()).ok()?;
         let body = reply.body();
         body.deserialize::<ManagedObjectsMap>()
             .ok()
@@ -363,7 +364,7 @@ pub(crate) fn is_call_profile(profile: &str) -> bool {
 /// The best available call profile the card has; never an A2DP one.
 pub(crate) fn pick_call_profile(card: &Card) -> Option<&'static str> {
     let available = |wanted: &str| card.profiles.iter().any(|(name, on)| name == wanted && *on);
-    CALL_PROFILES.into_iter().find(|wanted| available(*wanted))
+    CALL_PROFILES.into_iter().find(|wanted| available(wanted))
 }
 
 fn card_listed(short_list: &str, card: &str) -> bool {
