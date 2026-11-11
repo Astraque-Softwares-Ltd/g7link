@@ -10,26 +10,31 @@ Item {
     property string title
     property string description
     property bool stackBelow: false
+    // The icon's tint (G7 theme: each setting's glyph in its own color).
+    property color iconColor: Theme.surfaceContentVariant
     default property alias trailing: trailingSlot.data
 
     readonly property bool stackTrailing: stackBelow || (trailingSlot.childrenRect.width > row.width * 0.52 && row.width > 0)
 
     implicitHeight: stackTrailing
         ? texts.implicitHeight + trailingSlot.childrenRect.height + 34
-        : Math.max(56, texts.implicitHeight + 20, trailingSlot.childrenRect.height + 16)
+        : Math.max(Theme.quiet ? Theme.rowHeight : 56, texts.implicitHeight + (Theme.quiet ? 14 : 20),
+                   trailingSlot.childrenRect.height + (Theme.quiet ? 10 : 16))
 
     Icon {
         id: icon
         visible: row.iconPath.length > 0
         anchors.left: parent.left
         anchors.verticalCenter: row.stackTrailing ? texts.verticalCenter : parent.verticalCenter
+        width: Theme.quiet ? 18 : implicitWidth
+        height: width
         path: row.iconPath
-        color: Theme.surfaceContentVariant
+        color: row.iconColor
     }
     Column {
         id: texts
         anchors.left: icon.visible ? icon.right : parent.left
-        anchors.leftMargin: icon.visible ? 14 : 0
+        anchors.leftMargin: icon.visible ? (Theme.quiet ? 12 : 14) : 0
         anchors.right: row.stackTrailing ? parent.right : trailingSlot.left
         anchors.rightMargin: row.stackTrailing ? 0 : 16
         y: row.stackTrailing ? 12 : Math.round((row.height - height) / 2)
@@ -37,8 +42,8 @@ Item {
         Txt {
             width: parent.width
             text: row.title
-            role: "title"
-            size: 14
+            role: Theme.quiet ? "body" : "title"
+            size: Theme.quiet ? Theme.typography.body.size : 14
             wrapMode: Text.WordWrap
             elide: Text.ElideNone
         }

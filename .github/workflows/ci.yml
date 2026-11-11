@@ -143,6 +143,16 @@ jobs:
         run: cargo clippy --locked -p g7link-desktop -p g7link-vcam --all-targets -- -D warnings
       - name: Tests
         run: cargo test --locked -p g7link-desktop -p g7link-vcam
+      # Starts the app with a pretend phone and tours every page, menu and
+      # window (MainWindow.qml, uiCheckTour); any QML warning fails it. QML
+      # errors otherwise only show when someone opens that screen.
+      - name: Open every screen
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          cargo build --locked -p g7link-desktop
+          data="$(mktemp -d)"
+          timeout 180 target/debug/g7link-desktop --ui-check --data-dir "$data"
       - name: Video adapter fallback
         run: bash desktop/app/tests/linux_video_dispatch_test.sh
       - name: Waiting on the Qt thread

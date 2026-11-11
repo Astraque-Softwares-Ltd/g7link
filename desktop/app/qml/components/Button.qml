@@ -18,8 +18,8 @@ FocusScope {
     readonly property bool interactive: enabled && !busy
     readonly property color background: {
         if (Theme.quiet)
-            return variant === "fill" ? Theme.secondaryContainer
-                : (variant === "text" ? "transparent" : Theme.surfaceContainer)
+            return variant === "fill" ? Theme.accent
+                : (variant === "tonal" ? Theme.selection : (variant === "text" ? "transparent" : Theme.raised))
         if (variant === "fill")
             return Theme.graphite ? Theme.surfaceContent : Theme.primary
         if (variant === "tonal") {
@@ -34,7 +34,8 @@ FocusScope {
     }
     readonly property color foreground: {
         if (Theme.quiet)
-            return variant === "text" ? Theme.surfaceContentVariant : Theme.surfaceContent
+            return variant === "fill" ? Theme.accentContent
+                : (variant === "text" ? Theme.surfaceContentVariant : Theme.surfaceContent)
         if (variant === "fill")
             return Theme.graphite ? Theme.surface : Theme.primaryContent
         if (variant === "tonal")
@@ -44,8 +45,8 @@ FocusScope {
         return Theme.surfaceContent
     }
 
-    implicitHeight: small ? 32 : 40
-    implicitWidth: row.implicitWidth + (variant === "text" ? 20 : (small ? 26 : 36))
+    implicitHeight: Theme.quiet ? (small ? 26 : 34) : (small ? 32 : 40)
+    implicitWidth: row.implicitWidth + (Theme.quiet ? (small ? 20 : 28) : (variant === "text" ? 20 : (small ? 26 : 36)))
     activeFocusOnTab: true
     opacity: enabled ? 1 : 0.38
 
@@ -84,7 +85,7 @@ FocusScope {
         id: body
         width: parent.width
         height: parent.height
-        radius: Theme.pill(height)
+        radius: Theme.quiet ? (button.small ? Theme.radiusSm : Theme.radiusMd) : Theme.pill(height)
         color: button.background
         Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
         border.width: !Theme.quiet && button.variant === "outline" || (Theme.glass && (button.variant === "tonal" || button.variant === "fill")) ? 1 : 0
@@ -128,7 +129,7 @@ FocusScope {
             Icon {
                 visible: button.iconPath.length > 0 && !button.busy
                 anchors.verticalCenter: parent.verticalCenter
-                width: button.small ? 16 : 18; height: width
+                width: button.small || Theme.quiet ? 16 : 18; height: width
                 path: button.iconPath
                 color: button.foreground
             }
@@ -137,7 +138,8 @@ FocusScope {
                 text: button.text
                 role: "label"
                 color: button.foreground
-                size: Theme.graphite ? 11 : (button.small ? 13 : 14)
+                size: Theme.graphite ? 11 : (Theme.quiet ? (button.small ? 12 : 13) : (button.small ? 13 : 14))
+                weight: Theme.quiet && button.variant !== "fill" ? 400 : Theme.typography.label.weight
                 font.underline: Theme.graphite && button.variant === "text"
                 maximumLineCount: 1
                 elide: Text.ElideRight

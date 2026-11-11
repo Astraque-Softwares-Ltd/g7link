@@ -16,8 +16,8 @@ FocusScope {
     readonly property bool hasText: text.length > 0
     readonly property string effectiveTip: label.length > 0 ? label : text
 
-    implicitWidth: hasText ? contentRow.implicitWidth + 24 : 34
-    implicitHeight: 34
+    implicitWidth: hasText ? contentRow.implicitWidth + (Theme.quiet ? 20 : 24) : (Theme.quiet ? 30 : 34)
+    implicitHeight: Theme.quiet ? 30 : 34
     activeFocusOnTab: true
     opacity: enabled ? 1 : 0.38
     Component.onDestruction: tooltipPill.shown = false
@@ -38,9 +38,9 @@ FocusScope {
     Rectangle {
         id: body
         anchors.fill: parent
-        radius: Theme.pill(height)
+        radius: Theme.quiet ? Theme.radiusSm : Theme.pill(height)
         color: button.tonal
-            ? (Theme.glass
+            ? (Theme.quiet ? Theme.selection : Theme.glass
                 ? Qt.tint(Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.54), Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.18 : 0.14))
                 : Theme.secondaryContainer)
             : "transparent"

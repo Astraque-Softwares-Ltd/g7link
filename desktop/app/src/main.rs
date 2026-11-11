@@ -241,8 +241,8 @@ struct Options {
 }
 
 /// How long `--ui-check` keeps the window open: long enough for the window
-/// to load, be restored and settle.
-const UI_CHECK_SECONDS: u64 = 8;
+/// to load and settle, and for its tour of every page, menu and window.
+const UI_CHECK_SECONDS: u64 = 16;
 
 fn parse_options() -> Options {
     parse_options_from(std::env::args_os().skip(1))

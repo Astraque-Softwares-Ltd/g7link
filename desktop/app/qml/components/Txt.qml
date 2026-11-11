@@ -18,10 +18,10 @@ Text {
     // Pixel size; set this (not font.pixelSize) to resize, so the role's
     // tracking scales with it.
     property real size: Math.round(graphiteLabel ? Theme.labelStyle.size : spec.size)
-    // Set this (not font.weight) to change the weight: Figtree is a variable
-    // font, and its weight axis is set to match, so in-between weights such
+    // Set this (not font.weight) to change the weight: Figtree and Geist
+    // Mono are variable fonts, and its weight axis is set to match, so in-between weights such
     // as 650 render exactly instead of snapping to a named style.
-    property int weight: graphiteLabel ? Theme.labelStyle.weight : (isDisplay && Theme.graphite ? 400 : (Theme.quiet && isDisplay ? 600 : spec.weight))
+    property int weight: graphiteLabel ? Theme.labelStyle.weight : (isDisplay && Theme.graphite ? 400 : spec.weight)
 
     readonly property string family: role === "code" || graphiteLabel
         ? Theme.fontMono : (isDisplay ? Theme.fontDisplay : Theme.fontUi)
@@ -30,7 +30,7 @@ Text {
     font.family: family
     font.pixelSize: Math.max(1, Math.round(size))
     font.weight: weight
-    font.variableAxes: family === "Figtree" ? { "wght": weight } : {}
+    font.variableAxes: family === "Figtree" || family === "Geist Mono" ? { "wght": weight } : {}
     font.letterSpacing: (graphiteLabel ? Theme.labelStyle.tracking : spec.tracking) * size
     font.capitalization: graphiteLabel ? Font.AllUppercase : Font.MixedCase
     // Token line heights are CSS-style (a multiple of the font size), not

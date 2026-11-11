@@ -11,6 +11,7 @@ Item {
     property real cardWidth: 460
     default property alias content: body.data
     signal dismissed
+    readonly property int inset: Theme.quiet ? 16 : 24
 
     function open() {
         opened = true
@@ -53,7 +54,7 @@ Item {
         id: card
         anchors.centerIn: parent
         width: Math.min(sheet.cardWidth, parent.width - 48)
-        height: Math.min(body.childrenRect.height + 48, parent.height - 48)
+        height: Math.min(body.childrenRect.height + 2 * sheet.inset, parent.height - 48)
         radius: Theme.radiusXl
         color: Theme.surface
         border.width: 1
@@ -66,7 +67,7 @@ Item {
 
         Flickable {
             anchors.fill: parent
-            anchors.margins: 24
+            anchors.margins: sheet.inset
             contentWidth: width
             contentHeight: body.childrenRect.height
             interactive: contentHeight > height

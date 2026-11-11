@@ -11,10 +11,12 @@ Rectangle {
     property bool interactive: false
     signal clicked()
 
-    implicitHeight: 30
-    implicitWidth: row.implicitWidth + 24
-    radius: Theme.pill(height)
-    color: Theme.graphite
+    implicitHeight: Theme.quiet ? 24 : 30
+    implicitWidth: row.implicitWidth + (Theme.quiet ? 20 : 24)
+    radius: Theme.quiet ? Theme.radiusSm : Theme.pill(height)
+    color: Theme.quiet
+        ? (selected ? Theme.selection : (interactive ? "transparent" : Theme.raised))
+        : Theme.graphite
         ? (selected ? Theme.surfaceContent : "transparent")
         : (Theme.glass
             ? (selected
@@ -22,7 +24,7 @@ Rectangle {
                 : Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.50))
             : (selected ? Theme.secondaryContainer : Theme.surfaceContainerHigh))
     Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-    border.width: Theme.graphite || Theme.glass ? 1 : 0
+    border.width: !Theme.quiet && (Theme.graphite || Theme.glass) ? 1 : 0
     border.color: Theme.glass
         ? (selected ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.55) : Qt.rgba(1, 1, 1, Theme.dark ? 0.22 : 0.68))
         : (selected ? Theme.surfaceContent : Theme.outlineVariant)
@@ -65,7 +67,7 @@ Rectangle {
         Icon {
             visible: chip.iconPath.length > 0
             anchors.verticalCenter: parent.verticalCenter
-            width: 15; height: 15
+            width: Theme.quiet ? 14 : 15; height: width
             path: chip.iconPath
             color: label.color
         }
@@ -73,8 +75,9 @@ Rectangle {
             id: label
             anchors.verticalCenter: parent.verticalCenter
             text: chip.text
-            role: "label"
-            color: Theme.graphite ? (chip.selected ? Theme.surface : Theme.surfaceContent)
+            role: Theme.quiet ? "bodySmall" : "label"
+            color: Theme.quiet ? (chip.selected || !chip.interactive ? Theme.surfaceContent : Theme.surfaceContentVariant)
+                : Theme.graphite ? (chip.selected ? Theme.surface : Theme.surfaceContent)
                                   : (chip.selected ? Theme.secondaryContainerContent : Theme.surfaceContent)
         }
     }

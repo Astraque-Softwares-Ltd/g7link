@@ -2,14 +2,18 @@
 import QtQuick
 import QtQuick.Window
 import QtQuick.Effects
+import QtQml
+import QtQml.Models
 import app.g7link
 
-// The main window: navigation rail, title bar and pages. Before any device
-// is paired it shows the welcome (pairing) screen instead.
+// The main window: a header (phone picker and search), a sidebar, the page
+// and a footer (the G7 menu, the link and battery, the page's actions).
+// Before any device is paired it shows the welcome screen instead.
 NativeWindow {
     id: window
 
-    readonly property bool showWalkthrough: AppController.status === "ready" && !Preferences.walkthroughCompleted
+    readonly property bool showWalkthrough: AppController.status === "ready"
+                                            && (!Preferences.walkthroughCompleted || uiCheckWelcome)
     readonly property bool welcome: AppController.status !== "ready" || showWalkthrough
     property string page: AppController.currentPage.length > 0 ? AppController.currentPage : "home"
     property string pendingSettingsSection: ""
@@ -94,13 +98,6 @@ NativeWindow {
         }
         window.page = "home"
     }
-    // The G7 theme, on a wide screen: related sections share the window.
-    readonly property var pagePair: {
-        if (!Theme.quiet || pages.width < 1560)
-            return []
-        const groups = [["messages", "calls"], ["photos", "apps"], ["deck", "timeline"]]
-        return groups.find((group) => group.includes(window.page)) || []
-    }
     function pageUrl(name) {
         switch (name) {
         case "timeline": return "qrc:/qt/qml/app/g7link/qml/pages/TimelinePage.qml"
@@ -115,7 +112,7 @@ NativeWindow {
         }
     }
 
-    // Hooks a loaded page up to the window (both pages, when two share the screen).
+    // Hooks a loaded page up to the window.
     function wirePage(item) {
         if ("deviceId" in item)
             item.deviceId = Qt.binding(() => window.currentDeviceId)
@@ -461,9 +458,9 @@ NativeWindow {
         pulseSeconds: Theme.comb.pulseSeconds
         lineColor: Theme.combLine
         glowColor: Theme.combGlow
-        // The center of the logo mark in the rail; the comb and its pulses
-        // carry across the whole window.
-        origin: Qt.point(Theme.railWidth / 2, Theme.topBarHeight / 2)
+        // The G7 mark in the footer; the comb and its pulses carry across
+        // the whole window.
+        origin: Qt.point(28, window.height - Theme.footerHeight / 2)
         reach: 2.4
         pulseReach: 1.05
     }
@@ -562,513 +559,421 @@ NativeWindow {
         }
     }
 
-    // ---- Navigation rail ----
-    Rectangle {
-        id: rail
-        visible: !window.welcome && !Theme.quiet
-        width: Theme.quiet ? 0 : Theme.railWidth
-        height: parent.height
-        color: "transparent"
-        property string hoveredNav: ""
-
-        Rectangle {
-            id: mark
-            anchors.horizontalCenter: parent.horizontalCenter
-            // Centered on the top bar, level with the page title and the window buttons.
-            y: (Theme.topBarHeight - height) / 2
-            width: 38; height: 38
-            radius: Theme.radiusSm
-            color: Theme.graphite ? Theme.surfaceContent : Theme.primary
-            Icon {
-                anchors.centerIn: parent
-                path: Icons.mark
-                stroke: 2.4
-                color: Theme.graphite ? Theme.surface : Theme.primaryContent
-            }
-        }
-        Column {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.top: mark.bottom
-            anchors.topMargin: 31
-            spacing: 6
-            NavItem {
-                iconPath: Icons.home
-                text: qsTr("Home")
-                selected: window.page === "home" || window.page === "timeline"
-                activeHover: rail.hoveredNav === "home"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "home"
-                    else if (rail.hoveredNav === "home") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "home"
-            }
-            NavItem {
-                iconPath: Icons.messages
-                text: qsTr("Messages")
-                selected: window.page === "messages"
-                activeHover: rail.hoveredNav === "messages"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "messages"
-                    else if (rail.hoveredNav === "messages") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "messages"
-            }
-            NavItem {
-                iconPath: Icons.call
-                text: qsTr("Calls")
-                selected: window.page === "calls"
-                activeHover: rail.hoveredNav === "calls"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "calls"
-                    else if (rail.hoveredNav === "calls") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "calls"
-            }
-            NavItem {
-                iconPath: Icons.photo
-                text: qsTr("Photos")
-                selected: window.page === "photos"
-                activeHover: rail.hoveredNav === "photos"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "photos"
-                    else if (rail.hoveredNav === "photos") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "photos"
-            }
-            NavItem {
-                iconPath: Icons.apps
-                text: qsTr("Apps")
-                selected: window.page === "apps"
-                activeHover: rail.hoveredNav === "apps"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "apps"
-                    else if (rail.hoveredNav === "apps") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "apps"
-            }
-            NavItem {
-                iconPath: Icons.deck
-                text: qsTr("Deck")
-                selected: window.page === "deck"
-                activeHover: rail.hoveredNav === "deck"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "deck"
-                    else if (rail.hoveredNav === "deck") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "deck"
-            }
-            NavItem {
-                iconPath: Icons.book
-                text: qsTr("Guide")
-                selected: window.page === "guide"
-                activeHover: rail.hoveredNav === "guide"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "guide"
-                    else if (rail.hoveredNav === "guide") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "guide"
-            }
-            NavItem {
-                iconPath: Icons.settings
-                text: qsTr("Settings")
-                selected: window.page === "settings"
-                activeHover: rail.hoveredNav === "settings"
-                onHoveredChanged: {
-                    if (hovered) rail.hoveredNav = "settings"
-                    else if (rail.hoveredNav === "settings") rail.hoveredNav = ""
-                }
-                onClicked: window.page = "settings"
-            }
-        }
-        IconButton {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 18
-            iconPath: Icons.plus
-            label: qsTr("Pair a new device")
-            tonal: true
-            onClicked: window.openPairing()
+    // ---- The window: a header, a sidebar and a footer around the page ----
+    // Every page can describe its footer and its Actions list:
+    //   footerLabel: "Photos · 1,284" (else the page's name)
+    //   primaryAction / secondaryAction: { label, keys, run }
+    //   screenActions: [{ label, detail, icon, tint, keys, checked, enabled, run }]
+    // The page itself handles the keys it advertises.
+    readonly property var pageItem: pageLoader.status === Loader.Ready ? pageLoader.item : null
+    readonly property var primaryAction: pageItem && pageItem.primaryAction ? pageItem.primaryAction : null
+    readonly property var secondaryAction: pageItem && pageItem.secondaryAction ? pageItem.secondaryAction : null
+    readonly property var screenActions: pageItem && pageItem.screenActions ? pageItem.screenActions : []
+    readonly property var navItems: [
+        { page: "home", icon: Icons.home, tint: Theme.tintLavender, name: qsTr("Home") },
+        { page: "messages", icon: Icons.messages, tint: Theme.tintBlue, name: qsTr("Messages") },
+        { page: "calls", icon: Icons.call, tint: Theme.tintTeal, name: qsTr("Calls") },
+        { page: "photos", icon: Icons.photo, tint: Theme.tintCoral, name: qsTr("Photos") },
+        { page: "apps", icon: Icons.apps, tint: Theme.tintPink, name: qsTr("Apps") },
+        { page: "deck", icon: Icons.deck, tint: Theme.tintGreen, name: qsTr("Deck") },
+        { page: "timeline", icon: Icons.history, tint: Theme.tintLavender, name: qsTr("Timeline") },
+        { page: "settings", icon: Icons.settings, tint: Theme.surfaceContentVariant, name: qsTr("Settings") }
+    ]
+    readonly property string pageName: {
+        if (window.page === "guide")
+            return qsTr("Guide")
+        const item = window.navItems.find((n) => n.page === window.page)
+        return item ? item.name : ""
+    }
+    // Unread conversations, from the threads the Messages bridge has loaded.
+    readonly property int unreadMessages: {
+        if (Messages.threads.length === 0)
+            return 0
+        try {
+            return JSON.parse(Messages.threads).reduce((sum, t) => sum + (t.unread > 0 ? t.unread : 0), 0)
+        } catch (e) {
+            return 0
         }
     }
 
-    // ---- Title bar and pages ----
+    // The phone on screen: its link and battery, for the footer.
+    Instantiator {
+        id: deviceRows
+        model: DeviceList
+        delegate: QtObject {
+            required property int index
+            required property string path
+            required property int rttMs
+            required property int battery
+            required property bool charging
+            required property bool online
+        }
+    }
+    readonly property var currentRow: deviceRows.count > 0 ? deviceRows.objectAt(window.currentDeviceIndex) : null
+    readonly property string linkText: {
+        const d = window.currentRow
+        if (!d)
+            return ""
+        const name = d.path === "usb" ? "USB" : (d.path === "lan" ? qsTr("Wi-Fi") : (d.path === "relay" ? qsTr("Internet") : ""))
+        if (!d.online)
+            return d.path === "connecting" ? qsTr("Connecting") : qsTr("Offline")
+        return d.rttMs >= 0 ? qsTr("%1 · %2 ms").arg(name).arg(d.rttMs) : name
+    }
+
+    function deviceMenuActions() {
+        const list = []
+        for (let i = 0; i < DeviceList.count; ++i) {
+            const index = i
+            list.push({
+                label: DeviceList.deviceNameAt(i),
+                icon: Icons.phone,
+                tint: index === window.currentDeviceIndex ? Theme.accent : Theme.surfaceContentVariant,
+                checked: index === window.currentDeviceIndex,
+                run: () => { AppController.currentDevice = index }
+            })
+        }
+        list.push({ label: qsTr("Pair a phone"), icon: Icons.plus, tint: Theme.accent, run: () => window.openPairing() })
+        return list
+    }
+    readonly property var g7MenuActions: [
+        { label: qsTr("Guide"), icon: Icons.book, tint: Theme.tintBlue, run: () => { window.page = "guide" } },
+        { label: qsTr("Pair a phone"), icon: Icons.plus, tint: Theme.accent, run: () => window.openPairing() },
+        { label: qsTr("Check this PC"), icon: Icons.shield, tint: Theme.tintTeal, run: () => AppController.runDoctor() },
+        { label: qsTr("Command palette"), icon: Icons.search, tint: Theme.surfaceContentVariant, keys: "Ctrl K",
+          run: () => AppController.openCommandPalette() },
+        { label: qsTr("Quit G7 Link"), icon: Icons.power, tint: Theme.tintRed, run: () => {
+            window.saveWindowState()
+            Qt.quit()
+        } }
+    ]
+    function openActions() {
+        const list = window.screenActions.slice()
+        if (list.length === 0)
+            return
+        actionsMenu.actions = list
+        actionsMenu.openAt(footer.width - 14, footer.y, true, true)
+    }
+
+    // ---- Header: the phone picker, then search ----
+    Item {
+        id: header
+        visible: !window.welcome
+        anchors.left: parent.left
+        anchors.right: captionButtons.left
+        height: Theme.headerHeight
+
+        Rectangle {
+            id: phonePicker
+            x: 12
+            anchors.verticalCenter: parent.verticalCenter
+            width: pickerRow.implicitWidth + 16
+            height: 32
+            radius: Theme.rowRadius
+            color: pickerMouse.containsMouse || phoneMenu.opened ? Theme.raised : "transparent"
+            Accessible.role: Accessible.ButtonMenu
+            Accessible.name: qsTr("Phone: %1").arg(window.currentDeviceName)
+            Row {
+                id: pickerRow
+                anchors.centerIn: parent
+                spacing: 8
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 18; height: 18
+                    path: Icons.phone
+                    color: Theme.accent
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, 220)
+                    text: window.currentDeviceName.length > 0 ? window.currentDeviceName : qsTr("Pair a phone")
+                    weight: 500
+                }
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 14; height: 14
+                    path: Icons.chevronDown
+                    color: Theme.surfaceContentVariant
+                }
+            }
+            MouseArea {
+                id: pickerMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    phoneMenu.actions = window.deviceMenuActions()
+                    phoneMenu.openAt(phonePicker.x, header.height - 6, false, false)
+                }
+            }
+            Component.onCompleted: window.addCaptionHole(phonePicker)
+        }
+        Field {
+            id: headerSearch
+            anchors.left: phonePicker.right
+            anchors.leftMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(parent.width - x - 16, 720)
+            readOnly: true
+            iconPath: Icons.search
+            placeholder: qsTr("Search messages, contacts, apps and actions")
+            keys: Preferences.commandPaletteHotkey.length > 0 ? Preferences.commandPaletteHotkey : "Ctrl K"
+            onPressed: AppController.openCommandPalette()
+            Component.onCompleted: window.addCaptionHole(headerSearch)
+        }
+    }
+    Rectangle {
+        visible: header.visible
+        y: Theme.headerHeight - 1
+        width: parent.width
+        height: 1
+        color: Theme.line
+    }
+
+    // ---- Sidebar ----
+    Item {
+        id: sidebar
+        visible: !window.welcome
+        y: Theme.headerHeight
+        width: window.width < 1000 ? 52 : Theme.sidebarWidth
+        height: parent.height - Theme.headerHeight - Theme.footerHeight
+        readonly property bool iconsOnly: width < Theme.sidebarWidth
+
+        Column {
+            anchors.fill: parent
+            anchors.margins: sidebar.iconsOnly ? 4 : 8
+            spacing: 2
+            Repeater {
+                model: window.navItems
+                ActionRow {
+                    required property var modelData
+                    width: parent.width
+                    iconPath: modelData.icon
+                    tint: modelData.tint
+                    title: sidebar.iconsOnly ? "" : modelData.name
+                    accessibleName: modelData.name
+                    meta: !sidebar.iconsOnly && modelData.page === "messages" && window.unreadMessages > 0
+                        ? String(window.unreadMessages) : ""
+                    selected: window.page === modelData.page
+                    onClicked: window.page = modelData.page
+                }
+            }
+        }
+        Rectangle {
+            anchors.right: parent.right
+            width: 1
+            height: parent.height
+            color: Theme.line
+        }
+    }
+
+    // ---- Pages ----
     Item {
         id: main
         visible: !window.welcome
-        anchors.left: rail.right
+        anchors.left: sidebar.right
         anchors.right: parent.right
-        height: parent.height - (dock.visible ? dock.height : 0)
-
-        Item {
-            id: topBar
-            width: parent.width - captionButtons.width
-            height: Theme.topBarHeight
-            IconButton {
-                id: backToHome
-                anchors.left: parent.left
-                anchors.leftMargin: Theme.contentPadding - 6
-                anchors.verticalCenter: parent.verticalCenter
-                visible: window.page === "timeline"
-                iconPath: Icons.back
-                label: qsTr("Back to Home")
-                onClicked: window.page = "home"
-                Component.onCompleted: window.addCaptionHole(backToHome)
-            }
-            Txt {
-                id: pageTitle
-                anchors.left: backToHome.visible ? backToHome.right : parent.left
-                anchors.leftMargin: backToHome.visible ? 6 : Theme.contentPadding
-                anchors.verticalCenter: parent.verticalCenter
-                text: window.page === "home" ? qsTr("Home")
-                    : window.page === "timeline" ? qsTr("Timeline")
-                    : window.page === "messages" ? qsTr("Messages")
-                    : window.page === "calls" ? qsTr("Calls")
-                    : window.page === "photos" ? qsTr("Photos")
-                    : window.page === "apps" ? qsTr("Apps")
-                    : window.page === "deck" ? qsTr("Deck")
-                    : window.page === "guide" ? qsTr("Features guide")
-                    : qsTr("Settings")
-                role: "headline"
-                size: 20
-            }
-            // Screen sharing: a live pill in the title bar, so the page never shifts. It sits
-            // centered, and slides aside rather than overlap the title or the actions.
-            Rectangle {
-                id: sharingPill
-                readonly property bool shown: AppController.pcMirrorActive
-                readonly property real room: topBarActions.x - (pageTitle.x + pageTitle.width) - 32
-                readonly property string fullText: AppController.pcMirrorDeviceName.length > 0
-                    ? qsTr("Sharing screen with %1").arg(AppController.pcMirrorDeviceName)
-                    : qsTr("Sharing screen")
-
-                height: 34
-                width: Math.max(0, Math.min(14 + 10 + 8 + sharingLabel.implicitWidth + 12 + stopSharing.width + 4, room))
-                radius: Theme.quiet ? Theme.radiusMd : height / 2
-                x: Math.max(pageTitle.x + pageTitle.width + 16,
-                            Math.min((parent.width - width) / 2, topBarActions.x - width - 16))
-                anchors.verticalCenter: parent.verticalCenter
-                visible: (shown || opacity > 0) && room > 120
-                opacity: shown ? 1 : 0
-                scale: shown ? 1 : 0.94
-                color: Theme.errorContainer
-                border.width: 1
-                border.color: Qt.rgba(Theme.error.r, Theme.error.g, Theme.error.b, Theme.dark ? 0.45 : 0.30)
-                Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 240; easing.type: Easing.OutBack } }
-
-                Accessible.role: Accessible.StatusBar
-                Accessible.name: fullText
-
-                // Live dot with a slow halo, like a recording light.
-                Item {
-                    id: liveDot
-                    width: 10; height: 10
-                    anchors.left: parent.left
-                    anchors.leftMargin: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    Rectangle {
-                        id: halo
-                        anchors.centerIn: parent
-                        width: 10; height: 10; radius: 5
-                        color: Theme.error
-                        opacity: 0
-                        SequentialAnimation on opacity {
-                            running: sharingPill.shown && !Theme.reduceMotion && Qt.application.state === Qt.ApplicationActive
-                            loops: Animation.Infinite
-                            NumberAnimation { from: 0.45; to: 0; duration: 1400; easing.type: Easing.OutCubic }
-                        }
-                        SequentialAnimation on scale {
-                            running: sharingPill.shown && !Theme.reduceMotion && Qt.application.state === Qt.ApplicationActive
-                            loops: Animation.Infinite
-                            NumberAnimation { from: 1; to: 2.4; duration: 1400; easing.type: Easing.OutCubic }
-                        }
-                    }
-                    Rectangle {
-                        anchors.centerIn: parent
-                        width: 8; height: 8; radius: 4
-                        color: Theme.error
-                    }
-                }
-                Txt {
-                    id: sharingLabel
-                    anchors.left: liveDot.right
-                    anchors.leftMargin: 8
-                    anchors.right: stopSharing.left
-                    anchors.rightMargin: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: sharingPill.fullText
-                    role: "label"
-                    color: Theme.errorContainerContent
-                    elide: Text.ElideRight
-                }
-                Button {
-                    id: stopSharing
-                    anchors.right: parent.right
-                    anchors.rightMargin: 4
-                    anchors.verticalCenter: parent.verticalCenter
-                    size: "sm"
-                    variant: "tonal"
-                    text: qsTr("Stop")
-                    Accessible.name: qsTr("Stop sharing this PC's screen")
-                    onClicked: AppController.stopPcMirror()
-                    Component.onCompleted: window.addCaptionHole(stopSharing)
-                }
-            }
-            Row {
-                id: topBarActions
-                anchors.right: parent.right
-                anchors.rightMargin: 10
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 4
-
-                IconButton {
-                    id: paletteTopBtn
-                    anchors.verticalCenter: parent.verticalCenter
-                    iconPath: Icons.search
-                    iconSize: 16
-                    text: qsTr("Commands")
-                    label: Preferences.commandPaletteHotkey.length > 0
-                        ? qsTr("Command palette (%1)").arg(Preferences.commandPaletteHotkey)
-                        : qsTr("Command palette (Ctrl+K)")
-                    onClicked: AppController.openCommandPalette()
-                    Component.onCompleted: window.addCaptionHole(paletteTopBtn)
-                }
-                IconButton {
-                    id: timelineTopBtn
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: (window.page === "home" || window.page === "timeline") && AppController.hasDevices
-                    iconPath: Icons.history
-                    iconSize: 16
-                    text: qsTr("Timeline")
-                    tonal: window.page === "timeline"
-                    label: qsTr("Files, clips, links, photos, recordings and sessions")
-                    onClicked: window.page = window.page === "timeline" ? "home" : "timeline"
-                    Component.onCompleted: window.addCaptionHole(timelineTopBtn)
-                }
-                // Reconnects and syncs with the phones (the title bar lets
-                // clicks through here).
-                IconButton {
-                    id: refresh
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: window.page === "home" && AppController.hasDevices
-                    iconPath: Icons.refresh
-                    iconSize: 16
-                    label: qsTr("Refresh")
-                    onClicked: {
-                        AppController.syncNow()
-                        if (!Theme.reduceMotion) spin.restart()
-                    }
-                    RotationAnimation on rotation {
-                        id: spin
-                        running: false
-                        from: 0; to: 360
-                        duration: 700
-                        easing.type: Easing.OutCubic
-                    }
-                    Component.onCompleted: window.addCaptionHole(refresh)
-                }
-            }
-        }
+        y: Theme.headerHeight
+        height: parent.height - Theme.headerHeight - Theme.footerHeight
 
         Rectangle {
             id: pages
-            anchors.top: topBar.bottom
-            anchors.bottom: parent.bottom
-            width: parent.width
+            anchors.fill: parent
             clip: true
-            topLeftRadius: Theme.quiet ? 0 : 18
-            // Hive: lets the comb show faintly through, under opaque cards.
-            color: Theme.hive
-                ? Qt.rgba(Theme.surfaceContainerLow.r, Theme.surfaceContainerLow.g, Theme.surfaceContainerLow.b, Theme.dark ? 0.50 : 0.58)
-                : Theme.amoled
-                ? "#07080C"
-                : (Theme.glass
-                    ? Qt.rgba(Theme.surfaceContainerLow.r, Theme.surfaceContainerLow.g, Theme.surfaceContainerLow.b, Theme.dark ? 0.34 : 0.46)
-                    : (Theme.graphite
-                        ? Theme.surfaceContainerLow
-                        : Qt.rgba(Theme.surfaceContainerLow.r, Theme.surfaceContainerLow.g, Theme.surfaceContainerLow.b, Theme.dark ? 0.56 : 0.68)))
-            Behavior on color { ColorAnimation { duration: Theme.fadeNormal } }
-            border.width: 0
+            // Hive and Glass let their backdrop show faintly through.
+            color: Theme.hive || Theme.glass
+                ? Qt.rgba(Theme.surface.r, Theme.surface.g, Theme.surface.b, Theme.dark ? 0.50 : 0.58)
+                : (Theme.amoled ? "#000000" : Theme.surface)
 
             Loader {
                 id: pageLoader
-                anchors.left: parent.left
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                width: companionLoader.active ? Math.floor(parent.width / 2) : parent.width
+                anchors.fill: parent
                 active: !window.welcome && AppController.status === "ready"
-                property bool firstLoadDone: false
-                transform: [
-                    Translate { id: pageSlide; y: 0 },
-                    Scale {
-                        id: pageScale
-                        origin.x: pageLoader.width / 2
-                        origin.y: pageLoader.height / 3
-                        xScale: 1.0
-                        yScale: 1.0
-                    }
-                ]
-                ParallelAnimation {
-                    id: pageEnterAnim
-                    NumberAnimation {
-                        target: pageLoader
-                        property: "opacity"
-                        from: 0.35
-                        to: 1.0
-                        duration: 180
-                        easing.type: Easing.OutCubic
-                    }
-                    NumberAnimation {
-                        target: pageSlide
-                        property: "y"
-                        from: 10
-                        to: 0
-                        duration: 210
-                        easing.type: Easing.OutCubic
-                    }
-                    NumberAnimation {
-                        target: pageScale
-                        properties: "xScale,yScale"
-                        from: 0.985
-                        to: 1.0
-                        duration: 210
-                        easing.type: Easing.OutCubic
-                    }
-                }
-                source: active ? window.pageUrl(window.pagePair.length > 0 ? window.pagePair[0] : window.page) : ""
+                source: active ? window.pageUrl(window.page) : ""
                 onLoaded: {
                     window.wirePage(item)
-                    if (!pageLoader.firstLoadDone || Theme.reduceMotion) {
-                        pageLoader.firstLoadDone = true
-                        pageLoader.opacity = 1.0
-                        pageSlide.y = 0
-                        pageScale.xScale = 1.0
-                        pageScale.yScale = 1.0
-                    } else {
-                        pageLoader.opacity = 0.35
-                        pageSlide.y = 10
-                        pageScale.xScale = 0.985
-                        pageScale.yScale = 0.985
-                        Qt.callLater(() => pageEnterAnim.restart())
+                    if (!Theme.reduceMotion) {
+                        pageLoader.opacity = 0.4
+                        pageFade.restart()
                     }
                 }
-            }
-
-            Rectangle {
-                visible: companionLoader.active
-                x: pageLoader.width
-                width: 1
-                height: parent.height
-                color: Theme.outlineVariant
-            }
-            Loader {
-                id: companionLoader
-                active: pageLoader.active && window.pagePair.length > 0
-                anchors.left: pageLoader.right
-                anchors.leftMargin: 1
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                source: active ? window.pageUrl(window.pagePair[1]) : ""
-                onLoaded: window.wirePage(item)
+                NumberAnimation {
+                    id: pageFade
+                    target: pageLoader
+                    property: "opacity"
+                    to: 1.0
+                    duration: Theme.fadeFast
+                    easing.type: Easing.OutCubic
+                }
             }
         }
     }
 
-    // ---- The G7 theme's bottom dock: the same destinations as the rail, plus
-    // Timeline and Commands, which the title bar also keeps ----
+    // ---- Footer ----
     Item {
-        id: dock
-        visible: !window.welcome && Theme.quiet
+        id: footer
+        visible: !window.welcome
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: 44
-        readonly property bool compact: width < 1130
-        readonly property bool roomy: width >= 1400
-        readonly property var destinations: [
-            { page: "home", icon: Icons.home, name: qsTr("Home") },
-            { page: "messages", icon: Icons.messages, name: qsTr("Messages") },
-            { page: "calls", icon: Icons.call, name: qsTr("Calls") },
-            { page: "photos", icon: Icons.photo, name: qsTr("Photos") },
-            { page: "apps", icon: Icons.apps, name: qsTr("Apps") },
-            { page: "deck", icon: Icons.deck, name: qsTr("Deck") },
-            { page: "timeline", icon: Icons.history, name: qsTr("Timeline") },
-            { page: "commands", icon: Icons.search, name: qsTr("Commands") },
-            { page: "guide", icon: Icons.book, name: qsTr("Guide") },
-            { page: "settings", icon: Icons.settings, name: qsTr("Settings") }
-        ]
+        height: Theme.footerHeight
 
         Rectangle {
             width: parent.width
             height: 1
-            color: Theme.outlineVariant
+            color: Theme.line
         }
         Row {
-            id: dockBrand
-            anchors.left: parent.left
-            anchors.leftMargin: Theme.contentPadding
+            id: footerLeft
+            x: 14
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 9
-            Icon {
+            spacing: 14
+
+            Rectangle {
+                id: mark
                 anchors.verticalCenter: parent.verticalCenter
-                width: 20; height: 20
-                path: Icons.mark
-                stroke: 2.4
-                color: Theme.focusRing
+                width: markText.implicitWidth + 10
+                height: 20
+                radius: 5
+                color: Theme.accent
+                Accessible.role: Accessible.ButtonMenu
+                Accessible.name: qsTr("G7 Link menu")
+                Txt {
+                    id: markText
+                    anchors.centerIn: parent
+                    text: "G7"
+                    role: "label"
+                    color: Theme.accentContent
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: g7Menu.openAt(footerLeft.x, footer.y, true, false)
+                }
             }
             Txt {
                 anchors.verticalCenter: parent.verticalCenter
-                visible: !dock.compact
-                text: "G7 Link"
-                role: "title"
-                size: 13
+                visible: window.page !== "home" && text.length > 0
+                text: window.pageItem && window.pageItem.footerLabel ? window.pageItem.footerLabel : window.pageName
+                role: "bodySmall"
+                muted: true
             }
-        }
-        Row {
-            anchors.left: dockBrand.right
-            anchors.leftMargin: 14
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 2
-            Repeater {
-                model: dock.destinations
-                DockItem {
-                    required property var modelData
-                    anchors.verticalCenter: parent ? parent.verticalCenter : undefined
-                    visible: modelData.page !== "timeline" || AppController.hasDevices
-                    iconPath: modelData.icon
-                    text: modelData.name
-                    showLabel: !dock.compact
-                    selected: window.page === modelData.page || window.pagePair.includes(modelData.page)
-                    onClicked: {
-                        if (modelData.page === "commands")
-                            AppController.openCommandPalette()
-                        else
-                            window.page = modelData.page
-                    }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: text.length > 0 && footer.width > 760
+                text: window.linkText
+                role: "bodySmall"
+                muted: true
+            }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: window.currentRow !== null && window.currentRow.battery >= 0
+                text: window.currentRow ? (window.currentRow.charging ? qsTr("%1% · charging") : "%1%").arg(window.currentRow.battery) : ""
+                role: "bodySmall"
+                color: Theme.batteryColor(window.currentRow ? window.currentRow.battery : -1)
+            }
+            // This PC's screen is being shared: say so, with a way to stop.
+            Row {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: AppController.pcMirrorActive
+                spacing: 8
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 6; height: 6; radius: 3
+                    color: Theme.tintRed
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: AppController.pcMirrorDeviceName.length > 0
+                        ? qsTr("Sharing screen with %1").arg(AppController.pcMirrorDeviceName)
+                        : qsTr("Sharing screen")
+                    role: "bodySmall"
+                    color: Theme.tintRed
+                }
+                TextAction {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Stop")
+                    Accessible.name: qsTr("Stop sharing this PC's screen")
+                    onClicked: AppController.stopPcMirror()
                 }
             }
         }
         Row {
             anchors.right: parent.right
-            anchors.rightMargin: Theme.contentPadding
+            anchors.rightMargin: 14
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 12
+            spacing: 10
+
+            FooterAction {
+                action: window.primaryAction
+                strong: true
+            }
+            FooterAction {
+                action: window.secondaryAction
+            }
+            FooterAction {
+                visible: window.screenActions.length > 0
+                action: ({ label: qsTr("Actions"), keys: "Ctrl B", run: () => window.openActions() })
+            }
+        }
+    }
+    component FooterAction: Row {
+        id: fa
+        property var action: null
+        property bool strong: false
+        visible: action !== null
+        spacing: 6
+        height: 28
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: faText.implicitWidth + 12
+            height: 24
+            radius: Theme.radiusSm
+            color: faMouse.containsMouse ? Theme.raised : "transparent"
             Txt {
-                anchors.verticalCenter: parent.verticalCenter
-                visible: dock.roomy && window.currentDeviceName.length > 0
-                text: window.currentDeviceName
+                id: faText
+                anchors.centerIn: parent
+                text: fa.action ? fa.action.label : ""
                 role: "bodySmall"
-                muted: true
+                muted: !fa.strong
             }
-            IconButton {
-                anchors.verticalCenter: parent.verticalCenter
-                iconPath: Icons.plus
-                text: dock.roomy ? qsTr("Pair a new device") : ""
-                label: qsTr("Pair a new device")
-                tonal: true
-                onClicked: window.openPairing()
+            MouseArea {
+                id: faMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: if (fa.action && typeof fa.action.run === "function") fa.action.run()
             }
+            Accessible.role: Accessible.Button
+            Accessible.name: faText.text
+        }
+        Keycap {
+            anchors.verticalCenter: parent.verticalCenter
+            keys: fa.action && fa.action.keys ? fa.action.keys : ""
+        }
+    }
+
+    PopupMenu {
+        id: phoneMenu
+        panelWidth: 280
+    }
+    PopupMenu {
+        id: g7Menu
+        panelWidth: 260
+        actions: window.g7MenuActions
+    }
+    PopupMenu {
+        id: actionsMenu
+        filterable: true
+        panelWidth: 340
+    }
+    Shortcut {
+        sequence: "Ctrl+B"
+        enabled: !window.welcome
+        onActivated: {
+            if (actionsMenu.opened)
+                actionsMenu.close()
+            else
+                window.openActions()
         }
     }
 
@@ -1322,6 +1227,51 @@ NativeWindow {
                 doctorLoader.item.open()
             else
                 doctorLoader.active = true
+        }
+    }
+
+    // `--ui-check`: visit every page, the menus, the palette, the Shelf,
+    // the Island and the welcome screen once, so a QML error on any of them
+    // fails the check.
+    readonly property bool uiCheck: Qt.application.arguments.indexOf("--ui-check") >= 0
+    property bool uiCheckWelcome: false
+    Timer {
+        id: uiCheckTour
+        property int step: 0
+        readonly property var stops: ["messages", "calls", "photos", "apps", "deck", "timeline", "settings", "guide", "home"]
+        interval: 450
+        repeat: true
+        running: window.uiCheck && AppController.status === "ready"
+        onTriggered: {
+            const n = stops.length
+            if (step < n) {
+                window.page = stops[step]
+            } else if (step === n) {
+                window.openActions()
+            } else if (step === n + 1) {
+                actionsMenu.close()
+                phoneMenu.actions = window.deviceMenuActions()
+                phoneMenu.openAt(12, Theme.headerHeight, false, false)
+            } else if (step === n + 2) {
+                phoneMenu.close()
+                g7Menu.openAt(14, footer.y, true, false)
+            } else if (step === n + 3) {
+                g7Menu.close()
+                window.openPairing()
+            } else if (step === n + 4) {
+                pairingSheet.close()
+                AppController.openCommandPalette()
+            } else if (step === n + 5) {
+                AppController.closeCommandPalette()
+                AppController.toggleShelf()
+                Preferences.g7Island = true
+            } else if (step === n + 6) {
+                AppController.closeShelf()
+                window.uiCheckWelcome = true
+            } else {
+                stop()
+            }
+            step++
         }
     }
 

@@ -479,19 +479,28 @@ QtObject {
           }
         },
         "quiet": {
-          "description": "G7's Quiet Tool language (docs/design-language.md in g7linux). Charcoal and paper grounds, neutral selection, lavender only for focus and the mark, the desktop's own font, bare glyphs, rows instead of cards. Colors are fixed.",
+          "description": "G7's Quiet Tool language (docs/design-language.md in g7linux). Charcoal and paper grounds, neutral selection, lavender only for focus, the primary button and the mark, Geist Mono everywhere, bare glyphs in their own tints, rows instead of cards. Colors are fixed.",
           "dynamicColor": false,
           "fonts": {
-            "display": "system",
-            "label": "system",
+            "display": "Geist Mono",
+            "label": "Geist Mono",
             "mono": "Geist Mono",
-            "ui": "system"
+            "ui": "Geist Mono"
           },
           "label": {
             "case": "none",
             "size": 12,
             "tracking": 0,
             "weight": 500
+          },
+          "layout": {
+            "columnWidth": 300,
+            "footerHeight": 40,
+            "headerHeight": 52,
+            "rowHeight": 36,
+            "rowPadding": 10,
+            "rowRadius": 8,
+            "sidebarWidth": 200
           },
           "shape": {
             "full": 8,
@@ -500,6 +509,84 @@ QtObject {
             "sm": 6,
             "xl": 12,
             "xs": 5
+          },
+          "tints": {
+            "dark": {
+              "amber": "#EF9F27",
+              "blue": "#7CB7EE",
+              "coral": "#F0997B",
+              "green": "#97C459",
+              "lavender": "#B292D0",
+              "pink": "#ED93B1",
+              "red": "#E5736F",
+              "teal": "#5DCAA5"
+            },
+            "light": {
+              "amber": "#8F5B00",
+              "blue": "#2F6DAE",
+              "coral": "#B4532F",
+              "green": "#4B7516",
+              "lavender": "#7D5CA9",
+              "pink": "#AE4470",
+              "red": "#B3322D",
+              "teal": "#1E7F64"
+            }
+          },
+          "typography": {
+            "body": {
+              "lineHeight": 1.4,
+              "size": 13,
+              "tracking": 0,
+              "weight": 400
+            },
+            "bodySmall": {
+              "lineHeight": 1.4,
+              "size": 12,
+              "tracking": 0,
+              "weight": 400
+            },
+            "caption": {
+              "lineHeight": 1.4,
+              "size": 11,
+              "tracking": 0,
+              "weight": 400
+            },
+            "code": {
+              "lineHeight": 1.4,
+              "size": 13,
+              "tracking": 0,
+              "weight": 500
+            },
+            "displayLarge": {
+              "lineHeight": 1.3,
+              "size": 22,
+              "tracking": 0,
+              "weight": 500
+            },
+            "displaySmall": {
+              "lineHeight": 1.3,
+              "size": 18,
+              "tracking": 0,
+              "weight": 500
+            },
+            "headline": {
+              "lineHeight": 1.3,
+              "size": 18,
+              "tracking": 0,
+              "weight": 500
+            },
+            "label": {
+              "lineHeight": 1.4,
+              "size": 12,
+              "tracking": 0,
+              "weight": 500
+            },
+            "title": {
+              "lineHeight": 1.4,
+              "size": 13,
+              "tracking": 0,
+              "weight": 500
+            }
           },
           "variants": {
             "dark": {

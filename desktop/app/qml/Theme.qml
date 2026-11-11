@@ -6,8 +6,8 @@ import app.g7link
 // The active theme: Quiet (G7's own language, the default), Bloom
 // (Material You, seed presets), Hive (honey on charcoal or wax), Glass, or
 // Graphite (paper and slate), light or dark, resolved from Preferences and
-// the system. Colors
-// come from Tokens (generated from docs/design/tokens.json); Material's
+// the system. Every theme shares the same window (header, sidebar, footer)
+// and rows; themes only change tokens. Colors come from Tokens (generated from docs/design/tokens.json); Material's
 // "onX" roles are named "xContent" because QML reserves the "on" prefix.
 QtObject {
     id: theme
@@ -222,8 +222,40 @@ QtObject {
     // Hive: the honey halo around a primary control on hover.
     readonly property color glow: Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.30 : 0.22)
     readonly property color buttonShadow: graphite ? palette.buttonShadow : "transparent"
-    // Lavender marks keyboard focus and the G7 mark, and nothing else, in the G7 theme.
+    // Lavender marks keyboard focus, the primary button and the G7 mark in the G7 theme.
     readonly property color focusRing: quiet ? palette.accent : primary
+    readonly property color accent: quiet ? palette.accent : (graphite ? surfaceContent : primary)
+    readonly property color accentContent: quiet ? palette.onPrimary : (graphite ? surface : primaryContent)
+    // Raised fields and keycaps, the selected or hovered row, and the 1 px lines.
+    readonly property color raised: surfaceContainer
+    readonly property color selection: surfaceContainerHigh
+    readonly property color line: outlineVariant
+
+    // ---- Glyph tints ----
+    // Each section and action draws its bare glyph in one tint (G7 theme);
+    // the other themes keep their single ink.
+    readonly property var tints: Tokens.data.themes.quiet.tints[dark ? "dark" : "light"]
+    function tint(name) {
+        if (!quiet)
+            return graphite ? surfaceContent : primary
+        return tints[name] || surfaceContentVariant
+    }
+    readonly property color tintLavender: tint("lavender")
+    readonly property color tintBlue: tint("blue")
+    readonly property color tintTeal: tint("teal")
+    readonly property color tintCoral: tint("coral")
+    readonly property color tintPink: tint("pink")
+    readonly property color tintAmber: tint("amber")
+    readonly property color tintGreen: tint("green")
+    readonly property color tintRed: tint("red")
+    // A tint washed into the ground: avatar and tile backgrounds.
+    function wash(c) { return Qt.tint(surface, Qt.rgba(c.r, c.g, c.b, dark ? 0.16 : 0.14)) }
+    // Battery: green when it's fine, amber when low, red when nearly empty.
+    function batteryColor(level) {
+        if (level < 0)
+            return surfaceContentVariant
+        return level <= 10 ? tintRed : (level <= 20 ? tintAmber : tintGreen)
+    }
     readonly property color scrim: Qt.rgba(0, 0, 0, dark ? 0.5 : 0.32)
 
     // ---- Shape ----
@@ -241,18 +273,26 @@ QtObject {
     // ---- Type ----
     // Bundled with the app (assets/fonts).
     // The G7 theme follows the desktop's own interface font, as G7 does.
-    readonly property string fontUi: quiet ? Qt.application.font.family : "Figtree"
+    readonly property string fontUi: quiet ? "Geist Mono" : "Figtree"
     readonly property string fontDisplay: graphite ? "Instrument Serif" : fontUi
     readonly property string fontMono: quiet ? "Geist Mono" : "Space Mono"
-    readonly property var typography: Tokens.data.typography
+    readonly property var typography: quiet ? Tokens.data.themes.quiet.typography : Tokens.data.typography
     readonly property var labelStyle: quiet ? Tokens.data.themes.quiet.label
         : (graphite ? Tokens.data.themes.graphite.label
             : (hive ? Tokens.data.themes.hive.label : Tokens.data.themes.bloom.label))
 
     // ---- Layout and spacing ----
     readonly property var layout: Tokens.data.layout.desktop
+    readonly property var frame: Tokens.data.themes.quiet.layout
     readonly property int railWidth: layout.railWidth
-    readonly property int topBarHeight: layout.topBarHeight
+    readonly property int topBarHeight: frame.headerHeight
+    readonly property int headerHeight: frame.headerHeight
+    readonly property int sidebarWidth: frame.sidebarWidth
+    readonly property int footerHeight: frame.footerHeight
+    readonly property int rowHeight: frame.rowHeight
+    readonly property int rowPadding: frame.rowPadding
+    readonly property int rowRadius: frame.rowRadius
+    readonly property int columnWidth: frame.columnWidth
     readonly property int contentPadding: layout.contentPadding
     readonly property int gutter: layout.gutter
     function space(step) { return Tokens.data.spacing.scale[step] }
