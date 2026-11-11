@@ -46,7 +46,7 @@ While a call is active on your phone, the call bar on your PC shows the live cal
 
 ### Browsing Call History
 
-The **Calls** page groups your phone's recent incoming, outgoing, and missed calls by day. Missed calls are highlighted in red and summarized on your PC's Home screen until viewed. A voicemail notification from your phone appears in the notification feed like any other notification.
+The **Calls** page groups your phone's recent incoming, outgoing, and missed calls by day. Missed calls are highlighted in red. The number beside **Calls** in the sidebar counts the missed calls that came in since you last opened the Calls page for that phone on this PC, and opening the page clears it. A voicemail notification from your phone appears in the notification feed like any other notification.
 
 ## Call Audio
 

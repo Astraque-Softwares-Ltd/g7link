@@ -6,6 +6,7 @@
 //! closed; the app keeps running in the tray (docs/PLAN.md §5).
 
 mod automations;
+mod badges;
 mod battery;
 mod bridge;
 mod calls;

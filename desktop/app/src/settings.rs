@@ -257,6 +257,32 @@ static NICKNAMES: std::sync::Mutex<Option<std::collections::HashMap<String, Stri
 
 static KEEP_SCREEN_OFF: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// When a phone's Messages and Calls were last looked at on this PC, in Unix
+/// milliseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PagesSeen {
+    pub messages: i64,
+    pub calls: i64,
+}
+
+static PAGES_SEEN: std::sync::Mutex<Option<std::collections::HashMap<String, PagesSeen>>> =
+    std::sync::Mutex::new(None);
+
+/// [`Settings::pages_seen`] as it is now (kept when other settings save).
+pub fn pages_seen() -> std::collections::HashMap<String, PagesSeen> {
+    PAGES_SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default()
+}
+
+pub fn set_pages_seen(seen: std::collections::HashMap<String, PagesSeen>) {
+    *PAGES_SEEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(seen);
+}
+
+/// Changes [`pages_seen`] in place.
+pub fn update_pages_seen<T>(f: impl FnOnce(&mut std::collections::HashMap<String, PagesSeen>) -> T) -> T {
+    f(PAGES_SEEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
+}
+
 /// The phones whose screen stays off for mirroring and app windows, by device ID.
 pub fn keep_screen_off_phones() -> Vec<String> {
     KEEP_SCREEN_OFF.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -463,6 +489,10 @@ pub struct Settings {
         alias = "device_nicknames"
     )]
     pub device_nicknames: std::collections::HashMap<String, String>,
+    /// When each phone's Messages and Calls were last looked at here, by
+    /// device ID: the sidebar counts only what came after.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub pages_seen: std::collections::HashMap<String, PagesSeen>,
     /// Start when the user signs in. Unset until the user chooses: then an
     /// installed copy starts at sign-in and a build run from its folder
     /// doesn't.
@@ -652,6 +682,7 @@ impl Default for Settings {
             ui_scale: default_ui_scale(),
             keep_screen_off: Vec::new(),
             device_nicknames: std::collections::HashMap::new(),
+            pages_seen: std::collections::HashMap::new(),
             start_with_windows: None,
             recordings_folder: None,
             recordings_format: RecordingFormat::default(),
@@ -756,6 +787,7 @@ impl Settings {
         set_battery_full_threshold(self.battery_full_threshold);
         set_keep_screen_off_phones(self.keep_screen_off.clone());
         set_device_nicknames(self.device_nicknames.clone());
+        set_pages_seen(self.pages_seen.clone());
         set_window_geometry(
             self.window_screen.clone(),
             self.window_x,
@@ -917,6 +949,7 @@ mod tests {
             ui_scale: 125,
             keep_screen_off: vec!["abc".to_owned()],
             device_nicknames: std::collections::HashMap::from([("abc".to_owned(), "Work phone".to_owned())]),
+            pages_seen: [("abc".to_owned(), PagesSeen { messages: 1, calls: 2 })].into(),
             start_with_windows: Some(true),
             recordings_folder: Some(PathBuf::from(r"C:\Recordings")),
             recordings_format: RecordingFormat::Flac,

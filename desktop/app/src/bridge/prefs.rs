@@ -1135,6 +1135,7 @@ impl qobject::Preferences {
             ui_scale: u16::try_from(p.ui_scale).unwrap_or(100),
             keep_screen_off: crate::settings::keep_screen_off_phones(),
             device_nicknames: crate::settings::device_nicknames(),
+            pages_seen: crate::settings::pages_seen(),
             start_with_windows: p.start_choice,
             recordings_folder: p.custom_recordings_folder.clone(),
             recordings_format: RecordingFormat::from_str_lossy(&String::from(&p.recordings_format)),

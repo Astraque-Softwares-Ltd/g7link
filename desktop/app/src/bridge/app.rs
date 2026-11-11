@@ -782,6 +782,7 @@ impl cxx_qt::Initialize for qobject::AppController {
     fn initialize(mut self: Pin<&mut Self>) {
         self.as_mut().set_version(QString::from(env!("CARGO_PKG_VERSION")));
         self.as_mut().set_current_page(QString::from("home"));
+        self.as_mut().on_current_page_changed(|o| note_page(&String::from(o.current_page()))).release();
         self.as_mut().set_can_update(crate::updater::can_update());
         // Nothing downloading yet (0 would show an empty bar).
         self.as_mut().set_update_progress(-1.0);
@@ -1881,6 +1882,7 @@ impl qobject::AppController {
 
     pub fn set_interactive(&self, on: bool) {
         core_host::set_interactive(on);
+        note_interactive(on);
     }
 
     pub fn recheck_doctor(self: Pin<&mut Self>) {
@@ -3057,12 +3059,16 @@ impl Drop for AppControllerRust {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct HomeDeviceSummary {
+    /// What the sidebar's Messages and Calls counts are made from.
+    inbox: crate::badges::Inbox,
     sms_loaded: bool,
     sms_busy: bool,
+    /// Conversations with something unread since Messages was last looked at.
     unread_messages: u32,
     unread_sender: String,
     calls_loaded: bool,
     calls_busy: bool,
+    /// Missed calls since Calls was last looked at.
     missed_calls: u32,
     missed_caller: String,
     photo_loaded: bool,
@@ -3078,7 +3084,21 @@ struct HomeDeviceSummary {
 #[derive(Debug, Default)]
 struct HomeSummaryStore {
     watched: Option<DeviceId>,
+    /// The page on screen, when it has a count in the sidebar.
+    page: Option<crate::badges::Page>,
+    /// The main window is showing.
+    interactive: bool,
     devices: std::collections::HashMap<DeviceId, HomeDeviceSummary>,
+}
+
+impl HomeSummaryStore {
+    /// The phone and counted page someone is looking at.
+    fn viewing(&self) -> Option<(DeviceId, crate::badges::Page)> {
+        if !self.interactive {
+            return None;
+        }
+        Some((self.watched?, self.page?))
+    }
 }
 
 static HOME_SUMMARY: Mutex<Option<HomeSummaryStore>> = Mutex::new(None);
@@ -3131,47 +3151,153 @@ fn home_summary_json(device: DeviceId) -> String {
 
 fn watch_home(device: Option<DeviceId>) {
     crate::command_palette::set_preferred_device(device);
-    home_store(|s| s.watched = device);
+    change_view(|s| s.watched = device);
     if let Some(id) = device {
         refresh_home_if_needed(id, false, false, false);
+        refresh_home_chats(id);
     }
 }
 
-pub(crate) fn update_home_sms(device: DeviceId, threads: &[g7link_core::SmsThread]) {
-    let changed = home_store(|s| {
-        let entry = s.devices.entry(device).or_default();
-        let unread_messages: u32 = threads.iter().map(|t| t.unread).sum();
-        let unread_sender =
-            threads.iter().find(|t| t.unread > 0).map(crate::messages::title_of).unwrap_or_default();
-        let prev = (entry.sms_loaded, entry.unread_messages, entry.unread_sender.clone());
-        entry.sms_loaded = true;
-        entry.sms_busy = false;
-        entry.unread_messages = unread_messages;
-        entry.unread_sender = unread_sender;
-        prev != (entry.sms_loaded, entry.unread_messages, entry.unread_sender.clone())
+/// Changes what's on screen; a counted page that was or is now looked at
+/// is seen up to now.
+fn change_view(f: impl FnOnce(&mut HomeSummaryStore)) {
+    let (before, after) = home_store(|s| {
+        let before = s.viewing();
+        f(s);
+        (before, s.viewing())
     });
+    if before != after {
+        for (device, page) in [before, after].into_iter().flatten() {
+            settle_badges(device, Some(page));
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Recounts `device`'s sidebar counts; `opened` is a page just opened or left.
+fn settle_badges(device: DeviceId, opened: Option<crate::badges::Page>) {
+    use crate::badges::Page;
+    let now = now_ms();
+    let key = device.to_string();
+    let (changed, save) = home_store(|s| {
+        let showing = s.viewing().filter(|(d, _)| *d == device).map(|(_, page)| page);
+        let d = s.devices.entry(device).or_default();
+        let (seen, save) = crate::settings::update_pages_seen(|map| {
+            let (seen, new) = crate::badges::entry(map, &key, now);
+            let moved = crate::badges::settle(seen, &d.inbox, now, opened, showing);
+            (*seen, new || moved)
+        });
+        let (unread, sender) = d.inbox.count(Page::Messages, &seen);
+        let (missed, caller) = d.inbox.count(Page::Calls, &seen);
+        let changed = (d.unread_messages, &d.unread_sender, d.missed_calls, &d.missed_caller)
+            != (unread, &sender, missed, &caller);
+        d.unread_messages = unread;
+        d.unread_sender = sender;
+        d.missed_calls = missed;
+        d.missed_caller = caller;
+        (changed, save)
+    });
+    if save {
+        save_pages_seen();
+    }
     if changed {
         bump_home_summary();
     }
 }
 
-pub(crate) fn update_home_calls(device: DeviceId, entries: &[g7link_core::CallLogEntry]) {
-    let changed = home_store(|s| {
+/// Writes [`crate::settings::pages_seen`] off the calling thread, the
+/// latest last.
+fn save_pages_seen() {
+    static WRITING: Mutex<()> = Mutex::new(());
+    let spawned = std::thread::Builder::new().name("save-pages-seen".into()).spawn(|| {
+        let _writing = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = &core_host::host().data_dir;
+        let mut settings = crate::settings::Settings::load(dir);
+        settings.pages_seen = crate::settings::pages_seen();
+        if let Err(e) = settings.save(dir) {
+            tracing::warn!(error = %e, "can't save when Messages and Calls were looked at");
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "can't save when Messages and Calls were looked at");
+    }
+}
+
+/// The current page changed (`AppController.currentPage`).
+fn note_page(name: &str) {
+    let page = crate::badges::Page::named(name);
+    change_view(|s| s.page = page);
+}
+
+/// The main window was shown or hidden.
+fn note_interactive(on: bool) {
+    change_view(|s| s.interactive = on);
+}
+
+pub(crate) fn update_home_sms(device: DeviceId, threads: &[g7link_core::SmsThread]) {
+    let texts = threads
+        .iter()
+        .filter(|t| t.unread > 0)
+        .map(|t| crate::badges::Arrival { date: t.date, from: crate::messages::title_of(t) })
+        .collect();
+    let loaded = home_store(|s| {
         let entry = s.devices.entry(device).or_default();
-        let missed_calls = entries.iter().filter(|e| e.direction == "missed").count() as u32;
-        let missed_caller = entries
-            .iter()
-            .find(|e| e.direction == "missed")
-            .map(|e| e.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| e.number.clone()))
-            .unwrap_or_default();
-        let prev = (entry.calls_loaded, entry.missed_calls, entry.missed_caller.clone());
+        let loaded = !entry.sms_loaded;
+        entry.sms_loaded = true;
+        entry.sms_busy = false;
+        entry.inbox.texts = texts;
+        loaded
+    });
+    settle_badges(device, None);
+    if loaded {
+        bump_home_summary();
+    }
+}
+
+/// Chat-app conversations (kept on this PC), for the Messages count.
+pub(crate) fn update_home_chats(device: DeviceId, chats: &[g7link_core::ChatThreadRecord]) {
+    let chats = chats
+        .iter()
+        .filter(|c| c.unread > 0)
+        .map(|c| crate::badges::Arrival { date: c.updated_ms, from: c.title.clone() })
+        .collect();
+    home_store(|s| s.devices.entry(device).or_default().inbox.chats = chats);
+    settle_badges(device, None);
+}
+
+/// Reads the chat-app conversations again, off the calling thread.
+fn refresh_home_chats(device: DeviceId) {
+    let Some(node) = core_host::node() else { return };
+    core_host::spawn(async move {
+        let chats = node.chat_threads(device);
+        update_home_chats(device, &chats);
+    });
+}
+
+pub(crate) fn update_home_calls(device: DeviceId, entries: &[g7link_core::CallLogEntry]) {
+    let missed = entries
+        .iter()
+        .filter(|e| e.direction == "missed")
+        .map(|e| crate::badges::Arrival {
+            date: e.date,
+            from: e.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| e.number.clone()),
+        })
+        .collect();
+    let loaded = home_store(|s| {
+        let entry = s.devices.entry(device).or_default();
+        let loaded = !entry.calls_loaded;
         entry.calls_loaded = true;
         entry.calls_busy = false;
-        entry.missed_calls = missed_calls;
-        entry.missed_caller = missed_caller;
-        prev != (entry.calls_loaded, entry.missed_calls, entry.missed_caller.clone())
+        entry.inbox.missed = missed;
+        loaded
     });
-    if changed {
+    settle_badges(device, None);
+    if loaded {
         bump_home_summary();
     }
 }
@@ -3201,6 +3327,16 @@ pub(crate) fn on_home_event(event: &g7link_core::NodeEvent) {
         }
         NodeEvent::CallLogChanged { device } if watched == Some(*device) => {
             refresh_home_if_needed(*device, false, true, false);
+        }
+        NodeEvent::NotificationPosted { device, notification }
+            if watched == Some(*device) && notification.conversation.is_some() =>
+        {
+            refresh_home_chats(*device);
+        }
+        NodeEvent::NotificationRemoved { device, .. } | NodeEvent::NotificationsReset { device, .. }
+            if watched == Some(*device) =>
+        {
+            refresh_home_chats(*device);
         }
         NodeEvent::Call { device, call } if watched == Some(*device) && call.state == "ended" => {
             let dev = *device;
@@ -3244,6 +3380,9 @@ pub(crate) fn on_home_event(event: &g7link_core::NodeEvent) {
                     s.watched = None;
                 }
             });
+            if crate::settings::update_pages_seen(|seen| seen.remove(&device.to_string()).is_some()) {
+                save_pages_seen();
+            }
         }
         _ => {}
     }

@@ -19,7 +19,7 @@ The **Messages** page on your PC brings together your phone's SMS and MMS text t
 
 ### Reading SMS, MMS, and Chat App Threads
 
-1. Click **Messages** in the left navigation bar on your PC.
+1. Click **Messages** in the left navigation bar on your PC. The number beside it counts the conversations with an unread message that arrived since you last opened Messages for that phone on this PC; opening the page clears it.
 2. The left pane lists your conversations ordered by most recent activity:
    - **SMS and MMS threads** are synced directly from your phone's system telephony database, including group MMS conversations and inline picture attachments.
    - **Unified Conversations** capture incoming messages from chat apps that use Android's `MessagingStyle` notification format (such as Google Messages RCS, WhatsApp, Telegram, Signal, Discord, and Slack). Each thread badge shows which app it belongs to. G7 Link automatically deduplicates SMS notifications against the system SMS provider so texts never appear twice.
