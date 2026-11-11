@@ -362,6 +362,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Media", "Media is turned off for that device."), // desktop/app/src/media.rs
     QT_TRANSLATE_NOOP("Media", "That player can't do that."), // desktop/app/src/media.rs
     QT_TRANSLATE_NOOP("Media", "That player isn't playing anymore."), // desktop/app/src/media.rs
+    QT_TRANSLATE_NOOP("Messages", "All"), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "Attachment is %1 (MMS supports up to 900 KB)"), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "Group texts can't be sent from the PC yet."), // desktop/app/src/messages.rs
     QT_TRANSLATE_NOOP("Messages", "Only image or voice-note audio files can be attached."), // desktop/app/src/messages.rs

@@ -23,7 +23,7 @@ The **Messages** page on your PC brings together your phone's SMS and MMS text t
 2. The left pane lists your conversations ordered by most recent activity:
    - **SMS and MMS threads** are synced directly from your phone's system telephony database, including group MMS conversations and inline picture attachments.
    - **Unified Conversations** capture incoming messages from chat apps that use Android's `MessagingStyle` notification format (such as Google Messages RCS, WhatsApp, Telegram, Signal, Discord, and Slack). Each thread badge shows which app it belongs to. G7 Link automatically deduplicates SMS notifications against the system SMS provider so texts never appear twice.
-3. When chat apps are present, chips at the top of the list filter conversations by app. The search box filters threads by contact name, phone number, app, or message text.
+3. Tabs at the top of the list filter conversations: **All**, **SMS**, then one for each chat app with conversations, shown with the app's own icon. Each conversation carries a small icon of the app it belongs to: the chat app's, or your phone's SMS app's for texts. The search box filters threads by contact name, phone number, app, or message text.
 
 ### Sending Texts and Replying to Chat Apps
 

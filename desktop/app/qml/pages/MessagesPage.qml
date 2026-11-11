@@ -90,7 +90,7 @@ Item {
             { label: qsTr("Refresh"), icon: Icons.refresh, enabled: Messages.status !== "loading",
               run: () => Messages.refresh() }
         ]
-        if (Messages.hasChatThreads && page.availableApps.length > 2)
+        if (page.availableApps.length > 2)
             for (const app of page.availableApps)
                 list.push({ label: qsTr("Show %1").arg(app.label), icon: Icons.messages, tint: Theme.tintBlue,
                             checked: Messages.appFilter === app.key, run: () => Messages.filterByApp(app.key) })
@@ -341,18 +341,19 @@ Item {
             }
         }
 
-        // Chat apps, when mirrored chat conversations are here.
+        // Tabs: All, SMS, then each chat app with conversations here.
         Flickable {
             id: appFilterBar
             anchors.top: search.bottom
-            anchors.topMargin: visible ? 6 : 0
+            anchors.topMargin: 6
             anchors.left: parent.left
             anchors.right: parent.right
-            height: visible ? 26 : 0
-            visible: Messages.hasChatThreads && page.availableApps.length > 2
+            height: 26
             contentWidth: filterRow.implicitWidth + 16
+            interactive: contentWidth > width
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            Accessible.role: Accessible.PageTabList
 
             Row {
                 id: filterRow
@@ -363,7 +364,12 @@ Item {
                     model: page.availableApps
                     delegate: TextAction {
                         required property var modelData
+                        anchors.verticalCenter: parent.verticalCenter
                         text: modelData.label
+                        imageSource: modelData.icon || ""
+                        // Until the app's own icon is here.
+                        iconPath: modelData.key === "" ? "" : Icons.messages
+                        iconColor: Theme.tintBlue
                         selected: Messages.appFilter === modelData.key
                         onClicked: Messages.filterByApp(modelData.key)
                     }
@@ -1065,24 +1071,32 @@ Item {
                 iconPath: row.thread.group ? Icons.messages : named ? "" : Icons.person
                 hue: named && !row.thread.group ? page.hueOf(row.thread.title) : -1
             }
-            // The chat app's icon, on a mirrored conversation.
+            // The app the conversation belongs to: the chat app's icon, or the
+            // phone's SMS app's; the messages glyph until its icon is here.
             Rectangle {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                anchors.rightMargin: -3
-                anchors.bottomMargin: -3
-                width: 14; height: 14
-                radius: 7
-                visible: row.isChat && !!row.thread.appIcon && row.thread.appIcon.length > 0 && appBadgeImg.status === Image.Ready
+                anchors.rightMargin: -4
+                anchors.bottomMargin: -4
+                width: 16; height: 16
+                radius: 8
                 color: Theme.surface
                 RoundedImage {
                     id: appBadgeImg
                     anchors.centerIn: parent
-                    width: 11; height: 11
-                    radius: 5.5
+                    width: 13; height: 13
+                    radius: 6.5
+                    visible: status === Image.Ready
                     source: row.thread.appIcon || ""
-                    sourceSize: Qt.size(22, 22)
+                    sourceSize: Qt.size(26, 26)
                     fillMode: Image.PreserveAspectCrop
+                }
+                Icon {
+                    anchors.centerIn: parent
+                    width: 11; height: 11
+                    visible: !appBadgeImg.visible
+                    path: Icons.messages
+                    color: Theme.tintBlue
                 }
             }
         }

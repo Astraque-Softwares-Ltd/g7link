@@ -3,11 +3,14 @@ import QtQuick
 import app.g7link
 
 // A small, quiet text button: "Clear all", "Mark as read", "New". Muted
-// until hovered; `selected` gives it the selection fill (filter tabs).
+// until hovered; `selected` gives it the selection fill (filter tabs). An
+// `imageSource` (an app's icon) shows in place of the `iconPath` glyph once
+// it has loaded.
 FocusScope {
     id: action
     property string text
     property string iconPath
+    property url imageSource
     property color iconColor: Theme.accent
     property bool selected: false
     property bool muted: !selected
@@ -39,8 +42,17 @@ FocusScope {
         id: content
         anchors.centerIn: parent
         spacing: 6
+        RoundedImage {
+            id: image
+            visible: action.imageSource.toString().length > 0 && status === Image.Ready
+            anchors.verticalCenter: parent.verticalCenter
+            width: 14; height: 14
+            radius: 3
+            source: action.imageSource
+            sourceSize: Qt.size(28, 28)
+        }
         Icon {
-            visible: action.iconPath.length > 0
+            visible: action.iconPath.length > 0 && !image.visible
             anchors.verticalCenter: parent.verticalCenter
             width: 14; height: 14
             path: action.iconPath

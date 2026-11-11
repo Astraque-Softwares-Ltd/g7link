@@ -101,6 +101,10 @@ struct State {
     photos: HashMap<String, PathBuf>,
     /// App icons saved, by Android package name.
     app_icons: HashMap<String, PathBuf>,
+    /// The phone's default SMS app (package name), and its icon when this PC
+    /// has it (saved with that app's notifications).
+    sms_app: Option<String>,
+    sms_app_icon: Option<PathBuf>,
     /// A number pre-filled in the new-message box (from Calls / Contacts).
     compose_to: Option<String>,
     compose_name: Option<String>,
@@ -180,6 +184,7 @@ pub fn clear_cache() {
         s.pictures.clear();
         s.photos.clear();
         s.app_icons.clear();
+        s.sms_app_icon = None;
         s.staged_attachment = None;
         s.more = false;
         s.loading_older = false;
@@ -278,114 +283,139 @@ pub struct View {
 }
 
 pub fn view() -> View {
-    state(|s| {
-        let mut combined: Vec<(i64, String, Value)> = Vec::new();
-        if s.app_filter.is_empty() || s.app_filter == "sms" {
-            for t in &s.threads {
-                let mut json = thread_json(t, s.photos.get(&t.id));
-                if s.seen.get(&t.id).is_some_and(|seen| *seen >= t.date) {
-                    json["unread"] = json!(0);
-                }
-                combined.push((t.date, t.id.clone(), json));
-            }
-        }
-        if s.app_filter != "sms" {
-            for ct in &s.chat_threads {
-                if s.app_filter.is_empty() || ct.app == s.app_filter {
-                    combined.push((
-                        ct.updated_ms,
-                        ct.thread_id.clone(),
-                        chat_thread_json(ct, s.photos.get(&ct.thread_id), s.app_icons.get(&ct.app)),
-                    ));
-                }
-            }
-        }
-        combined.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        let threads = Value::Array(combined.into_iter().map(|(_, _, v)| v).collect());
+    state(|s| view_of(s))
+}
 
-        let mut apps = vec![json!({ "key": "", "label": "All" }), json!({ "key": "sms", "label": "SMS" })];
-        let mut seen = HashSet::new();
-        for ct in &s.chat_threads {
-            if !ct.app.is_empty() && seen.insert(ct.app.clone()) {
-                let label = if ct.app_name.trim().is_empty() { ct.app.clone() } else { ct.app_name.clone() };
-                apps.push(json!({ "key": ct.app, "label": label }));
-            }
-        }
-        let available_apps = Value::Array(apps);
+/// The tab for texts (`State::app_filter`); a chat app's is its package name.
+const SMS_TAB: &str = "sms";
 
-        let open_id = s.thread.as_deref();
-        let current_is_chat = open_id.is_some_and(|id| id.starts_with("chat:"));
-        let (current_app_name, current_can_reply, current_is_group) = if current_is_chat {
-            let ct = open_id.and_then(|id| s.chat_threads.iter().find(|c| c.thread_id == id));
-            (
-                ct.map(|c| if c.app_name.trim().is_empty() { "Chat".into() } else { c.app_name.clone() })
-                    .unwrap_or_else(|| "Chat".into()),
-                ct.is_some_and(|c| c.active && c.reply_action_id.is_some()),
-                ct.is_some_and(|c| c.is_group),
-            )
-        } else {
-            let sms_thread = open_id.and_then(|id| s.threads.iter().find(|t| t.id == id));
-            (
-                "SMS".into(),
-                sms_thread.is_none_or(|t| takes_replies(&t.addresses)),
-                sms_thread.is_some_and(|t| t.addresses.len() > 1),
-            )
+/// Whether a conversation shows under the `filter` tab: texts (`app` is
+/// `None`) under All and SMS, a chat app's under All and its own tab.
+fn in_tab(filter: &str, app: Option<&str>) -> bool {
+    match app {
+        None => filter.is_empty() || filter == SMS_TAB,
+        Some(app) => filter.is_empty() || filter == app,
+    }
+}
+
+/// The conversation list's tabs: All, SMS, then each chat app that has
+/// conversations, the most recently active first, with their icons.
+fn app_tabs(s: &State) -> Value {
+    let icon = |path: Option<&PathBuf>| path.map(|p| crate::icons::file_url(p)).unwrap_or_default();
+    let mut tabs = vec![
+        json!({ "key": "", "label": tr!("Messages", "All"), "icon": "" }),
+        json!({ "key": SMS_TAB, "label": "SMS", "icon": icon(s.sms_app_icon.as_ref()) }),
+    ];
+    let mut listed = HashSet::new();
+    for ct in &s.chat_threads {
+        if !ct.app.is_empty() && listed.insert(ct.app.as_str()) {
+            let label = if ct.app_name.trim().is_empty() { ct.app.clone() } else { ct.app_name.clone() };
+            tabs.push(json!({ "key": ct.app, "label": label, "icon": icon(s.app_icons.get(&ct.app)) }));
+        }
+    }
+    Value::Array(tabs)
+}
+
+fn view_of(s: &State) -> View {
+    let mut combined: Vec<(i64, String, Value)> = Vec::new();
+    if in_tab(&s.app_filter, None) {
+        let sms_app = s.sms_app.clone().unwrap_or_default();
+        let sms_icon = s.sms_app_icon.as_ref().map(|p| crate::icons::file_url(p)).unwrap_or_default();
+        for t in &s.threads {
+            let mut json = thread_json(t, s.photos.get(&t.id));
+            json["app"] = json!(sms_app);
+            json["appIcon"] = json!(sms_icon);
+            if s.seen.get(&t.id).is_some_and(|seen| *seen >= t.date) {
+                json["unread"] = json!(0);
+            }
+            combined.push((t.date, t.id.clone(), json));
+        }
+    }
+    for ct in &s.chat_threads {
+        if in_tab(&s.app_filter, Some(ct.app.as_str())) {
+            combined.push((
+                ct.updated_ms,
+                ct.thread_id.clone(),
+                chat_thread_json(ct, s.photos.get(&ct.thread_id), s.app_icons.get(&ct.app)),
+            ));
+        }
+    }
+    combined.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let threads = Value::Array(combined.into_iter().map(|(_, _, v)| v).collect());
+    let available_apps = app_tabs(s);
+
+    let open_id = s.thread.as_deref();
+    let current_is_chat = open_id.is_some_and(|id| id.starts_with("chat:"));
+    let (current_app_name, current_can_reply, current_is_group) = if current_is_chat {
+        let ct = open_id.and_then(|id| s.chat_threads.iter().find(|c| c.thread_id == id));
+        (
+            ct.map(|c| if c.app_name.trim().is_empty() { "Chat".into() } else { c.app_name.clone() })
+                .unwrap_or_else(|| "Chat".into()),
+            ct.is_some_and(|c| c.active && c.reply_action_id.is_some()),
+            ct.is_some_and(|c| c.is_group),
+        )
+    } else {
+        let sms_thread = open_id.and_then(|id| s.threads.iter().find(|t| t.id == id));
+        (
+            "SMS".into(),
+            sms_thread.is_none_or(|t| takes_replies(&t.addresses)),
+            sms_thread.is_some_and(|t| t.addresses.len() > 1),
+        )
+    };
+
+    let messages = if current_is_chat {
+        let mut ordered = s.chat_messages.clone();
+        ordered.sort_by(|a, b| a.time_ms.cmp(&b.time_ms).then_with(|| a.id.cmp(&b.id)));
+        Value::Array(ordered.iter().map(chat_message_json).collect())
+    } else {
+        // In a group, who sent each message (by contact name when known).
+        let thread = s.thread.as_ref().and_then(|id| s.threads.iter().find(|t| &t.id == id));
+        let group = thread.filter(|t| t.addresses.len() > 1);
+        Value::Array(
+            s.messages
+                .iter()
+                .rev()
+                .map(|m| message_json(m, &s.pictures, group.map(|t| sender_of(t, &m.address))))
+                .collect(),
+        )
+    };
+
+    let (has_attachment, attachment_preview, attachment_name, attachment_size, attachment_error) =
+        match &s.staged_attachment {
+            Some(att) => (
+                true,
+                att.preview_url.clone(),
+                att.name.clone(),
+                att.size_text.clone(),
+                att.error.clone(),
+            ),
+            None => (false, String::new(), String::new(), String::new(), String::new()),
         };
 
-        let messages = if current_is_chat {
-            let mut ordered = s.chat_messages.clone();
-            ordered.sort_by(|a, b| a.time_ms.cmp(&b.time_ms).then_with(|| a.id.cmp(&b.id)));
-            Value::Array(ordered.iter().map(chat_message_json).collect())
-        } else {
-            // In a group, who sent each message (by contact name when known).
-            let thread = s.thread.as_ref().and_then(|id| s.threads.iter().find(|t| &t.id == id));
-            let group = thread.filter(|t| t.addresses.len() > 1);
-            Value::Array(
-                s.messages
-                    .iter()
-                    .rev()
-                    .map(|m| message_json(m, &s.pictures, group.map(|t| sender_of(t, &m.address))))
-                    .collect(),
-            )
-        };
-
-        let (has_attachment, attachment_preview, attachment_name, attachment_size, attachment_error) =
-            match &s.staged_attachment {
-                Some(att) => (
-                    true,
-                    att.preview_url.clone(),
-                    att.name.clone(),
-                    att.size_text.clone(),
-                    att.error.clone(),
-                ),
-                None => (false, String::new(), String::new(), String::new(), String::new()),
-            };
-
-        View {
-            device: s.device,
-            status: s.status,
-            threads,
-            thread: s.thread.clone(),
-            messages,
-            more: if current_is_chat { false } else { s.more },
-            loading_older: if current_is_chat { false } else { s.loading_older },
-            sending: s.sending,
-            compose_to: s.compose_to.clone(),
-            compose_name: s.compose_name.clone(),
-            app_filter: s.app_filter.clone(),
-            available_apps,
-            has_chat_threads: !s.chat_threads.is_empty(),
-            current_is_chat,
-            current_app_name,
-            current_can_reply,
-            current_is_group,
-            has_attachment,
-            attachment_preview,
-            attachment_name,
-            attachment_size,
-            attachment_error,
-        }
-    })
+    View {
+        device: s.device,
+        status: s.status,
+        threads,
+        thread: s.thread.clone(),
+        messages,
+        more: if current_is_chat { false } else { s.more },
+        loading_older: if current_is_chat { false } else { s.loading_older },
+        sending: s.sending,
+        compose_to: s.compose_to.clone(),
+        compose_name: s.compose_name.clone(),
+        app_filter: s.app_filter.clone(),
+        available_apps,
+        has_chat_threads: !s.chat_threads.is_empty(),
+        current_is_chat,
+        current_app_name,
+        current_can_reply,
+        current_is_group,
+        has_attachment,
+        attachment_preview,
+        attachment_name,
+        attachment_size,
+        attachment_error,
+    }
 }
 
 /// Who a conversation is with: contact names, or numbers.
@@ -625,20 +655,28 @@ pub fn load_threads() {
     changed();
     let Some(node) = core_host::node() else { return };
     core_host::spawn(async move {
-        let result = node.sms_threads(device, THREADS).await;
+        let result = node.sms_threads_and_app(device, THREADS).await;
         let photos = match &result {
-            Ok(threads) => save_photos(device, threads),
+            Ok((threads, _)) => save_photos(device, threads),
             Err(_) => HashMap::new(),
+        };
+        let sms_app_icon = match &result {
+            Ok((_, Some(app))) => sms_app_icon(app),
+            _ => None,
         };
         state(|s| {
             if s.generation != generation {
                 return;
             }
             match result {
-                Ok(threads) => {
+                Ok((threads, app)) => {
                     crate::bridge::app::update_home_sms(device, &threads);
                     s.threads = threads;
                     s.photos.extend(photos);
+                    if app.is_some() {
+                        s.sms_app = app;
+                        s.sms_app_icon = sms_app_icon;
+                    }
                     s.status = Status::Ready;
                 }
                 Err(e) => {
@@ -654,6 +692,14 @@ pub fn load_threads() {
         changed();
         open_pending();
     });
+}
+
+/// The icon of the phone's SMS app, when its notifications brought one.
+fn sms_app_icon(app: &str) -> Option<PathBuf> {
+    core_host::host()
+        .hub
+        .read(|s| s.app_icons.get(app).cloned())
+        .or_else(|| crate::icons::existing(&core_host::host().data_dir, app))
 }
 
 /// Contact photos as files, for QML.
@@ -1523,6 +1569,71 @@ mod tests {
             unread: 0,
             photo: None,
         }
+    }
+
+    fn chat(id: &str, app: &str, app_name: &str, updated_ms: i64) -> ChatThreadRecord {
+        ChatThreadRecord {
+            peer: DeviceId([1; 32]),
+            thread_id: id.into(),
+            app: app.into(),
+            app_name: app_name.into(),
+            notification_key: String::new(),
+            reply_action_id: None,
+            title: id.into(),
+            is_group: false,
+            snippet: String::new(),
+            last_sender: None,
+            updated_ms,
+            unread: 0,
+            active: true,
+            avatar: None,
+            app_icon: None,
+        }
+    }
+
+    fn listed(s: &State) -> Vec<String> {
+        let view = view_of(s);
+        view.threads.as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect()
+    }
+
+    #[test]
+    fn tabs_filter_texts_and_each_chat_app() {
+        let mut s = State {
+            threads: vec![SmsThread { id: "sms1".into(), date: 30, ..thread(&["+1555"], &[]) }],
+            chat_threads: vec![
+                chat("chat:wa:Sam", "com.whatsapp", "WhatsApp", 40),
+                chat("chat:tg:Ana", "org.telegram.messenger", "", 20),
+                chat("chat:wa:Family", "com.whatsapp", "WhatsApp", 10),
+            ],
+            sms_app: Some("com.google.android.apps.messaging".into()),
+            ..State::default()
+        };
+        assert_eq!(listed(&s), ["chat:wa:Sam", "sms1", "chat:tg:Ana", "chat:wa:Family"], "All, newest first");
+        s.app_filter = SMS_TAB.into();
+        assert_eq!(listed(&s), ["sms1"]);
+        s.app_filter = "com.whatsapp".into();
+        assert_eq!(listed(&s), ["chat:wa:Sam", "chat:wa:Family"]);
+
+        let tabs = view_of(&s).available_apps;
+        let keys: Vec<&str> = tabs.as_array().unwrap().iter().map(|t| t["key"].as_str().unwrap()).collect();
+        assert_eq!(keys, ["", "sms", "com.whatsapp", "org.telegram.messenger"], "one tab per app, once");
+        assert_eq!(tabs[2]["label"], "WhatsApp");
+        assert_eq!(tabs[3]["label"], "org.telegram.messenger", "no name: the package");
+    }
+
+    #[test]
+    fn texts_carry_the_phone_sms_app() {
+        let mut s = State {
+            threads: vec![thread(&["+1555"], &[])],
+            sms_app: Some("com.google.android.apps.messaging".into()),
+            ..State::default()
+        };
+        let row = |s: &State| view_of(s).threads[0].clone();
+        assert_eq!(row(&s)["app"], "com.google.android.apps.messaging");
+        assert_eq!(row(&s)["appIcon"], "", "no icon yet: QML shows the glyph");
+        s.sms_app_icon = Some(PathBuf::from("/icons/com.google.android.apps.messaging.png"));
+        assert!(row(&s)["appIcon"].as_str().unwrap().ends_with("com.google.android.apps.messaging.png"));
+        assert!(view_of(&s).available_apps[1]["icon"].as_str().unwrap().ends_with(".png"));
     }
 
     #[test]
