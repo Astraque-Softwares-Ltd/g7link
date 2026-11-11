@@ -58,6 +58,8 @@ class AppDisplay(
         var codec: MediaCodec? = null
         var surface: Surface? = null
         val data = DataOutputStream(out.buffered(1 shl 16))
+        // Looked up while the encoder and the display are made, not after them.
+        val launcher = if (fullScreen) null else launcherActivitySoon(pkg)
         try {
             val first = createEncoder(curW, curH)
             codec = first.codec
@@ -74,8 +76,8 @@ class AppDisplay(
             }
             codecForKeyframes = first.codec
             writeConfig(data, curW, curH, displayId, first.codecName)
-            if (!fullScreen) {
-                launch(pkg, displayId)
+            if (launcher != null) {
+                launch(pkg, displayId, launcher)
                 watchActivities(displayId)
                 keepActive(displayId)
             }
@@ -336,10 +338,20 @@ class AppDisplay(
         }
     }
 
-    private fun launch(pkg: String, display: Int) {
+    /** [launcherActivity], asked for on a thread of its own: it takes a tenth of a second. */
+    private fun launcherActivitySoon(pkg: String): java.util.concurrent.Future<String?> {
+        val lookup = java.util.concurrent.FutureTask<String?> { launcherActivity(pkg) }
+        Thread(lookup, "app-display-launcher").apply { isDaemon = true }.start()
+        return lookup
+    }
+
+    private fun launch(pkg: String, display: Int, launcher: java.util.concurrent.Future<String?>) {
         // By its launcher activity's name: a package-only launcher intent isn't resolved on some
         // phones (Samsung's One UI answers "intent not resolved"), and nothing would open.
-        val target = launcherActivity(pkg)?.let { arrayOf("-n", it) }
+        val activity = runCatching {
+            launcher.get(LAUNCHER_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }.getOrNull()
+        val target = activity?.let { arrayOf("-n", it) }
             ?: arrayOf("-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", pkg)
         val command = arrayOf("am", "start", "--display", display.toString(), "--windowingMode", "1") + target +
             arrayOf("-f", (FLAG_NEW_TASK or FLAG_MULTIPLE_TASK).toString())
@@ -447,6 +459,9 @@ class AppDisplay(
         /** How often an open window counts as activity; well under any screen timeout. */
         private const val KEEP_ACTIVE_MS = 4_000L
         private const val ROTATION_CHECK_MS = 250L
+
+        /** How long the launcher activity's name is waited for before starting the app without it. */
+        private const val LAUNCHER_WAIT_MS = 3_000L
 
         /** WindowManager.DISPLAY_IME_POLICY_HIDE. */
         private const val DISPLAY_IME_POLICY_HIDE = 2
