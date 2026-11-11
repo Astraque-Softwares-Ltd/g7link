@@ -298,7 +298,7 @@ fun SettingsScreen(
                 NotificationAccess(state.notificationAccess, highlighted = pulsing == "notifications")
                 RuntimePermissionAccess(
                     title = stringResource(R.string.calls_title),
-                    icon = G7Icons.phone,
+                    icon = G7Icons.call,
                     tint = tints.teal,
                     granted = state.callAccess,
                     permissions = PhoneCalls.permissions,
@@ -349,7 +349,7 @@ fun SettingsScreen(
                     label = stringResource(R.string.guide_away_title),
                     checked = state.awayMode,
                     onCheckedChange = onToggleAwayMode,
-                    icon = G7Icons.wifi,
+                    icon = G7Icons.signal,
                     tint = tints.teal,
                 )
                 G7SwitchRow(

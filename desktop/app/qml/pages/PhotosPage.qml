@@ -286,7 +286,7 @@ Item {
                         enabled: !Photos.saving, run: () => Photos.saveItems([id], "") })
             list.push({ label: qsTr("Save to folder…"), icon: Icons.folder, tint: Theme.tintAmber, enabled: !Photos.saving,
                         run: () => { saveToFolderPicker.pendingIds = [id]; saveToFolderPicker.open() } })
-            list.push({ label: qsTr("Previous photo"), icon: Icons.back, keys: "Left", enabled: page.viewerIndex > 0,
+            list.push({ label: qsTr("Previous photo"), icon: Icons.chevronLeft, keys: "Left", enabled: page.viewerIndex > 0,
                         run: () => page.stepViewer(-1) })
             list.push({ label: qsTr("Next photo"), icon: Icons.chevronRight, keys: "Right",
                         enabled: page.viewerIndex + 1 < Photos.count, run: () => page.stepViewer(1) })
@@ -326,7 +326,7 @@ Item {
         } else {
             list.push({ label: qsTr("Take photo with phone"), icon: Icons.camera, tint: Theme.tintBlue,
                         run: () => AppController.startContinuityCamera("photo") })
-            list.push({ label: qsTr("Scan document with phone"), icon: Icons.clipboardList, tint: Theme.tintTeal,
+            list.push({ label: qsTr("Scan document with phone"), icon: Icons.scan, tint: Theme.tintTeal,
                         run: () => AppController.startContinuityCamera("scan") })
         }
         if (Photos.count > 0)
@@ -901,7 +901,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 tonal: true
                 visible: page.viewerIndex > 0
-                iconPath: Icons.back
+                iconPath: Icons.chevronLeft
                 label: qsTr("Previous photo")
                 onClicked: page.stepViewer(-1)
             }

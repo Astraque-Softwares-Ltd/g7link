@@ -125,7 +125,7 @@ internal fun rememberAccessItems(state: CoreState, onAccessChanged: () -> Unit):
             id = "calls",
             title = stringResource(R.string.walkthrough_perm_calls_title),
             sub = stringResource(R.string.welcome_calls_sub),
-            icon = G7Icons.phone,
+            icon = G7Icons.call,
             tint = tints.teal,
             granted = state.callAccess,
             restrictable = false,

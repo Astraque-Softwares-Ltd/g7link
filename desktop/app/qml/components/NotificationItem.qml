@@ -445,11 +445,12 @@ Item {
                 opacity: modelData.pending ? 0.55 : 1
                 Icon {
                     width: 14; height: 14
-                    anchors.verticalCenter: parent.verticalCenter
+                    y: Math.round((replyText.lineHeight - height) / 2)
                     path: modelData.pending ? Icons.send : Icons.check
                     color: Theme.accent
                 }
                 Txt {
+                    id: replyText
                     width: parent.width - 20
                     role: "bodySmall"
                     muted: true

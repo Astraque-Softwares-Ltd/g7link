@@ -344,7 +344,7 @@ fun DeskScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 DeskIconButton(
-                    icon = G7Icons.screen,
+                    icon = G7Icons.monitor,
                     label = stringResource(R.string.desk_pc_screen),
                     tint = tints.pink,
                     background = raised,

@@ -1537,7 +1537,7 @@ Item {
                         }
                         ToggleTile {
                             width: toggleGrid.cell
-                            iconPath: Icons.globe
+                            iconPath: Icons.hotspot
                             label: qsTr("Hotspot")
                             active: phoneControls.hotspotActive
                             feature: home.feature("toggles.wifi")

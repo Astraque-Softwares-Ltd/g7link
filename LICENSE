@@ -19,6 +19,14 @@ project. The full license texts are in the LICENSES/ directory.
                                                iroh-mdns-address-lookup is
                                                MIT OR Apache-2.0
 
+  Icons from Tabler Icons                      MIT, in
+  (desktop/app/qml/Icons.qml and the           LICENSES/MIT-Tabler-Icons.txt
+  Android app's G7Icons, where marked)
+
+  Glyphs from G7 Linux's src/server/icons      GPL-3.0-or-later, like the
+  (desktop G7Glyphs.qml, Android G7Icons       rest of the apps
+  and res/drawable)
+
   Anything not listed above                    GPL-3.0-or-later, with the
                                                additional permission in
                                                LICENSES/APP-STORE-EXCEPTION.md

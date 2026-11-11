@@ -404,7 +404,7 @@ private fun RemoteToolbar(
                 modifier = Modifier.weight(1f),
             )
             G7IconButton(
-                icon = G7Icons.power,
+                icon = G7Icons.moon,
                 contentDescription = stringResource(R.string.action_sleep_pc),
                 onClick = { core.pcPower(device.id, true) },
                 tint = tints.red,

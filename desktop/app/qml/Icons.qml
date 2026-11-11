@@ -3,7 +3,9 @@ pragma Singleton
 import QtQuick
 
 // Stroke icons as SVG paths on a 24×24 grid (round caps and joins), drawn
-// by Icon. Same shapes as the design mockups.
+// by Icon when G7Glyphs has no filled glyph for them or another theme is on.
+// chevronLeft, sparkle (sparkles), island (picture-in-picture-top) and
+// hotspot (access-point) are Tabler Icons, MIT (LICENSES/MIT-Tabler-Icons.txt).
 QtObject {
     readonly property string home: "M3 10a2 2 0 0 1 .71-1.53l7-6a2 2 0 0 1 2.58 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 21v-6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v6"
     readonly property string messages: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 8.5h8M8 12.5h5"
@@ -46,6 +48,7 @@ QtObject {
     readonly property string mark: "M21.12 4.08L8.64 4.08A6.48 6.48 0 0 0 8.64 17.04L10.56 17.04A2.88 2.88 0 0 0 10.56 11.28L7.92 11.28M21.12 4.08L16.32 21.12"
     readonly property string share: "M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98"
     readonly property string back: "M15 18l-6-6 6-6"
+    readonly property string chevronLeft: "M15 6l-6 6l6 6"
     readonly property string chevronRight: "M9 18l6-6-6-6"
     readonly property string chevronDown: "M6 9l6 6 6-6"
     readonly property string chevronUp: "M18 15l-6-6-6 6"
@@ -70,8 +73,8 @@ QtObject {
     readonly property string colorSwatch: "M12 3a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM8.5 9a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM15.5 9a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"
     readonly property string power: "M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04"
     readonly property string folder: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"
-    readonly property string sparkle: "M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"
-    readonly property string island: "M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 7.5h6"
+    readonly property string sparkle: "M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"
+    readonly property string island: "M11 5h-6a2 2 0 0 0 -2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2 -2v-4M15 10h5a1 1 0 0 0 1 -1v-3a1 1 0 0 0 -1 -1h-5a1 1 0 0 0 -1 1v3a1 1 0 0 0 1 1z"
     readonly property string shelf: "M12 3L2 8l10 5 10-5-10-5zM2 13l10 5 10-5M2 18l10 5 10-5"
     readonly property string glass: "M8 3h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM4 7v11a3 3 0 0 0 3 3h11"
     readonly property string download: "M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5"
@@ -84,6 +87,7 @@ QtObject {
     readonly property string camera: "M14 4a2 2 0 0 1 1.76 1.05l.49.9A2 2 0 0 0 18 7h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2a2 2 0 0 0 1.76-1.05l.49-.9A2 2 0 0 1 10 4zM12 10a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"
     readonly property string keyboard: "M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM6 9.5h1.5M10 9.5h1.5M14 9.5h1.5M17.5 9.5H19M7 14h10"
     readonly property string globe: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM2 12h20M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"
+    readonly property string hotspot: "M12 12l0 .01M14.828 9.172a4 4 0 0 1 0 5.656M17.657 6.343a8 8 0 0 1 0 11.314M9.168 14.828a4 4 0 0 1 0 -5.656M6.337 17.657a8 8 0 0 1 0 -11.314"
     readonly property string text: "M4 7V4h16v3M12 4v16M9 20h6"
     readonly property string terminal: "M4 17l6-6-6-6M12 19h8"
     readonly property string bolt: "M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"

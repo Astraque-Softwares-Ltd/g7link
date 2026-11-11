@@ -2,7 +2,8 @@
 //! `cargo xtask notices <out> [--target <triple>]`: the third-party notices
 //! shipped with the desktop app. Every crate compiled into the app (normal
 //! dependencies for that target; not build or dev ones) with its license
-//! and the license files it ships, then Qt and the bundled fonts.
+//! and the license files it ships, then Qt, the bundled fonts and the icons
+//! taken from other projects.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -60,6 +61,7 @@ pub fn run(args: &[&str]) -> Result<()> {
     )?;
     write_qt(&mut text, &root)?;
     write_fonts(&mut text, &root)?;
+    write_icons(&mut text, &root)?;
     writeln!(text, "\nRust crates ({} in this build)\n{}", crates.len(), "-".repeat(30))?;
     for c in &crates {
         writeln!(text, "\n{} {}  ·  {}", c.name, c.version, c.license)?;
@@ -195,6 +197,15 @@ fn write_fonts(text: &mut String, root: &Path) -> Result<()> {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         writeln!(text, "\n--- {name} ---\n{}", fs::read_to_string(&path)?.trim_end())?;
     }
+    Ok(())
+}
+
+fn write_icons(text: &mut String, root: &Path) -> Result<()> {
+    writeln!(text, "\nIcons\n-----")?;
+    writeln!(text, "Some icons are from Tabler Icons (https://tabler.io/icons), under the MIT License:")?;
+    let mit = fs::read_to_string(root.join("LICENSES/MIT-Tabler-Icons.txt"))
+        .context("reading the Tabler Icons license")?;
+    writeln!(text, "\n{}", mit.trim_end())?;
     Ok(())
 }
 

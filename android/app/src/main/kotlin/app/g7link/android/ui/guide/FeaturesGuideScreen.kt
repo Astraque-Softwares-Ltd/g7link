@@ -552,7 +552,7 @@ private fun openDevOptions(context: Context) {
 /** Each feature's icon and tint, as Home draws it. */
 private fun guideIcon(id: String, tints: G7Tints): Pair<ImageVector, Color> = when (id) {
     "notification_mirroring" -> G7Icons.bell to tints.blue
-    "incoming_calls" -> G7Icons.phone to tints.teal
+    "incoming_calls" -> G7Icons.call to tints.teal
     "media_and_pc_audio" -> G7Icons.music to tints.pink
     "sms_mms_messages" -> G7Icons.message to tints.blue
     "clipboard_sync", "quick_settings_clipboard_tile" -> G7Icons.clipboard to tints.lavender
@@ -560,7 +560,7 @@ private fun guideIcon(id: String, tints: G7Tints): Pair<ImageVector, Color> = wh
     "waiting_to_send_queue" -> G7Icons.history to tints.amber
     "share_sheet_handoff" -> G7Icons.send to tints.blue
     "browse_phone_storage" -> G7Icons.folder to tints.amber
-    "browse_pc_files" -> G7Icons.download to tints.amber
+    "browse_pc_files" -> G7Icons.folder to tints.amber
     "recent_photos" -> G7Icons.photo to tints.coral
     "timeline_history" -> G7Icons.history to tints.blue
     "localsend_lan" -> G7Icons.wifi to tints.green
@@ -575,7 +575,7 @@ private fun guideIcon(id: String, tints: G7Tints): Pair<ImageVector, Color> = wh
     "desk_mode" -> G7Icons.clock to tints.lavender
     "ring_lock_sleep_wake" -> G7Icons.power to tints.red
     "phone_quick_toggles" -> G7Icons.moon to tints.lavender
-    "away_mode_and_usb" -> G7Icons.wifi to tints.teal
+    "away_mode_and_usb" -> G7Icons.signal to tints.teal
     "connection_doctor" -> G7Icons.info to tints.blue
     else -> G7Icons.info to tints.muted
 }

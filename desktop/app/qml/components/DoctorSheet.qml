@@ -88,7 +88,8 @@ Sheet {
                         Rectangle {
                             id: badge
                             x: Theme.quiet ? Theme.rowPadding : 8
-                            anchors.verticalCenter: parent.verticalCenter
+                            // On the title's first line, however many lines it wraps to.
+                            y: words.y + Math.round((checkTitle.lineHeight - height) / 2)
                             width: Theme.quiet ? 18 : 28; height: width
                             radius: width / 2
                             color: Theme.quiet ? "transparent" : row.modelData.outcome === "ok" ? Theme.secondaryContainer
@@ -114,6 +115,7 @@ Sheet {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 3
                             Txt {
+                                id: checkTitle
                                 width: parent.width
                                 text: row.modelData.title
                                 role: Theme.quiet ? "body" : "title"

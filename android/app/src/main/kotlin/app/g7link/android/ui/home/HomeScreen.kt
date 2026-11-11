@@ -173,6 +173,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import app.g7link.android.core.PHONE_SPEAKER_OUTPUT
 import app.g7link.android.ui.theme.G7IconButton
+import app.g7link.android.ui.theme.FirstLineIcon
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7Mark
 import app.g7link.android.ui.theme.G7Row
@@ -689,7 +690,7 @@ fun HomeScreen(
                     )
                     G7Row(
                         label = stringResource(R.string.action_browse_pc_files),
-                        icon = G7Icons.download,
+                        icon = G7Icons.folder,
                         tint = tints.amber,
                         enabled = online,
                         onClick = { browseFilesPcId = pc.id },
@@ -714,7 +715,7 @@ fun HomeScreen(
                         )
                         G7Row(
                             label = stringResource(R.string.action_sleep_pc),
-                            icon = G7Icons.power,
+                            icon = G7Icons.moon,
                             tint = tints.red,
                             enabled = online,
                             onClick = { onPower(pc.id, true) },
@@ -1834,48 +1835,50 @@ private fun SendQueueRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Icon(
-                imageVector = kindIcon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = displayTitle,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    if (showPeerChip && item.peerName.isNotBlank()) {
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FirstLineIcon(
+                    icon = kindIcon,
+                    tint = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.titleSmall,
+                    size = 18.dp,
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         Text(
-                            text = item.peerName,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            text = displayTitle,
+                            style = MaterialTheme.typography.titleSmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .bentoWell(
-                                    cornerRadius = 8.dp,
-                                    fillColor = MaterialTheme.colorScheme.secondaryContainer,
-                                )
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            modifier = Modifier.weight(1f, fill = false),
                         )
+                        if (showPeerChip && item.peerName.isNotBlank()) {
+                            Text(
+                                text = item.peerName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .bentoWell(
+                                        cornerRadius = 8.dp,
+                                        fillColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
                     }
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = statusColor,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = statusColor,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
             when (status) {
                 is FfiQueueStatus.Waiting, is FfiQueueStatus.Sending -> {

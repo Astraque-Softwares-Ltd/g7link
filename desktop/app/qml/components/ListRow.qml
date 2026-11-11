@@ -25,7 +25,8 @@ Item {
         id: icon
         visible: row.iconPath.length > 0
         anchors.left: parent.left
-        anchors.verticalCenter: row.stackTrailing ? texts.verticalCenter : parent.verticalCenter
+        // On the title's first line, however many lines the text wraps to.
+        y: texts.y + Math.round((titleText.lineHeight - height) / 2)
         width: Theme.quiet ? 18 : implicitWidth
         height: width
         path: row.iconPath
@@ -40,6 +41,7 @@ Item {
         y: row.stackTrailing ? 12 : Math.round((row.height - height) / 2)
         spacing: 2
         Txt {
+            id: titleText
             width: parent.width
             text: row.title
             role: Theme.quiet ? "body" : "title"
