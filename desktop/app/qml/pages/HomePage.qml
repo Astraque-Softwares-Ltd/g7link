@@ -1495,7 +1495,8 @@ Item {
                         ToggleTile {
                             width: toggleGrid.cell
                             iconPath: Icons.moon
-                            label: qsTr("Do not disturb")
+                            label: qsTr("DND", "Do not disturb, on a narrow tile")
+                            fullName: qsTr("Do not disturb")
                             active: phoneControls.state ? Boolean(phoneControls.state.dnd) : false
                             feature: home.feature("toggles.dnd")
                             onLockedClicked: phoneControls.showLock(feature)
@@ -2259,6 +2260,9 @@ Item {
         id: tile
         property string iconPath
         property string label
+        // The whole name, for the tooltip and screen readers, when `label`
+        // is shortened to fit the tile.
+        property string fullName: label
         property bool active: false
         property var feature: ({})
         readonly property bool available: feature.state === "available"
@@ -2268,7 +2272,7 @@ Item {
         height: 34
         activeFocusOnTab: true
         Accessible.role: Accessible.CheckBox
-        Accessible.name: label
+        Accessible.name: fullName
         Accessible.checked: active
         Accessible.onPressAction: tile.available ? tile.clicked() : tile.lockedClicked()
         Keys.onPressed: (event) => {
@@ -2314,6 +2318,30 @@ Item {
         TapHandler {
             gesturePolicy: TapHandler.ReleaseWithinBounds
             onTapped: tile.available ? tile.clicked() : tile.lockedClicked()
+        }
+        // The full name above the tile, after a short hover.
+        Timer {
+            id: tipDelay
+            interval: 450
+            running: tileHover.hovered && tile.fullName !== tile.label
+        }
+        Rectangle {
+            z: 10
+            visible: tileHover.hovered && tile.fullName !== tile.label && !tipDelay.running
+            x: Math.round((tile.width - width) / 2)
+            y: -height - 6
+            width: tipText.implicitWidth + 18
+            height: tipText.implicitHeight + 10
+            radius: Theme.radiusSm
+            color: Theme.surfaceContainerHighest
+            border.width: 1
+            border.color: Theme.line
+            Txt {
+                id: tipText
+                anchors.centerIn: parent
+                role: "caption"
+                text: tile.fullName
+            }
         }
     }
 
