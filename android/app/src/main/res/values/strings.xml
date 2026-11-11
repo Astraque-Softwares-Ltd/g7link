@@ -251,6 +251,9 @@
     <string name="wake_not_ready">Connect to %1$s once so this phone learns its network address.</string>
     <string name="pc_locked">%1$s is locked.</string>
     <string name="pc_sleeping">%1$s is going to sleep.</string>
+    <string name="sending_clipboard">Sending…</string>
+    <string name="locking">Locking…</string>
+    <string name="sleeping">Going to sleep…</string>
     <string name="pc_actions_off">Locking and sleep are turned off for this phone on %1$s.</string>
     <string name="channel_links">Links from your PC</string>
     <!-- Play on phone: what a PC plays, streamed to the phone. -->

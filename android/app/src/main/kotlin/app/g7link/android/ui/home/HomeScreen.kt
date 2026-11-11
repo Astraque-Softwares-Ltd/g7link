@@ -69,6 +69,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -193,7 +194,7 @@ fun HomeScreen(
     onStopRinging: () -> Unit,
     onPairNew: () -> Unit,
     onRefresh: () -> Unit,
-    onPower: (pcId: String, sleep: Boolean) -> Unit,
+    onPower: (pcId: String, sleep: Boolean, onDone: (Boolean) -> Unit) -> Unit,
     onWake: (pcId: String) -> Unit,
     onSetReconnect: (pcId: String, on: Boolean) -> Unit,
     onRemote: (pcId: String) -> Unit,
@@ -266,6 +267,14 @@ fun HomeScreen(
     var showTimeline by remember { mutableStateOf(false) }
     var browseFilesPcId by remember { mutableStateOf<String?>(null) }
     var linkPcId by remember { mutableStateOf<String?>(null) }
+    /** PCs with a lock (false) or sleep (true) on its way, until the PC answers. */
+    val powering = remember { mutableStateMapOf<String, Boolean>() }
+    val power: (String, Boolean) -> Unit = { pcId, sleep ->
+        if (pcId !in powering) {
+            powering[pcId] = sleep
+            onPower(pcId, sleep) { powering.remove(pcId) }
+        }
+    }
     var pulsingTarget by remember { mutableStateOf<GuideHighlightTarget?>(null) }
     var accessOpen by rememberSaveable { mutableStateOf(false) }
     var selectedPcId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -703,19 +712,20 @@ fun HomeScreen(
                         },
                     )
                     if (pc.has("device.pc_actions")) {
+                        val inFlight = powering[pc.id]
                         G7Row(
-                            label = stringResource(R.string.home_lock),
+                            label = stringResource(if (inFlight == false) R.string.locking else R.string.home_lock),
                             icon = G7Icons.lock,
                             tint = tints.teal,
                             enabled = online,
-                            onClick = { onPower(pc.id, false) },
+                            onClick = { power(pc.id, false) },
                         )
                         G7Row(
-                            label = stringResource(R.string.action_sleep_pc),
+                            label = stringResource(if (inFlight == true) R.string.sleeping else R.string.action_sleep_pc),
                             icon = G7Icons.moon,
                             tint = tints.red,
                             enabled = online,
-                            onClick = { onPower(pc.id, true) },
+                            onClick = { power(pc.id, true) },
                         )
                     }
                     val deckState = pc.deckState

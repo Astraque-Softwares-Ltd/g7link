@@ -7,6 +7,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.util.Log
+import android.widget.Toast
 import android.net.Uri
 import app.g7link.android.BuildConfig
 import app.g7link.android.audio.PcSpeakerPlayer
@@ -63,9 +64,11 @@ import app.g7link.core.TransferDirection
 import app.g7link.core.TransferStatus
 import app.g7link.core.initLogging
 import app.g7link.android.files.transferTitle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
@@ -229,6 +232,13 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
      */
     private val remoteOps = Channel<suspend (G7LinkNode) -> Unit>(Channel.UNLIMITED)
 
+    /**
+     * Pointer moves and smooth scrolls (QUIC datagrams), never queued behind
+     * [remoteOps]' replies. Each kind keeps at most one op here, summing
+     * deltas until it runs.
+     */
+    private val pointerOps = Channel<suspend (G7LinkNode) -> Unit>(Channel.UNLIMITED)
+
     private val opsLock = Any()
     @Volatile private var isRunning = false
 
@@ -247,6 +257,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             }
         }
     }
+
+    private fun enqueuePointerOp(op: suspend (G7LinkNode) -> Unit): Boolean =
+        synchronized(opsLock) {
+            isRunning && node != null && pointerOps.trySend(op).isSuccess
+        }
 
     private val _state = MutableStateFlow(CoreState())
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -590,6 +605,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     runCatching { op(started) }.onFailure { Log.w(TAG, "remote input failed", it) }
                 }
             }
+            currentRunScope.launch {
+                for (op in pointerOps) {
+                    runCatching { op(started) }.onFailure { Log.w(TAG, "pointer input failed", it) }
+                }
+            }
         }
         startJob = job
     }
@@ -619,6 +639,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     // Drain any pending operations so they don't replay on the next run.
                     while (notificationOps.tryReceive().isSuccess) {}
                     while (remoteOps.tryReceive().isSuccess) {}
+                    while (pointerOps.tryReceive().isSuccess) {}
+                    pendingMoves.clear()
+                    pendingScrolls.clear()
                 }
                 startJob = null
                 runJob = null
@@ -1491,6 +1514,26 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     suspend fun sendClipboard(text: String, pcId: String? = null, html: String? = null): String =
         sendToPcs(image = false, pcId = pcId) { node, pc -> node.sendClipboardRich(pc, text, html, null) }
 
+    /**
+     * Runs a clipboard send ([sendClipboard], [sendClipboardImage] or [sendClipboardSensitive])
+     * in the background and returns at once; what it says shows as a toast.
+     */
+    fun sendClipboardInBackground(send: suspend Core.() -> String) {
+        scope.launch {
+            val message = try {
+                send()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "clipboard not sent", e)
+                context.getString(R.string.error_generic)
+            }
+            if (message.isNotBlank()) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+
     /** Sends what a password manager copied, when the user chose that. Never queued. */
     suspend fun sendClipboardSensitive(text: String, pcId: String? = null): String =
         sendToPcs(image = false, pcId = pcId) { node, pc -> node.sendClipboardPrivate(pc, text) }
@@ -2057,19 +2100,29 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     /** Tells paired PCs that `version` is out on `channel`, so they needn't wait for their next check. */
     fun announceUpdate(channel: String, version: String) = command { it.announceUpdate(channel, version) }
 
-    /** Locks a PC, or puts it to sleep; says how it went. */
-    fun pcPower(id: String, sleep: Boolean) {
+    /** Locks a PC, or puts it to sleep; says how it went, and calls [onDone] on the main thread with whether it did. */
+    fun pcPower(id: String, sleep: Boolean, onDone: (Boolean) -> Unit = {}) {
         scope.launch {
-            startJob?.join()
-            val node = node ?: return@launch
-            val name = _state.value.nameOf(id).orEmpty()
-            val message = try {
-                node.pcPower(id, sleep)
-                context.getString(if (sleep) R.string.pc_sleeping else R.string.pc_locked, name)
-            } catch (e: G7LinkException) {
-                if (e is G7LinkException.Denied) context.getString(R.string.pc_actions_off, name) else describe(e)
+            var done = false
+            try {
+                startJob?.join()
+                val node = node
+                val name = _state.value.nameOf(id).orEmpty()
+                val message = if (node == null) {
+                    context.getString(R.string.error_not_connected)
+                } else {
+                    try {
+                        node.pcPower(id, sleep)
+                        done = true
+                        context.getString(if (sleep) R.string.pc_sleeping else R.string.pc_locked, name)
+                    } catch (e: G7LinkException) {
+                        if (e is G7LinkException.Denied) context.getString(R.string.pc_actions_off, name) else describe(e)
+                    }
+                }
+                _messages.tryEmit(message)
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main) { onDone(done) }
             }
-            _messages.tryEmit(message)
         }
     }
 
@@ -2176,50 +2229,32 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    private val pendingMoveLock = Any()
-    private var pendingMovePcId: String? = null
-    private var pendingMoveDx: Float = 0f
-    private var pendingMoveDy: Float = 0f
-    private var pendingMoveQueued: Boolean = false
+    private val pendingMoves = DeltaCoalescer(limit = MAX_MOVE_DELTA)
+    private val pendingScrolls = DeltaCoalescer(limit = MAX_SCROLL_DELTA)
 
     /** Moves a PC's cursor by `(dx, dy)` logical pixels over QUIC datagrams, coalescing rapid 120Hz touch samples. */
     fun remoteMove(id: String, dx: Float, dy: Float) {
-        val shouldQueue = synchronized(pendingMoveLock) {
-            if (pendingMovePcId != null && pendingMovePcId != id) {
-                pendingMoveDx = 0f
-                pendingMoveDy = 0f
-            }
-            pendingMovePcId = id
-            pendingMoveDx += dx
-            pendingMoveDy += dy
-            if (!pendingMoveQueued) {
-                pendingMoveQueued = true
-                true
-            } else {
-                false
-            }
+        if (!pendingMoves.add(id, dx, dy)) return
+        val queued = enqueuePointerOp { node ->
+            pendingMoves.take()?.let { runCatching { node.remoteMove(it.target, it.dx, it.dy) } }
         }
-        if (shouldQueue) {
-            enqueueRemoteOp { node ->
-                val (targetId, totalDx, totalDy) = synchronized(pendingMoveLock) {
-                    val t = pendingMovePcId
-                    val x = pendingMoveDx
-                    val y = pendingMoveDy
-                    pendingMoveDx = 0f
-                    pendingMoveDy = 0f
-                    pendingMoveQueued = false
-                    Triple(t, x, y)
-                }
-                if (targetId != null && (totalDx != 0f || totalDy != 0f)) {
-                    runCatching { node.remoteMove(targetId, totalDx, totalDy) }
-                }
-            }
-        }
+        if (!queued) pendingMoves.clear()
     }
 
-    /** Scrolls on a PC (`dy` > 0 scrolls down, `dx` > 0 scrolls right, in wheel notches). */
+    /**
+     * Scrolls on a PC (`dy` > 0 scrolls down, `dx` > 0 scrolls right, in wheel notches).
+     * Smooth ([fast]) scrolls are datagrams, summed until sent; wheel clicks keep their order.
+     */
     fun remoteScroll(id: String, dx: Float, dy: Float, fast: Boolean = true) {
-        enqueueRemoteOp { runCatching { it.remoteScroll(id, dx, dy, fast) } }
+        if (!fast) {
+            enqueueRemoteOp { runCatching { it.remoteScroll(id, dx, dy, false) } }
+            return
+        }
+        if (!pendingScrolls.add(id, dx, dy)) return
+        val queued = enqueuePointerOp { node ->
+            pendingScrolls.take()?.let { runCatching { node.remoteScroll(it.target, it.dx, it.dy, true) } }
+        }
+        if (!queued) pendingScrolls.clear()
     }
 
     /** Presses, releases or clicks a mouse button (`"left"`, `"right"` or `"middle"`). */
@@ -2315,17 +2350,23 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     enum class DeckPressResult { Ok, Denied, Offline, NotFound, Failed }
 
-    /** Presses a Deck tile on a paired PC (`deck.press`). */
+    /** Presses a Deck tile on a paired PC (`deck.press`); says when it couldn't. */
     suspend fun deckPress(id: String, tile: String): DeckPressResult {
         startJob?.join()
-        val node = node ?: return DeckPressResult.Offline
+        val node = node ?: run {
+            _messages.tryEmit(context.getString(R.string.error_not_connected))
+            return DeckPressResult.Offline
+        }
         return try {
             node.deckPress(id, tile)
             DeckPressResult.Ok
         } catch (e: G7LinkException) {
             when (e) {
                 is G7LinkException.Denied -> DeckPressResult.Denied
-                is G7LinkException.Offline -> DeckPressResult.Offline
+                is G7LinkException.Offline -> {
+                    _messages.tryEmit(describe(e))
+                    DeckPressResult.Offline
+                }
                 is G7LinkException.NotFound -> DeckPressResult.NotFound
                 else -> {
                     _messages.tryEmit(describe(e))
@@ -2374,16 +2415,45 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 s
             }
         }
-        enqueueRemoteOp { node ->
-            try {
-                node.setPcAudio(id, wireVol, muted)
-            } catch (e: G7LinkException) {
-                if (e is G7LinkException.Denied) {
-                    val name = _state.value.nameOf(id).orEmpty()
-                    _messages.tryEmit(context.getString(R.string.remote_denied_title, name))
-                } else if (e !is G7LinkException.Offline) {
-                    _messages.tryEmit(describe(e))
-                }
+        audioSender.offer(
+            id,
+            PcAudioRequest(
+                relay = wireVol.takeIf { isSpeakerRelayToggle },
+                volume = wireVol.takeIf { !isSpeakerRelayToggle },
+                muted = muted,
+            ),
+        )
+    }
+
+    /** What a PC's audio should become; newer fields replace older ones. */
+    private data class PcAudioRequest(val relay: UByte?, val volume: UByte?, val muted: Boolean?) {
+        fun then(newer: PcAudioRequest) = PcAudioRequest(
+            relay = newer.relay ?: relay,
+            volume = newer.volume ?: volume,
+            muted = newer.muted ?: muted,
+        )
+    }
+
+    /** Sends each PC only its latest audio settings: a dragged slider never queues up requests. */
+    private val audioSender = LatestValueSender<String, PcAudioRequest>(
+        scope = scope,
+        merge = PcAudioRequest::then,
+        onError = { Log.w(TAG, "PC audio not set", it) },
+    ) send@{ id, request ->
+        val node = node ?: return@send
+        if (request.relay != null) sendPcAudio(node, id, request.relay, null)
+        if (request.volume != null || request.muted != null) sendPcAudio(node, id, request.volume, request.muted)
+    }
+
+    private suspend fun sendPcAudio(node: G7LinkNode, id: String, volume: UByte?, muted: Boolean?) {
+        try {
+            node.setPcAudio(id, volume, muted)
+        } catch (e: G7LinkException) {
+            if (e is G7LinkException.Denied) {
+                val name = _state.value.nameOf(id).orEmpty()
+                _messages.tryEmit(context.getString(R.string.remote_denied_title, name))
+            } else if (e !is G7LinkException.Offline) {
+                _messages.tryEmit(describe(e))
             }
         }
     }
@@ -2559,6 +2629,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     private companion object {
         const val TAG = "G7Link"
+        /** The protocol's bounds on one pointer move and one scroll (`remote::MAX_MOVE_DELTA`, `MAX_SCROLL_DELTA`). */
+        const val MAX_MOVE_DELTA = 4000f
+        const val MAX_SCROLL_DELTA = 200f
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */

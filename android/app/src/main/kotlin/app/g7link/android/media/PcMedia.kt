@@ -120,6 +120,17 @@ class PcMedia(
     data class PcLevel(val volume: Int, val muted: Boolean)
     private val stalePauseTimeout = Runnable { hide() }
 
+    /** The summary as the PC last described it, before any play or pause pressed here. */
+    private var rendered: Summary? = null
+
+    /** Puts back what the PC said when it never answered a play or pause. */
+    private val undoPressedPlaying = Runnable {
+        if (currentSummary != rendered) {
+            currentSummary = rendered
+            app.g7link.android.widget.PcWidgetProvider.refreshAll(context)
+        }
+    }
+
     private val callback = object : MediaSession.Callback() {
         override fun onPlay() = command(MediaAction.PLAY)
         override fun onPause() = command(MediaAction.PAUSE)
@@ -189,6 +200,7 @@ class PcMedia(
 
     private fun render() {
         main.removeCallbacks(stalePauseTimeout)
+        main.removeCallbacks(undoPressedPlaying)
         val first = players.entries.firstNotNullOfOrNull { (pc, list) ->
             (list.firstOrNull { it.playing } ?: list.firstOrNull())?.let { pc to it }
         }
@@ -226,7 +238,7 @@ class PcMedia(
         }
         val subtitleLine = listOfNotNull(cleanArtist, where).distinct().joinToString(" · ")
 
-        val prev = currentSummary
+        val prev = rendered
         val nextSummary = Summary(
             pcId = pc,
             title = cleanTitle,
@@ -234,6 +246,7 @@ class PcMedia(
             playing = player.playing,
             artwork = picture,
         )
+        rendered = nextSummary
         currentSummary = nextSummary
         val widgetSummaryChanged = prev?.pcId != nextSummary.pcId ||
             prev.title != nextSummary.title ||
@@ -343,9 +356,11 @@ class PcMedia(
 
     private fun hide() {
         main.removeCallbacks(stalePauseTimeout)
+        main.removeCallbacks(undoPressedPlaying)
         shown = null
         remote = null
         val hadSummary = currentSummary != null
+        rendered = null
         currentSummary = null
         if (activeSeedColor != null) {
             activeSeedColor = null
@@ -428,14 +443,34 @@ class PcMedia(
         }
     }
 
-    /** A button in the notification or widget. */
-    internal fun pressed(action: MediaAction) = main.post { command(action) }
+    /**
+     * A button in the app, notification or widget. Play and pause show at once;
+     * the PC's next update confirms it, or it goes back after [PRESSED_PLAYING_MS].
+     */
+    internal fun pressed(action: MediaAction) = main.post {
+        if (shown == null) return@post
+        command(action)
+        val summary = currentSummary ?: return@post
+        val playing = when (action) {
+            MediaAction.PLAY -> true
+            MediaAction.PAUSE -> false
+            else -> return@post
+        }
+        if (summary.playing == playing) return@post
+        currentSummary = summary.copy(playing = playing)
+        main.removeCallbacks(undoPressedPlaying)
+        main.postDelayed(undoPressedPlaying, PRESSED_PLAYING_MS)
+        app.g7link.android.widget.PcWidgetProvider.refreshAll(context)
+    }
 
     companion object {
         private const val CHANNEL = "pc_media"
         private const val NOTIFICATION_TAG = "pc_media"
         private const val NOTIFICATION_ID = 1
         const val EXTRA_ACTION = "action"
+
+        /** How long a pressed play or pause shows without the PC confirming it. */
+        private const val PRESSED_PLAYING_MS = 4_000L
 
         /** Steps of the PC's volume on the phone: each button press moves it 4%. */
         internal const val VOLUME_STEPS = 25

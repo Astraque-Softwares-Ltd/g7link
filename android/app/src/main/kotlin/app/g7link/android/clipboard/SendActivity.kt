@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.core.content.IntentCompat
 import app.g7link.android.G7LinkApplication
 import app.g7link.android.R
+import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -162,10 +163,8 @@ class SendActivity : ComponentActivity() {
             is PhoneClipboard.Read.Text -> send(clip.text, clip.html)
             is PhoneClipboard.Read.Image -> sendImage(clip.uri)
             is PhoneClipboard.Read.Sensitive -> {
-                sent = true
-                val core = (application as G7LinkApplication).core
                 val pcId = targetPcId()
-                scope.launch { finishWith(core.sendClipboardSensitive(clip.text, pcId)) }
+                sendInBackground { sendClipboardSensitive(clip.text, pcId) }
             }
             PhoneClipboard.Read.Private -> finishWith(getString(R.string.clip_private))
             PhoneClipboard.Read.Empty -> finishWith(getString(R.string.clip_empty))
@@ -210,17 +209,19 @@ class SendActivity : ComponentActivity() {
     }
 
     private fun send(text: String, html: String? = null) {
-        sent = true
-        val core = (application as G7LinkApplication).core
         val pcId = targetPcId()
-        scope.launch { finishWith(core.sendClipboard(text, pcId, html)) }
+        sendInBackground { sendClipboard(text, pcId, html) }
     }
 
     private fun sendImage(uri: Uri) {
-        sent = true
-        val core = (application as G7LinkApplication).core
         val pcId = targetPcId()
-        scope.launch { finishWith(core.sendClipboardImage(uri, pcId)) }
+        sendInBackground { sendClipboardImage(uri, pcId) }
+    }
+
+    /** Hands the send to the app and closes at once; the outcome shows as a toast when the PC answers. */
+    private fun sendInBackground(send: suspend Core.() -> String) {
+        (application as G7LinkApplication).core.sendClipboardInBackground(send)
+        finishWith(getString(R.string.sending_clipboard))
     }
 
     private fun finishWith(message: String) {

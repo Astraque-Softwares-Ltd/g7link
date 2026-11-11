@@ -249,6 +249,9 @@
     <string name="wake_not_ready">Bu telefonun ağ adresini öğrenmesi için %1$s cihazına bir kez bağlanın.</string>
     <string name="pc_locked">%1$s kilitlendi.</string>
     <string name="pc_sleeping">%1$s uyku moduna geçiyor.</string>
+    <string name="sending_clipboard">Gönderiliyor…</string>
+    <string name="locking">Kilitleniyor…</string>
+    <string name="sleeping">Uyku moduna geçiyor…</string>
     <string name="pc_actions_off">%1$s üzerinde bu telefon için kilitleme ve uyku kapalı.</string>
     <string name="channel_links">Bilgisayarınızdan gelen bağlantılar</string>
     <!-- Play on phone: what a PC plays, streamed to the phone. -->

@@ -60,6 +60,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -67,7 +68,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -117,6 +124,9 @@ fun DeckScreen(
     var fullScreen by rememberSaveable { mutableStateOf(false) }
     var access by remember(device.id) { mutableStateOf(Core.RemoteAccess.Allowed) }
     var commandsDenied by remember(device.id) { mutableStateOf(false) }
+    /** Tiles waiting for the PC, or just done, by tile id; the press count tells a later press from an earlier one. */
+    val tileProgress = remember(device.id) { mutableStateMapOf<String, DeckTileProgress>() }
+    val tilePresses = remember(device.id) { mutableMapOf<String, Int>() }
 
     // Keep the phone's screen on while Deck is open, and restore system bars on exit.
     DisposableEffect(view, device.id) {
@@ -271,10 +281,15 @@ fun DeckScreen(
                             liveState = liveState,
                             compact = isLandscape,
                             enabled = device.online,
+                            progress = tileProgress[tile.id],
                             onPress = {
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                val press = (tilePresses[tile.id] ?: 0) + 1
+                                tilePresses[tile.id] = press
+                                tileProgress[tile.id] = DeckTileProgress.Working
                                 scope.launch {
-                                    when (core.deckPress(device.id, tile.id)) {
+                                    val result = core.deckPress(device.id, tile.id)
+                                    when (result) {
                                         Core.DeckPressResult.Ok -> {
                                             access = Core.RemoteAccess.Allowed
                                             if (tile.kind == "run_command") commandsDenied = false
@@ -290,6 +305,14 @@ fun DeckScreen(
                                             access = Core.RemoteAccess.Offline
                                         }
                                         else -> {}
+                                    }
+                                    if (tilePresses[tile.id] != press) return@launch
+                                    if (result == Core.DeckPressResult.Ok) {
+                                        tileProgress[tile.id] = DeckTileProgress.Done
+                                        delay(TILE_DONE_MS)
+                                        if (tilePresses[tile.id] == press) tileProgress.remove(tile.id)
+                                    } else {
+                                        tileProgress.remove(tile.id)
                                     }
                                 }
                             },
@@ -566,6 +589,7 @@ private fun DeckTileButton(
     liveState: DeckState,
     compact: Boolean,
     enabled: Boolean,
+    progress: DeckTileProgress?,
     onPress: () -> Unit,
 ) {
     val reducedMotion = LocalReducedMotion.current
@@ -591,6 +615,11 @@ private fun DeckTileButton(
 
     val quiet = LocalQuietTheme.current
     val tileTint = if (quiet) deckTint(iconName, g7Tints()) else palette.fg
+    val workingTint = (if (quiet) tileTint else palette.accent).copy(alpha = 0.14f)
+    val progressOverlay = Modifier.drawWithContent {
+        drawContent()
+        if (progress == DeckTileProgress.Working) drawRect(workingTint)
+    }
     Surface(
         shape = if (quiet) RoundedCornerShape(12.dp) else MaterialTheme.shapes.large,
         color = if (quiet) {
@@ -643,11 +672,15 @@ private fun DeckTileButton(
     ) {
         if (quiet) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp),
+                modifier = progressOverlay.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
-                DeckIcon(name = iconName, tint = tileTint, modifier = Modifier.size(24.dp))
+                if (progress == DeckTileProgress.Done) {
+                    DeckCheck(tint = tileTint, modifier = Modifier.size(24.dp))
+                } else {
+                    DeckIcon(name = iconName, tint = tileTint, modifier = Modifier.size(24.dp))
+                }
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = tile.label,
@@ -669,7 +702,7 @@ private fun DeckTileButton(
             return@Surface
         }
         Column(
-            modifier = Modifier
+            modifier = progressOverlay
                 .fillMaxSize()
                 .padding(horizontal = 11.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.SpaceBetween,
@@ -685,11 +718,15 @@ private fun DeckTileButton(
                         .background(palette.iconWell, MaterialTheme.shapes.medium),
                     contentAlignment = Alignment.Center,
                 ) {
-                    DeckIcon(
-                        name = iconName,
-                        tint = palette.fg,
-                        modifier = Modifier.size(if (compact) 18.dp else 20.dp),
-                    )
+                    if (progress == DeckTileProgress.Done) {
+                        DeckCheck(tint = palette.fg, modifier = Modifier.size(if (compact) 18.dp else 20.dp))
+                    } else {
+                        DeckIcon(
+                            name = iconName,
+                            tint = palette.fg,
+                            modifier = Modifier.size(if (compact) 18.dp else 20.dp),
+                        )
+                    }
                 }
 
                 if (badge != null) {
@@ -721,6 +758,29 @@ private fun DeckTileButton(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+    }
+}
+
+/** A pressed tile waiting for the PC, or one the PC just ran. */
+private enum class DeckTileProgress { Working, Done }
+
+/** How long a tile shows its check once the PC ran it. */
+private const val TILE_DONE_MS = 900L
+
+/** A check mark in place of a tile's icon, once the PC ran it. */
+@Composable
+private fun DeckCheck(tint: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val path = Path().apply {
+            moveTo(size.width * 0.2f, size.height * 0.52f)
+            lineTo(size.width * 0.42f, size.height * 0.74f)
+            lineTo(size.width * 0.8f, size.height * 0.3f)
+        }
+        drawPath(
+            path,
+            color = tint,
+            style = Stroke(width = size.minDimension * 0.11f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+        )
     }
 }
 

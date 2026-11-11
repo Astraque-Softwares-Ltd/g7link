@@ -249,6 +249,9 @@
     <string name="wake_not_ready">Conecte-se a %1$s uma vez para que o celular reconheça o endereço de rede dele.</string>
     <string name="pc_locked">%1$s foi bloqueado.</string>
     <string name="pc_sleeping">%1$s está entrando em suspensão.</string>
+    <string name="sending_clipboard">Enviando…</string>
+    <string name="locking">Bloqueando…</string>
+    <string name="sleeping">Suspendendo…</string>
     <string name="pc_actions_off">As ações de bloquear e suspender estão desativadas para este celular em %1$s.</string>
     <string name="channel_links">Links do PC</string>
     <!-- Play on phone: what a PC plays, streamed to the phone. -->

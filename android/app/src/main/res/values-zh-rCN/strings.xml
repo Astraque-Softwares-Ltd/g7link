@@ -241,6 +241,9 @@
     <string name="wake_not_ready">请先连接一次 %1$s，让本手机获取它的网络地址。</string>
     <string name="pc_locked">%1$s 已锁定。</string>
     <string name="pc_sleeping">%1$s 正在进入睡眠。</string>
+    <string name="sending_clipboard">正在发送…</string>
+    <string name="locking">正在锁定…</string>
+    <string name="sleeping">正在进入睡眠…</string>
     <string name="pc_actions_off">%1$s 上已对本手机关闭锁定与睡眠功能。</string>
     <string name="channel_links">来自电脑的链接</string>
     <string name="watch_offer_title">观看 %1$s 上的播放</string>
