@@ -252,6 +252,9 @@ struct State {
     keyboard_device: Option<DeviceId>,
     /// Short transient feedback notices per mirror window: `(text, shown_at, token)`.
     notices: HashMap<Window, (String, Instant, u64)>,
+    /// How many times each open window was asked for again: its window comes
+    /// to the front each time this goes up.
+    raised: HashMap<Window, u64>,
     apps: HashMap<DeviceId, Apps>,
     saved: SavedWindows,
 }
@@ -305,6 +308,7 @@ impl Default for State {
             screen_off: HashSet::new(),
             keyboard_device: None,
             notices: HashMap::new(),
+            raised: HashMap::new(),
             apps: HashMap::new(),
             saved: SavedWindows::load(),
         }
@@ -798,6 +802,11 @@ pub fn windows() -> Vec<(Window, Shown)> {
     all
 }
 
+/// How many times an open window was asked for again (see `State::raised`).
+pub fn raised(window: &Window) -> u64 {
+    state(|s| s.raised.get(window).copied().unwrap_or(0))
+}
+
 /// Remembered window position and size for `(device, pkg)`.
 pub fn geometry(device: &DeviceId, pkg: &str) -> Option<WindowGeometry> {
     state(|s| s.saved.geometry.get(&format!("{device}/{pkg}")).copied())
@@ -880,7 +889,9 @@ pub fn start(device: DeviceId) {
     let (stay_awake, screen_off) = state(|s| {
         // The phone's screen starts as it's set to, unless app windows already turned it off.
         s.reset_screen_off(&device);
-        s.windows.insert(window, Shown { phase: Phase::Asking, app: None, pkg: None });
+        if s.windows.insert(window, Shown { phase: Phase::Asking, app: None, pkg: None }).is_some() {
+            *s.raised.entry(window).or_default() += 1;
+        }
         power(s, &device)
     });
     let options = screen_options(crate::settings::mirror_quality(), on_relay(&device));
@@ -957,30 +968,35 @@ pub fn keyboard_paste(device: DeviceId) {
     }
 }
 
-/// Opens one of the phone's apps in a window of its own (or does nothing
-/// when it's already open; reuses an ended window for that app).
+/// Opens one of the phone's apps in a window of its own. An app that's
+/// already open isn't opened twice: its window comes to the front (an ended
+/// one is used again).
 pub fn start_app(device: DeviceId, pkg: String, label: String) {
     let window = state(|s| {
-        if s.windows.iter().any(|(w, shown)| {
-            w.device == device
-                && shown.pkg.as_deref() == Some(pkg.as_str())
-                && matches!(shown.phase, Phase::Asking | Phase::Showing)
-        }) {
-            return None;
-        }
-        record_recent(s, &device, &pkg);
-        let ended = s
+        let existing = s
             .windows
             .iter()
             .find(|(w, shown)| w.device == device && shown.pkg.as_deref() == Some(pkg.as_str()))
-            .map(|(w, _)| *w);
-        let window =
-            ended.unwrap_or_else(|| Window { device, session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed) });
+            .map(|(w, shown)| (*w, matches!(shown.phase, Phase::Asking | Phase::Showing)));
+        if let Some((window, open)) = existing {
+            *s.raised.entry(window).or_default() += 1;
+            if open {
+                return None;
+            }
+        }
+        record_recent(s, &device, &pkg);
+        let window = existing.map_or_else(
+            || Window { device, session: NEXT_SESSION.fetch_add(1, Ordering::Relaxed) },
+            |(window, _)| window,
+        );
         s.reset_screen_off(&device);
         s.windows.insert(window, Shown { phase: Phase::Asking, app: Some(label), pkg: Some(pkg.clone()) });
         Some((window, power(s, &device)))
     });
-    let Some((window, (stay_awake, screen_off))) = window else { return };
+    let Some((window, (stay_awake, screen_off))) = window else {
+        core_host::host().hub.changed(Changes::MIRROR);
+        return;
+    };
     let options = app_options(crate::settings::mirror_quality(), on_relay(&device));
     ffi::video_clear(&window.key());
     request(
@@ -1183,6 +1199,7 @@ pub fn stop(window: Window) {
     state(|s| {
         s.windows.remove(&window);
         s.notices.remove(&window);
+        s.raised.remove(&window);
         if !s.mirroring(&window.device) {
             s.screen_off.remove(&window.device);
         }

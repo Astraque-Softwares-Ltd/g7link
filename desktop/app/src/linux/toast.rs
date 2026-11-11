@@ -66,6 +66,8 @@ pub struct Progress {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MonitorSignal {
+    /// Sent just before `ActionInvoked`: what lets a window of ours take the focus.
+    ActivationToken { id: u32, token: String },
     ActionInvoked { id: u32, action_key: String },
     NotificationReplied { id: u32, text: String },
     NotificationClosed { id: u32, reason: u32 },
@@ -112,6 +114,10 @@ struct Toaster {
     reply_actions: HashMap<u32, String>,
     snapshots: HashMap<(String, String), ToastSnapshot>,
     next_fallback_id: u32,
+    /// The activation token the desktop gave for a click, and the notification clicked.
+    activation: Option<(u32, String)>,
+    /// The token of a notification that was just opened, for the window that opens.
+    window_token: Option<String>,
 }
 
 impl Toaster {
@@ -124,6 +130,8 @@ impl Toaster {
             reply_actions: HashMap::new(),
             snapshots: HashMap::new(),
             next_fallback_id: 100_000,
+            activation: None,
+            window_token: None,
         }
     }
 
@@ -182,9 +190,18 @@ impl Toaster {
 
     fn handle_signal(&mut self, signal: MonitorSignal) -> Option<ToastEvent> {
         match signal {
+            MonitorSignal::ActivationToken { id, token } => {
+                self.activation = (self.id_to_target.contains_key(&id) && is_activation_token(&token))
+                    .then_some((id, token));
+                None
+            }
             MonitorSignal::ActionInvoked { id, action_key } => {
+                let token = self.activation.take().filter(|(clicked, _)| *clicked == id).map(|(_, t)| t);
                 let (device, key) = self.id_to_target.get(&id)?.clone();
                 if action_key == "default" || action_key.is_empty() {
+                    // Opening shows a window, which takes the token. A button
+                    // (Mark as read...) shows none, so its token is dropped.
+                    self.window_token = token;
                     Some(ToastEvent::Opened { device, key })
                 } else {
                     Some(ToastEvent::Action { device, key, action: action_key })
@@ -846,15 +863,22 @@ fn monitor_loop() {
                 break;
             };
             if let Some(signal) = parse_dbus_signal(&msg) {
-                let (event, callback) = TOASTER
+                let (event, token, callback) = TOASTER
                     .get()
                     .and_then(|mutex| {
                         let mut guard = mutex.lock().ok()?;
                         let ev = guard.handle_signal(signal);
+                        let token = guard.window_token.take();
                         let cb = guard.on_event.clone();
-                        Some((ev, cb))
+                        Some((ev, token, cb))
                     })
-                    .unwrap_or((None, None));
+                    .unwrap_or((None, None, None));
+                // Before the event: the window it opens is then shown with the
+                // token, so it gets the focus and the desktop stops waiting for
+                // one (GNOME shows a busy pointer until then, or for 15 seconds).
+                if let Some(token) = token {
+                    crate::bridge::native::ffi::linux_set_activation_token(&token);
+                }
                 if let (Some(event), Some(cb)) = (event, callback) {
                     cb(event);
                 }
@@ -862,6 +886,12 @@ fn monitor_loop() {
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// Whether `token` can be an activation token: short, and without control
+/// characters (it goes into an environment variable).
+fn is_activation_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= 256 && !token.chars().any(char::is_control)
 }
 
 /// Deserializes a D-Bus signal from `org.freedesktop.Notifications` into a [`MonitorSignal`].
@@ -875,6 +905,10 @@ pub fn parse_dbus_signal(msg: &zbus::message::Message) -> Option<MonitorSignal> 
     }
     let member = header.member()?.as_str();
     match member {
+        "ActivationToken" => {
+            let (id, token) = msg.body().deserialize::<(u32, String)>().ok()?;
+            Some(MonitorSignal::ActivationToken { id, token })
+        }
         "ActionInvoked" => {
             let (id, action_key) = msg.body().deserialize::<(u32, String)>().ok()?;
             Some(MonitorSignal::ActionInvoked { id, action_key })
@@ -1080,5 +1114,81 @@ mod tests {
 
         assert!(toaster.active_ids.is_empty());
         assert!(toaster.id_to_target.is_empty());
+    }
+
+    fn plain_snapshot() -> ToastSnapshot {
+        ToastSnapshot {
+            title: "Messages".to_string(),
+            body: "Hi there".to_string(),
+            attribution: "Messages".to_string(),
+            icon_path: "/tmp/icon.png".to_string(),
+            image_path: None,
+            actions: vec![("archive".to_string(), "Archive".to_string())],
+            reply: None,
+            silent: false,
+            call: false,
+        }
+    }
+
+    fn toaster_showing(id: u32) -> Toaster {
+        let mut toaster = Toaster::new(PathBuf::from("/tmp/icon.png"), None);
+        toaster.record_shown("phone-1".to_string(), "notif-a".to_string(), id, plain_snapshot());
+        toaster
+    }
+
+    fn token_for(id: u32, token: &str) -> MonitorSignal {
+        MonitorSignal::ActivationToken { id, token: token.to_string() }
+    }
+
+    fn invoked(id: u32, action: &str) -> MonitorSignal {
+        MonitorSignal::ActionInvoked { id, action_key: action.to_string() }
+    }
+
+    /// As GNOME Shell makes them on X11; on Wayland it's a UUID.
+    const TOKEN: &str = "gnome-shell/G7 Link/1234-5-guchu_TIME678";
+
+    #[test]
+    fn opening_a_notification_hands_its_activation_token_to_the_window() {
+        let token_msg = zbus::message::Message::signal(
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "ActivationToken",
+        )
+        .unwrap()
+        .build(&(77u32, TOKEN))
+        .unwrap();
+        let token = parse_dbus_signal(&token_msg).unwrap();
+        assert_eq!(token, token_for(77, TOKEN));
+
+        let mut toaster = toaster_showing(77);
+        // Nothing with a line break in it goes into the environment.
+        assert_eq!(toaster.handle_signal(token_for(77, "token\nXDG_X=1")), None);
+        assert_eq!(toaster.activation, None);
+
+        assert_eq!(toaster.handle_signal(token), None);
+        assert!(toaster.handle_signal(invoked(77, "default")).is_some());
+        assert_eq!(toaster.window_token.take().as_deref(), Some(TOKEN));
+        assert_eq!(toaster.activation, None, "a token is used once");
+    }
+
+    #[test]
+    fn a_button_or_another_notification_never_gets_the_token() {
+        let mut toaster = toaster_showing(77);
+
+        // A button opens no window: the token is dropped, not kept for the next window.
+        toaster.handle_signal(token_for(77, TOKEN));
+        toaster.handle_signal(invoked(77, "archive"));
+        assert_eq!(toaster.window_token, None);
+        assert_eq!(toaster.activation, None);
+
+        // A token for a notification that isn't ours is ignored.
+        toaster.handle_signal(token_for(5, TOKEN));
+        assert_eq!(toaster.activation, None);
+
+        // A token for one notification doesn't open another.
+        toaster.record_shown("phone-1".to_string(), "notif-b".to_string(), 78, plain_snapshot());
+        toaster.handle_signal(token_for(77, TOKEN));
+        toaster.handle_signal(invoked(78, "default"));
+        assert_eq!(toaster.window_token, None);
     }
 }

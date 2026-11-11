@@ -29,7 +29,8 @@ pub mod qobject {
         #[qml_singleton]
         /// The windows, as JSON: `[{ key, device, session, name, title,
         /// phase ("asking", "showing", "ended"), reason, canControl, sound,
-        /// app }]`.
+        /// app, raised }]` (`raised` goes up each time an open window is
+        /// asked for again, and the window then comes to the front).
         #[qproperty(QString, windows)]
         /// The user turned the phones' sound off on this PC.
         #[qproperty(bool, muted)]
@@ -251,6 +252,7 @@ impl qobject::Mirror {
                     "screenOff": mirror::screen_off(&window.device),
                     "canScreenOff": can_screen_off,
                     "notice": mirror::last_notice(&window),
+                    "raised": mirror::raised(&window),
                     "savedX": geom.map(|g| g.x),
                     "savedY": geom.map(|g| g.y),
                     "savedWidth": geom.map(|g| g.width).unwrap_or(0),

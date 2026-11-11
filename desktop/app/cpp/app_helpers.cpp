@@ -29,6 +29,7 @@
 #include <QtCore/QBuffer>
 #include <QtCore/QMetaObject>
 #include <QtCore/QThread>
+#include <QtCore/QTimer>
 #include <QtGui/QAction>
 #include <QtGui/QClipboard>
 #include <QtGui/QScreen>
@@ -691,6 +692,12 @@ void linux_set_activation_token(rust::Str token)
     const QByteArray tok(token.data(), static_cast<qsizetype>(token.size()));
     runOnQtMainThread([tok]() {
         qputenv("XDG_ACTIVATION_TOKEN", tok);
+        // The window shown or raised next takes it. If none does, it's dropped:
+        // left set, it would hand the focus to whichever window opens later.
+        QTimer::singleShot(std::chrono::seconds(5), qApp, [tok]() {
+            if (qgetenv("XDG_ACTIVATION_TOKEN") == tok)
+                qunsetenv("XDG_ACTIVATION_TOKEN");
+        });
     });
 }
 
