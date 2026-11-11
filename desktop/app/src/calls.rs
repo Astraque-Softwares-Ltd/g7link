@@ -13,7 +13,7 @@ use std::{
         Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use g7link_core::{
@@ -56,10 +56,30 @@ fn note_call_ongoing(device: DeviceId) {
     }
 }
 
-fn note_call_ended(device: DeviceId) {
-    let all_done = ongoing_calls(|c| c.remove(&device) && c.is_empty());
-    if all_done {
+/// Why the PC stopped following a phone's call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallGone {
+    /// The phone said it ended.
+    Ended,
+    /// The phone dropped off the network; its call may well go on.
+    LinkLost,
+    /// The phone was unpaired.
+    Removed,
+}
+
+/// Whether the phone's card goes back from call audio: only once its call
+/// has ended and no other call is going on. A network blip mustn't take a
+/// call's sound away.
+fn releases_call_audio(why: CallGone, calls_left: bool) -> bool {
+    why == CallGone::Ended && !calls_left
+}
+
+fn note_call_ended(device: DeviceId, why: CallGone) {
+    let (was_ongoing, calls_left) = ongoing_calls(|c| (c.remove(&device), !c.is_empty()));
+    if was_ongoing && !calls_left {
         crate::sys::media_sessions::resume_after_call();
+    }
+    if releases_call_audio(why, calls_left) && bt_hfp::holds_call_audio() {
         let _ = std::thread::Builder::new().name("hfp-disconnect".into()).spawn(|| {
             bt_hfp::disconnect_audio();
             refresh_hfp_cache(None);
@@ -307,7 +327,7 @@ pub fn on_event(event: &NodeEvent) {
         NodeEvent::LinkChanged { device, link: LinkState::Offline { .. } } => {
             stop_ringing(*device);
             finish(*device);
-            note_call_ended(*device);
+            note_call_ended(*device, CallGone::LinkLost);
             forget_pending(*device);
             if Some(*device) == page_device {
                 page_state(|s| {
@@ -328,7 +348,7 @@ pub fn on_event(event: &NodeEvent) {
         NodeEvent::DeviceRemoved(device) => {
             stop_ringing(*device);
             finish(*device);
-            note_call_ended(*device);
+            note_call_ended(*device, CallGone::Removed);
             forget_pending(*device);
             forget_page_data(*device);
         }
@@ -364,7 +384,7 @@ fn changed(device: DeviceId, call: &CallState) {
     }
     match call.state.as_str() {
         "ringing" | "active" => note_call_ongoing(device),
-        "ended" => note_call_ended(device),
+        "ended" => note_call_ended(device, CallGone::Ended),
         _ => {}
     }
     if call.state == "active" {
@@ -1191,8 +1211,27 @@ fn refresh_hfp_cache_async(device: Option<DeviceId>) {
     });
 }
 
+/// Bluetooth changes come in bursts (a connect changes several properties):
+/// the status is read again once they've settled this long.
+const HFP_SETTLE: Duration = Duration::from_millis(300);
+static HFP_CHANGES: AtomicU64 = AtomicU64::new(0);
+
+/// BlueZ said something changed: reads the status again once it settles.
+fn bluetooth_changed() {
+    let change = HFP_CHANGES.fetch_add(1, Ordering::Relaxed) + 1;
+    core_host::spawn(async move {
+        tokio::time::sleep(HFP_SETTLE).await;
+        if HFP_CHANGES.load(Ordering::Relaxed) == change {
+            let device = HFP_CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|(d, _)| *d));
+            refresh_hfp_cache_async(device);
+        }
+    });
+}
+
 /// Returns the current Bluetooth HFP / PC audio status for `device`.
 pub fn hfp_status(device: Option<DeviceId>) -> bt_hfp::HfpStatus {
+    static WATCH: std::sync::Once = std::sync::Once::new();
+    WATCH.call_once(|| bt_hfp::watch(bluetooth_changed));
     let target = device.or_else(|| page_state(|s| s.device));
     if let Ok(mut guard) = HFP_CACHE.lock() {
         if let Some((cached_dev, status)) = guard.as_ref()
@@ -1209,26 +1248,55 @@ pub fn hfp_status(device: Option<DeviceId>) -> bt_hfp::HfpStatus {
     bt_hfp::HfpStatus::default()
 }
 
-/// Opens a Bluetooth connection to route call audio through this PC.
+/// A call audio connect is under way; one at a time.
+static HFP_CONNECTING: AtomicBool = AtomicBool::new(false);
+
+/// Ends the connect it stands for when dropped, however the connect ends.
+struct Connecting;
+
+impl Drop for Connecting {
+    fn drop(&mut self) {
+        HFP_CONNECTING.store(false, Ordering::Release);
+    }
+}
+
+pub fn hfp_connecting() -> bool {
+    HFP_CONNECTING.load(Ordering::Acquire)
+}
+
+/// Opens a Bluetooth connection to route call audio through this PC, unless
+/// one is already being made.
 pub fn connect_pc_audio(device: Option<DeviceId>) {
+    if HFP_CONNECTING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let connecting = Connecting;
     let target = device.or_else(|| page_state(|s| s.device));
     let name = target.map(phone_name);
-    let _ =
-        std::thread::Builder::new().name("hfp-connect".into()).spawn(move || {
-            match bt_hfp::connect_audio(name.as_deref()) {
-                Ok(status) => {
-                    if let Ok(mut guard) = HFP_CACHE.lock() {
-                        *guard = Some((target, status));
-                    }
-                    page_changed();
+    let spawned = std::thread::Builder::new().name("hfp-connect".into()).spawn(move || {
+        let started = Instant::now();
+        let result = bt_hfp::connect_audio(name.as_deref());
+        let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        tracing::info!(ms, ok = result.is_ok(), "hfp connect");
+        match result {
+            Ok(status) => {
+                if let Ok(mut guard) = HFP_CACHE.lock() {
+                    *guard = Some((target, status));
                 }
-                Err(err) => {
-                    refresh_hfp_cache(target);
-                    page_changed();
-                    show_message(err);
-                }
+                drop(connecting);
+                page_changed();
             }
-        });
+            Err(err) => {
+                refresh_hfp_cache(target);
+                drop(connecting);
+                page_changed();
+                show_message(err);
+            }
+        }
+    });
+    if spawned.is_ok() {
+        page_changed();
+    }
 }
 
 /// Opens the desktop's Bluetooth settings.
@@ -1402,5 +1470,13 @@ mod tests {
         save_chosen(&path, &HashMap::from([(phone, "2".to_owned())])).unwrap();
         assert_eq!(load_chosen(&path).get(&phone).map(String::as_str), Some("2"));
         assert!(load_chosen(&dir.path().join("missing.json")).is_empty());
+    }
+
+    #[test]
+    fn only_an_ended_call_takes_call_audio_off_this_pc() {
+        assert!(releases_call_audio(CallGone::Ended, false));
+        assert!(!releases_call_audio(CallGone::Ended, true));
+        assert!(!releases_call_audio(CallGone::LinkLost, false));
+        assert!(!releases_call_audio(CallGone::Removed, false));
     }
 }

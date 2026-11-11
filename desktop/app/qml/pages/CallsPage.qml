@@ -74,7 +74,8 @@ Item {
                         enabled: PhoneCall.canDial, run: () => PhoneCall.chooseSim(s.id) })
         if (!PhoneCall.hfpConnected && PhoneCall.hfpDetail.length > 0)
             list.push(PhoneCall.hfpAvailable
-                ? { label: qsTr("Connect PC audio"), icon: Icons.speaker, tint: Theme.tintTeal, run: () => PhoneCall.connectPcAudio() }
+                ? { label: PhoneCall.hfpConnecting ? qsTr("Connecting…") : qsTr("Connect PC audio"), icon: Icons.speaker,
+                    tint: Theme.tintTeal, enabled: !PhoneCall.hfpConnecting, run: () => PhoneCall.connectPcAudio() }
                 : { label: qsTr("Open Bluetooth settings"), icon: Icons.bluetooth, tint: Theme.tintBlue,
                     run: () => PhoneCall.openBluetoothSettings() })
         return list
@@ -847,7 +848,9 @@ Item {
                 TextAction {
                     x: Theme.rowPadding - 8
                     visible: !PhoneCall.hfpConnected
-                    text: PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Open Bluetooth settings")
+                    enabled: !PhoneCall.hfpConnecting
+                    text: PhoneCall.hfpConnecting ? qsTr("Connecting…")
+                        : PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Open Bluetooth settings")
                     onClicked: {
                         if (PhoneCall.hfpAvailable)
                             PhoneCall.connectPcAudio()

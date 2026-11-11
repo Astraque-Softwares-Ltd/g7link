@@ -66,8 +66,11 @@ pub mod qobject {
         #[qproperty(QString, sim)]
         /// Whether a paired Bluetooth HFP / audio playback endpoint is available for the phone.
         #[qproperty(bool, hfp_available, cxx_name = "hfpAvailable")]
-        /// Whether call audio is currently routed through this PC over Bluetooth.
+        /// Whether call audio is routed through this PC over Bluetooth (not
+        /// just a media link to the phone).
         #[qproperty(bool, hfp_connected, cxx_name = "hfpConnected")]
+        /// Call audio is being connected.
+        #[qproperty(bool, hfp_connecting, cxx_name = "hfpConnecting")]
         /// Human-readable Bluetooth HFP status or pairing guidance.
         #[qproperty(QString, hfp_detail, cxx_name = "hfpDetail")]
         type PhoneCall = super::PhoneCallRust;
@@ -161,6 +164,7 @@ pub struct PhoneCallRust {
     sim: QString,
     hfp_available: bool,
     hfp_connected: bool,
+    hfp_connecting: bool,
     hfp_detail: QString,
     /// The call's ID on the phone, for its commands.
     call: Option<(DeviceId, String)>,
@@ -279,7 +283,8 @@ impl qobject::PhoneCall {
 
         let hfp = calls::hfp_status(call_device);
         self.as_mut().set_hfp_available(hfp.available);
-        self.as_mut().set_hfp_connected(hfp.connected);
+        self.as_mut().set_hfp_connected(hfp.call_audio_ready);
+        self.as_mut().set_hfp_connecting(calls::hfp_connecting());
         self.as_mut().set_hfp_detail(QString::from(&hfp.detail));
 
         let view = calls::view();

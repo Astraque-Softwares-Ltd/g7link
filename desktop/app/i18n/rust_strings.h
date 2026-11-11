@@ -46,10 +46,20 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Battery", "%1's battery is low"), // desktop/app/src/battery.rs
     QT_TRANSLATE_NOOP("Battery", "You can unplug it."), // desktop/app/src/battery.rs
     QT_TRANSLATE_NOOP("Battery", "Your phone"), // desktop/app/src/battery.rs
+    QT_TRANSLATE_NOOP("Calls", "%1 is paired but not connected."), // desktop/app/src/linux/bt_hfp.rs
+    QT_TRANSLATE_NOOP("Calls", "%1 isn't paired with this PC over Bluetooth."), // desktop/app/src/linux/bt_hfp.rs
+    QT_TRANSLATE_NOOP("Calls", "Bluetooth is off."), // desktop/app/src/linux/bt_hfp.rs
+    QT_TRANSLATE_NOOP("Calls", "Bluetooth isn't running on this PC."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "Calling %1"), // desktop/app/src/calls.rs
+    QT_TRANSLATE_NOOP("Calls", "Connected for media only (%1)."), // desktop/app/src/linux/bt_hfp.rs
+    QT_TRANSLATE_NOOP("Calls", "Couldn't reach %1 over Bluetooth."), // desktop/app/src/linux/bt_hfp.rs
+    QT_TRANSLATE_NOOP("Calls", "Couldn't switch this PC to call audio."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "Missed call from %1"), // desktop/app/src/calls.rs
+    QT_TRANSLATE_NOOP("Calls", "On PC over Bluetooth (%1)."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "On a call with %1"), // desktop/app/src/calls.rs
+    QT_TRANSLATE_NOOP("Calls", "Pair your phone over system Bluetooth to route call audio through this PC."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "That call is over."), // desktop/app/src/calls.rs
+    QT_TRANSLATE_NOOP("Calls", "This PC can't take call audio over Bluetooth."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "Unknown caller"), // desktop/app/src/bridge/calls.rs
     QT_TRANSLATE_NOOP("Clipboard", "Copied from %1"), // desktop/app/src/clipboard.rs
     QT_TRANSLATE_NOOP("Clipboard", "Copied from %1."), // desktop/app/src/clipboard.rs

@@ -382,7 +382,9 @@ Column {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             visible: !PhoneCall.hfpConnected
-            text: PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Bluetooth settings")
+            enabled: !PhoneCall.hfpConnecting
+            text: PhoneCall.hfpConnecting ? qsTr("Connecting…")
+                : PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Bluetooth settings")
             onClicked: {
                 if (PhoneCall.hfpAvailable)
                     PhoneCall.connectPcAudio()
