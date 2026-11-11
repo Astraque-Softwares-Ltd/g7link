@@ -412,6 +412,9 @@ pub struct Settings {
     /// Pause PC media playback while a phone call is ringing or active.
     #[serde(alias = "pause_media_on_call", alias = "auto_pause_media")]
     pub pause_media_on_call: bool,
+    /// Connect a call's audio to this PC over Bluetooth when it rings.
+    #[serde(default, alias = "auto_call_audio")]
+    pub auto_call_audio: bool,
     /// The app's language: a locale name from `i18n::LANGUAGES`, or "" for
     /// the system's.
     pub language: String,
@@ -637,6 +640,7 @@ impl Default for Settings {
             suggest_clipboard_actions: true,
             auto_copy_otp: false,
             pause_media_on_call: true,
+            auto_call_audio: false,
             mute_while_watched: true,
             language: String::new(),
             sync_dnd: false,
@@ -764,6 +768,7 @@ impl Settings {
             self.window_height,
             self.window_maximized,
         );
+        crate::calls::set_auto_call_audio(self.auto_call_audio);
     }
 
     /// Loads the settings, falling back to defaults if the file is missing.
@@ -901,6 +906,7 @@ mod tests {
             suggest_clipboard_actions: false,
             auto_copy_otp: true,
             pause_media_on_call: false,
+            auto_call_audio: true,
             mute_while_watched: false,
             language: "zh_CN".into(),
             sync_dnd: true,

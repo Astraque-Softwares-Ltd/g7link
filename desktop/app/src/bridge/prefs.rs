@@ -57,6 +57,8 @@ pub mod qobject {
         #[qproperty(bool, auto_copy_otp)]
         /// Pause PC media playback while a phone call is ringing or active.
         #[qproperty(bool, pause_media_on_call)]
+        /// Connect a call's audio to this PC over Bluetooth when it rings.
+        #[qproperty(bool, auto_call_audio)]
         /// Mute this PC while a phone watches its playback (Play on phone).
         #[qproperty(bool, mute_while_watched, cxx_name = "muteWhileWatched")]
         /// The app's language: "" for the system's, "en", "zh_CN".
@@ -325,6 +327,7 @@ pub struct PreferencesRust {
     suggest_clipboard_actions: bool,
     auto_copy_otp: bool,
     pause_media_on_call: bool,
+    auto_call_audio: bool,
     mute_while_watched: bool,
     language: QString,
     sync_dnd: bool,
@@ -417,6 +420,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().set_auto_copy_otp(settings.auto_copy_otp);
         crate::notifications::set_auto_copy_otp(settings.auto_copy_otp);
         self.as_mut().set_pause_media_on_call(settings.pause_media_on_call);
+        self.as_mut().set_auto_call_audio(settings.auto_call_audio);
         self.as_mut().set_mute_while_watched(settings.mute_while_watched);
         self.as_mut().set_language(QString::from(&settings.language));
         crate::pc_mirror::set_mute_while_watched(settings.mute_while_watched);
@@ -550,6 +554,12 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut()
             .on_pause_media_on_call_changed(|p| {
                 crate::calls::set_pause_media_on_call(p.pause_media_on_call);
+                p.save();
+            })
+            .release();
+        self.as_mut()
+            .on_auto_call_audio_changed(|p| {
+                crate::calls::set_auto_call_audio(p.auto_call_audio);
                 p.save();
             })
             .release();
@@ -1118,6 +1128,7 @@ impl qobject::Preferences {
             suggest_clipboard_actions: p.suggest_clipboard_actions,
             auto_copy_otp: p.auto_copy_otp,
             pause_media_on_call: p.pause_media_on_call,
+            auto_call_audio: p.auto_call_audio,
             mute_while_watched: p.mute_while_watched,
             language: String::from(&p.language),
             sync_dnd: p.sync_dnd,

@@ -40,6 +40,13 @@ pub fn set_pause_media_on_call(on: bool) {
     PAUSE_MEDIA_ON_CALL.store(on, Ordering::Relaxed);
 }
 
+/// Whether call audio connects to this PC over Bluetooth when a call starts.
+static AUTO_CALL_AUDIO: AtomicBool = AtomicBool::new(false);
+
+pub fn set_auto_call_audio(on: bool) {
+    AUTO_CALL_AUDIO.store(on, Ordering::Relaxed);
+}
+
 /// Phones that currently have a ringing or active call, for media auto-pause/resume.
 static ONGOING_CALLS: Mutex<Option<HashSet<DeviceId>>> = Mutex::new(None);
 
@@ -53,6 +60,9 @@ fn note_call_ongoing(device: DeviceId) {
     let started = ongoing_calls(|c| c.insert(device));
     if started && PAUSE_MEDIA_ON_CALL.load(Ordering::Relaxed) {
         crate::sys::media_sessions::pause_for_call();
+    }
+    if started && AUTO_CALL_AUDIO.load(Ordering::Relaxed) && !hfp_ready(device) {
+        connect_pc_audio(Some(device));
     }
 }
 
@@ -1226,6 +1236,14 @@ fn bluetooth_changed() {
             refresh_hfp_cache_async(device);
         }
     });
+}
+
+/// Whether `device`'s calls already play on this PC, as last read.
+fn hfp_ready(device: DeviceId) -> bool {
+    HFP_CACHE
+        .lock()
+        .ok()
+        .is_some_and(|g| g.as_ref().is_some_and(|(d, s)| *d == Some(device) && s.call_audio_ready))
 }
 
 /// Returns the current Bluetooth HFP / PC audio status for `device`.

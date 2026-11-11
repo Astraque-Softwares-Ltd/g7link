@@ -1355,6 +1355,17 @@ Item {
                                 onToggled: (on) => Preferences.pauseMediaOnCall = on
                             }
                         }
+                        SettingRow {
+                            width: parent.width
+                            iconPath: Icons.bluetooth
+                            title: qsTr("Call audio on this PC")
+                            description: qsTr("Connect automatically when a call rings")
+                            Toggle {
+                                label: qsTr("Call audio on this PC")
+                                checked: Preferences.autoCallAudio
+                                onToggled: (on) => Preferences.autoCallAudio = on
+                            }
+                        }
 
                         SettingRow {
                             width: parent.width
