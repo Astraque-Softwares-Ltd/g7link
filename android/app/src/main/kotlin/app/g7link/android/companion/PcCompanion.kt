@@ -7,6 +7,7 @@ import android.companion.AssociationInfo
 import android.companion.AssociationRequest
 import android.companion.BluetoothLeDeviceFilter
 import android.companion.CompanionDeviceManager
+import android.companion.ObservingDevicePresenceRequest
 import android.content.Context
 import android.content.IntentSender
 import android.os.Build
@@ -89,7 +90,17 @@ object PcCompanion {
     fun startObservingPresence(context: Context) {
         runCatching {
             val cdm = context.getSystemService(CompanionDeviceManager::class.java) ?: return
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+                for (info in cdm.myAssociations) {
+                    runCatching {
+                        cdm.startObservingDevicePresence(
+                            ObservingDevicePresenceRequest.Builder()
+                                .setAssociationId(info.id)
+                                .build(),
+                        )
+                    }
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 for (info in cdm.myAssociations) {
                     runCatching {
                         val addr = info.deviceMacAddress?.toString()
