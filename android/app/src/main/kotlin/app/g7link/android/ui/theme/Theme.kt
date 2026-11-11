@@ -67,7 +67,7 @@ fun rememberReducedMotion(): Boolean {
  * The G7 theme's line color while it's active, null otherwise. Set by [G7LinkTheme]; read
  * while modifiers are built, so a theme switch rebuilds them.
  */
-private var quietLine by mutableStateOf<Color?>(Tokens.quietDark.outlineVariant)
+private var quietLine by mutableStateOf<Color?>(G7Colors.darkPalette.outlineVariant)
 
 /** The user's look choices (see Preferences). */
 @androidx.compose.runtime.Immutable
@@ -336,10 +336,10 @@ private fun ColorScheme.toAmoledScheme(glass: Boolean): ColorScheme = copy(
 private fun shapes(graphite: Boolean, glass: Boolean, hive: Boolean, quiet: Boolean) = when {
     quiet -> Shapes(
         extraSmall = RoundedCornerShape(5.dp),
-        small = RoundedCornerShape(6.dp),
-        medium = RoundedCornerShape(8.dp),
-        large = RoundedCornerShape(8.dp),
-        extraLarge = RoundedCornerShape(12.dp),
+        small = RoundedCornerShape(8.dp),
+        medium = RoundedCornerShape(10.dp),
+        large = RoundedCornerShape(10.dp),
+        extraLarge = RoundedCornerShape(14.dp),
     )
     hive -> Shapes(
         extraSmall = RoundedCornerShape(6.dp),
@@ -376,6 +376,17 @@ private fun shapes(graphite: Boolean, glass: Boolean, hive: Boolean, quiet: Bool
 fun g7SwitchColors(): androidx.compose.material3.SwitchColors {
     val isGlass = LocalGlassTheme.current
     val scheme = MaterialTheme.colorScheme
+    if (LocalQuietTheme.current) {
+        // G7: lavender when on, a quiet line when off, no outline.
+        return androidx.compose.material3.SwitchDefaults.colors(
+            checkedThumbColor = scheme.surface,
+            checkedTrackColor = scheme.primary,
+            checkedBorderColor = scheme.primary,
+            uncheckedThumbColor = scheme.onSurfaceVariant,
+            uncheckedTrackColor = scheme.outlineVariant,
+            uncheckedBorderColor = scheme.outlineVariant,
+        )
+    }
     return if (isGlass) {
         androidx.compose.material3.SwitchDefaults.colors(
             checkedThumbColor = Color.White,
@@ -416,7 +427,7 @@ fun G7LinkTheme(
     val amoledActive = dark && appearance.amoled && (graphite || isBlackSwatch)
     val error = when {
         hive -> if (dark) Tokens.hiveCombError else Tokens.hiveWaxError
-        quiet -> if (dark) Tokens.quietDarkError else Tokens.quietLightError
+        quiet -> if (dark) G7Colors.darkError else G7Colors.lightError
         else -> if (dark) Tokens.errorDark else Tokens.errorLight
     }
     val context = LocalContext.current
@@ -430,7 +441,7 @@ fun G7LinkTheme(
             (if (dark) Tokens.hiveComb else Tokens.hiveWax).toScheme(dark, error)
         }
         quiet -> remember(dark, error) {
-            (if (dark) Tokens.quietDark else Tokens.quietLight).toScheme(dark, error)
+            (if (dark) G7Colors.darkPalette else G7Colors.lightPalette).toScheme(dark, error)
         }
         graphite -> remember(dark, error) {
             (if (dark) Tokens.graphiteSlate else Tokens.graphitePaper).toScheme(dark, error)
@@ -517,16 +528,8 @@ fun Modifier.liquidGlassCard(
     /** Keeps its fill in the G7 theme: for chrome that floats over other content. */
     solid: Boolean = false,
 ): Modifier {
-    val line = quietLine.takeUnless { solid }
-    if (line != null) {
-        // The G7 theme has no boxes: a section is its content and a line under it.
-        return this.drawWithCache {
-            val strokePx = 1.dp.toPx()
-            onDrawBehind {
-                drawRect(color = line, topLeft = Offset(0f, size.height - strokePx), size = Size(size.width, strokePx))
-            }
-        }
-    }
+    // The G7 theme has no boxes around groups: a group is its label and its rows.
+    if (quietLine != null && !solid) return this
     return this.drawWithCache {
         val radiusPx = cornerRadius.toPx()
         val cr = CornerRadius(radiusPx, radiusPx)
