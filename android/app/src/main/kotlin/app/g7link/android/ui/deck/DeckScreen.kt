@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.deck
 
+import app.g7link.android.ui.theme.G7Slider
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.SliderDefaults
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -402,12 +403,9 @@ private fun DeckAudioHeaderBar(
                     onClick = { onSetPcAudio(null, !liveState.muted) },
                     tint = tints.teal,
                 )
-                Slider(
-                    colors = SliderDefaults.colors(
-                        thumbColor = tints.teal,
-                        activeTrackColor = tints.teal,
-                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ),
+                G7Slider(
+                    tint = tints.teal,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     value = (draggingVolume ?: liveState.volume.toFloat()).coerceIn(0f, 100f),
                     onValueChange = { v ->
                         draggingVolume = v

@@ -578,6 +578,56 @@ fun <T> G7Tabs(
     }
 }
 
+/**
+ * A flat slider: a thin track filled in [tint] up to a small round thumb, like
+ * G7's own bars, in place of Material's thick two-part track and bar thumb.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun G7Slider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    onValueChangeFinished: (() -> Unit)? = null,
+    tint: Color = MaterialTheme.colorScheme.primary,
+    trackColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    enabled: Boolean = true,
+) {
+    androidx.compose.material3.Slider(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        enabled = enabled,
+        valueRange = valueRange,
+        onValueChangeFinished = onValueChangeFinished,
+        thumb = {
+            Box(Modifier.size(14.dp).clip(RoundedCornerShape(7.dp)).background(tint))
+        },
+        track = { state ->
+            val span = (state.valueRange.endInclusive - state.valueRange.start).takeIf { it > 0f } ?: 1f
+            val fraction = ((state.value - state.valueRange.start) / span).coerceIn(0f, 1f)
+            androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().heightIn(min = 6.dp)) {
+                val height = 6.dp.toPx()
+                val top = (size.height - height) / 2f
+                val radius = androidx.compose.ui.geometry.CornerRadius(height / 2f, height / 2f)
+                drawRoundRect(
+                    color = trackColor,
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, top),
+                    size = androidx.compose.ui.geometry.Size(size.width, height),
+                    cornerRadius = radius,
+                )
+                drawRoundRect(
+                    color = tint,
+                    topLeft = androidx.compose.ui.geometry.Offset(0f, top),
+                    size = androidx.compose.ui.geometry.Size(size.width * fraction, height),
+                    cornerRadius = radius,
+                )
+            }
+        },
+    )
+}
+
 /** A dot in a status color, before a line of status text. */
 @Composable
 fun G7StatusDot(color: Color, modifier: Modifier = Modifier) {

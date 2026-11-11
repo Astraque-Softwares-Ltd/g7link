@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.pairing
 
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -19,7 +20,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,7 +51,7 @@ private const val LINK_PREFIX = "g7link://pair?"
 
 /**
  * A camera preview that reports the first G7 Link pairing link it sees.
- * Asks for the camera permission if needed.
+ * Without the camera permission, a button asks for it.
  */
 @Composable
 fun QrScanner(onLink: (String) -> Unit, modifier: Modifier = Modifier) {
@@ -62,7 +62,14 @@ fun QrScanner(onLink: (String) -> Unit, modifier: Modifier = Modifier) {
         )
     }
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
-    LaunchedEffect(Unit) { if (!granted) request.launch(Manifest.permission.CAMERA) }
+    // Asked only when the user taps Allow camera: the pairing screen also lists
+    // nearby PCs, which need no camera, and it stays composed while it closes
+    // after pairing, so asking on open could pop the prompt over Home.
+    // Camera access allowed in Settings shows up when the user comes back.
+    LifecycleResumeEffect(Unit) {
+        granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        onPauseOrDispose {}
+    }
 
     if (granted) {
         CameraPreview(onLink, modifier)

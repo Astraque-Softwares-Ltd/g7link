@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.settings
 
+import app.g7link.android.ui.theme.G7Slider
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -426,15 +427,12 @@ fun SettingsScreen(
                     tint = tints.teal,
                     note = stringResource(R.string.settings_touchpad_sensitivity_value, touchpadSensitivity),
                 )
-                Slider(
+                G7Slider(
                     value = touchpadSensitivity,
                     onValueChange = onTouchpadSensitivity,
                     valueRange = 0.5f..2.5f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = tints.teal,
-                        activeTrackColor = tints.teal,
-                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ),
+                    tint = tints.teal,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     modifier = Modifier
                         .padding(start = 48.dp, end = 12.dp)
                         .semantics { contentDescription = sensitivityTitle },

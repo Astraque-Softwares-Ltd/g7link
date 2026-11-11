@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.webcam
 
+import app.g7link.android.ui.theme.G7Slider
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -290,15 +291,12 @@ fun WebcamScreen(
         val zoomLabel = stringResource(R.string.webcam_zoom_label, session.zoomRatio)
         val minZ = session.minZoomRatio
         val maxZ = session.maxZoomRatio.coerceAtLeast(minZ + 0.1f)
-        Slider(
+        G7Slider(
             value = session.zoomRatio.coerceIn(minZ, maxZ),
             onValueChange = { WebcamService.setZoomRatio(it) },
             valueRange = minZ..maxZ,
-            colors = SliderDefaults.colors(
-                thumbColor = scheme.primary,
-                activeTrackColor = scheme.primary,
-                inactiveTrackColor = scheme.surfaceContainerHigh,
-            ),
+            tint = scheme.primary,
+            trackColor = scheme.surfaceContainerHigh,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 32.dp)

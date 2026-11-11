@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.desk
 
+import app.g7link.android.ui.theme.G7Slider
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -295,7 +296,7 @@ fun DeskScreen(
                             onClick = { core.setPcAudio(device.id, null, !deckState.muted) },
                         )
                         val shownVol = (draggingVolume ?: deckState.volume.toFloat()).coerceIn(0f, 100f)
-                        Slider(
+                        G7Slider(
                             value = shownVol,
                             onValueChange = { v ->
                                 draggingVolume = v
@@ -310,11 +311,8 @@ fun DeskScreen(
                                 lastSentVolInt = -1
                             },
                             valueRange = 0f..100f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = tints.teal,
-                                activeTrackColor = tints.teal,
-                                inactiveTrackColor = Color(0xFF2B2B30),
-                            ),
+                            tint = tints.teal,
+                            trackColor = Color(0xFF2B2B30),
                             modifier = Modifier.weight(1f),
                         )
                         Text(

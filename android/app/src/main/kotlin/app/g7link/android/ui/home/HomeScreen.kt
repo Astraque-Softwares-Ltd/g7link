@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.home
 
+import app.g7link.android.ui.theme.G7Slider
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.text.format.DateUtils
@@ -1263,7 +1264,7 @@ internal fun PcSoundRows(
                 .size(22.dp)
                 .clickable(role = Role.Button, onClickLabel = muteLabel) { onSetPcAudio(null, !deckState.muted) },
         )
-        Slider(
+        G7Slider(
             value = (draggingVolume ?: deckState.volume.toFloat()).coerceIn(0f, 100f),
             onValueChange = { v ->
                 draggingVolume = v
@@ -1275,11 +1276,8 @@ internal fun PcSoundRows(
             },
             onValueChangeFinished = { draggingVolume = null },
             valueRange = 0f..100f,
-            colors = SliderDefaults.colors(
-                thumbColor = tints.teal,
-                activeTrackColor = tints.teal,
-                inactiveTrackColor = scheme.surfaceContainerHigh,
-            ),
+            tint = tints.teal,
+            trackColor = scheme.surfaceContainerHigh,
             modifier = Modifier
                 .weight(1f)
                 .semantics { contentDescription = volumeLabel },
