@@ -295,11 +295,17 @@ class AppWindows(
                 @Suppress("DEPRECATION")
                 manager.queryIntentActivities(launcher, 0)
             }
-            val used = HashSet<String>()
+            val started = android.os.SystemClock.elapsedRealtime()
+            val used: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+            // Each app's name and icon come from its own package, and drawing
+            // and compressing an icon takes a while: over a hundred of them one
+            // after another kept the PC's Apps page waiting for seconds the first
+            // time. They are made on every core at once.
             val apps = found
                 .map { it.activityInfo }
                 .filter { it.packageName != context.packageName }
                 .distinctBy { it.packageName }
+                .parallelStream()
                 .map { info ->
                     PhoneApp(
                         pkg = info.packageName,
@@ -307,9 +313,11 @@ class AppWindows(
                         icon = cachedIcon(info, manager, used),
                     )
                 }
+                .collect(java.util.stream.Collectors.toList())
                 .sortedBy { it.label.lowercase() }
             // Forget uninstalled and updated apps' icons.
             icons.keys.retainAll(used)
+            Log.i(TAG, "listed ${apps.size} apps in ${android.os.SystemClock.elapsedRealtime() - started} ms")
             return apps
         }
 
