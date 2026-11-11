@@ -3,9 +3,9 @@ import QtQuick
 import QtQuick.Window
 import app.g7link
 
-// One phone notification in the feed: app, title and text, its actions,
-// an inline reply when the app offers one, and dismiss and options buttons
-// (what this app's notifications do on this PC).
+// One phone notification as a 36 px row: the app's icon, who it's from,
+// the text and when. Selected, it opens up: the whole text, its picture,
+// the app's own actions, Reply, Copy code, Open, Options and Dismiss.
 Item {
     id: item
     required property string deviceId
@@ -71,21 +71,35 @@ Item {
     }
     property bool replying: false
     property bool canOpenApp: false
+    property bool selected: false
+    readonly property bool open: selected || replying
+    // A glyph tint of its own, from the app's name, when it has no icon.
+    readonly property color tint: {
+        const names = ["teal", "blue", "coral", "pink", "green", "lavender", "amber"]
+        let h = 0
+        for (let i = 0; i < appName.length; i++)
+            h = (h * 31 + appName.charCodeAt(i)) % 997
+        return Theme.tint(names[h % names.length])
+    }
     signal optionsRequested
     signal openAppRequested
+    signal selectRequested
     signal imageClicked(string url)
 
-    implicitHeight: content.implicitHeight + 24
+    implicitHeight: Theme.rowHeight + (details.visible ? details.implicitHeight + 6 : 0)
     height: implicitHeight
-    activeFocusOnTab: item.canOpenApp && !item.replying
-    Accessible.role: item.canOpenApp ? Accessible.Button : Accessible.Grouping
+    activeFocusOnTab: !item.replying
+    Accessible.role: Accessible.Button
     Accessible.name: [item.appName, item.title, item.text].filter(s => s.length > 0).join(", ")
-    Accessible.description: item.canOpenApp ? qsTr("Open %1 in an app window").arg(item.appName) : ""
-    Accessible.onPressAction: if (item.canOpenApp && !item.replying) item.openAppRequested()
+    Accessible.onPressAction: if (!item.replying) item.selectRequested()
     Keys.onPressed: (event) => {
-        if (item.canOpenApp && !item.replying
-                && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
-            item.openAppRequested()
+        if (item.replying)
+            return
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+            item.selectRequested()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Delete && dismiss.visible) {
+            dismiss.clicked()
             event.accepted = true
         }
     }
@@ -144,250 +158,189 @@ Item {
     }
 
     function send() {
-        if (input.text.trim().length === 0)
+        if (replyField.text.trim().length === 0)
             return
-        NotificationList.reply(item.deviceId, item.key, item.replyAction, input.text)
-        input.text = ""
+        NotificationList.reply(item.deviceId, item.key, item.replyAction, replyField.text)
+        replyField.text = ""
         item.replying = false
     }
 
-    // Hover tracking; clicking the card body opens the app window when available.
-    MouseArea {
-        id: hover
-        anchors.fill: parent
-        hoverEnabled: true
-        acceptedButtons: item.canOpenApp && !item.replying ? Qt.LeftButton : Qt.NoButton
-        cursorShape: item.canOpenApp && !item.replying ? Qt.PointingHandCursor : Qt.ArrowCursor
-        onClicked: if (item.canOpenApp && !item.replying) item.openAppRequested()
+    function dismissIt() {
+        if (item.isGroupLead && !item.groupExpanded)
+            NotificationList.dismissGroup(item.deviceId, item.app)
+        else
+            NotificationList.dismiss(item.deviceId, item.key)
     }
 
-    // Stacked card visual depth behind collapsed notification groups.
+    // The row: a click selects it (and shows its actions), a double click
+    // opens the app in a window when it can.
     Rectangle {
-        visible: item.isGroupLead && !item.groupExpanded && item.groupCount > 2
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.leftMargin: 16
-        anchors.rightMargin: 16
-        anchors.bottomMargin: -5
-        height: 10
-        radius: Theme.radiusMd
-        color: Theme.surfaceContainer
-        border.width: 1
-        border.color: Theme.outlineVariant
-        opacity: 0.45
-    }
-    Rectangle {
-        visible: item.isGroupLead && !item.groupExpanded
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
-        anchors.leftMargin: 8
-        anchors.rightMargin: 8
-        anchors.bottomMargin: -2
-        height: 8
-        radius: Theme.radiusMd
-        color: Theme.surfaceContainerHigh
-        border.width: 1
-        border.color: Theme.outlineVariant
-        opacity: 0.65
-    }
-
-    // A calm highlighted container for Live Updates.
-    Rectangle {
-        anchors.fill: parent
-        radius: Theme.radiusMd
-        visible: item.isLive
-        color: Theme.graphite
-            ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.03)
-            : Qt.rgba(Theme.primaryContainer.r, Theme.primaryContainer.g, Theme.primaryContainer.b,
-                      Theme.dark ? 0.24 : 0.36)
-        border.width: item.isLive ? 1 : 0
-        border.color: Theme.graphite
-            ? Theme.outlineVariant
-            : Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.34 : 0.24)
-    }
-
-    Rectangle {
-        anchors.fill: parent
-        radius: Theme.radiusMd
-        color: "transparent"
+        id: rowFill
+        x: item.isGroupChild ? 18 : 0
+        width: parent.width - x
+        height: Theme.rowHeight
+        radius: Theme.rowRadius
+        color: item.open ? Theme.selection : (hover.containsMouse ? Theme.raised : "transparent")
         border.width: Theme.focusVisible(item) ? 2 : 0
         border.color: Theme.focusRing
-        visible: Theme.focusVisible(item)
+    }
+    MouseArea {
+        id: hover
+        anchors.fill: rowFill
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: item.selectRequested()
+        onDoubleClicked: if (item.canOpenApp) item.openAppRequested()
     }
 
-    // Subtle vertical thread bar connecting expanded notifications in the same app group.
-    Rectangle {
-        visible: item.isGroupChild
-        x: 27
-        y: 0
-        width: 2
-        height: parent.height
-        radius: 1
-        color: Theme.outlineVariant
-        opacity: 0.45
-    }
-
-    // App icon, or its initial when the phone didn't send one.
+    // App icon, or a glyph in its tint when the phone didn't send one.
     Item {
         id: icon
-        x: item.isGroupChild ? 20 : 12; y: 12
-        width: item.isGroupChild ? 24 : 32; height: item.isGroupChild ? 24 : 32
+        x: rowFill.x + Theme.rowPadding
+        y: (Theme.rowHeight - height) / 2
+        width: 18; height: 18
         Image {
             id: image
             anchors.fill: parent
             source: item.iconUrl
-            sourceSize: Qt.size(64, 64)
+            sourceSize: Qt.size(36, 36)
             smooth: true
             mipmap: true
             visible: status === Image.Ready
         }
-        Avatar {
+        Icon {
             anchors.fill: parent
             visible: image.status !== Image.Ready
-            name: item.appName
+            path: Icons.bell
+            color: item.tint
+        }
+    }
+    Txt {
+        id: who
+        anchors.left: icon.right
+        anchors.leftMargin: 10
+        y: (Theme.rowHeight - height) / 2
+        width: Math.min(implicitWidth, (trail.x - x) * (line.text.length > 0 ? 0.45 : 1))
+        text: item.title.length > 0 ? item.title : item.appName
+        weight: 500
+    }
+    Txt {
+        id: line
+        anchors.left: who.right
+        anchors.leftMargin: 10
+        y: (Theme.rowHeight - height) / 2
+        width: Math.max(0, trail.x - x - 10)
+        text: item.text.replace(/\s*\n\s*/g, " ")
+        muted: true
+    }
+    Row {
+        id: trail
+        anchors.right: rowFill.right
+        anchors.rightMargin: 6
+        y: (Theme.rowHeight - height) / 2
+        height: 28
+        spacing: 6
+        TextAction {
+            visible: item.otpCode.length > 0 && !item.open
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("Copy code")
+            onClicked: NotificationList.copyCode(item.otpCode)
+        }
+        Txt {
+            visible: item.liveRightLabel.length > 0
+            anchors.verticalCenter: parent.verticalCenter
+            role: "bodySmall"
+            color: Theme.accent
+            text: item.liveRightLabel
+        }
+        Txt {
+            visible: item.isLive && item.liveRightLabel.length === 0
+            anchors.verticalCenter: parent.verticalCenter
+            role: "bodySmall"
+            color: Theme.accent
+            text: item.liveBadgeText
+        }
+        Txt {
+            visible: item.isGroupLead
+            anchors.verticalCenter: parent.verticalCenter
+            role: "bodySmall"
+            muted: true
+            text: String(item.groupCount)
+        }
+        // Like Dismiss: always there for keyboards and screen readers, shown
+        // on hover.
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 24; height: 24
+            iconSize: 14
+            iconPath: Icons.more
+            label: qsTr("Options for %1").arg(item.appName)
+            opacity: hover.containsMouse || activeFocus || item.open ? 1 : 0
+            onClicked: item.optionsRequested()
+        }
+        IconButton {
+            id: dismiss
+            anchors.verticalCenter: parent.verticalCenter
+            width: 24; height: 24
+            iconSize: 14
+            iconPath: Icons.close
+            visible: !item.ongoing || (item.isGroupLead && !item.groupExpanded && item.groupCount > 1)
+            label: item.isGroupLead && !item.groupExpanded
+                   ? qsTr("Dismiss %1 notifications from %2").arg(item.groupCount).arg(item.appName)
+                   : qsTr("Dismiss")
+            opacity: hover.containsMouse || activeFocus || item.open ? 1 : 0
+            onClicked: item.dismissIt()
+        }
+        Txt {
+            visible: !item.isLive
+            anchors.verticalCenter: parent.verticalCenter
+            role: "bodySmall"
+            muted: true
+            text: item.timeText()
         }
     }
 
+    // ---- Opened: the rest of it, and what can be done ----
     Column {
-        id: content
-        anchors.left: icon.right
-        anchors.leftMargin: 12
-        anchors.right: parent.right
-        anchors.rightMargin: 84
-        y: 12
-        spacing: 4
+        id: details
+        visible: item.open || item.hasProgress || item.sent.length > 0 || item.isGroupLead
+        x: icon.x + icon.width + 10
+        y: Theme.rowHeight + 2
+        width: parent.width - x - Theme.rowPadding
+        spacing: 6
 
-        Item {
+        Txt {
             width: parent.width
-            height: Math.max(metaRow.height, liveReadout.height)
-
-            Row {
-                id: metaRow
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 6
-
-                // Live chip pill (shortCriticalText or "LIVE").
-                Rectangle {
-                    id: livePill
-                    visible: item.isLive
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: 18
-                    width: livePillRow.width + 12
-                    radius: Theme.graphite ? Theme.radiusSm : 9
-                    color: Theme.graphite ? "transparent" : Theme.primaryContainer
-                    border.width: Theme.graphite ? 1 : 0
-                    border.color: Theme.primary
-
-                    Row {
-                        id: livePillRow
-                        anchors.centerIn: parent
-                        spacing: 4
-                        Rectangle {
-                            width: 5
-                            height: 5
-                            radius: 2.5
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: Theme.graphite ? Theme.primary : Theme.primaryContainerContent
-                        }
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            role: "mono"
-                            size: 10
-                            weight: Font.Bold
-                            color: Theme.graphite ? Theme.primary : Theme.primaryContainerContent
-                            text: item.liveBadgeText
-                        }
-                    }
-                }
-
-                // Calm count badge for grouped app notifications.
-                Rectangle {
-                    id: groupCountBadge
-                    visible: item.isGroupLead
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: 18
-                    width: groupCountLabel.width + 12
-                    radius: Theme.graphite ? Theme.radiusSm : 9
-                    color: Theme.graphite ? "transparent" : Theme.surfaceContainerHighest
-                    border.width: Theme.graphite ? 1 : 0
-                    border.color: Theme.outlineVariant
-                    Txt {
-                        id: groupCountLabel
-                        anchors.centerIn: parent
-                        role: "mono"
-                        size: 10
-                        weight: Font.DemiBold
-                        color: Theme.surfaceContentVariant
-                        text: String(item.groupCount)
-                    }
-                }
-
-                Txt {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Math.max(40, content.width - (livePill.visible ? livePill.width + 6 : 0)
-                                        - (groupCountBadge.visible ? groupCountBadge.width + 6 : 0)
-                                        - (liveReadout.visible ? liveReadout.width + 8 : 0))
-                    role: "caption"
-                    muted: true
-                    elide: Text.ElideRight
-                    text: (item.isLive
-                           ? [item.appName, item.sub]
-                           : [item.appName, item.sub, item.timeText()]).filter(s => s.length > 0).join(" · ")
-                }
-            }
-
-            Txt {
-                id: liveReadout
-                visible: item.liveRightLabel.length > 0
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                role: "mono"
-                size: 11
-                weight: Font.DemiBold
-                color: Theme.primary
-                text: item.liveRightLabel
-            }
+            visible: item.open && (line.truncated || item.text.indexOf("\n") >= 0 || item.sub.length > 0)
+            role: "bodySmall"
+            muted: true
+            text: [item.appName, item.sub].filter(s => s.length > 0).join(" · ")
         }
         Txt {
             width: parent.width
-            visible: item.title.length > 0
-            role: "title"
-            size: 14
-            text: item.title
-        }
-        Txt {
-            width: parent.width
-            visible: item.text.length > 0
-            role: "body"
+            visible: item.open && (line.truncated || item.text.indexOf("\n") >= 0)
             text: item.text
             wrapMode: Text.Wrap
-            maximumLineCount: 4
+            maximumLineCount: 8
         }
 
-        // Live progress bar (smooth, indeterminate, or multi-segment with milestone points).
+        // Live progress: one smooth bar, or segments with milestone points.
         Item {
             id: liveBarBox
             width: parent.width
-            height: 12
+            height: 10
             visible: item.hasProgress
 
-            // Smooth single-track bar when no segments are defined.
             Rectangle {
-                id: smoothTrack
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width
-                height: 6
-                radius: 3
+                height: 4
+                radius: 2
                 visible: item.liveSegments.length === 0
-                color: Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b,
-                               Theme.dark ? 0.16 : 0.12)
-
+                color: Theme.selection
                 Rectangle {
                     height: parent.height
-                    radius: 3
+                    radius: 2
                     x: item.isLive && item.liveData.indeterminate ? Math.round(parent.width * 0.15) : 0
                     width: {
                         if (!item.isLive)
@@ -396,22 +349,20 @@ Item {
                             return Math.max(24, Math.round(parent.width * 0.35))
                         const maxVal = Math.max(1, Number(item.liveData.max || 1))
                         const ratio = Math.min(1, Math.max(0, Number(item.liveData.progress || 0) / maxVal))
-                        return ratio > 0 ? Math.max(6, Math.round(parent.width * ratio)) : 0
+                        return ratio > 0 ? Math.max(4, Math.round(parent.width * ratio)) : 0
                     }
-                    color: Theme.primary
+                    color: Theme.accent
                     Behavior on width {
                         enabled: !Theme.reduceMotion
                         NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
                     }
                 }
             }
-
-            // Multi-segment progress bar (Android 16 ProgressStyle.Segment).
             Row {
                 id: segRow
                 anchors.verticalCenter: parent.verticalCenter
                 width: parent.width
-                height: 6
+                height: 4
                 spacing: 3
                 visible: item.liveSegments.length > 0
                 readonly property real totalLen: {
@@ -421,33 +372,24 @@ Item {
                     return Math.max(1, s)
                 }
                 readonly property real availW: Math.max(10, width - spacing * Math.max(0, item.liveSegments.length - 1))
-
                 Repeater {
                     model: item.liveSegments
                     delegate: Rectangle {
                         required property var modelData
                         required property int index
-                        height: 6
-                        radius: 3
-                        width: Math.max(6, Math.floor(segRow.availW * Math.max(1, Number(modelData.length || 1)) / segRow.totalLen))
-                        color: Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b,
-                                       Theme.dark ? 0.16 : 0.12)
-
+                        height: 4
+                        radius: 2
+                        width: Math.max(4, Math.floor(segRow.availW * Math.max(1, Number(modelData.length || 1)) / segRow.totalLen))
+                        color: Theme.selection
                         Rectangle {
                             height: parent.height
-                            radius: 3
+                            radius: 2
                             width: Math.round(parent.width * item.segmentFillFraction(index))
-                            color: modelData.color && modelData.color.length > 0 ? modelData.color : Theme.primary
-                            Behavior on width {
-                                enabled: !Theme.reduceMotion
-                                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
-                            }
+                            color: modelData.color && modelData.color.length > 0 ? modelData.color : Theme.accent
                         }
                     }
                 }
             }
-
-            // Milestone points (Android 16 ProgressStyle.Point).
             Repeater {
                 model: item.livePoints
                 delegate: Rectangle {
@@ -455,36 +397,28 @@ Item {
                     readonly property real maxVal: Math.max(1, Number(item.isLive ? item.liveData.max : 1))
                     readonly property real posRatio: Math.min(1, Math.max(0, Number(modelData.position || 0) / maxVal))
                     readonly property bool reached: item.isLive && Number(item.liveData.progress || 0) >= Number(modelData.position || 0)
-                    width: 8
-                    height: 8
-                    radius: 4
+                    width: 8; height: 8; radius: 4
                     anchors.verticalCenter: parent.verticalCenter
                     x: Math.round((liveBarBox.width - width) * posRatio)
                     color: reached
-                        ? (modelData.color && modelData.color.length > 0 ? modelData.color : Theme.primary)
-                        : Theme.surfaceContainerHighest
+                        ? (modelData.color && modelData.color.length > 0 ? modelData.color : Theme.accent)
+                        : Theme.selection
                     border.width: 1.5
-                    border.color: modelData.color && modelData.color.length > 0 ? modelData.color : Theme.primary
+                    border.color: modelData.color && modelData.color.length > 0 ? modelData.color : Theme.accent
                 }
             }
         }
 
-        // The picture it shows (a photo in a message), up to a modest size.
+        // The picture it shows (a photo in a message).
         RoundedImage {
-            id: picture
             width: Math.min(parent.width, 320)
             height: status === Image.Ready
                     ? Math.min(220, width * implicitImageHeight / Math.max(1, implicitImageWidth)) : 0
-            visible: item.imageUrl.length > 0 && status === Image.Ready
-            source: item.imageUrl
+            visible: item.open && item.imageUrl.length > 0 && status === Image.Ready
+            source: item.open ? item.imageUrl : ""
             sourceSize.width: 640
             HoverHandler { cursorShape: Qt.PointingHandCursor }
-            TapHandler {
-                onTapped: {
-                    if (item.imageUrl.length > 0)
-                        item.imageClicked(item.imageUrl)
-                }
-            }
+            TapHandler { onTapped: item.imageClicked(item.imageUrl) }
         }
 
         // Replies sent from this PC.
@@ -492,15 +426,14 @@ Item {
             model: item.sent
             delegate: Row {
                 required property var modelData
-                width: content.width
+                width: details.width
                 spacing: 6
                 opacity: modelData.pending ? 0.55 : 1
-                Behavior on opacity { NumberAnimation { duration: Theme.fadeNormal } }
                 Icon {
                     width: 14; height: 14
                     anchors.verticalCenter: parent.verticalCenter
                     path: modelData.pending ? Icons.send : Icons.check
-                    color: Theme.primary
+                    color: Theme.accent
                 }
                 Txt {
                     width: parent.width - 20
@@ -516,22 +449,20 @@ Item {
         Flow {
             width: parent.width
             spacing: 6
-            topPadding: 4
-            visible: !item.replying && (item.otpCode.length > 0 || item.replyAction.length > 0 || item.buttons.length > 0)
-            Button {
-                visible: item.otpCode.length > 0
-                variant: "tonal"
-                size: "sm"
-                iconPath: Icons.copy
-                text: qsTr("Copy code")
-                onClicked: NotificationList.copyCode(item.otpCode)
-            }
+            visible: item.open && !item.replying
             Button {
                 visible: item.replyAction.length > 0
                 variant: "tonal"
                 size: "sm"
                 text: item.replyLabel.length > 0 ? item.replyLabel : qsTr("Reply")
-                onClicked: { item.replying = true; input.forceActiveFocus() }
+                onClicked: { item.replying = true; replyField.input.forceActiveFocus() }
+            }
+            Button {
+                visible: item.otpCode.length > 0
+                variant: "tonal"
+                size: "sm"
+                text: qsTr("Copy code")
+                onClicked: NotificationList.copyCode(item.otpCode)
             }
             Repeater {
                 model: item.buttons
@@ -543,116 +474,64 @@ Item {
                     onClicked: NotificationList.runAction(item.deviceId, item.key, modelData.id)
                 }
             }
+            Button {
+                visible: item.canOpenApp
+                variant: "text"
+                size: "sm"
+                text: qsTr("Open")
+                Accessible.description: qsTr("Open %1 in an app window").arg(item.appName)
+                onClicked: item.openAppRequested()
+            }
+            Button {
+                visible: dismiss.visible
+                variant: "text"
+                size: "sm"
+                text: qsTr("Dismiss")
+                onClicked: item.dismissIt()
+            }
         }
 
         // Inline reply.
-        Rectangle {
+        Item {
             width: parent.width
-            height: 40
+            height: 32
             visible: item.replying
-            radius: Theme.graphite ? Theme.radiusSm : height / 2
-            color: Theme.graphite ? "transparent" : Theme.surfaceContainerHighest
-            border.width: input.activeFocus ? 2 : 1
-            border.color: input.activeFocus ? Theme.focusRing : Theme.outlineVariant
-
-            TextInput {
-                id: input
+            Field {
+                id: replyField
                 anchors.left: parent.left
-                anchors.leftMargin: 16
                 anchors.right: sendButton.left
-                anchors.rightMargin: 8
-                anchors.verticalCenter: parent.verticalCenter
-                font.family: Theme.fontUi
-                font.pixelSize: 14
-                color: Theme.surfaceContent
-                selectionColor: Theme.primaryContainer
-                selectedTextColor: Theme.primaryContainerContent
-                clip: true
-                Keys.onReturnPressed: item.send()
-                Keys.onEnterPressed: item.send()
-                Keys.onEscapePressed: { text = ""; item.replying = false }
+                anchors.rightMargin: 6
+                height: parent.height
+                placeholder: qsTr("Reply to %1").arg(item.title.length > 0 ? item.title : item.appName)
+                onAccepted: item.send()
+                Keys.onEscapePressed: { replyField.text = ""; item.replying = false }
                 Accessible.name: qsTr("Reply to %1").arg(item.title)
-
-                Txt {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: input.text.length === 0
-                    role: "body"
-                    muted: true
-                    text: qsTr("Reply to %1").arg(item.title.length > 0 ? item.title : item.appName)
-                }
             }
-            IconButton {
+            Button {
                 id: sendButton
                 anchors.right: parent.right
-                anchors.rightMargin: 4
-                anchors.verticalCenter: parent.verticalCenter
-                iconPath: Icons.send
-                label: qsTr("Send")
-                enabled: input.text.trim().length > 0
+                height: parent.height
+                size: "sm"
+                text: qsTr("Send")
+                enabled: replyField.text.trim().length > 0
                 onClicked: item.send()
             }
         }
 
-        // Collapsible group bar for apps with 2+ notifications.
+        // An app with 2 or more notifications.
         Row {
-            id: groupBar
             visible: item.isGroupLead
-            width: parent.width
-            spacing: 8
-            topPadding: 2
-
-            Button {
-                id: toggleGroupBtn
-                variant: "tonal"
-                size: "sm"
+            spacing: 6
+            TextAction {
                 iconPath: item.groupExpanded ? Icons.chevronUp : Icons.chevronDown
-                text: item.groupExpanded
-                      ? qsTr("Show less")
-                      : qsTr("+%1 more").arg(item.groupCount - 1)
+                iconColor: Theme.surfaceContentVariant
+                text: item.groupExpanded ? qsTr("Show less") : qsTr("+%1 more").arg(item.groupCount - 1)
                 onClicked: NotificationList.toggleGroup(item.app)
             }
-
-            Button {
-                id: clearGroupBtn
-                variant: "text"
-                size: "sm"
-                iconPath: Icons.close
+            TextAction {
                 text: qsTr("Clear %1").arg(item.groupCount)
                 onClicked: NotificationList.dismissGroup(item.deviceId, item.app)
             }
-        }
-    }
-
-    IconButton {
-        anchors.right: dismiss.visible ? dismiss.left : parent.right
-        anchors.rightMargin: dismiss.visible ? 0 : 8
-        y: 8
-        iconPath: Icons.more
-        label: qsTr("Options for %1").arg(item.appName)
-        // Like Dismiss: always there (for keyboards and screen readers),
-        // quiet until hovered.
-        opacity: hover.containsMouse || activeFocus ? 1 : 0.55
-        Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
-        onClicked: item.optionsRequested()
-    }
-    IconButton {
-        id: dismiss
-        anchors.right: parent.right
-        anchors.rightMargin: 8
-        y: 8
-        iconPath: Icons.close
-        visible: !item.ongoing || (item.isGroupLead && !item.groupExpanded && item.groupCount > 1)
-        label: item.isGroupLead && !item.groupExpanded
-               ? qsTr("Dismiss %1 notifications from %2").arg(item.groupCount).arg(item.appName)
-               : qsTr("Dismiss")
-        // Always there (for keyboards and screen readers), quiet until hovered.
-        opacity: hover.containsMouse || activeFocus ? 1 : 0.55
-        Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
-        onClicked: {
-            if (item.isGroupLead && !item.groupExpanded)
-                NotificationList.dismissGroup(item.deviceId, item.app)
-            else
-                NotificationList.dismiss(item.deviceId, item.key)
         }
     }
 }

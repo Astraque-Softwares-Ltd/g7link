@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Window
-import QtQuick.Effects
 import app.g7link
 
-// What plays on a phone or this PC: compact by default and adjustable (expand/collapse),
-// with a native GPU-blurred album art backdrop, animated equalizer bars,
-// smooth track transitions, a 60fps animated progress bar with traveling shimmer,
-// -10s / +10s seek controls, inline volume slider, and one-tap Glass/Artwork theme sync.
-Card {
+// What plays on a phone or this PC: art, title, artist and app, a seek bar
+// and the transport. "More" adds ±10 s, volume and where the PC's sound
+// plays. With both a phone and a PC playing, Phone / PC switches between them.
+Item {
     id: card
     required property string deviceId
     required property string playerId
@@ -32,82 +30,14 @@ Card {
     property int phoneVolume: 65
     signal sourceSelected(string source)
 
-    // Compact by default; user can expand/collapse at any time.
     property bool expanded: false
-    padding: expanded ? 14 : 12
-    radius: embeddedInHero ? 22 : Theme.radiusLg
 
-    readonly property bool activelyRendered: card.visible
-        && Qt.application.state === Qt.ApplicationActive
-    readonly property bool windowResizing: Window.window && Window.window.resizing ? true : false
+    readonly property bool activelyRendered: card.visible && Qt.application.state === Qt.ApplicationActive
 
-    color: embeddedInHero
-        ? Qt.rgba(Theme.surfaceContainerHigh.r, Theme.surfaceContainerHigh.g, Theme.surfaceContainerHigh.b, Theme.glass ? (Theme.dark ? 0.46 : 0.56) : (Theme.dark ? 0.52 : 0.68))
-        : Theme.cardColor
-    border.width: embeddedInHero ? (Theme.glass ? 1 : 0) : (Theme.graphite || Theme.ambientBlurActive ? 1 : 0)
-    border.color: embeddedInHero
-        ? Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.34)
-        : Theme.cardBorder
-
-    implicitHeight: contentCol.implicitHeight + padding * 2
+    implicitHeight: contentCol.implicitHeight
     height: implicitHeight
-    Behavior on implicitHeight {
-        enabled: !Theme.reduceMotion && card.activelyRendered && !card.windowResizing
-        NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
-    }
 
-    // Rounded-masked internal blurred album-art glow inside the media player card (zero rectangular corner bleed!)
-    Item {
-        id: cardArtBackdrop
-        x: -card.padding
-        y: -card.padding
-        width: card.width
-        height: card.height
-        z: 0
-        visible: card.art.length > 0 && cardArtBg.status === Image.Ready && !Theme.graphite
-        opacity: Theme.dark ? 0.38 : 0.26
-        Behavior on opacity { NumberAnimation { duration: 320 } }
-
-        Rectangle {
-            id: cardArtMask
-            anchors.fill: parent
-            radius: card.radius
-            visible: false
-            layer.enabled: card.activelyRendered && cardArtBackdrop.visible
-            layer.textureSize: Qt.size(192, 96)
-            layer.smooth: true
-        }
-
-        Image {
-            id: cardArtBg
-            anchors.fill: parent
-            source: card.art
-            sourceSize: Qt.size(96, 96)
-            fillMode: Image.PreserveAspectCrop
-            asynchronous: true
-            visible: false
-            layer.enabled: card.activelyRendered && cardArtBackdrop.visible
-            layer.textureSize: Qt.size(96, 96)
-            layer.smooth: true
-        }
-
-        MultiEffect {
-            visible: card.activelyRendered && cardArtBackdrop.visible
-            anchors.fill: parent
-            source: cardArtBg
-            autoPaddingEnabled: false
-            blurEnabled: true
-            blurMax: 32
-            blur: 1.0
-            saturation: 0.45
-            maskEnabled: true
-            maskSource: cardArtMask
-            maskThresholdMin: 0.5
-            maskSpreadAtMin: 1.0
-        }
-    }
-
-    // Low-overhead 2Hz timer while playing so seek bar and timestamps advance without continuous 60-120Hz GPU scene-graph redraws.
+    // Twice a second while playing, so the bar and times advance.
     property real now: Date.now()
     Timer {
         interval: 500
@@ -118,22 +48,10 @@ Card {
     }
     onPositionAtChanged: now = Date.now()
 
-    // Smoothly animate title/artist when the track or active media source changes.
-    onTitleChanged: {
-        if (!Theme.reduceMotion && card.activelyRendered)
-            trackSwitchAnim.restart()
-    }
-    onDeviceIdChanged: {
-        if (!Theme.reduceMotion && card.activelyRendered)
-            sourceSlideAnim.restart()
-    }
-
     function switchSource(targetSource) {
         const currentSrc = card.isLocalPc ? "local" : "phone"
         if (!card.hasMultipleSources || targetSource === currentSrc)
             return
-        sourceSlideOffset.x = targetSource === "local" ? 18 : -18
-        sourceSlideAnim.restart()
         card.sourceSelected(targetSource)
     }
 
@@ -142,7 +60,6 @@ Card {
     // While dragging, the bar shows where the user is pointing.
     property real dragTo: -1
     readonly property real shown: dragTo >= 0 ? dragTo : elapsed
-    // Quantized to 1Hz seconds so timestamp text never re-layouts 60-120 times per second.
     readonly property int shownSeconds: Math.floor(Math.max(0, card.shown) / 1000)
     readonly property int remainingSeconds: Math.floor(Math.max(0, card.duration - card.shown) / 1000)
 
@@ -167,26 +84,7 @@ Card {
         return h > 0 ? h + ":" + String(m).padStart(2, "0") + ":" + ss : m + ":" + ss
     }
 
-    // Horizontal swipe & wheel gesture handler when both Phone and PC media are available
-    DragHandler {
-        id: cardSwipeDrag
-        enabled: card.hasMultipleSources && !seek.pressed && !volMouse.pressed
-        target: null
-        yAxis.enabled: false
-        property real startX: 0
-        onActiveChanged: {
-            if (active) {
-                startX = centroid.position.x
-            } else {
-                const dx = centroid.position.x - startX
-                if (dx <= -28)
-                    card.switchSource(card.isLocalPc ? "phone" : "local")
-                else if (dx >= 28)
-                    card.switchSource(card.isLocalPc ? "phone" : "local")
-            }
-        }
-    }
-
+    // A sideways swipe or scroll switches between phone and PC.
     WheelHandler {
         enabled: card.hasMultipleSources
         acceptedDevices: PointerDevice.TouchPad | PointerDevice.Mouse
@@ -205,363 +103,76 @@ Card {
     Column {
         id: contentCol
         width: parent.width
-        spacing: card.expanded ? 10 : 7
-        z: 2
-        transform: Translate { id: sourceSlideOffset; x: 0 }
+        spacing: 10
 
-        ParallelAnimation {
-            id: sourceSlideAnim
-            NumberAnimation {
-                target: contentCol
-                property: "opacity"
-                from: 0.35
-                to: 1.0
-                duration: 190
-                easing.type: Easing.OutCubic
+        Row {
+            visible: card.hasMultipleSources
+            spacing: 4
+            TextAction {
+                text: qsTr("Phone")
+                selected: !card.isLocalPc
+                onClicked: card.switchSource("phone")
             }
-            NumberAnimation {
-                target: sourceSlideOffset
-                property: "x"
-                to: 0
-                duration: 210
-                easing.type: Easing.OutCubic
+            TextAction {
+                text: qsTr("PC")
+                selected: card.isLocalPc
+                onClicked: card.switchSource("local")
             }
         }
 
-        // ---- Compact header row: equalizer indicator + segmented Phone/PC switcher + app label + actions ----
+        // ---- Art, title, artist · app ----
         Item {
             width: parent.width
-            height: 24
-
-            Row {
-                anchors.left: parent.left
-                anchors.right: rightHeaderActions.left
-                anchors.rightMargin: 6
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 6
-
-                // 3-bar equalizer indicator (settles cleanly without continuous 60fps loop)
-                Row {
-                    id: eqBars
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 2
-                    height: 12
-                    Repeater {
-                        model: 3
-                        delegate: Rectangle {
-                            id: eqBar
-                            required property int index
-                            width: 2.5
-                            radius: 1.25
-                            anchors.bottom: parent.bottom
-                            color: card.playing ? Theme.primary : Theme.surfaceContentVariant
-                            Behavior on color { ColorAnimation { duration: 200 } }
-                            height: card.playing ? (eqBar.index === 1 ? 11.5 : (eqBar.index === 0 ? 7.5 : 9.5)) : 3.5
-                            Behavior on height {
-                                enabled: !Theme.reduceMotion
-                                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
-                            }
-                        }
-                    }
-                }
-
-                // Single source badge OR interactive dual-source segmented pill ([Phone | This PC])
-                Rectangle {
-                    id: sourcePill
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: 21
-                    width: card.hasMultipleSources ? dualSourceRow.implicitWidth + 6 : singleSourceRow.implicitWidth + 10
-                    radius: 10.5
-                    color: Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.12 : 0.08)
-                    border.width: card.hasMultipleSources ? 1 : 0
-                    border.color: Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.28)
-
-                    // Single source badge when only 1 device has media
-                    Row {
-                        id: singleSourceRow
-                        visible: !card.hasMultipleSources
-                        anchors.centerIn: parent
-                        spacing: 4
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 11; height: 11
-                            path: card.isLocalPc ? Icons.desktop : Icons.phone
-                            color: Theme.primary
-                        }
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            role: "caption"
-                            size: 10
-                            weight: 600
-                            color: Theme.surfaceContent
-                            text: card.isLocalPc ? qsTr("This PC") : qsTr("Phone")
-                        }
-                    }
-
-                    // Dual source segmented switcher when both Phone and PC have media
-                    Row {
-                        id: dualSourceRow
-                        visible: card.hasMultipleSources
-                        anchors.centerIn: parent
-                        spacing: 2
-
-                        Rectangle {
-                            height: 17
-                            width: phoneSegRow.implicitWidth + 10
-                            radius: 8.5
-                            color: !card.isLocalPc ? Theme.primary : "transparent"
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                            Row {
-                                id: phoneSegRow
-                                anchors.centerIn: parent
-                                spacing: 3.5
-                                Icon {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 10; height: 10
-                                    path: Icons.phone
-                                    color: !card.isLocalPc ? Theme.primaryContent : Theme.surfaceContentVariant
-                                }
-                                Txt {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    role: "caption"
-                                    size: 10
-                                    weight: 600
-                                    color: !card.isLocalPc ? Theme.primaryContent : Theme.surfaceContentVariant
-                                    text: qsTr("Phone")
-                                }
-                            }
-                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: card.switchSource("phone") }
-                        }
-
-                        Rectangle {
-                            height: 17
-                            width: pcSegRow.implicitWidth + 10
-                            radius: 8.5
-                            color: card.isLocalPc ? Theme.primary : "transparent"
-                            Behavior on color { ColorAnimation { duration: 150 } }
-                            Row {
-                                id: pcSegRow
-                                anchors.centerIn: parent
-                                spacing: 3.5
-                                Icon {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 10; height: 10
-                                    path: Icons.desktop
-                                    color: card.isLocalPc ? Theme.primaryContent : Theme.surfaceContentVariant
-                                }
-                                Txt {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    role: "caption"
-                                    size: 10
-                                    weight: 600
-                                    color: card.isLocalPc ? Theme.primaryContent : Theme.surfaceContentVariant
-                                    text: qsTr("PC")
-                                }
-                            }
-                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: card.switchSource("local") }
-                        }
-                    }
-                }
-
-                Txt {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Math.max(36, parent.width - eqBars.width - sourcePill.width - 16)
-                    role: "caption"
-                    weight: 600
-                    color: card.playing ? Theme.primary : Theme.surfaceContentVariant
-                    text: card.app.length > 0 ? card.app : qsTr("Now playing")
-                    elide: Text.ElideRight
-                }
-            }
-
-            Row {
-                id: rightHeaderActions
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                // Play on phone: this PC's player, on the phone (streamed, or in the service's app).
-                IconButton {
-                    visible: card.isLocalPc && MediaList.playOnPhoneName !== ""
-                    width: 24; height: 24
-                    iconSize: 13
-                    iconPath: Icons.phone
-                    iconColor: Theme.surfaceContentVariant
-                    label: qsTr("Play on %1").arg(MediaList.playOnPhoneName)
-                    onClicked: card.send("play_on_phone")
-                }
-
-                IconButton {
-                    visible: !Theme.graphite
-                    width: 24; height: 24
-                    iconSize: 13
-                    tonal: Theme.isArtworkSeed
-                    iconPath: Icons.colorSwatch
-                    iconColor: Theme.isArtworkSeed ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
-                    label: Theme.isArtworkSeed
-                        ? qsTr("Artwork color sync is on (click to turn off)")
-                        : qsTr("Sync app colors & blur to playing artwork")
-                    onClicked: {
-                        Preferences.seed = Theme.isArtworkSeed ? "wallpaper" : "artwork"
-                    }
-                }
-
-                IconButton {
-                    width: 24; height: 24
-                    iconSize: 13
-                    iconPath: card.expanded ? Icons.chevronUp : Icons.chevronDown
-                    iconColor: Theme.surfaceContentVariant
-                    label: card.expanded ? qsTr("Compact player") : qsTr("More controls")
-                    onClicked: card.expanded = !card.expanded
-                }
-            }
-        }
-
-        // ---- Main track row (cover + metadata + inline controls when compact) ----
-        Item {
-            width: parent.width
-            height: Math.max(cover.height, metaCol.height)
-
+            height: 40
             Rectangle {
                 id: cover
-                width: card.expanded ? 64 : 46
-                height: width
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                radius: card.expanded ? Theme.radiusMd : Theme.radiusSm
-                color: (card.art.length > 0 && artwork.status === Image.Ready) ? "transparent" : Theme.secondaryContainer
-                scale: card.playing ? 1.0 : 0.95
-                Behavior on width {
-                    enabled: !Theme.reduceMotion
-                    NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
-                }
-                Behavior on scale {
-                    enabled: !Theme.reduceMotion
-                    NumberAnimation { duration: 200; easing.type: Easing.OutBack }
-                }
-
+                width: 40; height: 40
+                radius: Theme.radiusSm
+                color: Theme.selection
+                clip: true
                 Icon {
                     anchors.centerIn: parent
-                    width: card.expanded ? 24 : 18
-                    height: width
-                    visible: !(card.art.length > 0 && artwork.status === Image.Ready)
+                    visible: coverImage.status !== Image.Ready
+                    width: 18; height: 18
                     path: Icons.music
-                    color: Theme.secondaryContainerContent
+                    color: Theme.tintPink
                 }
                 RoundedImage {
-                    id: artwork
+                    id: coverImage
                     anchors.fill: parent
-                    radius: cover.radius
+                    visible: status === Image.Ready
                     source: card.art
-                    sourceSize: Qt.size(160, 160)
-                }
-                TapHandler {
-                    gesturePolicy: TapHandler.ReleaseWithinBounds
-                    onTapped: card.expanded = !card.expanded
+                    sourceSize: Qt.size(80, 80)
                 }
             }
-
             Column {
-                id: metaCol
                 anchors.left: cover.right
-                anchors.leftMargin: 11
-                anchors.right: compactControls.visible ? compactControls.left : parent.right
-                anchors.rightMargin: compactControls.visible ? 6 : 0
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: card.expanded ? 3 : 1
-                transform: Translate { id: metaSlide; x: 0 }
-
-                ParallelAnimation {
-                    id: trackSwitchAnim
-                    NumberAnimation {
-                        target: metaCol
-                        property: "opacity"
-                        from: 0.25
-                        to: 1.0
-                        duration: 210
-                        easing.type: Easing.OutCubic
-                    }
-                    NumberAnimation {
-                        target: metaSlide
-                        property: "x"
-                        from: 8
-                        to: 0
-                        duration: 220
-                        easing.type: Easing.OutCubic
-                    }
-                }
-
-                Txt {
-                    width: parent.width
-                    role: "title"
-                    size: card.expanded ? 14 : 13
-                    text: card.title.length > 0 ? card.title : card.app
-                    elide: Text.ElideRight
-                    maximumLineCount: card.expanded ? 2 : 1
-                    wrapMode: card.expanded ? Text.WordWrap : Text.NoWrap
-                }
-                Txt {
-                    width: parent.width
-                    visible: card.artist.length > 0
-                    role: "bodySmall"
-                    size: card.expanded ? 12 : 11
-                    muted: true
-                    text: card.artist
-                    elide: Text.ElideRight
-                }
-            }
-
-            // Inline compact transport controls (shown when compact; -10s/+10s appear in expanded mode)
-            Row {
-                id: compactControls
-                visible: !card.expanded
+                anchors.leftMargin: 10
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 2
-
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 28; height: 28
-                    iconSize: 14
-                    iconPath: Icons.skipPrevious
-                    label: qsTr("Previous")
-                    enabled: card.canPrevious
-                    onClicked: card.send("previous")
+                Txt {
+                    width: parent.width
+                    text: card.title.length > 0 ? card.title : (card.app.length > 0 ? card.app : qsTr("Now playing"))
                 }
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 34; height: 34
-                    iconSize: 16
-                    tonal: true
-                    iconPath: card.playing ? Icons.pause : Icons.play
-                    label: card.playing ? qsTr("Pause") : qsTr("Play")
-                    enabled: card.playing ? card.canPause : card.canPlay
-                    onClicked: card.send(card.playing ? "pause" : "play")
-                }
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 28; height: 28
-                    iconSize: 14
-                    iconPath: Icons.skipNext
-                    label: qsTr("Next")
-                    enabled: card.canNext
-                    onClicked: card.send("next")
+                Txt {
+                    width: parent.width
+                    visible: text.length > 0
+                    role: "bodySmall"
+                    muted: true
+                    text: [card.artist, card.isLocalPc ? qsTr("This PC") : card.app].filter(s => s && s.length > 0).join(" · ")
                 }
             }
         }
 
-        // ---- Animated Seek bar with traveling shimmer & glowing playhead ----
+        // ---- Seek bar ----
         Column {
             width: parent.width
-            spacing: 2
+            spacing: 4
             visible: card.duration > 0
-
             Item {
                 id: bar
                 width: parent.width
-                height: card.expanded ? 16 : 13
+                height: 10
                 activeFocusOnTab: card.canSeek
                 Accessible.role: Accessible.Slider
                 Accessible.name: qsTr("Playback position")
@@ -576,67 +187,25 @@ Card {
                     }
                 }
                 readonly property real fraction: card.duration > 0 ? Math.max(0, Math.min(1, card.shown / card.duration)) : 0
-                readonly property bool activeHover: card.canSeek && (seek.containsMouse || seek.pressed || Theme.focusVisible(bar))
-
                 Rectangle {
-                    id: track
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width
-                    height: bar.activeHover ? 7 : 4.5
-                    radius: Theme.quiet ? Theme.radiusMd : height / 2
-                    color: Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.16 : 0.12)
-                    Behavior on height {
-                        enabled: !Theme.reduceMotion
-                        NumberAnimation { duration: 150; easing.type: Easing.OutBack }
-                    }
-
+                    height: 4
+                    radius: 2
+                    color: Theme.selection
+                    border.width: Theme.focusVisible(bar) ? 1 : 0
+                    border.color: Theme.focusRing
                     Rectangle {
-                        id: progressFill
-                        width: Math.max(parent.height, parent.width * bar.fraction)
-                        visible: bar.fraction > 0
+                        width: parent.width * bar.fraction
                         height: parent.height
                         radius: parent.radius
-                        color: Theme.primary
+                        color: Theme.tintPink
                     }
                 }
-
-                Rectangle {
-                    id: seekThumb
-                    visible: card.canSeek
-                    scale: bar.activeHover ? (seek.pressed ? 1.22 : 1.0) : (card.playing ? 0.65 : 0.0)
-                    opacity: bar.activeHover ? 1.0 : (card.playing ? 0.85 : 0.0)
-                    x: Math.max(0, Math.min(bar.width - width, (bar.width * bar.fraction) - width / 2))
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 12; height: 12; radius: 6
-                    color: Theme.primary
-                    border.width: 2
-                    border.color: Theme.surface
-                    Behavior on scale {
-                        enabled: !Theme.reduceMotion
-                        NumberAnimation { duration: 150; easing.type: Easing.OutBack }
-                    }
-                    Behavior on opacity {
-                        enabled: !Theme.reduceMotion
-                        NumberAnimation { duration: 120 }
-                    }
-                }
-
-                Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: -3
-                    radius: Theme.radiusXs + 3
-                    color: "transparent"
-                    border.width: 2
-                    border.color: Theme.focusRing
-                    visible: Theme.focusVisible(bar)
-                }
-
                 MouseArea {
-                    id: seek
                     anchors.fill: parent
                     anchors.margins: -4
                     enabled: card.canSeek
-                    hoverEnabled: true
                     cursorShape: card.canSeek ? Qt.PointingHandCursor : Qt.ArrowCursor
                     function at(x) { return Math.max(0, Math.min(1, (x - 4) / bar.width)) * card.duration }
                     onPressed: (mouse) => card.dragTo = at(mouse.x)
@@ -648,87 +217,82 @@ Card {
                     onCanceled: card.dragTo = -1
                 }
             }
-
             Item {
                 width: parent.width
                 height: elapsedText.height
-                Txt { id: elapsedText; role: "caption"; size: 10; muted: true; text: card.clockFromSec(card.shownSeconds) }
+                Txt { id: elapsedText; role: "caption"; muted: true; text: card.clockFromSec(card.shownSeconds) }
                 Txt {
                     anchors.right: parent.right
                     role: "caption"
-                    size: 10
                     muted: true
                     text: "-" + card.clockFromSec(card.remainingSeconds)
                 }
             }
         }
 
-        // ---- Expanded transport + volume + audio output controls ----
-        Column {
+        // ---- Transport ----
+        Item {
             width: parent.width
-            spacing: 8
-            visible: card.expanded
-            opacity: card.expanded ? 1.0 : 0.0
-            Behavior on opacity {
-                enabled: !Theme.reduceMotion
-                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
-            }
-
+            height: 30
             Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 10
-
+                anchors.centerIn: parent
+                spacing: 4
                 IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 32; height: 32
-                    iconSize: 15
+                    visible: card.expanded && card.canSeek && card.duration > 0
                     iconPath: Icons.rewind10
                     label: qsTr("Rewind 10 seconds")
-                    enabled: card.canSeek && card.duration > 0
                     onClicked: card.skipBy(-10000)
                 }
                 IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 34; height: 34
-                    iconPath: Icons.skipPrevious
-                    label: qsTr("Previous")
                     enabled: card.canPrevious
+                    iconPath: Icons.skipPrevious
+                    iconColor: Theme.surfaceContent
+                    label: qsTr("Previous")
                     onClicked: card.send("previous")
                 }
                 IconButton {
-                    id: playPause
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 42; height: 42
+                    width: 46
                     tonal: true
-                    iconPath: card.playing ? Icons.pause : Icons.play
-                    label: card.playing ? qsTr("Pause") : qsTr("Play")
                     enabled: card.playing ? card.canPause : card.canPlay
+                    iconPath: card.playing ? Icons.pause : Icons.play
+                    iconColor: Theme.surfaceContent
+                    label: card.playing ? qsTr("Pause") : qsTr("Play")
                     onClicked: card.send(card.playing ? "pause" : "play")
                 }
                 IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 34; height: 34
-                    iconPath: Icons.skipNext
-                    label: qsTr("Next")
                     enabled: card.canNext
+                    iconPath: Icons.skipNext
+                    iconColor: Theme.surfaceContent
+                    label: qsTr("Next")
                     onClicked: card.send("next")
                 }
                 IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 32; height: 32
-                    iconSize: 15
+                    visible: card.expanded && card.canSeek && card.duration > 0
                     iconPath: Icons.forward10
                     label: qsTr("Forward 10 seconds")
-                    enabled: card.canSeek && card.duration > 0
                     onClicked: card.skipBy(10000)
                 }
             }
+            IconButton {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: 26; height: 26
+                iconSize: 14
+                iconPath: card.expanded ? Icons.chevronUp : Icons.chevronDown
+                label: card.expanded ? qsTr("Fewer controls") : qsTr("More controls")
+                onClicked: card.expanded = !card.expanded
+            }
+        }
 
-            // Inline Volume slider + Phone Speaker audio routing pill
+        // ---- More: volume, where the sound plays, play on phone, colors ----
+        Column {
+            width: parent.width
+            spacing: 6
+            visible: card.expanded
+
             Item {
                 width: parent.width
                 height: 26
-
                 IconButton {
                     id: muteBtn
                     anchors.left: parent.left
@@ -739,43 +303,37 @@ Card {
                     label: card.currentMuted ? qsTr("Unmute") : qsTr("Mute")
                     onClicked: card.send("mute", card.currentVolume)
                 }
-
                 Item {
                     id: volBar
                     anchors.left: muteBtn.right
                     anchors.leftMargin: 6
-                    anchors.right: speakerRoutePill.left
+                    anchors.right: volText.left
                     anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
                     height: 16
                     readonly property real volFraction: card.currentMuted ? 0 : Math.max(0, Math.min(1, card.currentVolume / 100))
-
+                    Accessible.role: Accessible.Slider
+                    Accessible.name: qsTr("Volume")
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width
-                        height: volMouse.containsMouse || volMouse.pressed ? 6 : 4
-                        radius: Theme.quiet ? Theme.radiusMd : height / 2
-                        color: Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.16 : 0.12)
-                        Behavior on height { NumberAnimation { duration: 120 } }
-
+                        height: 4
+                        radius: 2
+                        color: Theme.selection
                         Rectangle {
                             width: parent.width * volBar.volFraction
                             height: parent.height
                             radius: parent.radius
-                            color: Theme.primary
+                            color: Theme.accent
                         }
                     }
-
                     Timer {
                         id: volSettleTimer
                         interval: 400
                         onTriggered: card.dragVolume = -1
                     }
-
                     MouseArea {
-                        id: volMouse
                         anchors.fill: parent
-                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         function levelAt(x) { return Math.round(Math.max(0, Math.min(1, x / volBar.width)) * 100) }
                         onPressed: (mouse) => {
@@ -792,81 +350,42 @@ Card {
                         onCanceled: card.dragVolume = -1
                     }
                 }
-
-                Rectangle {
-                    id: speakerRoutePill
+                Txt {
+                    id: volText
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    height: 22
-                    width: speakerRouteRow.implicitWidth + 12
-                    radius: Theme.quiet ? Theme.radiusMd : 11
-                    color: Preferences.streamPcAudioToPhone
-                        ? Theme.secondaryContainer
-                        : Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.10 : 0.07)
-                    border.width: Preferences.streamPcAudioToPhone ? 1 : 0
-                    border.color: Theme.primary
-
-                    Row {
-                        id: speakerRouteRow
-                        anchors.centerIn: parent
-                        spacing: 4
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 11; height: 11
-                            path: Preferences.streamPcAudioToPhone ? Icons.phone : Icons.speaker
-                            color: Preferences.streamPcAudioToPhone ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
-                        }
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            role: "caption"
-                            size: 10
-                            weight: 600
-                            color: Preferences.streamPcAudioToPhone ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
-                            text: Preferences.streamPcAudioToPhone ? qsTr("Phone speaker") : qsTr("PC speaker")
-                        }
-                    }
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: Preferences.streamPcAudioToPhone = !Preferences.streamPcAudioToPhone }
+                    width: 32
+                    horizontalAlignment: Text.AlignRight
+                    role: "bodySmall"
+                    text: String(card.currentVolume)
                 }
             }
-        }
-
-        // ---- Interactive Carousel Pager Dots when both Phone and PC have active media ----
-        Row {
-            visible: card.hasMultipleSources
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 5
-            height: 7
-
-            Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                width: !card.isLocalPc ? 14 : 5.5
-                height: 5.5
-                radius: 2.75
-                color: !card.isLocalPc
-                    ? Theme.primary
-                    : Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.28)
-                Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                Behavior on color { ColorAnimation { duration: 180 } }
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: card.switchSource("phone") }
-            }
-
-            Rectangle {
-                anchors.verticalCenter: parent.verticalCenter
-                width: card.isLocalPc ? 14 : 5.5
-                height: 5.5
-                radius: 2.75
-                color: card.isLocalPc
-                    ? Theme.primary
-                    : Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, 0.28)
-                Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                Behavior on color { ColorAnimation { duration: 180 } }
-                HoverHandler { cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: card.switchSource("local") }
+            Flow {
+                width: parent.width
+                spacing: 4
+                TextAction {
+                    text: Preferences.streamPcAudioToPhone ? qsTr("Phone speaker") : qsTr("PC speaker")
+                    iconPath: Preferences.streamPcAudioToPhone ? Icons.phone : Icons.speaker
+                    iconColor: Theme.tintTeal
+                    Accessible.description: qsTr("Where this PC's sound plays")
+                    onClicked: Preferences.streamPcAudioToPhone = !Preferences.streamPcAudioToPhone
+                }
+                TextAction {
+                    visible: card.isLocalPc && MediaList.playOnPhoneName !== ""
+                    text: qsTr("Play on %1").arg(MediaList.playOnPhoneName)
+                    iconPath: Icons.phone
+                    iconColor: Theme.tintBlue
+                    onClicked: card.send("play_on_phone")
+                }
+                TextAction {
+                    visible: !Theme.graphite
+                    text: Theme.isArtworkSeed ? qsTr("Colors from artwork: on") : qsTr("Colors from artwork")
+                    selected: Theme.isArtworkSeed
+                    iconPath: Icons.colorSwatch
+                    iconColor: Theme.tintCoral
+                    onClicked: Preferences.seed = Theme.isArtworkSeed ? "wallpaper" : "artwork"
+                }
             }
         }
     }
 }
-
-

@@ -414,6 +414,8 @@ NativeWindow {
     Component.onCompleted: {
         if (!window.activeFocusItem && window.contentItem)
             window.contentItem.forceActiveFocus()
+        if (currentDeviceId.length > 0)
+            AppController.watchHomeSummary(currentDeviceId)
     }
     darkFrame: Theme.dark
     captionHeight: Theme.topBarHeight
@@ -585,15 +587,22 @@ NativeWindow {
         const item = window.navItems.find((n) => n.page === window.page)
         return item ? item.name : ""
     }
-    // Unread conversations, from the threads the Messages bridge has loaded.
-    readonly property int unreadMessages: {
-        if (Messages.threads.length === 0)
-            return 0
+    // Unread messages and missed calls on the phone on screen, for the sidebar.
+    readonly property var homeSummary: {
+        AppController.homeSummaryRevision
+        if (window.currentDeviceId.length === 0)
+            return ({})
         try {
-            return JSON.parse(Messages.threads).reduce((sum, t) => sum + (t.unread > 0 ? t.unread : 0), 0)
+            return JSON.parse(AppController.homeSummary(window.currentDeviceId) || "{}")
         } catch (e) {
-            return 0
+            return ({})
         }
+    }
+    onCurrentDeviceIdChanged: if (currentDeviceId.length > 0) AppController.watchHomeSummary(currentDeviceId)
+    function navCount(page) {
+        const n = page === "messages" ? window.homeSummary.unreadMessages
+            : (page === "calls" ? window.homeSummary.missedCalls : 0)
+        return n > 0 ? String(n) : ""
     }
 
     // The phone on screen: its link and battery, for the footer.
@@ -751,8 +760,7 @@ NativeWindow {
                     tint: modelData.tint
                     title: sidebar.iconsOnly ? "" : modelData.name
                     accessibleName: modelData.name
-                    meta: !sidebar.iconsOnly && modelData.page === "messages" && window.unreadMessages > 0
-                        ? String(window.unreadMessages) : ""
+                    meta: sidebar.iconsOnly ? "" : window.navCount(modelData.page)
                     selected: window.page === modelData.page
                     onClicked: window.page = modelData.page
                 }
@@ -1015,7 +1023,7 @@ NativeWindow {
     }
     Sheet {
         id: pairingSheet
-        cardWidth: 480
+        cardWidth: 760
         onOpenedChanged: if (!opened) Pairing.cancel()
         Loader {
             id: pairingLoader

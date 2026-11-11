@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
-import QtQuick.Effects
 import app.g7link
 
 // One file transfer: direction, name, progress, speed and time left, and
@@ -28,7 +27,7 @@ Item {
     property real shown: status === "done" ? 1 : Math.max(0, Math.min(1, progress))
     Behavior on shown { enabled: item.motion; NumberAnimation { duration: 260 } }
 
-    implicitHeight: column.height + 20
+    implicitHeight: Math.max(Theme.rowHeight, column.height + 12)
 
     function size(bytes) {
         if (bytes < 1024) return qsTr("%1 B").arg(Math.round(bytes))
@@ -85,35 +84,26 @@ Item {
 
     Row {
         id: row
-        x: 4; y: 10
-        width: parent.width - 8
-        spacing: 12
-
-        Rectangle {
-            width: 32; height: 32
-            radius: Theme.graphite ? Theme.radiusSm : 16
-            color: Theme.quiet ? "transparent" : Theme.graphite ? "transparent" : Theme.secondaryContainer
-            border.width: Theme.graphite ? 1 : 0
-            border.color: Theme.outlineVariant
-            Icon {
-                anchors.centerIn: parent
-                width: 18; height: 18
-                path: item.incoming ? (item.recording ? Icons.mic : Icons.folder) : Icons.send
-                color: Theme.graphite ? Theme.surfaceContent : Theme.secondaryContainerContent
-            }
+        x: Theme.rowPadding
+        y: 6
+        width: parent.width - 2 * Theme.rowPadding
+        spacing: 10
+        Icon {
+            y: 2
+            width: 18; height: 18
+            path: item.incoming ? (item.recording ? Icons.mic : Icons.download) : Icons.send
+            color: item.recording ? Theme.tintRed : Theme.tintAmber
         }
-
         Column {
             id: column
-            width: row.width - 32 - actions.width - row.spacing * 2
+            width: row.width - 18 - actions.width - row.spacing * 2
+            spacing: 4
             Item {
                 width: parent.width
                 height: titleText.height
                 Txt {
                     id: titleText
                     width: parent.width - (percent.visible ? percent.width + 8 : 0)
-                    role: "title"
-                    size: 14
                     text: item.title
                 }
                 Txt {
@@ -122,125 +112,43 @@ Item {
                     anchors.verticalCenter: titleText.verticalCenter
                     visible: item.showBar && item.total > 0
                     role: "bodySmall"
-                    weight: 600
-                    color: item.status === "running" ? Theme.primary : Theme.surfaceContentVariant
+                    color: item.status === "running" ? Theme.tintAmber : Theme.surfaceContentVariant
                     text: qsTr("%1%").arg(Math.floor(item.shown * 100))
                 }
             }
-            // One bar for the whole transfer. A highlight sweeps along what's
-            // been sent while it moves, waiting breathes, paused holds still,
-            // and when it's done the bar fills up, then folds away.
-            Item {
-                id: barSlot
+            // One bar for the whole transfer: it fills as it goes, dims while
+            // waiting or paused, and folds away when it's done.
+            Rectangle {
                 width: parent.width
-                height: item.showBar ? 16 : 0
-                opacity: item.showBar ? 1 : 0
-                clip: true
+                height: item.showBar ? 4 : 0
+                visible: height > 0
+                radius: 2
+                color: Theme.selection
                 Accessible.role: Accessible.ProgressBar
                 Accessible.name: item.title
                 Accessible.description: percent.text
-                Behavior on height {
-                    enabled: item.motion
-                    SequentialAnimation {
-                        PauseAnimation { duration: item.showBar ? 0 : 360 }
-                        NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
-                    }
-                }
-                Behavior on opacity {
-                    enabled: item.motion
-                    SequentialAnimation {
-                        PauseAnimation { duration: item.showBar ? 0 : 360 }
-                        NumberAnimation { duration: 180 }
-                    }
-                }
-
+                Behavior on height { enabled: item.motion; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                 Rectangle {
-                    id: track
-                    width: parent.width
-                    height: 6
-                    radius: 3
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: Theme.surfaceContainerHighest
-                }
-                // The filled part and its highlight, cut to the fill's rounded
-                // shape (a plain clip only cuts rectangles).
-                Item {
-                    id: fill
-                    anchors.fill: track
-                    readonly property real reach: item.shown <= 0 ? 0 : Math.max(track.height, track.width * item.shown)
-                    property real breath: 0.55
-                    opacity: item.status === "waiting" ? breath : item.status === "paused" ? 0.45 : 1
-                    SequentialAnimation on breath {
-                        running: item.status === "waiting" && item.motion
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 0.8; duration: 900; easing.type: Easing.InOutSine }
-                        NumberAnimation { to: 0.4; duration: 900; easing.type: Easing.InOutSine }
-                    }
-                    layer.enabled: width > 0 && height > 0
-                    layer.smooth: true
-                    layer.effect: MultiEffect {
-                        maskEnabled: true
-                        maskSource: fillMask
-                        maskThresholdMin: 0.5
-                        maskSpreadAtMin: 1.0
-                    }
-                    Rectangle {
-                        width: fill.reach
-                        height: parent.height
-                        color: Theme.primary
-                    }
-                    Rectangle {
-                        id: sheen
-                        readonly property real span: Math.min(72, Math.max(24, fill.reach * 0.6))
-                        property real at: 0
-                        visible: item.status === "running" && item.motion && fill.reach > span
-                        x: -span + (fill.reach + span) * at
-                        width: span
-                        height: parent.height
-                        gradient: Gradient {
-                            orientation: Gradient.Horizontal
-                            GradientStop { position: 0; color: "transparent" }
-                            GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, Theme.dark ? 0.55 : 0.45) }
-                            GradientStop { position: 1; color: "transparent" }
-                        }
-                        NumberAnimation on at {
-                            running: sheen.visible
-                            loops: Animation.Infinite
-                            from: 0; to: 1
-                            duration: 1500
-                            easing.type: Easing.InOutQuad
-                        }
-                    }
-                }
-                Item {
-                    id: fillMask
-                    anchors.fill: track
-                    visible: false
-                    layer.enabled: true
-                    layer.smooth: true
-                    Rectangle {
-                        width: fill.reach
-                        height: parent.height
-                        radius: Theme.quiet ? Theme.radiusMd : height / 2
-                    }
+                    width: item.shown <= 0 ? 0 : Math.max(parent.height, parent.width * item.shown)
+                    height: parent.height
+                    radius: parent.radius
+                    color: Theme.tintAmber
+                    opacity: item.status === "waiting" || item.status === "paused" ? 0.5 : 1
                 }
             }
             Txt {
                 width: parent.width
                 role: "bodySmall"
-                muted: true
-                color: item.status === "failed" ? Theme.error : Theme.surfaceContentVariant
+                color: item.status === "failed" ? Theme.tintRed : Theme.surfaceContentVariant
                 text: item.detail()
             }
         }
-
         Row {
             id: actions
             anchors.verticalCenter: parent.verticalCenter
             spacing: 4
             Button {
                 visible: item.status === "requested"
-                variant: "fill"
                 size: "sm"
                 text: qsTr("Accept")
                 onClicked: TransferList.accept(item.transferId)
@@ -252,10 +160,9 @@ Item {
                 text: qsTr("Decline")
                 onClicked: TransferList.cancel(item.transferId)
             }
-            Button {
+            TextAction {
+                anchors.verticalCenter: parent.verticalCenter
                 visible: item.status === "done" && item.incoming && item.savedPath.length > 0
-                variant: "text"
-                size: "sm"
                 text: qsTr("Open")
                 onClicked: TransferList.open(item.transferId)
             }

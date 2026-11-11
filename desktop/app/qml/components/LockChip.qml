@@ -68,12 +68,13 @@ Rectangle {
     }
 
     visible: label.length > 0
-    implicitHeight: 22
-    implicitWidth: textItem.implicitWidth + 34
+    // G7 theme: a flat tag like a keycap, with the lock glyph.
+    implicitHeight: Theme.quiet ? 18 : 22
+    implicitWidth: textItem.implicitWidth + (Theme.quiet ? 28 : 34)
     width: maxWidth > 0 ? Math.min(implicitWidth, maxWidth) : implicitWidth
-    radius: Theme.pill(height)
-    color: "transparent"
-    border.width: 1
+    radius: Theme.quiet ? 5 : Theme.pill(height)
+    color: Theme.quiet ? Theme.raised : "transparent"
+    border.width: Theme.quiet ? 0 : 1
     border.color: Theme.outlineVariant
     Component.onDestruction: helpTooltip.shown = false
 
@@ -90,14 +91,14 @@ Rectangle {
         spacing: 5
         Icon {
             anchors.verticalCenter: parent.verticalCenter
-            width: 13; height: 13
+            width: Theme.quiet ? 12 : 13; height: width
             path: Icons.lock
             color: Theme.surfaceContentVariant
         }
         Txt {
             id: textItem
             anchors.verticalCenter: parent.verticalCenter
-            width: Math.min(implicitWidth, Math.max(0, chip.width - 34))
+            width: Math.min(implicitWidth, Math.max(0, chip.width - (Theme.quiet ? 28 : 34)))
             text: chip.shownLabel
             role: "caption"
             muted: true
