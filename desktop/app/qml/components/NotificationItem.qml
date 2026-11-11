@@ -220,13 +220,34 @@ Item {
         anchors.left: icon.right
         anchors.leftMargin: 10
         y: (Theme.rowHeight - height) / 2
-        width: Math.min(implicitWidth, (trail.x - x) * (line.text.length > 0 ? 0.45 : 1))
+        width: Math.min(implicitWidth, (trail.x - x - (countBadge.visible ? countBadge.width + 6 : 0)) * (line.text.length > 0 ? 0.45 : 1))
         text: item.title.length > 0 ? item.title : item.appName
         weight: 500
     }
+    // How many this app's group holds, right after its name.
+    Rectangle {
+        id: countBadge
+        visible: item.isGroupLead
+        anchors.left: who.right
+        anchors.leftMargin: 6
+        y: (Theme.rowHeight - height) / 2
+        width: countText.implicitWidth + 10
+        height: 18
+        radius: 5
+        color: Theme.line
+        Accessible.role: Accessible.StaticText
+        Accessible.name: qsTr("%n notification(s)", "", item.groupCount)
+        Txt {
+            id: countText
+            anchors.centerIn: parent
+            text: String(item.groupCount)
+            role: "caption"
+            muted: true
+        }
+    }
     Txt {
         id: line
-        anchors.left: who.right
+        anchors.left: countBadge.visible ? countBadge.right : who.right
         anchors.leftMargin: 10
         y: (Theme.rowHeight - height) / 2
         width: Math.max(0, trail.x - x - 10)
@@ -259,13 +280,6 @@ Item {
             role: "bodySmall"
             color: Theme.accent
             text: item.liveBadgeText
-        }
-        Txt {
-            visible: item.isGroupLead
-            anchors.verticalCenter: parent.verticalCenter
-            role: "bodySmall"
-            muted: true
-            text: String(item.groupCount)
         }
         // Like Dismiss: always there for keyboards and screen readers, shown
         // on hover.
