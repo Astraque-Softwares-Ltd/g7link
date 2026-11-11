@@ -574,9 +574,6 @@ pub struct Settings {
     /// Current step index (0..=6) in the first-run setup walkthrough for resuming after a restart.
     #[serde(default, alias = "walkthrough_step")]
     pub walkthrough_step: u8,
-    /// Whether the gentle "What's new" card on Home has been dismissed.
-    #[serde(default, alias = "whats_new_dismissed")]
-    pub whats_new_dismissed: bool,
     /// Whether the card on Home inviting to try Hive has been answered.
     #[serde(default, alias = "hive_invite_dismissed")]
     pub hive_invite_dismissed: bool,
@@ -690,7 +687,6 @@ impl Default for Settings {
             away_mode: false,
             walkthrough_completed: false,
             walkthrough_step: 0,
-            whats_new_dismissed: false,
             hive_invite_dismissed: false,
             star_prompt_done: false,
             star_prompt_updated: false,
@@ -956,7 +952,6 @@ mod tests {
             away_mode: true,
             walkthrough_completed: true,
             walkthrough_step: 4,
-            whats_new_dismissed: true,
             hive_invite_dismissed: true,
             star_prompt_done: true,
             star_prompt_updated: true,
@@ -1180,7 +1175,9 @@ mod tests {
         fs::write(dir.path().join(FILE_NAME), "{}").unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());
 
+        // Settings this app no longer has (the Home "What's new" card) are ignored.
         let unknown_enums = r#"{
+            "whatsNewDismissed": false,
             "theme": "sepia",
             "accent": "ultraviolet",
             "colorMode": "solarized",

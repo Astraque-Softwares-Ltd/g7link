@@ -582,28 +582,12 @@ Item {
                 width: leftScroll.width - 16
                 spacing: 2
 
-                // ---- Notices: what's new, and an invitation to try Hive ----
-                ActionRow {
-                    width: parent.width
-                    visible: Preferences.walkthroughCompleted && !Preferences.whatsNewDismissed
-                    iconPath: Icons.book
-                    tint: Theme.tintBlue
-                    title: qsTr("Features guide")
-                    detail: qsTr("New")
-                    onClicked: {
-                        Preferences.whatsNewDismissed = true
-                        AppController.currentPage = "guide"
-                    }
-                    TextAction {
-                        text: qsTr("Dismiss")
-                        onClicked: Preferences.whatsNewDismissed = true
-                    }
-                }
+                // ---- Notice: an invitation to try Hive, until answered ----
                 ActionRow {
                     id: hiveInvite
                     width: parent.width
-                    visible: Preferences.walkthroughCompleted && Preferences.whatsNewDismissed
-                             && !Preferences.hiveInviteDismissed && !Theme.hive && !Theme.quiet
+                    visible: Preferences.walkthroughCompleted && !Preferences.hiveInviteDismissed
+                             && !Theme.hive && !Theme.quiet
                     iconPath: Icons.sparkle
                     tint: Theme.tintAmber
                     title: qsTr("Try Hive")

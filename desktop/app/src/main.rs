@@ -583,16 +583,7 @@ fn main() -> ExitCode {
         updater::set_channel(channel);
         updater::start();
         match (updated_from, options.updated) {
-            (Some(previous), _) => {
-                // A new version invites to try Hive again, once.
-                let mut saved = settings::Settings::load(&data_dir);
-                if std::mem::take(&mut saved.hive_invite_dismissed)
-                    && let Err(e) = saved.save(&data_dir)
-                {
-                    tracing::warn!(error = %e, "can't save settings");
-                }
-                updater::announce_update(previous, !options.minimized);
-            }
+            (Some(previous), _) => updater::announce_update(previous, !options.minimized),
             // Reopened by the relauncher, still on this version.
             (None, true) => updater::announce_update_failed(!options.minimized),
             (None, false) => {}

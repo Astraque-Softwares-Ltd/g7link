@@ -139,8 +139,6 @@ pub mod qobject {
         #[qproperty(bool, walkthrough_completed)]
         /// Current step index (`0..=6`) in the first-run setup walkthrough.
         #[qproperty(i32, walkthrough_step)]
-        /// Whether the gentle "What's new" card on Home has been dismissed.
-        #[qproperty(bool, whats_new_dismissed)]
         /// Whether the card on Home inviting to try Hive has been answered.
         #[qproperty(bool, hive_invite_dismissed)]
         /// Whether the one-time ask for a star on GitHub has been answered.
@@ -370,7 +368,6 @@ pub struct PreferencesRust {
     start_at_login: bool,
     walkthrough_completed: bool,
     walkthrough_step: i32,
-    whats_new_dismissed: bool,
     hive_invite_dismissed: bool,
     star_prompt_done: bool,
     star_prompt_updated: bool,
@@ -477,7 +474,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().set_away_mode(settings.away_mode);
         self.as_mut().set_walkthrough_completed(settings.walkthrough_completed);
         self.as_mut().set_walkthrough_step(i32::from(settings.walkthrough_step.min(6)));
-        self.as_mut().set_whats_new_dismissed(settings.whats_new_dismissed);
         self.as_mut().set_hive_invite_dismissed(settings.hive_invite_dismissed);
         self.as_mut().set_star_prompt_done(settings.star_prompt_done);
         self.as_mut().set_star_prompt_updated(settings.star_prompt_updated);
@@ -797,7 +793,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
                 p.save();
             })
             .release();
-        self.as_mut().on_whats_new_dismissed_changed(|p| p.save()).release();
         self.as_mut().on_hive_invite_dismissed_changed(|p| p.save()).release();
         self.as_mut().on_star_prompt_done_changed(|p| p.save()).release();
         self.as_mut().on_star_prompt_minutes_changed(|p| p.save()).release();
@@ -837,9 +832,6 @@ impl qobject::Preferences {
         }
         if *self.walkthrough_completed() != disk.walkthrough_completed {
             self.as_mut().set_walkthrough_completed(disk.walkthrough_completed);
-        }
-        if *self.whats_new_dismissed() != disk.whats_new_dismissed {
-            self.as_mut().set_whats_new_dismissed(disk.whats_new_dismissed);
         }
         // Only read: writing this snapshot back could undo a save that came
         // in between.
@@ -1181,7 +1173,6 @@ impl qobject::Preferences {
             away_mode: p.away_mode,
             walkthrough_completed: p.walkthrough_completed,
             walkthrough_step: p.walkthrough_step.clamp(0, 6) as u8,
-            whats_new_dismissed: p.whats_new_dismissed,
             hive_invite_dismissed: p.hive_invite_dismissed,
             star_prompt_done: p.star_prompt_done,
             star_prompt_updated: p.star_prompt_updated,
