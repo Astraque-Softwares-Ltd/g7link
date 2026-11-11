@@ -54,9 +54,9 @@ FocusScope {
         id: track
         anchors.verticalCenter: parent.verticalCenter
         width: parent.width
-        height: 6
-        radius: 3
-        color: Theme.surfaceContainerHighest
+        height: Theme.quiet ? 4 : 6
+        radius: height / 2
+        color: Theme.quiet ? Theme.line : Theme.surfaceContainerHighest
         border.width: Theme.graphite ? 1 : 0
         border.color: Theme.outlineVariant
 
@@ -65,7 +65,7 @@ FocusScope {
             width: parent.width * slider.fraction
             height: parent.height
             radius: parent.radius
-            color: Theme.graphite ? Theme.surfaceContent : Theme.primary
+            color: Theme.accent
             Behavior on width {
                 enabled: !Theme.reduceMotion && !drag.pressed
                 NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
@@ -77,8 +77,8 @@ FocusScope {
         id: handle
         x: Math.max(0, Math.min(slider.width - width, fill.width - width / 2))
         anchors.verticalCenter: parent.verticalCenter
-        width: 16; height: 16; radius: 8
-        color: Theme.graphite ? Theme.surfaceContent : Theme.primary
+        width: Theme.quiet ? 14 : 16; height: width; radius: width / 2
+        color: Theme.accent
         border.width: Theme.focusVisible(slider) ? 2 : 0
         border.color: Theme.surface
         scale: drag.pressed ? 1.15 : 1.0

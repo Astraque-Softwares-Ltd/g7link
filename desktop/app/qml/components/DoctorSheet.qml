@@ -26,7 +26,7 @@ Sheet {
 
     Column {
         width: parent.width
-        spacing: 16
+        spacing: Theme.quiet ? 10 : 16
 
         Item {
             width: parent.width
@@ -35,7 +35,7 @@ Sheet {
                 id: heading
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("Connection Doctor")
-                role: "headline"
+                role: Theme.quiet ? "title" : "headline"
             }
             Spinner {
                 id: busy
@@ -47,15 +47,15 @@ Sheet {
         Txt {
             width: parent.width
             wrapMode: Text.WordWrap
-            role: "body"
+            role: Theme.quiet ? "bodySmall" : "body"
             muted: true
             text: AppController.doctorBusy && sheet.checks.length === 0
                   ? qsTr("Checking network and firewall…")
                   : sheet.allWell
                     ? qsTr("Everything looks right.")
                     : sheet.connectionWell
-                      ? qsTr("Your phone can reach this PC. A few features need a step from you:")
-                      : qsTr("Issues blocking your phone from reaching this PC:")
+                      ? qsTr("Your phone reaches this PC. A few features need a step.")
+                      : qsTr("Your phone can't reach this PC.")
         }
 
         Flickable {
@@ -79,36 +79,48 @@ Sheet {
                         required property var modelData
                         readonly property bool hasFix: row.modelData.fix !== undefined && row.modelData.fix !== ""
                         width: parent.width
-                        height: Math.max(badge.height, words.height, actionsRow.height) + 20
+                        height: Theme.quiet
+                            ? Math.max(Theme.rowHeight, words.height + 16, actionsRow.height + 8)
+                            : Math.max(badge.height, words.height, actionsRow.height) + 20
                         radius: Theme.radiusMd
                         color: "transparent"
 
                         Rectangle {
                             id: badge
-                            x: 8
+                            x: Theme.quiet ? Theme.rowPadding : 8
                             anchors.verticalCenter: parent.verticalCenter
-                            width: 28; height: 28
-                            radius: 14
+                            width: Theme.quiet ? 18 : 28; height: width
+                            radius: width / 2
                             color: Theme.quiet ? "transparent" : row.modelData.outcome === "ok" ? Theme.secondaryContainer
                                  : row.modelData.outcome === "warn" ? Qt.alpha(Theme.warning, 0.18)
                                  : Qt.alpha(Theme.error, 0.16)
                             Icon {
                                 anchors.centerIn: parent
-                                width: 16; height: 16
+                                width: Theme.quiet ? 18 : 16; height: width
                                 path: row.modelData.outcome === "ok" ? Icons.check : Icons.warning
-                                color: row.modelData.outcome === "ok" ? Theme.secondaryContainerContent
-                                     : row.modelData.outcome === "warn" ? Theme.warning : Theme.error
+                                color: Theme.quiet
+                                    ? (row.modelData.outcome === "ok" ? Theme.tintTeal
+                                       : row.modelData.outcome === "warn" ? Theme.tintAmber : Theme.tintRed)
+                                    : (row.modelData.outcome === "ok" ? Theme.secondaryContainerContent
+                                       : row.modelData.outcome === "warn" ? Theme.warning : Theme.error)
                             }
                         }
                         Column {
                             id: words
                             anchors.left: badge.right
-                            anchors.leftMargin: 14
+                            anchors.leftMargin: Theme.quiet ? 12 : 14
                             anchors.right: actionsRow.visible ? actionsRow.left : parent.right
                             anchors.rightMargin: actionsRow.visible ? 12 : 8
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 3
-                            Txt { width: parent.width; text: row.modelData.title; role: "title"; size: 14; wrapMode: Text.WordWrap }
+                            Txt {
+                                width: parent.width
+                                text: row.modelData.title
+                                role: Theme.quiet ? "body" : "title"
+                                size: Theme.quiet ? Theme.typography.body.size : 14
+                                wrapMode: Text.WordWrap
+                                elide: Text.ElideNone
+                            }
                             Txt {
                                 width: parent.width
                                 visible: row.modelData.detail.length > 0

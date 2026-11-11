@@ -2,67 +2,54 @@
 import QtQuick
 import app.g7link
 
-// First run: pair a phone. Also covers the moment before the core is ready
-// and the (rare) case where it failed to start.
+// While G7 Link starts, and the (rare) case where it couldn't. Looks like
+// the welcome screen: the G7 mark, then what's happening.
 Item {
     id: page
 
     readonly property string status: AppController.status
 
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.surface
+    }
+
     Column {
         anchors.centerIn: parent
-        width: Math.min(460, parent.width - 48)
+        width: Math.min(520, parent.width - 32)
         spacing: 22
 
-        Rectangle {
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: 52; height: 52
-            radius: Theme.radiusMd
-            color: Theme.quiet ? Theme.focusRing : Theme.graphite ? Theme.surfaceContent : Theme.primary
-            Icon {
-                anchors.centerIn: parent
-                width: 26; height: 26
-                path: Icons.mark
-                stroke: 2.4
-                color: Theme.quiet ? Theme.surface : Theme.graphite ? Theme.surface : Theme.primaryContent
+        Row {
+            spacing: 14
+            Rectangle {
+                width: 52; height: 52
+                radius: 12
+                color: Theme.accent
+                Txt {
+                    anchors.centerIn: parent
+                    text: "G7"
+                    size: 20
+                    weight: 500
+                    color: Theme.accentContent
+                }
             }
-        }
-        Column {
-            width: parent.width
-            spacing: 6
-            Txt {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: qsTr("Welcome to G7 Link")
-                role: "displaySmall"
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 2
+                Txt {
+                    text: "G7 Link"
+                    role: "displayLarge"
+                }
+                Txt {
+                    text: page.status === "failed" ? qsTr("Couldn't start") : qsTr("Starting")
+                    color: page.status === "failed" ? Theme.tintRed : Theme.surfaceContentVariant
+                }
             }
-            Txt {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                role: "body"
-                muted: true
-                text: page.status === "failed"
-                      ? qsTr("G7 Link couldn't start.")
-                      : qsTr("Your phone and this PC, together. Pair once and they find each other from then on.")
+            Spinner {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: page.status !== "failed"
+                width: 18; height: 18
             }
-        }
-
-        Card {
-            width: parent.width
-            padding: 24
-            visible: page.status === "ready"
-            PairingPanel {
-                width: parent.width
-                cancellable: false
-                running: page.visible && page.status === "ready"
-            }
-        }
-
-        Spinner {
-            anchors.horizontalCenter: parent.horizontalCenter
-            visible: page.status === "starting"
-            width: 28; height: 28
         }
 
         Column {
@@ -71,20 +58,38 @@ Item {
             visible: page.status === "failed"
             Txt {
                 width: parent.width
-                horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
+                elide: Text.ElideNone
                 role: "code"
                 size: 12
                 muted: true
                 text: AppController.error
             }
             Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                variant: "tonal"
+                variant: "outline"
                 iconPath: Icons.folder
                 text: qsTr("Open the logs folder")
                 onClicked: Qt.openUrlExternally(AppController.logsUrl())
             }
+        }
+    }
+
+    Item {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: Theme.footerHeight
+        Rectangle {
+            width: parent.width
+            height: 1
+            color: Theme.line
+        }
+        Txt {
+            x: 14
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("Everything stays on your network. No account.")
+            role: "bodySmall"
+            muted: true
         }
     }
 }

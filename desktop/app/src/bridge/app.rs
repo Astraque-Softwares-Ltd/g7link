@@ -329,6 +329,10 @@ pub mod qobject {
         /// Opens the Connection Doctor and checks the connection.
         #[qinvokable]
         fn run_doctor(self: Pin<&mut AppController>);
+        /// Checks the connection and this PC again without opening the
+        /// Doctor (the welcome screen's checks).
+        #[qinvokable]
+        fn recheck_doctor(self: Pin<&mut AppController>);
         /// Runs one of the Doctor's fixes ("firewall", "network-settings",
         /// "reconnect"), then checks again.
         #[qinvokable]
@@ -1833,6 +1837,10 @@ impl qobject::AppController {
 
     pub fn run_doctor(mut self: Pin<&mut Self>) {
         self.as_mut().doctor_requested();
+        diagnose_in_background(self, None);
+    }
+
+    pub fn recheck_doctor(self: Pin<&mut Self>) {
         diagnose_in_background(self, None);
     }
 

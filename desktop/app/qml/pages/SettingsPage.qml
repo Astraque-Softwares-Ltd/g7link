@@ -3,39 +3,234 @@ import QtQuick
 import QtQuick.Dialogs
 import app.g7link
 
-// Settings: two-pane categorized layout for appearance, general behavior,
-// paired devices & permissions, camera & audio, notifications, files & sync,
-// shortcuts & rules, storage & privacy, and connection & about.
+// Settings: a list of sections (each paired phone first, then General,
+// Appearance, Notifications, Camera and sound, Files and sync, Shortcuts,
+// Privacy, Connection and About) and the chosen section's rows.
 Item {
     id: page
     property bool active: false
-    property string currentSection: "appearance"
-    property int selectedDeviceIndex: 0
+    property string deviceId
+    property string deviceName
+    property string currentSection: "devices"
+    property int selectedDeviceIndex: DeviceList.count > 0
+        ? Math.min(Math.max(0, AppController.currentDevice), DeviceList.count - 1) : 0
     signal pairRequested
+    signal restartWalkthroughRequested
 
     readonly property bool wideLayout: page.width >= 680
 
     readonly property var categories: [
-        { id: "appearance", title: qsTr("Appearance"), icon: Icons.palette, subtitle: qsTr("Theme, mode & colors") },
-        { id: "general", title: qsTr("General"), icon: Icons.laptop, subtitle: qsTr("Startup, clipboard & desktop") },
-        { id: "devices", title: qsTr("Devices"), icon: Icons.phone, subtitle: qsTr("Paired phones & permissions") },
-        { id: "camera_audio", title: qsTr("Camera & Audio"), icon: Icons.video, subtitle: qsTr("Webcam, speaker & calls") },
-        { id: "notifications", title: qsTr("Notifications"), icon: Icons.bell, subtitle: qsTr("Do not disturb & app rules") },
-        { id: "files_sync", title: qsTr("Files & Sync"), icon: Icons.folder, subtitle: qsTr("Folder sync, storage & recordings") },
-        { id: "shortcuts", title: qsTr("Shortcuts & Rules"), icon: Icons.bolt, subtitle: qsTr("Hotkeys & automations") },
-        { id: "storage", title: qsTr("Storage & Privacy"), icon: Icons.clipboardList, subtitle: qsTr("History, caches & retention") },
-        { id: "connection", title: qsTr("Connection & About"), icon: Icons.wifi, subtitle: qsTr("Doctor, Wake-on-LAN, API & version") }
+        { id: "general", title: qsTr("General") },
+        { id: "appearance", title: qsTr("Appearance") },
+        { id: "notifications", title: qsTr("Notifications") },
+        { id: "camera_audio", title: qsTr("Camera and sound") },
+        { id: "files_sync", title: qsTr("Files and sync") },
+        { id: "shortcuts", title: qsTr("Shortcuts") },
+        { id: "storage", title: qsTr("Privacy") },
+        { id: "connection", title: qsTr("Connection") },
+        { id: "about", title: qsTr("About") }
     ]
+    readonly property string releaseUrl: "https://github.com/Astraque-Softwares-Ltd/g7link/releases/latest"
+    // Matches the APK name on the GitHub release (see .github/workflows/release.yml).
+    readonly property string adbCommand: "adb install -r G7Link-" + AppController.version + "-android.apk"
+    readonly property string selectedDeviceId: DeviceList.count > 0 ? DeviceList.deviceIdAt(page.selectedDeviceIndex) : ""
+    readonly property string selectedDeviceName: DeviceList.count > 0 ? DeviceList.deviceNameAt(page.selectedDeviceIndex) : ""
+
+    // ---- Footer and Actions (Ctrl B) ----
+    readonly property string footerLabel: qsTr("Settings · G7 Link %1").arg(AppController.version)
+    readonly property var primaryAction: ({
+        label: qsTr("Toggle"),
+        keys: "Space",
+        run: () => {
+            const item = page.Window.activeFocusItem
+            if (item && typeof item.toggled === "function" && item.checked !== undefined)
+                item.toggled(!item.checked)
+        }
+    })
+    readonly property var screenActions: {
+        const list = []
+        if (DeviceList.count > 0)
+            list.push({ label: qsTr("Unpair %1").arg(page.selectedDeviceName), icon: Icons.unlink, tint: Theme.tintRed,
+                        run: () => page.askUnpair(page.selectedDeviceId, page.selectedDeviceName) })
+        list.push({ label: qsTr("Pair a phone"), icon: Icons.plus, tint: Theme.accent, run: () => page.pairRequested() })
+        if (AppController.canUpdate)
+            list.push({ label: AppController.updateVersion.length > 0 ? qsTr("Update to %1").arg(AppController.updateVersion)
+                                                                        : qsTr("Check for updates"),
+                        icon: Icons.refresh, tint: Theme.tintGreen, enabled: !AppController.updateBusy,
+                        run: () => AppController.updateVersion.length > 0 ? AppController.installUpdate()
+                                                                         : AppController.checkForUpdates() })
+        list.push({ label: qsTr("Connection Doctor"), icon: Icons.wifi, tint: Theme.tintBlue, run: () => AppController.runDoctor() })
+        list.push({ label: qsTr("Open logs"), icon: Icons.folder, tint: Theme.tintAmber,
+                    run: () => Qt.openUrlExternally(AppController.logsUrl()) })
+        list.push({ label: qsTr("Sync folders now"), icon: Icons.refresh, tint: Theme.tintAmber, run: () => Preferences.syncFoldersNow() })
+        if (page.selectedDeviceId.length > 0)
+            list.push({ label: qsTr("Add a synced folder"), icon: Icons.plus, tint: Theme.tintAmber,
+                        run: () => { page.currentSection = "files_sync"; folderSyncSheet.openFor(page.selectedDeviceId) } })
+        list.push({ label: qsTr("Test OBS connection"), icon: Icons.terminal, tint: Theme.tintGreen, run: () => Preferences.testObs() })
+        list.push({ label: qsTr("Clear all history and caches"), icon: Icons.trash, tint: Theme.tintRed,
+                    run: () => clearEverythingSheet.open() })
+        list.push({ label: qsTr("Welcome screen"), icon: Icons.compass, tint: Theme.tintLavender,
+                    run: () => page.restartWalkthroughRequested() })
+        list.push({ label: qsTr("Features guide"), icon: Icons.book, tint: Theme.tintLavender,
+                    run: () => { AppController.currentPage = "guide" } })
+        list.push({ label: qsTr("Open the Android app's release page"), icon: Icons.openExternal, tint: Theme.tintAmber,
+                    run: () => Qt.openUrlExternally(page.releaseUrl) })
+        list.push({ label: qsTr("Copy the ADB install command"), icon: Icons.copy, tint: Theme.tintAmber,
+                    run: () => AppController.copyText(page.adbCommand) })
+        for (const c of page.categories) {
+            const id = c.id
+            list.push({ label: c.title, detail: qsTr("Section"), icon: Icons.chevronRight, tint: Theme.surfaceContentVariant,
+                        run: () => { page.currentSection = id } })
+        }
+        return list
+    }
+
+    function askUnpair(id, name) {
+        unpairSheet.deviceId = id
+        unpairSheet.deviceName = name
+        unpairSheet.open()
+    }
+
+    // Each setting's glyph draws in its own tint.
+    function tintFor(path) {
+        if (path === Icons.bell || path === Icons.messages || path === Icons.wifi || path === Icons.globe
+            || path === Icons.signal || path === Icons.desktop)
+            return Theme.tintBlue
+        if (path === Icons.call || path === Icons.person || path === Icons.speaker || path === Icons.lock
+            || path === Icons.deck || path === Icons.laptop)
+            return Theme.tintTeal
+        if (path === Icons.photo || path === Icons.camera || path === Icons.video)
+            return Theme.tintCoral
+        if (path === Icons.mirror || path === Icons.music || path === Icons.island || path === Icons.screenOff
+            || path === Icons.phone)
+            return Theme.tintPink
+        if (path === Icons.folder || path === Icons.send || path === Icons.download || path === Icons.copy
+            || path === Icons.openExternal)
+            return Theme.tintAmber
+        if (path === Icons.battery || path === Icons.bolt || path === Icons.terminal || path === Icons.refresh)
+            return Theme.tintGreen
+        if (path === Icons.mic || path === Icons.power || path === Icons.trash || path === Icons.soundOff
+            || path === Icons.pause)
+            return Theme.tintRed
+        if (path.length > 0)
+            return Theme.tintLavender
+        return Theme.surfaceContentVariant
+    }
+
+    // A setting: its glyph in its tint, the title, a short muted detail
+    // after it (or under it when it doesn't fit), and the control on the
+    // right (or under the text when the control is wide).
+    component SettingRow: Item {
+        id: sr
+        property string iconPath
+        property string title
+        property string description
+        property bool stackBelow: false
+        property color iconColor: page.tintFor(iconPath)
+        default property alias trailing: srTrailing.data
+        readonly property bool stackTrailing: stackBelow || (srTrailing.childrenRect.width > sr.width * 0.6 && sr.width > 0)
+        readonly property real textX: srIcon.visible ? Theme.rowPadding + 30 : Theme.rowPadding
+        readonly property real textRoom: Math.max(0, (stackTrailing ? sr.width - Theme.rowPadding
+                                                                    : srTrailing.x - 12) - textX)
+        readonly property bool inlineDetail: description.length === 0
+            || srTitle.implicitWidth + 12 + srDetail.implicitWidth <= textRoom
+        readonly property real textHeight: srTitle.height + (inlineDetail ? 0 : 2 + srDetail.height)
+        readonly property real textY: stackTrailing ? 9 : Math.round((height - textHeight) / 2)
+
+        implicitHeight: stackTrailing
+            ? Math.max(Theme.rowHeight, textHeight + 18) + srTrailing.height + 8
+            : Math.max(Theme.rowHeight, textHeight + 18, srTrailing.height + 8)
+
+        Icon {
+            id: srIcon
+            visible: sr.iconPath.length > 0
+            x: Theme.rowPadding
+            y: sr.textY + Math.round((srTitle.lineHeight - height) / 2)
+            width: 18; height: 18
+            path: sr.iconPath
+            color: sr.iconColor
+        }
+        Txt {
+            id: srTitle
+            x: sr.textX
+            y: sr.textY
+            width: Math.min(implicitWidth, sr.textRoom)
+            text: sr.title
+            wrapMode: Text.WordWrap
+            elide: Text.ElideNone
+            maximumLineCount: 3
+        }
+        Txt {
+            id: srDetail
+            visible: sr.description.length > 0
+            x: sr.inlineDetail ? srTitle.x + srTitle.width + 12 : sr.textX
+            y: sr.inlineDetail ? sr.textY + 1 : sr.textY + srTitle.height + 2
+            width: sr.inlineDetail ? Math.max(0, sr.textRoom - srTitle.width - 12) : sr.textRoom
+            text: sr.description
+            role: "bodySmall"
+            muted: true
+            wrapMode: sr.inlineDetail ? Text.NoWrap : Text.WordWrap
+            elide: sr.inlineDetail ? Text.ElideRight : Text.ElideNone
+        }
+        Item {
+            id: srTrailing
+            x: sr.stackTrailing ? sr.textX : sr.width - width - Theme.rowPadding
+            y: sr.stackTrailing ? sr.textY + sr.textHeight + 8 : Math.round((sr.height - height) / 2)
+            width: childrenRect.width
+            height: childrenRect.height
+        }
+    }
+
+    // Rows that belong together, under an optional section label.
+    component Group: Column {
+        property string title
+        width: parent ? parent.width : 0
+        SectionLabel {
+            visible: text.length > 0
+            width: parent.width
+            text: parent.title
+        }
+    }
+
+    // A red text action (Unpair).
+    component DangerAction: Rectangle {
+        id: da
+        property string text
+        signal clicked
+        implicitWidth: daText.implicitWidth + 16
+        implicitHeight: 24
+        radius: Theme.radiusSm
+        color: daMouse.containsMouse ? Theme.raised : "transparent"
+        border.width: Theme.focusVisible(da) ? 2 : 0
+        border.color: Theme.focusRing
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: text
+        Accessible.onPressAction: da.clicked()
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                da.clicked()
+                event.accepted = true
+            }
+        }
+        Txt {
+            id: daText
+            anchors.centerIn: parent
+            text: da.text
+            role: "bodySmall"
+            color: Theme.tintRed
+        }
+        MouseArea {
+            id: daMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: da.clicked()
+        }
+    }
 
     // The languages the app speaks besides the system's ({ code, name }).
     readonly property var languages: { try { return JSON.parse(Preferences.languages()) } catch (e) { return [] } }
-    readonly property var activeCategoryObj: {
-        for (let i = 0; i < categories.length; i++) {
-            if (categories[i].id === page.currentSection)
-                return categories[i]
-        }
-        return categories[0]
-    }
 
     function syncSectionSideEffects() {
         Webcam.setPreviewVisible("settings", page.active && page.currentSection === "camera_audio"
@@ -174,16 +369,60 @@ Item {
         media: qsTr("Media controls"),
         photos: qsTr("Photos"),
         toggles: qsTr("Phone controls"),
-        pc_actions: qsTr("Lock, sleep & wake PC"),
-        mirroring: qsTr("Screen mirroring"),
-        pc_mirror: qsTr("Share PC screen to phone"),
+        pc_actions: qsTr("Lock, sleep and wake"),
+        mirroring: qsTr("Mirroring"),
+        pc_mirror: qsTr("See this screen"),
         webcam: qsTr("Webcam"),
         mic: qsTr("Phone as microphone"),
-        storage: qsTr("File manager integration"),
-        remote_input: qsTr("Remote mouse, keyboard & Deck"),
+        storage: qsTr("Phone storage in Files"),
+        remote_input: qsTr("Control this PC"),
         commands: qsTr("Run Deck shell commands"),
-        remote_files: qsTr("Remote PC file access")
+        remote_files: qsTr("Browse PC folders")
     })
+    readonly property var toggleDetails: ({
+        notifications: qsTr("Show on this PC"),
+        messages: qsTr("Read and reply"),
+        calls: qsTr("Answer and dial"),
+        contacts: qsTr("Names and numbers"),
+        clipboard: qsTr("Both ways"),
+        files: qsTr("Send and receive"),
+        recordings: qsTr("Voice notes to this PC"),
+        media: qsTr("Play, pause and skip"),
+        photos: qsTr("Browse and save"),
+        toggles: qsTr("Wi-Fi, Do not disturb, torch"),
+        pc_actions: qsTr("From the phone"),
+        mirroring: qsTr("Screen and app windows"),
+        pc_mirror: qsTr("Mirror the PC to the phone"),
+        webcam: qsTr("Use the phone camera"),
+        mic: qsTr("Use the phone microphone"),
+        storage: qsTr("Its folders in your file manager"),
+        remote_input: qsTr("Mouse, keyboard and Deck"),
+        commands: qsTr("Only for a phone you trust"),
+        remote_files: qsTr("Your PC's folders on the phone")
+    })
+    readonly property var toggleTints: ({
+        notifications: Theme.tintBlue,
+        messages: Theme.tintBlue,
+        calls: Theme.tintTeal,
+        contacts: Theme.tintTeal,
+        clipboard: Theme.tintLavender,
+        files: Theme.tintAmber,
+        recordings: Theme.tintRed,
+        media: Theme.tintPink,
+        photos: Theme.tintCoral,
+        toggles: Theme.tintLavender,
+        pc_actions: Theme.tintRed,
+        mirroring: Theme.tintPink,
+        pc_mirror: Theme.tintBlue,
+        webcam: Theme.tintCoral,
+        mic: Theme.tintRed,
+        storage: Theme.tintAmber,
+        remote_input: Theme.tintTeal,
+        commands: Theme.tintGreen,
+        remote_files: Theme.tintAmber
+    })
+    // Higher-trust access: off until the user turns it on.
+    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage"]
 
     readonly property var toggleIcons: ({
         notifications: Icons.bell,
@@ -207,55 +446,6 @@ Item {
         remote_files: Icons.globe
     })
 
-    readonly property var toggleDescriptions: ({
-        pc_mirror: qsTr("Allow this phone to view this PC's screen."),
-        commands: qsTr("Only enable for a phone you trust.")
-    })
-
-    readonly property var toggleGroups: [
-        {
-            title: qsTr("Calls, messages & notifications"),
-            keys: ["notifications", "messages", "calls", "contacts"]
-        },
-        {
-            title: qsTr("Files, photos & clipboard"),
-            keys: ["clipboard", "files", "photos", "recordings", "storage", "remote_files"]
-        },
-        {
-            title: qsTr("Screen, camera & control"),
-            keys: ["media", "toggles", "mirroring", "pc_mirror", "webcam", "pc_actions", "remote_input", "commands"]
-        }
-    ]
-
-    function groupTogglesFor(allToggles, groupKeys, isLastGroup, allGroupKeys) {
-        if (!allToggles || allToggles.length === 0)
-            return []
-        const res = []
-        for (let i = 0; i < groupKeys.length; i++) {
-            const k = groupKeys[i]
-            for (let j = 0; j < allToggles.length; j++) {
-                if (allToggles[j].name === k) {
-                    res.push(allToggles[j])
-                    break
-                }
-            }
-        }
-        if (isLastGroup) {
-            for (let j = 0; j < allToggles.length; j++) {
-                const name = allToggles[j].name
-                if (allGroupKeys.indexOf(name) === -1)
-                    res.push(allToggles[j])
-            }
-        }
-        return res
-    }
-
-    readonly property var allGroupedKeys: [
-        "notifications", "messages", "calls", "contacts",
-        "clipboard", "files", "photos", "recordings", "storage", "remote_files",
-        "media", "toggles", "mirroring", "pc_mirror", "webcam", "pc_actions", "remote_input", "commands"
-    ]
-
     FolderDialog {
         id: photoBackupFolderPicker
         property string deviceId
@@ -275,205 +465,83 @@ Item {
         onAccepted: Preferences.chooseRecordingsFolder(selectedFolder.toString())
     }
 
-    // ---- Left Category Navigation Rail (wide windows >= 680px) ----
+    // ---- Sections: each paired phone, then the rest ----
     Flickable {
-        id: categoryRail
-        visible: page.wideLayout
-        x: Theme.contentPadding
-        y: Theme.contentPadding
-        width: 232
-        height: parent.height - Theme.contentPadding * 2
-        contentHeight: railCol.height
+        id: sectionList
+        width: page.width >= 760 ? 200 : 168
+        height: parent.height
+        contentHeight: sectionCol.height + 16
         interactive: contentHeight > height
         boundsBehavior: Flickable.StopAtBounds
         clip: true
 
         Column {
-            id: railCol
-            width: parent.width
-            spacing: 4
-            property string hoveredCategoryId: ""
+            id: sectionCol
+            x: 8
+            y: 8
+            width: parent.width - 16
+            spacing: 2
 
             Repeater {
+                model: DeviceList
+                delegate: ActionRow {
+                    required property int index
+                    required property string name
+                    readonly property bool current: page.currentSection === "devices" && page.selectedDeviceIndex === index
+                    width: sectionCol.width
+                    title: name
+                    titleColor: current ? Theme.surfaceContent : Theme.surfaceContentVariant
+                    selected: current
+                    onClicked: {
+                        page.selectedDeviceIndex = index
+                        page.currentSection = "devices"
+                    }
+                }
+            }
+            ActionRow {
+                visible: DeviceList.count === 0
+                width: sectionCol.width
+                title: qsTr("Phone")
+                titleColor: page.currentSection === "devices" ? Theme.surfaceContent : Theme.surfaceContentVariant
+                selected: page.currentSection === "devices"
+                onClicked: page.currentSection = "devices"
+            }
+            Repeater {
                 model: page.categories
-                delegate: Rectangle {
-                    id: navItem
+                delegate: ActionRow {
                     required property var modelData
-                    readonly property bool selected: page.currentSection === modelData.id
-                    readonly property bool isHovered: railCol.hoveredCategoryId === modelData.id && navMouse.containsMouse
-                    readonly property color fg: selected
-                        ? (Theme.graphite ? Theme.surface : Theme.secondaryContainerContent)
-                        : Theme.surfaceContent
-                    width: railCol.width
-                    height: 42
-                    radius: Theme.radiusMd
-                    activeFocusOnTab: true
-                    color: selected
-                        ? (Theme.graphite ? Theme.surfaceContent : Theme.secondaryContainer)
-                        : (isHovered ? Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, Theme.dark ? 0.06 : 0.04) : "transparent")
-                    border.width: Theme.focusVisible(navItem) ? 2 : (Theme.graphite && selected ? 1 : 0)
-                    border.color: Theme.focusVisible(navItem) ? Theme.primary : Theme.outlineVariant
-
-                    Accessible.role: Accessible.PageTab
-                    Accessible.name: modelData.title
-                    Accessible.selected: selected
-                    Accessible.onPressAction: page.currentSection = modelData.id
-                    Keys.onPressed: (event) => {
-                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                            page.currentSection = navItem.modelData.id
-                            event.accepted = true
-                        }
-                    }
-
-                    Row {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 12
-                        anchors.right: navBadge.visible ? navBadge.left : parent.right
-                        anchors.rightMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 12
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 18; height: 18
-                            path: navItem.modelData.icon
-                            color: navItem.fg
-                        }
-                        Txt {
-                            width: parent.width - 30
-                            anchors.verticalCenter: parent.verticalCenter
-                            role: "label"
-                            size: 13
-                            text: navItem.modelData.title
-                            color: navItem.fg
-                            elide: Text.ElideRight
-                        }
-                    }
-
-                    Rectangle {
-                        id: navBadge
-                        visible: navItem.modelData.id === "devices" && DeviceList.count > 0
-                        anchors.right: parent.right
-                        anchors.rightMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        height: 20
-                        width: Math.max(20, navBadgeTxt.implicitWidth + 10)
-                        radius: 10
-                        color: navItem.selected
-                            ? Qt.rgba(navItem.fg.r, navItem.fg.g, navItem.fg.b, 0.16)
-                            : Theme.surfaceContainerHighest
-                        Txt {
-                            id: navBadgeTxt
-                            anchors.centerIn: parent
-                            role: "caption"
-                            text: String(DeviceList.count)
-                            color: navItem.selected ? navItem.fg : Theme.surfaceContentVariant
-                        }
-                    }
-
-                    MouseArea {
-                        id: navMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onContainsMouseChanged: {
-                            if (containsMouse)
-                                railCol.hoveredCategoryId = navItem.modelData.id
-                            else if (railCol.hoveredCategoryId === navItem.modelData.id)
-                                railCol.hoveredCategoryId = ""
-                        }
-                        onClicked: page.currentSection = navItem.modelData.id
-                    }
+                    width: sectionCol.width
+                    title: modelData.title
+                    titleColor: selected ? Theme.surfaceContent : Theme.surfaceContentVariant
+                    selected: page.currentSection === modelData.id
+                    onClicked: page.currentSection = modelData.id
                 }
             }
         }
     }
-
     Rectangle {
-        visible: page.wideLayout
-        x: categoryRail.x + categoryRail.width + 16
-        y: Theme.contentPadding
+        x: sectionList.width
         width: 1
-        height: parent.height - Theme.contentPadding * 2
-        color: Theme.outlineVariant
-        opacity: 0.6
+        height: parent.height
+        color: Theme.line
     }
 
-    // ---- Compact Top Category Pill Bar (narrow windows < 680px) ----
-    Flickable {
-        id: compactCategoryBar
-        visible: !page.wideLayout
-        x: Theme.contentPadding
-        y: 12
-        width: parent.width - Theme.contentPadding * 2
-        height: 38
-        contentWidth: compactRow.width
-        boundsBehavior: Flickable.StopAtBounds
-        clip: true
-
-        Row {
-            id: compactRow
-            height: parent.height
-            spacing: 6
-            Repeater {
-                model: page.categories
-                delegate: Rectangle {
-                    id: compactTab
-                    required property var modelData
-                    readonly property bool selected: page.currentSection === modelData.id
-                    readonly property color fg: selected
-                        ? (Theme.graphite ? Theme.surface : Theme.secondaryContainerContent)
-                        : Theme.surfaceContent
-                    height: 34
-                    width: compactTabRow.implicitWidth + 22
-                    anchors.verticalCenter: parent.verticalCenter
-                    radius: Theme.pill(height)
-                    color: selected
-                        ? (Theme.graphite ? Theme.surfaceContent : Theme.secondaryContainer)
-                        : Theme.surfaceContainerHigh
-                    border.width: Theme.graphite ? 1 : 0
-                    border.color: Theme.outlineVariant
-                    Row {
-                        id: compactTabRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 15; height: 15
-                            path: compactTab.modelData.icon
-                            color: compactTab.fg
-                        }
-                        Txt {
-                            anchors.verticalCenter: parent.verticalCenter
-                            role: "label"
-                            size: 12
-                            text: compactTab.modelData.title
-                            color: compactTab.fg
-                        }
-                    }
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: page.currentSection = compactTab.modelData.id }
-                }
-            }
-        }
-    }
-
-    // ---- Right Content Pane ----
+    // ---- The section ----
     Flickable {
         id: contentFlickable
-        x: page.wideLayout ? (categoryRail.x + categoryRail.width + 33) : 0
-        y: page.wideLayout ? 0 : (compactCategoryBar.y + compactCategoryBar.height + 8)
+        x: sectionList.width + 1
         width: parent.width - x
-        height: parent.height - y
-        contentHeight: column.height + Theme.contentPadding * 2
+        height: parent.height
+        contentHeight: column.height + 28
         boundsBehavior: Flickable.StopAtBounds
         clip: true
 
         Column {
             id: column
-            width: Math.min(840, contentFlickable.width - Theme.contentPadding * 2)
-            x: Math.max(Theme.contentPadding, Math.round((contentFlickable.width - width) / 2))
-            y: Theme.contentPadding
-            spacing: Theme.gutter
+            x: 16
+            y: 14
+            width: Math.min(760, contentFlickable.width - 32)
+            spacing: 14
             transform: Translate { id: sectionTranslate; y: 0 }
 
             ParallelAnimation {
@@ -496,46 +564,201 @@ Item {
                 }
             }
 
-            // Section Title Header
-            Item {
-                width: parent.width
-                height: Math.max(sectionHeaderTitleTxt.implicitHeight, pairNewHeaderBtn.visible ? pairNewHeaderBtn.height : 0)
-                Txt {
-                    id: sectionHeaderTitleTxt
-                    anchors.left: parent.left
-                    anchors.right: pairNewHeaderBtn.visible ? pairNewHeaderBtn.left : parent.right
-                    anchors.rightMargin: pairNewHeaderBtn.visible ? 12 : 0
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: page.activeCategoryObj.title
-                    role: "headline"
-                    elide: Text.ElideRight
+            // ================================================================
+            // THE PHONE
+            // ================================================================
+            Column {
+                visible: page.currentSection === "devices"
+                width: visible ? parent.width : 0
+                spacing: 14
+
+                // No phone yet.
+                Group {
+                    visible: DeviceList.count === 0
+                    SettingRow {
+                        width: parent.width
+                        iconPath: Icons.phone
+                        iconColor: Theme.accent
+                        title: qsTr("No phone paired")
+                        Button {
+                            size: "sm"
+                            iconPath: Icons.plus
+                            text: qsTr("Pair a phone")
+                            onClicked: page.pairRequested()
+                        }
+                    }
                 }
-                Button {
-                    id: pairNewHeaderBtn
-                    visible: page.currentSection === "devices"
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.plus
-                    text: qsTr("Pair a new device")
-                    onClicked: page.pairRequested()
+
+                // The chosen phone (only one shows at a time).
+                Repeater {
+                    model: page.currentSection === "devices" ? DeviceList : null
+                    delegate: Column {
+                        id: deviceCard
+                        required property int index
+                        required property string deviceId
+                        required property string name
+                        required property bool online
+                        required property double pairedAt
+                        required property string power
+                        visible: index === page.selectedDeviceIndex
+                        width: visible ? column.width : 0
+                        spacing: 14
+
+                        // Re-read when toggles (and so capabilities) change.
+                        readonly property var toggles: AppController.capsRevision >= 0 && AppController.togglesRevision >= 0
+                                                       ? AppController.deviceToggles(deviceId) : []
+                        readonly property var canItems: toggles.filter((t) => page.optInKeys.indexOf(t.name) < 0)
+                        readonly property var optInItems: page.optInKeys
+                            .map((k) => toggles.find((t) => t.name === k))
+                            .filter((t) => t !== undefined)
+                        readonly property string powerText: power === "elevated" ? qsTr("Elevated")
+                            : power === "assist" ? qsTr("Assist") : power === "basic" ? qsTr("Basic") : ""
+
+                        Item {
+                            width: parent.width
+                            height: 32
+                            Icon {
+                                id: phoneGlyph
+                                x: Theme.rowPadding
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 20; height: 20
+                                path: Icons.phone
+                                color: Theme.accent
+                            }
+                            Txt {
+                                id: phoneName
+                                anchors.left: phoneGlyph.right
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.min(implicitWidth, parent.width * 0.4)
+                                text: deviceCard.name
+                                weight: 500
+                            }
+                            Txt {
+                                anchors.left: phoneName.right
+                                anchors.leftMargin: 10
+                                anchors.right: unpair.left
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                role: "bodySmall"
+                                muted: true
+                                text: [
+                                    deviceCard.pairedAt > 0
+                                        ? qsTr("Paired %1").arg(new Date(deviceCard.pairedAt * 1000).toLocaleDateString(Qt.locale(), "d MMM"))
+                                        : "",
+                                    deviceCard.powerText,
+                                    deviceCard.online ? "" : qsTr("Not connected")
+                                ].filter((p) => p.length > 0).join(" · ")
+                            }
+                            DangerAction {
+                                id: unpair
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: qsTr("Unpair")
+                                onClicked: page.askUnpair(deviceCard.deviceId, deviceCard.name)
+                            }
+                        }
+
+                        Group {
+                            title: qsTr("This phone can")
+                            Repeater {
+                                model: deviceCard.canItems
+                                delegate: SettingRow {
+                                    required property var modelData
+                                    width: parent.width
+                                    iconPath: page.toggleIcons[modelData.name] || ""
+                                    iconColor: page.toggleTints[modelData.name] || Theme.surfaceContentVariant
+                                    title: page.toggleNames[modelData.name] || modelData.name
+                                    description: page.toggleDetails[modelData.name] || ""
+                                    Toggle {
+                                        label: page.toggleNames[modelData.name] || modelData.name
+                                        checked: Boolean(modelData.on)
+                                        onToggled: (on) => AppController.setDeviceToggle(deviceCard.deviceId, modelData.name, on)
+                                    }
+                                }
+                            }
+                        }
+
+                        Group {
+                            visible: deviceCard.optInItems.length > 0
+                            title: qsTr("Off until you turn them on")
+                            Repeater {
+                                model: deviceCard.optInItems
+                                delegate: SettingRow {
+                                    required property var modelData
+                                    width: parent.width
+                                    iconPath: page.toggleIcons[modelData.name] || ""
+                                    iconColor: page.toggleTints[modelData.name] || Theme.surfaceContentVariant
+                                    title: page.toggleNames[modelData.name] || modelData.name
+                                    description: page.toggleDetails[modelData.name] || ""
+                                    Row {
+                                        spacing: 8
+                                        TextAction {
+                                            visible: modelData.name === "storage" && Boolean(modelData.on)
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: qsTr("Open")
+                                            onClicked: AppController.openPhoneStorage(deviceCard.deviceId)
+                                        }
+                                        Toggle {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            label: page.toggleNames[modelData.name] || modelData.name
+                                            checked: Boolean(modelData.on)
+                                            onToggled: (on) => AppController.setDeviceToggle(deviceCard.deviceId, modelData.name, on)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Group {
+                            title: qsTr("On this PC")
+                            // Instant Hotspot: the saved Wi-Fi network the PC joins
+                            // after this phone turns its hotspot on.
+                            SettingRow {
+                                id: hotspotRow
+                                width: parent.width
+                                property string network: AppController.hotspotNetwork(deviceCard.deviceId)
+                                iconPath: Icons.wifi
+                                title: qsTr("Join its hotspot")
+                                description: hotspotRow.network.length > 0
+                                    ? qsTr("Joins %1").arg(hotspotRow.network)
+                                    : qsTr("Join it once from the system's Wi-Fi list first")
+                                TextAction {
+                                    text: qsTr("Choose network")
+                                    onClicked: {
+                                        hotspotSheet.deviceId = deviceCard.deviceId
+                                        hotspotSheet.row = hotspotRow
+                                        hotspotSheet.networks = JSON.parse(AppController.wifiNetworks() || "[]")
+                                        hotspotSheet.open()
+                                    }
+                                }
+                            }
+                            SettingRow {
+                                width: parent.width
+                                iconPath: Icons.screenOff
+                                title: qsTr("Keep its screen off")
+                                description: qsTr("While mirroring · needs Elevated")
+                                Toggle {
+                                    label: qsTr("Keep phone screen off")
+                                    checked: JSON.parse(Mirror.keepScreenOffPhones || "[]").indexOf(deviceCard.deviceId) >= 0
+                                    onToggled: (on) => Mirror.setKeepScreenOff(deviceCard.deviceId, on)
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            // ================================================================
-            // 1. APPEARANCE
-            // ================================================================
             Column {
                 visible: page.currentSection === "appearance"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.palette
                             title: qsTr("Theme")
@@ -551,8 +774,7 @@ Item {
                                 onPicked: (value) => Preferences.theme = value
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.moon
                             title: qsTr("Mode")
@@ -566,12 +788,11 @@ Item {
                                 onPicked: (value) => Preferences.colorMode = value
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.palette
                             title: qsTr("App size")
-                            description: qsTr("Makes text and everything else bigger. Applies when you restart G7 Link.")
+                            description: qsTr("After a restart")
                             Segmented {
                                 options: [
                                     { value: 100, label: "100%" },
@@ -584,8 +805,7 @@ Item {
                             }
                         }
                         // Hive's colors are fixed: no seed to pick.
-                        Divider { width: parent.width; visible: !Theme.graphite && !Theme.hive && !Theme.quiet }
-                        ListRow {
+                        SettingRow {
                             id: colorRow
                             width: parent.width
                             visible: !Theme.graphite && !Theme.hive && !Theme.quiet
@@ -828,10 +1048,9 @@ Item {
                                 }
                             }
                         }
-                        Divider { width: parent.width }
 
                         // Hive: the comb's motion (Hive keeps its own colors).
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             visible: Theme.hive
                             iconPath: Icons.sparkle
@@ -848,12 +1067,11 @@ Item {
                             }
                         }
 
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             visible: !Theme.hive && Theme.graphite && Theme.dark
                             iconPath: Icons.moon
                             title: qsTr("Pure black (AMOLED)")
-                            description: qsTr("Pitch-black #000000 surfaces.")
                             Toggle {
                                 checked: Preferences.amoled
                                 label: qsTr("Pure black (AMOLED)")
@@ -864,26 +1082,22 @@ Item {
                 }
             }
 
-            // ================================================================
-            // 2. GENERAL
-            // ================================================================
             Column {
                 visible: page.currentSection === "general"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
 
                         // Language: the system's, English, or another one the app
                         // speaks, picked from a list (each named in its own language).
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.globe
                             title: qsTr("Language")
-                            description: qsTr("G7 Link follows the system unless you pick one.")
                             Segmented {
                                 readonly property var other: page.languages.find(
                                     (l) => l.code === Preferences.language && l.code !== "en")
@@ -903,236 +1117,103 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 1: Start at sign-in | Stay in system tray
-                        Item {
-                            id: startupPairRow
+                        SettingRow {
+                            id: startWinRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(startWinRow.implicitHeight, stayTrayRow.implicitHeight)
-                                : (startWinRow.implicitHeight + 1 + stayTrayRow.implicitHeight)
-
-                            ListRow {
-                                id: startWinRow
-                                x: 0
-                                y: startupPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: startupPairRow.colWidth
-                                iconPath: Icons.power
-                                title: qsTr("Start at login")
-                                description: qsTr("Launch in the tray when you sign in.")
-                                Toggle {
-                                    label: qsTr("Start at login")
-                                    checked: Preferences.startWithWindows
-                                    onToggled: (on) => Preferences.startWithWindows = on
-                                }
+                            iconPath: Icons.power
+                            title: qsTr("Start at login")
+                            description: qsTr("In the tray")
+                            Toggle {
+                                label: qsTr("Start at login")
+                                checked: Preferences.startWithWindows
+                                onToggled: (on) => Preferences.startWithWindows = on
                             }
-
-                            Rectangle {
-                                visible: startupPairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !startupPairRow.splitCols
-                                y: startWinRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: stayTrayRow
-                                x: startupPairRow.splitCols ? (parent.width - width) : 0
-                                y: startupPairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (startWinRow.implicitHeight + 1)
-                                width: startupPairRow.colWidth
-                                opacity: 1.0
-                                iconPath: Icons.window
-                                title: qsTr("Stay in system tray")
-                                description: qsTr("Keep running when the window is closed.")
-                                Toggle {
-                                    label: qsTr("Stay in system tray")
-                                    checked: Preferences.closeToTray
-                                    onToggled: (on) => Preferences.closeToTray = on
-                                }
+                        }
+                        SettingRow {
+                            id: stayTrayRow
+                            width: parent.width
+                            iconPath: Icons.window
+                            title: qsTr("Stay in system tray")
+                            description: qsTr("Keep running when closed")
+                            Toggle {
+                                label: qsTr("Stay in system tray")
+                                checked: Preferences.closeToTray
+                                onToggled: (on) => Preferences.closeToTray = on
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 2: G7 Island | Battery alerts
-                        Item {
-                            id: islandBatteryPairRow
+                        SettingRow {
+                            id: islandRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(islandRow.implicitHeight, batteryAlertsRow.implicitHeight)
-                                : (islandRow.implicitHeight + 1 + batteryAlertsRow.implicitHeight)
-
-                            ListRow {
-                                id: islandRow
-                                x: 0
-                                y: islandBatteryPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: islandBatteryPairRow.colWidth
-                                iconPath: Icons.island
-                                title: qsTr("G7 Island")
-                                description: qsTr("Top-screen pill for calls, transfers & media.")
-                                Toggle {
-                                    label: qsTr("G7 Island")
-                                    checked: Preferences.g7Island
-                                    onToggled: (on) => Preferences.g7Island = on
-                                }
+                            iconPath: Icons.island
+                            title: qsTr("G7 Island")
+                            description: qsTr("Calls, transfers and media at the top")
+                            Toggle {
+                                label: qsTr("G7 Island")
+                                checked: Preferences.g7Island
+                                onToggled: (on) => Preferences.g7Island = on
                             }
-
-                            Rectangle {
-                                visible: islandBatteryPairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !islandBatteryPairRow.splitCols
-                                y: islandRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: batteryAlertsRow
-                                x: islandBatteryPairRow.splitCols ? (parent.width - width) : 0
-                                y: islandBatteryPairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (islandRow.implicitHeight + 1)
-                                width: islandBatteryPairRow.colWidth
-                                iconPath: Icons.battery
-                                title: qsTr("Battery alerts")
-                                description: qsTr("Notify when phone battery is low or full.")
-                                Toggle {
-                                    label: qsTr("Battery alerts")
-                                    checked: Preferences.batteryAlerts
-                                    onToggled: (on) => Preferences.batteryAlerts = on
-                                }
+                        }
+                        SettingRow {
+                            id: batteryAlertsRow
+                            width: parent.width
+                            iconPath: Icons.battery
+                            title: qsTr("Battery alerts")
+                            description: qsTr("Low and full")
+                            Toggle {
+                                label: qsTr("Battery alerts")
+                                checked: Preferences.batteryAlerts
+                                onToggled: (on) => Preferences.batteryAlerts = on
                             }
                         }
 
-                        // Sub-row: Granular G7 Island triggers (Calls, Transfers, Media, Notifications)
-                        Column {
-                            id: islandTriggersBlock
-                            visible: Preferences.g7Island
-                            width: parent.width
-                            spacing: 0
-
-                            Divider { width: parent.width }
-
-                            ListRow {
-                                id: islandTriggersRow
+                        // When the Island shows.
+                        Repeater {
+                            model: Preferences.g7Island ? [
+                                { key: "calls", label: qsTr("Island: calls"), icon: Icons.call },
+                                { key: "transfers", label: qsTr("Island: transfers"), icon: Icons.send },
+                                { key: "media", label: qsTr("Island: media"), icon: Icons.music },
+                                { key: "notifications", label: qsTr("Island: notifications"), icon: Icons.bell }
+                            ] : []
+                            delegate: SettingRow {
+                                id: trigRow
+                                required property var modelData
+                                readonly property bool on: {
+                                    if (modelData.key === "calls") return Preferences.g7IslandCalls
+                                    if (modelData.key === "transfers") return Preferences.g7IslandTransfers
+                                    if (modelData.key === "media") return Preferences.g7IslandMedia
+                                    return Preferences.g7IslandNotifications
+                                }
                                 width: parent.width
-                                title: qsTr("Island triggers")
-                                description: qsTr("Choose when the top pill appears.")
-
-                                Row {
-                                    id: islandTriggersRowItems
-                                    spacing: 8
-
-                                    Repeater {
-                                        model: [
-                                            { key: "calls", label: qsTr("Calls"), icon: Icons.call },
-                                            { key: "transfers", label: qsTr("Transfers"), icon: Icons.send },
-                                            { key: "media", label: qsTr("Media"), icon: Icons.music },
-                                            { key: "notifications", label: qsTr("Alerts"), icon: Icons.bell }
-                                        ]
-                                        delegate: Rectangle {
-                                            id: trigChip
-                                            required property var modelData
-                                            readonly property bool active: {
-                                                if (modelData.key === "calls") return Preferences.g7IslandCalls
-                                                if (modelData.key === "transfers") return Preferences.g7IslandTransfers
-                                                if (modelData.key === "media") return Preferences.g7IslandMedia
-                                                return Preferences.g7IslandNotifications
-                                            }
-                                            function toggleTrigger(nextVal) {
-                                                if (modelData.key === "calls") Preferences.g7IslandCalls = nextVal
-                                                else if (modelData.key === "transfers") Preferences.g7IslandTransfers = nextVal
-                                                else if (modelData.key === "media") Preferences.g7IslandMedia = nextVal
-                                                else Preferences.g7IslandNotifications = nextVal
-                                            }
-                                            height: 30
-                                            width: trigChipRow.implicitWidth + 16
-                                            radius: 15
-                                            color: active
-                                                ? (Theme.glass ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.16) : Theme.secondaryContainer)
-                                                : (Theme.glass ? Theme.tileColor : Theme.surfaceContainerHigh)
-                                            border.width: 1
-                                            border.color: active ? Theme.primary : Theme.cardBorder
-
-                                            Behavior on color { ColorAnimation { duration: 150 } }
-                                            Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                                            Row {
-                                                id: trigChipRow
-                                                anchors.centerIn: parent
-                                                spacing: 5
-
-                                                Icon {
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    width: 13; height: 13
-                                                    stroke: 1.9
-                                                    path: trigChip.modelData.icon
-                                                    color: trigChip.active ? Theme.primary : Theme.surfaceContentVariant
-                                                }
-
-                                                Txt {
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    role: "caption"
-                                                    weight: 600
-                                                    text: trigChip.modelData.label
-                                                    color: trigChip.active ? Theme.surfaceContent : Theme.surfaceContentVariant
-                                                }
-
-                                                Toggle {
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    scale: 0.72
-                                                    checked: trigChip.active
-                                                    label: trigChip.modelData.label
-                                                    onToggled: (on) => trigChip.toggleTrigger(on)
-                                                }
-                                            }
-
-                                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                            TapHandler { onTapped: trigChip.toggleTrigger(!trigChip.active) }
-                                        }
+                                iconPath: modelData.icon
+                                title: modelData.label
+                                Toggle {
+                                    label: trigRow.modelData.label
+                                    checked: trigRow.on
+                                    onToggled: (next) => {
+                                        if (trigRow.modelData.key === "calls") Preferences.g7IslandCalls = next
+                                        else if (trigRow.modelData.key === "transfers") Preferences.g7IslandTransfers = next
+                                        else if (trigRow.modelData.key === "media") Preferences.g7IslandMedia = next
+                                        else Preferences.g7IslandNotifications = next
                                     }
                                 }
                             }
                         }
 
-                        // Sub-row: Full charge alert target (100% or 80% Protect battery)
                         Column {
                             id: batteryThresholdBlock
                             visible: Preferences.batteryAlerts
                             width: parent.width
                             spacing: 0
 
-                            Divider { width: parent.width }
-
-                            ListRow {
+                            SettingRow {
                                 width: parent.width
                                 iconPath: Icons.bolt
                                 title: qsTr("Full charge target")
-                                description: qsTr("Alert at 100%, or at 80% if your phone has battery protection enabled.")
                                 Segmented {
                                     options: [
-                                        { value: 100, label: qsTr("100% (Standard)") },
-                                        { value: 80, label: qsTr("80% (Protect battery)") }
+                                        { value: 100, label: "100%" },
+                                        { value: 80, label: qsTr("80% · protect battery") }
                                     ]
                                     value: Preferences.batteryFullThreshold <= 80 ? 80 : 100
                                     onPicked: (val) => Preferences.batteryFullThreshold = val
@@ -1140,13 +1221,11 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.keyboard
                             title: qsTr("Enter sends messages")
-                            description: qsTr("In mirroring and app windows, Enter presses the app's Send and Ctrl+Enter makes a new line. Needs Assist on the phone.")
+                            description: qsTr("In mirroring · Ctrl+Enter for a new line · needs Assist")
                             Toggle {
                                 label: qsTr("Enter sends messages")
                                 checked: Preferences.enterSends
@@ -1154,14 +1233,11 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 3: Sync clipboard to phone
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.clipboard
                             title: qsTr("Sync clipboard to phone")
-                            description: qsTr("Share copied text and images with your phone.")
+                            description: qsTr("Text and images")
                             Toggle {
                                 label: qsTr("Sync clipboard to phone")
                                 checked: Preferences.autoClipboard
@@ -1169,13 +1245,11 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.clipboard
                             title: qsTr("Clipboard follows control")
-                            description: qsTr("Send your clipboard to the phone when you start controlling it, or when the mouse moves into its window.")
+                            description: qsTr("When you start controlling the phone")
                             Toggle {
                                 label: qsTr("Clipboard follows control")
                                 checked: Preferences.flowFollowClipboard
@@ -1183,74 +1257,36 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 4: Copy one-time codes | Copy received files
-                        Item {
-                            id: copyPairRow
+                        SettingRow {
+                            id: copyOtpRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(copyOtpRow.implicitHeight, copyFilesRow.implicitHeight)
-                                : (copyOtpRow.implicitHeight + 1 + copyFilesRow.implicitHeight)
-
-                            ListRow {
-                                id: copyOtpRow
-                                x: 0
-                                y: copyPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: copyPairRow.colWidth
-                                iconPath: Icons.lock
-                                title: qsTr("Copy one-time codes")
-                                description: qsTr("Auto-copy verification codes from texts.")
-                                Toggle {
-                                    label: qsTr("Copy one-time codes")
-                                    checked: Preferences.autoCopyOtp
-                                    onToggled: (on) => Preferences.autoCopyOtp = on
-                                }
+                            iconPath: Icons.lock
+                            title: qsTr("Copy one-time codes")
+                            description: qsTr("From texts")
+                            Toggle {
+                                label: qsTr("Copy one-time codes")
+                                checked: Preferences.autoCopyOtp
+                                onToggled: (on) => Preferences.autoCopyOtp = on
                             }
-
-                            Rectangle {
-                                visible: copyPairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !copyPairRow.splitCols
-                                y: copyOtpRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: copyFilesRow
-                                x: copyPairRow.splitCols ? (parent.width - width) : 0
-                                y: copyPairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (copyOtpRow.implicitHeight + 1)
-                                width: copyPairRow.colWidth
-                                iconPath: Icons.copy
-                                title: qsTr("Copy received files")
-                                description: qsTr("Ready to Ctrl+V incoming files anywhere.")
-                                Toggle {
-                                    label: qsTr("Copy received files")
-                                    checked: Preferences.clipboardAutoCopyReceivedFiles
-                                    onToggled: (on) => Preferences.clipboardAutoCopyReceivedFiles = on
-                                }
+                        }
+                        SettingRow {
+                            id: copyFilesRow
+                            width: parent.width
+                            iconPath: Icons.copy
+                            title: qsTr("Copy received files")
+                            description: qsTr("Ready to paste")
+                            Toggle {
+                                label: qsTr("Copy received files")
+                                checked: Preferences.clipboardAutoCopyReceivedFiles
+                                onToggled: (on) => Preferences.clipboardAutoCopyReceivedFiles = on
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 5: Suggest clipboard actions
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.openExternal
                             title: qsTr("Suggest clipboard actions")
-                            description: qsTr("Open links, maps, numbers & emails from phone clips.")
+                            description: qsTr("Links, maps, numbers and emails")
                             Toggle {
                                 label: qsTr("Suggest clipboard actions")
                                 checked: Preferences.suggestClipboardActions
@@ -1261,345 +1297,22 @@ Item {
                 }
             }
 
-            // ================================================================
-            // 3. DEVICES
-            // ================================================================
-            Column {
-                visible: page.currentSection === "devices"
-                width: visible ? parent.width : 0
-                spacing: Theme.gutter
-
-                // Device Selector Pill Bar when more than 1 phone is paired
-                Flow {
-                    width: parent.width
-                    visible: DeviceList.count > 1
-                    spacing: 8
-                    Repeater {
-                        model: page.currentSection === "devices" ? DeviceList : null
-                        delegate: Rectangle {
-                            id: deviceTabPill
-                            required property int index
-                            required property string deviceId
-                            required property string name
-                            required property bool online
-                            readonly property bool selected: page.selectedDeviceIndex === index
-                            readonly property color fg: selected
-                                ? (Theme.graphite ? Theme.surface : Theme.secondaryContainerContent)
-                                : Theme.surfaceContent
-                            height: 36
-                            width: deviceTabRow.implicitWidth + 24
-                            radius: Theme.pill(height)
-                            activeFocusOnTab: true
-                            color: selected
-                                ? (Theme.graphite ? Theme.surfaceContent : Theme.secondaryContainer)
-                                : Theme.surfaceContainerHigh
-                            border.width: Theme.focusVisible(deviceTabPill) ? 2 : (Theme.graphite || selected ? 1 : 0)
-                            border.color: Theme.focusVisible(deviceTabPill) ? Theme.primary : (selected ? Theme.primary : Theme.outlineVariant)
-                            Row {
-                                id: deviceTabRow
-                                anchors.centerIn: parent
-                                spacing: 8
-                                StatusDot {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    online: deviceTabPill.online
-                                }
-                                Txt {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    role: "label"
-                                    text: deviceTabPill.name
-                                    color: deviceTabPill.fg
-                                }
-                            }
-                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: page.selectedDeviceIndex = deviceTabPill.index }
-                        }
-                    }
-                }
-
-                // Empty state when 0 devices are paired
-                Card {
-                    width: parent.width
-                    visible: DeviceList.count === 0
-                    Column {
-                        width: parent.width
-                        spacing: 10
-                        Txt {
-                            width: parent.width
-                            text: qsTr("No phones paired yet")
-                            role: "title"
-                        }
-                        Txt {
-                            width: parent.width
-                            text: qsTr("Pair your phone to get started.")
-                            role: "bodySmall"
-                            muted: true
-                            wrapMode: Text.WordWrap
-                        }
-                        Button {
-                            variant: "tonal"
-                            size: "sm"
-                            iconPath: Icons.plus
-                            text: qsTr("Pair a phone")
-                            onClicked: page.pairRequested()
-                        }
-                    }
-                }
-
-                // Selected device card (only the selected device is shown at a time)
-                Repeater {
-                    model: page.currentSection === "devices" ? DeviceList : null
-                    delegate: Card {
-                        id: deviceCard
-                        required property int index
-                        required property string deviceId
-                        required property string name
-                        required property bool online
-                        visible: index === page.selectedDeviceIndex
-                        width: visible ? column.width : 0
-
-                        // Re-read when toggles (and so capabilities) change.
-                        readonly property var toggles: AppController.capsRevision >= 0 && AppController.togglesRevision >= 0
-                                                       ? AppController.deviceToggles(deviceId) : []
-
-                        Column {
-                            width: parent.width
-                            spacing: 14
-                            Row {
-                                width: parent.width
-                                spacing: 12
-                                Avatar { iconPath: Icons.phone; emphasized: deviceCard.online }
-                                Column {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: parent.width - 36 - 12 - unpair.width - 12
-                                    Txt { width: parent.width; text: deviceCard.name; role: "title"; elide: Text.ElideRight }
-                                    Row {
-                                        spacing: 6
-                                        StatusDot {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            online: deviceCard.online
-                                        }
-                                        Txt {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            text: deviceCard.online ? qsTr("Connected") : qsTr("Not connected")
-                                            role: "bodySmall"
-                                            muted: true
-                                        }
-                                    }
-                                }
-                                Button {
-                                    id: unpair
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    variant: "outline"
-                                    size: "sm"
-                                    iconPath: Icons.unlink
-                                    text: qsTr("Unpair")
-                                    onClicked: {
-                                        unpairSheet.deviceId = deviceCard.deviceId
-                                        unpairSheet.deviceName = deviceCard.name
-                                        unpairSheet.open()
-                                    }
-                                }
-                            }
-                            // Instant Hotspot: the saved Wi-Fi network the PC joins
-                            // after this phone turns its hotspot on.
-                            ListRow {
-                                id: hotspotRow
-                                width: parent.width
-                                property string network: AppController.hotspotNetwork(deviceCard.deviceId)
-                                iconPath: Icons.wifi
-                                title: qsTr("Join this phone's hotspot")
-                                description: hotspotRow.network.length > 0
-                                    ? qsTr("When Instant Hotspot turns it on, this PC joins %1.").arg(hotspotRow.network)
-                                    : (qsTr("Join the phone's hotspot once from your system Wi-Fi list, then choose it here."))
-                                Button {
-                                    variant: "tonal"
-                                    size: "sm"
-                                    text: qsTr("Choose network")
-                                    onClicked: {
-                                        hotspotSheet.deviceId = deviceCard.deviceId
-                                        hotspotSheet.row = hotspotRow
-                                        hotspotSheet.networks = JSON.parse(AppController.wifiNetworks() || "[]")
-                                        hotspotSheet.open()
-                                    }
-                                }
-                            }
-                            ListRow {
-                                width: parent.width
-                                iconPath: Icons.screenOff
-                                title: qsTr("Keep phone screen off")
-                                description: qsTr("Mirroring and app windows start with this phone's screen off. Needs Elevated.")
-                                Toggle {
-                                    label: qsTr("Keep phone screen off")
-                                    checked: JSON.parse(Mirror.keepScreenOffPhones || "[]").indexOf(deviceCard.deviceId) >= 0
-                                    onToggled: (on) => Mirror.setKeepScreenOff(deviceCard.deviceId, on)
-                                }
-                            }
-                            Repeater {
-                                model: page.toggleGroups
-                                delegate: Column {
-                                    id: groupCol
-                                    required property var modelData
-                                    required property int index
-                                    readonly property var groupItems: page.groupTogglesFor(
-                                        deviceCard.toggles,
-                                        modelData.keys,
-                                        index === page.toggleGroups.length - 1,
-                                        page.allGroupedKeys
-                                    )
-                                    visible: groupItems.length > 0
-                                    width: parent.width
-                                    spacing: 6
-                                    Txt {
-                                        text: groupCol.modelData.title
-                                        role: "label"
-                                        muted: true
-                                    }
-                                    Rectangle {
-                                        width: parent.width
-                                        height: groupInnerCol.height + 8
-                                        radius: Theme.radiusMd
-                                        color: Theme.surfaceContainerLow
-                                        border.width: 1
-                                        border.color: Theme.outlineVariant
-                                        Column {
-                                            id: groupInnerCol
-                                            x: 14
-                                            y: 4
-                                            width: parent.width - 28
-                                            readonly property bool splitCols: width >= 440
-                                            readonly property int rowCount: splitCols
-                                                ? Math.ceil(groupCol.groupItems.length / 2)
-                                                : groupCol.groupItems.length
-
-                                            Repeater {
-                                                model: groupInnerCol.rowCount
-                                                delegate: Column {
-                                                    id: permPairWrap
-                                                    required property int index
-                                                    width: parent.width
-                                                    readonly property int leftIdx: groupInnerCol.splitCols ? index * 2 : index
-                                                    readonly property int rightIdx: groupInnerCol.splitCols ? index * 2 + 1 : -1
-                                                    readonly property var leftItem: leftIdx < groupCol.groupItems.length ? groupCol.groupItems[leftIdx] : null
-                                                    readonly property var rightItem: (rightIdx >= 0 && rightIdx < groupCol.groupItems.length) ? groupCol.groupItems[rightIdx] : null
-                                                    readonly property bool hasRight: rightItem !== null
-                                                    readonly property real colWidth: (groupInnerCol.splitCols && hasRight)
-                                                        ? Math.floor((width - 33) / 2)
-                                                        : width
-
-                                                    Divider {
-                                                        width: parent.width
-                                                        visible: permPairWrap.index > 0
-                                                    }
-
-                                                    Item {
-                                                        width: parent.width
-                                                        implicitHeight: permPairWrap.hasRight
-                                                            ? Math.max(leftPermRow.implicitHeight, rightPermRow.implicitHeight)
-                                                            : leftPermRow.implicitHeight
-
-                                                        ListRow {
-                                                            id: leftPermRow
-                                                            visible: permPairWrap.leftItem !== null
-                                                            x: 0
-                                                            y: Math.round((parent.height - height) / 2)
-                                                            width: permPairWrap.colWidth
-                                                            iconPath: permPairWrap.leftItem ? (page.toggleIcons[permPairWrap.leftItem.name] || "") : ""
-                                                            title: permPairWrap.leftItem ? (page.toggleNames[permPairWrap.leftItem.name] || permPairWrap.leftItem.name) : ""
-                                                            description: permPairWrap.leftItem ? (page.toggleDescriptions[permPairWrap.leftItem.name] || "") : ""
-                                                            Row {
-                                                                spacing: 8
-                                                                Button {
-                                                                    visible: permPairWrap.leftItem !== null && permPairWrap.leftItem.name === "storage" && permPairWrap.leftItem.on
-                                                                    anchors.verticalCenter: parent.verticalCenter
-                                                                    variant: "tonal"
-                                                                    size: "sm"
-                                                                    iconPath: Icons.folder
-                                                                    text: qsTr("Open")
-                                                                    onClicked: AppController.openPhoneStorage(deviceCard.deviceId)
-                                                                }
-                                                                Toggle {
-                                                                    anchors.verticalCenter: parent.verticalCenter
-                                                                    label: permPairWrap.leftItem ? (page.toggleNames[permPairWrap.leftItem.name] || permPairWrap.leftItem.name) : ""
-                                                                    checked: permPairWrap.leftItem ? Boolean(permPairWrap.leftItem.on) : false
-                                                                    onToggled: (on) => {
-                                                                        if (permPairWrap.leftItem)
-                                                                            AppController.setDeviceToggle(deviceCard.deviceId, permPairWrap.leftItem.name, on)
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        Rectangle {
-                                                            visible: permPairWrap.hasRight
-                                                            x: Math.floor(parent.width / 2)
-                                                            y: 8
-                                                            width: 1
-                                                            height: Math.max(24, parent.height - 16)
-                                                            color: Theme.outlineVariant
-                                                        }
-
-                                                        ListRow {
-                                                            id: rightPermRow
-                                                            visible: permPairWrap.hasRight
-                                                            x: parent.width - width
-                                                            y: Math.round((parent.height - height) / 2)
-                                                            width: permPairWrap.colWidth
-                                                            iconPath: permPairWrap.rightItem ? (page.toggleIcons[permPairWrap.rightItem.name] || "") : ""
-                                                            title: permPairWrap.rightItem ? (page.toggleNames[permPairWrap.rightItem.name] || permPairWrap.rightItem.name) : ""
-                                                            description: permPairWrap.rightItem ? (page.toggleDescriptions[permPairWrap.rightItem.name] || "") : ""
-                                                            Row {
-                                                                spacing: 8
-                                                                Button {
-                                                                    visible: permPairWrap.rightItem !== null && permPairWrap.rightItem.name === "storage" && permPairWrap.rightItem.on
-                                                                    anchors.verticalCenter: parent.verticalCenter
-                                                                    variant: "tonal"
-                                                                    size: "sm"
-                                                                    iconPath: Icons.folder
-                                                                    text: qsTr("Open")
-                                                                    onClicked: AppController.openPhoneStorage(deviceCard.deviceId)
-                                                                }
-                                                                Toggle {
-                                                                    anchors.verticalCenter: parent.verticalCenter
-                                                                    label: permPairWrap.rightItem ? (page.toggleNames[permPairWrap.rightItem.name] || permPairWrap.rightItem.name) : ""
-                                                                    checked: permPairWrap.rightItem ? Boolean(permPairWrap.rightItem.on) : false
-                                                                    onToggled: (on) => {
-                                                                        if (permPairWrap.rightItem)
-                                                                            AppController.setDeviceToggle(deviceCard.deviceId, permPairWrap.rightItem.name, on)
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ================================================================
-            // 4. CAMERA & AUDIO
-            // ================================================================
             Column {
                 visible: page.currentSection === "camera_audio"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
-                    ListRow {
+                    SettingRow {
                         width: parent.width
                         iconPath: Icons.screenOff
                         title: qsTr("Mirror quality")
                         description: Preferences.mirrorQuality === "sharper"
-                            ? qsTr("The phone's full resolution. Uses more of its battery, and needs good Wi-Fi or USB and a GPU on this PC.")
+                            ? qsTr("Full resolution · needs good Wi-Fi or USB")
                             : Preferences.mirrorQuality === "smoother"
-                            ? qsTr("A softer picture that holds up better on weak Wi-Fi.")
-                            : qsTr("For the phone's screen and app windows, from the next time you open them.")
+                            ? qsTr("Holds up on weak Wi-Fi")
+                            : qsTr("From the next time you mirror")
                         Segmented {
                             options: [
                                 { value: "balanced", label: qsTr("Balanced") },
@@ -1612,76 +1325,40 @@ Item {
                     }
                 }
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
 
-                        // Row 1: Stream PC audio to phone | Pause media during phone calls
-                        Item {
-                            id: audioCallsPairRow
+                        SettingRow {
+                            id: streamAudioRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(streamAudioRow.implicitHeight, pauseOnCallRow.implicitHeight)
-                                : (streamAudioRow.implicitHeight + 1 + pauseOnCallRow.implicitHeight)
-
-                            ListRow {
-                                id: streamAudioRow
-                                x: 0
-                                y: audioCallsPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: audioCallsPairRow.colWidth
-                                iconPath: Icons.speaker
-                                title: qsTr("Stream PC audio to phone")
-                                description: qsTr("Listen to PC audio through your phone.")
-                                Toggle {
-                                    label: qsTr("Stream PC audio to phone")
-                                    checked: Preferences.streamPcAudioToPhone
-                                    onToggled: (on) => Preferences.streamPcAudioToPhone = on
-                                }
+                            iconPath: Icons.speaker
+                            title: qsTr("Stream PC audio to phone")
+                            Toggle {
+                                label: qsTr("Stream PC audio to phone")
+                                checked: Preferences.streamPcAudioToPhone
+                                onToggled: (on) => Preferences.streamPcAudioToPhone = on
                             }
-
-                            Rectangle {
-                                visible: audioCallsPairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !audioCallsPairRow.splitCols
-                                y: streamAudioRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: pauseOnCallRow
-                                x: audioCallsPairRow.splitCols ? (parent.width - width) : 0
-                                y: audioCallsPairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (streamAudioRow.implicitHeight + 1)
-                                width: audioCallsPairRow.colWidth
-                                iconPath: Icons.pause
-                                title: qsTr("Pause media during calls")
-                                description: qsTr("Auto-pause PC media when phone rings.")
-                                Toggle {
-                                    label: qsTr("Pause media during calls")
-                                    checked: Preferences.pauseMediaOnCall
-                                    onToggled: (on) => Preferences.pauseMediaOnCall = on
-                                }
+                        }
+                        SettingRow {
+                            id: pauseOnCallRow
+                            width: parent.width
+                            iconPath: Icons.pause
+                            title: qsTr("Pause media during calls")
+                            description: qsTr("When the phone rings")
+                            Toggle {
+                                label: qsTr("Pause media during calls")
+                                checked: Preferences.pauseMediaOnCall
+                                onToggled: (on) => Preferences.pauseMediaOnCall = on
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.soundOff
                             title: qsTr("Mute this PC while a phone watches")
-                            description: qsTr("With Play on phone, the phone still gets the sound.")
+                            description: qsTr("The phone still plays it")
                             Toggle {
                                 label: qsTr("Mute this PC while a phone watches")
                                 checked: Preferences.muteWhileWatched
@@ -1689,11 +1366,9 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
                         // Phone as microphone: its sound plays into an output; a
                         // virtual audio cable's other end is a microphone apps can pick.
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.mic
                             title: qsTr("Phone as microphone")
@@ -1703,7 +1378,7 @@ Item {
                                     ? qsTr("Tap Start on %1.").arg(PhoneMic.deviceName)
                                     : PhoneMic.cable
                                         ? qsTr("Plays into %1, so apps can pick its other end as a microphone.").arg(PhoneMic.outputName)
-                                        : qsTr("Plays into %1. To use it as a microphone in other apps, install a virtual audio cable such as VB-CABLE.").arg(PhoneMic.outputName)
+                                        : qsTr("Plays into %1").arg(PhoneMic.outputName)
                             Row {
                                 spacing: 8
                                 Button {
@@ -1725,7 +1400,7 @@ Item {
                             }
                         }
 
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.speaker
                             title: qsTr("Microphone volume")
@@ -1742,16 +1417,13 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 2: Virtual camera add-on
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.video
                             title: qsTr("Virtual camera add-on")
                             description: Webcam.addonRegistered
-                                ? qsTr("Registered for Zoom, Teams & Meet.")
-                                : qsTr("One-time setup (admin required) for Zoom, Teams & Meet.")
+                                ? qsTr("Ready for video calls")
+                                : qsTr("Loads v4l2loopback · asks for your password")
                             Row {
                                 spacing: 12
                                 Spinner {
@@ -1784,8 +1456,7 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width; visible: DeviceList.count > 1 }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             visible: DeviceList.count > 1
                             iconPath: Icons.phone
@@ -1806,69 +1477,33 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 3: Camera (Back | Front) | Mirror image
-                        Item {
-                            id: camMirrorPairRow
+                        SettingRow {
+                            id: cameraSelectRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(cameraSelectRow.implicitHeight, mirrorCamRow.implicitHeight)
-                                : (cameraSelectRow.implicitHeight + 1 + mirrorCamRow.implicitHeight)
-
-                            ListRow {
-                                id: cameraSelectRow
-                                x: 0
-                                y: camMirrorPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: camMirrorPairRow.colWidth
-                                iconPath: Icons.camera
-                                title: qsTr("Camera")
-                                Segmented {
-                                    options: [
-                                        { value: "back", label: qsTr("Back") },
-                                        { value: "front", label: qsTr("Front") }
-                                    ]
-                                    value: Webcam.camera
-                                    onPicked: (value) => Webcam.setCamera(value)
-                                }
+                            iconPath: Icons.camera
+                            title: qsTr("Camera")
+                            Segmented {
+                                options: [
+                                    { value: "back", label: qsTr("Back") },
+                                    { value: "front", label: qsTr("Front") }
+                                ]
+                                value: Webcam.camera
+                                onPicked: (value) => Webcam.setCamera(value)
                             }
-
-                            Rectangle {
-                                visible: camMirrorPairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !camMirrorPairRow.splitCols
-                                y: cameraSelectRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: mirrorCamRow
-                                x: camMirrorPairRow.splitCols ? (parent.width - width) : 0
-                                y: camMirrorPairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (cameraSelectRow.implicitHeight + 1)
-                                width: camMirrorPairRow.colWidth
-                                iconPath: Icons.mirror
-                                title: qsTr("Mirror image")
-                                Toggle {
-                                    label: qsTr("Mirror image")
-                                    checked: Webcam.mirror
-                                    onToggled: (on) => Webcam.setMirrorImage(on)
-                                }
+                        }
+                        SettingRow {
+                            id: mirrorCamRow
+                            width: parent.width
+                            iconPath: Icons.mirror
+                            title: qsTr("Mirror image")
+                            Toggle {
+                                label: qsTr("Mirror image")
+                                checked: Webcam.mirror
+                                onToggled: (on) => Webcam.setMirrorImage(on)
                             }
                         }
 
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.camera
                             title: qsTr("Resolution")
@@ -1883,7 +1518,6 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
                         Column {
                             width: parent.width
                             spacing: 10
@@ -1929,7 +1563,7 @@ Item {
                                 width: parent.width
                                 height: Math.round(width * 9 / 16)
                                 radius: Theme.radiusMd
-                                color: "#121318"
+                                color: Theme.raised
                                 border.width: 1
                                 border.color: Theme.outlineVariant
                                 clip: true
@@ -1943,99 +1577,60 @@ Item {
                 }
             }
 
-            // ================================================================
-            // 5. NOTIFICATIONS
-            // ================================================================
             Column {
                 visible: page.currentSection === "notifications"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
 
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.bell
                             title: qsTr("Quiet while this PC is locked")
-                            description: qsTr("No pop-ups while it's locked. Notifications still collect on Home.")
+                            description: qsTr("Still collected on Home")
                             Toggle {
                                 label: qsTr("Quiet while this PC is locked")
                                 checked: Preferences.quietWhenLocked
                                 onToggled: (on) => Preferences.quietWhenLocked = on
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.lock
                             title: qsTr("Don't receive while this PC is locked")
-                            description: qsTr("The phone sends nothing until you unlock. Then Home shows what's still on the phone.")
+                            description: qsTr("Until you unlock")
                             Toggle {
                                 label: qsTr("Don't receive while this PC is locked")
                                 checked: Preferences.holdWhenLocked
                                 onToggled: (on) => Preferences.holdWhenLocked = on
                             }
                         }
-                        Divider { width: parent.width }
 
-                        // Row 1: Follow phone Do not disturb | Forward PC notifications
-                        Item {
-                            id: notifPairRow
+                        SettingRow {
+                            id: syncDndRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(syncDndRow.implicitHeight, forwardPcNotifRow.implicitHeight)
-                                : (syncDndRow.implicitHeight + 1 + forwardPcNotifRow.implicitHeight)
-
-                            ListRow {
-                                id: syncDndRow
-                                x: 0
-                                y: notifPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: notifPairRow.colWidth
-                                iconPath: Icons.moon
-                                title: qsTr("Follow phone Do not disturb")
-                                description: qsTr("Mute pop-ups while phone is on DND.")
-                                Toggle {
-                                    label: qsTr("Follow phone Do not disturb")
-                                    checked: Preferences.syncDnd
-                                    onToggled: (on) => Preferences.syncDnd = on
-                                }
+                            iconPath: Icons.moon
+                            title: qsTr("Follow phone Do not disturb")
+                            Toggle {
+                                label: qsTr("Follow phone Do not disturb")
+                                checked: Preferences.syncDnd
+                                onToggled: (on) => Preferences.syncDnd = on
                             }
-
-                            Rectangle {
-                                visible: notifPairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !notifPairRow.splitCols
-                                y: syncDndRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: forwardPcNotifRow
-                                x: notifPairRow.splitCols ? (parent.width - width) : 0
-                                y: notifPairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (syncDndRow.implicitHeight + 1)
-                                width: notifPairRow.colWidth
-                                iconPath: Icons.bell
-                                title: qsTr("Forward PC notifications")
-                                description: qsTr("Send PC alerts to phone while away.")
-                                Toggle {
-                                    label: qsTr("Forward PC notifications")
-                                    checked: Preferences.forwardPcNotificationsToPhone
-                                    onToggled: (on) => Preferences.forwardPcNotificationsToPhone = on
-                                }
+                        }
+                        SettingRow {
+                            id: forwardPcNotifRow
+                            width: parent.width
+                            iconPath: Icons.bell
+                            title: qsTr("Forward PC notifications")
+                            description: qsTr("While you're away")
+                            Toggle {
+                                label: qsTr("Forward PC notifications")
+                                checked: Preferences.forwardPcNotificationsToPhone
+                                onToggled: (on) => Preferences.forwardPcNotificationsToPhone = on
                             }
                         }
 
@@ -2045,7 +1640,6 @@ Item {
                                 id: appRow
                                 required property var modelData
                                 width: parent.width
-                                Divider { width: parent.width }
                                 Item {
                                     width: parent.width
                                     height: 54
@@ -2093,83 +1687,46 @@ Item {
                 }
             }
 
-            // ================================================================
-            // 6. FILES & SYNC
-            // ================================================================
             Column {
                 visible: page.currentSection === "files_sync"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
 
-                        // Row 1: Show phones in the file manager | Your PC in your pocket
-                        Item {
-                            id: filesSharePairRow
+                        SettingRow {
+                            id: sendToMenuRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(sendToMenuRow.implicitHeight, pcInPocketRow.implicitHeight)
-                                : (sendToMenuRow.implicitHeight + 1 + pcInPocketRow.implicitHeight)
-
-                            ListRow {
-                                id: sendToMenuRow
-                                x: 0
-                                y: filesSharePairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: filesSharePairRow.colWidth
-                                iconPath: Icons.send
-                                title: qsTr("File manager Send to")
-                                description: qsTr("Send files from right-click menu.")
-                                Toggle {
-                                    label: qsTr("File manager Send to")
-                                    checked: Preferences.sendToMenu
-                                    onToggled: (on) => Preferences.sendToMenu = on
-                                }
+                            iconPath: Icons.send
+                            title: qsTr("File manager Send to")
+                            description: qsTr("In the right-click menu")
+                            Toggle {
+                                label: qsTr("File manager Send to")
+                                checked: Preferences.sendToMenu
+                                onToggled: (on) => Preferences.sendToMenu = on
                             }
-
-                            Rectangle {
-                                visible: filesSharePairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !filesSharePairRow.splitCols
-                                y: sendToMenuRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: pcInPocketRow
-                                x: filesSharePairRow.splitCols ? (parent.width - width) : 0
-                                y: filesSharePairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (sendToMenuRow.implicitHeight + 1)
-                                width: filesSharePairRow.colWidth
-                                iconPath: Icons.folder
-                                title: qsTr("Your PC in your pocket")
-                                description: qsTr("Share Downloads, Documents, Desktop & Pictures.")
-                                Toggle {
-                                    label: qsTr("Your PC in your pocket")
-                                    checked: Preferences.sharePcStorage
-                                    onToggled: (on) => Preferences.sharePcStorage = on
-                                }
+                        }
+                        SettingRow {
+                            id: pcInPocketRow
+                            width: parent.width
+                            iconPath: Icons.folder
+                            title: qsTr("Your PC in your pocket")
+                            description: qsTr("Downloads, Documents, Desktop, Pictures")
+                            Toggle {
+                                label: qsTr("Your PC in your pocket")
+                                checked: Preferences.sharePcStorage
+                                onToggled: (on) => Preferences.sharePcStorage = on
                             }
                         }
 
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.globe
                             title: qsTr("LocalSend on local network")
-                            description: qsTr("Share with nearby LocalSend devices without pairing.")
+                            description: qsTr("Nearby devices, no pairing")
                             Toggle {
                                 label: qsTr("LocalSend on local network")
                                 checked: AppController.localsendEnabled
@@ -2177,12 +1734,11 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.openExternal
                             title: qsTr("Open files shared from the phone")
-                            description: qsTr("Opens a shared photo or document as soon as it arrives.")
+                            description: qsTr("As soon as they arrive")
                             Toggle {
                                 label: qsTr("Open files shared from the phone")
                                 checked: Preferences.openSharedFiles
@@ -2190,8 +1746,7 @@ Item {
                             }
                         }
 
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             stackBelow: true
                             iconPath: Icons.mic
@@ -2230,13 +1785,13 @@ Item {
                     }
                 }
 
-                Card {
+                Group {
                     width: parent.width
-                    ListRow {
+                    SettingRow {
                         width: parent.width
                         iconPath: Icons.wifi
                         title: qsTr("Sync on Wi-Fi only")
-                        description: qsTr("Folder sync and photo backup wait while the phone is away, so they don't use its mobile data.")
+                        description: qsTr("Folder sync and photo backup")
                         Toggle {
                             label: qsTr("Sync on Wi-Fi only")
                             checked: Preferences.syncWifiOnly
@@ -2246,15 +1801,15 @@ Item {
                 }
 
                 // Photo backup: every album, by year and month, never deleting.
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.photo
                             title: qsTr("Photo backup")
-                            description: qsTr("Copies new photos from every album into a folder on this PC, by year and month. Nothing is deleted, here or on the phone. Needs only the phone's photos permission.")
+                            description: qsTr("Every album, by year and month · never deletes")
                         }
                         Repeater {
                             // By id: the status changes with every file copied, and rebuilding
@@ -2265,8 +1820,7 @@ Item {
                                 required property string modelData
                                 readonly property var phone: page.backupPhones.find((p) => p.id === modelData) || ({})
                                 width: parent.width
-                                Divider { width: parent.width }
-                                ListRow {
+                                SettingRow {
                                     width: parent.width
                                     iconPath: Icons.phone
                                     title: backupDelegate.phone.name
@@ -2277,7 +1831,7 @@ Item {
                                         onToggled: (on) => PhotoBackup.setEnabled(backupDelegate.phone.id, on)
                                     }
                                 }
-                                ListRow {
+                                SettingRow {
                                     width: parent.width
                                     visible: Boolean(backupDelegate.phone.enabled)
                                     iconPath: Icons.folder
@@ -2304,12 +1858,11 @@ Item {
                                         }
                                     }
                                 }
-                                ListRow {
+                                SettingRow {
                                     width: parent.width
                                     visible: Boolean(backupDelegate.phone.enabled)
                                     iconPath: Icons.video
                                     title: qsTr("Include videos")
-                                    description: qsTr("Videos can be large. Copied one at a time, so a lost connection costs at most one file.")
                                     Row {
                                         spacing: 8
                                         Button {
@@ -2334,15 +1887,14 @@ Item {
                     }
                 }
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.folder
                             title: qsTr("Synced folders")
-                            description: qsTr("One-way or two-way folder sync between phone and PC.")
                             Row {
                                 spacing: 8
                                 Button {
@@ -2372,8 +1924,7 @@ Item {
                                 id: syncRuleDelegate
                                 required property var modelData
                                 width: parent.width
-                                Divider { width: parent.width }
-                                ListRow {
+                                SettingRow {
                                     width: parent.width
                                     iconPath: Icons.folder
                                     title: syncRuleDelegate.modelData.phoneFolder + (syncRuleDelegate.modelData.mode === "two_way" ? " ⇄ " : syncRuleDelegate.modelData.mode === "one_way_pc_to_phone" ? " ← " : " → ") + syncRuleDelegate.modelData.pcFolder
@@ -2406,304 +1957,229 @@ Item {
                 }
             }
 
-            // ================================================================
-            // 7. SHORTCUTS & RULES
-            // ================================================================
             Column {
                 visible: page.currentSection === "shortcuts"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
 
-                        // Row 1: Command palette | File shelf
-                        Item {
-                            id: shortcutsPairRow1
+                        SettingRow {
+                            id: paletteShortcutRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 540
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(paletteShortcutRow.implicitHeight, shelfShortcutRow.implicitHeight)
-                                : (paletteShortcutRow.implicitHeight + 1 + shelfShortcutRow.implicitHeight)
-
-                            ListRow {
-                                id: paletteShortcutRow
-                                x: 0
-                                y: shortcutsPairRow1.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: shortcutsPairRow1.colWidth
-                                iconPath: Icons.search
-                                title: qsTr("Command palette")
-                                description: qsTr("Open from any app.")
-                                Row {
-                                    spacing: 6
-                                    Button {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: Preferences.commandPaletteHotkey !== "Ctrl+Alt+Space"
-                                        variant: "text"
-                                        size: "sm"
-                                        text: qsTr("Reset")
-                                        onClicked: {
-                                            paletteHotkeyInput.text = "Ctrl+Alt+Space"
-                                            Preferences.commandPaletteHotkey = "Ctrl+Alt+Space"
-                                        }
+                            iconPath: Icons.search
+                            title: qsTr("Command palette")
+                            Row {
+                                spacing: 6
+                                Button {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: Preferences.commandPaletteHotkey !== "Ctrl+Alt+Space"
+                                    variant: "text"
+                                    size: "sm"
+                                    text: qsTr("Reset")
+                                    onClicked: {
+                                        paletteHotkeyInput.text = "Ctrl+Alt+Space"
+                                        Preferences.commandPaletteHotkey = "Ctrl+Alt+Space"
                                     }
-                                    Rectangle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        width: 124
-                                        height: 32
-                                        radius: Theme.radiusSm
-                                        color: Theme.surfaceContainerHighest
-                                        border.width: paletteHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: paletteHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
-                                        TextInput {
-                                            id: paletteHotkeyInput
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 8
-                                            anchors.rightMargin: 8
-                                            verticalAlignment: TextInput.AlignVCenter
-                                            horizontalAlignment: TextInput.AlignHCenter
-                                            font.family: Theme.fontUi
-                                            font.pixelSize: 12
-                                            color: Theme.surfaceContent
-                                            selectionColor: Theme.primaryContainer
-                                            selectedTextColor: Theme.primaryContainerContent
-                                            clip: true
-                                            text: Preferences.commandPaletteHotkey
-                                            Keys.onPressed: (event) => {
-                                                const combo = page.formatKeyCombo(event)
-                                                if (combo.length > 0) {
-                                                    text = combo
-                                                    Preferences.commandPaletteHotkey = combo
-                                                    event.accepted = true
-                                                }
+                                }
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 124
+                                    height: 28
+                                    radius: Theme.radiusSm
+                                    color: Theme.raised
+                                    border.width: paletteHotkeyInput.activeFocus ? 1 : 0
+                                    border.color: paletteHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
+                                    TextInput {
+                                        id: paletteHotkeyInput
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 8
+                                        anchors.rightMargin: 8
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        horizontalAlignment: TextInput.AlignHCenter
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: 12
+                                        color: Theme.surfaceContent
+                                        selectionColor: Theme.selection
+                                        selectedTextColor: Theme.surfaceContent
+                                        clip: true
+                                        text: Preferences.commandPaletteHotkey
+                                        Keys.onPressed: (event) => {
+                                            const combo = page.formatKeyCombo(event)
+                                            if (combo.length > 0) {
+                                                text = combo
+                                                Preferences.commandPaletteHotkey = combo
+                                                event.accepted = true
                                             }
-                                            onEditingFinished: Preferences.commandPaletteHotkey = text.trim()
-                                            Accessible.name: qsTr("Command palette shortcut")
                                         }
+                                        onEditingFinished: Preferences.commandPaletteHotkey = text.trim()
+                                        Accessible.name: qsTr("Command palette shortcut")
                                     }
                                 }
                             }
-
-                            Rectangle {
-                                visible: shortcutsPairRow1.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !shortcutsPairRow1.splitCols
-                                y: paletteShortcutRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: shelfShortcutRow
-                                x: shortcutsPairRow1.splitCols ? (parent.width - width) : 0
-                                y: shortcutsPairRow1.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (paletteShortcutRow.implicitHeight + 1)
-                                width: shortcutsPairRow1.colWidth
-                                iconPath: Icons.folder
-                                title: qsTr("File shelf")
-                                description: qsTr("Toggle screen-edge shelf.")
-                                Row {
-                                    spacing: 6
-                                    Button {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: Preferences.shelfHotkey !== "Ctrl+Alt+S"
-                                        variant: "text"
-                                        size: "sm"
-                                        text: qsTr("Reset")
-                                        onClicked: {
-                                            shelfHotkeyInput.text = "Ctrl+Alt+S"
-                                            Preferences.shelfHotkey = "Ctrl+Alt+S"
-                                        }
+                        }
+                        SettingRow {
+                            id: shelfShortcutRow
+                            width: parent.width
+                            iconPath: Icons.folder
+                            title: qsTr("File shelf")
+                            Row {
+                                spacing: 6
+                                Button {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: Preferences.shelfHotkey !== "Ctrl+Alt+S"
+                                    variant: "text"
+                                    size: "sm"
+                                    text: qsTr("Reset")
+                                    onClicked: {
+                                        shelfHotkeyInput.text = "Ctrl+Alt+S"
+                                        Preferences.shelfHotkey = "Ctrl+Alt+S"
                                     }
-                                    Rectangle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        width: 124
-                                        height: 32
-                                        radius: Theme.radiusSm
-                                        color: Theme.surfaceContainerHighest
-                                        border.width: shelfHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: shelfHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
-                                        TextInput {
-                                            id: shelfHotkeyInput
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 8
-                                            anchors.rightMargin: 8
-                                            verticalAlignment: TextInput.AlignVCenter
-                                            horizontalAlignment: TextInput.AlignHCenter
-                                            font.family: Theme.fontUi
-                                            font.pixelSize: 12
-                                            color: Theme.surfaceContent
-                                            selectionColor: Theme.primaryContainer
-                                            selectedTextColor: Theme.primaryContainerContent
-                                            clip: true
-                                            text: Preferences.shelfHotkey
-                                            Keys.onPressed: (event) => {
-                                                const combo = page.formatKeyCombo(event)
-                                                if (combo.length > 0) {
-                                                    text = combo
-                                                    Preferences.shelfHotkey = combo
-                                                    event.accepted = true
-                                                }
+                                }
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 124
+                                    height: 28
+                                    radius: Theme.radiusSm
+                                    color: Theme.raised
+                                    border.width: shelfHotkeyInput.activeFocus ? 1 : 0
+                                    border.color: shelfHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
+                                    TextInput {
+                                        id: shelfHotkeyInput
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 8
+                                        anchors.rightMargin: 8
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        horizontalAlignment: TextInput.AlignHCenter
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: 12
+                                        color: Theme.surfaceContent
+                                        selectionColor: Theme.selection
+                                        selectedTextColor: Theme.surfaceContent
+                                        clip: true
+                                        text: Preferences.shelfHotkey
+                                        Keys.onPressed: (event) => {
+                                            const combo = page.formatKeyCombo(event)
+                                            if (combo.length > 0) {
+                                                text = combo
+                                                Preferences.shelfHotkey = combo
+                                                event.accepted = true
                                             }
-                                            onEditingFinished: Preferences.shelfHotkey = text.trim()
-                                            Accessible.name: qsTr("Shelf shortcut")
                                         }
+                                        onEditingFinished: Preferences.shelfHotkey = text.trim()
+                                        Accessible.name: qsTr("Shelf shortcut")
                                     }
                                 }
                             }
                         }
 
-                        Divider { width: parent.width }
-
-                        // Row 2: Take photo | Scan document
-                        Item {
-                            id: shortcutsPairRow2
+                        SettingRow {
+                            id: photoShortcutRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 540
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(photoShortcutRow.implicitHeight, scanShortcutRow.implicitHeight)
-                                : (photoShortcutRow.implicitHeight + 1 + scanShortcutRow.implicitHeight)
-
-                            ListRow {
-                                id: photoShortcutRow
-                                x: 0
-                                y: shortcutsPairRow2.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: shortcutsPairRow2.colWidth
-                                iconPath: Icons.camera
-                                title: qsTr("Take photo")
-                                description: qsTr("Capture & paste photo.")
-                                Row {
-                                    spacing: 6
-                                    Button {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: Preferences.continuityPhotoHotkey !== "Ctrl+Alt+C"
-                                        variant: "text"
-                                        size: "sm"
-                                        text: qsTr("Reset")
-                                        onClicked: {
-                                            photoHotkeyInput.text = "Ctrl+Alt+C"
-                                            Preferences.continuityPhotoHotkey = "Ctrl+Alt+C"
-                                        }
+                            iconPath: Icons.camera
+                            title: qsTr("Take photo")
+                            Row {
+                                spacing: 6
+                                Button {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: Preferences.continuityPhotoHotkey !== "Ctrl+Alt+C"
+                                    variant: "text"
+                                    size: "sm"
+                                    text: qsTr("Reset")
+                                    onClicked: {
+                                        photoHotkeyInput.text = "Ctrl+Alt+C"
+                                        Preferences.continuityPhotoHotkey = "Ctrl+Alt+C"
                                     }
-                                    Rectangle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        width: 124
-                                        height: 32
-                                        radius: Theme.radiusSm
-                                        color: Theme.surfaceContainerHighest
-                                        border.width: photoHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: photoHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
-                                        TextInput {
-                                            id: photoHotkeyInput
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 8
-                                            anchors.rightMargin: 8
-                                            verticalAlignment: TextInput.AlignVCenter
-                                            horizontalAlignment: TextInput.AlignHCenter
-                                            font.family: Theme.fontUi
-                                            font.pixelSize: 12
-                                            color: Theme.surfaceContent
-                                            selectionColor: Theme.primaryContainer
-                                            selectedTextColor: Theme.primaryContainerContent
-                                            clip: true
-                                            text: Preferences.continuityPhotoHotkey
-                                            Keys.onPressed: (event) => {
-                                                const combo = page.formatKeyCombo(event)
-                                                if (combo.length > 0) {
-                                                    text = combo
-                                                    Preferences.continuityPhotoHotkey = combo
-                                                    event.accepted = true
-                                                }
+                                }
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 124
+                                    height: 28
+                                    radius: Theme.radiusSm
+                                    color: Theme.raised
+                                    border.width: photoHotkeyInput.activeFocus ? 1 : 0
+                                    border.color: photoHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
+                                    TextInput {
+                                        id: photoHotkeyInput
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 8
+                                        anchors.rightMargin: 8
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        horizontalAlignment: TextInput.AlignHCenter
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: 12
+                                        color: Theme.surfaceContent
+                                        selectionColor: Theme.selection
+                                        selectedTextColor: Theme.surfaceContent
+                                        clip: true
+                                        text: Preferences.continuityPhotoHotkey
+                                        Keys.onPressed: (event) => {
+                                            const combo = page.formatKeyCombo(event)
+                                            if (combo.length > 0) {
+                                                text = combo
+                                                Preferences.continuityPhotoHotkey = combo
+                                                event.accepted = true
                                             }
-                                            onEditingFinished: Preferences.continuityPhotoHotkey = text.trim()
-                                            Accessible.name: qsTr("Take photo shortcut")
                                         }
+                                        onEditingFinished: Preferences.continuityPhotoHotkey = text.trim()
+                                        Accessible.name: qsTr("Take photo shortcut")
                                     }
                                 }
                             }
-
-                            Rectangle {
-                                visible: shortcutsPairRow2.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
-                            }
-
-                            Divider {
-                                visible: !shortcutsPairRow2.splitCols
-                                y: photoShortcutRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: scanShortcutRow
-                                x: shortcutsPairRow2.splitCols ? (parent.width - width) : 0
-                                y: shortcutsPairRow2.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (photoShortcutRow.implicitHeight + 1)
-                                width: shortcutsPairRow2.colWidth
-                                iconPath: Icons.clipboardList
-                                title: qsTr("Scan document")
-                                description: qsTr("Scan & paste document.")
-                                Row {
-                                    spacing: 6
-                                    Button {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: Preferences.continuityScanHotkey !== "Ctrl+Alt+D"
-                                        variant: "text"
-                                        size: "sm"
-                                        text: qsTr("Reset")
-                                        onClicked: {
-                                            scanHotkeyInput.text = "Ctrl+Alt+D"
-                                            Preferences.continuityScanHotkey = "Ctrl+Alt+D"
-                                        }
+                        }
+                        SettingRow {
+                            id: scanShortcutRow
+                            width: parent.width
+                            iconPath: Icons.clipboardList
+                            title: qsTr("Scan document")
+                            Row {
+                                spacing: 6
+                                Button {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: Preferences.continuityScanHotkey !== "Ctrl+Alt+D"
+                                    variant: "text"
+                                    size: "sm"
+                                    text: qsTr("Reset")
+                                    onClicked: {
+                                        scanHotkeyInput.text = "Ctrl+Alt+D"
+                                        Preferences.continuityScanHotkey = "Ctrl+Alt+D"
                                     }
-                                    Rectangle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        width: 124
-                                        height: 32
-                                        radius: Theme.radiusSm
-                                        color: Theme.surfaceContainerHighest
-                                        border.width: scanHotkeyInput.activeFocus ? 2 : 1
-                                        border.color: scanHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
-                                        TextInput {
-                                            id: scanHotkeyInput
-                                            anchors.fill: parent
-                                            anchors.leftMargin: 8
-                                            anchors.rightMargin: 8
-                                            verticalAlignment: TextInput.AlignVCenter
-                                            horizontalAlignment: TextInput.AlignHCenter
-                                            font.family: Theme.fontUi
-                                            font.pixelSize: 12
-                                            color: Theme.surfaceContent
-                                            selectionColor: Theme.primaryContainer
-                                            selectedTextColor: Theme.primaryContainerContent
-                                            clip: true
-                                            text: Preferences.continuityScanHotkey
-                                            Keys.onPressed: (event) => {
-                                                const combo = page.formatKeyCombo(event)
-                                                if (combo.length > 0) {
-                                                    text = combo
-                                                    Preferences.continuityScanHotkey = combo
-                                                    event.accepted = true
-                                                }
+                                }
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 124
+                                    height: 28
+                                    radius: Theme.radiusSm
+                                    color: Theme.raised
+                                    border.width: scanHotkeyInput.activeFocus ? 1 : 0
+                                    border.color: scanHotkeyInput.activeFocus ? Theme.focusRing : Theme.outlineVariant
+                                    TextInput {
+                                        id: scanHotkeyInput
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 8
+                                        anchors.rightMargin: 8
+                                        verticalAlignment: TextInput.AlignVCenter
+                                        horizontalAlignment: TextInput.AlignHCenter
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: 12
+                                        color: Theme.surfaceContent
+                                        selectionColor: Theme.selection
+                                        selectedTextColor: Theme.surfaceContent
+                                        clip: true
+                                        text: Preferences.continuityScanHotkey
+                                        Keys.onPressed: (event) => {
+                                            const combo = page.formatKeyCombo(event)
+                                            if (combo.length > 0) {
+                                                text = combo
+                                                Preferences.continuityScanHotkey = combo
+                                                event.accepted = true
                                             }
-                                            onEditingFinished: Preferences.continuityScanHotkey = text.trim()
-                                            Accessible.name: qsTr("Scan document shortcut")
                                         }
+                                        onEditingFinished: Preferences.continuityScanHotkey = text.trim()
+                                        Accessible.name: qsTr("Scan document shortcut")
                                     }
                                 }
                             }
@@ -2711,15 +2187,14 @@ Item {
                     }
                 }
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.bolt
                             title: qsTr("Trigger-action rules")
-                            description: qsTr("Run actions when your phone connects, disconnects, or rings.")
                             Row {
                                 spacing: 8
                                 Button {
@@ -2744,8 +2219,7 @@ Item {
                                 id: autoRuleDelegate
                                 required property var modelData
                                 width: parent.width
-                                Divider { width: parent.width }
-                                ListRow {
+                                SettingRow {
                                     width: parent.width
                                     iconPath: Icons.bolt
                                     title: page.formatTrigger(autoRuleDelegate.modelData.trigger) + " → " + page.formatAction(autoRuleDelegate.modelData.actionKind)
@@ -2776,18 +2250,18 @@ Item {
                 }
 
                 // OBS Studio, for Deck tiles that run "obs:" commands.
-                Card {
+                Group {
                     id: obsCard
                     width: parent.width
                     property bool hasPassword: Preferences.obsHasPassword()
                     Column {
                         width: parent.width
                         spacing: 12
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.terminal
                             title: qsTr("OBS Studio")
-                            description: qsTr("For Deck tiles that run obs: commands. Turn on OBS's WebSocket server in Tools › WebSocket Server Settings.")
+                            description: qsTr("For obs: Deck tiles · turn on OBS's WebSocket server")
                         }
                         Row {
                             spacing: 10
@@ -2800,10 +2274,10 @@ Item {
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: 76
-                                height: 32
+                                height: 28
                                 radius: Theme.radiusSm
-                                color: Theme.surfaceContainerHighest
-                                border.width: obsPortEdit.activeFocus ? 2 : 1
+                                color: Theme.raised
+                                border.width: obsPortEdit.activeFocus ? 1 : 0
                                 border.color: obsPortEdit.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                 TextInput {
                                     id: obsPortEdit
@@ -2813,8 +2287,8 @@ Item {
                                     verticalAlignment: TextInput.AlignVCenter
                                     horizontalAlignment: TextInput.AlignHCenter
                                     color: Theme.surfaceContent
-                                    selectionColor: Theme.primaryContainer
-                                    selectedTextColor: Theme.primaryContainerContent
+                                    selectionColor: Theme.selection
+                                    selectedTextColor: Theme.surfaceContent
                                     font.family: Theme.fontMono
                                     font.pixelSize: 12
                                     text: String(Preferences.obsPort())
@@ -2831,10 +2305,10 @@ Item {
                             Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: 180
-                                height: 32
+                                height: 28
                                 radius: Theme.radiusSm
-                                color: Theme.surfaceContainerHighest
-                                border.width: obsPasswordEdit.activeFocus ? 2 : 1
+                                color: Theme.raised
+                                border.width: obsPasswordEdit.activeFocus ? 1 : 0
                                 border.color: obsPasswordEdit.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                 TextInput {
                                     id: obsPasswordEdit
@@ -2843,8 +2317,8 @@ Item {
                                     anchors.rightMargin: 8
                                     verticalAlignment: TextInput.AlignVCenter
                                     color: Theme.surfaceContent
-                                    selectionColor: Theme.primaryContainer
-                                    selectedTextColor: Theme.primaryContainerContent
+                                    selectionColor: Theme.selection
+                                    selectedTextColor: Theme.surfaceContent
                                     font.pixelSize: 12
                                     echoMode: TextInput.Password
                                     passwordCharacter: "\u2022"
@@ -2892,141 +2366,102 @@ Item {
                 }
             }
 
-            // ================================================================
-            // 8. STORAGE & PRIVACY
-            // ================================================================
             Column {
                 visible: page.currentSection === "storage"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
 
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.lock
                             title: qsTr("Sync copied passwords")
-                            description: qsTr("Also sends what password managers mark private. It leaves the phone's clipboard after a minute where Android allows it, and is never kept in history.")
+                            description: qsTr("Never kept in history")
                             Toggle {
                                 label: qsTr("Sync copied passwords")
                                 checked: Preferences.syncPasswords
                                 onToggled: (on) => Preferences.syncPasswords = on
                             }
                         }
-                        Divider { width: parent.width }
 
-                        // Row 1: Clipboard history | Notification history
-                        Item {
-                            id: historyPairRow
+                        SettingRow {
+                            id: clipHistRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(clipHistRow.implicitHeight, notifHistRow.implicitHeight)
-                                : (clipHistRow.implicitHeight + 1 + notifHistRow.implicitHeight)
-
-                            ListRow {
-                                id: clipHistRow
-                                x: 0
-                                y: historyPairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: historyPairRow.colWidth
-                                iconPath: Icons.clipboard
-                                title: qsTr("Clipboard history")
-                                description: {
-                                    const count = Number(page.retentionSummary.clipboardItems || 0)
-                                    const size = page.formatRetentionBytes(page.retentionSummary.clipboardBytes)
-                                    return qsTr("%1 clips · %2 · kept 7 days").arg(count).arg(size)
-                                }
-                                Row {
-                                    spacing: 8
-                                    Button {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: Number(page.retentionSummary.clipboardItems || 0) > 0
-                                        variant: "text"
-                                        size: "sm"
-                                        text: qsTr("Clear")
-                                        onClicked: clearOneSheet.ask(
-                                            qsTr("Clear clipboard history?"),
-                                            qsTr("Deletes the clips kept on this PC. What's on the clipboard now stays."),
-                                            () => {
-                                                AppController.clearClipboardHistory()
-                                                AppController.refreshDataRetention()
-                                            })
-                                    }
-                                    Toggle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        label: qsTr("Clipboard history")
-                                        checked: Preferences.clipboardHistory
-                                        onToggled: (on) => {
-                                            Preferences.clipboardHistory = on
+                            iconPath: Icons.clipboard
+                            title: qsTr("Clipboard history")
+                            description: {
+                                const count = Number(page.retentionSummary.clipboardItems || 0)
+                                const size = page.formatRetentionBytes(page.retentionSummary.clipboardBytes)
+                                return qsTr("%1 clips · %2 · kept 7 days").arg(count).arg(size)
+                            }
+                            Row {
+                                spacing: 8
+                                Button {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: Number(page.retentionSummary.clipboardItems || 0) > 0
+                                    variant: "text"
+                                    size: "sm"
+                                    text: qsTr("Clear")
+                                    onClicked: clearOneSheet.ask(
+                                        qsTr("Clear clipboard history?"),
+                                        qsTr("Deletes the clips kept on this PC. What's on the clipboard now stays."),
+                                        () => {
+                                            AppController.clearClipboardHistory()
                                             AppController.refreshDataRetention()
-                                        }
+                                        })
+                                }
+                                Toggle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    label: qsTr("Clipboard history")
+                                    checked: Preferences.clipboardHistory
+                                    onToggled: (on) => {
+                                        Preferences.clipboardHistory = on
+                                        AppController.refreshDataRetention()
                                     }
                                 }
                             }
-
-                            Rectangle {
-                                visible: historyPairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
+                        }
+                        SettingRow {
+                            id: notifHistRow
+                            width: parent.width
+                            iconPath: Icons.bell
+                            title: qsTr("Notification history")
+                            description: {
+                                const count = Number(page.retentionSummary.notificationHistory || 0)
+                                const size = page.formatRetentionBytes(page.retentionSummary.notificationImageBytes)
+                                return qsTr("%1 alerts · %2 · kept 24h").arg(count).arg(size)
                             }
-
-                            Divider {
-                                visible: !historyPairRow.splitCols
-                                y: clipHistRow.implicitHeight
-                                width: parent.width
-                            }
-
-                            ListRow {
-                                id: notifHistRow
-                                x: historyPairRow.splitCols ? (parent.width - width) : 0
-                                y: historyPairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (clipHistRow.implicitHeight + 1)
-                                width: historyPairRow.colWidth
-                                iconPath: Icons.bell
-                                title: qsTr("Notification history")
-                                description: {
-                                    const count = Number(page.retentionSummary.notificationHistory || 0)
-                                    const size = page.formatRetentionBytes(page.retentionSummary.notificationImageBytes)
-                                    return qsTr("%1 alerts · %2 · kept 24h").arg(count).arg(size)
+                            Row {
+                                spacing: 8
+                                Button {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: Number(page.retentionSummary.notificationHistory || 0) > 0
+                                             || Number(page.retentionSummary.notificationImageBytes || 0) > 0
+                                    variant: "text"
+                                    size: "sm"
+                                    text: qsTr("Clear")
+                                    onClicked: clearOneSheet.ask(
+                                        qsTr("Clear notification history?"),
+                                        qsTr("Deletes the notifications kept after they went away. Ones still showing stay."),
+                                        () => AppController.clearNotificationHistory())
                                 }
-                                Row {
-                                    spacing: 8
-                                    Button {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        visible: Number(page.retentionSummary.notificationHistory || 0) > 0
-                                                 || Number(page.retentionSummary.notificationImageBytes || 0) > 0
-                                        variant: "text"
-                                        size: "sm"
-                                        text: qsTr("Clear")
-                                        onClicked: clearOneSheet.ask(
-                                            qsTr("Clear notification history?"),
-                                            qsTr("Deletes the notifications kept after they went away. Ones still showing stay."),
-                                            () => AppController.clearNotificationHistory())
-                                    }
-                                    Toggle {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        label: qsTr("Notification history")
-                                        checked: NotificationList.historyEnabled
-                                        onToggled: (on) => {
-                                            NotificationList.setHistoryEnabled(on)
-                                            AppController.refreshDataRetention()
-                                        }
+                                Toggle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    label: qsTr("Notification history")
+                                    checked: NotificationList.historyEnabled
+                                    onToggled: (on) => {
+                                        NotificationList.setHistoryEnabled(on)
+                                        AppController.refreshDataRetention()
                                     }
                                 }
                             }
                         }
 
-                        Divider { width: parent.width }
-                        // 2. Cross-device timeline
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             stackBelow: true
                             iconPath: Icons.history
@@ -3076,9 +2511,7 @@ Item {
                                 }
                             }
                         }
-                        Divider { width: parent.width }
-                        // 3. Cached messages & conversations
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.messages
                             title: qsTr("Cached messages")
@@ -3108,86 +2541,50 @@ Item {
                                 onClicked: AppController.clearMessageCache()
                             }
                         }
-                        Divider { width: parent.width }
-                        // 4. Photo thumbnails & Transfer history side-by-side
-                        Item {
-                            id: cachePairRow
+                        SettingRow {
+                            id: photoCacheRow
                             width: parent.width
-                            readonly property bool splitCols: width >= 460
-                            readonly property real colWidth: splitCols ? Math.floor((width - 37) / 2) : width
-                            implicitHeight: splitCols
-                                ? Math.max(photoCacheRow.implicitHeight, transferHistRow.implicitHeight)
-                                : (photoCacheRow.implicitHeight + 1 + transferHistRow.implicitHeight)
-
-                            ListRow {
-                                id: photoCacheRow
-                                x: 0
-                                y: cachePairRow.splitCols ? Math.round((parent.height - height) / 2) : 0
-                                width: cachePairRow.colWidth
-                                iconPath: Icons.photo
-                                title: qsTr("Photo thumbnails")
-                                description: {
-                                    const files = Number(page.retentionSummary.photoThumbFiles || 0)
-                                    const size = page.formatRetentionBytes(page.retentionSummary.photoThumbBytes)
-                                    return qsTr("%1 cached · %2 · kept 30 days").arg(files).arg(size)
-                                }
-                                Button {
-                                    variant: "text"
-                                    size: "sm"
-                                    visible: Number(page.retentionSummary.photoThumbFiles || 0) > 0
-                                    text: qsTr("Clear")
-                                    onClicked: AppController.clearPhotoThumbnails()
-                                }
+                            iconPath: Icons.photo
+                            title: qsTr("Photo thumbnails")
+                            description: {
+                                const files = Number(page.retentionSummary.photoThumbFiles || 0)
+                                const size = page.formatRetentionBytes(page.retentionSummary.photoThumbBytes)
+                                return qsTr("%1 cached · %2 · kept 30 days").arg(files).arg(size)
                             }
-
-                            Rectangle {
-                                visible: cachePairRow.splitCols
-                                x: Math.floor(parent.width / 2)
-                                y: 8
-                                width: 1
-                                height: Math.max(24, parent.height - 16)
-                                color: Theme.outlineVariant
+                            Button {
+                                variant: "text"
+                                size: "sm"
+                                visible: Number(page.retentionSummary.photoThumbFiles || 0) > 0
+                                text: qsTr("Clear")
+                                onClicked: AppController.clearPhotoThumbnails()
                             }
-
-                            Divider {
-                                visible: !cachePairRow.splitCols
-                                y: photoCacheRow.implicitHeight
-                                width: parent.width
+                        }
+                        SettingRow {
+                            id: transferHistRow
+                            width: parent.width
+                            iconPath: Icons.send
+                            title: qsTr("Transfer history")
+                            description: {
+                                const records = Number(page.retentionSummary.receivedFileRecords || 0)
+                                return qsTr("%1 records · kept with timeline").arg(records)
                             }
-
-                            ListRow {
-                                id: transferHistRow
-                                x: cachePairRow.splitCols ? (parent.width - width) : 0
-                                y: cachePairRow.splitCols
-                                    ? Math.round((parent.height - height) / 2)
-                                    : (photoCacheRow.implicitHeight + 1)
-                                width: cachePairRow.colWidth
-                                iconPath: Icons.send
-                                title: qsTr("Transfer history")
-                                description: {
-                                    const records = Number(page.retentionSummary.receivedFileRecords || 0)
-                                    return qsTr("%1 records · kept with timeline").arg(records)
-                                }
-                                Button {
-                                    variant: "text"
-                                    size: "sm"
-                                    visible: Number(page.retentionSummary.receivedFileRecords || 0) > 0
-                                    text: qsTr("Clear")
-                                    onClicked: clearOneSheet.ask(
-                                        qsTr("Clear transfer history?"),
-                                        qsTr("Deletes the list of past transfers. The files stay where they were saved."),
-                                        () => AppController.clearReceivedFileHistory())
-                                }
+                            Button {
+                                variant: "text"
+                                size: "sm"
+                                visible: Number(page.retentionSummary.receivedFileRecords || 0) > 0
+                                text: qsTr("Clear")
+                                onClicked: clearOneSheet.ask(
+                                    qsTr("Clear transfer history?"),
+                                    qsTr("Deletes the list of past transfers. The files stay where they were saved."),
+                                    () => AppController.clearReceivedFileHistory())
                             }
                         }
 
-                        Divider { width: parent.width }
-                        // 5. Clear everything
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.trash
-                            title: qsTr("Clear all local history & caches")
-                            description: qsTr("Wipes local history and caches; keeps paired devices and settings.")
+                            title: qsTr("Clear all history and caches")
+                            description: qsTr("Keeps phones and settings")
                             Button {
                                 variant: "outline"
                                 size: "sm"
@@ -3200,23 +2597,20 @@ Item {
                 }
             }
 
-            // ================================================================
-            // 9. CONNECTION & ABOUT
-            // ================================================================
             Column {
                 visible: page.currentSection === "connection"
                 width: visible ? parent.width : 0
-                spacing: Theme.gutter
+                spacing: 14
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.wifi
                             title: qsTr("Connection Doctor")
-                            description: qsTr("Diagnose and fix firewall, network, or VPN issues.")
+                            description: qsTr("Firewall, network and VPN")
                             Button {
                                 variant: "tonal"
                                 size: "sm"
@@ -3224,19 +2618,17 @@ Item {
                                 onClicked: AppController.runDoctor()
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.signal
                             title: qsTr("Connect over mobile data")
-                            description: qsTr("Stay connected over LTE/5G or relay when away from Wi-Fi.")
+                            description: qsTr("Away from Wi-Fi")
                             Toggle {
                                 checked: Preferences.awayMode
                                 onToggled: function(v) { Preferences.awayMode = v }
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.power
                             title: qsTr("Wake from your phone")
@@ -3247,7 +2639,7 @@ Item {
                                     return qsTr("No active network adapter found.")
                                 if (state === "enabled")
                                     return qsTr("%1 · Wake on Magic Packet ready.").arg(adapter)
-                                return qsTr("%1 · Wake on Magic Packet is off. Turn it on with NetworkManager or ethtool.").arg(adapter)
+                                return qsTr("%1 · Wake on Magic Packet is off (NetworkManager or ethtool)").arg(adapter)
                             }
                             Row {
                                 spacing: 6
@@ -3267,8 +2659,7 @@ Item {
                                 }
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.terminal
                             title: qsTr("Local automation API")
@@ -3280,10 +2671,10 @@ Item {
                                 Rectangle {
                                     anchors.verticalCenter: parent.verticalCenter
                                     width: 76
-                                    height: 32
+                                    height: 28
                                     radius: Theme.radiusSm
-                                    color: Theme.surfaceContainerHighest
-                                    border.width: localApiPortEdit.activeFocus ? 2 : 1
+                                    color: Theme.raised
+                                    border.width: localApiPortEdit.activeFocus ? 1 : 0
                                     border.color: localApiPortEdit.activeFocus ? Theme.focusRing : Theme.outlineVariant
                                     TextInput {
                                         id: localApiPortEdit
@@ -3293,8 +2684,8 @@ Item {
                                         verticalAlignment: TextInput.AlignVCenter
                                         horizontalAlignment: TextInput.AlignHCenter
                                         color: Theme.surfaceContent
-                                        selectionColor: Theme.primaryContainer
-                                        selectedTextColor: Theme.primaryContainerContent
+                                        selectionColor: Theme.selection
+                                        selectedTextColor: Theme.surfaceContent
                                         font.family: Theme.fontMono
                                         font.pixelSize: 12
                                         text: String(Preferences.localApiPort)
@@ -3316,8 +2707,23 @@ Item {
                                 }
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                    }
+                }
+            }
+
+            // ================================================================
+            // ABOUT
+            // ================================================================
+            Column {
+                visible: page.currentSection === "about"
+                width: visible ? parent.width : 0
+                spacing: 14
+
+                Group {
+                    width: parent.width
+                    Column {
+                        width: parent.width
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.desktop
                             title: qsTr("G7 Link %1").arg(AppController.version)
@@ -3333,14 +2739,14 @@ Item {
                                     width: 120
                                     height: 4
                                     radius: 2
-                                    color: Theme.surfaceContainerHighest
+                                    color: Theme.raised
                                     Accessible.role: Accessible.ProgressBar
                                     Accessible.name: qsTr("Update download")
                                     Rectangle {
                                         height: parent.height
                                         radius: parent.radius
                                         width: parent.width * Math.max(0, Math.min(1, AppController.updateProgress))
-                                        color: Theme.primary
+                                        color: Theme.accent
                                         Behavior on width { enabled: !Theme.reduceMotion; NumberAnimation { duration: 180 } }
                                     }
                                 }
@@ -3371,29 +2777,28 @@ Item {
                                 }
                             }
                         }
-                        Divider { width: parent.width; visible: AppController.canUpdate }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             visible: AppController.canUpdate
                             iconPath: Icons.refresh
                             title: qsTr("Check for updates")
                             description: Preferences.updateChannel === "nightly"
-                                         ? qsTr("Looks for a new build every couple of hours, and tells your phone.")
-                                         : qsTr("Looks for a new release twice a day, and tells your phone.")
+                                         ? qsTr("Every couple of hours")
+                                         : qsTr("Twice a day")
                             Toggle {
                                 label: qsTr("Check for updates")
                                 checked: Preferences.autoUpdate
                                 onToggled: (on) => Preferences.autoUpdate = on
                             }
                         }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             visible: AppController.canUpdate
                             iconPath: Icons.moon
                             title: qsTr("Update channel")
                             description: Preferences.updateChannel === "nightly"
-                                         ? qsTr("The newest build from every couple of hours, with the latest fixes and features, and sometimes new bugs. Back on Stable, this PC keeps its build until the next release is newer.")
-                                         : qsTr("Releases, tested and less often.")
+                                         ? qsTr("Newest build, sometimes new bugs")
+                                         : qsTr("Tested releases")
                             Segmented {
                                 options: [
                                     { value: "stable", label: qsTr("Stable") },
@@ -3406,33 +2811,88 @@ Item {
                     }
                 }
 
-                Card {
+                Group {
                     width: parent.width
                     Column {
                         width: parent.width
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.compass
-                            title: qsTr("Setup walkthrough")
-                            description: qsTr("Re-open the setup guide.")
+                            title: qsTr("Welcome screen")
+                            description: qsTr("This PC's checks and pairing")
                             Button {
                                 variant: "tonal"
                                 size: "sm"
                                 text: qsTr("Open")
-                                onClicked: Preferences.restartWalkthrough()
+                                onClicked: page.restartWalkthroughRequested()
                             }
                         }
-                        Divider { width: parent.width }
-                        ListRow {
+                        SettingRow {
                             width: parent.width
                             iconPath: Icons.book
                             title: qsTr("Features guide")
-                            description: qsTr("What each feature needs and where to find it.")
                             Button {
                                 variant: "tonal"
                                 size: "sm"
                                 text: qsTr("Open")
                                 onClicked: AppController.currentPage = "guide"
+                            }
+                        }
+                    }
+                }
+
+                // The phone app, for a phone that doesn't have it yet.
+                Group {
+                    width: parent.width
+                    title: qsTr("Android app")
+                    SettingRow {
+                        width: parent.width
+                        iconPath: Icons.download
+                        title: qsTr("Download")
+                        description: qsTr("Android 8.0 or later")
+                        Row {
+                            spacing: 4
+                            TextAction {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: qsTr("Open release page")
+                                onClicked: Qt.openUrlExternally(page.releaseUrl)
+                            }
+                            TextAction {
+                                id: copyLink
+                                property bool copied: false
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: copied ? qsTr("Copied") : qsTr("Copy link")
+                                onClicked: {
+                                    AppController.copyText(page.releaseUrl)
+                                    copied = true
+                                    copyLinkReset.restart()
+                                }
+                                Timer {
+                                    id: copyLinkReset
+                                    interval: 2000
+                                    onTriggered: copyLink.copied = false
+                                }
+                            }
+                        }
+                    }
+                    SettingRow {
+                        width: parent.width
+                        iconPath: Icons.terminal
+                        title: qsTr("Install over USB")
+                        description: page.adbCommand
+                        TextAction {
+                            id: copyAdb
+                            property bool copied: false
+                            text: copied ? qsTr("Copied") : qsTr("Copy command")
+                            onClicked: {
+                                AppController.copyText(page.adbCommand)
+                                copied = true
+                                copyAdbReset.restart()
+                            }
+                            Timer {
+                                id: copyAdbReset
+                                interval: 2000
+                                onTriggered: copyAdb.copied = false
                             }
                         }
                     }
@@ -3449,9 +2909,12 @@ Item {
                 const parts = tgt.split(":")
                 if (parts.length > 1) {
                     let sec = parts[1]
-                    if (sec === "camera") sec = "camera_audio"
-                    else if (sec === "clipboard") sec = "files_sync"
-                    else if (sec === "surfaces" || sec === "automation") sec = "shortcuts"
+                    if (sec === "camera" || sec === "audio") sec = "camera_audio"
+                    else if (sec === "clipboard" || sec === "files" || sec === "sync") sec = "files_sync"
+                    else if (sec === "surfaces" || sec === "automation" || sec === "hotkeys") sec = "shortcuts"
+                    else if (sec === "privacy" || sec === "history") sec = "storage"
+                    else if (sec === "phone" || sec === "permissions") sec = "devices"
+                    else if (sec === "updates" || sec === "version") sec = "about"
                     page.currentSection = sec
                 }
             }
@@ -3461,10 +2924,10 @@ Item {
     Rectangle {
         anchors.fill: parent
         anchors.margins: 10
-        radius: Theme.radiusLg
+        radius: Theme.radiusXl
         color: "transparent"
         border.width: 2
-        border.color: Theme.primary
+        border.color: Theme.focusRing
         visible: opacity > 0
         opacity: AppController.highlightTarget.startsWith("settings:") ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
@@ -3593,7 +3056,7 @@ Item {
                     : qsTr("New and changed files on the phone are copied to the PC. Nothing on the PC goes to the phone.")
             }
 
-            ListRow {
+            SettingRow {
                 width: parent.width
                 visible: folderSyncSheet.mode !== "one_way_pc_to_phone"
                 title: folderSyncSheet.mode === "two_way" ? qsTr("Also remove deleted files") : qsTr("Also remove from the PC")
