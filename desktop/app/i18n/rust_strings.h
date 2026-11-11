@@ -47,6 +47,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Battery", "You can unplug it."), // desktop/app/src/battery.rs
     QT_TRANSLATE_NOOP("Battery", "Your phone"), // desktop/app/src/battery.rs
     QT_TRANSLATE_NOOP("Calls", "%1 is paired but not connected."), // desktop/app/src/linux/bt_hfp.rs
+    QT_TRANSLATE_NOOP("Calls", "%1 is still using its own audio."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "%1 isn't paired with this PC over Bluetooth."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "Bluetooth is off."), // desktop/app/src/linux/bt_hfp.rs
     QT_TRANSLATE_NOOP("Calls", "Bluetooth isn't running on this PC."), // desktop/app/src/linux/bt_hfp.rs

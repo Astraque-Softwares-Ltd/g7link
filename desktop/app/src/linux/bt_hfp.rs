@@ -29,14 +29,17 @@ const DBUS_TIMEOUT: Duration = Duration::from_secs(3);
 /// A connect pages the phone, which can take several seconds.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 const PACTL_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long the audio server gets to show the phone's card after it connects.
+/// How long the audio server gets to show the phone's card, then its call
+/// audio, after it connects.
 const CARD_WAIT: Duration = Duration::from_secs(3);
 const CARD_POLL: Duration = Duration::from_millis(150);
 /// The watcher tries the system bus again after this when it can't reach it.
 const WATCH_RETRY: Duration = Duration::from_secs(30);
 
-/// Card profiles that carry a phone's calls, best first: PipeWire's, then
-/// PulseAudio's. A2DP profiles carry media only.
+/// Card profiles that can carry a phone's calls, best first: PipeWire's, then
+/// PulseAudio's. A2DP profiles carry media only. PipeWire's `audio-gateway`
+/// carries media too, so calls are on the PC only once the card has a
+/// hands-free node ([`has_call_audio_node`]).
 const CALL_PROFILES: [&str; 5] =
     ["audio-gateway", "headset-audio-gateway", "headset_audio_gateway", "handsfree_head_unit", "hfp_hf"];
 
@@ -58,7 +61,8 @@ pub struct HfpStatus {
     pub available: bool,
     /// The phone's Bluetooth link is up, for any profile (media, calls...).
     pub link_connected: bool,
-    /// The phone's calls play on this PC: its card is on a call profile.
+    /// The phone's calls play on this PC: the audio server has a hands-free
+    /// (SCO) node for it, not just media.
     pub call_audio_ready: bool,
     pub device_name: String,
     pub detail: String,
@@ -75,6 +79,8 @@ pub(crate) enum ConnectFailure {
     Unsupported,
     /// The audio server refused the call profile.
     NotSwitched,
+    /// The phone connected but keeps its calls' audio.
+    StillOnPhone,
 }
 
 impl ConnectFailure {
@@ -86,6 +92,7 @@ impl ConnectFailure {
             ConnectFailure::Unreachable => tr!("Calls", "Couldn't reach %1 over Bluetooth.", name),
             ConnectFailure::Unsupported => tr!("Calls", "This PC can't take call audio over Bluetooth."),
             ConnectFailure::NotSwitched => tr!("Calls", "Couldn't switch this PC to call audio."),
+            ConnectFailure::StillOnPhone => tr!("Calls", "%1 is still using its own audio.", name),
         }
     }
 }
@@ -357,10 +364,6 @@ pub(crate) fn parse_card(output: &str, card: &str) -> Option<Card> {
     found
 }
 
-pub(crate) fn is_call_profile(profile: &str) -> bool {
-    CALL_PROFILES.contains(&profile)
-}
-
 /// The best available call profile the card has; never an A2DP one.
 pub(crate) fn pick_call_profile(card: &Card) -> Option<&'static str> {
     let available = |wanted: &str| card.profiles.iter().any(|(name, on)| name == wanted && *on);
@@ -389,7 +392,55 @@ fn read_card(card: &str) -> Option<Card> {
     parse_card(&pactl(&["list", "cards"])?, card)
 }
 
+/// The properties of each sink or source in `pactl list sinks`/`sources`
+/// output (in the C locale).
+fn node_properties(output: &str) -> Vec<HashMap<&str, &str>> {
+    let mut nodes: Vec<HashMap<&str, &str>> = Vec::new();
+    for line in output.lines() {
+        if line.starts_with(|c: char| !c.is_whitespace()) {
+            nodes.push(HashMap::new());
+        } else if let (Some(node), Some((key, value))) = (nodes.last_mut(), line.trim().split_once(" = ")) {
+            node.insert(key, value.trim_matches('"'));
+        }
+    }
+    nodes
+}
+
+/// Whether `pactl list sinks`/`sources` output has a hands-free node for the
+/// phone at `mac`: one PipeWire made for its call audio (SCO), not for media.
+pub(crate) fn has_call_audio_node(output: &str, mac: &str) -> bool {
+    node_properties(output).iter().any(|node| {
+        let get = |key: &str| node.get(key).copied().unwrap_or_default();
+        let profile = get("api.bluez5.profile");
+        let sco = get("factory.name").contains(".sco.");
+        let hands_free = sco || profile.contains("headset") || profile.contains("hfp");
+        hands_free && get("api.bluez5.address").eq_ignore_ascii_case(mac)
+    })
+}
+
+/// Whether the audio server has a hands-free node for the phone at `mac`.
+fn call_audio_node(mac: &str) -> bool {
+    ["sinks", "sources"]
+        .into_iter()
+        .any(|kind| pactl(&["list", kind]).is_some_and(|out| has_call_audio_node(&out, mac)))
+}
+
+/// Waits up to [`CARD_WAIT`] for the phone's hands-free node.
+fn wait_for_call_audio(mac: &str) -> bool {
+    let deadline = Instant::now() + CARD_WAIT;
+    loop {
+        if call_audio_node(mac) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(CARD_POLL);
+    }
+}
+
 /// Puts `mac`'s card on a call profile, remembering the profile it was on.
+/// PipeWire's `audio-gateway` is usually on already, and isn't switched.
 fn route_call_audio(mac: &str) -> Result<(), ConnectFailure> {
     let card_name = bluez_card_name_for_mac(mac);
     if !wait_for_card(&card_name) {
@@ -397,27 +448,39 @@ fn route_call_audio(mac: &str) -> Result<(), ConnectFailure> {
     }
     let card = read_card(&card_name).ok_or(ConnectFailure::Unsupported)?;
     let profile = pick_call_profile(&card).ok_or(ConnectFailure::Unsupported)?;
-    if card.active.as_deref() == Some(profile) {
-        return Ok(());
-    }
-    if pactl(&["set-card-profile", &card_name, profile]).is_none() {
-        return Err(ConnectFailure::NotSwitched);
-    }
-    held(|slot| {
-        if slot.as_ref().is_none_or(|h| h.mac != mac) {
-            *slot = Some(Held { mac: mac.to_owned(), previous: card.active.clone() });
+    if card.active.as_deref() != Some(profile) {
+        if pactl(&["set-card-profile", &card_name, profile]).is_none() {
+            return Err(ConnectFailure::NotSwitched);
         }
-    });
+        held(|slot| {
+            if slot.as_ref().is_none_or(|h| h.mac != mac) {
+                *slot = Some(Held { mac: mac.to_owned(), previous: card.active.clone() });
+            }
+        });
+    }
     Ok(())
 }
 
-/// The status a phone's Bluetooth state and its card's active profile add up to.
-pub(crate) fn status_of(name: &str, powered: bool, linked: bool, active: Option<&str>) -> HfpStatus {
-    let call_audio_ready = powered && linked && active.is_some_and(is_call_profile);
+/// What the phone's Bluetooth link and audio add up to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Link {
+    pub powered: bool,
+    pub linked: bool,
+    /// The audio server has a hands-free node for it.
+    pub call_node: bool,
+    /// A call is ringing or going on on the phone.
+    pub in_call: bool,
+}
+
+pub(crate) fn status_of(name: &str, link: Link) -> HfpStatus {
+    let Link { powered, linked, call_node, in_call } = link;
+    let call_audio_ready = powered && linked && call_node;
     let detail = if !powered {
         tr!("Calls", "Bluetooth is off.")
     } else if call_audio_ready {
         tr!("Calls", "On PC over Bluetooth (%1).", name)
+    } else if linked && in_call {
+        ConnectFailure::StillOnPhone.message(name)
     } else if linked {
         tr!("Calls", "Connected for media only (%1).", name)
     } else {
@@ -436,7 +499,9 @@ fn not_available(phone_name: Option<&str>, detail: String) -> HfpStatus {
     HfpStatus { device_name: phone_name.unwrap_or_default().to_owned(), detail, ..HfpStatus::default() }
 }
 
-pub fn probe_status(phone_name: Option<&str>) -> HfpStatus {
+/// The phone's call audio status; `in_call` says whether a call is ringing or
+/// going on on it.
+pub fn probe_status(phone_name: Option<&str>, in_call: bool) -> HfpStatus {
     let Some(objects) = system_bus(DBUS_TIMEOUT).and_then(|conn| managed_objects(&conn)) else {
         return not_available(phone_name, ConnectFailure::NotRunning.message(""));
     };
@@ -449,15 +514,15 @@ pub fn probe_status(phone_name: Option<&str>) -> HfpStatus {
     };
     let display = display_name(&endpoint, phone_name);
     let powered = adapter_powered(&objects, endpoint.adapter.as_deref()) != Some(false);
-    let active = if powered && endpoint.connected {
-        read_card(&bluez_card_name_for_mac(&endpoint.mac)).and_then(|c| c.active)
-    } else {
-        None
-    };
-    status_of(&display, powered, endpoint.connected, active.as_deref())
+    let linked = endpoint.connected;
+    let call_node = powered && linked && call_audio_node(&endpoint.mac);
+    status_of(&display, Link { powered, linked, call_node, in_call })
 }
 
-pub fn connect_audio(phone_name: Option<&str>) -> Result<HfpStatus, String> {
+/// Connects the phone's call audio to this PC; `in_call` says whether a call
+/// is ringing or going on on it. Outside a call the phone may only open its
+/// call audio when one comes, so a missing hands-free node isn't a failure then.
+pub fn connect_audio(phone_name: Option<&str>, in_call: bool) -> Result<HfpStatus, String> {
     let fallback = phone_name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or_default().to_owned();
     let (Some(short), Some(long)) = (system_bus(DBUS_TIMEOUT), system_bus(CONNECT_TIMEOUT)) else {
         return Err(ConnectFailure::NotRunning.message(&fallback));
@@ -466,7 +531,11 @@ pub fn connect_audio(phone_name: Option<&str>) -> Result<HfpStatus, String> {
         .map_err(|(failure, display)| failure.message(display.as_deref().unwrap_or(&fallback)))?;
     let display = display_name(&endpoint, phone_name);
     route_call_audio(&endpoint.mac).map_err(|failure| failure.message(&display))?;
-    Ok(status_of(&display, true, true, Some(CALL_PROFILES[0])))
+    let call_node = wait_for_call_audio(&endpoint.mac);
+    if in_call && !call_node {
+        return Err(ConnectFailure::StillOnPhone.message(&display));
+    }
+    Ok(status_of(&display, Link { powered: true, linked: true, call_node, in_call }))
 }
 
 /// Whether this app switched a phone's card to call audio and hasn't put it back.
@@ -771,17 +840,66 @@ Card #52
 
     #[test]
     fn status_tells_a_media_link_from_call_audio() {
-        let media = status_of("Pixel", true, true, Some("a2dp-sink"));
+        let up = Link { powered: true, linked: true, ..Link::default() };
+        let media = status_of("Pixel", up);
         assert!(media.available && media.link_connected && !media.call_audio_ready);
+        assert_ne!(media.detail, status_of("Pixel", Link { in_call: true, ..up }).detail);
 
-        let calls = status_of("Pixel", true, true, Some("audio-gateway"));
+        let calls = status_of("Pixel", Link { call_node: true, ..up });
         assert!(calls.link_connected && calls.call_audio_ready);
 
-        let down = status_of("Pixel", true, false, Some("audio-gateway"));
+        let down = status_of("Pixel", Link { linked: false, call_node: true, ..up });
         assert!(down.available && !down.link_connected && !down.call_audio_ready);
 
-        let off = status_of("Pixel", false, true, Some("audio-gateway"));
+        let off = status_of("Pixel", Link { powered: false, call_node: true, ..up });
         assert!(!off.available && !off.link_connected && !off.call_audio_ready);
+    }
+
+    /// A Pixel on PipeWire's `audio-gateway` playing media, with another
+    /// phone's call audio up.
+    const MEDIA_NODES: &str = "\
+Source #93
+\tState: SUSPENDED
+\tName: bluez_input.B8_DB_38_7E_95_09.2
+\tProperties:
+\t\tapi.bluez5.address = \"B8:DB:38:7E:95:09\"
+\t\tapi.bluez5.codec = \"aac\"
+\t\tapi.bluez5.profile = \"a2dp-source\"
+\t\tfactory.name = \"api.bluez5.a2dp.source\"
+\t\tmedia.class = \"Audio/Source\"
+\tFormats:
+\t\tpcm
+Source #94
+\tName: bluez_input.11_22_33_44_55_66.0
+\tProperties:
+\t\tapi.bluez5.address = \"11:22:33:44:55:66\"
+\t\tapi.bluez5.profile = \"headset-audio-gateway\"
+\t\tmedia.class = \"Audio/Source\"
+";
+
+    /// The Pixel's call audio, as PipeWire makes it for SCO.
+    const CALL_NODES: &str = "\
+Sink #95
+\tName: bluez_output.B8_DB_38_7E_95_09.1
+\tProperties:
+\t\tapi.bluez5.address = \"B8:DB:38:7E:95:09\"
+\t\tapi.bluez5.codec = \"msbc\"
+\t\tapi.bluez5.profile = \"headset-audio-gateway\"
+\t\tfactory.name = \"api.bluez5.sco.sink\"
+\t\tmedia.class = \"Audio/Sink\"
+";
+
+    #[test]
+    fn call_audio_is_a_hands_free_node_not_media() {
+        let pixel = "b8:db:38:7e:95:09";
+        assert!(!has_call_audio_node(MEDIA_NODES, pixel));
+        assert!(has_call_audio_node(CALL_NODES, pixel));
+        assert!(has_call_audio_node(&format!("{MEDIA_NODES}{CALL_NODES}"), pixel));
+        assert!(!has_call_audio_node(CALL_NODES, "11:22:33:44:55:66"));
+        assert!(!has_call_audio_node("", pixel));
+
+        let sco_only = CALL_NODES.replace("headset-audio-gateway", "");
+        assert!(has_call_audio_node(&sco_only, pixel));
     }
 
     #[test]

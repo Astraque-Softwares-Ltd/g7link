@@ -393,8 +393,14 @@ fn changed(device: DeviceId, call: &CallState) {
         core_host::host().hub.changed(Changes::CALLS);
     }
     match call.state.as_str() {
-        "ringing" | "active" => note_call_ongoing(device),
-        "ended" => note_call_ended(device, CallGone::Ended),
+        "ringing" | "active" => {
+            note_call_ongoing(device);
+            call_audio_may_change();
+        }
+        "ended" => {
+            note_call_ended(device, CallGone::Ended);
+            call_audio_may_change();
+        }
         _ => {}
     }
     if call.state == "active" {
@@ -1343,7 +1349,8 @@ static HFP_CACHE: Mutex<Option<(Option<DeviceId>, bt_hfp::HfpStatus)>> = Mutex::
 fn refresh_hfp_cache(device: Option<DeviceId>) -> bt_hfp::HfpStatus {
     let target = device.or_else(|| page_state(|s| s.device));
     let name = target.map(phone_name);
-    let status = bt_hfp::probe_status(name.as_deref());
+    let in_call = target.is_some_and(|d| ongoing_calls(|c| c.contains(&d)));
+    let status = bt_hfp::probe_status(name.as_deref(), in_call);
     if let Ok(mut guard) = HFP_CACHE.lock() {
         *guard = Some((target, status.clone()));
     }
@@ -1361,7 +1368,15 @@ fn refresh_hfp_cache_async(device: Option<DeviceId>) {
 /// Bluetooth changes come in bursts (a connect changes several properties):
 /// the status is read again once they've settled this long.
 const HFP_SETTLE: Duration = Duration::from_millis(300);
+/// A phone opens or closes its call audio a moment after the call starts,
+/// is answered or ends.
+const CALL_AUDIO_SETTLE: Duration = Duration::from_secs(2);
 static HFP_CHANGES: AtomicU64 = AtomicU64::new(0);
+
+/// The phone whose call audio status is shown.
+fn hfp_shown_device() -> Option<DeviceId> {
+    HFP_CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|(d, _)| *d))
+}
 
 /// BlueZ said something changed: reads the status again once it settles.
 fn bluetooth_changed() {
@@ -1369,9 +1384,18 @@ fn bluetooth_changed() {
     core_host::spawn(async move {
         tokio::time::sleep(HFP_SETTLE).await;
         if HFP_CHANGES.load(Ordering::Relaxed) == change {
-            let device = HFP_CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|(d, _)| *d));
-            refresh_hfp_cache_async(device);
+            refresh_hfp_cache_async(hfp_shown_device());
         }
+    });
+}
+
+/// A call started, was answered or ended: whether its audio plays here is
+/// read again now and once the phone has moved it.
+fn call_audio_may_change() {
+    bluetooth_changed();
+    core_host::spawn(async {
+        tokio::time::sleep(CALL_AUDIO_SETTLE).await;
+        refresh_hfp_cache_async(hfp_shown_device());
     });
 }
 
@@ -1428,9 +1452,10 @@ pub fn connect_pc_audio(device: Option<DeviceId>) {
     let connecting = Connecting;
     let target = device.or_else(|| page_state(|s| s.device));
     let name = target.map(phone_name);
+    let in_call = target.is_some_and(|d| ongoing_calls(|c| c.contains(&d)));
     let spawned = std::thread::Builder::new().name("hfp-connect".into()).spawn(move || {
         let started = Instant::now();
-        let result = bt_hfp::connect_audio(name.as_deref());
+        let result = bt_hfp::connect_audio(name.as_deref(), in_call);
         let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::info!(ms, ok = result.is_ok(), "hfp connect");
         match result {
