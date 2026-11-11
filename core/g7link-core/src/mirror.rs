@@ -60,6 +60,10 @@ const AUDIO_QUEUE: usize = 24;
 /// this much later than a round trip takes. QUIC would take megabytes more, and
 /// on a slow link that's many seconds between moving the pointer and seeing it.
 const MAX_LAG: Duration = Duration::from_millis(250);
+/// A hold longer than this leaves what waited through it too old to show:
+/// it's dropped for a fresh keyframe instead of being sent late, which would
+/// only start the next hold.
+const STALE_AFTER: Duration = Duration::from_millis(500);
 /// How long a measured round trip stays in use: long enough to span a busy
 /// spell, short enough to notice a move from Wi-Fi to a relay.
 const TRIP_MEMORY: Duration = Duration::from_secs(10);
@@ -551,13 +555,16 @@ pub struct MirrorStream {
     /// Wakes the sending task when the stream is closed, so it finishes the
     /// stream even if no more packets come.
     stop: Arc<tokio::sync::Notify>,
-    /// Frames are being dropped until a keyframe.
-    resyncing: Mutex<bool>,
+    /// Frames are being dropped until a keyframe. The sending task sets it
+    /// too, when it drops what waited too long.
+    resyncing: Arc<Mutex<bool>>,
     /// Sound: each packet stands alone, so a dropped one needs no keyframe.
     audio: bool,
     /// What the link was last measured to carry, in bits per second; 0 for
-    /// nothing new (`link_rate`).
+    /// nothing new (`link_measure`).
     link_rate: Arc<AtomicU64>,
+    /// How many bytes that measure was made over.
+    link_bytes: Arc<AtomicU64>,
 }
 
 impl MirrorStream {
@@ -605,11 +612,23 @@ impl MirrorStream {
         self.closed.load(Ordering::Acquire) || self.queue.is_closed()
     }
 
-    /// What the link was last measured to carry, in bits per second, once,
-    /// when video got too far ahead of it. Never from a device that doesn't
-    /// report what it receives.
-    pub fn link_rate(&self) -> Option<u64> {
-        Some(self.link_rate.swap(0, Ordering::AcqRel)).filter(|rate| *rate > 0)
+    /// What the link was last measured to carry, in bits per second, and
+    /// over how many bytes, once, when video got too far ahead of it. Never
+    /// from a device that doesn't report what it receives.
+    ///
+    /// The measure is those bytes over the time they took, so it says what
+    /// the link carries only if they kept it busy: a few bytes that arrived
+    /// late (a quiet picture, a phone's radio asleep for a moment) measure
+    /// the delay, not the link. The caller knows its bitrate and judges.
+    pub fn link_measure(&self) -> Option<(u64, u64)> {
+        let rate = Some(self.link_rate.swap(0, Ordering::AcqRel)).filter(|rate| *rate > 0)?;
+        Some((rate, self.link_bytes.load(Ordering::Acquire)))
+    }
+
+    /// Whether everything queued is still waiting to go out: the link is
+    /// held, and anything made now would only be dropped.
+    pub fn is_backed_up(&self) -> bool {
+        self.queue.capacity() == 0 && !self.is_closed()
     }
 }
 
@@ -627,6 +646,8 @@ struct Pacer {
     /// Too far ahead: writes nothing until all of it has arrived. This is also
     /// what keeps `trips` honest, as the next packet finds the way clear.
     draining: Option<Drain>,
+    /// How many bytes the last wait measured the link over.
+    measured_bytes: u64,
 }
 
 /// A wait for what's on its way to arrive, which also measures the link: it's
@@ -664,6 +685,7 @@ impl Pacer {
             return None;
         }
         let drain = self.draining.take()?;
+        self.measured_bytes = drain.bytes;
         // Less a round trip: the last report took that on top of the link's time.
         let queued = now.saturating_duration_since(drain.since).saturating_sub(self.round_trip());
         Some(drain.bytes * 8 * 1000 / (queued.as_millis() as u64).max(50))
@@ -747,6 +769,20 @@ fn skip_to_keyframe(batch: &mut Vec<(PacketKind, u64, Vec<u8>)>) {
     });
 }
 
+/// What still goes out of `waiting` after a long hold. From its last
+/// keyframe on, if it has one. Otherwise nothing but format changes: the
+/// frames are old by now, and sending them would only delay the keyframe
+/// that has to follow. Returns whether frames were dropped, so one must.
+fn drop_stale(waiting: &mut Vec<(PacketKind, u64, Vec<u8>)>) -> bool {
+    if waiting.iter().any(|p| p.0 == PacketKind::Keyframe) {
+        skip_to_keyframe(waiting);
+        return false;
+    }
+    let before = waiting.len();
+    waiting.retain(|p| p.0 == PacketKind::Config);
+    waiting.len() < before
+}
+
 /// Whether this device reports video packets as they arrive. Anything else
 /// mustn't be sent reports: it would take them for the end of the stream.
 fn peer_reports(shared: &Shared, peer: &DeviceId) -> bool {
@@ -780,40 +816,66 @@ impl MirrorStream {
         let stopped = stop.clone();
         let link_rate = Arc::new(AtomicU64::new(0));
         let measured = link_rate.clone();
+        let link_bytes = Arc::new(AtomicU64::new(0));
+        let measured_bytes = link_bytes.clone();
+        let resyncing = Arc::new(Mutex::new(false));
+        let resync = resyncing.clone();
         tokio::spawn(async move {
             let mut pacer = paced.then(Pacer::default);
             let mut reports = [0u8; 256];
+            let mut held_since: Option<Instant> = None;
             'stream: loop {
                 let now = Instant::now();
                 let hold = pacer.as_mut().is_some_and(|p| p.hold(now));
-                let check = pacer.as_ref().and_then(Pacer::next_check);
-                let next = tokio::select! {
-                    _ = stopped.notified() => break,
-                    // Each byte is a packet received. The other side stops
-                    // reading (STOP_SENDING) when it's done watching.
-                    read = recv.read(&mut reports) => match read {
-                        Ok(Some(count)) => {
-                            let rate = pacer.as_mut().and_then(|p| p.reported(Instant::now(), count));
-                            if let Some(rate) = rate {
-                                measured.store(rate.max(1), Ordering::Release);
-                            }
-                            continue;
-                        }
-                        Ok(None) | Err(_) => break,
-                    },
-                    () = tokio::time::sleep_until(check.unwrap_or(now).into()), if check.is_some() => continue,
-                    next = packets.recv(), if !hold => next,
+                let mut batch = Vec::new();
+                // How long the hold that just ended lasted.
+                let held = match held_since {
+                    Some(since) if !hold => now.saturating_duration_since(since),
+                    _ => Duration::ZERO,
                 };
-                let Some(first) = next else { break };
-                if done.load(Ordering::Acquire) {
-                    break;
-                }
-                let mut batch = vec![first];
-                if pacer.is_some() {
+                held_since = if hold { held_since.or(Some(now)) } else { None };
+                if held >= STALE_AFTER {
+                    // Under the sender's lock, so no frame slips in between
+                    // dropping what it follows and asking for a keyframe.
+                    let mut needs_keyframe = resync.lock().unwrap_or_else(|e| e.into_inner());
                     while let Ok(packet) = packets.try_recv() {
                         batch.push(packet);
                     }
-                    skip_to_keyframe(&mut batch);
+                    if drop_stale(&mut batch) {
+                        *needs_keyframe = true;
+                    }
+                }
+                if batch.is_empty() {
+                    let check = pacer.as_ref().and_then(Pacer::next_check);
+                    let next = tokio::select! {
+                        _ = stopped.notified() => break,
+                        // Each byte is a packet received. The other side stops
+                        // reading (STOP_SENDING) when it's done watching.
+                        read = recv.read(&mut reports) => match read {
+                            Ok(Some(count)) => {
+                                let rate = pacer.as_mut().and_then(|p| p.reported(Instant::now(), count));
+                                if let (Some(rate), Some(pacer)) = (rate, &pacer) {
+                                    measured_bytes.store(pacer.measured_bytes, Ordering::Release);
+                                    measured.store(rate.max(1), Ordering::Release);
+                                }
+                                continue;
+                            }
+                            Ok(None) | Err(_) => break,
+                        },
+                        () = tokio::time::sleep_until(check.unwrap_or(now).into()), if check.is_some() => continue,
+                        next = packets.recv(), if !hold => next,
+                    };
+                    let Some(first) = next else { break };
+                    if done.load(Ordering::Acquire) {
+                        break;
+                    }
+                    batch.push(first);
+                    if pacer.is_some() {
+                        while let Ok(packet) = packets.try_recv() {
+                            batch.push(packet);
+                        }
+                        skip_to_keyframe(&mut batch);
+                    }
                 }
                 for (kind, time, data) in batch {
                     let Ok(header) = video_packet_header(kind, time, data.len()) else { continue };
@@ -835,7 +897,7 @@ impl MirrorStream {
                 shared.finish_timeline_session(row_id, started_at.elapsed().as_secs().max(1));
             }
         });
-        MirrorStream { queue, closed, stop, resyncing: Mutex::new(false), audio, link_rate }
+        MirrorStream { queue, closed, stop, resyncing, audio, link_rate, link_bytes }
     }
 }
 
@@ -919,6 +981,7 @@ mod tests {
         assert!(pacer.hold(t + ms(1700)), "half of it hasn't arrived");
         let rate = pacer.reported(t + ms(2400), 1).expect("measured");
         assert_eq!(rate, 100_000 * 8 * 1000 / 1300);
+        assert_eq!(pacer.measured_bytes, 100_000, "and over how much");
         assert!(!pacer.hold(t + ms(2400)));
         assert_eq!(pacer.round_trip(), ms(100), "still the shortest seen");
     }
@@ -952,6 +1015,21 @@ mod tests {
     }
 
     #[test]
+    fn what_waited_through_a_long_hold_is_dropped_for_a_keyframe() {
+        let left = |kinds: &[PacketKind]| -> (Vec<PacketKind>, bool) {
+            let mut waiting: Vec<_> = kinds.iter().map(|k| (*k, 0, Vec::new())).collect();
+            let dropped = drop_stale(&mut waiting);
+            (waiting.into_iter().map(|p| p.0).collect(), dropped)
+        };
+        use PacketKind::{Config, Frame, Keyframe};
+        assert_eq!(left(&[Frame, Frame, Frame]), (vec![], true), "old frames go, a keyframe must follow");
+        assert_eq!(left(&[Frame, Config, Frame]), (vec![Config], true), "format changes stay");
+        assert_eq!(left(&[Frame, Keyframe, Frame]), (vec![Keyframe, Frame], false), "a fresh start");
+        assert_eq!(left(&[]), (vec![], false));
+        assert_eq!(left(&[Config]), (vec![Config], false), "nothing dropped, nothing to ask for");
+    }
+
+    #[test]
     fn reports_of_more_than_was_sent_are_ignored() {
         let t = Instant::now();
         let mut pacer = Pacer::default();
@@ -968,15 +1046,18 @@ mod tests {
             queue,
             closed: Arc::default(),
             stop: Arc::default(),
-            resyncing: Mutex::new(false),
+            resyncing: Arc::default(),
             audio: false,
             link_rate: Arc::default(),
+            link_bytes: Arc::default(),
         };
         let send = |kind| tokio::task::block_in_place(|| stream.send(kind, 0, vec![1]));
         assert_eq!(send(PacketKind::Keyframe), MirrorSend::Queued);
         assert_eq!(send(PacketKind::Frame), MirrorSend::Queued);
         assert_eq!(send(PacketKind::Frame), MirrorSend::NeedKeyframe, "full");
+        assert!(stream.is_backed_up(), "nothing made now would go out");
         packets.recv().await;
+        assert!(!stream.is_backed_up());
         // Room again, but the decoder needs a fresh start first.
         assert_eq!(send(PacketKind::Frame), MirrorSend::NeedKeyframe);
         assert_eq!(send(PacketKind::Keyframe), MirrorSend::Queued);
@@ -993,9 +1074,10 @@ mod tests {
             queue,
             closed: Arc::default(),
             stop: Arc::default(),
-            resyncing: Mutex::new(false),
+            resyncing: Arc::default(),
             audio: true,
             link_rate: Arc::default(),
+            link_bytes: Arc::default(),
         };
         let send = |kind| tokio::task::block_in_place(|| stream.send(kind, 0, vec![1]));
         assert_eq!(send(PacketKind::Frame), MirrorSend::Queued);

@@ -1198,7 +1198,7 @@ async fn a_video_stream_outlasts_its_reports() {
     }
     assert!(screen.got.lock().unwrap().contains(&last), "the last frame arrives");
     assert!(!stream.is_closed());
-    assert_eq!(stream.link_rate(), None, "a clear link never makes it wait");
+    assert_eq!(stream.link_measure(), None, "a clear link never makes it wait");
 }
 
 #[tokio::test(flavor = "multi_thread")]

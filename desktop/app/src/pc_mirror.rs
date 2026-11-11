@@ -35,6 +35,16 @@ mod imp {
     /// The lowest bitrate the stream backs off to on a slow link (encoders
     /// go no lower).
     const MIN_BITRATE: u32 = 500_000;
+    /// A measure of the link over fewer bytes than this says how late they
+    /// were, not what the link carries (a quiet screen, the phone's radio
+    /// asleep for a moment): the bitrate stays.
+    const MIN_MEASURED_BYTES: u64 = 16 * 1024;
+    /// How long the link must have carried everything before the bitrate
+    /// steps back up, and how often it then does, a quarter at a time. From
+    /// the lowest bitrate to 4 Mbit/s that is about half a minute; it used to
+    /// be over a minute and a half.
+    const RAISE_AFTER_CLEAN: Duration = Duration::from_secs(4);
+    const RAISE_EVERY: Duration = Duration::from_secs(3);
 
     /// What a sharing session sent in the last stats window.
     #[derive(Default)]
@@ -1736,12 +1746,24 @@ mod imp {
                 }
             }
 
-            let captured = match (place, window_capture.as_mut()) {
-                (Some(place), Some(capture)) => capture.capture(place.in_window, dst_w, dst_h, &mut bgra),
-                (Some(place), None) => {
-                    capture_screen(Some(place.on_screen), dst_w, dst_h, &mut bgra).is_some()
+            // The link is held: the phone hasn't said it got what was sent. A picture made
+            // now would only be dropped, and a keyframe made for nothing costs the most. One
+            // asked for above stays asked for, and comes with the next picture that can go.
+            let held = sender.is_backed_up();
+            if held {
+                stats.dropped += 1;
+                last_drop = Some(Instant::now());
+            }
+            let captured = if held {
+                false
+            } else {
+                match (place, window_capture.as_mut()) {
+                    (Some(place), Some(capture)) => capture.capture(place.in_window, dst_w, dst_h, &mut bgra),
+                    (Some(place), None) => {
+                        capture_screen(Some(place.on_screen), dst_w, dst_h, &mut bgra).is_some()
+                    }
+                    (None, _) => capture_screen(None, dst_w, dst_h, &mut bgra).is_some(),
                 }
-                (None, _) => capture_screen(None, dst_w, dst_h, &mut bgra).is_some(),
             };
             if captured && let Some(enc) = encoder.as_mut() {
                 bgra_to_nv12(&bgra, dst_w as usize, dst_h as usize, &mut nv12);
@@ -1789,10 +1811,11 @@ mod imp {
                         // Video got ahead of the link, which says how much it carries. Leave
                         // room for sound and keyframes, and at most halve it: one bad moment
                         // on Wi-Fi shouldn't leave the picture blurry for a minute.
-                        if let Some(rate) = sender.link_rate() {
+                        if let Some((rate, bytes)) = sender.link_measure() {
                             link_measured = true;
                             last_drop = Some(Instant::now());
-                            if last_rate_change.elapsed() >= Duration::from_secs(1) {
+                            let busy = bytes >= MIN_MEASURED_BYTES;
+                            if busy && last_rate_change.elapsed() >= Duration::from_secs(1) {
                                 let room = u32::try_from(rate / 10 * 7).unwrap_or(u32::MAX);
                                 let lower = room.max(bitrate / 2).max(MIN_BITRATE);
                                 if lower < bitrate && enc.set_bitrate(lower) {
@@ -1801,12 +1824,9 @@ mod imp {
                                 }
                             }
                         }
-                        // Clean for 10 s: step the bitrate back up toward what the phone asked for.
-                        let clean = last_drop.is_none_or(|t| t.elapsed() >= Duration::from_secs(10));
-                        if clean
-                            && bitrate < max_bitrate
-                            && last_rate_change.elapsed() >= Duration::from_secs(10)
-                        {
+                        // Clean for a while: step the bitrate back up toward what the phone asked for.
+                        let clean = last_drop.is_none_or(|t| t.elapsed() >= RAISE_AFTER_CLEAN);
+                        if clean && bitrate < max_bitrate && last_rate_change.elapsed() >= RAISE_EVERY {
                             let higher = (bitrate / 4 * 5).min(max_bitrate);
                             if enc.set_bitrate(higher) {
                                 bitrate = higher;
