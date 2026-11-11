@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.deck
 
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.SliderDefaults
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.g7link.android.ui.theme.G7Header
+import app.g7link.android.ui.theme.G7IconButton
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7Tabs
+import app.g7link.android.ui.theme.G7Tints
+import app.g7link.android.ui.theme.LocalQuietTheme
+import app.g7link.android.ui.theme.g7Tints
 import android.app.Activity
 import android.content.Context
 import android.content.res.Configuration
@@ -179,61 +190,21 @@ fun DeckScreen(
             ),
         verticalArrangement = Arrangement.spacedBy(if (isLandscape) 8.dp else 12.dp),
     ) {
-        // Header row: Back, PC name + status dot, Full-screen toggle
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
+        G7Header(
+            title = stringResource(R.string.action_deck_pc),
+            onBack = onBack,
+            note = device.name,
+            noteColor = if (device.online) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_back),
-                    contentDescription = stringResource(R.string.action_back),
-                )
-            }
-            Spacer(Modifier.width(4.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        device.name,
-                        style = if (isLandscape) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Surface(
-                        shape = CircleShape,
-                        color = if (device.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(8.dp),
-                    ) {}
-                }
-                if (!fullScreen && !isLandscape) {
-                    Text(
-                        stringResource(R.string.deck_hint, device.name),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            OutlinedButton(
+            G7RowAction(
+                label = stringResource(if (fullScreen) R.string.deck_exit_fullscreen else R.string.deck_fullscreen),
                 onClick = { fullScreen = !fullScreen },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Text(
-                    stringResource(if (fullScreen) R.string.deck_exit_fullscreen else R.string.deck_fullscreen),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
+            )
         }
 
-        // Compact PC audio header bar (volume, mute, and active output device)
+        // What plays on the PC, with play and pause
         if (!fullScreen && device.online) {
-            DeckAudioHeaderBar(
-                pcName = device.name,
-                liveState = liveState,
-                onSetPcAudio = { vol, muted -> core.setPcAudio(device.id, vol, muted) },
-            )
+            DeckNowPlaying(pcId = device.id, core = core)
         }
 
         // Status / permission banners
@@ -257,35 +228,16 @@ fun DeckScreen(
 
         // Page tabs when multiple pages exist
         if (pages.size > 1) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                pages.forEachIndexed { index, page ->
-                    FilterChip(
-                        selected = pagerState.currentPage == index,
-                        onClick = {
-                            scope.launch {
-                                if (reducedMotion) {
-                                    pagerState.scrollToPage(index)
-                                } else {
-                                    pagerState.animateScrollToPage(index)
-                                }
-                            }
-                        },
-                        label = {
-                            Text(
-                                page.name,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                    )
-                }
-            }
+            G7Tabs(
+                options = pages.indices.map { it to pages[it].name },
+                selected = pagerState.currentPage,
+                onSelect = { index ->
+                    scope.launch {
+                        if (reducedMotion) pagerState.scrollToPage(index) else pagerState.animateScrollToPage(index)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         // Swipable pages of tactile Deck tiles
@@ -353,6 +305,62 @@ fun DeckScreen(
                 }
             }
         }
+
+        // The PC's volume, mute and output, under the tiles
+        if (!fullScreen && device.online) {
+            DeckAudioHeaderBar(
+                pcName = device.name,
+                liveState = liveState,
+                onSetPcAudio = { vol, muted -> core.setPcAudio(device.id, vol, muted) },
+            )
+        }
+    }
+}
+
+/** A raised row with what plays on the PC, and play or pause. Nothing while nothing plays. */
+@Composable
+private fun DeckNowPlaying(pcId: String, core: Core) {
+    val summary by core.pcMedia.summaryFlow.collectAsStateWithLifecycle()
+    val media = summary?.takeIf { it.pcId == pcId } ?: return
+    val tints = g7Tints()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .background(tints.pink.copy(alpha = 0.16f), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(G7Icons.music, contentDescription = null, tint = tints.pink, modifier = Modifier.size(20.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(media.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (media.subtitle.isNotBlank()) {
+                Text(
+                    media.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        G7IconButton(
+            icon = if (media.playing) G7Icons.pause else G7Icons.play,
+            contentDescription = stringResource(if (media.playing) R.string.media_pause else R.string.media_play),
+            onClick = {
+                core.pcMedia.pressed(
+                    if (media.playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY,
+                )
+            },
+            filled = true,
+        )
     }
 }
 
@@ -377,31 +385,29 @@ private fun DeckAudioHeaderBar(
     val defaultOutput = liveState.outputDevices.firstOrNull { it.isDefault } ?: liveState.outputDevices.firstOrNull()
     val volumeLabel = stringResource(R.string.pc_audio_volume)
 
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    val tints = g7Tints()
+    Column(modifier = Modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                FilledTonalButton(
+                G7IconButton(
+                    icon = if (liveState.muted) G7Icons.volumeOff else G7Icons.volume,
+                    contentDescription = stringResource(if (liveState.muted) R.string.pc_audio_unmute else R.string.pc_audio_mute),
                     onClick = { onSetPcAudio(null, !liveState.muted) },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                ) {
-                    Text(
-                        stringResource(if (liveState.muted) R.string.pc_audio_unmute else R.string.pc_audio_mute),
-                        style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
-                    )
-                }
+                    tint = tints.teal,
+                )
                 Slider(
+                    colors = SliderDefaults.colors(
+                        thumbColor = tints.teal,
+                        activeTrackColor = tints.teal,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
                     value = (draggingVolume ?: liveState.volume.toFloat()).coerceIn(0f, 100f),
                     onValueChange = { v ->
                         draggingVolume = v
@@ -593,14 +599,25 @@ private fun DeckTileButton(
     val fontScale = LocalConfiguration.current.fontScale.coerceIn(1f, 1.35f)
     val tileHeight = ((if (compact) 98 else 118) * fontScale).dp
 
+    val quiet = LocalQuietTheme.current
+    val tileTint = if (quiet) deckTint(iconName, g7Tints()) else palette.fg
     Surface(
-        shape = MaterialTheme.shapes.large,
-        color = palette.bg.copy(alpha = if (enabled) 1f else 0.55f),
-        contentColor = palette.fg,
-        border = BorderStroke(
-            width = if (highlighted) 2.dp else 1.dp,
-            color = if (highlighted) palette.accent else palette.border,
-        ),
+        shape = if (quiet) RoundedCornerShape(12.dp) else MaterialTheme.shapes.large,
+        color = if (quiet) {
+            (if (highlighted) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainer)
+                .copy(alpha = if (enabled) 1f else 0.55f)
+        } else {
+            palette.bg.copy(alpha = if (enabled) 1f else 0.55f)
+        },
+        contentColor = if (quiet) MaterialTheme.colorScheme.onSurface else palette.fg,
+        border = if (quiet) {
+            null
+        } else {
+            BorderStroke(
+                width = if (highlighted) 2.dp else 1.dp,
+                color = if (highlighted) palette.accent else palette.border,
+            )
+        },
         modifier = Modifier
             .fillMaxWidth()
             .height(tileHeight)
@@ -634,6 +651,33 @@ private fun DeckTileButton(
                 )
             },
     ) {
+        if (quiet) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                DeckIcon(name = iconName, tint = tileTint, modifier = Modifier.size(24.dp))
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = tile.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (badge != null) {
+                    Text(
+                        text = badge,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (highlighted) tileTint else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+            return@Surface
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -1073,3 +1117,15 @@ private fun localizedDefaults(layout: DeckLayout, context: android.content.Conte
         )
     },
 )
+
+/** A tile icon's tint, by what it does. */
+private fun deckTint(icon: String, tints: G7Tints): Color = when (icon) {
+    "play", "play_pause", "pause", "skip_next", "skip_previous", "music", "video", "keyboard" -> tints.pink
+    "volume_up", "volume_down", "volume_off", "lock" -> tints.teal
+    "mic", "mic_off" -> tints.red
+    "desktop", "switch_window", "windows", "screenshot", "camera", "bell" -> tints.blue
+    "globe", "spark", "bolt", "folder", "star" -> tints.amber
+    "terminal" -> tints.green
+    "text" -> tints.muted
+    else -> tints.lavender
+}

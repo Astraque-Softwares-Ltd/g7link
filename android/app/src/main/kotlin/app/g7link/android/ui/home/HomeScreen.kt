@@ -1181,12 +1181,12 @@ private fun LinkDialog(pcName: String, onOpen: (String) -> Unit, onDismiss: () -
  * and whether it plays on this phone instead.
  */
 @Composable
-private fun PcSoundRows(
+internal fun PcSoundRows(
     pcId: String,
     pcName: String,
     deckState: DeckState,
-    highlighted: Boolean,
     onSetPcAudio: (volume: Int?, muted: Boolean?) -> Unit,
+    highlighted: Boolean = false,
 ) {
     val context = LocalContext.current
     val tints = g7Tints()
@@ -1224,6 +1224,11 @@ private fun PcSoundRows(
             tint = tints.pink,
             highlighted = highlighted,
         ) {
+            G7IconButton(
+                icon = G7Icons.previous,
+                contentDescription = stringResource(R.string.media_previous),
+                onClick = { pcMedia?.pressed(app.g7link.core.MediaAction.PREVIOUS) },
+            )
             G7IconButton(
                 icon = if (mediaSummary.playing) G7Icons.pause else G7Icons.play,
                 contentDescription = stringResource(if (mediaSummary.playing) R.string.media_pause else R.string.media_play),
@@ -2055,7 +2060,7 @@ private fun TransferRow(
 }
 
 @Composable
-private fun linkText(link: Link): String = when (link) {
+internal fun linkText(link: Link): String = when (link) {
     is Link.Online -> when {
         link.relayed -> stringResource(R.string.link_away)
         link.usb -> if (link.rttMs >= 1u) stringResource(R.string.link_usb_rtt, link.rttMs.toInt()) else stringResource(R.string.link_usb)

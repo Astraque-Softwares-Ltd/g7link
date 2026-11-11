@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.desk
 
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import app.g7link.android.ui.home.linkText
+import app.g7link.android.ui.theme.G7Colors
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7StatusDot
+import app.g7link.android.ui.theme.G7Tints
+import app.g7link.android.ui.theme.LocalAppFonts
 import android.app.Activity
 import android.text.format.DateFormat
 import android.view.WindowManager
@@ -130,370 +142,285 @@ fun DeskScreen(
     var lastSentVolInt by remember { mutableIntStateOf(-1) }
     val scope = rememberCoroutineScope()
 
+    val tints = G7Tints.dark
+    val ink = Color(0xFFF2F2F3)
+    val muted = Color(0xFFA1A1A8)
+    val raised = Color(0xFF18181B)
     Surface(
-        color = Color.Black,
-        contentColor = Color(0xFFEAECEF),
+        color = G7Colors.deepGround,
+        contentColor = ink,
         modifier = modifier.fillMaxSize(),
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 20.dp),
+                .padding(start = 24.dp, end = 24.dp, top = 48.dp, bottom = 24.dp),
         ) {
-            // Top bar: PC connection status + Exit button
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = if (device.online) Color(0xFF0E2217) else Color(0xFF16181E),
-                    border = BorderStroke(
-                        1.dp,
-                        if (device.online) Color(0xFF2EA05E) else Color(0xFF2B2F3A),
-                    ),
+            // The clock, the date and the PC, drifting a little each minute against burn-in.
+            Column(Modifier.offset { IntOffset(shiftX, shiftY) }) {
+                DeskClockDisplay()
+                Row(
+                    modifier = Modifier.padding(top = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        val dotColor = if (device.online) Color(0xFF4ADE80) else Color(0xFF9CA3AF)
-                        Spacer(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .drawBehind { drawCircle(dotColor) },
-                        )
-                        val linkDetail = when (val l = device.link) {
-                            is Link.Online -> "${device.name} · ${l.rttMs} ms"
-                            else -> "${device.name} · Offline"
+                    G7StatusDot(if (device.online) tints.teal else muted)
+                    Text(
+                        text = "${device.name} · ${linkText(device.link)}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (device.online) tints.teal else muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            if (device.online && (deckState != null || activeSummary != null)) {
+                val isPlaying = activeSummary?.playing ?: (deckState?.playing == true)
+                val outName = deckState?.outputDevices?.firstOrNull { it.isDefault }?.name
+                    ?: deckState?.outputDevices?.firstOrNull()?.name
+                    ?: device.name
+                val songTitle = activeSummary?.title?.takeIf { it.isNotBlank() }
+                    ?: if (isPlaying) stringResource(R.string.desk_media_playing) else stringResource(R.string.desk_media_audio)
+                val subtitleText = buildString {
+                    val sub = activeSummary?.subtitle?.trim().orEmpty()
+                    if (sub.isNotEmpty()) {
+                        append(sub)
+                        if (outName.isNotBlank() && !sub.contains(outName, ignoreCase = true)) {
+                            append(" · ")
+                            append(outName)
                         }
+                    } else {
+                        append(outName)
+                    }
+                }
+                Spacer(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(Color(0xFF222226)),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (artBitmap != null) {
+                        Image(
+                            bitmap = artBitmap,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(52.dp).clip(RoundedCornerShape(10.dp)),
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(tints.pink.copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(G7Icons.music, contentDescription = null, tint = tints.pink, modifier = Modifier.size(22.dp))
+                        }
+                    }
+                    Column(Modifier.weight(1f)) {
                         Text(
-                            text = linkDetail,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = if (device.online) Color(0xFFB8F5CD) else Color(0xFFD1D5DB),
+                            text = songTitle,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = subtitleText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = muted,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                }
-
-                OutlinedButton(
-                    onClick = onBack,
-                    border = BorderStroke(1.dp, Color(0xFF282C37)),
-                ) {
-                    Text(stringResource(R.string.desk_exit), color = Color(0xFFD1D5DB))
-                }
-            }
-
-            // Center: Ambient Clock + Date + PC Media / Volume Card (with OLED burn-in drift)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.Center)
-                    .offset { IntOffset(shiftX, shiftY) },
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                DeskClockDisplay()
-
-                Spacer(Modifier.height(2.dp))
-
-                // PC Media & Audio Dock Card
-                if (device.online && (deckState != null || activeSummary != null)) {
-                    val isPlaying = activeSummary?.playing ?: (deckState?.playing == true)
-                    val outName = deckState?.outputDevices?.firstOrNull { it.isDefault }?.name
-                        ?: deckState?.outputDevices?.firstOrNull()?.name
-                        ?: device.name
-                    val songTitle = activeSummary?.title?.takeIf { it.isNotBlank() }
-                        ?: if (isPlaying) stringResource(R.string.desk_media_playing) else stringResource(R.string.desk_media_audio)
-                    val subtitleText = buildString {
-                        val sub = activeSummary?.subtitle?.trim().orEmpty()
-                        if (sub.isNotEmpty()) {
-                            append(sub)
-                            if (outName.isNotBlank() && !sub.contains(outName, ignoreCase = true)) {
-                                append(" · ")
-                                append(outName)
+                    DeskIconButton(
+                        icon = G7Icons.previous,
+                        label = stringResource(R.string.media_previous),
+                        tint = ink,
+                        background = raised,
+                        onClick = {
+                            if (activeSummary != null) {
+                                core.pcMedia.pressed(MediaAction.PREVIOUS)
+                            } else {
+                                scope.launch { core.deckPress(device.id, "media_previous") }
                             }
-                        } else {
-                            append(outName)
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(26.dp),
-                        color = Color(0xFF0E1015),
-                        border = BorderStroke(1.dp, Color(0xFF222631)),
-                        modifier = Modifier.fillMaxWidth(),
+                        },
+                    )
+                    DeskIconButton(
+                        icon = if (isPlaying) G7Icons.pause else G7Icons.play,
+                        label = stringResource(R.string.deck_default_play_pause),
+                        tint = ink,
+                        background = raised,
+                        onClick = {
+                            if (activeSummary != null) {
+                                core.pcMedia.pressed(if (isPlaying) MediaAction.PAUSE else MediaAction.PLAY)
+                            } else {
+                                scope.launch { core.deckPress(device.id, "media_play_pause") }
+                            }
+                        },
+                    )
+                    DeskIconButton(
+                        icon = G7Icons.next,
+                        label = stringResource(R.string.media_next),
+                        tint = ink,
+                        background = raised,
+                        onClick = {
+                            if (activeSummary != null) {
+                                core.pcMedia.pressed(MediaAction.NEXT)
+                            } else {
+                                scope.launch { core.deckPress(device.id, "media_next") }
+                            }
+                        },
+                    )
+                }
+                if (deckState != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                // Album art or music badge
-                                if (artBitmap != null) {
-                                    Image(
-                                        bitmap = artBitmap,
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(48.dp)
-                                            .clip(RoundedCornerShape(12.dp)),
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(48.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(R.drawable.ic_music),
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp),
-                                        )
-                                    }
+                        DeskIconButton(
+                            icon = if (deckState.muted) G7Icons.volumeOff else G7Icons.volume,
+                            label = stringResource(if (deckState.muted) R.string.pc_audio_unmute else R.string.pc_audio_mute),
+                            tint = tints.teal,
+                            background = Color.Transparent,
+                            onClick = { core.setPcAudio(device.id, null, !deckState.muted) },
+                        )
+                        val shownVol = (draggingVolume ?: deckState.volume.toFloat()).coerceIn(0f, 100f)
+                        Slider(
+                            value = shownVol,
+                            onValueChange = { v ->
+                                draggingVolume = v
+                                val rounded = v.roundToInt()
+                                if (rounded != lastSentVolInt) {
+                                    lastSentVolInt = rounded
+                                    core.setPcAudio(device.id, rounded, null)
                                 }
-
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                                ) {
-                                    Text(
-                                        text = songTitle,
-                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = if (activeSummary != null) Color(0xFFF3F4F6) else MaterialTheme.colorScheme.primary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        text = subtitleText,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = Color(0xFF9CA3AF),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    FilledTonalIconButton(
-                                        onClick = {
-                                            if (activeSummary != null) {
-                                                core.pcMedia.pressed(MediaAction.PREVIOUS)
-                                            } else {
-                                                scope.launch { core.deckPress(device.id, "media_previous") }
-                                            }
-                                        },
-                                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                            containerColor = Color(0xFF1B1F2A),
-                                            contentColor = Color(0xFFE5E7EB),
-                                        ),
-                                        modifier = Modifier.size(38.dp),
-                                    ) {
-                                        Icon(
-                                            painterResource(R.drawable.ic_skip_previous),
-                                            contentDescription = stringResource(R.string.media_previous),
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                    FilledTonalIconButton(
-                                        onClick = {
-                                            if (activeSummary != null) {
-                                                core.pcMedia.pressed(
-                                                    if (isPlaying) MediaAction.PAUSE else MediaAction.PLAY,
-                                                )
-                                            } else {
-                                                scope.launch { core.deckPress(device.id, "media_play_pause") }
-                                            }
-                                        },
-                                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        ),
-                                        modifier = Modifier.size(42.dp),
-                                    ) {
-                                        Icon(
-                                            painterResource(
-                                                if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play,
-                                            ),
-                                            contentDescription = stringResource(R.string.deck_default_play_pause),
-                                            modifier = Modifier.size(20.dp),
-                                        )
-                                    }
-                                    FilledTonalIconButton(
-                                        onClick = {
-                                            if (activeSummary != null) {
-                                                core.pcMedia.pressed(MediaAction.NEXT)
-                                            } else {
-                                                scope.launch { core.deckPress(device.id, "media_next") }
-                                            }
-                                        },
-                                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                            containerColor = Color(0xFF1B1F2A),
-                                            contentColor = Color(0xFFE5E7EB),
-                                        ),
-                                        modifier = Modifier.size(38.dp),
-                                    ) {
-                                        Icon(
-                                            painterResource(R.drawable.ic_skip_next),
-                                            contentDescription = stringResource(R.string.media_next),
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Volume slider row
-                            if (deckState != null) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    IconButton(
-                                        onClick = { core.setPcAudio(device.id, null, !deckState.muted) },
-                                        modifier = Modifier.size(32.dp),
-                                    ) {
-                                        Icon(
-                                            painterResource(
-                                                if (deckState.muted) R.drawable.ic_sound_off else R.drawable.ic_speaker,
-                                            ),
-                                            contentDescription = null,
-                                            tint = Color(0xFFD1D5DB),
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                    val shownVol = (draggingVolume ?: deckState.volume.toFloat()).coerceIn(0f, 100f)
-                                    Slider(
-                                        value = shownVol,
-                                        onValueChange = { v ->
-                                            draggingVolume = v
-                                            val rounded = v.roundToInt()
-                                            if (rounded != lastSentVolInt) {
-                                                lastSentVolInt = rounded
-                                                core.setPcAudio(device.id, rounded, null)
-                                            }
-                                        },
-                                        onValueChangeFinished = {
-                                            draggingVolume = null
-                                            lastSentVolInt = -1
-                                        },
-                                        valueRange = 0f..100f,
-                                        colors = SliderDefaults.colors(
-                                            thumbColor = MaterialTheme.colorScheme.primary,
-                                            activeTrackColor = MaterialTheme.colorScheme.primary,
-                                            inactiveTrackColor = Color(0xFF252A36),
-                                        ),
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    Text(
-                                        text = if (deckState.muted) "Muted" else "${shownVol.roundToInt()}%",
-                                        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
-                                        color = Color(0xFFD1D5DB),
-                                        modifier = Modifier.width(44.dp),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } else if (!device.online && device.canWake) {
-                    FilledTonalButton(onClick = { core.wake(device.id) }) {
-                        Text(stringResource(R.string.action_wake_pc))
+                            },
+                            onValueChangeFinished = {
+                                draggingVolume = null
+                                lastSentVolInt = -1
+                            },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = tints.teal,
+                                activeTrackColor = tints.teal,
+                                inactiveTrackColor = Color(0xFF2B2B30),
+                            ),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = if (deckState.muted) {
+                                stringResource(R.string.pc_audio_muted)
+                            } else {
+                                stringResource(R.string.deck_volume_percent, shownVol.roundToInt())
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = muted,
+                        )
                     }
                 }
+            } else if (!device.online && device.canWake) {
+                DeskIconButton(
+                    icon = G7Icons.power,
+                    label = stringResource(R.string.action_wake_pc),
+                    tint = tints.red,
+                    background = raised,
+                    onClick = { core.wake(device.id) },
+                    text = stringResource(R.string.action_wake_pc),
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
             }
 
-            // Bottom Dock Bar: Symmetric 2×2 Grid of Equal-Width Quick Action Pills
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+            // The dock: the PC's screen, control, Deck, Lock and Exit.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    DeskActionButton(
-                        label = stringResource(R.string.desk_pc_screen),
-                        enabled = device.online,
-                        onClick = { onOpenRemote(RemoteMode.Screen) },
-                        modifier = Modifier.weight(1f),
-                    )
-                    DeskActionButton(
-                        label = stringResource(R.string.action_remote_pc),
-                        enabled = device.online,
-                        onClick = { onOpenRemote(RemoteMode.Touchpad) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    DeskActionButton(
-                        label = stringResource(R.string.action_deck_pc),
-                        enabled = device.online,
-                        onClick = onOpenDeck,
-                        modifier = Modifier.weight(1f),
-                    )
-                    DeskActionButton(
-                        label = stringResource(R.string.action_lock_pc),
-                        enabled = device.online,
-                        isSecondary = true,
-                        onClick = { core.pcPower(device.id, sleep = false) },
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                DeskIconButton(
+                    icon = G7Icons.screen,
+                    label = stringResource(R.string.desk_pc_screen),
+                    tint = tints.pink,
+                    background = raised,
+                    enabled = device.online,
+                    onClick = { onOpenRemote(RemoteMode.Screen) },
+                    modifier = Modifier.weight(1f),
+                )
+                DeskIconButton(
+                    icon = G7Icons.pointer,
+                    label = stringResource(R.string.action_remote_pc),
+                    tint = tints.teal,
+                    background = raised,
+                    enabled = device.online,
+                    onClick = { onOpenRemote(RemoteMode.Touchpad) },
+                    modifier = Modifier.weight(1f),
+                )
+                DeskIconButton(
+                    icon = G7Icons.deck,
+                    label = stringResource(R.string.action_deck_pc),
+                    tint = tints.green,
+                    background = raised,
+                    enabled = device.online,
+                    onClick = onOpenDeck,
+                    modifier = Modifier.weight(1f),
+                )
+                DeskIconButton(
+                    icon = G7Icons.lock,
+                    label = stringResource(R.string.action_lock_pc),
+                    tint = tints.teal,
+                    background = raised,
+                    enabled = device.online,
+                    onClick = { core.pcPower(device.id, sleep = false) },
+                    modifier = Modifier.weight(1f),
+                )
+                DeskIconButton(
+                    icon = G7Icons.close,
+                    label = stringResource(R.string.desk_exit),
+                    tint = muted,
+                    background = raised,
+                    onClick = onBack,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
 }
 
+/** A dark button with a tinted icon (and maybe a word), for the desk's dark ground. */
 @Composable
-private fun DeskActionButton(
+private fun DeskIconButton(
+    icon: ImageVector,
     label: String,
-    enabled: Boolean,
-    isSecondary: Boolean = false,
+    tint: Color,
+    background: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    text: String? = null,
 ) {
-    FilledTonalButton(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(18.dp),
-        colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = if (isSecondary) Color(0xFF12141B) else Color(0xFF171B24),
-            contentColor = if (isSecondary) Color(0xFFD1D5DB) else Color(0xFFF3F4F6),
-            disabledContainerColor = Color(0xFF0C0E12),
-            disabledContentColor = Color(0xFF4B5563),
-        ),
-        border = BorderStroke(
-            1.dp,
-            if (isSecondary) Color(0xFF262A36) else Color(0xFF2B3140),
-        ),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 13.dp),
-        modifier = modifier,
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(background)
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick)
+            .semantics { contentDescription = label }
+            .padding(horizontal = 12.dp, vertical = 14.dp)
+            .alpha(if (enabled) 1f else 0.4f),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+        if (text != null) {
+            Text(text, style = MaterialTheme.typography.labelLarge, color = Color(0xFFF2F2F3))
+        }
     }
 }
 
@@ -522,32 +449,31 @@ private fun DeskClockDisplay() {
     val dateText = remember(minuteKey, locale) { dateFormat.format(Date(minuteKey * 60_000L)) }
     val secText = remember(secondKey, locale) { secFormat.format(Date(secondKey * 1_000L)) }
 
-    Row(
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.Center,
-    ) {
+    val mono = LocalAppFonts.current.mono
+    Row(verticalAlignment = Alignment.Bottom) {
         Text(
             text = timeText,
-            fontSize = 84.sp,
-            lineHeight = 88.sp,
-            fontWeight = FontWeight.Light,
-            fontFamily = FontFamily.Monospace,
-            color = Color(0xFFF3F4F6),
+            fontSize = 76.sp,
+            lineHeight = 80.sp,
+            fontWeight = FontWeight.Normal,
+            fontFamily = mono,
+            letterSpacing = (-2).sp,
+            color = Color(0xFFF2F2F3),
         )
         Text(
             text = secText,
-            fontSize = 28.sp,
-            fontWeight = FontWeight.Normal,
-            fontFamily = FontFamily.Monospace,
-            color = Color(0xFF9CA3AF),
-            modifier = Modifier.padding(bottom = 12.dp, start = 4.dp),
+            fontSize = 24.sp,
+            fontFamily = mono,
+            color = Color(0xFFA1A1A8),
+            modifier = Modifier.padding(bottom = 10.dp, start = 4.dp),
         )
     }
 
     Text(
         text = dateText,
-        style = MaterialTheme.typography.titleMedium,
-        color = Color(0xFF9CA3AF),
+        style = MaterialTheme.typography.bodyLarge,
+        color = Color(0xFFA1A1A8),
+        modifier = Modifier.padding(top = 8.dp),
     )
 }
 

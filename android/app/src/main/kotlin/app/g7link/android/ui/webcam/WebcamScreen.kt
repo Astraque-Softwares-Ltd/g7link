@@ -1,6 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.webcam
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import app.g7link.android.ui.theme.G7Colors
+import app.g7link.android.ui.theme.G7IconButton
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7StatusDot
+import app.g7link.android.ui.theme.G7Tabs
+import app.g7link.android.ui.theme.LocalQuietTheme
+import app.g7link.android.ui.theme.g7Tints
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -130,7 +144,7 @@ fun WebcamScreen(
     }
 
     val previewView = remember { WebcamPreviewView(context, WebcamService::attachUiPreview) }
-    val previewShape = MaterialTheme.shapes.extraLarge
+    val previewShape = RoundedCornerShape(16.dp)
     val previewDensity = LocalDensity.current
     val previewDirection = LocalLayoutDirection.current
     LifecycleStartEffect(previewView) {
@@ -140,325 +154,243 @@ fun WebcamScreen(
 
     val isStreamingHere = session.active && session.pcId == device.id
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+    val tints = g7Tints()
+    val scheme = MaterialTheme.colorScheme
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(if (LocalQuietTheme.current) G7Colors.deepGround else scheme.background),
     ) {
-        // Header: Back icon button, PC name, online dot
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_back),
-                        contentDescription = stringResource(R.string.action_back),
-                    )
-                }
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    device.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                Surface(
-                    shape = CircleShape,
-                    color = if (device.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(10.dp),
-                ) {}
-            }
+        // Back, whether it's live, and what it streams
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            G7IconButton(icon = G7Icons.back, contentDescription = stringResource(R.string.action_back), onClick = onBack)
+            val live = isStreamingHere && !session.connecting
+            G7StatusDot(if (live) tints.red else if (device.online) tints.teal else tints.muted)
+            Text(
+                text = when {
+                    live -> stringResource(R.string.webcam_live_on, device.name)
+                    isStreamingHere -> stringResource(R.string.webcam_status_connecting, device.name)
+                    else -> device.name
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = if (live) tints.red else scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = stringResource(R.string.webcam_stream_spec, session.width, session.height, session.fps),
+                style = MaterialTheme.typography.labelMedium,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+            )
         }
 
-        // Camera permission prompt card when CAMERA permission is not granted yet
         if (!hasCameraPermission) {
-            item {
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                ) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
-                        Text(
-                            stringResource(R.string.webcam_permission_title),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            stringResource(R.string.webcam_permission_text, device.name),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Button(
-                            onClick = {
-                                startAfterGrant = device.online
-                                askCamera.launch(Manifest.permission.CAMERA)
-                            },
-                        ) {
-                            Text(stringResource(R.string.webcam_allow_camera))
-                        }
-                    }
-                }
+            G7Row(
+                label = stringResource(R.string.webcam_permission_title),
+                icon = G7Icons.camera,
+                tint = tints.coral,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            ) {
+                G7RowAction(
+                    label = stringResource(R.string.action_allow),
+                    onClick = {
+                        startAfterGrant = device.online
+                        askCamera.launch(Manifest.permission.CAMERA)
+                    },
+                    accent = true,
+                )
             }
         }
-
-        // Offline notice
         if (!device.online) {
-            item {
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Text(
-                            stringResource(R.string.not_connected),
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            stringResource(R.string.webcam_offline_hint, device.name),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
+            G7Row(
+                label = stringResource(R.string.not_connected),
+                sublabel = stringResource(R.string.webcam_offline_hint, device.name),
+                icon = G7Icons.wifi,
+                tint = tints.muted,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
         }
 
-        // Live 16:9 camera preview box
-        item {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clip(MaterialTheme.shapes.extraLarge)
-                    .background(Color(0xFF101216)),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (isStreamingHere && hasCameraPermission) {
-                    AndroidView(
-                        factory = { previewView.detached() },
-                        update = { it.setPreviewShape(previewShape, previewDensity, previewDirection) },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(24.dp),
-                    ) {
-                        Text(
-                            text = if (isStreamingHere && session.connecting) {
-                                stringResource(R.string.webcam_status_connecting, device.name)
-                            } else {
-                                stringResource(R.string.webcam_status_ready, device.name)
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = stringResource(R.string.webcam_stream_spec, session.width, session.height, session.fps),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.White.copy(alpha = 0.72f),
-                        )
-                    }
-                }
-
-                // Overlay badge in top-left corner
-                Surface(
-                    shape = MaterialTheme.shapes.medium,
-                    color = Color.Black.copy(alpha = 0.58f),
-                    contentColor = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(12.dp),
-                ) {
-                    val camLabel = stringResource(
-                        if (session.camera == "front") R.string.webcam_camera_front else R.string.webcam_camera_back,
-                    )
-                    Text(
-                        text = if (isStreamingHere && !session.connecting) {
-                            stringResource(
-                                R.string.webcam_status_streaming_camera,
-                                session.width,
-                                session.height,
-                                device.name,
-                                camLabel,
-                            )
-                        } else {
-                            stringResource(R.string.webcam_stream_camera_spec, session.width, session.height, camLabel)
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
-                }
-            }
-        }
-
-        // Controls Card: Start/Stop, Front/Back switch, Torch (when camera has flash), Resolution, Zoom
-        item {
-            Surface(
-                shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.surfaceContainer,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    // Start/Stop across the card, then the camera and torch side by side
-                    // at the same height (the camera alone when there's no flash).
-                    if (isStreamingHere) {
-                        Button(
-                            onClick = { WebcamService.stop(context) },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error,
-                                contentColor = MaterialTheme.colorScheme.onError,
-                            ),
-                            modifier = Modifier.fillMaxWidth().height(ControlHeight),
-                        ) {
-                            Text(stringResource(R.string.webcam_stop))
-                        }
+        // The camera's view
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xFF1D1D21)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (isStreamingHere && hasCameraPermission) {
+                AndroidView(
+                    factory = { previewView.detached() },
+                    update = { it.setPreviewShape(previewShape, previewDensity, previewDirection) },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Text(
+                    text = if (isStreamingHere && session.connecting) {
+                        stringResource(R.string.webcam_status_connecting, device.name)
                     } else {
-                        Button(
-                            enabled = device.online,
-                            onClick = {
-                                if (!hasCameraPermission) {
-                                    startAfterGrant = true
-                                    askCamera.launch(Manifest.permission.CAMERA)
-                                } else {
-                                    WebcamService.start(
-                                        context = context,
-                                        pcId = device.id,
-                                        height = session.height,
-                                        camera = session.camera,
-                                    )
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(ControlHeight),
-                        ) {
-                            Text(stringResource(R.string.webcam_start))
-                        }
-                    }
+                        stringResource(R.string.webcam_status_ready, device.name)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFA1A1A8),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(24.dp),
+                )
+            }
+        }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        FilledTonalButton(
-                            onClick = {
-                                val next = if (session.camera == "front") "back" else "front"
-                                WebcamService.setCamera(next, context)
-                            },
-                            modifier = Modifier.weight(1.3f).height(ControlHeight),
-                        ) {
-                            // Says what tapping does (#68), not which camera is on.
-                            Text(
-                                stringResource(
-                                    if (session.camera == "front") R.string.webcam_switch_to_back else R.string.webcam_switch_to_front,
-                                ),
-                                textAlign = TextAlign.Center,
-                                maxLines = 2,
+        // Resolution, then zoom: presets and a slider
+        val res720p = stringResource(R.string.webcam_res_720p)
+        val res1080p = stringResource(R.string.webcam_res_1080p)
+        val res4k = stringResource(R.string.webcam_res_4k)
+        val resolutions = buildList {
+            add(720 to res720p)
+            add(1080 to res1080p)
+            if (session.supports4k) add(2160 to res4k)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.Center) {
+            G7Tabs(options = resolutions, selected = session.resolution, onSelect = { WebcamService.setResolutionHeight(it) })
+        }
+        val zoomPresets = buildList {
+            add(1f)
+            if (session.maxZoomRatio >= 2f) add(2f)
+            if (session.maxZoomRatio >= 4f) add(4f)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        ) {
+            zoomPresets.forEach { ratio ->
+                val selected = kotlin.math.abs(session.zoomRatio - ratio) < 0.08f
+                Text(
+                    stringResource(R.string.webcam_zoom_preset, ratio.toInt()),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) scheme.onPrimary else scheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (selected) scheme.primary else scheme.surface)
+                        .clickable(role = Role.Button) { WebcamService.setZoomRatio(ratio.coerceAtMost(session.maxZoomRatio)) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        }
+        val zoomLabel = stringResource(R.string.webcam_zoom_label, session.zoomRatio)
+        val minZ = session.minZoomRatio
+        val maxZ = session.maxZoomRatio.coerceAtLeast(minZ + 0.1f)
+        Slider(
+            value = session.zoomRatio.coerceIn(minZ, maxZ),
+            onValueChange = { WebcamService.setZoomRatio(it) },
+            valueRange = minZ..maxZ,
+            colors = SliderDefaults.colors(
+                thumbColor = scheme.primary,
+                activeTrackColor = scheme.primary,
+                inactiveTrackColor = scheme.surfaceContainerHigh,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 32.dp)
+                .semantics { contentDescription = zoomLabel },
+        )
+
+        // Switch camera, start or stop, and the torch when there's one
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 4.dp, bottom = 20.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RoundButton(
+                icon = G7Icons.refresh,
+                label = stringResource(
+                    if (session.camera == "front") R.string.webcam_switch_to_back else R.string.webcam_switch_to_front,
+                ),
+                size = 52.dp,
+                background = scheme.surface,
+                tint = scheme.onSurface,
+                onClick = {
+                    val next = if (session.camera == "front") "back" else "front"
+                    WebcamService.setCamera(next, context)
+                },
+            )
+            if (isStreamingHere) {
+                RoundButton(
+                    icon = G7Icons.stop,
+                    label = stringResource(R.string.webcam_stop),
+                    size = 64.dp,
+                    background = tints.red,
+                    tint = Color(0xFF2A1111),
+                    onClick = { WebcamService.stop(context) },
+                )
+            } else {
+                RoundButton(
+                    icon = G7Icons.camera,
+                    label = stringResource(R.string.webcam_start),
+                    size = 64.dp,
+                    background = scheme.primary,
+                    tint = scheme.onPrimary,
+                    enabled = device.online,
+                    onClick = {
+                        if (!hasCameraPermission) {
+                            startAfterGrant = true
+                            askCamera.launch(Manifest.permission.CAMERA)
+                        } else {
+                            WebcamService.start(
+                                context = context,
+                                pcId = device.id,
+                                height = session.height,
+                                camera = session.camera,
                             )
                         }
-
-                        if (session.hasFlash) {
-                            OutlinedButton(
-                                enabled = isStreamingHere,
-                                onClick = { WebcamService.setTorch(!session.torchOn) },
-                                modifier = Modifier.weight(1f).height(ControlHeight),
-                            ) {
-                                Text(
-                                    stringResource(
-                                        if (session.torchOn) R.string.webcam_turn_torch_off else R.string.webcam_turn_torch_on,
-                                    ),
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 2,
-                                )
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-                    // Resolution picker: 720p, 1080p, and 4K (when supported)
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            stringResource(R.string.webcam_resolution_label),
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val res720p = stringResource(R.string.webcam_res_720p)
-                            val res1080p = stringResource(R.string.webcam_res_1080p)
-                            val res4k = stringResource(R.string.webcam_res_4k)
-                            val resolutions = buildList {
-                                add(720 to res720p)
-                                add(1080 to res1080p)
-                                if (session.supports4k) add(2160 to res4k)
-                            }
-                            for ((h, label) in resolutions) {
-                                FilterChip(
-                                    selected = session.resolution == h,
-                                    onClick = { WebcamService.setResolutionHeight(h) },
-                                    label = { Text(label) },
-                                )
-                            }
-                        }
-                    }
-
-                    // Zoom controls: presets + smooth high-contrast slider
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        val zoomLabel = stringResource(
-                            R.string.webcam_zoom_label,
-                            session.zoomRatio,
-                        )
-                        Text(
-                            zoomLabel,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = kotlin.math.abs(session.zoomRatio - 1f) < 0.08f,
-                                onClick = { WebcamService.setZoomRatio(1f) },
-                                label = { Text(stringResource(R.string.webcam_zoom_preset, 1)) },
-                            )
-                            FilterChip(
-                                selected = kotlin.math.abs(session.zoomRatio - 2f) < 0.08f,
-                                onClick = { WebcamService.setZoomRatio(2f.coerceAtMost(session.maxZoomRatio)) },
-                                label = { Text(stringResource(R.string.webcam_zoom_preset, 2)) },
-                            )
-                            if (session.maxZoomRatio >= 4f) {
-                                FilterChip(
-                                    selected = kotlin.math.abs(session.zoomRatio - 4f) < 0.08f,
-                                    onClick = { WebcamService.setZoomRatio(4f.coerceAtMost(session.maxZoomRatio)) },
-                                    label = { Text(stringResource(R.string.webcam_zoom_preset, 4)) },
-                                )
-                            }
-                        }
-                        val minZ = session.minZoomRatio
-                        val maxZ = session.maxZoomRatio.coerceAtLeast(minZ + 0.1f)
-                        Slider(
-                            value = session.zoomRatio.coerceIn(minZ, maxZ),
-                            onValueChange = { WebcamService.setZoomRatio(it) },
-                            valueRange = minZ..maxZ,
-                            colors = SliderDefaults.colors(
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                activeTrackColor = MaterialTheme.colorScheme.primary,
-                                inactiveTrackColor = MaterialTheme.colorScheme.secondaryContainer,
-                                disabledThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                disabledActiveTrackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-                                disabledInactiveTrackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
-                            ),
-                            modifier = Modifier.semantics { contentDescription = zoomLabel },
-                        )
-                    }
-                }
+                    },
+                )
+            }
+            if (session.hasFlash) {
+                RoundButton(
+                    icon = G7Icons.torch,
+                    label = stringResource(if (session.torchOn) R.string.webcam_turn_torch_off else R.string.webcam_turn_torch_on),
+                    size = 52.dp,
+                    background = if (session.torchOn) tints.amber else scheme.surface,
+                    tint = if (session.torchOn) Color(0xFF2A1A00) else scheme.onSurface,
+                    enabled = isStreamingHere,
+                    onClick = { WebcamService.setTorch(!session.torchOn) },
+                )
+            } else {
+                Spacer(Modifier.size(52.dp))
             }
         }
     }
 }
 
-/** One height for the webcam's buttons, so they line up. */
-private val ControlHeight = 52.dp
+/** A round camera control with an icon; its label is for screen readers. */
+@Composable
+private fun RoundButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    size: androidx.compose.ui.unit.Dp,
+    background: Color,
+    tint: Color,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(background)
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = label, onClick = onClick)
+            .semantics { contentDescription = label }
+            .alpha(if (enabled) 1f else 0.45f),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+    }
+}
+

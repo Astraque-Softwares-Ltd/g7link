@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.remote
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.g7link.android.ui.home.PcSoundRows
+import app.g7link.android.ui.home.linkText
+import app.g7link.android.ui.theme.G7Header
+import app.g7link.android.ui.theme.G7IconButton
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7RaisedButton
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7Tabs
+import app.g7link.android.ui.theme.g7Tints
 import android.Manifest
 import android.app.Activity
 import android.content.Context
@@ -124,7 +134,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlinx.coroutines.delay
 
-enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen }
+enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen, Media }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -154,6 +164,7 @@ fun RemoteScreen(
     }
 
     var mode by rememberSaveable(initialMode) { mutableStateOf(initialMode) }
+    var showKeyboard by rememberSaveable { mutableStateOf(false) }
     var screenFullScreen by rememberSaveable { mutableStateOf(false) }
     var access by remember(device.id) { mutableStateOf(Core.RemoteAccess.Allowed) }
     // In landscape the touchpad takes the screen, with its buttons under it.
@@ -200,112 +211,39 @@ fun RemoteScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .then(
-                if (isFullScreen) {
-                    Modifier
-                } else {
-                    Modifier
-                        .systemBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                },
-            ),
-        verticalArrangement = Arrangement.spacedBy(if (isFullScreen) 0.dp else 12.dp),
+            .then(if (isFullScreen) Modifier else Modifier.systemBarsPadding()),
     ) {
         if (!isFullScreen) {
-            // Header: Back, PC name, online dot
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_back),
-                        contentDescription = stringResource(R.string.action_back),
-                    )
-                }
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    device.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                Surface(
-                    shape = CircleShape,
-                    color = if (device.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(10.dp),
-                ) {}
-            }
-
-            // Mode switcher: Touchpad | Air mouse | Presentation | Screen
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                SegmentedButton(
-                    selected = mode == RemoteMode.Touchpad,
-                    onClick = { mode = RemoteMode.Touchpad },
-                    shape = SegmentedButtonDefaults.itemShape(0, 4),
-                    icon = {},
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_mode_touchpad),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                SegmentedButton(
-                    selected = mode == RemoteMode.AirMouse,
-                    onClick = { mode = RemoteMode.AirMouse },
-                    shape = SegmentedButtonDefaults.itemShape(1, 4),
-                    icon = {},
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_mode_air),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                SegmentedButton(
-                    selected = mode == RemoteMode.Presentation,
-                    onClick = { mode = RemoteMode.Presentation },
-                    shape = SegmentedButtonDefaults.itemShape(2, 4),
-                    icon = {},
-                    modifier = Modifier.weight(1.1f),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_mode_presentation),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                SegmentedButton(
-                    selected = mode == RemoteMode.Screen,
-                    onClick = { mode = RemoteMode.Screen },
-                    shape = SegmentedButtonDefaults.itemShape(3, 4),
-                    icon = {},
-                    modifier = Modifier.weight(0.95f),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_mode_screen),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
+            G7Header(title = device.name, onBack = onBack, note = linkText(device.link))
+            G7Tabs(
+                options = listOf(
+                    RemoteMode.Touchpad to stringResource(R.string.remote_mode_touchpad),
+                    RemoteMode.AirMouse to stringResource(R.string.remote_mode_air),
+                    RemoteMode.Presentation to stringResource(R.string.remote_mode_presentation),
+                    RemoteMode.Screen to stringResource(R.string.remote_mode_screen),
+                    RemoteMode.Media to stringResource(R.string.remote_mode_media),
+                ),
+                selected = mode,
+                onSelect = { mode = it },
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+            )
 
             // Status banner when offline, denied, or unsupported
-            when {
-                !device.online || access == Core.RemoteAccess.Offline -> OfflineWakeBanner(
-                    device = device,
-                    onWake = { core.wake(device.id) },
-                )
-                access == Core.RemoteAccess.Denied -> StatusBanner(
-                    title = stringResource(R.string.remote_denied_title, device.name),
-                    text = stringResource(R.string.remote_denied_text, device.name),
-                )
-                access == Core.RemoteAccess.Unsupported -> StatusBanner(
-                    title = null,
-                    text = stringResource(R.string.remote_unsupported_text, device.name),
-                )
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp)) {
+                when {
+                    !device.online || access == Core.RemoteAccess.Offline -> OfflineWakeBanner(
+                        device = device,
+                        onWake = { core.wake(device.id) },
+                    )
+                    access == Core.RemoteAccess.Denied -> StatusBanner(
+                        title = stringResource(R.string.remote_denied_title, device.name),
+                        text = stringResource(R.string.remote_denied_text, device.name),
+                    )
+                    access == Core.RemoteAccess.Unsupported -> StatusBanner(
+                        title = null,
+                        text = stringResource(R.string.remote_unsupported_text, device.name),
+                    )
+                }
             }
         }
 
@@ -323,7 +261,10 @@ fun RemoteScreen(
                             fadeOut(tween(150)))
                 }
             },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .then(if (isFullScreen) Modifier else Modifier.padding(horizontal = 16.dp)),
             label = "RemoteModeTransition",
         ) { currentMode ->
             when (currentMode) {
@@ -337,6 +278,8 @@ fun RemoteScreen(
                     canBeTouchpadOnly = landscape,
                     touchpadOnly = touchpadOnly,
                     onTouchpadOnly = { touchpadOnlyChosen = it },
+                    showKeyboard = showKeyboard,
+                    onShowKeyboard = { showKeyboard = it },
                     modifier = Modifier.fillMaxSize(),
                 )
                 RemoteMode.AirMouse -> AirMouseView(
@@ -381,7 +324,115 @@ fun RemoteScreen(
                         )
                     }
                 }
+                RemoteMode.Media -> MediaView(device = device, core = core, modifier = Modifier.fillMaxSize())
             }
+        }
+
+        if (!isFullScreen && !WindowInsets.isImeVisible) {
+            RemoteToolbar(
+                device = device,
+                core = core,
+                keyboardOn = showKeyboard && mode == RemoteMode.Touchpad,
+                onKeyboard = {
+                    if (mode != RemoteMode.Touchpad) {
+                        mode = RemoteMode.Touchpad
+                        showKeyboard = true
+                    } else {
+                        showKeyboard = !showKeyboard
+                    }
+                },
+                onVolume = { mode = RemoteMode.Media },
+            )
+        }
+    }
+}
+
+/**
+ * Under every mode: the keyboard, the PC's sound, play or pause, and Lock and
+ * Sleep when the PC takes them.
+ */
+@Composable
+private fun RemoteToolbar(
+    device: Device,
+    core: Core,
+    keyboardOn: Boolean,
+    onKeyboard: () -> Unit,
+    onVolume: () -> Unit,
+) {
+    val tints = g7Tints()
+    val pcMedia = core.pcMedia
+    val summary by pcMedia.summaryFlow.collectAsStateWithLifecycle()
+    val playing = summary?.takeIf { it.pcId == device.id }?.playing ?: (device.deckState?.playing == true)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        G7IconButton(
+            icon = G7Icons.keyboard,
+            contentDescription = stringResource(R.string.remote_keyboard),
+            onClick = onKeyboard,
+            tint = tints.pink,
+            filled = keyboardOn,
+            enabled = device.online,
+            modifier = Modifier.weight(1f),
+        )
+        G7IconButton(
+            icon = G7Icons.volume,
+            contentDescription = stringResource(R.string.pc_audio_volume),
+            onClick = onVolume,
+            tint = tints.teal,
+            enabled = device.online,
+            modifier = Modifier.weight(1f),
+        )
+        G7IconButton(
+            icon = if (playing) G7Icons.pause else G7Icons.play,
+            contentDescription = stringResource(if (playing) R.string.media_pause else R.string.media_play),
+            onClick = {
+                pcMedia.pressed(if (playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY)
+            },
+            tint = tints.pink,
+            enabled = device.online,
+            modifier = Modifier.weight(1f),
+        )
+        if (device.has("device.pc_actions")) {
+            G7IconButton(
+                icon = G7Icons.lock,
+                contentDescription = stringResource(R.string.action_lock_pc),
+                onClick = { core.pcPower(device.id, false) },
+                tint = tints.teal,
+                enabled = device.online,
+                modifier = Modifier.weight(1f),
+            )
+            G7IconButton(
+                icon = G7Icons.power,
+                contentDescription = stringResource(R.string.action_sleep_pc),
+                onClick = { core.pcPower(device.id, true) },
+                tint = tints.red,
+                enabled = device.online,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/** The PC's sound: what plays, with its controls, the volume and where it plays. */
+@Composable
+private fun MediaView(device: Device, core: Core, modifier: Modifier = Modifier) {
+    val deckState = device.deckState
+    Column(modifier = modifier.verticalScroll(rememberScrollState())) {
+        if (deckState != null && device.online) {
+            PcSoundRows(
+                pcId = device.id,
+                pcName = device.name,
+                deckState = deckState,
+                onSetPcAudio = { volume, muted -> core.setPcAudio(device.id, volume, muted) },
+            )
+        } else {
+            G7Row(
+                label = stringResource(R.string.remote_media_nothing),
+                icon = G7Icons.music,
+                tint = g7Tints().muted,
+            )
         }
     }
 }
@@ -482,11 +533,8 @@ private fun TouchpadSurface(
     val touchpadDesc = stringResource(R.string.remote_mode_touchpad)
     Surface(
         shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(
-            width = if (dragging) 2.dp else 1.dp,
-            color = if (dragging) primaryColor else outlineColor,
-        ),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = if (dragging) BorderStroke(2.dp, primaryColor) else null,
         modifier = modifier
             .semantics { contentDescription = touchpadDesc }
             .pointerInput(pcId, sensitivity) {
@@ -629,8 +677,8 @@ private fun TouchpadSurface(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp, vertical = 14.dp),
             )
         }
     }
@@ -648,9 +696,10 @@ private fun TouchpadView(
     canBeTouchpadOnly: Boolean,
     touchpadOnly: Boolean,
     onTouchpadOnly: (Boolean) -> Unit,
+    showKeyboard: Boolean,
+    onShowKeyboard: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var showKeyboard by rememberSaveable { mutableStateOf(false) }
     // What's been typed since the last Enter: a real field, so the keyboard
     // keeps its page, autocorrects, and has something to delete.
     var typed by remember { mutableStateOf(TextFieldValue("")) }
@@ -695,83 +744,41 @@ private fun TouchpadView(
                 )
             }
 
-            // Mouse buttons + Keyboard toggle row
+            // The mouse buttons, and in landscape the switch to the touchpad alone
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                FilledTonalButton(
+                G7RaisedButton(
+                    label = stringResource(R.string.remote_left_click),
                     onClick = { core.remoteButton(pcId, "left", "click", onStatus) },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                    modifier = Modifier.weight(0.88f).height(46.dp),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_left_click),
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                )
+                G7RaisedButton(
+                    label = stringResource(R.string.remote_middle_click),
                     onClick = { core.remoteButton(pcId, "middle", "click", onStatus) },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                    modifier = Modifier.weight(1.04f).height(46.dp),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_middle_click),
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                FilledTonalButton(
+                    modifier = Modifier.weight(1f),
+                )
+                G7RaisedButton(
+                    label = stringResource(R.string.remote_right_click),
                     onClick = { core.remoteButton(pcId, "right", "click", onStatus) },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                    modifier = Modifier.weight(0.94f).height(46.dp),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_right_click),
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Button(
-                    onClick = {
-                        // Typing needs the keys and the field, so show them all.
-                        if (touchpadOnly) onTouchpadOnly(false)
-                        showKeyboard = !showKeyboard
-                    },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                    modifier = Modifier.weight(1.26f).height(46.dp),
-                ) {
-                    Text(
-                        stringResource(R.string.remote_keyboard),
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+                    modifier = Modifier.weight(1f),
+                )
                 if (canBeTouchpadOnly) {
-                    OutlinedButton(
+                    G7RaisedButton(
+                        label = stringResource(if (touchpadOnly) R.string.remote_more_controls else R.string.remote_touchpad_only),
                         onClick = {
-                            if (!touchpadOnly) showKeyboard = false
+                            if (!touchpadOnly) onShowKeyboard(false)
                             onTouchpadOnly(!touchpadOnly)
                         },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                        modifier = Modifier.weight(1.1f).height(46.dp),
-                    ) {
-                        Text(
-                            stringResource(if (touchpadOnly) R.string.remote_more_controls else R.string.remote_touchpad_only),
-                            style = MaterialTheme.typography.labelLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                        modifier = Modifier.weight(1.2f),
+                    )
                 }
             }
 
             if (touchpadOnly) return@Column
+
+            if (!showKeyboard) return@Column
 
             // Scroll rather than squeeze the typing field when the keyboard is up.
             Column(
@@ -942,7 +949,7 @@ private fun AirMouseView(
         val airDesc = stringResource(R.string.remote_mode_air)
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
-            color = if (padHeld) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = if (padHeld) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
             contentColor = if (padHeld) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
             border = BorderStroke(
                 width = if (padHeld) 2.dp else 1.dp,
@@ -1057,20 +1064,16 @@ private fun AirMouseView(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            FilledTonalButton(
+            G7RaisedButton(
+                label = stringResource(R.string.remote_left_click),
                 onClick = { core.remoteButton(pcId, "left", "click", onStatus) },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                modifier = Modifier.weight(1f).height(48.dp),
-            ) {
-                Text(stringResource(R.string.remote_left_click), maxLines = 1)
-            }
-            FilledTonalButton(
+                modifier = Modifier.weight(1f),
+            )
+            G7RaisedButton(
+                label = stringResource(R.string.remote_right_click),
                 onClick = { core.remoteButton(pcId, "right", "click", onStatus) },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                modifier = Modifier.weight(1f).height(48.dp),
-            ) {
-                Text(stringResource(R.string.remote_right_click), maxLines = 1)
-            }
+                modifier = Modifier.weight(1f),
+            )
         }
 
         // Voice typing bar (Dictate button: hold to talk, or tap to start/stop)
@@ -1366,7 +1369,7 @@ private fun VoiceTypingBar(
             )
 
             Surface(
-                shape = CircleShape,
+                shape = MaterialTheme.shapes.small,
                 color = buttonBg,
                 contentColor = buttonFg,
                 modifier = Modifier
@@ -1705,39 +1708,21 @@ private fun PresentationView(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedButton(
+            G7RaisedButton(
+                label = stringResource(R.string.remote_slide_start),
                 onClick = { core.remoteSlide(pcId, "start", onStatus) },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                modifier = Modifier.weight(0.98f).height(48.dp),
-            ) {
-                Text(
-                    stringResource(R.string.remote_slide_start),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            OutlinedButton(
+                modifier = Modifier.weight(0.98f),
+            )
+            G7RaisedButton(
+                label = stringResource(R.string.remote_slide_stop),
                 onClick = { core.remoteSlide(pcId, "stop", onStatus) },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                modifier = Modifier.weight(0.88f).height(48.dp),
-            ) {
-                Text(
-                    stringResource(R.string.remote_slide_stop),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            OutlinedButton(
+                modifier = Modifier.weight(0.88f),
+            )
+            G7RaisedButton(
+                label = stringResource(R.string.remote_slide_black),
                 onClick = { core.remoteSlide(pcId, "black", onStatus) },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                modifier = Modifier.weight(1.22f).height(48.dp),
-            ) {
-                Text(
-                    stringResource(R.string.remote_slide_black),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+                modifier = Modifier.weight(1.22f),
+            )
         }
 
         // Hold for laser pointer pad (supports both gyroscope tilt and finger drag)
@@ -1748,7 +1733,7 @@ private fun PresentationView(
         )
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
-            color = if (laserHeld) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = if (laserHeld) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
             contentColor = if (laserHeld) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
             border = BorderStroke(
                 width = if (laserHeld) 2.dp else 1.dp,

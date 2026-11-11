@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.recorder
 
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import app.g7link.android.ui.theme.G7Header
+import app.g7link.android.ui.theme.G7IconButton
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7RaisedButton
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7SectionLabel
+import app.g7link.android.ui.theme.g7Tints
 import android.Manifest
 import android.media.MediaPlayer
 import android.text.format.Formatter
@@ -155,272 +167,197 @@ fun RecorderScreen(
         onDispose { stopPlayback() }
     }
 
+    val tints = g7Tints()
+    val scheme = MaterialTheme.colorScheme
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(start = 10.dp, end = 10.dp, bottom = 16.dp),
     ) {
-        // Header: Back, PC name, online dot
         item(key = "header", contentType = "header") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_back),
-                        contentDescription = stringResource(R.string.action_back),
-                    )
-                }
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    device.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.weight(1f),
-                )
-                val dotColor = if (device.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                Spacer(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .drawBehind { drawCircle(dotColor) },
-                )
-            }
+            G7Header(
+                title = stringResource(R.string.home_voice_note),
+                onBack = onBack,
+                note = stringResource(R.string.recorder_saves_to, device.name),
+            )
         }
 
-        // Contextual permission card when microphone access has not been granted yet
         if (!hasMicPermission) {
-            item(key = "mic_permission", contentType = "permission_banner") {
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                ) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
-                        Text(
-                            stringResource(R.string.recorder_permission_title),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            stringResource(R.string.recorder_permission_text, device.name),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Button(
-                            onClick = {
-                                startAfterGrant = false
-                                askMic.launch(Manifest.permission.RECORD_AUDIO)
-                            },
-                        ) {
-                            Text(stringResource(R.string.recorder_allow_mic))
-                        }
-                    }
-                }
-            }
-        }
-
-        // Offline notice when PC isn't currently connected
-        if (!device.online) {
-            item(key = "offline_notice", contentType = "offline_banner") {
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Text(
-                            stringResource(R.string.transfer_waiting, device.name),
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            stringResource(R.string.recorder_offline_hint, device.name),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        }
-
-        // Main Recorder Card: elapsed time, live level meter, big record/pause/stop buttons, markers
-        item(key = "recorder_card", contentType = "recorder_card") {
-            Surface(
-                shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        text = when {
-                            session.active && session.paused -> stringResource(R.string.recorder_status_paused)
-                            session.active -> stringResource(R.string.recorder_status_recording, device.name)
-                            else -> stringResource(R.string.recorder_status_ready, device.name)
+            item(key = "mic_permission", contentType = "row") {
+                G7Row(label = stringResource(R.string.recorder_permission_title), icon = G7Icons.mic, tint = tints.red) {
+                    G7RowAction(
+                        label = stringResource(R.string.action_allow),
+                        onClick = {
+                            startAfterGrant = false
+                            askMic.launch(Manifest.permission.RECORD_AUDIO)
                         },
-                        style = MaterialTheme.typography.labelLarge,
+                        accent = true,
                     )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        text = RecorderService.formatDuration(session.elapsedMs),
-                        style = MaterialTheme.typography.displayMedium.copy(
-                            fontFamily = LocalAppFonts.current.mono,
-                        ),
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                    Spacer(Modifier.height(16.dp))
+                }
+            }
+        }
 
-                    // Live level meter (collects 25Hz mic level internally in draw phase)
-                    LevelMeter(
-                        active = session.active && !session.paused,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(40.dp),
-                    )
+        if (!device.online) {
+            item(key = "offline_notice", contentType = "row") {
+                G7Row(
+                    label = stringResource(R.string.transfer_waiting, device.name),
+                    sublabel = stringResource(R.string.recorder_offline_hint, device.name),
+                    icon = G7Icons.wifi,
+                    tint = tints.muted,
+                )
+            }
+        }
 
-                    Spacer(Modifier.height(24.dp))
+        // The time, the level, markers, and the controls
+        item(key = "recorder_card", contentType = "recorder") {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = when {
+                        session.active && session.paused -> stringResource(R.string.recorder_status_paused)
+                        session.active -> stringResource(R.string.recorder_status_recording, device.name)
+                        else -> stringResource(R.string.recorder_status_ready, device.name)
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = scheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    text = RecorderService.formatDuration(session.elapsedMs),
+                    style = MaterialTheme.typography.displayMedium.copy(fontFamily = LocalAppFonts.current.mono),
+                    maxLines = 1,
+                    softWrap = false,
+                )
+                Spacer(Modifier.height(22.dp))
+                LevelMeter(
+                    active = session.active && !session.paused,
+                    modifier = Modifier.fillMaxWidth().height(70.dp),
+                )
+                Spacer(Modifier.height(22.dp))
 
-                    if (!session.active) {
-                        val startDesc = stringResource(R.string.recorder_start)
-                        Button(
-                            onClick = {
-                                stopPlayback()
-                                if (RecorderService.hasPermission(context)) {
-                                    hasMicPermission = true
-                                    RecorderService.start(context, device.id)
-                                } else {
-                                    startAfterGrant = true
-                                    askMic.launch(Manifest.permission.RECORD_AUDIO)
-                                }
-                            },
-                            modifier = Modifier
-                                .height(64.dp)
-                                .fillMaxWidth(0.75f)
-                                .semantics { contentDescription = startDesc },
-                            shape = CircleShape,
-                        ) {
-                            Text(
-                                stringResource(R.string.recorder_start),
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                        }
-                    } else {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            val pauseResumeLabel = stringResource(
-                                if (session.paused) R.string.recorder_resume else R.string.recorder_pause,
-                            )
-                            FilledTonalButton(
-                                onClick = {
-                                    if (session.paused) {
-                                        RecorderService.resume(context)
-                                    } else {
-                                        RecorderService.pause(context)
-                                    }
-                                },
-                                modifier = Modifier
-                                    .height(56.dp)
-                                    .weight(1f)
-                                    .semantics { contentDescription = pauseResumeLabel },
-                            ) {
-                                Text(pauseResumeLabel, style = MaterialTheme.typography.titleMedium)
-                            }
-
-                            val stopLabel = stringResource(R.string.action_stop)
-                            Button(
-                                onClick = { RecorderService.stop(context) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.error,
-                                    contentColor = MaterialTheme.colorScheme.onError,
-                                ),
-                                modifier = Modifier
-                                    .height(56.dp)
-                                    .weight(1f)
-                                    .semantics { contentDescription = stopLabel },
-                            ) {
-                                Text(stopLabel, style = MaterialTheme.typography.titleMedium)
-                            }
-                        }
-
-                        Spacer(Modifier.height(16.dp))
-
-                        // Marker controls while recording
-                        val markerHint = stringResource(R.string.recorder_marker_hint)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            OutlinedTextField(
-                                value = markerText,
-                                onValueChange = { markerText = it },
-                                placeholder = { Text(markerHint) },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                keyboardActions = KeyboardActions(
-                                    onDone = {
-                                        RecorderService.addMarker(markerText)
-                                        markerText = ""
-                                    },
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .semantics { contentDescription = markerHint },
-                            )
-                            val addMarkerDesc = stringResource(R.string.recorder_add_marker)
-                            FilledTonalButton(
-                                onClick = {
+                if (session.active) {
+                    val markerHint = stringResource(R.string.recorder_marker_hint)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = markerText,
+                            onValueChange = { markerText = it },
+                            placeholder = { Text(markerHint) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(
+                                onDone = {
                                     RecorderService.addMarker(markerText)
                                     markerText = ""
                                 },
-                                modifier = Modifier
-                                    .height(52.dp)
-                                    .semantics { contentDescription = addMarkerDesc },
-                            ) {
-                                Text(addMarkerDesc)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics { contentDescription = markerHint },
+                        )
+                        G7RaisedButton(
+                            label = stringResource(R.string.recorder_add_marker),
+                            onClick = {
+                                RecorderService.addMarker(markerText)
+                                markerText = ""
+                            },
+                        )
+                    }
+                    if (session.markers.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            session.markers.forEachIndexed { idx, m ->
+                                val ts = RecorderService.formatDuration(m.atMs.toLong())
+                                val label = m.label ?: stringResource(R.string.recorder_marker_default, idx + 1)
+                                // A label, not a button: markers aren't actionable here.
+                                Text(
+                                    text = stringResource(R.string.recorder_marker_chip, ts, label),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = scheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .background(scheme.surfaceContainer, RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                )
                             }
                         }
+                    }
+                    Spacer(Modifier.height(24.dp))
+                }
 
-                        if (session.markers.isNotEmpty()) {
-                            Spacer(Modifier.height(12.dp))
-                            FlowRow(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                session.markers.forEachIndexed { idx, m ->
-                                    val ts = RecorderService.formatDuration(m.atMs.toLong())
-                                    val label = m.label ?: stringResource(R.string.recorder_marker_default, idx + 1)
-                                    // A label, not a button: markers aren't actionable here.
-                                    Text(
-                                        text = stringResource(R.string.recorder_marker_chip, ts, label),
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        modifier = Modifier
-                                            .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(8.dp))
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                    )
+                // Pause or record in the middle; Save (stop and send) at the right.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Spacer(Modifier.width(72.dp))
+                    val bigLabel = stringResource(
+                        when {
+                            !session.active -> R.string.recorder_start
+                            session.paused -> R.string.recorder_resume
+                            else -> R.string.recorder_pause
+                        },
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .background(tints.red)
+                            .clickable(role = Role.Button, onClickLabel = bigLabel) {
+                                when {
+                                    !session.active -> {
+                                        stopPlayback()
+                                        if (RecorderService.hasPermission(context)) {
+                                            hasMicPermission = true
+                                            RecorderService.start(context, device.id)
+                                        } else {
+                                            startAfterGrant = true
+                                            askMic.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    }
+                                    session.paused -> RecorderService.resume(context)
+                                    else -> RecorderService.pause(context)
                                 }
                             }
+                            .semantics { contentDescription = bigLabel },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = if (session.active && !session.paused) G7Icons.pause else G7Icons.mic,
+                            contentDescription = null,
+                            tint = Color(0xFF2A1111),
+                            modifier = Modifier.size(26.dp),
+                        )
+                    }
+                    Box(Modifier.width(72.dp), contentAlignment = Alignment.Center) {
+                        if (session.active) {
+                            Text(
+                                stringResource(R.string.recorder_save),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = scheme.primary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(role = Role.Button) { RecorderService.stop(context) }
+                                    .padding(12.dp),
+                            )
                         }
                     }
                 }
             }
         }
 
-        // Saved recordings list: play, send again, delete
+        // Saved recordings: play, send again, delete
         if (recordings.isNotEmpty()) {
             item(key = "saved_header", contentType = "section_header") {
-                Text(
-                    stringResource(R.string.recorder_saved_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
+                G7SectionLabel(stringResource(R.string.recorder_saved_title))
             }
             items(recordings, key = { it.id }, contentType = { "recording_row" }) { rec ->
                 RecordingRow(
@@ -453,8 +390,8 @@ private fun LevelMeter(
         animationSpec = if (reducedMotion) snap() else spring(),
         label = "micLevel",
     )
-    val activeColor = MaterialTheme.colorScheme.primary
-    val inactiveColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f)
+    val activeColor = g7Tints().red
+    val inactiveColor = MaterialTheme.colorScheme.outlineVariant
     Canvas(modifier = modifier) {
         val level = animatedLevelState.value
         val barCount = 24
@@ -505,51 +442,25 @@ private fun RecordingRow(
         DeliveryState.Idle -> null
     }
 
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            val meta = listOfNotNull(durationText, sizeText, markersText, statusText).joinToString(" · ")
-            Text(
-                meta,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(
-                    onClick = onPlayToggle,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                ) {
-                    Text(stringResource(if (playing) R.string.action_stop else R.string.media_play))
-                }
-                OutlinedButton(
-                    onClick = onSend,
-                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                ) {
-                    Text(
-                        stringResource(
-                            if (recording.delivery == DeliveryState.Sent) R.string.recorder_send_again
-                            else R.string.recorder_send_now,
-                        ),
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                TextButton(
-                    onClick = onDelete,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                ) {
-                    Text(stringResource(R.string.recorder_delete))
-                }
-            }
-        }
+    val meta = listOfNotNull(durationText, sizeText, markersText, statusText).joinToString(" · ")
+    G7Row(label = title, sublabel = meta, icon = G7Icons.mic, tint = g7Tints().red) {
+        G7IconButton(
+            icon = if (playing) G7Icons.stop else G7Icons.play,
+            contentDescription = stringResource(if (playing) R.string.action_stop else R.string.media_play),
+            onClick = onPlayToggle,
+        )
+        G7IconButton(
+            icon = G7Icons.send,
+            contentDescription = stringResource(
+                if (recording.delivery == DeliveryState.Sent) R.string.recorder_send_again else R.string.recorder_send_now,
+            ),
+            onClick = onSend,
+        )
+        G7IconButton(
+            icon = G7Icons.trash,
+            contentDescription = stringResource(R.string.recorder_delete),
+            onClick = onDelete,
+            tint = g7Tints().red,
+        )
     }
 }
