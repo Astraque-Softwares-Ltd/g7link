@@ -10,7 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -658,6 +658,66 @@ struct PageState {
     contact_photos: HashMap<String, PathBuf>,
     /// Bumped when the phone changes, so late answers are dropped.
     generation: u64,
+    /// The page's call log as JSON (it shows the contacts' names and photos too).
+    log_cache: CachedJson,
+    /// The page's contacts as JSON.
+    contacts_cache: CachedJson,
+}
+
+impl PageState {
+    /// The call log or its photos changed.
+    fn log_changed(&mut self) {
+        self.log_cache.changed();
+    }
+
+    /// The contacts or their photos changed: the call log shows them too.
+    fn contacts_changed(&mut self) {
+        self.contacts_cache.changed();
+        self.log_cache.changed();
+    }
+
+    fn log_json(&mut self) -> (u64, Arc<str>) {
+        let Self { log, log_photos, contacts, contact_photos, log_cache, .. } = self;
+        log_cache.get(|| call_log_json(log, log_photos, contacts, contact_photos))
+    }
+
+    fn contacts_json(&mut self) -> (u64, Arc<str>) {
+        let Self { contacts, contact_photos, contacts_cache, .. } = self;
+        contacts_cache.get(|| contacts_to_json(contacts, contact_photos))
+    }
+}
+
+/// Generations of the Calls page's JSON, never reused in a run.
+static JSON_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// JSON made from the Calls page's data, made again only after the data
+/// changed: a call ringing or being answered mustn't serialise thousands of
+/// contacts again.
+#[derive(Debug, Default)]
+struct CachedJson {
+    /// Changes only when the JSON does.
+    generation: u64,
+    json: Arc<str>,
+    /// `json` was made from the data as it is.
+    current: bool,
+}
+
+impl CachedJson {
+    fn changed(&mut self) {
+        self.current = false;
+    }
+
+    fn get(&mut self, make: impl FnOnce() -> String) -> (u64, Arc<str>) {
+        if !self.current {
+            let json = make();
+            if self.generation == 0 || *self.json != *json {
+                self.generation = JSON_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+                self.json = Arc::from(json);
+            }
+            self.current = true;
+        }
+        (self.generation, self.json.clone())
+    }
 }
 
 static PAGE: Mutex<Option<PageState>> = Mutex::new(None);
@@ -712,11 +772,17 @@ pub fn release_idle_resources() {
 pub struct View {
     pub device: Option<DeviceId>,
     pub log_status: Status,
-    pub call_log: Value,
+    /// The call log as JSON.
+    pub call_log: Arc<str>,
+    /// Changes only when `call_log` does.
+    pub log_generation: u64,
     pub more_log: bool,
     pub loading_older: bool,
     pub contacts_status: Status,
-    pub contacts: Value,
+    /// The contacts as JSON.
+    pub contacts: Arc<str>,
+    /// Changes only when `contacts` does.
+    pub contacts_generation: u64,
     pub dialing: bool,
     /// `[{ id, label }]` when the phone has more than one SIM to call with.
     pub sims: Value,
@@ -725,61 +791,78 @@ pub struct View {
 }
 
 pub fn view() -> View {
-    page_state(|s| {
-        // Match call log numbers to contacts for photos and fallback names.
-        let mut by_digits: HashMap<String, (&str, Option<&PathBuf>)> = HashMap::new();
-        for c in &s.contacts {
-            let photo = s.contact_photos.get(&c.id);
-            for n in &c.numbers {
-                let d = digits(&n.number);
-                if !d.is_empty() {
-                    by_digits.entry(d).or_insert((c.name.as_str(), photo));
-                }
+    page_state(view_of)
+}
+
+fn view_of(s: &mut PageState) -> View {
+    let (log_generation, call_log) = s.log_json();
+    let (contacts_generation, contacts) = s.contacts_json();
+    View {
+        device: s.device,
+        log_status: s.log_status,
+        call_log,
+        log_generation,
+        more_log: s.more_log,
+        loading_older: s.loading_older,
+        contacts_status: s.contacts_status,
+        contacts,
+        contacts_generation,
+        dialing: s.dialing,
+        sims: sims_json(&s.sims),
+        sim: s.device.and_then(|d| sim_from(&s.sims, chosen_sim(d).as_deref())).unwrap_or_default(),
+    }
+}
+
+/// The call log for the Calls page, named and pictured from the contacts
+/// where the phone's log has no name or photo.
+fn call_log_json(
+    log: &[CallLogEntry],
+    log_photos: &HashMap<String, PathBuf>,
+    contacts: &[Contact],
+    contact_photos: &HashMap<String, PathBuf>,
+) -> String {
+    // Match call log numbers to contacts for photos and fallback names.
+    let mut by_digits: HashMap<String, (&str, Option<&PathBuf>)> = HashMap::new();
+    for c in contacts {
+        let photo = contact_photos.get(&c.id);
+        for n in &c.numbers {
+            let d = digits(&n.number);
+            if !d.is_empty() {
+                by_digits.entry(d).or_insert((c.name.as_str(), photo));
             }
         }
-        View {
-            device: s.device,
-            log_status: s.log_status,
-            call_log: Value::Array(
-                s.log
-                    .iter()
-                    .map(|e| {
-                        let matched = digits(&e.number);
-                        let from_contact =
-                            (!matched.is_empty()).then(|| by_digits.get(&matched).copied()).flatten();
-                        let photo = s
-                            .log_photos
-                            .get(&e.id)
-                            .or_else(|| from_contact.and_then(|(_, p)| p))
-                            .map(|p| crate::icons::file_url(p))
-                            .unwrap_or_default();
-                        let name = e
-                            .name
-                            .as_deref()
-                            .filter(|n| !n.trim().is_empty())
-                            .or_else(|| from_contact.map(|(n, _)| n).filter(|n| !n.trim().is_empty()))
-                            .unwrap_or_default();
-                        log_entry_json(e, name, photo)
-                    })
-                    .collect(),
-            ),
-            more_log: s.more_log,
-            loading_older: s.loading_older,
-            contacts_status: s.contacts_status,
-            contacts: Value::Array(
-                s.contacts.iter().map(|c| contact_json(c, s.contact_photos.get(&c.id))).collect(),
-            ),
-            dialing: s.dialing,
-            sims: if s.sims.sims.len() > 1 {
-                Value::Array(
-                    s.sims.sims.iter().map(|sim| json!({ "id": sim.id, "label": sim.label })).collect(),
-                )
-            } else {
-                Value::Array(Vec::new())
-            },
-            sim: s.device.and_then(|d| sim_from(&s.sims, chosen_sim(d).as_deref())).unwrap_or_default(),
-        }
-    })
+    }
+    let mut entries = Vec::with_capacity(log.len());
+    for e in log {
+        let matched = digits(&e.number);
+        let from_contact = (!matched.is_empty()).then(|| by_digits.get(&matched).copied()).flatten();
+        let photo = log_photos
+            .get(&e.id)
+            .or_else(|| from_contact.and_then(|(_, p)| p))
+            .map(|p| crate::icons::file_url(p))
+            .unwrap_or_default();
+        let name = e
+            .name
+            .as_deref()
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| from_contact.map(|(n, _)| n).filter(|n| !n.trim().is_empty()))
+            .unwrap_or_default();
+        entries.push(log_entry_json(e, name, photo));
+    }
+    Value::Array(entries).to_string()
+}
+
+fn contacts_to_json(contacts: &[Contact], photos: &HashMap<String, PathBuf>) -> String {
+    let contacts: Vec<Value> = contacts.iter().map(|c| contact_json(c, photos.get(&c.id))).collect();
+    Value::Array(contacts).to_string()
+}
+
+/// The SIMs to pick from, when there's more than one.
+fn sims_json(sims: &CallSims) -> Value {
+    if sims.sims.len() < 2 {
+        return Value::Array(Vec::new());
+    }
+    sims.sims.iter().map(|sim| json!({ "id": sim.id, "label": sim.label })).collect()
 }
 
 // ---- SIM choice (#112) ----
@@ -986,6 +1069,7 @@ fn load_call_log(before: Option<i64>) {
                         s.more_log = full;
                     }
                     s.log_photos.extend(photos);
+                    s.log_changed();
                     s.log_status = Status::Ready;
                     crate::bridge::app::update_home_calls(device, &s.log);
                 }
@@ -1043,6 +1127,7 @@ fn load_contacts() {
                 None => {
                     s.contacts = all;
                     s.contact_photos.extend(photos);
+                    s.contacts_changed();
                     s.contacts_status = Status::Ready;
                 }
                 Some(e) => {
@@ -1445,7 +1530,8 @@ mod tests {
         let v = view();
         assert_eq!(v.log_status, Status::Ready);
         assert_eq!(v.contacts_status, Status::Ready);
-        let log = v.call_log.as_array().unwrap();
+        let log: Value = serde_json::from_str(&v.call_log).unwrap();
+        let log = log.as_array().unwrap();
         assert_eq!(log.len(), 2);
         // Matched to Alice Rivera by trailing digits!
         assert_eq!(log[0]["name"], "Alice Rivera");
@@ -1453,7 +1539,8 @@ mod tests {
         assert_eq!(log[1]["name"], "Explicit Name");
         assert_eq!(log[1]["duration"], 95);
 
-        let contacts = v.contacts.as_array().unwrap();
+        let contacts: Value = serde_json::from_str(&v.contacts).unwrap();
+        let contacts = contacts.as_array().unwrap();
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0]["name"], "Alice Rivera");
         assert_eq!(contacts[0]["starred"], true);
@@ -1461,6 +1548,62 @@ mod tests {
 
         assert_eq!(dial_problem(&Error::Denied), "Calls are turned off for this phone.");
         assert_eq!(dial_problem(&Error::Offline), "The phone isn't connected.");
+    }
+
+    #[test]
+    fn the_pages_json_is_made_again_only_when_its_data_changes() {
+        use g7link_core::ContactNumber;
+
+        let mut s = PageState {
+            log: vec![CallLogEntry {
+                id: "1".into(),
+                number: "+15550102000".into(),
+                name: None,
+                photo: None,
+                direction: "incoming".into(),
+                date: 1_700_000_000_000,
+                duration: 30,
+            }],
+            ..PageState::default()
+        };
+        let first = view_of(&mut s);
+
+        // A call ringing, then answered, changes nothing the page lists.
+        let phone = DeviceId([45; 32]);
+        ringing(|r| r.insert(phone, call(Some("Sam"), Some("+15550102000"))));
+        let ringing_view = view_of(&mut s);
+        ringing(|r| r.remove(&phone));
+        assert_eq!(ringing_view.log_generation, first.log_generation);
+        assert_eq!(ringing_view.contacts_generation, first.contacts_generation);
+        assert!(Arc::ptr_eq(&ringing_view.call_log, &first.call_log), "not serialised again");
+
+        // A new contact: the contacts change, and so does the log, which now
+        // names the caller.
+        s.contacts.push(Contact {
+            id: "c1".into(),
+            name: "Sam Otieno".into(),
+            numbers: vec![ContactNumber { number: "555-010-2000".into(), label: None }],
+            starred: false,
+            photo: None,
+        });
+        s.contacts_changed();
+        let added = view_of(&mut s);
+        assert_ne!(added.contacts_generation, first.contacts_generation);
+        assert_ne!(added.log_generation, first.log_generation);
+        assert!(added.call_log.contains("Sam Otieno"));
+
+        // Loaded again, the same: nothing to show again.
+        s.contacts_changed();
+        s.log_changed();
+        let reloaded = view_of(&mut s);
+        assert_eq!(reloaded.contacts_generation, added.contacts_generation);
+        assert_eq!(reloaded.log_generation, added.log_generation);
+
+        // Another phone's (empty) page is new too.
+        let mut other = PageState::default();
+        let empty = view_of(&mut other);
+        assert_ne!(empty.contacts_generation, added.contacts_generation);
+        assert_eq!(&*empty.contacts, "[]");
     }
 
     #[test]

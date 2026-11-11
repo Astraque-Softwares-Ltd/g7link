@@ -168,7 +168,7 @@ pub struct PhoneCallRust {
     hfp_detail: QString,
     /// The call's ID on the phone, for its commands.
     call: Option<(DeviceId, String)>,
-    /// What the Calls page last showed, to skip JSON updates that changed nothing.
+    /// What the Calls page last showed, to skip updates that changed nothing.
     last_view: Option<calls::View>,
 }
 
@@ -288,26 +288,28 @@ impl qobject::PhoneCall {
         self.as_mut().set_hfp_detail(QString::from(&hfp.detail));
 
         let view = calls::view();
-        if self.rust().last_view.as_ref() != Some(&view) {
-            let last = self.rust().last_view.clone();
-            let differs = |f: fn(&calls::View) -> String| last.as_ref().is_none_or(|l| f(l) != f(&view));
-            self.as_mut().set_log_status(QString::from(view.log_status.as_str()));
-            if differs(|v| v.call_log.to_string()) {
-                self.as_mut().set_call_log(QString::from(&view.call_log.to_string()));
-            }
-            self.as_mut().set_more_log(view.more_log);
-            self.as_mut().set_loading_older(view.loading_older);
-            self.as_mut().set_contacts_status(QString::from(view.contacts_status.as_str()));
-            if differs(|v| v.contacts.to_string()) {
-                self.as_mut().set_contacts(QString::from(&view.contacts.to_string()));
-            }
-            self.as_mut().set_dialing(view.dialing);
-            if differs(|v| v.sims.to_string()) {
-                self.as_mut().set_sims(QString::from(&view.sims.to_string()));
-            }
-            self.as_mut().set_sim(QString::from(&view.sim));
-            self.as_mut().rust_mut().last_view = Some(view);
+        let last = self.as_mut().rust_mut().last_view.take();
+        // The log and contacts can be thousands of entries: they go to QML
+        // again only when their generation says they changed.
+        let shown = |generation: fn(&calls::View) -> u64| {
+            last.as_ref().is_some_and(|l| generation(l) == generation(&view))
+        };
+        self.as_mut().set_log_status(QString::from(view.log_status.as_str()));
+        if !shown(|v| v.log_generation) {
+            self.as_mut().set_call_log(QString::from(&*view.call_log));
         }
+        self.as_mut().set_more_log(view.more_log);
+        self.as_mut().set_loading_older(view.loading_older);
+        self.as_mut().set_contacts_status(QString::from(view.contacts_status.as_str()));
+        if !shown(|v| v.contacts_generation) {
+            self.as_mut().set_contacts(QString::from(&*view.contacts));
+        }
+        self.as_mut().set_dialing(view.dialing);
+        if last.as_ref().is_none_or(|l| l.sims != view.sims) {
+            self.as_mut().set_sims(QString::from(&view.sims.to_string()));
+        }
+        self.as_mut().set_sim(QString::from(&view.sim));
+        self.as_mut().rust_mut().last_view = Some(view);
     }
 
     fn send(&self, command: CallCommand) {
