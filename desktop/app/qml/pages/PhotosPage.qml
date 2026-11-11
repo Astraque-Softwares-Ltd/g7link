@@ -658,7 +658,7 @@ Item {
             visible: Photos.count > 0
             clip: true
             boundsBehavior: Flickable.StopAtBounds
-            cacheBuffer: height
+            cacheBuffer: Math.max(0, height)
             // Auto-fill: as many ~130 px columns as fit, 6 px apart.
             readonly property int columns: Math.max(2, Math.floor((width + 6) / 136))
             cellWidth: Math.floor(width / columns)
