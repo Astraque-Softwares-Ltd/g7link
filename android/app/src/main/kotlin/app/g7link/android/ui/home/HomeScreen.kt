@@ -599,8 +599,7 @@ fun HomeScreen(
 
         if (pc == null) {
             item(key = "no_paired_pc_card", contentType = "group") {
-                Column {
-                    G7SectionLabel(stringResource(R.string.home_no_pc_paired))
+                Column(Modifier.padding(top = 8.dp)) {
                     G7Row(
                         label = stringResource(R.string.action_pair_with_pc),
                         icon = G7Icons.plus,

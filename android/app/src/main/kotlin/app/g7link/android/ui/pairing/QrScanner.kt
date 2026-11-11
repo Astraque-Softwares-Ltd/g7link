@@ -12,7 +12,6 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
@@ -68,13 +67,15 @@ fun QrScanner(onLink: (String) -> Unit, modifier: Modifier = Modifier) {
     if (granted) {
         CameraPreview(onLink, modifier)
     } else {
-        Column(modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        // The explanation above the scanning frame, the button inside it.
+        Box(modifier) {
             Text(
                 stringResource(R.string.camera_permission_needed),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
+                modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 20.dp, vertical = 14.dp),
             )
-            Button(onClick = { request.launch(Manifest.permission.CAMERA) }, modifier = Modifier.padding(top = 12.dp)) {
+            Button(onClick = { request.launch(Manifest.permission.CAMERA) }, modifier = Modifier.align(Alignment.Center)) {
                 Text(stringResource(R.string.action_allow_camera))
             }
         }

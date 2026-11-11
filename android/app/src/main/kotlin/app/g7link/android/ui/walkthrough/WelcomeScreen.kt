@@ -32,6 +32,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import app.g7link.android.R
 import app.g7link.android.calls.PhoneCalls
 import app.g7link.android.contacts.PhoneContacts
@@ -72,6 +73,12 @@ internal fun rememberAccessItems(state: CoreState, onAccessChanged: () -> Unit):
     val context = LocalContext.current
     val tints = g7Tints()
     var refresh by remember { mutableIntStateOf(0) }
+    // Permissions also change in Android's own prompts and settings screens.
+    LifecycleResumeEffect(Unit) {
+        refresh++
+        onAccessChanged()
+        onPauseOrDispose {}
+    }
     val postNotifGranted = remember(state.notificationAccess, refresh) {
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
