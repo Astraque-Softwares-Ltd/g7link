@@ -31,7 +31,6 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 /**
  * Phone apps in windows of their own on a PC (Elevated): each runs on a
@@ -55,7 +54,7 @@ class AppWindows(
         val socket: Socket,
         @Volatile var width: Int,
         @Volatile var height: Int,
-        val dpi: Int,
+        @Volatile var dpi: Int,
         val maxSize: Int,
     ) {
         @Volatile var display: Int = -1
@@ -172,13 +171,18 @@ class AppWindows(
         val window = windows[pc to session] ?: return
         val (phoneW, phoneH) = screen()
         val (newW, newH) = WindowShape.fit(width, height, window.maxSize, phoneW, phoneH)
-        if (newW == window.width && newH == window.height) return
+        // The density follows the size, so the app is laid out as on the phone
+        // however big its window is. Keeping the first size's density made a
+        // smaller window a smaller phone: everything too big, and cut.
+        val newDpi = WindowShape.density(newW, newH, phoneW, phoneH, phoneDpi())
+        if (newW == window.width && newH == window.height && newDpi == window.dpi) return
         window.width = newW
         window.height = newH
+        window.dpi = newDpi
         runCatching {
             synchronized(window) {
                 window.socket.getOutputStream().apply {
-                    write("R $newW $newH ${window.dpi}\n".toByteArray())
+                    write("R $newW $newH $newDpi\n".toByteArray())
                     flush()
                 }
             }
@@ -210,10 +214,11 @@ class AppWindows(
         val (w, h) = screen()
         val (shortSide, longSide) = minOf(w, h) to maxOf(w, h)
         val (fitW, fitH) = WindowShape.fit(shortSide, longSide, maxSize.coerceAtLeast(320), w, h)
-        val scale = fitH.toFloat() / longSide
-        val dpi = (context.resources.displayMetrics.densityDpi * scale).roundToInt().coerceIn(120, 640)
-        return Triple(fitW, fitH, dpi)
+        return Triple(fitW, fitH, WindowShape.density(fitW, fitH, w, h, phoneDpi()))
     }
+
+    /** The phone's own density, as the user set it (Display size). */
+    private fun phoneDpi(): Int = context.resources.displayMetrics.densityDpi
 
     /** The PC turned keeping the phone awake, or its screen off, on or off. */
     fun setPower(pc: String, stayAwake: Boolean, screenOff: Boolean) {

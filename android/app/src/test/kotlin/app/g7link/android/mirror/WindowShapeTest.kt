@@ -53,4 +53,25 @@ class WindowShapeTest {
         assertTrue(small.first >= 240 && small.second >= 240)
         assertAligned(small)
     }
+
+    @Test
+    fun aWindowOfAnySizeIsAsManyDpAcrossAsThePhone() {
+        // A Pixel 8 Pro with Display size turned up: 1344 px across at 544 dpi, 395 dp.
+        val (w, h, dpi) = Triple(1344, 2992, 544)
+        val phoneDp = w * 160.0 / dpi
+        for ((dw, dh) in listOf(720 to 1600, 576 to 1280, 432 to 960, 1600 to 720, 800 to 800)) {
+            val density = WindowShape.density(dw, dh, w, h, dpi)
+            val dp = minOf(dw, dh) * 160.0 / density
+            assertEquals("$dw x $dh at $density dpi", phoneDp, dp, 1.5)
+        }
+        // The first size's density on a smaller window was a 316 dp phone.
+        assertEquals(233, WindowShape.density(576, 1280, w, h, dpi))
+    }
+
+    @Test
+    fun aDensityStaysWithinWhatAndroidTakes() {
+        assertEquals(120, WindowShape.density(240, 240, 1440, 3200, 320))
+        assertEquals(640, WindowShape.density(1920, 1920, 720, 1600, 320))
+        assertEquals(320, WindowShape.density(720, 1600, 0, 0, 320))
+    }
 }

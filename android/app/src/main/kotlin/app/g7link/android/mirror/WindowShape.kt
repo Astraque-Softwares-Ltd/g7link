@@ -42,6 +42,23 @@ object WindowShape {
         return unitW * count to unitH * count
     }
 
+    /**
+     * The density of a [width] x [height] display that lays an app out as the
+     * phone does: as many dp across its short side as the phone's screen
+     * ([phoneW] x [phoneH] at [phoneDpi]). A display that only got smaller
+     * while keeping the phone's density is a smaller phone to the app, which
+     * then draws everything too big for its window.
+     */
+    fun density(width: Int, height: Int, phoneW: Int, phoneH: Int, phoneDpi: Int): Int {
+        val phoneShort = minOf(phoneW, phoneH)
+        if (phoneShort <= 0 || phoneDpi <= 0) return phoneDpi.coerceIn(MIN_DPI, MAX_DPI)
+        val dpi = phoneDpi.toLong() * minOf(width, height) / phoneShort.toDouble()
+        return Math.round(dpi).toInt().coerceIn(MIN_DPI, MAX_DPI)
+    }
+
+    private const val MIN_DPI = 120
+    private const val MAX_DPI = 640
+
     /** [COMMON] and the phone's own shape, each reduced (long : short). */
     private fun shapes(phoneW: Int, phoneH: Int): List<Pair<Int, Int>> {
         val own = if (phoneW > 0 && phoneH > 0) {

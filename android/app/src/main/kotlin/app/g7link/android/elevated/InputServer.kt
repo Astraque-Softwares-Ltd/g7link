@@ -82,6 +82,9 @@ object InputServer {
         serverSocket = server
         println("ready ${server.localPort}")
         System.out.flush()
+        // Making the system context takes a few hundred milliseconds. Made
+        // now, the first app window doesn't wait for it.
+        Thread({ runCatching { ShellContext.get() } }, "warm-up").apply { isDaemon = true }.start()
         if (attach) {
             runCatching {
                 Runtime.getRuntime().exec(

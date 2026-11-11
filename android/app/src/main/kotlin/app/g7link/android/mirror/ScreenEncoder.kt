@@ -174,7 +174,12 @@ internal class ScreenEncoder(
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 100_000)
             // Real time, no reordering.
             setInteger(MediaFormat.KEY_PRIORITY, 0)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                // A 90 or 120 Hz screen otherwise feeds the encoder every one of
+                // its frames: twice what the PC asked for, each at half the bits.
+                setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, fps.toFloat())
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) setInteger(MediaFormat.KEY_LATENCY, 1)
             // What the PC assumes when it turns the picture into RGB.
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
