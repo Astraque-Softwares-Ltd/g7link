@@ -108,8 +108,8 @@ fn fonts_qrc() -> PathBuf {
     out
 }
 
-/// Fragment shaders, served under `qrc:/shaders/`.
-const SHADERS: &[&str] = &["glassrim.frag", "hive.frag"];
+/// Shaders, served under `qrc:/shaders/`.
+const SHADERS: &[&str] = &["glassrim.frag", "hive.frag", "nv12.frag", "nv12.vert"];
 
 /// Compiles the shaders with Qt's `qsb` when it can be found (next to qmake, or on PATH),
 /// otherwise uses the compiled copies committed beside the sources. Returns the qrc path.
@@ -127,7 +127,10 @@ fn shaders_qrc() -> PathBuf {
         println!("cargo::rerun-if-changed={}", source.display());
         println!("cargo::rerun-if-changed={}", committed.display());
         let built = out.join(format!("{shader}.qsb"));
+        // A scene graph material's vertex shader is drawn in batches, which needs its own variant.
+        let batchable: &[&str] = if shader.ends_with(".vert") { &["--batchable"] } else { &[] };
         let compiled = std::process::Command::new(&qsb)
+            .args(batchable)
             .args(["--glsl", "100es,120,150", "--hlsl", "50", "--msl", "12", "-o"])
             .arg(&built)
             .arg(&source)

@@ -195,7 +195,7 @@ Priority: optional
 Architecture: ${DEB_ARCH}
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${BASE_DEPENDS}${QT_DEPENDS}
-Recommends: fuse3, curl | wget, libavcodec62 | libavcodec61 | libavcodec60, libopenh264-8 | libopenh264-7 | libopenh264-6, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, pulseaudio-utils, pipewire-bin, libxtst6, wl-clipboard, xclip, xdg-utils, bluez, pkexec | policykit-1
+Recommends: fuse3, curl | wget, libavcodec62 | libavcodec61 | libavcodec60, libopenh264-8 | libopenh264-7 | libopenh264-6, va-driver-all | va-driver, gstreamer1.0-tools, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, pulseaudio-utils, pipewire-bin, libxtst6, wl-clipboard, xclip, xdg-utils, bluez, pkexec | policykit-1
 Suggests: v4l2loopback-dkms, ffmpeg, network-manager
 Maintainer: Astraque Softwares Ltd <https://github.com/Astraque-Softwares-Ltd/g7link>
 Homepage: https://github.com/Astraque-Softwares-Ltd/g7link

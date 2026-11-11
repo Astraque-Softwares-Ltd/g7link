@@ -13,7 +13,8 @@
 
 // Shows the latest picture of a video stream (a phone's screen), scaled to
 // fit with its aspect ratio kept. Pictures come from Rust, on any thread,
-// through `video_frame`; only the newest is drawn.
+// through `video_frame` (BGRX) or `video_frame_nv12` (as decoded, turned
+// into RGB by the GPU while it's drawn); only the newest is drawn.
 class VideoView : public QQuickItem
 {
     Q_OBJECT
@@ -74,6 +75,9 @@ private:
     quint64 m_frames = 0;
     // The serial of the picture on screen.
     quint64 m_shown = 0;
+    // Whether the node drawing it is the NV12 one (it's replaced when the
+    // stream changes kind).
+    bool m_nodeIsNv12 = false;
     QString m_windowIcon;
     bool m_acceptsText = false;
     std::atomic_bool m_framePending{false};
@@ -82,6 +86,12 @@ private:
 // The latest picture of `stream`: `width` x `height`, 32-bit BGRX rows.
 // Any thread.
 void video_frame(rust::Str stream, uint32_t width, uint32_t height, rust::Slice<const uint8_t> bgrx);
+
+// The latest picture of `stream` as the decoder made it: NV12, `width` x
+// `height` visible in rows of `stride` bytes, the UV plane starting
+// `plane_rows` rows in. Drawn without a conversion on the CPU. Any thread.
+void video_frame_nv12(rust::Str stream, uint32_t width, uint32_t height, uint32_t stride, uint32_t plane_rows,
+                      rust::Slice<const uint8_t> nv12, bool bt601, bool full_range);
 
 // The stream ended: views of it go blank. Any thread.
 void video_clear(rust::Str stream);

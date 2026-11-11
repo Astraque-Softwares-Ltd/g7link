@@ -31,7 +31,7 @@ use crate::{
     state::Changes,
     sys::{
         audio_out::Player,
-        h264::{Decoder, to_bgrx},
+        h264::{Decoder, Picture, to_bgrx},
         image::{Bitmap, encode_png},
         mp4::{MirrorRecorder, local_timestamp_filename, merge_sps_pps},
         toast::{self, Toast},
@@ -322,9 +322,17 @@ static NEXT_SESSION: AtomicU32 = AtomicU32::new(1);
 /// Monotonic token for auto-clearing window notices.
 static NOTICE_SEQ: AtomicU64 = AtomicU64::new(1);
 
-type FrameMap = HashMap<Window, (u32, u32, Arc<Vec<u8>>)>;
+/// The picture a window shows, as it was decoded and with the size it's
+/// shown at. It's turned into RGB only when a screenshot is taken.
+struct LatestPicture {
+    width: u32,
+    height: u32,
+    picture: Picture,
+}
 
-/// Latest displayed BGRX frame per window, for instant screenshots.
+type FrameMap = HashMap<Window, Arc<LatestPicture>>;
+
+/// Latest displayed picture per window, for instant screenshots.
 static FRAMES: Mutex<Option<FrameMap>> = Mutex::new(None);
 /// Active MP4 recorders per window.
 static RECORDERS: Mutex<Option<HashMap<Window, MirrorRecorder>>> = Mutex::new(None);
@@ -476,12 +484,32 @@ fn set_notice(window: Window, text: impl Into<String>) {
     });
 }
 
-fn save_latest_frame(window: Window, width: u32, height: u32, bgrx: Vec<u8>) {
+fn save_latest_frame(window: Window, width: u32, height: u32, picture: Picture) {
     FRAMES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(HashMap::new)
-        .insert(window, (width, height, Arc::new(bgrx)));
+        .insert(window, Arc::new(LatestPicture { width, height, picture }));
+}
+
+/// Hands a decoded picture to the window's `VideoView` as it is: the GPU
+/// turns it into RGB while drawing it. Doing that here first took longer
+/// than decoding the picture did, and halved the frame rate.
+fn show_picture(stream: &str, window: Window, picture: Picture, width: u32, height: u32) {
+    let Ok(stride) = u32::try_from(picture.stride) else { return };
+    let Ok(plane_rows) = u32::try_from(picture.plane_rows.max(picture.height as usize)) else { return };
+    let colors = picture.colors;
+    ffi::video_frame_nv12(
+        stream,
+        width,
+        height,
+        stride,
+        plane_rows,
+        &picture.nv12,
+        colors.bt601,
+        colors.full_range,
+    );
+    save_latest_frame(window, width, height, picture);
 }
 
 fn clear_window_buffers(window: &Window) {
@@ -497,20 +525,13 @@ fn clear_window_buffers(window: &Window) {
 }
 
 fn latest_bitmap(window: &Window) -> Option<Bitmap> {
-    let (width, height, raw) = FRAMES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|m| m.get(window))
-        .map(|(w, h, b)| (*w, *h, b.clone()))?;
+    let latest = FRAMES.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(window).cloned()?;
+    let (width, height) = (latest.width.min(latest.picture.width), latest.height.min(latest.picture.height));
     if width == 0 || height == 0 {
         return None;
     }
-    let mut bgra = (*raw).clone();
-    for px in bgra.as_chunks_mut::<4>().0 {
-        px[3] = 0xFF;
-    }
-    Some(Bitmap { width, height, bgra })
+    // Every pixel comes out opaque.
+    Some(Bitmap { width, height, bgra: to_bgrx(&latest.picture, width, height) })
 }
 
 /// Copies the current mirror frame for `window` to the PC clipboard as PNG.
@@ -658,7 +679,7 @@ pub fn toggle_recording(window: Window) {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
-                .and_then(|m| m.get(&window).map(|(w, h, _)| (*w, *h)))
+                .and_then(|m| m.get(&window).map(|latest| (latest.width, latest.height)))
         })
         .unwrap_or((0, 0));
 
@@ -2202,7 +2223,7 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
                     continue;
                 }
                 let started = Instant::now();
-                let pictures = match decoder.decode(&data, time_us) {
+                let mut pictures = match decoder.decode(&data, time_us) {
                     Ok(pictures) => pictures,
                     Err(e) => {
                         tracing::debug!(error = %e, "a video packet didn't decode");
@@ -2214,26 +2235,19 @@ fn decode(window: Window, items: &Receiver<Item>, waiting: &AtomicUsize) {
                 };
                 let decoded = started.elapsed();
                 // Decode every contiguous packet to preserve references. Only
-                // convert the newest available picture, unless none has been
+                // show the newest available picture, unless none has been
                 // shown for a while. Always show the last queued picture even
                 // if it is old: a static screen may not send another one.
                 // Recheck after decoding: more packets may have arrived.
                 let show = should_show_frame(waiting.load(Ordering::Acquire), last_shown.elapsed());
-                if let (Some(picture), true) = (pictures.last(), show) {
+                if let (Some(picture), true) = (pictures.pop(), show) {
                     last_shown = Instant::now();
-                    let converted = Instant::now();
+                    let handed = Instant::now();
+                    // The size the phone said, within what was decoded.
                     let (w, h) = if size.0 > 0 { size } else { (picture.width, picture.height) };
-                    let (src_w, src_h) = (w.min(picture.width), h.min(picture.height));
-                    let bgrx = to_bgrx(picture, w, h);
-                    if (src_w, src_h) == (w, h) || src_w == 0 || src_h == 0 {
-                        ffi::video_frame(&stream, src_w, src_h, &bgrx);
-                        save_latest_frame(window, src_w, src_h, bgrx);
-                    } else {
-                        let scaled = scale_bgrx(&bgrx, src_w, src_h, w, h);
-                        ffi::video_frame(&stream, w, h, &scaled);
-                        save_latest_frame(window, w, h, scaled);
-                    }
-                    stats.shown(decoded, converted.elapsed());
+                    let (w, h) = (w.min(picture.width), h.min(picture.height));
+                    show_picture(&stream, window, picture, w, h);
+                    stats.shown(decoded, handed.elapsed());
                 } else {
                     stats.skipped();
                 }
@@ -2280,27 +2294,14 @@ impl DecodeGate {
     }
 }
 
-fn scale_bgrx(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
-    let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
-    for y in 0..dst_h {
-        let sy = ((u64::from(y) * u64::from(src_h)) / u64::from(dst_h)) as usize;
-        let src_row = &src[sy * (src_w as usize * 4)..(sy + 1) * (src_w as usize * 4)];
-        let dst_row = &mut dst[(y as usize) * (dst_w as usize * 4)..(y as usize + 1) * (dst_w as usize * 4)];
-        for x in 0..dst_w as usize {
-            let sx = ((x as u64 * u64::from(src_w)) / u64::from(dst_w)) as usize;
-            dst_row[x * 4..x * 4 + 4].copy_from_slice(&src_row[sx * 4..sx * 4 + 4]);
-        }
-    }
-    dst
-}
-
-/// Decode and conversion times, logged now and then.
+/// Decode and hand-over times, logged now and then.
 struct Stats {
     since: Instant,
     shown: u32,
     skipped: u32,
     decode: Duration,
-    convert: Duration,
+    /// Giving the picture to the window (a copy).
+    show: Duration,
     queue_max: Duration,
 }
 
@@ -2311,7 +2312,7 @@ impl Stats {
             shown: 0,
             skipped: 0,
             decode: Duration::ZERO,
-            convert: Duration::ZERO,
+            show: Duration::ZERO,
             queue_max: Duration::ZERO,
         }
     }
@@ -2320,10 +2321,10 @@ impl Stats {
         self.queue_max = self.queue_max.max(age);
     }
 
-    fn shown(&mut self, decode: Duration, convert: Duration) {
+    fn shown(&mut self, decode: Duration, show: Duration) {
         self.shown += 1;
         self.decode += decode;
-        self.convert += convert;
+        self.show += show;
         self.maybe_log();
     }
 
@@ -2349,7 +2350,7 @@ impl Stats {
             fps = format!("{:.1}", f64::from(self.shown) / elapsed.as_secs_f64()),
             skipped = self.skipped,
             decode_ms = format!("{:.1}", self.decode.as_secs_f64() * 1000.0 / f64::from(self.shown)),
-            convert_ms = format!("{:.1}", self.convert.as_secs_f64() * 1000.0 / f64::from(self.shown)),
+            show_ms = format!("{:.1}", self.show.as_secs_f64() * 1000.0 / f64::from(self.shown)),
             queue_max_ms = self.queue_max.as_millis(),
             "mirroring"
         );

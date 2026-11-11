@@ -98,6 +98,8 @@ Recommends:     pipewire-gstreamer
 Recommends:     gstreamer1-plugins-base
 Recommends:     libavcodec-free
 Recommends:     openh264
+Recommends:     mesa-va-drivers
+Recommends:     libva-intel-media-driver
 Recommends:     bluez
 Recommends:     fuse3
 Suggests:       v4l2loopback

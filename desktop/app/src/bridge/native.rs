@@ -16,6 +16,21 @@ pub mod ffi {
         /// The latest picture of a video stream (32-bit BGRX rows), for
         /// `VideoView`s showing it. Any thread.
         fn video_frame(stream: &str, width: u32, height: u32, bgrx: &[u8]);
+        /// The latest picture of a video stream as decoded (NV12: `width` x
+        /// `height` visible in rows of `stride` bytes, the UV plane
+        /// `plane_rows` rows in), which the GPU turns into RGB while drawing
+        /// it. Any thread.
+        #[allow(clippy::too_many_arguments)]
+        fn video_frame_nv12(
+            stream: &str,
+            width: u32,
+            height: u32,
+            stride: u32,
+            plane_rows: u32,
+            nv12: &[u8],
+            bt601: bool,
+            full_range: bool,
+        );
         /// The stream ended: its views go blank. Any thread.
         fn video_clear(stream: &str);
 

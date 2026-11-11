@@ -102,6 +102,13 @@ If plugging your phone into your PC with a USB cable does not trigger USB auto-p
 
 - If the whole mirror window stays black only while a specific app (such as a banking app, password manager, or DRM video player) is open on your phone, that app sets Android's `FLAG_SECURE` window flag to block screen capture. Switching back to your phone's home screen restores the image immediately.
 
+### Mirroring Feels Slow or Stutters
+
+- Open the `mirror` window's menu (move the pointer over the picture and click **⋯**): its last line shows the frames per second on screen and the connection's round trip. A still screen sends few frames; scroll something to see the real rate.
+- The PC decodes the phone's video on its graphics card when the system has a VA-API driver for it, and on the processor otherwise. `~/.local/share/G7Link/logs/g7link.log` says which: `Linux video decoder initialized … backend=vaapi` or `backend=software`. On Debian and Ubuntu, `sudo apt install va-driver-all` installs the drivers (Intel, AMD); on Fedora, `mesa-va-drivers` and `libva-intel-media-driver`. The `.deb` and `.rpm` recommend them.
+- The same log line, `mirroring fps=… decode_ms=… show_ms=… queue_max_ms=…`, written every ten seconds while the picture moves, shows how long each picture takes on the PC.
+- Over Wi-Fi, **Mirror quality › Smoother** halves the work at both ends.
+
 ### No Sound on PC During Screen Mirroring
 
 - Make sure your phone is running **Android 10 or newer** (earlier Android versions do not support internal audio capture).
