@@ -226,6 +226,50 @@ pub async fn shell(server: SocketAddr, serial: &str, command: &str) -> Result<Tc
     Ok(stream)
 }
 
+/// Connects the adb server to a phone's Wireless debugging (`adb connect
+/// <device>`) and returns the serial adb then knows it by. The server signs
+/// in with its own key, so this works for a phone that has paired this PC
+/// and fails for any other.
+pub async fn connect(server: SocketAddr, device: SocketAddr) -> Result<String, AdbError> {
+    let serial = device.to_string();
+    let mut stream = TcpStream::connect(server).await?;
+    send_command(&mut stream, &format!("host:connect:{serial}")).await?;
+    // adb answers OKAY either way, and says in words whether it connected.
+    let said = read_payload(&mut stream).await?;
+    if said.starts_with("connected to") || said.starts_with("already connected to") {
+        Ok(serial)
+    } else {
+        Err(AdbError::Remote(said.trim().to_owned()))
+    }
+}
+
+/// Makes sure an adb server answers at `server`, starting the usual one
+/// (`adb start-server`) when none does. One that was asked for at another
+/// address is somebody's own, and isn't started from here.
+pub async fn ensure_server(server: SocketAddr) -> Result<(), AdbError> {
+    if TcpStream::connect(server).await.is_ok() {
+        return Ok(());
+    }
+    if server != DEFAULT_ADB_ADDR {
+        return Err(AdbError::Protocol(format!("no adb server at {server}")));
+    }
+    let started = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("adb")
+            .arg("start-server")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+    })
+    .await
+    .map_err(|e| AdbError::Protocol(e.to_string()))??;
+    if !started.success() {
+        return Err(AdbError::Protocol(format!("adb start-server: {started}")));
+    }
+    TcpStream::connect(server).await?;
+    Ok(())
+}
+
 /// Removes a TCP port forward (`adb -s <serial> forward --remove tcp:<local>`).
 pub async fn kill_forward_tcp(server: SocketAddr, serial: &str, local_port: u16) -> Result<(), AdbError> {
     if !is_serial_allowed(serial) {
@@ -419,6 +463,49 @@ emulator-5554          device product:sdk_gphone64_x86_64 model:Pixel_9 device:e
         let (addr, commands) = forward_server(vec![Some("cannot bind listener")]).await;
         assert!(forward_tcp(addr, "emulator-5554", 5000, 53319).await.is_err());
         assert_eq!(commands.lock().unwrap().len(), 1, "a port the caller chose is not swapped");
+    }
+
+    /// A mock adb server that answers one `connect` with OKAY and `said`.
+    async fn connect_server(said: &'static str) -> (SocketAddr, tokio::task::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let command = read_payload(&mut socket).await.unwrap();
+            socket.write_all(format!("OKAY{:04x}{said}", said.len()).as_bytes()).await.unwrap();
+            command
+        });
+        (addr, server)
+    }
+
+    #[tokio::test]
+    async fn connect_tells_a_phone_that_let_adb_in_from_one_that_did_not() {
+        let phone: SocketAddr = "192.168.1.40:37123".parse().unwrap();
+
+        let (addr, server) = connect_server("connected to 192.168.1.40:37123").await;
+        assert_eq!(connect(addr, phone).await.unwrap(), "192.168.1.40:37123");
+        assert_eq!(server.await.unwrap(), "host:connect:192.168.1.40:37123");
+
+        let (addr, _server) = connect_server("already connected to 192.168.1.40:37123").await;
+        assert_eq!(connect(addr, phone).await.unwrap(), "192.168.1.40:37123");
+
+        // A phone that hasn't paired this PC: adb says so in words, after OKAY.
+        let (addr, _server) = connect_server("failed to authenticate to 192.168.1.40:37123\n").await;
+        let err = connect(addr, phone).await.unwrap_err();
+        assert!(matches!(err, AdbError::Remote(ref why) if why.starts_with("failed to authenticate")));
+
+        // The serial is one the USB watcher leaves alone, and adb commands accept.
+        assert!(is_network_serial("192.168.1.40:37123") && is_serial_allowed("192.168.1.40:37123"));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_answers_is_not_started_again() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert!(ensure_server(addr).await.is_ok());
+        drop(listener);
+        // Nothing there, and not the usual address: left alone.
+        assert!(ensure_server(addr).await.is_err());
     }
 
     #[tokio::test]

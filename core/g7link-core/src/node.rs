@@ -220,6 +220,8 @@ pub(crate) struct Shared {
     pub(crate) usb_bridge_ports: Arc<Mutex<std::collections::HashSet<u16>>>,
     /// Active USB tunnel peers mapped to their local UDP bridge address and cancellation token.
     pub(crate) usb_peers: Arc<Mutex<HashMap<DeviceId, (SocketAddr, CancellationToken)>>>,
+    /// The adb server this PC watches for phones, if it uses adb.
+    pub(crate) adb_server: Option<SocketAddr>,
     /// The adb serial (and adb server) each USB-tunnelled phone is on.
     pub(crate) usb_serials: Mutex<HashMap<DeviceId, (String, SocketAddr)>>,
     /// Elevated helpers started over USB, by phone: they run until dropped.
@@ -1719,6 +1721,7 @@ impl Node {
             usb_listener_port: std::sync::atomic::AtomicU16::new(0),
             usb_bridge_ports: Arc::new(Mutex::new(std::collections::HashSet::new())),
             usb_peers: Arc::new(Mutex::new(HashMap::new())),
+            adb_server: config.adb_server,
             usb_serials: Mutex::new(HashMap::new()),
             usb_helpers: Mutex::new(HashMap::new()),
             usb_inbound: Mutex::new(std::collections::HashSet::new()),

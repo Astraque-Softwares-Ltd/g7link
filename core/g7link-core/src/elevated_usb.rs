@@ -4,13 +4,20 @@
 //! Elevated runs a small helper on the phone as Android's shell user. The
 //! phone normally starts it through its own wireless debugging; a phone
 //! plugged into a PC with USB debugging allowed can instead ask the PC to
-//! start it, the way scrcpy starts its server. The PC only runs the app's own
-//! helper and the app's own grants (checked in [`ElevatedUsbStart::is_valid`]),
-//! and only on the phone that asked, over that phone's own USB connection.
-//! The helper runs as long as the PC holds its adb shell: until the phone
-//! asks again, the cable comes out, or the node stops.
+//! start it, the way scrcpy starts its server. So can a phone on the same
+//! network whose Wireless debugging has paired the PC (`adb_wifi`). The PC
+//! only runs the app's own helper and the app's own grants (checked in
+//! [`ElevatedUsbStart::is_valid`]), and only on the phone that asked: over
+//! that phone's own USB connection, or over an adb connection checked to be
+//! that phone's. The helper runs as long as the PC holds its adb shell: until
+//! the phone asks again, the cable comes out or the network goes, or the
+//! node stops.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
@@ -48,13 +55,10 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     }
     let peer = session.peer;
     let request: ElevatedUsbStart = env.body()?;
-    let usb = shared.usb_serials.lock().unwrap_or_else(|e| e.into_inner()).get(&peer).cloned();
     let refusal = if !request.is_valid() {
         Some(Envelope::error(ErrorCode::BadMessage, "invalid Elevated over USB request"))
     } else if !shared.we_offer(elevated::USB) {
         Some(Envelope::error(ErrorCode::Unsupported, "this PC doesn't start Elevated over USB"))
-    } else if usb.is_none() {
-        Some(Envelope::error(ErrorCode::Unsupported, "this phone isn't connected to this PC over USB"))
     } else {
         None
     };
@@ -62,21 +66,47 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         session.send(refusal.reply_to(env.id)).await?;
         return Ok(true);
     }
-    let Some((serial, adb_addr)) = usb else { return Ok(true) };
-    // Grants and the helper take seconds: answer from a task of its own.
+    // Finding the phone, the grants and the helper take seconds: answer from a task of its own.
     let (shared, session, id) = (shared.clone(), session.clone(), env.id);
     tokio::spawn(async move {
-        let reply = match launch(&shared, peer, adb_addr, &serial, &request).await {
+        let reply = match start_helper(&shared, &session, &request).await {
             Ok(port) => Envelope::new(types::ELEVATED_USB_READY, &ElevatedUsbReady { port })
                 .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "can't answer")),
-            Err(reason) => {
-                tracing::info!(peer = %peer.short(), reason, "couldn't start Elevated over USB");
-                Envelope::error(ErrorCode::Internal, reason)
+            Err((code, reason)) => {
+                tracing::info!(peer = %peer.short(), reason, "couldn't start Elevated through adb");
+                Envelope::error(code, reason)
             }
         };
         let _ = session.send(reply.reply_to(id)).await;
     });
     Ok(true)
+}
+
+/// Finds the phone in adb, then starts its helper there. Returns the helper's port.
+async fn start_helper(
+    shared: &Arc<Shared>,
+    session: &Session,
+    request: &ElevatedUsbStart,
+) -> std::result::Result<u16, (ErrorCode, String)> {
+    let peer = session.peer;
+    let usb = shared.usb_serials.lock().unwrap_or_else(|e| e.into_inner()).get(&peer).cloned();
+    let (serial, adb_addr, wireless) = match usb {
+        Some((serial, adb_addr)) => (serial, adb_addr, false),
+        // No cable: its Wireless debugging, if it has paired this PC.
+        None => {
+            let Some(adb_addr) = shared.adb_server else {
+                return Err((ErrorCode::Unsupported, "this PC doesn't use adb".into()));
+            };
+            let from: Vec<IpAddr> = session.remote_ip_addrs().iter().map(SocketAddr::ip).collect();
+            let found = crate::adb_wifi::route(adb_addr, &from, &request.apk).await;
+            let serial = found.map_err(|why| (ErrorCode::Unsupported, format!("no USB cable, and {why}")))?;
+            (serial, adb_addr, true)
+        }
+    };
+    let launched = launch(shared, peer, adb_addr, &serial, request).await;
+    let port = launched.map_err(|why| (ErrorCode::Internal, why))?;
+    tracing::info!(peer = %peer.short(), wireless, "started Elevated through adb");
+    Ok(port)
 }
 
 /// Runs the grants, then starts the helper and keeps its shell open in a task

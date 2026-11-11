@@ -7,6 +7,7 @@
 //! `docs/architecture/core-api.md` for the design.
 
 mod actions;
+mod adb_wifi;
 mod calls;
 pub mod clip_kind;
 mod clipboard;

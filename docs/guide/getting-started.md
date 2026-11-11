@@ -178,3 +178,7 @@ You can set up `Elevated` directly on your phone in about two minutes on Android
 This needs `adb` running on the PC, as in [Method 3](#method-3-plug-in-a-usb-cable-auto-pair).
 
 If you connect your phone to your PC with a USB cable and have **USB debugging** enabled in Developer options, G7 Link on your PC can start the `Elevated` helper on your phone over `adb` automatically without needing the Wi-Fi pairing code step.
+
+### Alternative: `Elevated` Through Your PC's Wireless `adb`
+
+If you have already paired your PC's `adb` with the phone's **Wireless debugging** (the PC is listed under **Paired devices** on that screen, from `adb pair` or Android Studio), G7 Link on your PC can start the `Elevated` helper without a cable too. Keep **Wireless debugging** on and both devices on the same Wi-Fi; when the phone connects, the PC finds the phone's debugging port on the network, has `adb` connect to it and starts the helper. This needs `adb` installed on the PC (G7 Link starts its server when it isn't running). It stops when Wireless debugging turns off, which Android does whenever the phone leaves that Wi-Fi.
