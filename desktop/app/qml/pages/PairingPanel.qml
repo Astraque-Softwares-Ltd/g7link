@@ -20,6 +20,9 @@ Item {
     readonly property bool wide: width >= 600
     // The left side shows the Android app's download QR instead.
     property bool showApp: false
+    // Comparing codes (or waiting on the phone after a match): a compact
+    // block with just the code and its two answers.
+    readonly property bool checking: state_ === "comparing" || state_ === "confirmed"
     readonly property string releaseUrl: "https://github.com/Astraque-Softwares-Ltd/g7link/releases/latest"
 
     implicitWidth: 760
@@ -89,8 +92,44 @@ Item {
         width: parent.width
         spacing: 0
 
+        Column {
+            id: checkBlock
+            visible: panel.checking
+            width: parent.width
+            padding: 20
+            spacing: 14
+            Txt {
+                width: checkBlock.width - 2 * checkBlock.padding
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+                weight: 500
+                text: qsTr("Same code on %1?").arg(Pairing.peerName.length > 0 ? Pairing.peerName : qsTr("the phone"))
+            }
+            CodeDigits {
+                code: Pairing.code
+            }
+            Row {
+                visible: panel.state_ === "comparing"
+                spacing: 8
+                Button { text: qsTr("Codes match"); onClicked: Pairing.confirm(true) }
+                Button { variant: "outline"; text: qsTr("They don't match"); onClicked: Pairing.confirm(false) }
+            }
+            Row {
+                visible: panel.state_ === "confirmed"
+                height: 34
+                spacing: 10
+                Spinner { width: 16; height: 16; anchors.verticalCenter: parent.verticalCenter }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Waiting for %1…").arg(Pairing.peerName)
+                    muted: true
+                }
+            }
+        }
+
         Flow {
             id: sides
+            visible: !panel.checking
             width: parent.width
             spacing: 0
 
@@ -121,17 +160,15 @@ Item {
                         Spinner {
                             anchors.centerIn: parent
                             visible: !panel.showApp && (panel.state_ === "starting" || panel.state_ === "idle"
-                                                        || panel.state_ === "connecting" || panel.state_ === "confirmed")
+                                                        || panel.state_ === "connecting")
                             width: 28; height: 28
                         }
                         Icon {
                             anchors.centerIn: parent
-                            visible: !panel.showApp && (panel.state_ === "paired" || panel.state_ === "failed" || panel.state_ === "comparing")
+                            visible: !panel.showApp && (panel.state_ === "paired" || panel.state_ === "failed")
                             width: 40; height: 40
-                            path: panel.state_ === "paired" ? Icons.check
-                                : (panel.state_ === "failed" ? Icons.warning : Icons.lock)
-                            color: panel.state_ === "paired" ? Theme.tintTeal
-                                : (panel.state_ === "failed" ? Theme.tintRed : Theme.accent)
+                            path: panel.state_ === "paired" ? Icons.check : Icons.warning
+                            color: panel.state_ === "paired" ? Theme.tintTeal : Theme.tintRed
                         }
                     }
                     Column {
@@ -146,7 +183,6 @@ Item {
                             text: panel.showApp ? qsTr("Scan to get G7 Link for Android")
                                 : panel.state_ === "paired" ? qsTr("Paired")
                                 : panel.state_ === "failed" ? qsTr("Pairing didn't work")
-                                : panel.state_ === "comparing" ? qsTr("Check the code")
                                 : qsTr("Scan with G7 Link on your phone")
                         }
                         Txt {
@@ -284,9 +320,9 @@ Item {
                         text: qsTr("On the phone, open G7 Link and choose Pair nearby.")
                     }
 
-                    // Connecting to, or waiting on, the phone.
+                    // Connecting to the phone.
                     Row {
-                        visible: panel.state_ === "connecting" || panel.state_ === "confirmed"
+                        visible: panel.state_ === "connecting"
                         x: Theme.rowPadding
                         height: Theme.rowHeight
                         spacing: 10
@@ -315,25 +351,15 @@ Item {
                         wrapMode: Text.WordWrap
                         elide: Text.ElideNone
                         role: "bodySmall"
-                        muted: panel.state_ !== "comparing"
-                        text: panel.state_ === "comparing" || panel.state_ === "confirmed"
-                            ? qsTr("Same code on %1?").arg(Pairing.peerName.length > 0 ? Pairing.peerName : qsTr("the phone"))
-                            : qsTr("Next you'll compare a 6-digit code on both screens")
+                        muted: true
+                        text: qsTr("Next you'll compare a 6-digit code on both screens")
                     }
                     Item { width: 1; height: 8 }
                     CodeDigits {
                         visible: panel.state_ !== "paired" && panel.state_ !== "failed"
                         x: Theme.rowPadding
-                        code: panel.state_ === "comparing" || panel.state_ === "confirmed" ? Pairing.code : "······"
-                        dim: !(panel.state_ === "comparing" || panel.state_ === "confirmed")
-                    }
-                    Item { width: 1; height: 12 }
-                    Row {
-                        visible: panel.state_ === "comparing"
-                        x: Theme.rowPadding
-                        spacing: 8
-                        Button { text: qsTr("Codes match"); onClicked: Pairing.confirm(true) }
-                        Button { variant: "outline"; text: qsTr("They don't match"); onClicked: Pairing.confirm(false) }
+                        code: "······"
+                        dim: true
                     }
 
                     // ---- Outcome ----
