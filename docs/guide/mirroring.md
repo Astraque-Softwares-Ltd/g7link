@@ -23,7 +23,7 @@ G7 Link streams your phone's screen to your PC in a dedicated window at up to 60
 1. On your PC, click **Mirror screen** on the **Home** screen (or press `Ctrl+Alt+Space` and choose **Mirror phone screen**). You can also start mirroring from your phone by tapping **Mirror to PC** on the Android Home screen.
 2. If your phone is at `Standard` or `Assist`, tap the notification on your phone and approve Android's screen-sharing dialog. If your phone is at `Elevated`, the `mirror` window opens immediately on your PC without a prompt on the phone.
 3. Your phone's screen streams at up to 1920 pixels on the long edge and 60 fps. G7 Link automatically negotiates the best hardware codec supported by both devices (**AV1**, **H.265/HEVC**, or **H.264/AVC**) and adapts when you rotate your phone between portrait and landscape.
-4. On Android 10 and newer, your phone's media and game audio plays through your PC's speakers automatically during mirroring. Click the speaker icon in the `mirror` window toolbar at any time to mute or unmute the phone's audio on your PC.
+4. On Android 10 and newer, your phone's media and game audio plays through your PC's speakers automatically during mirroring. Choose **Play the sound on the phone** in the `mirror` window's menu at any time to mute the phone's audio on your PC, and **Play the phone's sound here** to bring it back.
 
 ### Controlling Your Phone from the Mirror Window
 
@@ -38,19 +38,22 @@ Once `Assist` or `Elevated` is enabled on your phone:
 
 On Xiaomi, Redmi and POCO phones, `Elevated` control also needs **USB debugging (Security settings)** turned on in **Developer options**.
 
-### Mirror Toolbar and Keyboard Shortcuts
+### The Mirror Window's Menu and Keyboard Shortcuts
 
-The `mirror` window header includes quick controls and keyboard shortcuts:
+The `mirror` window is the phone's screen and nothing else, in the screen's shape: drag an edge and the window keeps that shape. Move the pointer over it and a small **⋯** button shows at the top; click it (or press `F10`) for the menu. It lists the phone's **Back**, **Home** and **Recent apps** keys when you can control the phone, and:
 
 | Action | Shortcut | What It Does |
 | :--- | :--- | :--- |
 | **Copy screenshot** | `Ctrl+Shift+C` | Captures the current mirrored frame directly onto your clipboard as a PNG image. |
 | **Save screenshot** | `Ctrl+S` | Saves a PNG screenshot of the mirrored screen to `~/Downloads/G7Link`. |
 | **Record video (MP4)** | `Ctrl+R` | Records the live mirror stream and phone audio to an `.mp4` file in `~/Downloads/G7Link` using lossless H.264 stream passthrough (zero video re-encoding overhead on your PC). Press `Ctrl+R` again to stop and save. |
-| **Keep phone awake** | Toolbar icon | Prevents your phone's screen timeout from locking the device while mirroring is active. |
-| **Turn phone screen off** | Toolbar icon (`Elevated`) | Blanks your phone's physical OLED/LCD display while the `mirror` window continues running on your PC, and turns the physical display back on automatically when mirroring stops. |
-| **Lock phone** | Toolbar icon | Locks the phone, as its power button would. Shows when you can control the phone. |
-| **Play the sound on the phone / here** | Toolbar icon | Stops sending the phone's sound to the PC so the phone plays it again, or brings it back to the PC. While it's on the phone, new mirroring leaves it there. |
+| **Keep phone awake** | Menu | Prevents your phone's screen timeout from locking the device while mirroring is active. |
+| **Turn phone screen off** | Menu (`Elevated`) | Blanks your phone's physical OLED/LCD display while the `mirror` window continues running on your PC, and turns the physical display back on automatically when mirroring stops. |
+| **Lock phone** | Menu | Locks the phone, as its power button would. Shows when you can control the phone. |
+| **Play the sound on the phone / here** | Menu | Stops sending the phone's sound to the PC so the phone plays it again, or brings it back to the PC. While it's on the phone, new mirroring leaves it there. |
+| **Full screen** | `F11` | Fills the screen with the picture; `F11` again leaves it. |
+
+The menu's last line shows the frames per second on screen and the connection's round trip. A small red timer stays in the corner while a recording runs.
 
 ### Opening Phone Apps in Their Own PC Windows (`app window`)
 
@@ -69,8 +72,8 @@ With `Elevated` on Android 11 or newer, you can run individual phone apps in sep
 
 3. Click any app. G7 Link creates an isolated virtual display on your phone and opens that app on your PC in its own `app window`, a separate window on your desktop.
 4. The app runs independently beside whatever is shown on your phone's physical screen, and typing from your PC does not pop up the on-screen soft keyboard on your phone.
-5. Resize the `app window` on your PC and the Android app dynamically re-lays out to match the new aspect ratio. G7 Link remembers each app's window size and screen position for the next time you open it. You can open multiple `app window` instances side by side in tabs or separate windows.
-6. The phone's sound comes to your PC with its app windows, and the phone itself goes quiet. It's the phone's whole sound, so with several app windows open you hear all of them. The speaker icon in any `app window` toolbar mutes it on the PC, and the sound stops when you close the last `app window`.
+5. Resize the `app window` on your PC and the Android app re-lays out for the new shape, at the size it has on the phone: a smaller window shows the same app smaller, not a cramped one. The window then takes the exact shape the phone answered with. G7 Link remembers each app's window size and screen position for the next time you open it. You can open multiple `app window` instances side by side in tabs or separate windows.
+6. The phone's sound comes to your PC with its app windows, and the phone itself goes quiet. It's the phone's whole sound, so with several app windows open you hear all of them. **Play the sound on the phone** in any `app window`'s menu mutes it on the PC, and the sound stops when you close the last `app window`.
 
 ### Desktop Display Mode (DeX / Desktop Mode)
 

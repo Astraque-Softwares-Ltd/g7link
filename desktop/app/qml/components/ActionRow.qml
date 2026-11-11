@@ -17,6 +17,8 @@ FocusScope {
     property bool interactive: true
     property bool strong: false
     property color titleColor: Theme.surfaceContent
+    // A title too long for the row takes a second line instead of ending in "…".
+    property bool wrapTitle: false
     property string accessibleName: title
     // Something drawn in place of the glyph (an avatar or an app icon).
     property alias leading: leadingSlot.data
@@ -25,7 +27,7 @@ FocusScope {
     signal clicked
     signal rightClicked(real x, real y)
 
-    implicitHeight: Theme.rowHeight
+    implicitHeight: wrapTitle ? Math.max(Theme.rowHeight, titleText.implicitHeight + 12) : Theme.rowHeight
     implicitWidth: titleText.implicitWidth + rightRow.implicitWidth + 80
     activeFocusOnTab: interactive
     opacity: enabled ? 1 : 0.38
@@ -93,6 +95,8 @@ FocusScope {
         text: row.title
         weight: row.strong ? 500 : 400
         color: row.titleColor
+        wrapMode: row.wrapTitle ? Text.WordWrap : Text.NoWrap
+        maximumLineCount: row.wrapTitle ? 2 : 1
     }
     Txt {
         id: detailText

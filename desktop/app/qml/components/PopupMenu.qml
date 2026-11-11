@@ -14,6 +14,8 @@ Item {
     property bool filterable: false
     property string placeholder: qsTr("Search actions")
     property real panelWidth: 320
+    // Long labels take a second line (for a menu in a narrow window).
+    property bool wrapLabels: false
     property real anchorX: 0
     property real anchorY: 0
     property bool upward: true
@@ -62,6 +64,7 @@ Item {
 
     Rectangle {
         id: panel
+        objectName: "panel"
         width: Math.min(menu.panelWidth, menu.width - 24)
         height: Math.min(content.implicitHeight + 12, menu.height - 24)
         x: Math.max(12, Math.min(menu.width - width - 12, menu.alignRight ? menu.anchorX - width : menu.anchorX))
@@ -125,6 +128,7 @@ Item {
                         iconPath: modelData.icon || ""
                         tint: modelData.tint !== undefined ? modelData.tint : Theme.surfaceContentVariant
                         title: modelData.label
+                        wrapTitle: menu.wrapLabels
                         detail: modelData.detail || ""
                         keys: modelData.keys || ""
                         enabled: modelData.enabled !== false

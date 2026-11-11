@@ -3,7 +3,7 @@ pragma Singleton
 import QtQuick
 
 // Stands in for the Rust DeviceList in QML tests: no phones.
-QtObject {
-    property int count: 0
+ListModel {
     function deviceNameAt(index) { return "" }
+    function rowOf(device) { return -1 }
 }

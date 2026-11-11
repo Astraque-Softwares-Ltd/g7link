@@ -105,7 +105,7 @@ If plugging your phone into your PC with a USB cable does not trigger USB auto-p
 ### No Sound on PC During Screen Mirroring
 
 - Make sure your phone is running **Android 10 or newer** (earlier Android versions do not support internal audio capture).
-- Check that the speaker icon in the `mirror` window toolbar on your PC is not muted, and that your phone's media volume is turned up.
+- Check that the `mirror` window's menu on your PC doesn't offer **Play the phone's sound here** (the sound is then on the phone), and that your phone's media volume is turned up.
 - Note that some Android apps explicitly block third-party `AudioPlaybackCapture` in their manifest (see [Known Limitations](known-limitations.md)).
 
 ## 7. Troubleshooting Phone as Webcam (`G7 Link Webcam`)
