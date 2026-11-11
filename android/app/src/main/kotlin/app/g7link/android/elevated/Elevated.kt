@@ -744,23 +744,45 @@ object Elevated {
     }
 
     /**
-     * Asks the PC this phone is plugged into to run the grants and start the
-     * helper over USB, then connects to it. The helper runs until the cable
-     * comes out (its socket then closes, see [connectSocketLocked]).
+     * Asks a PC to run the grants and start the helper through its adb, then
+     * connects to it: the PC this phone is plugged into, or, without a cable,
+     * one this phone's Wireless debugging has paired (it is told the port,
+     * which changes each time Wireless debugging turns on). The helper runs
+     * until the cable comes out or the network goes (its socket then closes,
+     * see [connectSocketLocked]).
      */
     private suspend fun startOverUsbLocked(): Boolean {
         val app = context.applicationContext as? app.g7link.android.G7LinkApplication ?: return false
         val token = ByteArray(24).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it) }
-        val port = app.core.elevatedUsbStart(context.applicationInfo.sourceDir, token, grants()) ?: return false
+        val apk = context.applicationInfo.sourceDir
+        val port = app.core.elevatedUsbStart(apk, token, grants())
+            ?: wirelessDebuggingPort()?.let { app.core.elevatedUsbStart(apk, token, grants(), it) }
+            ?: return false
         return runCatching {
             connectSocketLocked(port, token)
-            Log.i(TAG, "started over USB")
+            Log.i(TAG, "started through a PC's adb")
             cancelRetry()
             true
         }.getOrElse {
-            Log.w(TAG, "the helper started over USB didn't answer", it)
+            Log.w(TAG, "the helper a PC started didn't answer", it)
             false
         }
+    }
+
+    /**
+     * The port this phone's Wireless debugging listens on, or null when it's
+     * off, the phone isn't on Wi-Fi, or the port can't be found.
+     */
+    private suspend fun wirelessDebuggingPort(): Int? {
+        val on = runCatching { Settings.Global.getInt(context.contentResolver, ADB_WIFI, 0) == 1 }.getOrDefault(false)
+        if (!on || !onWifi()) return null
+        return runCatching {
+            if (LoopbackAdb.preferred()) {
+                LoopbackAdb.connectPort(LoopbackAdb.openPorts())
+            } else {
+                discover(AdbMdns.SERVICE_TYPE_TLS_CONNECT)
+            }
+        }.getOrNull()
     }
 
     /** Stops the helper and disconnects, and keeps it stopped until [start]. */

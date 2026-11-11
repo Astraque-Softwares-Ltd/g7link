@@ -1122,15 +1122,19 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     }
 
     /**
-     * Elevated over USB (`docs/protocol/elevated-usb.md`): asks each connected
-     * PC to start this phone's helper; only one it's plugged into with USB
-     * debugging allowed can. Returns the helper's port, or `null`.
+     * Elevated through a PC's adb (`docs/protocol/elevated-usb.md`): asks each
+     * connected PC to start this phone's helper. One it's plugged into with
+     * USB debugging allowed can; so can one this phone's Wireless debugging
+     * has paired, when told the port it listens on ([adbPort]). Returns the
+     * helper's port, or `null`.
      */
-    suspend fun elevatedUsbStart(apk: String, token: String, grants: List<String>): Int? {
+    suspend fun elevatedUsbStart(apk: String, token: String, grants: List<String>, adbPort: Int? = null): Int? {
         startJob?.join()
         val node = node ?: return null
         for (pc in _state.value.devices.filter { it.online }) {
-            val port = runCatching { node.elevatedUsbStart(pc.id, apk, token, grants) }.getOrNull()
+            val port = runCatching {
+                node.elevatedUsbStart(pc.id, apk, token, grants, adbPort?.toUShort())
+            }.getOrNull()
             if (port != null) return port.toInt()
         }
         return null

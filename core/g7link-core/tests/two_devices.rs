@@ -7148,10 +7148,10 @@ async fn elevated_over_usb_is_refused_without_a_usb_connection() {
     let token = "0123456789abcdef0123456789abcdef".to_owned();
 
     // This PC doesn't watch adb, so it can't start anything over USB.
-    let refused = phone.node.elevated_usb_start(pc_id, apk.clone(), token.clone(), Vec::new()).await;
+    let refused = phone.node.elevated_usb_start(pc_id, apk.clone(), token.clone(), Vec::new(), None).await;
     assert!(matches!(refused, Err(Error::Unsupported)), "{refused:?}");
     // A request for anything but the app's own helper never leaves the phone.
-    let bad = phone.node.elevated_usb_start(pc_id, apk, token, vec!["reboot".into()]).await;
+    let bad = phone.node.elevated_usb_start(pc_id, apk, token, vec!["reboot".into()], None).await;
     assert!(matches!(bad, Err(Error::Protocol(_))), "{bad:?}");
 
     pc.node.shutdown().await;

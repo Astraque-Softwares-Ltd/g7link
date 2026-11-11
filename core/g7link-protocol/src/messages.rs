@@ -1738,6 +1738,11 @@ pub struct ElevatedUsbStart {
     pub token: String,
     #[serde(default)]
     pub grants: Vec<String>,
+    /// The port the phone's Wireless debugging listens on, when it's on: a
+    /// PC the phone isn't plugged into connects its adb there (the port
+    /// changes each time Wireless debugging turns on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adb_port: Option<u16>,
 }
 
 impl ElevatedUsbStart {
@@ -1747,6 +1752,7 @@ impl ElevatedUsbStart {
             && self.token.bytes().all(|b| b.is_ascii_hexdigit())
             && self.grants.len() <= elevated::MAX_GRANTS
             && self.grants.iter().all(|g| is_valid_grant(g))
+            && self.adb_port != Some(0)
     }
 }
 
@@ -4568,8 +4574,25 @@ mod tests {
                 "cmd notification allow_listener app.g7link/app.g7link.android.notifications.NotificationListener"
                     .into(),
             ],
+            adb_port: None,
         };
         assert!(start.is_valid());
+        // Without a cable the phone names its Wireless debugging port; a PC
+        // or phone from before that neither sends nor needs it.
+        let wireless = ElevatedUsbStart { adb_port: Some(37123), ..start.clone() };
+        assert!(wireless.is_valid());
+        assert!(!ElevatedUsbStart { adb_port: Some(0), ..start.clone() }.is_valid());
+        let field = ciborium::Value::Text("adb_port".into());
+        let names_port = |env: &crate::Envelope| match &env.b {
+            Some(ciborium::Value::Map(fields)) => fields.iter().any(|(key, _)| *key == field),
+            _ => false,
+        };
+        let sent = crate::Envelope::new(types::ELEVATED_USB_START, &start).unwrap();
+        assert!(!names_port(&sent));
+        assert_eq!(sent.body::<ElevatedUsbStart>().unwrap(), start);
+        let sent = crate::Envelope::new(types::ELEVATED_USB_START, &wireless).unwrap();
+        assert!(names_port(&sent));
+        assert_eq!(sent.body::<ElevatedUsbStart>().unwrap(), wireless);
 
         for apk in [
             "/data/app/other.app-1/base.apk",

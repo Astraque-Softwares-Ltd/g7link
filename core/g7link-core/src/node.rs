@@ -2915,20 +2915,23 @@ impl Node {
 
     /// Asks a paired phone to stream its microphone; the phone asks its
     /// user. Sound then arrives through [`Platform::mic_sink`](crate::Platform::mic_sink).
-    /// Asks `pc`, which this phone is plugged into over USB, to start this
-    /// phone's Elevated helper from `apk` with `token` after running `grants`
-    /// (`docs/protocol/elevated-usb.md`). Returns the helper's loopback port.
+    /// Asks `pc` to start this phone's Elevated helper from `apk` with `token`
+    /// after running `grants` (`docs/protocol/elevated-usb.md`): a PC this
+    /// phone is plugged into over USB, or, with `adb_port` (the port this
+    /// phone's Wireless debugging listens on), one that Wireless debugging
+    /// has paired. Returns the helper's loopback port.
     pub async fn elevated_usb_start(
         &self,
         pc: DeviceId,
         apk: String,
         token: String,
         grants: Vec<String>,
+        adb_port: Option<u16>,
     ) -> Result<u16> {
         let session = self.connected(&pc)?;
         crate::elevated_usb::start(
             &session,
-            g7link_protocol::messages::ElevatedUsbStart { apk, token, grants },
+            g7link_protocol::messages::ElevatedUsbStart { apk, token, grants, adb_port },
         )
         .await
     }

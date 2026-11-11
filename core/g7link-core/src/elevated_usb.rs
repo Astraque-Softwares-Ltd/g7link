@@ -5,7 +5,8 @@
 //! phone normally starts it through its own wireless debugging; a phone
 //! plugged into a PC with USB debugging allowed can instead ask the PC to
 //! start it, the way scrcpy starts its server. So can a phone on the same
-//! network whose Wireless debugging has paired the PC (`adb_wifi`). The PC
+//! network whose Wireless debugging has paired the PC, by naming the port
+//! Wireless debugging listens on (`adb_wifi`). The PC
 //! only runs the app's own helper and the app's own grants (checked in
 //! [`ElevatedUsbStart::is_valid`]), and only on the phone that asked: over
 //! that phone's own USB connection, or over an adb connection checked to be
@@ -92,13 +93,14 @@ async fn start_helper(
     let usb = shared.usb_serials.lock().unwrap_or_else(|e| e.into_inner()).get(&peer).cloned();
     let (serial, adb_addr, wireless) = match usb {
         Some((serial, adb_addr)) => (serial, adb_addr, false),
-        // No cable: its Wireless debugging, if it has paired this PC.
+        // No cable: its Wireless debugging, if it's on and has paired this PC.
         None => {
-            let Some(adb_addr) = shared.adb_server else {
-                return Err((ErrorCode::Unsupported, "this PC doesn't use adb".into()));
+            let (Some(adb_addr), Some(port)) = (shared.adb_server, request.adb_port) else {
+                let why = "this phone isn't connected to this PC over USB";
+                return Err((ErrorCode::Unsupported, why.into()));
             };
             let from: Vec<IpAddr> = session.remote_ip_addrs().iter().map(SocketAddr::ip).collect();
-            let found = crate::adb_wifi::route(adb_addr, &from, &request.apk).await;
+            let found = crate::adb_wifi::route(adb_addr, &from, port, &request.apk).await;
             let serial = found.map_err(|why| (ErrorCode::Unsupported, format!("no USB cable, and {why}")))?;
             (serial, adb_addr, true)
         }

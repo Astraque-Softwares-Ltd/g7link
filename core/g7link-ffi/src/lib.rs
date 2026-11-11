@@ -3447,18 +3447,21 @@ impl G7LinkNode {
         self.run(async move { Ok(node.unpair(id).await?) }).await
     }
 
-    /// Asks a PC this phone is plugged into over USB to start this phone's
-    /// Elevated helper (`docs/protocol/elevated-usb.md`); returns its port.
+    /// Asks a PC to start this phone's Elevated helper
+    /// (`docs/protocol/elevated-usb.md`): one this phone is plugged into over
+    /// USB, or, with `adb_port` (this phone's Wireless debugging port), one
+    /// that Wireless debugging has paired. Returns the helper's port.
     pub async fn elevated_usb_start(
         &self,
         pc_id: String,
         apk: String,
         token: String,
         grants: Vec<String>,
+        adb_port: Option<u16>,
     ) -> Result<u16> {
         let id = parse_id(&pc_id)?;
         let node = self.node.clone();
-        self.run(async move { Ok(node.elevated_usb_start(id, apk, token, grants).await?) }).await
+        self.run(async move { Ok(node.elevated_usb_start(id, apk, token, grants, adb_port).await?) }).await
     }
 
     pub async fn ring(&self, id: String, on: bool) -> Result<()> {
