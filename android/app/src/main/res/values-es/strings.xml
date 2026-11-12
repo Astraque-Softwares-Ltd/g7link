@@ -149,7 +149,6 @@
     <string name="clip_off_for">El portapapeles está desactivado para %1$s.</string>
     <string name="clip_too_large">Es demasiado texto para enviarlo a la vez.</string>
     <string name="clip_private">Lo que copiaste está marcado como privado por su aplicación, por lo que no se envió.</string>
-    <string name="clip_empty">No hay texto ni imagen en el portapapeles.</string>
     <string name="clip_image_too_large">Esa imagen es demasiado grande para enviarla.</string>
     <string name="clip_image_unreadable">Esa imagen no se puede leer.</string>
     <string name="clip_image_unsupported">Actualiza G7 Link en %1$s para enviarle imágenes.</string>

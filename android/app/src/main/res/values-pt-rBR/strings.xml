@@ -145,12 +145,28 @@
     <string name="transfer_pick_pc">Enviar para qual PC?</string>
     <string name="clip_tile_label">Enviar item copiado</string>
     <string name="action_send_clipboard">Enviar item copiado</string>
+    <string name="clip_sheet_subtitle">O que você copiou por último neste celular</string>
+    <plurals name="clip_sheet_text_length">
+        <item quantity="one">Texto · %1$d caractere</item>
+        <item quantity="other">Texto · %1$d caracteres</item>
+    </plurals>
+    <string name="clip_sheet_copied">Copiado %1$s</string>
+    <string name="clip_sheet_hidden_note">Enviado oculto: não aparece nem fica no histórico de %1$s.</string>
+    <string name="clip_sheet_send_hidden">Enviar oculto</string>
+    <string name="clip_sheet_send">Enviar</string>
+    <string name="clip_sheet_lands">Vai para a área de transferência dele</string>
+    <string name="clip_sheet_lands_each">Vai para a área de transferência de cada um</string>
+    <string name="clip_sheet_nothing_title">Nada copiado</string>
+    <string name="clip_sheet_nothing_text">Copie algo no celular e volte aqui.</string>
+    <string name="clip_sheet_close">Fechar</string>
+    <string name="clip_sheet_on_clipboard">Na área de transferência de %1$s</string>
+    <string name="clip_sheet_paste_hint">Cole no PC com Ctrl+V</string>
+    <string name="clip_sheet_paste_on">Colar em %1$s</string>
     <string name="clip_sent_to">Enviado para %1$s</string>
     <string name="clip_no_pc">Nenhum PC está conectado agora.</string>
     <string name="clip_off_for">O compartilhamento da área de transferência está desativado para %1$s.</string>
     <string name="clip_too_large">O texto é grande demais para enviar de uma vez.</string>
     <string name="clip_private">O app marcou o que você copiou como privado, então nada foi enviado.</string>
-    <string name="clip_empty">Não há texto nem imagem na área de transferência.</string>
     <string name="clip_image_too_large">Essa imagem é muito grande para enviar.</string>
     <string name="clip_image_unreadable">Essa imagem não pode ser lida.</string>
     <string name="clip_image_unsupported">Atualize o G7 Link em %1$s para enviar imagens.</string>
@@ -1213,7 +1229,6 @@
     <string name="home_this_phone">Este celular</string>
     <string name="home_files">Arquivos</string>
     <string name="home_folder">Pasta</string>
-    <string name="home_clipboard">Área de transferência</string>
     <string name="home_link">Link</string>
     <string name="home_trackpad">Touchpad e teclado</string>
     <string name="home_lock">Bloquear</string>

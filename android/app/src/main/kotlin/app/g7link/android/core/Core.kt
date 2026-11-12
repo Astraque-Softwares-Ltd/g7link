@@ -70,9 +70,11 @@ import app.g7link.core.initLogging
 import app.g7link.android.files.transferTitle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
@@ -1638,21 +1640,34 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     @Volatile private var lastAutoSentClip: Pair<String, String?>? = null
     @Volatile private var lastAutoSentAtMs: Long = 0L
 
+    /** What a clipboard send came to; [message] is what to tell the user. */
+    sealed interface ClipSend {
+        val message: String
+
+        /** On these PCs' clipboards now (any others it went to queued it). */
+        data class Sent(val pcIds: List<String>, override val message: String) : ClipSend
+
+        /** Waiting in the send queue until the PC is back. */
+        data class Queued(override val message: String) : ClipSend
+
+        data class Failed(override val message: String) : ClipSend
+    }
+
     /**
-     * Sends text (and optional HTML) to every connected PC (or to `pcId` when chosen via Direct Share);
-     * returns what to tell the user. Waits for the core when the app was just launched.
+     * Sends text (and optional HTML) to every connected PC (or to `pcId` when chosen via Direct Share).
+     * Waits for the core when the app was just launched.
      */
-    suspend fun sendClipboard(text: String, pcId: String? = null, html: String? = null): String =
+    suspend fun sendClipboard(text: String, pcId: String? = null, html: String? = null): ClipSend =
         sendToPcs(image = false, pcId = pcId) { node, pc -> node.sendClipboardRich(pc, text, html, null) }
 
     /**
      * Runs a clipboard send ([sendClipboard], [sendClipboardImage] or [sendClipboardSensitive])
      * in the background and returns at once; what it says shows as a toast.
      */
-    fun sendClipboardInBackground(send: suspend Core.() -> String) {
+    fun sendClipboardInBackground(send: suspend Core.() -> ClipSend) {
         scope.launch {
             val message = try {
-                send()
+                send().message
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1665,8 +1680,34 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
+    /**
+     * Starts a clipboard send ([sendClipboard], [sendClipboardImage] or [sendClipboardSensitive])
+     * that keeps going when the screen that asked for it closes.
+     */
+    fun startClipboardSend(send: suspend Core.() -> ClipSend): Deferred<ClipSend> =
+        scope.async {
+            try {
+                send()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "clipboard not sent", e)
+                ClipSend.Failed(context.getString(R.string.error_generic))
+            }
+        }
+
+    /** Says how a send from [startClipboardSend] ended in a toast, once the screen that started it is gone. */
+    fun toastWhenSent(send: Deferred<ClipSend>) {
+        scope.launch {
+            val message = send.await().message
+            if (message.isNotBlank()) {
+                withContext(Dispatchers.Main) { Toast.makeText(context, message, Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+
     /** Sends what a password manager copied, when the user chose that. Never queued. */
-    suspend fun sendClipboardSensitive(text: String, pcId: String? = null): String =
+    suspend fun sendClipboardSensitive(text: String, pcId: String? = null): ClipSend =
         sendToPcs(image = false, pcId = pcId) { node, pc -> node.sendClipboardPrivate(pc, text) }
 
     /** A password manager copied this in the background while Elevated is running. */
@@ -1725,15 +1766,15 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return if (online.isNotEmpty()) online else all
     }
 
-    /** Sends a copied image to the connected PCs (or to `pcId`, queueing if offline); returns what to tell the user. */
-    suspend fun sendClipboardImage(uri: Uri, pcId: String? = null): String {
+    /** Sends a copied image to the connected PCs (or to `pcId`, queueing if offline). */
+    suspend fun sendClipboardImage(uri: Uri, pcId: String? = null): ClipSend {
         startJob?.join()
         val targets = targetPcsForSend(pcId)
-        if (targets.isEmpty()) return context.getString(R.string.clip_no_pc)
+        if (targets.isEmpty()) return ClipSend.Failed(context.getString(R.string.clip_no_pc))
         val image = when (val read = withContext(Dispatchers.IO) { PhoneClipboard.readImage(context, uri) }) {
             is PhoneClipboard.ImageResult.Ready -> read.image
-            PhoneClipboard.ImageResult.TooLarge -> return context.getString(R.string.clip_image_too_large)
-            PhoneClipboard.ImageResult.Unreadable -> return context.getString(R.string.clip_image_unreadable)
+            PhoneClipboard.ImageResult.TooLarge -> return ClipSend.Failed(context.getString(R.string.clip_image_too_large))
+            PhoneClipboard.ImageResult.Unreadable -> return ClipSend.Failed(context.getString(R.string.clip_image_unreadable))
         }
         return sendToPcs(image = true, pcId = pcId) { node, pc -> node.sendClipboardImage(pc, image.mime, image.bytes) }
     }
@@ -1741,7 +1782,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     /** Puts a PNG (a screenshot of the PC, cropped here) on a PC's clipboard; returns what to tell the user. */
     suspend fun sendClipboardPng(pcId: String, png: ByteArray): String {
         if (png.size > MAX_CLIPBOARD_PNG_BYTES) return context.getString(R.string.clip_image_too_large)
-        return sendToPcs(image = true, pcId = pcId) { node, pc -> node.sendClipboardImage(pc, "image/png", png) }
+        return sendToPcs(image = true, pcId = pcId) { node, pc -> node.sendClipboardImage(pc, "image/png", png) }.message
     }
 
     /**
@@ -1784,12 +1825,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         image: Boolean,
         pcId: String? = null,
         send: suspend (G7LinkNode, String) -> Unit,
-    ): String {
+    ): ClipSend {
         startJob?.join()
-        val node = node ?: return context.getString(R.string.clip_no_pc)
+        val node = node ?: return ClipSend.Failed(context.getString(R.string.clip_no_pc))
         val pcs = targetPcsForSend(pcId)
-        if (pcs.isEmpty()) return context.getString(R.string.clip_no_pc)
-        val sentTo = mutableListOf<String>()
+        if (pcs.isEmpty()) return ClipSend.Failed(context.getString(R.string.clip_no_pc))
+        val sentTo = mutableListOf<Device>()
         val queuedTo = mutableListOf<Device>()
         var lastQueueId: String? = null
         var failure: String? = null
@@ -1798,7 +1839,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             try {
                 send(node, pc.id)
                 if (wasOnline) {
-                    sentTo += pc.name
+                    sentTo += pc
                 } else {
                     queuedTo += pc
                     lastQueueId = runCatching { node.latestQueuedIdForPeer(pc.id) }.getOrNull()
@@ -1827,10 +1868,14 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 ),
             )
             if (sentTo.isEmpty()) {
-                return msg
+                return ClipSend.Queued(msg)
             }
         }
-        return if (sentTo.isNotEmpty()) context.getString(R.string.clip_sent_to, sentTo.joinToString()) else failure.orEmpty()
+        return if (sentTo.isNotEmpty()) {
+            ClipSend.Sent(sentTo.map { it.id }, context.getString(R.string.clip_sent_to, sentTo.joinToString { it.name }))
+        } else {
+            ClipSend.Failed(failure.orEmpty())
+        }
     }
 
     private fun refreshClipboardHistory() {

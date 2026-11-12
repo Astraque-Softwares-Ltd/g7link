@@ -12,16 +12,23 @@ import android.os.Bundle
 import android.os.Process
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.annotation.StringRes
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.IntentCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.G7LinkApplication
 import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.files.OutgoingFiles
+import app.g7link.android.ui.Preferences
+import app.g7link.android.ui.theme.G7LinkTheme
 import java.security.MessageDigest
 import java.security.SecureRandom
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -29,9 +36,10 @@ import kotlinx.coroutines.launch
 
 /**
  * Sends to the connected PCs: files or text shared from another app, or the
- * clipboard (from the Quick Settings tile or the connection notification).
- * Everything goes the moment it's shared; with several PCs online, the user
- * picks one first. File progress and the confirmation are notifications.
+ * clipboard (from Home, the Quick Settings tile or the connection notification).
+ * What's shared goes the moment it's shared; with several PCs online, the user
+ * picks one first. File progress and the confirmation are notifications. The
+ * clipboard first shows what was copied in a sheet, and goes from there.
  */
 class SendActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -40,6 +48,12 @@ class SendActivity : ComponentActivity() {
     private var userShared = false
     /** Sent here directly by another app: the user picks the PC first, even with only one. */
     private var askFirst = false
+    /** The clipboard has been read for the sheet; it's read once, on the first focus. */
+    private var clipRead = false
+    private val clipSheet = mutableStateOf<ClipSheetState?>(null)
+    private val clipClosing = mutableStateOf(false)
+    /** A clipboard send still under way; says how it went in a toast if the sheet closes first. */
+    private var clipSending: Deferred<Core.ClipSend>? = null
     private val pickFilesLauncher = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -66,7 +80,8 @@ class SendActivity : ComponentActivity() {
                 finish()
                 return
             }
-            // The clipboard is read in onWindowFocusChanged.
+            // The clipboard is read in onWindowFocusChanged, and shown in the sheet.
+            showClipboardSheet()
             return
         }
         if (intent.action == ACTION_SEND_FILES) {
@@ -262,16 +277,105 @@ class SendActivity : ComponentActivity() {
             finish()
             return
         }
-        when (val clip = PhoneClipboard.read(this)) {
-            is PhoneClipboard.Read.Text -> send(clip.text, clip.html)
-            is PhoneClipboard.Read.Image -> sendImage(clip.uri)
-            is PhoneClipboard.Read.Sensitive -> {
-                val pcId = targetPcId()
-                sendInBackground { sendClipboardSensitive(clip.text, pcId) }
-            }
-            PhoneClipboard.Read.Private -> finishWith(getString(R.string.clip_private))
-            PhoneClipboard.Read.Empty -> finishWith(getString(R.string.clip_empty))
+        if (clipRead) return
+        clipRead = true
+        val copiedAt = PhoneClipboard.copiedAt(this)
+        clipSheet.value = when (val clip = PhoneClipboard.read(this)) {
+            is PhoneClipboard.Read.Text -> ClipSheetState.Preview(
+                CopiedClip.Text(clip.text, clip.html, link = webLink(clip.text) != null),
+                copiedAt,
+            )
+            is PhoneClipboard.Read.Image -> ClipSheetState.Preview(CopiedClip.Image(clip.uri), copiedAt)
+            is PhoneClipboard.Read.Sensitive -> ClipSheetState.Preview(CopiedClip.Hidden(clip.text), copiedAt)
+            PhoneClipboard.Read.Private -> ClipSheetState.Note(getString(R.string.clip_private), isPrivate = true)
+            PhoneClipboard.Read.Empty -> ClipSheetState.Empty
         }
+    }
+
+    /** The Send clipboard sheet, once the clipboard is read; the activity closes with it. */
+    private fun showClipboardSheet() {
+        val core = (application as G7LinkApplication).core
+        val preferences = Preferences(this)
+        val pcId = targetPcId()
+        setContent {
+            val appearance by preferences.appearance.collectAsStateWithLifecycle()
+            val state by core.state.collectAsStateWithLifecycle()
+            val sheet by clipSheet
+            val closing by clipClosing
+            G7LinkTheme(appearance = appearance) {
+                sheet?.let { current ->
+                    ClipboardSheet(
+                        state = current,
+                        devices = state.devices,
+                        pcId = pcId,
+                        closing = closing,
+                        onSend = ::sendCopied,
+                        onPaste = ::pasteCopied,
+                        onClose = { clipClosing.value = true },
+                        onClosed = ::finish,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends what the sheet shows, where the clipboard always went: the chosen PC, or
+     * every connected one (an offline one queues it, but never a password). The sheet
+     * then says how it went.
+     */
+    private fun sendCopied() {
+        val preview = clipSheet.value as? ClipSheetState.Preview ?: return
+        if (preview.sending) return
+        val core = (application as G7LinkApplication).core
+        val pcId = targetPcId()
+        val clip = preview.clip
+        val sending = core.startClipboardSend {
+            when (clip) {
+                is CopiedClip.Text -> sendClipboard(clip.text, pcId, clip.html)
+                is CopiedClip.Image -> sendClipboardImage(clip.uri, pcId)
+                is CopiedClip.Hidden -> sendClipboardSensitive(clip.text, pcId)
+            }
+        }
+        clipSending = sending
+        clipSheet.value = preview.copy(sending = true)
+        scope.launch {
+            val result = sending.await()
+            clipSending = null
+            clipSheet.value = when (result) {
+                is Core.ClipSend.Sent -> ClipSheetState.Sent(clip, result.pcIds)
+                is Core.ClipSend.Queued -> ClipSheetState.Queued(clip, result.message)
+                is Core.ClipSend.Failed ->
+                    ClipSheetState.Note(result.message.ifBlank { getString(R.string.error_generic) })
+            }
+        }
+    }
+
+    /** Presses Paste on the PC it went to, as the remote's Paste key does; closes once it's pressed. */
+    private fun pasteCopied() {
+        val sent = clipSheet.value as? ClipSheetState.Sent ?: return
+        val pcId = sent.pcIds.singleOrNull() ?: return
+        if (sent.pasting) return
+        clipSheet.value = sent.copy(pasting = true, pasteProblem = null)
+        val core = (application as G7LinkApplication).core
+        core.remoteKey(pcId, "paste", emptyList()) { access ->
+            runOnUiThread { onPasteDone(core, pcId, access) }
+        }
+    }
+
+    private fun onPasteDone(core: Core, pcId: String, access: Core.RemoteAccess) {
+        val sent = clipSheet.value as? ClipSheetState.Sent ?: return
+        if (access == Core.RemoteAccess.Allowed) {
+            clipClosing.value = true
+            return
+        }
+        val name = core.state.value.nameOf(pcId)?.takeIf { it.isNotBlank() } ?: getString(R.string.your_pc)
+        val problem = when (access) {
+            Core.RemoteAccess.Denied -> getString(R.string.remote_denied_text, name)
+            Core.RemoteAccess.Unsupported -> getString(R.string.remote_unsupported_text, name)
+            else -> getString(R.string.error_not_connected)
+        }
+        clipSheet.value = sent.copy(pasting = false, pasteProblem = problem)
     }
 
     /**
@@ -327,13 +431,8 @@ class SendActivity : ComponentActivity() {
         sendInBackground { sendClipboard(text, pcId, html) }
     }
 
-    private fun sendImage(uri: Uri) {
-        val pcId = targetPcId()
-        sendInBackground { sendClipboardImage(uri, pcId) }
-    }
-
     /** Hands the send to the app and closes at once; the outcome shows as a toast when the PC answers. */
-    private fun sendInBackground(send: suspend Core.() -> String) {
+    private fun sendInBackground(send: suspend Core.() -> Core.ClipSend) {
         (application as G7LinkApplication).core.sendClipboardInBackground(send)
         finishWith(getString(R.string.sending_clipboard))
     }
@@ -345,6 +444,7 @@ class SendActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        clipSending?.takeIf { !it.isCompleted }?.let { (application as G7LinkApplication).core.toastWhenSent(it) }
         scope.cancel()
         super.onDestroy()
     }

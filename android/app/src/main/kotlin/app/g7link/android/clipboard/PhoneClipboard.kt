@@ -13,6 +13,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.content.FileProvider
 import app.g7link.android.files.OutgoingFiles
+import app.g7link.android.media.sampleSizeToCover
 import java.io.File
 
 /**
@@ -219,6 +220,53 @@ object PhoneClipboard {
     }.getOrElse {
         Log.w(TAG, "can't read the copied image", it)
         ImageResult.Unreadable
+    }
+
+    /** When what's on the clipboard was copied (wall-clock milliseconds), if Android says. */
+    fun copiedAt(context: Context): Long? = runCatching {
+        manager(context)?.primaryClipDescription?.timestamp?.takeIf { it > 0L }
+    }.getOrNull()
+
+    /** A copied image as the Send clipboard sheet shows it: a picture small enough to draw, and what's known of it. */
+    class ImagePreview(val picture: Bitmap?, val mime: String?, val width: Int, val height: Int, val bytes: Long?)
+
+    /**
+     * Reads a copied image's type, size and a picture of it no larger than needed to fill
+     * [maxWidth]×[maxHeight] pixels (blocking; call off the main thread).
+     */
+    fun previewImage(context: Context, uri: Uri, maxWidth: Int, maxHeight: Int): ImagePreview? = runCatching {
+        if (!OutgoingFiles.isAllowedShareUri(uri.scheme, uri.authority, context.packageName)) return null
+        val first = openCheckedImage(context, uri) ?: return null
+        val bytes = first.statSize.takeIf { it >= 0L }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        ParcelFileDescriptor.AutoCloseInputStream(first).use { BitmapFactory.decodeStream(it, null, bounds) }
+        val width = bounds.outWidth.coerceAtLeast(0)
+        val height = bounds.outHeight.coerceAtLeast(0)
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: bounds.outMimeType
+        val small = bytes == null || bytes <= MAX_IMAGE_BYTES
+        val picture = if (width > 0 && height > 0 && small) {
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sampleSizeToCover(width, height, maxWidth, maxHeight)
+            }
+            openCheckedImage(context, uri)?.let { second ->
+                ParcelFileDescriptor.AutoCloseInputStream(second).use { BitmapFactory.decodeStream(it, null, options) }
+            }
+        } else {
+            null
+        }
+        ImagePreview(picture, mime, width, height, bytes)
+    }.getOrElse {
+        Log.w(TAG, "can't preview the copied image", it)
+        null
+    }
+
+    private fun openCheckedImage(context: Context, uri: Uri): ParcelFileDescriptor? {
+        val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
+        if (!OutgoingFiles.isSafeOpenedFd(context, pfd, allowClipboardCache = true)) {
+            pfd.close()
+            return null
+        }
+        return pfd
     }
 
     /** Puts text (and optional HTML) a PC sent on the clipboard. */

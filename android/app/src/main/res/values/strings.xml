@@ -147,12 +147,28 @@
     <string name="transfer_pick_pc">Send to which PC?</string>
     <string name="clip_tile_label">Send clipboard</string>
     <string name="action_send_clipboard">Send clipboard</string>
+    <string name="clip_sheet_subtitle">What you last copied on this phone</string>
+    <plurals name="clip_sheet_text_length">
+        <item quantity="one">Text · %1$d character</item>
+        <item quantity="other">Text · %1$d characters</item>
+    </plurals>
+    <string name="clip_sheet_copied">Copied %1$s</string>
+    <string name="clip_sheet_hidden_note">Sent hidden: it isn’t shown or kept in history on %1$s.</string>
+    <string name="clip_sheet_send_hidden">Send hidden</string>
+    <string name="clip_sheet_send">Send</string>
+    <string name="clip_sheet_lands">Lands on its clipboard</string>
+    <string name="clip_sheet_lands_each">Lands on each one’s clipboard</string>
+    <string name="clip_sheet_nothing_title">Nothing copied</string>
+    <string name="clip_sheet_nothing_text">Copy something on the phone, then come back.</string>
+    <string name="clip_sheet_close">Close</string>
+    <string name="clip_sheet_on_clipboard">On %1$s’s clipboard</string>
+    <string name="clip_sheet_paste_hint">Paste with Ctrl+V on the PC</string>
+    <string name="clip_sheet_paste_on">Paste on %1$s</string>
     <string name="clip_sent_to">Sent to %1$s</string>
     <string name="clip_no_pc">No PC is connected right now.</string>
     <string name="clip_off_for">The clipboard is turned off for %1$s.</string>
     <string name="clip_too_large">That’s too much text to send at once.</string>
     <string name="clip_private">What you copied is marked private by its app, so it wasn’t sent.</string>
-    <string name="clip_empty">There’s no text or image on the clipboard.</string>
     <string name="clip_image_too_large">That image is too large to send.</string>
     <string name="clip_image_unreadable">That image can’t be read.</string>
     <string name="clip_image_unsupported">Update G7 Link on %1$s to send it images.</string>
@@ -1215,7 +1231,6 @@
     <string name="home_this_phone">This phone</string>
     <string name="home_files">Files</string>
     <string name="home_folder">Folder</string>
-    <string name="home_clipboard">Clipboard</string>
     <string name="home_link">Link</string>
     <string name="home_trackpad">Trackpad and keyboard</string>
     <string name="home_lock">Lock</string>

@@ -632,7 +632,7 @@ fun HomeScreen(
                         onClick = { pickFolder.launch(null) },
                     )
                     G7Row(
-                        label = stringResource(R.string.home_clipboard),
+                        label = stringResource(R.string.action_send_clipboard),
                         icon = G7Icons.clipboard,
                         tint = tints.lavender,
                         // Offline, the clip waits in the send queue.
@@ -1127,7 +1127,7 @@ private fun PeerRows(
             onClick = { pickFiles.launch(arrayOf("*/*")) },
         )
         G7Row(
-            label = stringResource(R.string.home_clipboard),
+            label = stringResource(R.string.action_send_clipboard),
             icon = G7Icons.clipboard,
             tint = tints.lavender,
             enabled = !device.online || device.has("pair.clipboard"),

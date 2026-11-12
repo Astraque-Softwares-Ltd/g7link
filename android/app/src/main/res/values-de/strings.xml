@@ -145,12 +145,28 @@
     <string name="transfer_pick_pc">An welchen PC senden?</string>
     <string name="clip_tile_label">Zwischenablage senden</string>
     <string name="action_send_clipboard">Zwischenablage senden</string>
+    <string name="clip_sheet_subtitle">Was du zuletzt auf diesem Gerät kopiert hast</string>
+    <plurals name="clip_sheet_text_length">
+        <item quantity="one">Text · %1$d Zeichen</item>
+        <item quantity="other">Text · %1$d Zeichen</item>
+    </plurals>
+    <string name="clip_sheet_copied">Kopiert: %1$s</string>
+    <string name="clip_sheet_hidden_note">Wird verborgen gesendet: Auf %1$s wird es weder angezeigt noch im Verlauf gespeichert.</string>
+    <string name="clip_sheet_send_hidden">Verborgen senden</string>
+    <string name="clip_sheet_send">Senden</string>
+    <string name="clip_sheet_lands">Landet in seiner Zwischenablage</string>
+    <string name="clip_sheet_lands_each">Landet jeweils in der Zwischenablage</string>
+    <string name="clip_sheet_nothing_title">Nichts kopiert</string>
+    <string name="clip_sheet_nothing_text">Kopiere etwas auf dem Gerät und komm dann zurück.</string>
+    <string name="clip_sheet_close">Schließen</string>
+    <string name="clip_sheet_on_clipboard">In der Zwischenablage von %1$s</string>
+    <string name="clip_sheet_paste_hint">Auf dem PC mit Strg+V einfügen</string>
+    <string name="clip_sheet_paste_on">Auf %1$s einfügen</string>
     <string name="clip_sent_to">Gesendet an %1$s</string>
     <string name="clip_no_pc">Momentan ist kein PC verbunden.</string>
     <string name="clip_off_for">Die Zwischenablage ist für %1$s deaktiviert.</string>
     <string name="clip_too_large">Das ist zu viel Text, um ihn auf einmal zu senden.</string>
     <string name="clip_private">Der kopierte Inhalt wurde von der App als vertraulich markiert und daher nicht gesendet.</string>
-    <string name="clip_empty">Die Zwischenablage enthält weder Text noch Bild.</string>
     <string name="clip_image_too_large">Dieses Bild ist zu groß zum Senden.</string>
     <string name="clip_image_unreadable">Dieses Bild kann nicht gelesen werden.</string>
     <string name="clip_image_unsupported">Aktualisiere G7 Link auf %1$s, um Bilder dorthin zu senden.</string>
@@ -1213,7 +1229,6 @@
     <string name="home_this_phone">Dieses Smartphone</string>
     <string name="home_files">Dateien</string>
     <string name="home_folder">Ordner</string>
-    <string name="home_clipboard">Zwischenablage</string>
     <string name="home_link">Link</string>
     <string name="home_trackpad">Touchpad und Tastatur</string>
     <string name="home_lock">Sperren</string>

@@ -139,12 +139,28 @@
     <string name="transfer_pick_pc">发送到哪台电脑？</string>
     <string name="clip_tile_label">发送剪贴板</string>
     <string name="action_send_clipboard">发送剪贴板</string>
+    <string name="clip_sheet_subtitle">你在这部手机上最近复制的内容</string>
+    <plurals name="clip_sheet_text_length">
+        <item quantity="one">文本 · %1$d 个字符</item>
+        <item quantity="other">文本 · %1$d 个字符</item>
+    </plurals>
+    <string name="clip_sheet_copied">%1$s复制</string>
+    <string name="clip_sheet_hidden_note">隐藏发送：不会在 %1$s 上显示，也不会保存到历史记录。</string>
+    <string name="clip_sheet_send_hidden">隐藏发送</string>
+    <string name="clip_sheet_send">发送</string>
+    <string name="clip_sheet_lands">将进入其剪贴板</string>
+    <string name="clip_sheet_lands_each">将进入每台设备的剪贴板</string>
+    <string name="clip_sheet_nothing_title">没有复制内容</string>
+    <string name="clip_sheet_nothing_text">先在手机上复制内容，再回来这里。</string>
+    <string name="clip_sheet_close">关闭</string>
+    <string name="clip_sheet_on_clipboard">已在 %1$s 的剪贴板上</string>
+    <string name="clip_sheet_paste_hint">在电脑上按 Ctrl+V 粘贴</string>
+    <string name="clip_sheet_paste_on">在 %1$s 上粘贴</string>
     <string name="clip_sent_to">已发送到 %1$s</string>
     <string name="clip_no_pc">当前没有已连接的电脑。</string>
     <string name="clip_off_for">已对 %1$s 关闭剪贴板。</string>
     <string name="clip_too_large">文本太多，无法一次发送。</string>
     <string name="clip_private">你复制的内容被其应用标记为私密，因此未发送。</string>
-    <string name="clip_empty">剪贴板中没有文本或图片。</string>
     <string name="clip_image_too_large">图片太大，无法发送。</string>
     <string name="clip_image_unreadable">无法读取该图片。</string>
     <string name="clip_image_unsupported">请更新 %1$s 上的G7 Link以发送图片。</string>
@@ -1080,7 +1096,6 @@
     <string name="home_this_phone">这部手机</string>
     <string name="home_files">文件</string>
     <string name="home_folder">文件夹</string>
-    <string name="home_clipboard">剪贴板</string>
     <string name="home_link">链接</string>
     <string name="home_trackpad">触控板和键盘</string>
     <string name="home_lock">锁定</string>

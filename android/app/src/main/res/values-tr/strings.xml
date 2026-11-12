@@ -145,12 +145,28 @@
     <string name="transfer_pick_pc">Hangi bilgisayara gönderilsin?</string>
     <string name="clip_tile_label">Panoyu gönder</string>
     <string name="action_send_clipboard">Panoyu gönder</string>
+    <string name="clip_sheet_subtitle">Bu telefonda en son kopyaladığınız</string>
+    <plurals name="clip_sheet_text_length">
+        <item quantity="one">Metin · %1$d karakter</item>
+        <item quantity="other">Metin · %1$d karakter</item>
+    </plurals>
+    <string name="clip_sheet_copied">Kopyalandı: %1$s</string>
+    <string name="clip_sheet_hidden_note">Gizli gönderilir: %1$s cihazında gösterilmez ve geçmişte tutulmaz.</string>
+    <string name="clip_sheet_send_hidden">Gizli gönder</string>
+    <string name="clip_sheet_send">Gönder</string>
+    <string name="clip_sheet_lands">Panosuna gider</string>
+    <string name="clip_sheet_lands_each">Her birinin panosuna gider</string>
+    <string name="clip_sheet_nothing_title">Kopyalanan bir şey yok</string>
+    <string name="clip_sheet_nothing_text">Telefonda bir şey kopyalayın, sonra geri gelin.</string>
+    <string name="clip_sheet_close">Kapat</string>
+    <string name="clip_sheet_on_clipboard">%1$s cihazının panosunda</string>
+    <string name="clip_sheet_paste_hint">Bilgisayarda Ctrl+V ile yapıştırın</string>
+    <string name="clip_sheet_paste_on">%1$s cihazında yapıştır</string>
     <string name="clip_sent_to">%1$s cihazına gönderildi</string>
     <string name="clip_no_pc">Şu anda bağlı bilgisayar yok.</string>
     <string name="clip_off_for">%1$s için pano kapalı.</string>
     <string name="clip_too_large">Bir kerede gönderilemeyecek kadar çok metin var.</string>
     <string name="clip_private">Kopyaladığınız içerik, uygulaması tarafından gizli olarak işaretlendiği için gönderilmedi.</string>
-    <string name="clip_empty">Panoda metin veya görüntü yok.</string>
     <string name="clip_image_too_large">Bu görüntü gönderilemeyecek kadar büyük.</string>
     <string name="clip_image_unreadable">Bu görüntü okunamıyor.</string>
     <string name="clip_image_unsupported">Görüntü göndermek için %1$s cihazındaki G7 Link\'i güncelleyin.</string>
@@ -1213,7 +1229,6 @@
     <string name="home_this_phone">Bu telefon</string>
     <string name="home_files">Dosyalar</string>
     <string name="home_folder">Klasör</string>
-    <string name="home_clipboard">Pano</string>
     <string name="home_link">Bağlantı</string>
     <string name="home_trackpad">Dokunmatik yüzey ve klavye</string>
     <string name="home_lock">Kilitle</string>
