@@ -73,6 +73,8 @@ import app.g7link.android.ui.deck.DeckScreen
 import app.g7link.android.ui.guide.FeaturesGuideScreen
 import app.g7link.android.ui.guide.GuideHighlightTarget
 import app.g7link.android.ui.home.HomeScreen
+import app.g7link.android.ui.capture.PcShotActivity
+import androidx.lifecycle.repeatOnLifecycle
 import app.g7link.android.ui.pairing.PairingActions
 import app.g7link.android.ui.pairing.PairingScreen
 import app.g7link.android.ui.recorder.RecorderScreen
@@ -414,6 +416,19 @@ private fun App(
     val appScope = androidx.compose.runtime.rememberCoroutineScope()
     val undoLabel = stringResource(R.string.send_queue_undo)
     LaunchedEffect(Unit) { core.messages.collect { snackbar.showSnackbar(it) } }
+    // A screenshot of a PC opens to crop once it's here and the app is in view.
+    val shotContext = LocalContext.current
+    val shotLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(shotLifecycle) {
+        shotLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            core.pcCapture.shot.collect { shot ->
+                if (shot != null) {
+                    runCatching { shotContext.startActivity(PcShotActivity.intent(shotContext, shot)) }
+                    core.pcCapture.shotShown(shot)
+                }
+            }
+        }
+    }
     LaunchedEffect(undoLabel) {
         core.queuedNotices.collectLatest { notice ->
             val result = snackbar.showSnackbar(
@@ -714,6 +729,7 @@ private fun App(
                     val mirrorSession by MirrorService.session.collectAsStateWithLifecycle()
                     val webcamSession by WebcamService.session.collectAsStateWithLifecycle()
                     val micStreamingTo by app.g7link.android.mic.MicService.streaming.collectAsStateWithLifecycle()
+                    val pcCaptureStates by core.pcCapture.states.collectAsStateWithLifecycle()
                     val recorderFlow = remember {
                         RecorderService.session.distinctUntilChanged { a, b ->
                             a.active == b.active &&
@@ -827,6 +843,9 @@ private fun App(
                                     onOpenLink = { id, url ->
                                         appScope.launch { snackbar.showSnackbar(core.openLinkOnPc(id, url)) }
                                     },
+                                    pcCapture = pcCaptureStates,
+                                    onPcScreenshot = core.pcCapture::screenshot,
+                                    onPcRecord = core.pcCapture::toggleRecording,
                                     mirrorSession = mirrorSession,
                                     webcamSession = webcamSession,
                                     recorderSession = recorderSession,

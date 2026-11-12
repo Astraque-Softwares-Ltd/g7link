@@ -270,6 +270,18 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     private val _state = MutableStateFlow(CoreState())
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
+
+    /** Screenshots and recordings of a PC's screen, taken from this phone. */
+    val pcCapture = PcCapture(
+        this.context,
+        scope,
+        node = {
+            startJob?.join()
+            node
+        },
+        nameOf = { pcId -> _state.value.nameOf(pcId)?.ifBlank { null } ?: this.context.getString(R.string.your_pc) },
+        say = { message -> _messages.tryEmit(message) },
+    )
     private val _queuedNotices = MutableSharedFlow<OfflineQueuedNotice>(extraBufferCapacity = 8)
     private val _clipSuggestions = MutableSharedFlow<ClipSuggestionNotice>(extraBufferCapacity = 4)
     @Volatile private var node: G7LinkNode? = null
@@ -911,6 +923,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     lastPcMirrorKeyframe = null
                 }
             }
+            is Event.PcCapturePrompt -> pcCapture.onPrompt(event.id)
+            is Event.PcCaptureRecordEnded -> pcCapture.onRecordingEnded(event.id, event.name)
             // A PC that's gone isn't playing for this phone anymore; it
             // sends what plays when it's back.
             is Event.LinkChanged -> {
@@ -919,6 +933,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                         pcMedia.update(event.id, "", emptyList())
                     }
                     pcSpeakerPlayer.stopForPc(event.id)
+                    pcCapture.onOffline(event.id)
                     if (_pcMirrorConfig.value?.pcId == event.id) {
                         _pcMirrorConfig.value = null
                     }
@@ -948,6 +963,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     pcNotificationPoster.cancelAll(event.id)
                 }
                 pcSpeakerPlayer.stopForPc(event.id)
+                pcCapture.onOffline(event.id)
                 if (_pcMirrorConfig.value?.pcId == event.id) {
                     _pcMirrorConfig.value = null
                 }
@@ -1007,11 +1023,16 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         val pcOnline = _state.value.device(transfer.deviceId)?.online == true
         recordings.onTransferEvent(transfer, pcOnline)
         TransferNotifications.update(context, transfer, pc)
+        if (transfer.status is TransferStatus.Failed || transfer.status is TransferStatus.Cancelled) {
+            pcCapture.onTransferGone(transfer.id)
+        }
         val done = transfer.status as? TransferStatus.Done ?: return
         if (transfer.direction != TransferDirection.INCOMING) {
             scope.launch(Dispatchers.IO) { refreshDataRetention() }
             return
         }
+        // A screenshot this phone asked a PC for opens to crop; it doesn't land in Downloads.
+        if (pcCapture.claim(transfer, done.saved)) return
         // Out of the app's cache, into Downloads, then tell the user.
         scope.launch(Dispatchers.IO) {
             val published = done.saved.flatMap { ReceivedFiles.publish(context, java.io.File(it)) }
@@ -1711,6 +1732,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             PhoneClipboard.ImageResult.Unreadable -> return context.getString(R.string.clip_image_unreadable)
         }
         return sendToPcs(image = true, pcId = pcId) { node, pc -> node.sendClipboardImage(pc, image.mime, image.bytes) }
+    }
+
+    /** Puts a PNG (a screenshot of the PC, cropped here) on a PC's clipboard; returns what to tell the user. */
+    suspend fun sendClipboardPng(pcId: String, png: ByteArray): String {
+        if (png.size > MAX_CLIPBOARD_PNG_BYTES) return context.getString(R.string.clip_image_too_large)
+        return sendToPcs(image = true, pcId = pcId) { node, pc -> node.sendClipboardImage(pc, "image/png", png) }
     }
 
     /**
@@ -2809,6 +2836,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         /** The protocol's bounds on one pointer move and one scroll (`remote::MAX_MOVE_DELTA`, `MAX_SCROLL_DELTA`). */
         const val MAX_MOVE_DELTA = 4000f
         const val MAX_SCROLL_DELTA = 200f
+        /** The largest image a PC takes on its clipboard (`clip::MAX_IMAGE_BYTES`). */
+        const val MAX_CLIPBOARD_PNG_BYTES = 32 * 1024 * 1024
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */

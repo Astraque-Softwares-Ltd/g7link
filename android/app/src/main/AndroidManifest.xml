@@ -394,6 +394,12 @@
             android:launchMode="singleTop"
             android:theme="@style/Theme.G7Link" />
 
+        <!-- A screenshot of a PC, to crop, then save, share or copy back to the PC. -->
+        <activity
+            android:name=".ui.capture.PcShotActivity"
+            android:exported="false"
+            android:theme="@style/Theme.G7Link" />
+
         <activity
             android:name=".camera.ContinuityCameraActivity"
             android:exported="false"

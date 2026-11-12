@@ -1260,4 +1260,26 @@
     <string name="relay_region_europe">Avrupa</string>
     <string name="relay_region_asia_pacific">Asya-Pasifik</string>
     <string name="relay_region_custom">Özel</string>
+    <string name="pc_capture_screenshot">Ekran görüntüsü</string>
+    <string name="pc_capture_record">Ekranı kaydet</string>
+    <string name="pc_capture_stop_recording">Kaydı durdur · %1$s</string>
+    <string name="pc_capture_approve">Bilgisayarınızda onaylayın</string>
+    <string name="pc_capture_off">%1$s bu telefonun ekranını görmesine izin vermiyor. Bilgisayardan izin verin.</string>
+    <string name="pc_capture_locked">%1$s kilitli.</string>
+    <string name="pc_capture_declined">%1$s üzerinde ekran paylaşımına izin verilmedi.</string>
+    <string name="pc_capture_files_off">%1$s bu telefona dosya göndermiyor.</string>
+    <string name="pc_capture_busy">%1$s zaten kayıt yapıyor.</string>
+    <string name="pc_capture_unsupported">%1$s ekranını yakalayamıyor.</string>
+    <string name="pc_capture_failed">%1$s ekranı yakalanamadı.</string>
+    <string name="pc_capture_recording_sent">Kayıt %1$s üzerine kaydedildi. Yolda.</string>
+    <string name="pc_capture_recording_ended">%1$s kaydı durdurdu.</string>
+    <string name="pc_shot_title">Ekran görüntüsü</string>
+    <string name="pc_shot_save">Kaydet</string>
+    <string name="pc_shot_share">Paylaş</string>
+    <string name="pc_shot_copy">%1$s cihazına kopyala</string>
+    <string name="pc_shot_saved">Resimler/G7 Link klasörüne kaydedildi.</string>
+    <string name="pc_shot_not_saved">Ekran görüntüsü kaydedilemedi.</string>
+    <string name="pc_shot_unreadable">Ekran görüntüsü açılamadı.</string>
+    <string name="pc_shot_crop_desc">%1$s ekran görüntüsü. Kırpmak için köşeleri veya kenarları sürükleyin.</string>
+    <string name="pc_shot_share_title">Ekran görüntüsünü paylaş</string>
 </resources>

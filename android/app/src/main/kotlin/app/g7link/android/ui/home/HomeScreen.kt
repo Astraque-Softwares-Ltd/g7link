@@ -168,6 +168,8 @@ import app.g7link.android.core.PHONE_SPEAKER_OUTPUT
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.FirstLineIcon
 import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.capture.PcCaptureRows
+import app.g7link.android.core.PcCaptureState
 import app.g7link.android.ui.theme.G7Mark
 import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7RowAction
@@ -235,6 +237,10 @@ fun HomeScreen(
         onSaved(null)
     },
     onOpenLink: (pcId: String, url: String) -> Unit = { _, _ -> },
+    /** Screenshots and recordings of each PC's screen under way. */
+    pcCapture: Map<String, PcCaptureState> = emptyMap(),
+    onPcScreenshot: (pcId: String) -> Unit = {},
+    onPcRecord: (pcId: String) -> Unit = {},
     mirrorSession: MirrorSession = MirrorSession(),
     webcamSession: WebcamSession = WebcamSession(),
     recorderSession: RecorderSession = RecorderSession(),
@@ -677,6 +683,14 @@ fun HomeScreen(
                         enabled = online,
                         onClick = { browseFilesPcId = pc.id },
                     )
+                    if (pc.has("device.pc_capture")) {
+                        PcCaptureRows(
+                            online = online,
+                            capture = pcCapture[pc.id] ?: PcCaptureState(),
+                            onScreenshot = { onPcScreenshot(pc.id) },
+                            onRecord = { onPcRecord(pc.id) },
+                        )
+                    }
                     G7Row(
                         label = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device),
                         icon = G7Icons.bell,

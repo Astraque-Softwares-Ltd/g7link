@@ -119,6 +119,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
+import app.g7link.android.core.PcCaptureState
+import app.g7link.android.ui.capture.recordLabel
+import app.g7link.android.ui.capture.screenshotLabel
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.core.PcClipNotice
@@ -387,6 +390,7 @@ fun RemoteScreen(
             RemoteToolbar(
                 device = device,
                 core = core,
+                screen = mode == RemoteMode.Screen,
                 keyboardOn = showKeyboard && mode == RemoteMode.Touchpad,
                 onKeyboard = {
                     keyboardOpenedForPc = false
@@ -411,6 +415,7 @@ fun RemoteScreen(
 private fun RemoteToolbar(
     device: Device,
     core: Core,
+    screen: Boolean,
     keyboardOn: Boolean,
     onKeyboard: () -> Unit,
     onVolume: () -> Unit,
@@ -457,6 +462,28 @@ private fun RemoteToolbar(
             enabled = device.online,
             modifier = Modifier.weight(1f),
         )
+        // On the Screen tab: a screenshot, or a recording, of what it shows.
+        if (screen && device.has("device.pc_capture")) {
+            val captures by core.pcCapture.states.collectAsStateWithLifecycle()
+            val capture = captures[device.id] ?: PcCaptureState()
+            G7IconButton(
+                icon = G7Icons.screenshot,
+                contentDescription = stringResource(screenshotLabel(capture)),
+                onClick = { core.pcCapture.screenshot(device.id) },
+                tint = tints.blue,
+                enabled = device.online && !capture.shooting,
+                modifier = Modifier.weight(1f),
+            )
+            G7IconButton(
+                icon = G7Icons.video,
+                contentDescription = recordLabel(capture),
+                onClick = { core.pcCapture.toggleRecording(device.id) },
+                tint = tints.red,
+                enabled = device.online && !capture.recordingBusy,
+                selected = capture.recordingSince != null,
+                modifier = Modifier.weight(1f),
+            )
+        }
         if (device.has("device.pc_actions")) {
             G7IconButton(
                 icon = G7Icons.lock,

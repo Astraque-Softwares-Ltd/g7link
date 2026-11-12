@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!-- Received files on Android 8–9 (see files/ReceivedFiles.kt), images
-     a PC put on the clipboard (see clipboard/PhoneClipboard.kt), and
-     outgoing MMS PDUs (see sms/PhoneSms.kt). -->
+     a PC put on the clipboard (see clipboard/PhoneClipboard.kt), outgoing
+     MMS PDUs (see sms/PhoneSms.kt), and screenshots of a PC being shared
+     (see ui/capture/PcShotActivity.kt). -->
 <paths>
     <external-files-path name="received" path="Download/G7Link/" />
     <files-path name="recordings" path="recordings/" />
     <cache-path name="clipboard" path="clipboard/" />
     <cache-path name="mms" path="mms/" />
+    <cache-path name="pc_shots" path="pc-shots/shared/" />
 </paths>

@@ -1260,4 +1260,26 @@
     <string name="relay_region_europe">Europa</string>
     <string name="relay_region_asia_pacific">Ásia-Pacífico</string>
     <string name="relay_region_custom">Personalizados</string>
+    <string name="pc_capture_screenshot">Captura de tela</string>
+    <string name="pc_capture_record">Gravar a tela</string>
+    <string name="pc_capture_stop_recording">Parar gravação · %1$s</string>
+    <string name="pc_capture_approve">Aprove no seu PC</string>
+    <string name="pc_capture_off">%1$s não deixa este celular ver a tela. Permita no PC.</string>
+    <string name="pc_capture_locked">%1$s está bloqueado.</string>
+    <string name="pc_capture_declined">O compartilhamento de tela não foi permitido em %1$s.</string>
+    <string name="pc_capture_files_off">%1$s não envia arquivos para este celular.</string>
+    <string name="pc_capture_busy">%1$s já está gravando.</string>
+    <string name="pc_capture_unsupported">%1$s não consegue capturar a tela.</string>
+    <string name="pc_capture_failed">Não foi possível capturar a tela de %1$s.</string>
+    <string name="pc_capture_recording_sent">Gravação salva em %1$s. Ela está a caminho.</string>
+    <string name="pc_capture_recording_ended">%1$s parou a gravação.</string>
+    <string name="pc_shot_title">Captura de tela</string>
+    <string name="pc_shot_save">Salvar</string>
+    <string name="pc_shot_share">Compartilhar</string>
+    <string name="pc_shot_copy">Copiar para %1$s</string>
+    <string name="pc_shot_saved">Salva em Imagens/G7 Link.</string>
+    <string name="pc_shot_not_saved">Não foi possível salvar a captura de tela.</string>
+    <string name="pc_shot_unreadable">Não foi possível abrir a captura de tela.</string>
+    <string name="pc_shot_crop_desc">Captura de tela de %1$s. Arraste os cantos ou as bordas para recortar.</string>
+    <string name="pc_shot_share_title">Compartilhar captura de tela</string>
 </resources>

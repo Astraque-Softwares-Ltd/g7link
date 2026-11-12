@@ -1263,4 +1263,26 @@
     <string name="relay_region_europe">Europe</string>
     <string name="relay_region_asia_pacific">Asia-Pacific</string>
     <string name="relay_region_custom">Custom</string>
+    <string name="pc_capture_screenshot">Screenshot</string>
+    <string name="pc_capture_record">Record screen</string>
+    <string name="pc_capture_stop_recording">Stop recording · %1$s</string>
+    <string name="pc_capture_approve">Approve on your PC</string>
+    <string name="pc_capture_off">%1$s doesn\'t let this phone see its screen. Allow it on the PC.</string>
+    <string name="pc_capture_locked">%1$s is locked.</string>
+    <string name="pc_capture_declined">Screen sharing wasn\'t allowed on %1$s.</string>
+    <string name="pc_capture_files_off">%1$s doesn\'t send files to this phone.</string>
+    <string name="pc_capture_busy">%1$s is already recording.</string>
+    <string name="pc_capture_unsupported">%1$s can\'t capture its screen.</string>
+    <string name="pc_capture_failed">Couldn\'t capture the screen of %1$s.</string>
+    <string name="pc_capture_recording_sent">Recording saved on %1$s. It\'s on its way.</string>
+    <string name="pc_capture_recording_ended">%1$s stopped the recording.</string>
+    <string name="pc_shot_title">Screenshot</string>
+    <string name="pc_shot_save">Save</string>
+    <string name="pc_shot_share">Share</string>
+    <string name="pc_shot_copy">Copy to %1$s</string>
+    <string name="pc_shot_saved">Saved to Pictures/G7 Link.</string>
+    <string name="pc_shot_not_saved">Couldn\'t save the screenshot.</string>
+    <string name="pc_shot_unreadable">Couldn\'t open the screenshot.</string>
+    <string name="pc_shot_crop_desc">Screenshot of %1$s. Drag the corners or edges to crop.</string>
+    <string name="pc_shot_share_title">Share screenshot</string>
 </resources>

@@ -1260,4 +1260,26 @@
     <string name="relay_region_europe">Europa</string>
     <string name="relay_region_asia_pacific">Asien-Pazifik</string>
     <string name="relay_region_custom">Eigene</string>
+    <string name="pc_capture_screenshot">Bildschirmfoto</string>
+    <string name="pc_capture_record">Bildschirm aufnehmen</string>
+    <string name="pc_capture_stop_recording">Aufnahme beenden · %1$s</string>
+    <string name="pc_capture_approve">Am PC bestätigen</string>
+    <string name="pc_capture_off">%1$s lässt dieses Smartphone seinen Bildschirm nicht sehen. Erlaube es am PC.</string>
+    <string name="pc_capture_locked">%1$s ist gesperrt.</string>
+    <string name="pc_capture_declined">Die Bildschirmfreigabe wurde auf %1$s nicht erlaubt.</string>
+    <string name="pc_capture_files_off">%1$s sendet keine Dateien an dieses Smartphone.</string>
+    <string name="pc_capture_busy">%1$s nimmt bereits auf.</string>
+    <string name="pc_capture_unsupported">%1$s kann seinen Bildschirm nicht aufnehmen.</string>
+    <string name="pc_capture_failed">Der Bildschirm von %1$s konnte nicht aufgenommen werden.</string>
+    <string name="pc_capture_recording_sent">Aufnahme auf %1$s gespeichert. Sie ist unterwegs.</string>
+    <string name="pc_capture_recording_ended">%1$s hat die Aufnahme beendet.</string>
+    <string name="pc_shot_title">Bildschirmfoto</string>
+    <string name="pc_shot_save">Speichern</string>
+    <string name="pc_shot_share">Teilen</string>
+    <string name="pc_shot_copy">Auf %1$s kopieren</string>
+    <string name="pc_shot_saved">In Bilder/G7 Link gespeichert.</string>
+    <string name="pc_shot_not_saved">Das Bildschirmfoto konnte nicht gespeichert werden.</string>
+    <string name="pc_shot_unreadable">Das Bildschirmfoto konnte nicht geöffnet werden.</string>
+    <string name="pc_shot_crop_desc">Bildschirmfoto von %1$s. Ziehe an den Ecken oder Kanten, um es zuzuschneiden.</string>
+    <string name="pc_shot_share_title">Bildschirmfoto teilen</string>
 </resources>

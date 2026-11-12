@@ -1196,4 +1196,26 @@
     <string name="relay_region_europe">Châu Âu</string>
     <string name="relay_region_asia_pacific">Châu Á – Thái Bình Dương</string>
     <string name="relay_region_custom">Tùy chỉnh</string>
+<string name="pc_capture_screenshot">Chụp màn hình</string>
+<string name="pc_capture_record">Quay màn hình</string>
+<string name="pc_capture_stop_recording">Dừng quay · %1$s</string>
+<string name="pc_capture_approve">Hãy cho phép trên PC</string>
+<string name="pc_capture_off">%1$s không cho điện thoại này xem màn hình. Hãy cho phép trên PC.</string>
+<string name="pc_capture_locked">%1$s đang bị khóa.</string>
+<string name="pc_capture_declined">Chia sẻ màn hình không được cho phép trên %1$s.</string>
+<string name="pc_capture_files_off">%1$s không gửi tệp đến điện thoại này.</string>
+<string name="pc_capture_busy">%1$s đang quay màn hình rồi.</string>
+<string name="pc_capture_unsupported">%1$s không thể chụp màn hình của nó.</string>
+<string name="pc_capture_failed">Không thể chụp màn hình của %1$s.</string>
+<string name="pc_capture_recording_sent">Đã lưu bản quay trên %1$s. Bản quay đang được gửi đến.</string>
+<string name="pc_capture_recording_ended">%1$s đã dừng quay.</string>
+<string name="pc_shot_title">Ảnh chụp màn hình</string>
+<string name="pc_shot_save">Lưu</string>
+<string name="pc_shot_share">Chia sẻ</string>
+<string name="pc_shot_copy">Sao chép sang %1$s</string>
+<string name="pc_shot_saved">Đã lưu vào Pictures/G7 Link.</string>
+<string name="pc_shot_not_saved">Không thể lưu ảnh chụp màn hình.</string>
+<string name="pc_shot_unreadable">Không thể mở ảnh chụp màn hình.</string>
+<string name="pc_shot_crop_desc">Ảnh chụp màn hình của %1$s. Kéo các góc hoặc cạnh để cắt.</string>
+<string name="pc_shot_share_title">Chia sẻ ảnh chụp màn hình</string>
 </resources>

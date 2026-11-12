@@ -1127,4 +1127,26 @@
     <string name="relay_region_europe">欧洲</string>
     <string name="relay_region_asia_pacific">亚太地区</string>
     <string name="relay_region_custom">自定义</string>
+    <string name="pc_capture_screenshot">截图</string>
+    <string name="pc_capture_record">录制屏幕</string>
+    <string name="pc_capture_stop_recording">停止录制 · %1$s</string>
+    <string name="pc_capture_approve">请在电脑上确认</string>
+    <string name="pc_capture_off">%1$s 不允许本手机查看其屏幕。请在电脑上允许。</string>
+    <string name="pc_capture_locked">%1$s 已锁定。</string>
+    <string name="pc_capture_declined">%1$s 上未允许共享屏幕。</string>
+    <string name="pc_capture_files_off">%1$s 不向本手机发送文件。</string>
+    <string name="pc_capture_busy">%1$s 已在录制。</string>
+    <string name="pc_capture_unsupported">%1$s 无法捕获其屏幕。</string>
+    <string name="pc_capture_failed">无法捕获 %1$s 的屏幕。</string>
+    <string name="pc_capture_recording_sent">录制内容已保存在 %1$s 上，正在发送。</string>
+    <string name="pc_capture_recording_ended">%1$s 已停止录制。</string>
+    <string name="pc_shot_title">截图</string>
+    <string name="pc_shot_save">保存</string>
+    <string name="pc_shot_share">分享</string>
+    <string name="pc_shot_copy">复制到 %1$s</string>
+    <string name="pc_shot_saved">已保存到 Pictures/G7 Link。</string>
+    <string name="pc_shot_not_saved">无法保存截图。</string>
+    <string name="pc_shot_unreadable">无法打开截图。</string>
+    <string name="pc_shot_crop_desc">%1$s 的截图。拖动角或边进行裁剪。</string>
+    <string name="pc_shot_share_title">分享截图</string>
 </resources>
