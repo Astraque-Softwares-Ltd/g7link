@@ -1366,6 +1366,17 @@ Item {
                                 onToggled: (on) => Preferences.autoCallAudio = on
                             }
                         }
+                        SettingRow {
+                            width: parent.width
+                            iconPath: Icons.speaker
+                            title: qsTr("Phone media on this PC")
+                            description: qsTr("Off: a phone connected over Bluetooth keeps playing on its own speaker or headphones")
+                            Toggle {
+                                label: qsTr("Phone media on this PC")
+                                checked: Preferences.phoneMediaOnPc
+                                onToggled: (on) => Preferences.phoneMediaOnPc = on
+                            }
+                        }
 
                         SettingRow {
                             width: parent.width

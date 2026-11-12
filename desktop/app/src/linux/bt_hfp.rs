@@ -556,6 +556,151 @@ pub fn disconnect_audio() {
     }
 }
 
+/// A2DP sink: what this PC offers a phone that plays media to it.
+const UUID_A2DP_SINK: &str = "0000110b-0000-1000-8000-00805f9b34fb";
+
+/// Whether a paired phone may play its media on this PC over Bluetooth.
+static PHONE_MEDIA_ALLOWED: AtomicBool = AtomicBool::new(false);
+
+/// The names paired phones go by, to tell them from other Bluetooth devices.
+static PHONE_NAMES: OnceLock<fn() -> Vec<String>> = OnceLock::new();
+
+/// Lets paired phones play media on this PC, or sends their media back.
+pub fn set_phone_media_allowed(on: bool) {
+    let was = PHONE_MEDIA_ALLOWED.swap(on, Ordering::AcqRel);
+    if was && !on && PHONE_NAMES.get().is_some() {
+        let _ = std::thread::Builder::new().name("bt-media-off".into()).spawn(|| {
+            if let Some(conn) = system_bus(CONNECT_TIMEOUT) {
+                drop_phone_media(&conn);
+            }
+        });
+    }
+}
+
+/// Keeps paired phones' media on the phone. A phone that connects to this PC
+/// over Bluetooth (for calls, or by the user) also opens a media link, and
+/// Android then plays everything here instead of on its headphones. Unless
+/// [`set_phone_media_allowed`], that link is closed as it opens; calls and
+/// other devices aren't touched. One thread for the app's lifetime.
+pub fn keep_phone_media_on_phone(phone_names: fn() -> Vec<String>) {
+    if PHONE_NAMES.set(phone_names).is_err() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("bt-media-guard".into()).spawn(|| {
+        loop {
+            guard_phone_media();
+            std::thread::sleep(WATCH_RETRY);
+        }
+    });
+}
+
+/// Follows media links opening until the system bus connection ends.
+fn guard_phone_media() {
+    let Ok(conn) = system_builder().and_then(|b| b.method_timeout(CONNECT_TIMEOUT).build()) else {
+        return;
+    };
+    let messages = zbus::blocking::MessageIterator::from(&conn);
+    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&conn) else {
+        return;
+    };
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(BLUEZ)
+        .and_then(|b| b.interface(OBJECT_MANAGER))
+        .and_then(|b| b.member("InterfacesAdded"))
+        .map(|b| b.build());
+    let Ok(rule) = rule else { return };
+    if let Err(error) = dbus.add_match_rule(rule) {
+        tracing::debug!(%error, "Bluetooth: can't follow media links");
+        return;
+    }
+    drop_phone_media(&conn);
+    for message in messages {
+        let Ok(message) = message else {
+            break;
+        };
+        let header = message.header();
+        if header.member().is_none_or(|m| m.as_str() != "InterfacesAdded") {
+            continue;
+        }
+        let opened = message
+            .body()
+            .deserialize::<(OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>)>()
+            .is_ok_and(|(_, interfaces)| interfaces.contains_key(MEDIA_TRANSPORT));
+        if opened {
+            drop_phone_media(&conn);
+        }
+    }
+}
+
+/// A media link open to this PC: the device it comes from and its profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MediaLink {
+    pub device: String,
+    pub uuid: String,
+}
+
+fn media_links(objects: &ManagedObjectsMap) -> Vec<MediaLink> {
+    objects
+        .values()
+        .filter_map(|ifaces| {
+            let transport = ifaces.get(MEDIA_TRANSPORT)?;
+            let device = match &**transport.get("Device")? {
+                Value::ObjectPath(p) => p.as_str().to_owned(),
+                _ => return None,
+            };
+            let uuid = <&str>::try_from(&**transport.get("UUID")?).ok()?.to_ascii_lowercase();
+            Some(MediaLink { device, uuid })
+        })
+        .collect()
+}
+
+/// The paired phones in `endpoints` with a media link to this PC: phones
+/// named in `names`, never another device.
+pub(crate) fn phones_playing_here(
+    links: &[MediaLink],
+    endpoints: &[BluezEndpoint],
+    names: &[String],
+) -> Vec<String> {
+    endpoints
+        .iter()
+        .filter(|e| {
+            links.iter().any(|l| {
+                l.device == e.object_path && (l.uuid == UUID_A2DP_SINK || l.uuid == UUID_A2DP_SOURCE)
+            })
+        })
+        .filter(|e| {
+            let pair = [(e.mac.clone(), e.name.clone())];
+            names.iter().any(|n| match_endpoint(&pair, Some(n)).is_some())
+        })
+        .map(|e| e.object_path.clone())
+        .collect()
+}
+
+/// Closes the media link of every paired phone playing here, unless allowed.
+fn drop_phone_media(conn: &zbus::blocking::Connection) {
+    if PHONE_MEDIA_ALLOWED.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(names) = PHONE_NAMES.get().map(|f| f()) else { return };
+    if names.is_empty() {
+        return;
+    }
+    let Some(objects) = managed_objects(conn) else { return };
+    let endpoints = parse_bluez_managed_objects(&objects);
+    for device in phones_playing_here(&media_links(&objects), &endpoints, &names) {
+        let path = device.as_str();
+        let result = super::non_tokio(|| {
+            conn.call_method(Some(BLUEZ), path, Some(DEVICE), "DisconnectProfile", &(UUID_A2DP_SOURCE,))
+                .map(|_| ())
+        });
+        match result {
+            Ok(()) => tracing::info!("Bluetooth: kept a phone's media on the phone"),
+            Err(error) => tracing::info!(%error, "Bluetooth: couldn't keep a phone's media on the phone"),
+        }
+    }
+}
+
 /// Calls `changed` whenever Bluetooth changes in a way that may change call
 /// audio: BlueZ starts or stops, an adapter is turned on or off, a device
 /// connects, disconnects or is paired, or an audio link comes or goes. One
@@ -705,6 +850,38 @@ pub fn open_bluetooth_settings() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn endpoint(path: &str, mac: &str, name: &str) -> BluezEndpoint {
+        BluezEndpoint {
+            object_path: path.into(),
+            mac: mac.into(),
+            name: name.into(),
+            connected: true,
+            adapter: Some("/org/bluez/hci0".into()),
+        }
+    }
+
+    #[test]
+    fn only_a_paired_phone_playing_here_loses_its_media_link() {
+        let pixel = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01";
+        let tablet = "/org/bluez/hci0/dev_11_22_33_44_55_66";
+        let endpoints = [
+            endpoint(pixel, "AA:BB:CC:DD:EE:01", "Pixel 8 Pro"),
+            endpoint(tablet, "11:22:33:44:55:66", "Galaxy Tab"),
+        ];
+        let links = [
+            MediaLink { device: pixel.into(), uuid: UUID_A2DP_SINK.into() },
+            MediaLink { device: tablet.into(), uuid: UUID_A2DP_SINK.into() },
+        ];
+        let names = ["Pixel 8 Pro".to_owned()];
+        assert_eq!(phones_playing_here(&links, &endpoints, &names), vec![pixel.to_owned()]);
+        // No media link, nothing to close; a call's link isn't media.
+        let call = [MediaLink { device: pixel.into(), uuid: UUID_HFP_AG.into() }];
+        assert!(phones_playing_here(&call, &endpoints, &names).is_empty());
+        assert!(phones_playing_here(&[], &endpoints, &names).is_empty());
+        // No paired phones: never another device's.
+        assert!(phones_playing_here(&links, &endpoints, &[]).is_empty());
+    }
     use std::sync::Arc;
 
     #[test]

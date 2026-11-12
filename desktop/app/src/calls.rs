@@ -47,6 +47,26 @@ pub fn set_auto_call_audio(on: bool) {
     AUTO_CALL_AUDIO.store(on, Ordering::Relaxed);
 }
 
+/// Lets paired phones play their media on this PC over Bluetooth (off: their
+/// media stays on the phone, on its headphones or speaker).
+pub fn set_phone_media_on_pc(on: bool) {
+    bt_hfp::set_phone_media_allowed(on);
+    bt_hfp::keep_phone_media_on_phone(paired_phone_names);
+}
+
+/// What paired phones are called, by their own name and any nickname here.
+fn paired_phone_names() -> Vec<String> {
+    let Some(host) = core_host::try_host() else { return Vec::new() };
+    host.hub.read(|s| {
+        s.devices
+            .iter()
+            .flat_map(|d| [Some(d.info.name.clone()), crate::settings::nickname_for(&d.id.to_string())])
+            .flatten()
+            .filter(|n| !n.trim().is_empty())
+            .collect()
+    })
+}
+
 /// Phones that currently have a ringing or active call, for media auto-pause/resume.
 static ONGOING_CALLS: Mutex<Option<HashSet<DeviceId>>> = Mutex::new(None);
 

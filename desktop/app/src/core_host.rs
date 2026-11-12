@@ -41,6 +41,11 @@ pub fn host() -> &'static CoreHost {
     HOST.get().expect("core host is started in main before Qt")
 }
 
+/// The running host, once main has started it.
+pub fn try_host() -> Option<&'static CoreHost> {
+    HOST.get()
+}
+
 /// The running host's data directory, if the host has been started.
 pub fn try_data_dir() -> Option<&'static std::path::Path> {
     HOST.get().map(|h| h.data_dir.as_path())
