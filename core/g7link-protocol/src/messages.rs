@@ -6278,7 +6278,8 @@ mod tests {
         for editable in [true, false] {
             let focus = RemoteTextFocus { editable };
             let env = crate::Envelope::new(types::REMOTE_TEXT_FOCUS, &focus).unwrap();
-            let decoded: RemoteTextFocus = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+            let decoded: RemoteTextFocus =
+                crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
             assert_eq!(decoded, focus);
         }
     }
