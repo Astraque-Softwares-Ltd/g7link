@@ -384,6 +384,8 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Mirror", "Show in folder"), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "The app didn't open on the phone. Try again, or open G7 Link on the phone to check Wireless debugging."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "The phone ignores taps from this PC. In its Developer options, turn on USB debugging (Security settings)."), // desktop/app/src/mirror.rs
+    QT_TRANSLATE_NOOP("Mirror", "The phone is locked. It takes taps and keys again once it's unlocked."), // desktop/app/src/mirror.rs
+    QT_TRANSLATE_NOOP("Mirror", "The phone is locked. Unlock it, then try again."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "The phone isn't connected."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "The screenshot couldn't be copied to the clipboard."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "The screenshot couldn't be saved."), // desktop/app/src/mirror.rs

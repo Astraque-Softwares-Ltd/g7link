@@ -120,7 +120,6 @@
         <item quantity="one">%1$d app is open in a window on a PC</item>
         <item quantity="other">%1$d apps are open in windows on a PC</item>
     </plurals>
-    <string name="app_windows_text">Shown on %1$s. They run here, beside what\'s on your screen.</string>
     <string name="action_close_all">Close all</string>
     <string name="sms_title">Text from your PC</string>
     <string name="calls_title">Calls on your PC</string>
@@ -1295,4 +1294,5 @@
     <string name="elevated_no_trusted_networks">None yet. G7 Link turns Wireless debugging on only on trusted networks.</string>
     <string name="elevated_paused_title">Elevated is paused</string>
     <string name="elevated_paused_notice">Elevated is paused on the Wi-Fi network at %1$s. Trust it to keep using Elevated here.</string>
+    <string name="mirror_controlling">%1$s is controlling this phone</string>
 </resources>

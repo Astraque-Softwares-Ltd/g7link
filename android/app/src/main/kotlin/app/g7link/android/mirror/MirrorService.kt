@@ -62,12 +62,18 @@ class MirrorService : Service() {
     private var stayAwake: Boolean = false
     private var screenOff: Boolean = false
     private var soundOnly: Boolean = false
+    /** The PC's name the notification shows. */
+    private var shownName: String = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopSharing()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_REPOST) {
+            if (pcId == null) stopSelf() else repostNotification()
             return START_NOT_STICKY
         }
         val pc = intent?.getStringExtra(EXTRA_PC)
@@ -386,24 +392,45 @@ class MirrorService : Service() {
         MirrorRequests.show(this, request, "")
     }
 
+    /**
+     * Says the phone is shared, and controlled when the PC can tap and type on
+     * it, while it is: swiping it away brings it back (Android 14 lets users
+     * dismiss ongoing notifications), and turning the screen off leaves it.
+     */
     private fun notification(pcName: String): Notification {
+        shownName = pcName
         val stop = PendingIntent.getService(
             this, 0, Intent(this, MirrorService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val repost = PendingIntent.getService(
+            this, 1, Intent(this, MirrorService::class.java).setAction(ACTION_REPOST),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val pc = pcName.ifEmpty { getString(R.string.your_pc) }
+        val controlled = !soundOnly && (app.g7link.android.elevated.Elevated.running || InputService.running)
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(
-                getString(
-                    if (soundOnly) R.string.mirror_sharing_sound else R.string.mirror_sharing,
-                    pcName.ifEmpty { getString(R.string.your_pc) },
-                ),
+                when {
+                    soundOnly -> getString(R.string.mirror_sharing_sound, pc)
+                    controlled -> getString(R.string.mirror_controlling, pc)
+                    else -> getString(R.string.mirror_sharing, pc)
+                },
             )
             .setOngoing(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setDeleteIntent(repost)
             .addAction(0, getString(R.string.action_stop), stop)
             .build()
+    }
+
+    /** The notification was swiped away while sharing: back it comes. */
+    private fun repostNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(shownName))
+        }.onFailure { Log.i(TAG, "can't show the sharing notification again", it) }
     }
 
     private fun stopSharing() {
@@ -443,6 +470,7 @@ class MirrorService : Service() {
         internal const val CHANNEL = "mirroring"
         private const val NOTIFICATION_ID = 4
         private const val ACTION_STOP = "app.g7link.android.mirror.STOP"
+        private const val ACTION_REPOST = "app.g7link.android.mirror.REPOST"
         private const val EXTRA_PC = "pc"
         private const val EXTRA_ELEVATED = "elevated"
         private const val EXTRA_CONSENT = "consent"

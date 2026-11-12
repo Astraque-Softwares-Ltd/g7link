@@ -112,7 +112,6 @@
         <item quantity="one">有 %1$d 个应用在电脑上的窗口中打开</item>
         <item quantity="other">有 %1$d 个应用在电脑上的窗口中打开</item>
     </plurals>
-    <string name="app_windows_text">显示在 %1$s 上。它们在这里运行，与屏幕上的内容并排显示。</string>
     <string name="action_close_all">全部关闭</string>
     <string name="sms_title">从电脑收发短信</string>
     <string name="calls_title">电脑上的通话</string>
@@ -1159,4 +1158,5 @@
     <string name="elevated_no_trusted_networks">暂无。G7 Link 只会在受信任的网络上开启无线调试。</string>
     <string name="elevated_paused_title">高级权限已暂停</string>
     <string name="elevated_paused_notice">高级权限已在 %1$s 的 Wi-Fi 网络上暂停。信任此网络即可继续在这里使用。</string>
+    <string name="mirror_controlling">%1$s 正在控制此手机</string>
 </resources>

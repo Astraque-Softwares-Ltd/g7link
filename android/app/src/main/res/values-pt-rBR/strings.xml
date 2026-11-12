@@ -118,7 +118,6 @@
         <item quantity="one">%1$d app está aberto em uma janela em um PC</item>
         <item quantity="other">%1$d apps estão abertos em janelas em um PC</item>
     </plurals>
-    <string name="app_windows_text">Aparecem em %1$s, mas rodam aqui, ao lado do que está na sua tela.</string>
     <string name="action_close_all">Fechar tudo</string>
     <string name="sms_title">Mensagens pelo PC</string>
     <string name="calls_title">Chamadas no PC</string>
@@ -1292,4 +1291,5 @@
     <string name="elevated_no_trusted_networks">Nenhuma ainda. O G7 Link só ativa a depuração por Wi-Fi em redes confiáveis.</string>
     <string name="elevated_paused_title">O Elevated está pausado</string>
     <string name="elevated_paused_notice">O Elevated está pausado na rede Wi-Fi em %1$s. Confie nela para continuar usando o Elevated aqui.</string>
+    <string name="mirror_controlling">%1$s está controlando este celular</string>
 </resources>

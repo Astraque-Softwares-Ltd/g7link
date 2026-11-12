@@ -118,7 +118,6 @@
         <item quantity="one">%1$d uygulama bir bilgisayarda pencerede açık</item>
         <item quantity="other">%1$d uygulama bir bilgisayarda pencerelerde açık</item>
     </plurals>
-    <string name="app_windows_text">%1$s cihazında gösteriliyor. Burada, ekranınızdakilerin yanında çalışırlar.</string>
     <string name="action_close_all">Tümünü kapat</string>
     <string name="sms_title">Bilgisayarınızdan mesajlaşın</string>
     <string name="calls_title">Bilgisayarınızda aramalar</string>
@@ -1292,4 +1291,5 @@
     <string name="elevated_no_trusted_networks">Henüz yok. G7 Link, Kablosuz hata ayıklamayı yalnızca güvenilen ağlarda açar.</string>
     <string name="elevated_paused_title">Yükseltilmiş mod duraklatıldı</string>
     <string name="elevated_paused_notice">Yükseltilmiş mod, %1$s adresindeki Wi-Fi ağında duraklatıldı. Burada kullanmaya devam etmek için bu ağa güvenin.</string>
+    <string name="mirror_controlling">%1$s bu telefonu kontrol ediyor</string>
 </resources>

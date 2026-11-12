@@ -22,7 +22,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use g7link_protocol::{
-    DeviceId, Envelope, ErrorCode, PacketKind,
+    DeviceId, Envelope, ErrorCode, PacketKind, ProtocolError,
     messages::{
         MirrorAudioConfig, MirrorConfig, MirrorInput, MirrorNotice, MirrorPower, MirrorResize, MirrorSession,
         MirrorSound, MirrorStart, PhoneApp, PhoneApps, StreamHeader, mirror, types,
@@ -119,8 +119,14 @@ pub(crate) async fn start(shared: &Shared, session: &Session, options: MirrorSta
         return Err(Error::Protocol("invalid mirroring options".into()));
     }
     let env = Envelope::new(types::MIRROR_START, &options)?;
-    session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect(types::OK)?;
-    Ok(())
+    match session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect(types::OK) {
+        Ok(()) => Ok(()),
+        // The phone is locked: it opens nothing without a tap until it's unlocked.
+        Err(ProtocolError::Remote { code: ErrorCode::Denied, msg }) if msg == mirror::NOTICE_LOCKED => {
+            Err(Error::Declined)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Tells the PC something about its mirroring (`mirror.notice`), by `code`.
@@ -427,14 +433,22 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 Envelope::error(ErrorCode::Unsupported, "this device doesn't share that")
             } else {
                 let requested_session = options.session;
-                match tokio::task::spawn_blocking(move || platform.mirror_requested(&peer, &options))
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
-                {
-                    Ok(()) => {
+                // An app window opens without a tap on the phone: not while it's locked.
+                let app_window = !desktop && options.app.is_some();
+                let started = tokio::task::spawn_blocking(move || {
+                    if app_window && platform.phone_locked() {
+                        return Ok(false);
+                    }
+                    platform.mirror_requested(&peer, &options).map(|()| true)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+                match started {
+                    Ok(true) => {
                         shared.record_outgoing_mirror_session(peer, requested_session);
                         Envelope::empty(types::OK)
                     }
+                    Ok(false) => Envelope::error(ErrorCode::Denied, mirror::NOTICE_LOCKED),
                     Err(reason) => {
                         tracing::warn!(reason, "can't ask to share the screen");
                         if desktop {

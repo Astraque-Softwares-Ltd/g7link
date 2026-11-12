@@ -44,6 +44,8 @@ struct RecordingPlatform {
     mms_sent: Mutex<Vec<MmsRecord>>,
     mirror_asks: Mutex<Vec<String>>,
     mirror_reject: std::sync::atomic::AtomicBool,
+    /// The phone's lock screen is up.
+    phone_locked: std::sync::atomic::AtomicBool,
     watch_offers: Mutex<Vec<String>>,
     mic_asks: Mutex<Vec<String>>,
     mic: Arc<TestMicSink>,
@@ -143,6 +145,9 @@ impl Platform for RecordingPlatform {
     ) -> Option<Arc<dyn g7link_core::MirrorSink>> {
         self.mirror_asks.lock().unwrap().push(format!("sink {session}"));
         Some(self.screen.clone())
+    }
+    fn phone_locked(&self) -> bool {
+        self.phone_locked.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn mirror_requested(
         &self,
@@ -2653,6 +2658,11 @@ async fn phone_apps_open_in_windows_of_their_own() {
     };
     let listed: Vec<_> = apps.iter().map(|a| (a.label.as_str(), a.icon.is_some())).collect();
     assert_eq!(listed, [("Chat", true), ("Maps", false), ("notes", true)], "by name; big icons left out");
+
+    // Nothing opens while the phone is locked, and the PC hears why.
+    phone.platform.phone_locked.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(pc.node.mirror_start(phone_id, app(7)).await, Err(Error::Declined)));
+    phone.platform.phone_locked.store(false, std::sync::atomic::Ordering::SeqCst);
 
     // An app window is a session of its own; the screen's (0) can't have an app.
     assert!(pc.node.mirror_start(phone_id, app(0)).await.is_err());

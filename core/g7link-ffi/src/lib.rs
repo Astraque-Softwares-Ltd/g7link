@@ -2868,6 +2868,9 @@ pub trait Platform: Send + Sync {
     /// The PC's mouse or keyboard on the mirrored screen (only while this
     /// phone offers `mirror.input`) or an app window. Return quickly.
     fn mirror_input(&self, pc_id: String, session: u32, input: MirrorInputEvent);
+    /// Whether the phone's lock screen is up: a PC then opens no app windows
+    /// on it. Return quickly.
+    fn phone_locked(&self) -> bool;
     /// A PC asked for this phone's camera as a webcam: start streaming (or
     /// ask the user) and call `webcam_open`. False if it can't or the user
     /// declined.
@@ -3098,6 +3101,9 @@ impl core::Platform for PlatformAdapter {
     }
     fn mirror_input(&self, peer: &DeviceId, session: u32, input: core::MirrorInput) {
         self.0.mirror_input(peer.to_string(), session, input.into());
+    }
+    fn phone_locked(&self) -> bool {
+        self.0.phone_locked()
     }
     fn webcam_requested(&self, peer: &DeviceId, options: &core::WebcamStart) -> Result<(), String> {
         let options = WebcamOptions {
@@ -4443,6 +4449,17 @@ impl G7LinkNode {
         let node = self.node.clone();
         self.run(async move {
             node.mirror_notice(id, session, core::MIRROR_NOTICE_INPUT_BLOCKED).await.map_err(Into::into)
+        })
+        .await
+    }
+
+    /// This phone is locked and ignores the PC's taps and keys on mirroring
+    /// `session` until it's unlocked: tells the PC, so it can say why.
+    pub async fn mirror_locked(&self, pc_id: String, session: u32) -> Result<()> {
+        let id = parse_id(&pc_id)?;
+        let node = self.node.clone();
+        self.run(async move {
+            node.mirror_notice(id, session, core::MIRROR_NOTICE_LOCKED).await.map_err(Into::into)
         })
         .await
     }

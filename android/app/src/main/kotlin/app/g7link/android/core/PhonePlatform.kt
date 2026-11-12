@@ -21,6 +21,7 @@ import app.g7link.android.mirror.InputService
 import app.g7link.android.mirror.MirrorRequest
 import app.g7link.android.mirror.MirrorRequests
 import app.g7link.android.mirror.MirrorService
+import app.g7link.android.mirror.PhoneLock
 import app.g7link.android.sms.PhoneSms
 import app.g7link.android.storage.PhoneStorage
 import app.g7link.android.toggles.PhoneToggles
@@ -89,8 +90,11 @@ internal class PhonePlatform(
     private val nameOf: (String) -> String = { "" },
     /** Notifies when a PC starts or stops typing on this phone without mirroring. */
     private val onKeyboardFromPc: (String, Boolean) -> Unit = { _, _ -> },
+    /** A PC's taps and keys were dropped because the phone is locked: (PC's ID, session). */
+    private val onLockedInput: (String, UInt) -> Unit = { _, _ -> },
 ) : Platform {
     private val context = context.applicationContext
+    private val lockGate = PhoneLock.Gate()
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun startRinging() = ringer.startRinging()
@@ -150,7 +154,8 @@ internal class PhonePlatform(
 
     override fun mirrorRequested(pcId: String, options: MirrorOptions): Boolean =
         if (options.app != null) {
-            appWindows.open(pcId, options)
+            // An app window opens without a tap: not while the phone is locked.
+            !PhoneLock.locked(context) && appWindows.open(pcId, options)
         } else {
             // Kept within what the encoder can take: a zero or huge value from
             // the PC would only make this mirroring fail to start.
@@ -164,12 +169,16 @@ internal class PhonePlatform(
                 options.screenOff,
                 options.soundOnly,
             )
-            if (Elevated.running && MirrorService.startElevated(context, request)) {
+            // Through Elevated it starts without a tap; while the phone is locked, it asks.
+            val withoutTap = PhoneLock.startsWithoutTap(Elevated.running, PhoneLock.locked(context), request.soundOnly)
+            if (withoutTap && MirrorService.startElevated(context, request)) {
                 true
             } else {
                 onMirror(pcId, request)
             }
         }
+
+    override fun phoneLocked(): Boolean = PhoneLock.locked(context)
 
     override fun mirrorPowerRequested(pcId: String, stayAwake: Boolean, screenOff: Boolean) {
         MirrorService.setPower(pcId, stayAwake, screenOff)
@@ -194,6 +203,12 @@ internal class PhonePlatform(
 
     // Real events when Elevated runs; gestures through the accessibility service otherwise.
     override fun mirrorInput(pcId: String, session: UInt, requested: MirrorInputEvent) {
+        // No control while the phone is locked; the PC hears why once per lock.
+        when (lockGate.check(PhoneLock.locked(context), pcId, session)) {
+            PhoneLock.Input.Pass -> {}
+            PhoneLock.Input.Drop -> return
+            PhoneLock.Input.DropAndTell -> return onLockedInput(pcId, session)
+        }
         lastMirrorInput = pcId to session
         // Send needs the accessibility service. Without it, it's a plain Enter.
         var input = requested

@@ -1419,6 +1419,10 @@ pub mod mirror {
     /// `mirror.notice`: the phone refuses the PC's taps and keys (on Xiaomi,
     /// until USB debugging (Security settings) is on).
     pub const NOTICE_INPUT_BLOCKED: &str = "input_blocked";
+    /// `mirror.notice`, and the message of a `DENIED` answer to `mirror.start`:
+    /// the phone is locked, so it takes no taps or keys and opens no app
+    /// windows until it's unlocked.
+    pub const NOTICE_LOCKED: &str = "locked";
 }
 
 /// Whether `name` looks like an Android package name.

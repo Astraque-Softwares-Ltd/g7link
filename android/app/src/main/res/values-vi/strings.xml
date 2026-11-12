@@ -117,7 +117,6 @@
         <item quantity="one">%1$d ứng dụng đang mở trong một cửa sổ trên PC</item>
         <item quantity="other">%1$d ứng dụng đang mở trong các cửa sổ trên PC</item>
     </plurals>
-<string name="app_windows_text">Được hiển thị trên %1$s. Chúng chạy ở đây, bên cạnh những gì trên màn hình của bạn.</string>
 <string name="action_close_all">Đóng tất cả</string>
 <string name="sms_title">Nhắn tin từ PC của bạn</string>
 <string name="calls_title">Cuộc gọi trên PC của bạn</string>
@@ -1228,4 +1227,5 @@
 <string name="elevated_no_trusted_networks">Chưa có. G7 Link chỉ bật Gỡ lỗi không dây trên các mạng tin cậy.</string>
 <string name="elevated_paused_title">Elevated đã tạm dừng</string>
 <string name="elevated_paused_notice">Elevated đã tạm dừng trên mạng Wi-Fi tại %1$s. Hãy tin cậy mạng này để tiếp tục dùng Elevated tại đây.</string>
+<string name="mirror_controlling">%1$s đang điều khiển điện thoại này</string>
 </resources>

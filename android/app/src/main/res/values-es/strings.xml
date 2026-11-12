@@ -117,7 +117,6 @@
         <item quantity="many">%1$d aplicaciones están abiertas en ventanas de un PC</item>
         <item quantity="other">%1$d aplicaciones están abiertas en ventanas de un PC</item>
     </plurals>
-    <string name="app_windows_text">Se muestran en %1$s. Se ejecutan aquí, junto a lo que hay en tu pantalla.</string>
     <string name="action_close_all">Cerrar todo</string>
     <string name="sms_title">Enviar mensajes desde tu PC</string>
     <string name="calls_title">Llamadas en tu PC</string>

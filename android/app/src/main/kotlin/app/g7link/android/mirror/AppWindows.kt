@@ -250,17 +250,23 @@ class AppWindows(
             context, 0, Intent(context, CloseReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        // Swiped away while windows are open (Android 14 allows it): back it comes.
+        val repost = PendingIntent.getBroadcast(
+            context, 1, Intent(context, CloseReceiver::class.java).setAction(ACTION_REPOST),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val notification = NotificationCompat.Builder(context, MirrorService.CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(
-                context.resources.getQuantityString(R.plurals.app_windows_title, windows.size, windows.size),
+                context.getString(R.string.mirror_controlling, pcs.joinToString().ifEmpty { context.getString(R.string.your_pc) }),
             )
             .setContentText(
-                context.getString(R.string.app_windows_text, pcs.joinToString().ifEmpty { context.getString(R.string.your_pc) }),
+                context.resources.getQuantityString(R.plurals.app_windows_title, windows.size, windows.size),
             )
             .setOngoing(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setDeleteIntent(repost)
             .addAction(0, context.getString(R.string.action_close_all), closeAll)
             .build()
         try {
@@ -270,15 +276,16 @@ class AppWindows(
         }
     }
 
-    /** The notification's Close all. */
+    /** The notification's Close all, and its coming back when swiped away. */
     class CloseReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            instance?.closeAll()
+            if (intent.action == ACTION_REPOST) instance?.changed() else instance?.closeAll()
         }
     }
 
     companion object {
         private const val TAG = "AppWindows"
+        private const val ACTION_REPOST = "app.g7link.android.mirror.APP_WINDOWS_REPOST"
         private const val NOTIFICATION_ID = 10
         /** Packets from the helper, at most. */
         private const val MAX_PACKET = 8 shl 20

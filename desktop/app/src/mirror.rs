@@ -1128,6 +1128,7 @@ fn request(window: Window, mut options: MirrorStart) {
         if let Err(e) = node.mirror_start(window.device, options).await {
             let reason = match e {
                 Error::Denied => tr!("Mirror", "Mirroring is turned off for this phone."),
+                Error::Declined => tr!("Mirror", "The phone is locked. Unlock it, then try again."),
                 Error::Unsupported if app => {
                     tr!("Mirror", "Set up Wireless debugging in G7 Link on the phone to open its apps here.")
                 }
@@ -1256,6 +1257,13 @@ pub fn on_event(event: &NodeEvent) {
                         "The phone ignores taps from this PC. In its Developer options, turn on USB debugging (Security settings)."
                     ),
                     Duration::from_secs(12),
+                );
+            } else if code == g7link_core::MIRROR_NOTICE_LOCKED {
+                let window = Window { device: *device, session: *session };
+                set_notice_for(
+                    window,
+                    tr!("Mirror", "The phone is locked. It takes taps and keys again once it's unlocked."),
+                    Duration::from_secs(8),
                 );
             }
         }

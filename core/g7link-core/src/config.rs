@@ -322,6 +322,13 @@ pub trait Platform: Send + Sync + 'static {
     /// `mirror.virtual_display` for app windows). Must return quickly.
     fn mirror_input(&self, _peer: &g7link_protocol::DeviceId, _session: u32, _input: crate::MirrorInput) {}
 
+    /// Whether this phone's lock screen is up. A PC then opens no app
+    /// windows on it (they'd run without a tap on the phone). Must return
+    /// quickly.
+    fn phone_locked(&self) -> bool {
+        false
+    }
+
     /// The PC's decoder needs a fresh start: encode a keyframe next.
     fn mirror_keyframe_requested(&self, _peer: &g7link_protocol::DeviceId, _session: u32) {}
 

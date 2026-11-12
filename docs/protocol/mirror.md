@@ -59,8 +59,11 @@ means 0, so PCs and phones that predate sessions work as before.
   physical display panel off while the mirror keeps running. The
   phone answers `ok` once it has asked its user; video follows only if the
   user agrees, and sound only if the phone can (it may share the screen
-  without it). Errors: `DENIED` (mirroring is off for the PC),
-  `UNSUPPORTED` (no `mirror.capture`).
+  without it). Errors: `DENIED` (mirroring is off for the PC; with the
+  message `locked`, an app window (§6) asked for while the phone is
+  locked), `UNSUPPORTED` (no `mirror.capture`). While the phone is locked,
+  nothing starts without a tap on it: through Elevated, the phone asks its
+  user as it does without it.
 - `sound_only` (PC → phone, `session` 0 with `audio`, never with `app`,
   `watch`, `stay_awake` or `screen_off`): only the phone's sound, no video
   stream; the PC plays it without a window. Sent only to a phone that offers
@@ -84,7 +87,9 @@ means 0, so PCs and phones that predate sessions work as before.
 - `mirror.notice` (phone → PC): something the PC should tell its user about
   that mirroring. `code` is `input_blocked` when the phone refuses the PC's
   taps and keys (Xiaomi, Redmi and POCO phones do until **USB debugging
-  (Security settings)** is on). Not answered; a PC ignores codes it doesn't
+  (Security settings)** is on), and `locked` when the phone is locked: it
+  drops the PC's taps and keys until it's unlocked, and says so once per
+  lock. Not answered; a PC ignores codes it doesn't
   know, and a PC from before this message ignores it.
 
 ## 3. The video stream
