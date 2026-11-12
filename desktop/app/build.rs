@@ -73,7 +73,8 @@ const QML: &[&str] = &[
 ];
 
 /// QML singletons.
-const QML_SINGLETONS: &[&str] = &["qml/Tokens.qml", "qml/Theme.qml", "qml/Icons.qml", "qml/G7Glyphs.qml"];
+const QML_SINGLETONS: &[&str] =
+    &["qml/Tokens.qml", "qml/Palettes.qml", "qml/Theme.qml", "qml/Icons.qml", "qml/G7Glyphs.qml"];
 
 /// Bundled fonts (in `assets/fonts`), compiled in under `:/fonts/`.
 const FONTS: &[&str] = &[
