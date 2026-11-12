@@ -3,7 +3,11 @@
 //! conversations and their messages, fetches pictures in them, and sends
 //! texts through the phone; the phone says when something changed.
 
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    time::{Duration, Instant},
+};
 
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, MAX_FRAME_LEN,
@@ -19,6 +23,74 @@ use crate::{Error, Result, events::NodeEvent, node::Shared, session::Session};
 pub(crate) const TOGGLE: &str = "messages";
 /// Room left in a frame for the envelope around a list.
 const FRAME_MARGIN: usize = 4 * 1024;
+/// Requests from one PC the phone answers at once; more are turned away.
+const MAX_RUNNING: usize = 4;
+/// Texts one PC may send through the phone in [`SEND_WINDOW`].
+const MAX_SENDS: usize = 10;
+const SEND_WINDOW: Duration = Duration::from_secs(60);
+
+/// What each PC has running on the phone, and when it last sent texts.
+static LIMITS: LazyLock<Mutex<Limits>> = LazyLock::new(|| Mutex::new(Limits::default()));
+
+fn limits() -> MutexGuard<'static, Limits> {
+    LIMITS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[derive(Debug, Default)]
+struct Limits {
+    peers: HashMap<DeviceId, PeerLoad>,
+}
+
+#[derive(Debug, Default)]
+struct PeerLoad {
+    running: usize,
+    sends: VecDeque<Instant>,
+}
+
+impl Limits {
+    /// Starts a request from `peer`, or says why it's turned away: a paired
+    /// PC mustn't tie up the phone or send texts without end.
+    fn start(
+        &mut self,
+        peer: DeviceId,
+        sending: bool,
+        now: Instant,
+    ) -> std::result::Result<(), &'static str> {
+        let load = self.peers.entry(peer).or_default();
+        if load.running >= MAX_RUNNING {
+            return Err("too many messages requests at once");
+        }
+        if sending {
+            while load.sends.front().is_some_and(|at| now.saturating_duration_since(*at) >= SEND_WINDOW) {
+                load.sends.pop_front();
+            }
+            if load.sends.len() >= MAX_SENDS {
+                return Err("too many texts sent in a minute");
+            }
+            load.sends.push_back(now);
+        }
+        load.running += 1;
+        Ok(())
+    }
+
+    fn finish(&mut self, peer: &DeviceId) {
+        if let Some(load) = self.peers.get_mut(peer) {
+            load.running = load.running.saturating_sub(1);
+            if load.running == 0 && load.sends.is_empty() {
+                self.peers.remove(peer);
+            }
+        }
+    }
+}
+
+/// A request's place in [`LIMITS`], given back when it's answered.
+struct Running(DeviceId);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        limits().finish(&self.0);
+    }
+}
 
 impl Shared {
     fn sms_target(&self, session: &Session) -> bool {
@@ -138,9 +210,17 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     {
         return Ok(false);
     }
+    let started = limits().start(session.peer, env.t == types::SMS_SEND, Instant::now());
+    if let Err(why) = started {
+        tracing::warn!(peer = %session.peer.short(), t = %env.t, why, "turned a messages request away");
+        let _ = session.send(Envelope::error(ErrorCode::Busy, why).reply_to(env.id)).await;
+        return Ok(true);
+    }
+    let running = Running(session.peer);
     // Reading the phone's messages takes a moment: not on the session's loop.
     let (shared, session, env) = (shared.clone(), session.clone(), env.clone());
     tokio::spawn(async move {
+        let _running = running;
         let reply = answer(&shared, &session, &env).await.unwrap_or_else(|e| {
             tracing::debug!(error = %e, "bad messages request");
             Envelope::error(ErrorCode::BadMessage, "invalid request")
@@ -241,6 +321,35 @@ pub(crate) fn fit<T: Clone>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pc_has_a_few_requests_running_and_ten_texts_a_minute() {
+        let (pc, other) = (DeviceId([1; 32]), DeviceId([2; 32]));
+        let start = Instant::now();
+        let mut limits = Limits::default();
+        for _ in 0..MAX_RUNNING {
+            assert!(limits.start(pc, false, start).is_ok());
+        }
+        assert!(limits.start(pc, false, start).is_err());
+        assert!(limits.start(other, false, start).is_ok(), "each PC has its own");
+        limits.finish(&pc);
+        assert!(limits.start(pc, false, start).is_ok());
+        for _ in 0..MAX_RUNNING {
+            limits.finish(&pc);
+        }
+        limits.finish(&other);
+        assert!(limits.peers.is_empty(), "nothing is kept for idle PCs");
+
+        for i in 0..MAX_SENDS {
+            assert!(limits.start(pc, true, start).is_ok(), "text {i}");
+            limits.finish(&pc);
+        }
+        assert!(limits.start(pc, true, start + Duration::from_secs(30)).is_err());
+        // Reading goes on meanwhile, and texts again once a minute has passed.
+        assert!(limits.start(pc, false, start + Duration::from_secs(30)).is_ok());
+        limits.finish(&pc);
+        assert!(limits.start(pc, true, start + SEND_WINDOW).is_ok());
+    }
 
     #[test]
     fn an_item_too_large_for_a_frame_is_an_error_not_an_empty_list() {
