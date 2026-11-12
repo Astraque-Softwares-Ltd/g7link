@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -126,6 +127,7 @@ private class Loaded(val image: ImageBitmap, val width: Int, val height: Int)
 @Composable
 private fun PcShotScreen(core: Core, pcId: String, pcName: String, file: File, onClose: () -> Unit) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var loaded by remember { mutableStateOf<Loaded?>(null) }
@@ -146,7 +148,7 @@ private fun PcShotScreen(core: Core, pcId: String, pcName: String, file: File, o
         val selection = crop
         scope.launch {
             val png = withContext(Dispatchers.IO) { ShotFiles.cropPng(file, selection, picture.width, picture.height) }
-            val message = if (png == null) context.getString(R.string.pc_shot_unreadable) else use(png)
+            val message = if (png == null) resources.getString(R.string.pc_shot_unreadable) else use(png)
             working = false
             if (message != null) snackbar.showSnackbar(message)
         }
@@ -192,7 +194,7 @@ private fun PcShotScreen(core: Core, pcId: String, pcName: String, file: File, o
                         onClick = {
                             withPng { png ->
                                 val saved = withContext(Dispatchers.IO) { ShotFiles.saveToPictures(context, png, name) }
-                                context.getString(if (saved) R.string.pc_shot_saved else R.string.pc_shot_not_saved)
+                                resources.getString(if (saved) R.string.pc_shot_saved else R.string.pc_shot_not_saved)
                             }
                         },
                     )
@@ -204,9 +206,9 @@ private fun PcShotScreen(core: Core, pcId: String, pcName: String, file: File, o
                             withPng { png ->
                                 val shared = withContext(Dispatchers.IO) { ShotFiles.forSharing(context, png, name) }
                                 if (shared == null) {
-                                    context.getString(R.string.pc_shot_not_saved)
+                                    resources.getString(R.string.pc_shot_not_saved)
                                 } else {
-                                    ShotFiles.share(context, shared, context.getString(R.string.pc_shot_share_title))
+                                    ShotFiles.share(context, shared, resources.getString(R.string.pc_shot_share_title))
                                     null
                                 }
                             }

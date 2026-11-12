@@ -13,7 +13,9 @@ mod imp {
     };
     use std::time::{Duration, Instant};
 
-    use g7link_core::{CapturePrompt, DeviceId, KeyMod, MirrorInput, MirrorStart, PcCaptureError, mirror_keys};
+    use g7link_core::{
+        CapturePrompt, DeviceId, KeyMod, MirrorInput, MirrorStart, PcCaptureError, mirror_keys,
+    };
     use g7link_core::{MirrorConfig, MirrorSend, PacketKind};
 
     use crate::{core_host, sys};
@@ -1722,12 +1724,11 @@ mod imp {
                 ScreenFeed::Wayland => {
                     let (slot, src_w, src_h) = {
                         let mut guard = WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner());
-                        match guard.as_mut() {
-                            Some(caster) if caster.alive() => {
-                                (Arc::clone(&caster.latest_frame), caster.dst_w, caster.dst_h)
-                            }
-                            _ => return FeedFrame::Gone,
+                        let Some(caster) = guard.as_mut() else { return FeedFrame::Gone };
+                        if !caster.alive() {
+                            return FeedFrame::Gone;
                         }
+                        (Arc::clone(&caster.latest_frame), caster.dst_w, caster.dst_h)
                     };
                     let latest = slot.lock().unwrap_or_else(|e| e.into_inner());
                     let Some(picture) = latest.as_ref() else { return FeedFrame::NotYet };
