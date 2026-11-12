@@ -128,8 +128,10 @@ pub struct TimelineEntry {
     /// For `Clip` entries: whether the referenced clip is still present in
     /// `ClipboardHistoryStore`.
     pub clip_available: bool,
-    /// For image `Clip` entries: a `data:image/png;base64,...` preview resolved
-    /// from `ClipboardHistoryStore` at query time (never stored in SQLite).
+    /// For image `Clip` entries: `Some` (an empty string) while the picture is
+    /// still in `ClipboardHistoryStore`, resolved at query time (never stored in
+    /// SQLite). The picture itself is fetched with `Node::clipboard_history_image`,
+    /// so a page of timeline rows doesn't carry every copied image.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_data_url: Option<String>,
 }
@@ -160,37 +162,6 @@ pub(crate) struct NewTimelineEntry {
     pub size_bytes: u64,
     pub duration_secs: u64,
     pub ref_id: Option<String>,
-}
-
-/// Encodes `(mime, bytes)` as a `data:<mime>;base64,...` URI for image clip previews.
-pub(crate) fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(6 + mime.len() + 8 + bytes.len().div_ceil(3) * 4);
-    out.push_str("data:");
-    out.push_str(mime);
-    out.push_str(";base64,");
-    let (chunks, rem) = bytes.as_chunks::<3>();
-    for &[b0, b1, b2] in chunks {
-        let n = (u32::from(b0) << 16) | (u32::from(b1) << 8) | u32::from(b2);
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
-        out.push(TABLE[(n & 0x3F) as usize] as char);
-    }
-    if rem.len() == 1 {
-        let n = u32::from(rem[0]) << 16;
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push('=');
-        out.push('=');
-    } else if rem.len() == 2 {
-        let n = (u32::from(rem[0]) << 16) | (u32::from(rem[1]) << 8);
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
-        out.push('=');
-    }
-    out
 }
 
 /// Formats a clipboard text string for display in the Timeline UI:

@@ -4430,8 +4430,8 @@ impl Node {
                 crate::ClipboardItemKind::Image => {
                     entry.title = "Image clip".into();
                     entry.detail = clip.mime.unwrap_or_else(|| "image/png".into());
-                    if let Some((mime, bytes)) = self.shared.clipboard_history.image_bytes(ref_id) {
-                        entry.image_data_url = Some(crate::timeline::encode_data_url(&mime, &bytes));
+                    if self.shared.clipboard_history.has_image(ref_id) {
+                        entry.image_data_url = Some(String::new());
                     }
                 }
             }

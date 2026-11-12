@@ -690,8 +690,11 @@ fn describe_entry(
             let clip_thumb = entry
                 .ref_id
                 .as_deref()
-                .and_then(crate::clipboard::thumb_for_clip)
-                .or_else(|| entry.image_data_url.clone())
+                .and_then(|id| {
+                    crate::clipboard::thumb_for_clip(id).or_else(|| {
+                        entry.image_data_url.as_ref().and_then(|_| crate::clipboard::image_url_for_clip(id))
+                    })
+                })
                 .unwrap_or_default();
             let available = entry.clip_available;
             let mut raw_detail: Option<String> = None;

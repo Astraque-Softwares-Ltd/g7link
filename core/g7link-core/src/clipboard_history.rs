@@ -438,6 +438,14 @@ impl ClipboardHistoryStore {
         s.items.iter().find(|i| i.entry.id == id).map(|i| i.entry.clone())
     }
 
+    /// Whether `id` is an image entry whose encrypted picture is on disk,
+    /// without reading or decrypting it.
+    pub fn has_image(&self, id: &str) -> bool {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.items.iter().any(|i| i.entry.id == id && i.entry.kind == ClipboardItemKind::Image)
+            && self.image_path(id).is_file()
+    }
+
     /// Decrypts and returns `(mime, bytes)` for an image entry.
     pub fn image_bytes(&self, id: &str) -> Option<(String, Vec<u8>)> {
         let mime = {

@@ -76,6 +76,13 @@ pub fn thumb_for_clip(id: &str) -> Option<String> {
     None
 }
 
+/// The whole picture of a history image as a data URL, for while its preview
+/// is still being made (or when one couldn't be).
+pub fn image_url_for_clip(id: &str) -> Option<String> {
+    let (mime, bytes) = core_host::node()?.clipboard_history_image(id)?;
+    Some(format!("data:{mime};base64,{}", BASE64.encode(&bytes)))
+}
+
 pub fn set_auto_send(on: bool) {
     AUTO_SEND.store(on, Ordering::Relaxed);
 }
