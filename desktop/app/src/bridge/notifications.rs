@@ -267,9 +267,9 @@ fn category_of(app: &str, members: &[&NotificationView], sms_app: Option<&str>) 
     if PHONE_APPS.contains(&app) || app.contains(".dialer") || app.contains("incallui") {
         return Category::Calls;
     }
-    let chat = members.iter().any(|v| {
-        v.notification.conversation.is_some() || v.notification.actions.iter().any(|a| a.reply)
-    });
+    let chat = members
+        .iter()
+        .any(|v| v.notification.conversation.is_some() || v.notification.actions.iter().any(|a| a.reply));
     if chat || MESSAGING_APPS.contains(&app) || sms_app == Some(app) {
         Category::Messages
     } else {
