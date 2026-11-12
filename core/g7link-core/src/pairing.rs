@@ -381,8 +381,8 @@ pub(crate) async fn accept(shared: Arc<Shared>, conn: Connection) {
     // Over USB, outside pairing mode, only through a tunnel this device dialed
     // (a PC), or while its pairing screen is open: any app on a phone can
     // reach the phone's end of the tunnel.
-    let usb_may_pair = shared.is_usb_connection(&conn)
-        && (shared.pairing.screen_open() || shared.usb_tunnel_dialed(&peer));
+    let usb_may_pair =
+        shared.is_usb_connection(&conn) && (shared.pairing.screen_open() || shared.usb_tunnel_dialed(&peer));
     if !shared.pairing.is_hosting() && !usb_may_pair {
         tracing::debug!(peer = %peer.short(), "refusing pairing connection: not in pairing mode");
         conn.close(VarInt::from_u32(ErrorCode::Denied.close_code()), b"not pairing");
