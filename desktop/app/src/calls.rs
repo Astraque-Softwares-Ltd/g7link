@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::{
     bridge::app::{describe, show_message},
-    core_host,
+    bt_phones, core_host,
     messages::{Status, digits},
     state::Changes,
     sys::{
@@ -50,22 +50,40 @@ pub fn set_auto_call_audio(on: bool) {
 /// Keeps each paired phone's media on the phone (its headphones or speaker)
 /// unless its `bt_media` toggle lets it play on this PC over Bluetooth.
 pub fn keep_phone_media_on_phone() {
-    bt_hfp::keep_phone_media_on_phone(phones_keeping_media);
+    bt_hfp::keep_phone_media_on_phone(paired_bt_phones, bt_phones::found);
 }
 
-/// What the paired phones that may not play media here are called, by their
-/// own name and any nickname here.
-fn phones_keeping_media() -> Vec<String> {
+/// The paired phones as Bluetooth knows them, with whether each may not play
+/// media here.
+fn paired_bt_phones() -> Vec<bt_hfp::BtPhone> {
     let (Some(host), Some(node)) = (core_host::try_host(), core_host::node()) else { return Vec::new() };
     let devices: Vec<(DeviceId, String)> =
         host.hub.read(|s| s.devices.iter().map(|d| (d.id, d.info.name.clone())).collect());
-    devices
+    let paired: Vec<bt_phones::Paired> = devices
         .into_iter()
-        .filter(|(id, _)| node.device_toggles(*id).is_ok_and(|t| !t.contains(&(BT_MEDIA_TOGGLE, true))))
-        .flat_map(|(id, name)| [Some(name), crate::settings::nickname_for(&id.to_string())])
-        .flatten()
-        .filter(|n| !n.trim().is_empty())
-        .collect()
+        .map(|(id, name)| bt_phones::Paired {
+            id,
+            name,
+            label: phone_name(id),
+            media_on_phone: node.device_toggles(id).is_ok_and(|t| !t.contains(&(BT_MEDIA_TOGGLE, true))),
+        })
+        .collect();
+    bt_phones::phones(&paired)
+}
+
+/// `device` among `phones`.
+fn bt_phone(phones: &[bt_hfp::BtPhone], device: DeviceId) -> Option<&bt_hfp::BtPhone> {
+    let id = device.to_string();
+    phones.iter().find(|p| p.id == id)
+}
+
+/// Records the address `status` found `phone`'s device at, when none was yet.
+fn note_bt_address(phone: Option<&bt_hfp::BtPhone>, status: &bt_hfp::HfpStatus) {
+    if let (Some(phone), Some(address)) = (phone, &status.address)
+        && phone.address.is_none()
+    {
+        bt_phones::found(&phone.id, address);
+    }
 }
 
 /// Phones that currently have a ringing or active call, for media auto-pause/resume.
@@ -1373,9 +1391,11 @@ static HFP_CACHE: Mutex<Option<(Option<DeviceId>, bt_hfp::HfpStatus)>> = Mutex::
 
 fn refresh_hfp_cache(device: Option<DeviceId>) -> bt_hfp::HfpStatus {
     let target = device.or_else(|| page_state(|s| s.device));
-    let name = target.map(phone_name);
+    let phones = paired_bt_phones();
+    let phone = target.and_then(|d| bt_phone(&phones, d));
     let in_call = target.is_some_and(|d| ongoing_calls(|c| c.contains(&d)));
-    let status = bt_hfp::probe_status(name.as_deref(), in_call);
+    let status = bt_hfp::probe_status(phone, &phones, in_call);
+    note_bt_address(phone, &status);
     if let Ok(mut guard) = HFP_CACHE.lock() {
         *guard = Some((target, status.clone()));
     }
@@ -1476,11 +1496,15 @@ pub fn connect_pc_audio(device: Option<DeviceId>) {
     }
     let connecting = Connecting;
     let target = device.or_else(|| page_state(|s| s.device));
-    let name = target.map(phone_name);
     let in_call = target.is_some_and(|d| ongoing_calls(|c| c.contains(&d)));
     let spawned = std::thread::Builder::new().name("hfp-connect".into()).spawn(move || {
         let started = Instant::now();
-        let result = bt_hfp::connect_audio(name.as_deref(), in_call);
+        let phones = paired_bt_phones();
+        let phone = target.and_then(|d| bt_phone(&phones, d));
+        let result = bt_hfp::connect_audio(phone, &phones, in_call);
+        if let Ok(status) = &result {
+            note_bt_address(phone, status);
+        }
         let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::info!(ms, ok = result.is_ok(), "hfp connect");
         match result {

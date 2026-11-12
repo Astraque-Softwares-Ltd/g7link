@@ -55,6 +55,23 @@ pub(crate) struct BluezEndpoint {
     pub adapter: Option<String>,
 }
 
+/// A G7 Link phone as Bluetooth knows it. Its device is the one at `address`
+/// once that's recorded, and until then the one device its `names` match: never
+/// one picked by a name the phone reports later.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BtPhone {
+    /// Its device id in G7 Link.
+    pub id: String,
+    /// What it's called in messages.
+    pub label: String,
+    /// The Bluetooth address recorded for its device.
+    pub address: Option<String>,
+    /// The names its device may be paired under.
+    pub names: Vec<String>,
+    /// Its media stays on the phone rather than playing here.
+    pub media_on_phone: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HfpStatus {
     /// The phone is paired over Bluetooth and Bluetooth is on.
@@ -66,6 +83,8 @@ pub struct HfpStatus {
     pub call_audio_ready: bool,
     pub device_name: String,
     pub detail: String,
+    /// The Bluetooth address of the phone's device, when it was found.
+    pub address: Option<String>,
 }
 
 /// Why call audio couldn't be connected.
@@ -173,10 +192,51 @@ pub fn match_endpoint<'a>(
     })
 }
 
-fn find_endpoint(endpoints: &[BluezEndpoint], phone_name: Option<&str>) -> Option<BluezEndpoint> {
-    let pairs: Vec<(String, String)> = endpoints.iter().map(|e| (e.mac.clone(), e.name.clone())).collect();
-    let (mac, _) = match_endpoint(&pairs, phone_name)?;
-    endpoints.iter().find(|e| &e.mac == mac).cloned()
+/// `phone`'s endpoint: the one at its recorded address, or else the one its names
+/// match that no other of `phones` has recorded. When several match, the one
+/// named exactly so is taken, and none rather than a guess between several.
+pub(crate) fn phone_endpoint<'a>(
+    endpoints: &'a [BluezEndpoint],
+    phone: &BtPhone,
+    phones: &[BtPhone],
+) -> Option<&'a BluezEndpoint> {
+    if let Some(address) = &phone.address {
+        return endpoints.iter().find(|e| e.mac.eq_ignore_ascii_case(address));
+    }
+    let recorded = |e: &BluezEndpoint| {
+        let at = |p: &BtPhone| p.address.as_ref().is_some_and(|a| e.mac.eq_ignore_ascii_case(a));
+        phones.iter().any(|p| p.id != phone.id && at(p))
+    };
+    let matches: Vec<&BluezEndpoint> = endpoints
+        .iter()
+        .filter(|&e| !recorded(e))
+        .filter(|e| {
+            let pair = [(e.mac.clone(), e.name.clone())];
+            phone.names.iter().any(|n| match_endpoint(&pair, Some(n)).is_some())
+        })
+        .collect();
+    if let [only] = matches.as_slice() {
+        return Some(*only);
+    }
+    let exact: Vec<&BluezEndpoint> = matches
+        .into_iter()
+        .filter(|e| phone.names.iter().any(|n| e.name.trim().eq_ignore_ascii_case(n.trim())))
+        .collect();
+    match exact.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+/// The phones of `phones` with no address recorded whose device was found now,
+/// with its address. One found for two phones is recorded for neither.
+pub(crate) fn found_addresses(endpoints: &[BluezEndpoint], phones: &[BtPhone]) -> Vec<(String, String)> {
+    let found: Vec<(String, String)> = phones
+        .iter()
+        .filter(|p| p.address.is_none())
+        .filter_map(|p| Some((p.id.clone(), phone_endpoint(endpoints, p, phones)?.mac.clone())))
+        .collect();
+    found.iter().filter(|(_, mac)| found.iter().filter(|(_, m)| m == mac).count() == 1).cloned().collect()
 }
 
 pub(crate) fn is_phone_capable_bluez_device(paired: bool, uuids: &[String]) -> bool {
@@ -291,12 +351,16 @@ pub(crate) fn connect_result(error_name: Option<&str>) -> Result<(), ConnectFail
 pub(crate) fn connect_link(
     short: &zbus::blocking::Connection,
     long: &zbus::blocking::Connection,
-    phone_name: Option<&str>,
+    phone: Option<&BtPhone>,
+    phones: &[BtPhone],
 ) -> Result<BluezEndpoint, (ConnectFailure, Option<String>)> {
     let objects = managed_objects(short).ok_or((ConnectFailure::NotRunning, None))?;
     let endpoints = parse_bluez_managed_objects(&objects);
-    let endpoint = find_endpoint(&endpoints, phone_name).ok_or((ConnectFailure::NotPaired, None))?;
-    let display = display_name(&endpoint, phone_name);
+    let endpoint = phone
+        .and_then(|phone| phone_endpoint(&endpoints, phone, phones))
+        .cloned()
+        .ok_or((ConnectFailure::NotPaired, None))?;
+    let display = display_name(&endpoint, phone.map(|p| p.label.as_str()));
     if adapter_powered(&objects, endpoint.adapter.as_deref()) == Some(false) {
         return Err((ConnectFailure::Off, Some(display)));
     }
@@ -492,6 +556,7 @@ pub(crate) fn status_of(name: &str, link: Link) -> HfpStatus {
         call_audio_ready,
         device_name: name.to_owned(),
         detail,
+        address: None,
     }
 }
 
@@ -501,33 +566,40 @@ fn not_available(phone_name: Option<&str>, detail: String) -> HfpStatus {
 
 /// The phone's call audio status; `in_call` says whether a call is ringing or
 /// going on on it.
-pub fn probe_status(phone_name: Option<&str>, in_call: bool) -> HfpStatus {
+pub fn probe_status(phone: Option<&BtPhone>, phones: &[BtPhone], in_call: bool) -> HfpStatus {
+    let phone_name = phone.map(|p| p.label.as_str());
     let Some(objects) = system_bus(DBUS_TIMEOUT).and_then(|conn| managed_objects(&conn)) else {
         return not_available(phone_name, ConnectFailure::NotRunning.message(""));
     };
     let endpoints = parse_bluez_managed_objects(&objects);
-    let Some(endpoint) = find_endpoint(&endpoints, phone_name) else {
+    let Some(endpoint) = phone.and_then(|phone| phone_endpoint(&endpoints, phone, phones)) else {
         return not_available(
             phone_name,
             tr!("Calls", "Pair your phone over system Bluetooth to route call audio through this PC."),
         );
     };
-    let display = display_name(&endpoint, phone_name);
+    let display = display_name(endpoint, phone_name);
     let powered = adapter_powered(&objects, endpoint.adapter.as_deref()) != Some(false);
     let linked = endpoint.connected;
     let call_node = powered && linked && call_audio_node(&endpoint.mac);
-    status_of(&display, Link { powered, linked, call_node, in_call })
+    let status = status_of(&display, Link { powered, linked, call_node, in_call });
+    HfpStatus { address: Some(endpoint.mac.clone()), ..status }
 }
 
 /// Connects the phone's call audio to this PC; `in_call` says whether a call
 /// is ringing or going on on it. Outside a call the phone may only open its
 /// call audio when one comes, so a missing hands-free node isn't a failure then.
-pub fn connect_audio(phone_name: Option<&str>, in_call: bool) -> Result<HfpStatus, String> {
+pub fn connect_audio(
+    phone: Option<&BtPhone>,
+    phones: &[BtPhone],
+    in_call: bool,
+) -> Result<HfpStatus, String> {
+    let phone_name = phone.map(|p| p.label.as_str());
     let fallback = phone_name.map(str::trim).filter(|s| !s.is_empty()).unwrap_or_default().to_owned();
     let (Some(short), Some(long)) = (system_bus(DBUS_TIMEOUT), system_bus(CONNECT_TIMEOUT)) else {
         return Err(ConnectFailure::NotRunning.message(&fallback));
     };
-    let endpoint = connect_link(&short, &long, phone_name)
+    let endpoint = connect_link(&short, &long, phone, phones)
         .map_err(|(failure, display)| failure.message(display.as_deref().unwrap_or(&fallback)))?;
     let display = display_name(&endpoint, phone_name);
     route_call_audio(&endpoint.mac).map_err(|failure| failure.message(&display))?;
@@ -535,7 +607,8 @@ pub fn connect_audio(phone_name: Option<&str>, in_call: bool) -> Result<HfpStatu
     if in_call && !call_node {
         return Err(ConnectFailure::StillOnPhone.message(&display));
     }
-    Ok(status_of(&display, Link { powered: true, linked: true, call_node, in_call }))
+    let status = status_of(&display, Link { powered: true, linked: true, call_node, in_call });
+    Ok(HfpStatus { address: Some(endpoint.mac), ..status })
 }
 
 /// Whether this app switched a phone's card to call audio and hasn't put it back.
@@ -559,14 +632,14 @@ pub fn disconnect_audio() {
 /// A2DP sink: what this PC offers a phone that plays media to it.
 const UUID_A2DP_SINK: &str = "0000110b-0000-1000-8000-00805f9b34fb";
 
-/// The names of the paired phones whose media stays on the phone, to tell
-/// them from other Bluetooth devices.
-static PHONE_NAMES: OnceLock<fn() -> Vec<String>> = OnceLock::new();
+/// The paired phones, to tell them from other Bluetooth devices, and what
+/// records the address a phone's device is found at.
+static PHONES: OnceLock<(fn() -> Vec<BtPhone>, fn(&str, &str))> = OnceLock::new();
 
 /// Sends media back to the phones that may no longer play it here, after one
 /// of them stopped being allowed to.
 pub fn recheck_phone_media() {
-    if PHONE_NAMES.get().is_none() {
+    if PHONES.get().is_none() {
         return;
     }
     let _ = std::thread::Builder::new().name("bt-media-off".into()).spawn(|| {
@@ -579,10 +652,11 @@ pub fn recheck_phone_media() {
 /// Keeps paired phones' media on the phone. A phone that connects to this PC
 /// over Bluetooth (for calls, or by the user) also opens a media link, and
 /// Android then plays everything here instead of on its headphones. For the
-/// phones `phone_names` names, that link is closed as it opens; calls and
-/// other devices aren't touched. One thread for the app's lifetime.
-pub fn keep_phone_media_on_phone(phone_names: fn() -> Vec<String>) {
-    if PHONE_NAMES.set(phone_names).is_err() {
+/// `phones` whose media stays on the phone, that link is closed as it opens;
+/// calls and other devices aren't touched. `found` records the address a
+/// phone's device is found at. One thread for the app's lifetime.
+pub fn keep_phone_media_on_phone(phones: fn() -> Vec<BtPhone>, found: fn(&str, &str)) {
+    if PHONES.set((phones, found)).is_err() {
         return;
     }
     let _ = std::thread::Builder::new().name("bt-media-guard".into()).spawn(|| {
@@ -654,37 +728,42 @@ fn media_links(objects: &ManagedObjectsMap) -> Vec<MediaLink> {
         .collect()
 }
 
-/// The paired phones in `endpoints` with a media link to this PC: phones
-/// named in `names`, never another device.
+/// The endpoints with a media link to this PC of the `phones` whose media stays
+/// on the phone, never another device.
 pub(crate) fn phones_playing_here(
     links: &[MediaLink],
     endpoints: &[BluezEndpoint],
-    names: &[String],
+    phones: &[BtPhone],
 ) -> Vec<String> {
-    endpoints
+    let mut playing: Vec<String> = phones
         .iter()
+        .filter(|p| p.media_on_phone)
+        .filter_map(|p| phone_endpoint(endpoints, p, phones))
         .filter(|e| {
             links.iter().any(|l| {
                 l.device == e.object_path && (l.uuid == UUID_A2DP_SINK || l.uuid == UUID_A2DP_SOURCE)
             })
         })
-        .filter(|e| {
-            let pair = [(e.mac.clone(), e.name.clone())];
-            names.iter().any(|n| match_endpoint(&pair, Some(n)).is_some())
-        })
         .map(|e| e.object_path.clone())
-        .collect()
+        .collect();
+    playing.sort();
+    playing.dedup();
+    playing
 }
 
-/// Closes the media link of every phone `PHONE_NAMES` names that plays here.
+/// Closes the media link of every phone in `PHONES` that keeps its media and plays here.
 fn drop_phone_media(conn: &zbus::blocking::Connection) {
-    let Some(names) = PHONE_NAMES.get().map(|f| f()) else { return };
-    if names.is_empty() {
+    let Some(&(phones, found)) = PHONES.get() else { return };
+    let phones = phones();
+    if !phones.iter().any(|p| p.media_on_phone) {
         return;
     }
     let Some(objects) = managed_objects(conn) else { return };
     let endpoints = parse_bluez_managed_objects(&objects);
-    for device in phones_playing_here(&media_links(&objects), &endpoints, &names) {
+    for (id, address) in found_addresses(&endpoints, &phones) {
+        found(&id, &address);
+    }
+    for device in phones_playing_here(&media_links(&objects), &endpoints, &phones) {
         let path = device.as_str();
         let result = super::non_tokio(|| {
             conn.call_method(Some(BLUEZ), path, Some(DEVICE), "DisconnectProfile", &(UUID_A2DP_SOURCE,))
@@ -857,6 +936,16 @@ mod tests {
         }
     }
 
+    fn phone(id: &str, names: &[&str], address: Option<&str>) -> BtPhone {
+        BtPhone {
+            id: id.into(),
+            label: names.first().copied().unwrap_or_default().into(),
+            address: address.map(Into::into),
+            names: names.iter().map(|&n| n.into()).collect(),
+            media_on_phone: true,
+        }
+    }
+
     #[test]
     fn only_a_paired_phone_playing_here_loses_its_media_link() {
         let pixel = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01";
@@ -869,14 +958,73 @@ mod tests {
             MediaLink { device: pixel.into(), uuid: UUID_A2DP_SINK.into() },
             MediaLink { device: tablet.into(), uuid: UUID_A2DP_SINK.into() },
         ];
-        let names = ["Pixel 8 Pro".to_owned()];
-        assert_eq!(phones_playing_here(&links, &endpoints, &names), vec![pixel.to_owned()]);
+        let phones = [phone("a", &["Pixel 8 Pro"], None)];
+        assert_eq!(phones_playing_here(&links, &endpoints, &phones), vec![pixel.to_owned()]);
         // No media link, nothing to close; a call's link isn't media.
         let call = [MediaLink { device: pixel.into(), uuid: UUID_HFP_AG.into() }];
-        assert!(phones_playing_here(&call, &endpoints, &names).is_empty());
-        assert!(phones_playing_here(&[], &endpoints, &names).is_empty());
+        assert!(phones_playing_here(&call, &endpoints, &phones).is_empty());
+        assert!(phones_playing_here(&[], &endpoints, &phones).is_empty());
         // No paired phones: never another device's.
         assert!(phones_playing_here(&links, &endpoints, &[]).is_empty());
+        // A phone whose media may play here keeps its link.
+        let allowed = [BtPhone { media_on_phone: false, ..phone("a", &["Pixel 8 Pro"], None) }];
+        assert!(phones_playing_here(&links, &endpoints, &allowed).is_empty());
+    }
+
+    #[test]
+    fn a_recorded_address_finds_the_phone_whatever_it_is_called() {
+        let endpoints = [
+            endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01", "AA:BB:CC:DD:EE:01", "Pixel 8 Pro"),
+            endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02", "AA:BB:CC:DD:EE:02", "Galaxy S24"),
+        ];
+        // Its device is found by its address, not by a name naming another device.
+        let pixel = phone("a", &["Galaxy S24"], Some("aa:bb:cc:dd:ee:01"));
+        let found = phone_endpoint(&endpoints, &pixel, std::slice::from_ref(&pixel)).unwrap();
+        assert_eq!(found.mac, "AA:BB:CC:DD:EE:01");
+        // A recorded address that's no longer paired finds nothing.
+        let gone = phone("a", &["Pixel 8 Pro"], Some("AA:BB:CC:DD:EE:09"));
+        assert!(phone_endpoint(&endpoints, &gone, std::slice::from_ref(&gone)).is_none());
+    }
+
+    #[test]
+    fn a_name_never_finds_another_phones_device() {
+        let galaxy = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02";
+        let endpoints = [
+            endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01", "AA:BB:CC:DD:EE:01", "Pixel 8 Pro"),
+            endpoint(galaxy, "AA:BB:CC:DD:EE:02", "Galaxy S24"),
+        ];
+        let links = [MediaLink { device: galaxy.into(), uuid: UUID_A2DP_SINK.into() }];
+        // The Galaxy is another G7 Link phone's, recorded: a phone named like it doesn't get it.
+        let owner = phone("b", &["Galaxy S24"], Some("AA:BB:CC:DD:EE:02"));
+        let owner = BtPhone { media_on_phone: false, ..owner };
+        let copycat = phone("a", &["Galaxy S24"], None);
+        let phones = [copycat.clone(), owner];
+        assert!(phone_endpoint(&endpoints, &copycat, &phones).is_none());
+        assert!(phones_playing_here(&links, &endpoints, &phones).is_empty());
+        assert!(found_addresses(&endpoints, &phones).is_empty());
+    }
+
+    #[test]
+    fn several_devices_a_name_matches_are_not_guessed_between() {
+        let endpoints = [
+            endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01", "AA:BB:CC:DD:EE:01", "Pixel 8 Pro"),
+            endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02", "AA:BB:CC:DD:EE:02", "Pixel 8"),
+            endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03", "AA:BB:CC:DD:EE:03", "Pixel 8a"),
+        ];
+        // "Pixel" is in all three: none of them.
+        let vague = phone("a", &["Pixel"], None);
+        assert!(phone_endpoint(&endpoints, &vague, std::slice::from_ref(&vague)).is_none());
+        // One is named exactly so.
+        let exact = phone("a", &["pixel 8"], None);
+        let found = phone_endpoint(&endpoints, &exact, std::slice::from_ref(&exact)).unwrap();
+        assert_eq!(found.mac, "AA:BB:CC:DD:EE:02");
+        assert_eq!(
+            found_addresses(&endpoints, std::slice::from_ref(&exact)),
+            vec![("a".to_owned(), "AA:BB:CC:DD:EE:02".to_owned())]
+        );
+        // Two phones finding the same device: it's recorded for neither.
+        let twin = phone("b", &["Pixel 8"], None);
+        assert!(found_addresses(&endpoints, &[exact, twin]).is_empty());
     }
     use std::sync::Arc;
 
@@ -1234,7 +1382,8 @@ Sink #95
         let phone = FakePhone::default();
         let _bluez = fake_bluez(&bus, true, &phone);
         let conn = bus.connect();
-        let endpoint = connect_link(&conn, &conn, Some("Pixel 8 Pro")).unwrap();
+        let pixel = phone("a", &["Pixel 8 Pro"], None);
+        let endpoint = connect_link(&conn, &conn, Some(&pixel), &[]).unwrap();
         assert_eq!(endpoint.mac, "AA:BB:CC:DD:EE:FF");
         assert_eq!(*phone.connects.lock().unwrap(), [UUID_HFP_AG]);
     }
@@ -1248,7 +1397,8 @@ Sink #95
         let phone = FakePhone::default();
         let _bluez = fake_bluez(&bus, false, &phone);
         let conn = bus.connect();
-        let failure = connect_link(&conn, &conn, Some("Pixel 8 Pro")).unwrap_err().0;
+        let pixel = phone("a", &["Pixel 8 Pro"], None);
+        let failure = connect_link(&conn, &conn, Some(&pixel), &[]).unwrap_err().0;
         assert_eq!(failure, ConnectFailure::Off);
         assert!(phone.connects.lock().unwrap().is_empty());
     }
@@ -1261,7 +1411,8 @@ Sink #95
         };
         let conn = bus.connect();
         let started = Instant::now();
-        assert_eq!(connect_link(&conn, &conn, Some("Pixel")).unwrap_err().0, ConnectFailure::NotRunning);
+        let pixel = phone("a", &["Pixel"], None);
+        assert_eq!(connect_link(&conn, &conn, Some(&pixel), &[]).unwrap_err().0, ConnectFailure::NotRunning);
         assert!(started.elapsed() < DBUS_TIMEOUT);
     }
 }

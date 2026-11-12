@@ -9,6 +9,7 @@ mod automations;
 mod badges;
 mod battery;
 mod bridge;
+mod bt_phones;
 mod calls;
 mod clipboard;
 mod command_palette;
