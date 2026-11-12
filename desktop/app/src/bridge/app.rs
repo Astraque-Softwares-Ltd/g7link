@@ -510,6 +510,12 @@ pub struct AppControllerRust {
     localsend_peers_json: QString,
     shelf_open: bool,
     shelf_items: QString,
+    /// The Shelf was asked to open and waits for its items.
+    shelf_opening: bool,
+    /// Counts the Shelf opening and closing, so items prepared for an earlier
+    /// opening aren't shown.
+    shelf_generation: u64,
+    shelf_preparing: OneAtATime,
     apk_qr_path: QString,
     apk_qr_size: i32,
     apk_qr_svg: QString,
@@ -520,6 +526,34 @@ pub struct AppControllerRust {
     last_online_count: usize,
     last_tray_tooltip: String,
     tray: Option<tray::Tray>,
+}
+
+/// One background job at a time: asking while one runs asks for one more
+/// after it, however many times it's asked.
+#[derive(Debug, Default)]
+struct OneAtATime {
+    running: bool,
+    again: bool,
+}
+
+impl OneAtATime {
+    /// Whether to start a job now; otherwise one more is noted for after the
+    /// running one.
+    fn start(&mut self) -> bool {
+        if self.running {
+            self.again = true;
+            return false;
+        }
+        self.running = true;
+        true
+    }
+
+    /// The running job ended: whether to run the one more asked for meanwhile,
+    /// which then counts as running.
+    fn finish(&mut self) -> bool {
+        self.running = std::mem::take(&mut self.again);
+        self.running
+    }
 }
 
 /// The controller's thread handle, so other threads (second launch) can
@@ -859,8 +893,7 @@ impl cxx_qt::Initialize for qobject::AppController {
                 object.as_mut().set_timeline_preview(preview_q);
             }
             if object.shelf_open {
-                let shelf = compute_shelf_items_json(object.current_device);
-                object.set_shelf_items(QString::from(&shelf));
+                object.prepare_shelf();
             }
         });
         super::subscribe(qt.clone(), Changes::TIMELINE | Changes::DEVICES | Changes::STATUS, |mut object| {
@@ -869,14 +902,12 @@ impl cxx_qt::Initialize for qobject::AppController {
                 object.as_mut().set_timeline_preview(preview_q);
             }
             if object.shelf_open {
-                let shelf = compute_shelf_items_json(object.current_device);
-                object.set_shelf_items(QString::from(&shelf));
+                object.prepare_shelf();
             }
         });
         super::subscribe(qt.clone(), Changes::TRANSFERS | Changes::PHOTOS, |object| {
             if object.shelf_open {
-                let shelf = compute_shelf_items_json(object.current_device);
-                object.set_shelf_items(QString::from(&shelf));
+                object.prepare_shelf();
             }
         });
         super::subscribe(qt.clone(), Changes::CONTINUITY, Self::refresh_continuity);
@@ -1979,34 +2010,72 @@ impl qobject::AppController {
         }
     }
 
+    /// Opens the Shelf once its items are ready, or closes it.
     pub fn toggle_shelf(mut self: Pin<&mut Self>) {
-        if self.shelf_open {
+        if self.shelf_open || self.rust().shelf_opening {
             self.close_shelf();
         } else {
             SHELF_OPEN.store(true, Ordering::Relaxed);
-            let idx = self.current_device;
-            let json = compute_shelf_items_json(idx);
-            self.as_mut().set_shelf_items(QString::from(&json));
-            self.as_mut().set_shelf_open(true);
-            sys::tray::apply_no_activate_style_by_title("G7 Link Shelf");
+            let generation = self.rust().shelf_generation.wrapping_add(1);
+            self.as_mut().rust_mut().shelf_generation = generation;
+            self.as_mut().rust_mut().shelf_opening = true;
+            self.prepare_shelf();
         }
     }
 
     pub fn close_shelf(mut self: Pin<&mut Self>) {
         SHELF_OPEN.store(false, Ordering::Relaxed);
+        let generation = self.rust().shelf_generation.wrapping_add(1);
+        self.as_mut().rust_mut().shelf_generation = generation;
+        self.as_mut().rust_mut().shelf_opening = false;
+        self.as_mut().rust_mut().shelf_preparing.again = false;
         self.as_mut().set_shelf_open(false);
         self.as_mut().set_shelf_items(QString::default());
+        discard_clip_drag_file(clip_drag_file(Option::take));
     }
 
-    pub fn refresh_shelf(mut self: Pin<&mut Self>) {
+    pub fn refresh_shelf(self: Pin<&mut Self>) {
         if !self.shelf_open {
             return;
         }
         if let (Some(dev), _, true) = resolve_shelf_device(self.current_device) {
             refresh_shelf_photo_if_needed(dev, true);
         }
-        let json = compute_shelf_items_json(self.current_device);
-        self.as_mut().set_shelf_items(QString::from(&json));
+        self.prepare_shelf();
+    }
+
+    /// Prepares the Shelf's items off the GUI thread (the database, the
+    /// received files folder, the clipboard), one preparation at a time.
+    fn prepare_shelf(mut self: Pin<&mut Self>) {
+        if self.as_mut().rust_mut().shelf_preparing.start() {
+            self.run_shelf_preparation();
+        }
+    }
+
+    fn run_shelf_preparation(self: Pin<&mut Self>) {
+        let (generation, device, qt) = (self.rust().shelf_generation, self.current_device, self.qt_thread());
+        core_host::host().runtime.spawn_blocking(move || {
+            let json = compute_shelf_items_json(device);
+            let _ = qt.queue(move |object| object.shelf_prepared(generation, json));
+        });
+    }
+
+    /// Shows prepared items while the Shelf is open, or opening, as it was
+    /// when they were asked for, opening it if it waited for them.
+    fn shelf_prepared(mut self: Pin<&mut Self>, generation: u64, json: String) {
+        let again = self.as_mut().rust_mut().shelf_preparing.finish();
+        let wanted = self.shelf_open || self.rust().shelf_opening;
+        if wanted && self.rust().shelf_generation == generation {
+            self.as_mut().set_shelf_items(QString::from(&json));
+            if self.rust().shelf_opening {
+                self.as_mut().rust_mut().shelf_opening = false;
+                self.as_mut().set_shelf_open(true);
+                sys::tray::apply_no_activate_style_by_title("G7 Link Shelf");
+            }
+        }
+        if again {
+            self.run_shelf_preparation();
+        }
     }
 
     pub fn style_shelf_window(&self) {
@@ -2044,31 +2113,19 @@ impl qobject::AppController {
                 return super::native::ffi::start_external_drag(&thumb.to_string_lossy(), &t);
             }
         }
-        if kind_str == "clip"
-            && !s.is_empty()
-            && t.is_empty()
-            && let Some(node) = core_host::node()
-            && let Some((_, bytes)) = node.clipboard_history_image(&s)
-        {
-            // A file per drag: the app it's dropped on may read it later, after
-            // another drag. Ones from more than an hour ago go.
-            let cache = core_host::host().data_dir.join("cache");
-            let _ = std::fs::create_dir_all(&cache);
-            for old in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
-                let stale = old
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .is_ok_and(|t| t.elapsed().unwrap_or_default() > std::time::Duration::from_secs(3600));
-                if stale && old.file_name().to_string_lossy().starts_with("shelf-clip") {
-                    let _ = std::fs::remove_file(old.path());
-                }
-            }
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            let tmp = cache.join(format!("shelf-clip-{nanos}.png"));
-            if std::fs::write(&tmp, &bytes).is_ok() {
-                return super::native::ffi::start_external_drag(&tmp.to_string_lossy(), "");
+        if kind_str == "clip" && !s.is_empty() && t.is_empty() {
+            // Written already while the Shelf prepared its items.
+            let prepared = clip_drag_file(|file| {
+                let file = file.as_mut().filter(|f| f.id == s && f.path.exists())?;
+                file.dragged = true;
+                Some(file.path.clone())
+            });
+            let path = prepared.or_else(|| {
+                let (_, bytes) = core_host::node()?.clipboard_history_image(&s)?;
+                write_clip_drag_file(&bytes)
+            });
+            if let Some(path) = path {
+                return super::native::ffi::start_external_drag(&path.to_string_lossy(), "");
             }
         }
         super::native::ffi::start_external_drag("", &t)
@@ -2756,6 +2813,65 @@ fn unix_ms(ts: i64) -> i64 {
     if ts < 10_000_000_000 { ts.saturating_mul(1000) } else { ts }
 }
 
+/// The current clip's picture written out to drag, while the Shelf is open:
+/// a drag then starts at once, without reading the clip on the GUI thread.
+#[derive(Debug)]
+struct ClipDragFile {
+    id: String,
+    path: std::path::PathBuf,
+    /// A drag used it: the app it was dropped on may read it later.
+    dragged: bool,
+}
+
+static CLIP_DRAG_FILE: Mutex<Option<ClipDragFile>> = Mutex::new(None);
+
+fn clip_drag_file<T>(f: impl FnOnce(&mut Option<ClipDragFile>) -> T) -> T {
+    f(&mut CLIP_DRAG_FILE.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Writes a clip's picture to a new file to drag, and removes ones from more
+/// than an hour ago. A file per picture: the app it's dropped on may read it
+/// later, after another drag.
+fn write_clip_drag_file(bytes: &[u8]) -> Option<std::path::PathBuf> {
+    let cache = core_host::host().data_dir.join("cache");
+    let _ = std::fs::create_dir_all(&cache);
+    for old in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
+        let stale = old
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().unwrap_or_default() > std::time::Duration::from_secs(3600));
+        if stale && old.file_name().to_string_lossy().starts_with("shelf-clip") {
+            let _ = std::fs::remove_file(old.path());
+        }
+    }
+    let since_epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    let nanos = since_epoch.map_or(0, |d| d.as_nanos());
+    let path = cache.join(format!("shelf-clip-{nanos}.png"));
+    std::fs::write(&path, bytes).is_ok().then_some(path)
+}
+
+/// Writes clip `id`'s picture out to drag, unless it's written already.
+fn prepare_clip_drag(node: &g7link_core::Node, id: &str) {
+    if clip_drag_file(|file| file.as_ref().is_some_and(|f| f.id == id && f.path.exists())) {
+        return;
+    }
+    let bytes = node.clipboard_history_image(id).map(|(_, bytes)| bytes);
+    let Some(path) = bytes.and_then(|bytes| write_clip_drag_file(&bytes)) else { return };
+    let file = ClipDragFile { id: id.to_owned(), path, dragged: false };
+    discard_clip_drag_file(clip_drag_file(|prepared| prepared.replace(file)));
+    // Closed while this was written.
+    if !is_shelf_open() {
+        discard_clip_drag_file(clip_drag_file(Option::take));
+    }
+}
+
+/// Removes a clip's drag file that no drag used.
+fn discard_clip_drag_file(file: Option<ClipDragFile>) {
+    if let Some(file) = file.filter(|f| !f.dragged) {
+        let _ = std::fs::remove_file(file.path);
+    }
+}
+
 fn compute_shelf_items_json(current_device_idx: i32) -> String {
     use g7link_core::{ClipboardItemKind, Direction, TimelineKind, TimelineQuery, TransferState};
 
@@ -2905,6 +3021,9 @@ fn compute_shelf_items_json(current_device_idx: i32) -> String {
         let (kind, image_data_url) = match entry.kind {
             ClipboardItemKind::Text => ("text", String::new()),
             ClipboardItemKind::Image => {
+                if let Some(n) = &node {
+                    prepare_clip_drag(n, &entry.id);
+                }
                 ("image", crate::clipboard::thumb_for_clip(&entry.id).unwrap_or_default())
             }
         };
@@ -3105,8 +3224,7 @@ fn bump_home_summary() {
             let rev = object.home_summary_revision.wrapping_add(1);
             object.as_mut().set_home_summary_revision(rev);
             if object.shelf_open {
-                let shelf = compute_shelf_items_json(object.current_device);
-                object.set_shelf_items(QString::from(&shelf));
+                object.prepare_shelf();
             }
         });
     }
@@ -3556,6 +3674,21 @@ fn feature_state_map(state: Option<FeatureState>) -> QMap<QMapPair_QString_QVari
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_job_runs_at_a_time_and_one_more_after_it() {
+        let mut jobs = OneAtATime::default();
+        assert!(jobs.start());
+        assert!(!jobs.start());
+        assert!(!jobs.start());
+        // Asked twice meanwhile: one more, and it's running.
+        assert!(jobs.finish());
+        assert!(!jobs.start());
+        assert!(jobs.finish());
+        // Nothing asked meanwhile: done.
+        assert!(!jobs.finish());
+        assert!(jobs.start());
+    }
 
     #[test]
     fn shelf_times_compare_in_milliseconds() {
