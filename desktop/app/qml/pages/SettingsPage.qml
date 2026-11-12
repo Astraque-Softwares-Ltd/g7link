@@ -2655,6 +2655,17 @@ Item {
                         }
                         SettingRow {
                             width: parent.width
+                            iconPath: Icons.globe
+                            title: qsTr("Relay servers")
+                            Button {
+                                variant: "tonal"
+                                size: "sm"
+                                text: qsTr("Manage")
+                                onClicked: relaySheet.open()
+                            }
+                        }
+                        SettingRow {
+                            width: parent.width
                             iconPath: Icons.power
                             title: qsTr("Wake from your phone")
                             description: {
@@ -3112,6 +3123,8 @@ Item {
             }
         }
     }
+
+    RelaySheet { id: relaySheet }
 
     Sheet {
         id: hotspotSheet

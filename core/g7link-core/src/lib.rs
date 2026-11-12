@@ -35,6 +35,7 @@ mod pairing;
 pub mod palette;
 mod photos;
 pub mod play_on_phone;
+pub mod relays;
 pub mod remote;
 mod ring;
 mod session;

@@ -84,6 +84,7 @@ import app.g7link.android.ui.pairing.PairingScreen
 import app.g7link.android.ui.recorder.RecorderScreen
 import app.g7link.android.ui.remote.RemoteMode
 import app.g7link.android.ui.remote.RemoteScreen
+import app.g7link.android.ui.settings.RelaySettingsDialog
 import app.g7link.android.ui.settings.SettingsScreen
 import app.g7link.android.ui.theme.Appearance
 import app.g7link.android.ui.theme.GlassBackdrop
@@ -957,6 +958,14 @@ private fun App(
                                 )
                             }
                             Tab.Settings -> saveableStateHolder.SaveableStateProvider("tab_settings") {
+                                var relaySettingsOpen by remember { mutableStateOf(false) }
+                                if (relaySettingsOpen) {
+                                    RelaySettingsDialog(
+                                        core = core,
+                                        awayMode = state.awayMode,
+                                        onDismiss = { relaySettingsOpen = false },
+                                    )
+                                }
                                 SettingsScreen(
                                     state = state,
                                     appearance = appearance,
@@ -997,6 +1006,7 @@ private fun App(
                                     onClearEverything = core::clearEverything,
                                     onToggleLocalSend = core::setLocalSendEnabled,
                                     onToggleAwayMode = core::setAwayMode,
+                                    onOpenRelaySettings = { relaySettingsOpen = true },
                                     onOpenWalkthrough = {
                                         preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
                                         manualWalkthroughOpen = true

@@ -55,6 +55,10 @@ import app.g7link.core.Notification
 import app.g7link.core.PairingFailure
 import app.g7link.core.PowerLevel
 import app.g7link.core.RecordingMarker
+import app.g7link.core.RelayEdit
+import app.g7link.core.RelayEditResult
+import app.g7link.core.RelayProbe
+import app.g7link.core.RelaySnapshot
 import app.g7link.core.RemoteStorageEntry
 import app.g7link.core.TimelineEntry
 import app.g7link.core.TimelineKind
@@ -1527,6 +1531,23 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     ) {
         val shouldHold = enabled && interactive && isRunning
         localsendMulticast?.runCatching { if (shouldHold) { if (!isHeld) acquire() } else if (isHeld) release() }
+    }
+
+    suspend fun relaySnapshot(): RelaySnapshot? = withContext(Dispatchers.IO) {
+        runCatching { node?.relaySnapshot() }.getOrNull()
+    }
+
+    suspend fun editRelay(url: String, action: RelayEdit): RelayEditResult = withContext(Dispatchers.IO) {
+        runCatching { node?.editRelay(url, action) }.getOrNull() ?: RelayEditResult.FAILED
+    }
+
+    suspend fun checkRelays(): List<RelayProbe> = try {
+        node?.checkRelays().orEmpty()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IllegalStateException) {
+        // The node can be closed while the settings dialog is open.
+        emptyList()
     }
 
     fun setLocalSendEnabled(enabled: Boolean) {

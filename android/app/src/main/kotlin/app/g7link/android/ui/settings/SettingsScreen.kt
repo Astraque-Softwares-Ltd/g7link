@@ -146,6 +146,7 @@ fun SettingsScreen(
     onClearEverything: () -> Unit = {},
     onToggleLocalSend: (Boolean) -> Unit = {},
     onToggleAwayMode: (Boolean) -> Unit = {},
+    onOpenRelaySettings: () -> Unit = {},
     onOpenWalkthrough: () -> Unit = {},
     highlightTarget: GuideHighlightTarget? = null,
     onHighlightConsumed: () -> Unit = {},
@@ -351,6 +352,12 @@ fun SettingsScreen(
                     onCheckedChange = onToggleAwayMode,
                     icon = G7Icons.signal,
                     tint = tints.teal,
+                )
+                G7Row(
+                    label = stringResource(R.string.relay_settings_title),
+                    icon = G7Icons.globe,
+                    tint = tints.blue,
+                    onClick = onOpenRelaySettings,
                 )
                 G7SwitchRow(
                     label = stringResource(R.string.settings_run_in_background),

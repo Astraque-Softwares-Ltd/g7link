@@ -18,7 +18,7 @@ use g7link_protocol::{
     pairing::PairingUri,
 };
 use iroh::{
-    Endpoint, EndpointAddr, RelayMode,
+    Endpoint, EndpointAddr, RelayMap, RelayMode, Watcher,
     address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver},
     endpoint::{Connection, PortmapperConfig, QuicTransportConfig, VarInt, presets},
     endpoint_info::{EndpointInfo, UserData},
@@ -35,6 +35,9 @@ use crate::{
     identity,
     notifications::{self, Feed},
     pairing::{self, PairingState},
+    relays::{
+        self, HomeRelay, RelayEdit, RelayEditError, RelayProbe, RelayRoute, RelaySettings, RelaySnapshot,
+    },
     session::{self, CLOSE_DUPLICATE, CLOSE_NORMAL, REQUEST_TIMEOUT, Session},
     store::Store,
     transfer,
@@ -177,6 +180,8 @@ pub(crate) struct Shared {
     /// The last capability matrix emitted per device, to emit only changes.
     matrices: Mutex<HashMap<DeviceId, CapabilityMatrix>>,
     pub(crate) away_mode: std::sync::atomic::AtomicBool,
+    relay_settings: Mutex<RelaySettings>,
+    relay_map: RelayMap,
     /// Whether the user has the app open: heartbeats ping more often then.
     pub(crate) interactive: Arc<crate::session::Interactive>,
     memory: MemoryLookup,
@@ -1839,6 +1844,11 @@ impl Node {
         let secret = identity::load_or_create(&config.data_dir, protector.as_ref())?;
         let protector = identity::protector_for_data(&config.data_dir, protector);
         let store = Store::open(&config.data_dir)?;
+        let relay_settings = store.relay_settings().unwrap_or_else(|err| {
+            tracing::warn!(%err, "can't load relay settings; using defaults");
+            RelaySettings::default()
+        });
+        let relay_map = relay_settings.enabled_map(config.away_mode);
         if let Err(e) = store.seal_queue_with(protector.clone()) {
             tracing::warn!(error = %e, "can't seal the send queue");
         }
@@ -1858,19 +1868,19 @@ impl Node {
             if config.port != 0 { Some(Ports { v4: config.port, v6: Some(config.port) }) } else { saved };
         // Right after a restart the previous process may still be letting go
         // of the ports, so try them for a moment before taking others.
-        let mut bound = bind_endpoint(&config, secret.clone(), wanted).await;
+        let mut bound = bind_endpoint(&config, secret.clone(), wanted, relay_map.clone()).await;
         for _ in 0..PORT_RETRIES {
             if bound.is_ok() || wanted.is_none() {
                 break;
             }
             tokio::time::sleep(PORT_RETRY_DELAY).await;
-            bound = bind_endpoint(&config, secret.clone(), wanted).await;
+            bound = bind_endpoint(&config, secret.clone(), wanted, relay_map.clone()).await;
         }
         let endpoint = match bound {
             Ok(endpoint) => endpoint,
             Err(e) if config.port == 0 && wanted.is_some() => {
                 tracing::info!(error = %e, "saved ports unavailable; using others");
-                bind_endpoint(&config, secret.clone(), None).await?
+                bind_endpoint(&config, secret.clone(), None, relay_map.clone()).await?
             }
             Err(e) => return Err(e),
         };
@@ -1916,6 +1926,8 @@ impl Node {
             dial_failures: Mutex::new(HashMap::new()),
             matrices: Mutex::new(HashMap::new()),
             away_mode: std::sync::atomic::AtomicBool::new(config.away_mode),
+            relay_settings: Mutex::new(relay_settings),
+            relay_map,
             interactive: Default::default(),
             memory,
             notifications: Feed::default(),
@@ -1995,6 +2007,67 @@ impl Node {
     /// Whether remote / mobile data connections outside the local Wi-Fi/LAN are allowed.
     pub fn away_mode(&self) -> bool {
         self.shared.away_mode()
+    }
+
+    /// Configured relays, the endpoint's home relays and routes in use by paired devices.
+    pub fn relay_snapshot(&self) -> RelaySnapshot {
+        let servers = lock(&self.shared.relay_settings).servers();
+        let home = self
+            .shared
+            .endpoint
+            .home_relay_status()
+            .get()
+            .into_iter()
+            .map(|relay| HomeRelay {
+                url: relay.url().to_string(),
+                connected: relay.is_connected(),
+                failed: relay.last_error().is_some(),
+            })
+            .collect();
+        let mut routes: Vec<_> = self
+            .shared
+            .live_sessions()
+            .into_iter()
+            .filter_map(|session| {
+                let url = session.relay_url()?.to_string();
+                let device = self
+                    .shared
+                    .store
+                    .get_peer(&session.peer)
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| session.peer.short(), |peer| peer.info.name);
+                Some(RelayRoute { device, url })
+            })
+            .collect();
+        routes.sort_by(|a, b| a.device.cmp(&b.device).then_with(|| a.url.cmp(&b.url)));
+        RelaySnapshot { servers, home, routes }
+    }
+
+    /// Saves a relay change and updates the running endpoint without restarting the node.
+    pub fn edit_relay(&self, url: &str, action: RelayEdit) -> std::result::Result<(), RelayEditError> {
+        let mut settings = lock(&self.shared.relay_settings);
+        let mut next = settings.clone();
+        next.edit(url, action)?;
+        self.shared.store.save_relay_settings(&next)?;
+        *settings = next;
+        drop(settings);
+
+        let shared = self.shared.clone();
+        self.shared.runtime.spawn(async move {
+            let _one_at_a_time = shared.away_switch.lock().await;
+            if apply_relays(&shared, shared.away_mode()).await {
+                shared.endpoint.network_change().await;
+                shared.nudge_reconnect();
+            }
+        });
+        Ok(())
+    }
+
+    /// Checks all listed relays on demand, even while Away mode is off.
+    pub async fn check_relays(&self) -> Vec<RelayProbe> {
+        let servers = lock(&self.shared.relay_settings).servers();
+        relays::probe_servers(&self.shared.endpoint, servers).await
     }
 
     /// Enables or disables connecting over mobile data / non-LAN paths at runtime.
@@ -4410,6 +4483,7 @@ async fn bind_endpoint(
     config: &NodeConfig,
     secret: iroh::SecretKey,
     ports: Option<Ports>,
+    relay_map: RelayMap,
 ) -> Result<Endpoint> {
     let tuning = config.transport;
     let controller: std::sync::Arc<dyn iroh::endpoint::ControllerFactory + Send + Sync> = match tuning
@@ -4440,21 +4514,13 @@ async fn bind_endpoint(
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
         .alpns(vec![ALPN_SESSION.to_vec(), ALPN_PAIR.to_vec()])
+        // Keep a relay transport even in LAN mode, so it can be enabled later.
+        .relay_mode(RelayMode::Custom(relay_map))
         .transport_config(transport);
-    builder = if config.away_mode {
-        builder.relay_mode(RelayMode::Default)
-    } else {
-        // LAN only: no relays, nothing published outside the network, and no
-        // asking the router to open ports (UPnP, NAT-PMP, PCP) every few seconds.
-        // An empty relay map rather than none, so turning Away on later has a
-        // relay transport to fill: without one, only a restart could add relays.
-        builder
-            .relay_mode(RelayMode::Custom(iroh::RelayMap::empty()))
-            .portmapper_config(PortmapperConfig::Disabled)
-    };
     if !config.away_mode {
         let v4_port = ports.map_or(0, |p| p.v4);
         builder = builder
+            .portmapper_config(PortmapperConfig::Disabled)
             .clear_ip_transports()
             .bind_addr(SocketAddr::from(([0, 0, 0, 0], v4_port)))
             .map_err(crate::error::net)?;
@@ -4474,6 +4540,25 @@ async fn bind_endpoint(
     Ok(endpoint)
 }
 
+/// Reconciles the live relay map. The caller holds `away_switch`.
+async fn apply_relays(shared: &Shared, away: bool) -> bool {
+    let desired = lock(&shared.relay_settings).enabled_map(away);
+    let mut changed = false;
+    for config in desired.relays::<Vec<_>>() {
+        if !shared.relay_map.contains(&config.url) {
+            shared.endpoint.insert_relay(config.url.clone(), config).await;
+            changed = true;
+        }
+    }
+    for url in shared.relay_map.urls::<Vec<_>>() {
+        if !desired.contains(&url) {
+            shared.endpoint.remove_relay(&url).await;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Brings relays and internet lookups in line with Away mode, while running.
 /// Off, nothing is published or looked up and no relay is picked or used. iroh
 /// keeps its idle connection to the current home relay until the endpoint
@@ -4481,17 +4566,7 @@ async fn bind_endpoint(
 async fn apply_internet_services(shared: &Arc<Shared>) {
     let _one_at_a_time = shared.away_switch.lock().await;
     let on = shared.away_mode();
-    let relays = RelayMode::Default.relay_map();
-    let urls: Vec<iroh::RelayUrl> = relays.urls();
-    for url in urls {
-        if on {
-            if let Some(config) = relays.get(&url) {
-                shared.endpoint.insert_relay(url, config).await;
-            }
-        } else {
-            shared.endpoint.remove_relay(&url).await;
-        }
-    }
+    apply_relays(shared, on).await;
     let running = lock(&shared.lan_discovery).as_ref().map(|(_, fast)| *fast);
     let lookups = match running {
         // Swapping mDNS clears the lookups and puts back what Away mode allows.
@@ -4994,7 +5069,6 @@ mod away_tests {
     use super::*;
     use crate::config::NoopPlatform;
     use g7link_protocol::messages::{DeviceInfo, DeviceKind};
-    use iroh::Watcher as _;
 
     async fn node(dir: &tempfile::TempDir, away: bool) -> Node {
         let mut config = NodeConfig::new(

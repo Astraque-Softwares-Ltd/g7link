@@ -41,6 +41,7 @@ const QML: &[&str] = &[
     "qml/components/NowPlaying.qml",
     "qml/components/PopupMenu.qml",
     "qml/components/QrCode.qml",
+    "qml/components/RelaySheet.qml",
     "qml/components/RoundedImage.qml",
     "qml/components/SectionLabel.qml",
     "qml/components/Segmented.qml",
