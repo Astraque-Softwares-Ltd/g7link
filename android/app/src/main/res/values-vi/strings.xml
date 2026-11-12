@@ -290,6 +290,8 @@
 <string name="settings_remote">Điều khiển PC của bạn</string>
 <string name="settings_volume_keys_control_pc">Nút âm lượng điều khiển PC</string>
 <string name="settings_touchpad_sensitivity">Tốc độ Touchpad</string>
+<string name="settings_touchpad_haptics">Rung trên bàn di chuột</string>
+<string name="settings_touchpad_haptics_note">Nhấp, từng nấc cuộn và kéo</string>
 <string name="settings_touchpad_sensitivity_value">%1$.1f×</string>
 <string name="remote_mode_touchpad">Touchpad</string>
 <string name="remote_mode_air">Air Mouse</string>

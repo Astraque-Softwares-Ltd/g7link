@@ -167,6 +167,7 @@ fun RemoteScreen(
     sensitivity: Float,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    haptics: Boolean = true,
     initialMode: RemoteMode = RemoteMode.Touchpad,
 ) {
     val view = LocalView.current
@@ -269,8 +270,8 @@ fun RemoteScreen(
     }
 
     val onStatus: (Core.RemoteAccess) -> Unit = { next -> access = next }
-    // Felt only for input that reaches the PC.
-    val haptics = rememberTrackpadHaptics(live = device.online && access == Core.RemoteAccess.Allowed)
+    // Felt only for input that reaches the PC, and only when the user wants it (Settings › Remote).
+    val haptic = rememberTrackpadHaptics(live = haptics && device.online && access == Core.RemoteAccess.Allowed)
 
     Column(
         modifier = modifier
@@ -350,7 +351,7 @@ fun RemoteScreen(
                     pasteChip = pasteChip,
                     pasteReady = freshClip != null,
                     onPasted = onPasted,
-                    haptics = haptics,
+                    haptics = haptic,
                     modifier = Modifier.fillMaxSize(),
                 )
                 RemoteMode.AirMouse -> AirMouseView(
@@ -418,7 +419,7 @@ fun RemoteScreen(
                 },
                 onVolume = { mode = RemoteMode.Media },
                 keycaps = mode == RemoteMode.Touchpad,
-                haptics = haptics,
+                haptics = haptic,
             )
         }
     }

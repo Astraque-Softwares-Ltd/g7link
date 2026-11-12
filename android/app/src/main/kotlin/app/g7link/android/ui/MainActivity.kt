@@ -716,6 +716,7 @@ private fun App(
                 val dev = state.device(route.pcId) ?: return@AnimatedContent
                 BackHandler { remotePcId = null }
                 val sensitivity by preferences.touchpadSensitivity.collectAsStateWithLifecycle()
+                val touchpadHaptics by preferences.touchpadHaptics.collectAsStateWithLifecycle()
                 Scaffold(
                     contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
                     snackbarHost = { SnackbarHost(snackbar) },
@@ -724,6 +725,7 @@ private fun App(
                         device = dev,
                         core = core,
                         sensitivity = sensitivity,
+                        haptics = touchpadHaptics,
                         initialMode = remoteInitialMode,
                         onBack = { remotePcId = null },
                         modifier = Modifier.fillMaxSize().padding(padding),
@@ -755,6 +757,7 @@ private fun App(
                     val touchpadSensitivity by preferences.touchpadSensitivity.collectAsStateWithLifecycle()
                     val suggestClipboardActions by preferences.suggestClipboardActions.collectAsStateWithLifecycle()
                     val volumeKeysControlPc by preferences.volumeKeysControlPc.collectAsStateWithLifecycle()
+                    val touchpadHaptics by preferences.touchpadHaptics.collectAsStateWithLifecycle()
                     val backgroundServiceEnabled by preferences.backgroundServiceEnabled.collectAsStateWithLifecycle()
                     val startWithoutAsking by app.g7link.android.service.PcAutoStart.pcs(context).collectAsStateWithLifecycle()
                     val saveableStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
@@ -970,6 +973,8 @@ private fun App(
                                     onClearClipboardHistory = core::clearClipboardHistory,
                                     suggestClipboardActions = suggestClipboardActions,
                                     onSetSuggestClipboardActions = preferences::updateSuggestClipboardActions,
+                                    touchpadHaptics = touchpadHaptics,
+                                    onSetTouchpadHaptics = preferences::updateTouchpadHaptics,
                                     volumeKeysControlPc = volumeKeysControlPc,
                                     onSetVolumeKeysControlPc = preferences::updateVolumeKeysControlPc,
                                     backgroundServiceEnabled = backgroundServiceEnabled,

@@ -24,6 +24,9 @@ class Preferences(context: Context) {
     private val _suggestClipboardActions = MutableStateFlow(prefs.getBoolean(SUGGEST_CLIPBOARD_ACTIONS, true))
     val suggestClipboardActions: StateFlow<Boolean> = _suggestClipboardActions.asStateFlow()
 
+    private val _touchpadHaptics = MutableStateFlow(prefs.getBoolean(TOUCHPAD_HAPTICS, true))
+    val touchpadHaptics: StateFlow<Boolean> = _touchpadHaptics.asStateFlow()
+
     private val _volumeKeysControlPc = MutableStateFlow(prefs.getBoolean(VOLUME_KEYS_CONTROL_PC, true))
     val volumeKeysControlPc: StateFlow<Boolean> = _volumeKeysControlPc.asStateFlow()
 
@@ -79,6 +82,11 @@ class Preferences(context: Context) {
         _touchpadSensitivity.value = clamped
     }
 
+    fun updateTouchpadHaptics(enabled: Boolean) {
+        prefs.edit { putBoolean(TOUCHPAD_HAPTICS, enabled) }
+        _touchpadHaptics.value = enabled
+    }
+
     fun updateSuggestClipboardActions(enabled: Boolean) {
         prefs.edit { putBoolean(SUGGEST_CLIPBOARD_ACTIONS, enabled) }
         _suggestClipboardActions.value = enabled
@@ -118,6 +126,7 @@ class Preferences(context: Context) {
         private const val THEME = "theme"
         private const val MODE = "mode"
         private const val TOUCHPAD_SENSITIVITY = "touchpad_sensitivity"
+        private const val TOUCHPAD_HAPTICS = "touchpad_haptics"
         private const val SUGGEST_CLIPBOARD_ACTIONS = "suggest_clipboard_actions"
         private const val VOLUME_KEYS_CONTROL_PC = "volume_keys_control_pc"
         internal const val BACKGROUND_SERVICE_ENABLED = "background_service_enabled"

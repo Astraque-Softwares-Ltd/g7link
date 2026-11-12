@@ -295,6 +295,8 @@
     <string name="settings_remote">Control your PC</string>
     <string name="settings_volume_keys_control_pc">Volume buttons control your PC</string>
     <string name="settings_touchpad_sensitivity">Touchpad speed</string>
+    <string name="settings_touchpad_haptics">Vibrate on the touchpad</string>
+    <string name="settings_touchpad_haptics_note">Clicks, scroll notches and drags</string>
     <string name="settings_touchpad_sensitivity_value">%1$.1f×</string>
     <string name="remote_mode_touchpad">Touchpad</string>
     <string name="remote_mode_air">Air mouse</string>

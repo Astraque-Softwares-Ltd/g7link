@@ -133,6 +133,8 @@ fun SettingsScreen(
     onClearClipboardHistory: () -> Unit = {},
     suggestClipboardActions: Boolean = true,
     onSetSuggestClipboardActions: (Boolean) -> Unit = {},
+    touchpadHaptics: Boolean = true,
+    onSetTouchpadHaptics: (Boolean) -> Unit = {},
     volumeKeysControlPc: Boolean = true,
     onSetVolumeKeysControlPc: (Boolean) -> Unit = {},
     backgroundServiceEnabled: Boolean = true,
@@ -445,6 +447,14 @@ fun SettingsScreen(
                     modifier = Modifier
                         .padding(start = 48.dp, end = 12.dp)
                         .semantics { contentDescription = sensitivityTitle },
+                )
+                G7SwitchRow(
+                    label = stringResource(R.string.settings_touchpad_haptics),
+                    sublabel = stringResource(R.string.settings_touchpad_haptics_note),
+                    checked = touchpadHaptics,
+                    onCheckedChange = onSetTouchpadHaptics,
+                    icon = G7Icons.phone,
+                    tint = tints.teal,
                 )
                 G7SwitchRow(
                     label = stringResource(R.string.settings_volume_keys_control_pc),

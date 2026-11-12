@@ -293,6 +293,8 @@
     <string name="settings_remote">Bilgisayarınızı kontrol edin</string>
     <string name="settings_volume_keys_control_pc">Ses düğmeleri bilgisayarınızı kontrol eder</string>
     <string name="settings_touchpad_sensitivity">Dokunmatik yüzey hızı</string>
+    <string name="settings_touchpad_haptics">Dokunmatik yüzeyde titreşim</string>
+    <string name="settings_touchpad_haptics_note">Tıklamalar, kaydırma adımları ve sürüklemeler</string>
     <string name="settings_touchpad_sensitivity_value">%1$.1f×</string>
     <string name="remote_mode_touchpad">Dokunmatik yüzey</string>
     <string name="remote_mode_air">Air mouse</string>
