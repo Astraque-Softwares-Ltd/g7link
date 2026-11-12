@@ -90,9 +90,16 @@ async fn start_helper(
     request: &ElevatedUsbStart,
 ) -> std::result::Result<u16, (ErrorCode, String)> {
     let peer = session.peer;
-    let usb = shared.usb_serials.lock().unwrap_or_else(|e| e.into_inner()).get(&peer).cloned();
-    let (serial, adb_addr, wireless) = match usb {
-        Some((serial, adb_addr)) => (serial, adb_addr, false),
+    // A cable only counts once this session's own handshake came over it.
+    let usb = shared
+        .usb_serials
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&peer)
+        .cloned()
+        .filter(|(_, _, port)| session.uses_usb_bridge_port(*port));
+    let (serial, adb_addr, bridge_port) = match usb {
+        Some((serial, adb_addr, port)) => (serial, adb_addr, Some(port)),
         // No cable: its Wireless debugging, if it's on and has paired this PC.
         None => {
             let (Some(adb_addr), Some(port)) = (shared.adb_server, request.adb_port) else {
@@ -102,22 +109,24 @@ async fn start_helper(
             let from: Vec<IpAddr> = session.remote_ip_addrs().iter().map(SocketAddr::ip).collect();
             let found = crate::adb_wifi::route(adb_addr, &from, port, &request.apk).await;
             let serial = found.map_err(|why| (ErrorCode::Unsupported, format!("no USB cable, and {why}")))?;
-            (serial, adb_addr, true)
+            (serial, adb_addr, None)
         }
     };
-    let launched = launch(shared, peer, adb_addr, &serial, request).await;
+    let launched = launch(shared, peer, adb_addr, &serial, bridge_port, request).await;
     let port = launched.map_err(|why| (ErrorCode::Internal, why))?;
-    tracing::info!(peer = %peer.short(), wireless, "started Elevated through adb");
+    tracing::info!(peer = %peer.short(), wireless = bridge_port.is_none(), "started Elevated through adb");
     Ok(port)
 }
 
 /// Runs the grants, then starts the helper and keeps its shell open in a task
-/// stored for `peer`. Returns the helper's port.
+/// stored for `peer`. `bridge_port` is the USB tunnel it came through (none
+/// over Wireless debugging). Returns the helper's port.
 async fn launch(
     shared: &Arc<Shared>,
     peer: DeviceId,
     adb_addr: SocketAddr,
     serial: &str,
+    bridge_port: Option<u16>,
     request: &ElevatedUsbStart,
 ) -> std::result::Result<u16, String> {
     for grant in &request.grants {
@@ -137,6 +146,16 @@ async fn launch(
         let mut sink = [0u8; 1024];
         while matches!(output.read(&mut sink).await, Ok(n) if n > 0) {}
     });
+    // The cable may have been pulled, or another tunnel taken over, meanwhile.
+    let still_active = !shared.cancel.is_cancelled()
+        && bridge_port.is_none_or(|bridge_port| {
+            let serials = shared.usb_serials.lock().unwrap_or_else(|e| e.into_inner());
+            serials.get(&peer).is_some_and(|(s, a, p)| s == serial && *a == adb_addr && *p == bridge_port)
+        });
+    if !still_active {
+        keep.abort();
+        return Err("the USB connection ended".into());
+    }
     if let Some(old) = shared.usb_helpers.lock().unwrap_or_else(|e| e.into_inner()).insert(peer, keep) {
         old.abort();
     }
