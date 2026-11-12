@@ -42,7 +42,6 @@ import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.G7Switch
 import app.g7link.android.ui.theme.g7Tints
-import app.g7link.android.ui.theme.glassModalContainerColor
 import app.g7link.core.RelayEdit
 import app.g7link.core.RelayEditResult
 import app.g7link.core.RelayProbe
@@ -107,7 +106,7 @@ fun RelaySettingsDialog(core: Core, awayMode: Boolean, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = glassModalContainerColor(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         title = { Text(stringResource(R.string.relay_settings_title)) },
         confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_done)) } },
         dismissButton = {
