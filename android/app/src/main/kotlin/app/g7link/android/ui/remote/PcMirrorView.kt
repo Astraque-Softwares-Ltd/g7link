@@ -27,6 +27,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -95,6 +96,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -114,6 +116,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.currentStateAsState
 import app.g7link.android.R
 import app.g7link.android.core.Core
+import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.core.MirrorInputEvent
 import app.g7link.core.TouchPhase
@@ -1119,6 +1122,27 @@ fun PcMirrorView(
 
             }
 
+            // Quality switch in the opposite corner of the portrait viewer
+            if (!isFullScreen && watch == null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(10.dp)
+                        .heightIn(min = 38.dp)
+                        .clip(RoundedCornerShape(19.dp))
+                        .background(Color.Black.copy(alpha = 0.58f))
+                        .clickable(role = Role.Button) {
+                            highQuality = !highQuality
+                            reconnectTick++
+                        }
+                        .semantics { contentDescription = qualityA11yLabel }
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(qualityShortLabel, style = MaterialTheme.typography.labelLarge, color = Color.White)
+                }
+            }
+
             // Expand button in the corner of the portrait viewer
             if (!isFullScreen && watch == null) {
                 IconButton(
@@ -1385,49 +1409,29 @@ fun PcMirrorView(
             }
         }
 
-        // Portrait action bar
+        // Portrait action bar. The picture's own corner holds the quality switch,
+        // so the three actions here have room for their whole names.
         if (!isFullScreen && watch == null) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(
+                G7RaisedButton(
+                    label = rightClickLabel,
                     onClick = { core.remoteButton(pcId, "right", "click") },
-                    modifier = Modifier
-                        .weight(1f)
-                        .semantics { contentDescription = rightClickLabel },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                ) {
-                    Text(rightClickLabel, maxLines = 1)
-                }
-                OutlinedButton(
+                    modifier = Modifier.weight(1.25f),
+                )
+                G7RaisedButton(
+                    label = taskViewLabel,
                     onClick = { core.sendPcMirrorInput(pcId, MirrorInputEvent.Key("recents")) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .semantics { contentDescription = taskViewLabel },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                ) {
-                    Text(taskViewLabel, maxLines = 1)
-                }
-                FilledTonalButton(
+                    modifier = Modifier.weight(1f),
+                )
+                G7RaisedButton(
+                    label = keyboardLabel,
                     onClick = { showKeyboardBar = !showKeyboardBar },
-                    modifier = Modifier
-                        .weight(1f)
-                        .semantics { contentDescription = keyboardLabel },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                ) {
-                    Text(keyboardLabel, maxLines = 1)
-                }
-                OutlinedButton(
-                    onClick = {
-                        highQuality = !highQuality
-                        reconnectTick++
-                    },
-                    modifier = Modifier.semantics { contentDescription = qualityA11yLabel },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-                ) {
-                    Text(qualityShortLabel, maxLines = 1)
-                }
+                    selected = showKeyboardBar,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }

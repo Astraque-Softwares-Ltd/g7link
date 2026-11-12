@@ -725,7 +725,9 @@ private fun TouchpadView(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (touchpadOnly) Modifier.padding(8.dp) else Modifier),
+                .then(if (touchpadOnly) Modifier.padding(8.dp) else Modifier)
+                // A gap between the typing field and the keyboard, so they don't touch.
+                .then(if (imeVisible) Modifier.padding(bottom = 10.dp) else Modifier),
             verticalArrangement = Arrangement.spacedBy(if (touchpadOnly) 6.dp else 10.dp),
         ) {
             // The touchpad takes whatever room the keys and the keyboard leave.
