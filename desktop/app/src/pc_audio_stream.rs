@@ -252,7 +252,7 @@ mod imp {
         args
     }
 
-    fn resolve_default_monitor_source() -> String {
+    pub(crate) fn resolve_default_monitor_source() -> String {
         let default_sink = std::process::Command::new("pactl")
             .arg("get-default-sink")
             .output()

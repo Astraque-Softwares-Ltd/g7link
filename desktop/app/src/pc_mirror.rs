@@ -13,7 +13,7 @@ mod imp {
     };
     use std::time::{Duration, Instant};
 
-    use g7link_core::{DeviceId, KeyMod, MirrorInput, MirrorStart, mirror_keys};
+    use g7link_core::{CapturePrompt, DeviceId, KeyMod, MirrorInput, MirrorStart, PcCaptureError, mirror_keys};
     use g7link_core::{MirrorConfig, MirrorSend, PacketKind};
 
     use crate::{core_host, sys};
@@ -1129,7 +1129,10 @@ mod imp {
     }
 
     struct WaylandScreenCaster {
-        _conn: zbus::blocking::Connection,
+        /// The session lasts as long as this connection.
+        conn: zbus::blocking::Connection,
+        /// The session's object path, for opening more PipeWire connections to it.
+        session: String,
         /// The PipeWire connection the portal opened for us; the stream is
         /// only readable through it.
         remote: std::os::fd::OwnedFd,
@@ -1152,40 +1155,97 @@ mod imp {
         }
     }
 
+    /// A started ScreenCast session: the connection it lives on (it ends with
+    /// it) and the PipeWire stream of the monitor the user chose.
+    struct Negotiated {
+        conn: zbus::blocking::Connection,
+        session: String,
+        remote: std::os::fd::OwnedFd,
+        node_id: u32,
+        src_w: u32,
+        src_h: u32,
+    }
+
+    fn portal_failed(error: impl std::fmt::Display) -> PcCaptureError {
+        PcCaptureError::Failed(format!("screen-sharing portal: {error}"))
+    }
+
+    /// Marks the portal's dialog as answered when it goes, on every way out.
+    struct Answered(Arc<AtomicBool>);
+
+    impl Drop for Answered {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn wait_portal_response(
         iter: &mut zbus::blocking::MessageIterator,
         expected_path: &str,
-    ) -> Option<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+    ) -> Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>, PcCaptureError> {
         for msg in iter.by_ref() {
-            let msg = msg.ok()?;
+            let msg = msg.map_err(portal_failed)?;
             let hdr = msg.header();
             if hdr.interface().map(|i| i.as_str()) == Some("org.freedesktop.portal.Request")
                 && hdr.member().map(|m| m.as_str()) == Some("Response")
                 && hdr.path().map(|p| p.as_str()) == Some(expected_path)
             {
                 let (code, results): (u32, std::collections::HashMap<String, zbus::zvariant::OwnedValue>) =
-                    msg.body().deserialize().ok()?;
-                return if code == 0 { Some(results) } else { None };
+                    msg.body().deserialize().map_err(portal_failed)?;
+                return match code {
+                    0 => Ok(results),
+                    // The user dismissed the dialog.
+                    1 => Err(PcCaptureError::Declined),
+                    other => Err(portal_failed(format!("answered {other}"))),
+                };
             }
         }
-        None
+        Err(portal_failed("the session bus went away"))
+    }
+
+    /// Opens another connection to a session's PipeWire streams.
+    fn open_pipewire_remote(
+        conn: &zbus::blocking::Connection,
+        session: &str,
+    ) -> Result<std::os::fd::OwnedFd, PcCaptureError> {
+        use std::collections::HashMap;
+        use zbus::zvariant::{ObjectPath, Value};
+
+        let session = ObjectPath::try_from(session).map_err(portal_failed)?;
+        let empty_opts: HashMap<&str, Value<'_>> = HashMap::new();
+        let reply = conn
+            .call_method(
+                Some("org.freedesktop.portal.Desktop"),
+                "/org/freedesktop/portal/desktop",
+                Some("org.freedesktop.portal.ScreenCast"),
+                "OpenPipeWireRemote",
+                &(&session, &empty_opts),
+            )
+            .map_err(portal_failed)?;
+        let remote: zbus::zvariant::OwnedFd = reply.body().deserialize().map_err(portal_failed)?;
+        Ok(remote.into())
     }
 
     impl WaylandScreenCaster {
-        #[allow(clippy::type_complexity)]
-        fn negotiate_portal() -> Option<(zbus::blocking::Connection, std::os::fd::OwnedFd, u32, u32, u32)> {
+        /// Opens a ScreenCast session on one monitor: `cursor_mode` 1 leaves the
+        /// pointer out, 2 draws it in. `prompt` hears when the portal likely asks
+        /// the user: it has no earlier choice to restore, or doesn't answer at once.
+        fn negotiate_portal(
+            cursor_mode: u32,
+            prompt: Option<CapturePrompt>,
+        ) -> Result<Negotiated, PcCaptureError> {
             use std::collections::HashMap;
             use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
-            let conn = zbus::blocking::Connection::session().ok()?;
+            let conn = zbus::blocking::Connection::session().map_err(portal_failed)?;
             let rule = zbus::MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
                 .interface("org.freedesktop.portal.Request")
                 .and_then(|b| b.member("Response"))
                 .map(|b| b.build())
-                .ok()?;
-            let dbus = zbus::blocking::fdo::DBusProxy::new(&conn).ok()?;
-            dbus.add_match_rule(rule).ok()?;
+                .map_err(portal_failed)?;
+            let dbus = zbus::blocking::fdo::DBusProxy::new(&conn).map_err(portal_failed)?;
+            dbus.add_match_rule(rule).map_err(portal_failed)?;
             let mut iter = zbus::blocking::MessageIterator::from(&conn);
 
             let pid = std::process::id();
@@ -1205,23 +1265,24 @@ mod imp {
                     "CreateSession",
                     &(&create_opts,),
                 )
-                .ok()?;
-            let req_path_1: OwnedObjectPath = reply.body().deserialize().ok()?;
+                .map_err(portal_failed)?;
+            let req_path_1: OwnedObjectPath = reply.body().deserialize().map_err(portal_failed)?;
             let create_res = wait_portal_response(&mut iter, req_path_1.as_str())?;
             let session_path_str = create_res.get("session_handle").and_then(|v| {
                 String::try_from(v.clone())
                     .ok()
                     .or_else(|| OwnedObjectPath::try_from(v.clone()).ok().map(|p| p.to_string()))
-            })?;
-            let session_obj = ObjectPath::try_from(session_path_str.as_str()).ok()?;
+            });
+            let session_path_str = session_path_str.ok_or_else(|| portal_failed("no session"))?;
+            let session_obj = ObjectPath::try_from(session_path_str.as_str()).map_err(portal_failed)?;
 
-            // 2. SelectSources (types = 1 MONITOR, cursor_mode = 2 EMBEDDED)
+            // 2. SelectSources (types = 1 MONITOR, one of them)
             let mut select_opts: HashMap<&str, Value<'_>> = HashMap::new();
             let req_tok_2 = format!("g7link_sc_req2_{pid}");
             select_opts.insert("handle_token", Value::from(req_tok_2.as_str()));
             select_opts.insert("types", Value::from(1u32));
             select_opts.insert("multiple", Value::from(false));
-            select_opts.insert("cursor_mode", Value::from(2u32));
+            select_opts.insert("cursor_mode", Value::from(cursor_mode));
             // Ask once until the user takes it back: the portal hands back a token
             // that restores the same choice without a dialog, also after a restart.
             select_opts.insert("persist_mode", Value::from(2u32));
@@ -1238,11 +1299,27 @@ mod imp {
                     "SelectSources",
                     &(&session_obj, &select_opts),
                 )
-                .ok()?;
-            let req_path_2: OwnedObjectPath = reply.body().deserialize().ok()?;
+                .map_err(portal_failed)?;
+            let req_path_2: OwnedObjectPath = reply.body().deserialize().map_err(portal_failed)?;
             wait_portal_response(&mut iter, req_path_2.as_str())?;
 
-            // 3. Start
+            // 3. Start: the portal asks the user now, unless it restores an earlier
+            // choice, which it does at once. A slow answer means it asks after all.
+            let answered = Answered(Arc::new(AtomicBool::new(false)));
+            if let Some(prompt) = prompt {
+                if restore.is_none() {
+                    prompt();
+                } else {
+                    let answered = Arc::clone(&answered.0);
+                    let ask = move || {
+                        std::thread::sleep(PROMPT_AFTER);
+                        if !answered.load(Ordering::SeqCst) {
+                            prompt();
+                        }
+                    };
+                    let _ = std::thread::Builder::new().name("g7link-screencast-ask".into()).spawn(ask);
+                }
+            }
             let mut start_opts: HashMap<&str, Value<'_>> = HashMap::new();
             let req_tok_3 = format!("g7link_sc_req3_{pid}");
             start_opts.insert("handle_token", Value::from(req_tok_3.as_str()));
@@ -1255,9 +1332,10 @@ mod imp {
                     "Start",
                     &(&session_obj, "", &start_opts),
                 )
-                .ok()?;
-            let req_path_3: OwnedObjectPath = reply.body().deserialize().ok()?;
+                .map_err(portal_failed)?;
+            let req_path_3: OwnedObjectPath = reply.body().deserialize().map_err(portal_failed)?;
             let start_res = wait_portal_response(&mut iter, req_path_3.as_str())?;
+            drop(answered);
             if let Some(token) = start_res.get("restore_token").and_then(|v| String::try_from(v.clone()).ok())
             {
                 // Each token works once, and this is the one for next time.
@@ -1266,9 +1344,10 @@ mod imp {
                 }
             }
 
-            let streams_val = start_res.get("streams")?;
-            let streams: Vec<(u32, HashMap<String, OwnedValue>)> = streams_val.clone().try_into().ok()?;
-            let (node_id, props) = streams.into_iter().next()?;
+            let streams_val = start_res.get("streams").ok_or_else(|| portal_failed("no streams"))?;
+            let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
+                streams_val.clone().try_into().map_err(portal_failed)?;
+            let (node_id, props) = streams.into_iter().next().ok_or_else(|| portal_failed("no streams"))?;
             let (src_w, src_h) = props
                 .get("size")
                 .and_then(|v| <(i32, i32)>::try_from(v.clone()).ok())
@@ -1278,20 +1357,9 @@ mod imp {
 
             // The stream is only readable through the PipeWire connection
             // the portal opens for this session.
-            let empty_opts: HashMap<&str, Value<'_>> = HashMap::new();
-            let reply = conn
-                .call_method(
-                    Some("org.freedesktop.portal.Desktop"),
-                    "/org/freedesktop/portal/desktop",
-                    Some("org.freedesktop.portal.ScreenCast"),
-                    "OpenPipeWireRemote",
-                    &(&session_obj, &empty_opts),
-                )
-                .ok()?;
-            let remote: zbus::zvariant::OwnedFd = reply.body().deserialize().ok()?;
-            let remote: std::os::fd::OwnedFd = remote.into();
+            let remote = open_pipewire_remote(&conn, &session_path_str)?;
 
-            Some((conn, remote, node_id, src_w, src_h))
+            Ok(Negotiated { conn, session: session_path_str, remote, node_id, src_w, src_h })
         }
 
         /// The fd number the portal's PipeWire connection gets in the capture process.
@@ -1356,15 +1424,30 @@ mod imp {
         }
 
         fn start(dst_w: u32, dst_h: u32) -> Option<Self> {
-            let (conn, remote, node_id, src_w, src_h) = Self::negotiate_portal()?;
-            let (child, latest_frame) = Self::spawn_pipeline(&remote, node_id, dst_w, dst_h)?;
-            Some(Self {
-                _conn: conn,
-                remote,
-                node_id,
+            Self::open(2, None, |_, _| (dst_w, dst_h))
+                .inspect_err(|error| tracing::debug!(%error, "can't share the screen"))
+                .ok()
+        }
+
+        /// Opens a session and starts reading its stream at the size `dims`
+        /// picks for the monitor's.
+        fn open(
+            cursor_mode: u32,
+            prompt: Option<CapturePrompt>,
+            dims: impl FnOnce(u32, u32) -> (u32, u32),
+        ) -> Result<Self, PcCaptureError> {
+            let n = Self::negotiate_portal(cursor_mode, prompt)?;
+            let (dst_w, dst_h) = dims(n.src_w, n.src_h);
+            let pipeline = Self::spawn_pipeline(&n.remote, n.node_id, dst_w, dst_h);
+            let (child, latest_frame) = pipeline.ok_or_else(|| portal_failed("can't read the screen"))?;
+            Ok(Self {
+                conn: n.conn,
+                session: n.session,
+                remote: n.remote,
+                node_id: n.node_id,
                 started: Instant::now(),
-                src_w,
-                src_h,
+                src_w: n.src_w,
+                src_h: n.src_h,
                 dst_w,
                 dst_h,
                 child: Some(child),
@@ -1485,6 +1568,208 @@ mod imp {
 
     fn stop_wayland_screencast() {
         *WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Ends the screencast when no phone sees the screen any more.
+    pub(crate) fn release_screencast() {
+        if !is_active() {
+            stop_wayland_screencast();
+        }
+    }
+
+    /// How long after asking for the screen the portal is taken to show its dialog.
+    const PROMPT_AFTER: Duration = Duration::from_millis(1500);
+    /// How long a screenshot waits for the screen's first picture.
+    const STILL_WAIT: Duration = Duration::from_secs(5);
+    /// The first picture of a new stream can be half drawn: a screenshot is the
+    /// newest one this long after it.
+    const STILL_SETTLE: Duration = Duration::from_millis(200);
+    /// The largest screen a screenshot takes whole, in pixels.
+    const MAX_STILL_PIXELS: u64 = 8192 * 8192;
+    /// The longest side of a recording.
+    pub(crate) const RECORD_MAX_EDGE: u32 = 1920;
+
+    /// The screen at its own size, for a screenshot: through the screencast a
+    /// phone or a recording already uses (pointer included), or through a
+    /// session of its own without the pointer, which may ask the user first.
+    pub(crate) fn grab_still(prompt: CapturePrompt) -> Result<crate::sys::image::Bitmap, PcCaptureError> {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return grab_still_x11();
+        }
+        if !is_wayland_screencast_available() {
+            return Err(PcCaptureError::Unsupported);
+        }
+        let running = WAYLAND_CASTER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|c| (c.conn.clone(), c.session.clone(), c.node_id, c.src_w, c.src_h));
+        match running {
+            Some((conn, session, node_id, src_w, src_h)) => {
+                let remote = open_pipewire_remote(&conn, &session)?;
+                one_frame(&remote, node_id, src_w, src_h)
+            }
+            None => {
+                // The session lasts while its connection does: until the picture is in.
+                let session = WaylandScreenCaster::negotiate_portal(1, Some(prompt))?;
+                one_frame(&session.remote, session.node_id, session.src_w, session.src_h)
+            }
+        }
+    }
+
+    /// One picture of stream `node_id` at `width` x `height`.
+    fn one_frame(
+        remote: &std::os::fd::OwnedFd,
+        node_id: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<crate::sys::image::Bitmap, PcCaptureError> {
+        if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_STILL_PIXELS {
+            return Err(portal_failed(format!("a {width}x{height} screen")));
+        }
+        let pipeline = WaylandScreenCaster::spawn_pipeline(remote, node_id, width, height);
+        let (mut child, latest) = pipeline.ok_or_else(|| portal_failed("can't read the screen"))?;
+        let deadline = Instant::now() + STILL_WAIT;
+        let mut first_at: Option<Instant> = None;
+        let frame = loop {
+            let ready = latest.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+            if ready && first_at.is_none() {
+                first_at = Some(Instant::now());
+            }
+            let settled = first_at.is_some_and(|at| at.elapsed() >= STILL_SETTLE);
+            let ended = !matches!(child.try_wait(), Ok(None));
+            if settled || ended || Instant::now() >= deadline {
+                break latest.lock().unwrap_or_else(|e| e.into_inner()).take();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        let bgra = frame.ok_or_else(|| portal_failed("no picture came"))?;
+        Ok(crate::sys::image::Bitmap { width, height, bgra })
+    }
+
+    fn grab_still_x11() -> Result<crate::sys::image::Bitmap, PcCaptureError> {
+        if std::env::var_os("DISPLAY").is_none() || x11_api().is_none() {
+            return Err(PcCaptureError::Unsupported);
+        }
+        let (width, height) = primary_screen_dimensions();
+        let whole = crate::sys::browser::Rect { left: 0, top: 0, right: width as i32, bottom: height as i32 };
+        let mut bgra = Vec::new();
+        // A region of the screen comes without the pointer.
+        if capture_screen(Some(whole), width, height, &mut bgra).is_none() {
+            return Err(PcCaptureError::Failed("can't read the screen".into()));
+        }
+        Ok(crate::sys::image::Bitmap { width, height, bgra })
+    }
+
+    /// Where a recording gets the screen from, pointer included: the
+    /// screencast a phone sees when there is one, or one opened for it.
+    pub(crate) enum ScreenFeed {
+        Wayland,
+        X11,
+    }
+
+    /// A recording's next picture.
+    pub(crate) enum FeedFrame {
+        Got,
+        NotYet,
+        /// The screen can't be read any more (the screencast stopped).
+        Gone,
+    }
+
+    impl ScreenFeed {
+        /// Opens the screen, asking the user first when the portal does
+        /// (`prompt`). Returns the feed and the screen's size.
+        pub(crate) fn open(prompt: CapturePrompt) -> Result<(ScreenFeed, u32, u32), PcCaptureError> {
+            if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+                if std::env::var_os("DISPLAY").is_none() || x11_api().is_none() {
+                    return Err(PcCaptureError::Unsupported);
+                }
+                let (width, height) = primary_screen_dimensions();
+                return Ok((ScreenFeed::X11, width, height));
+            }
+            if !is_wayland_screencast_available() {
+                return Err(PcCaptureError::Unsupported);
+            }
+            if let Some(caster) = WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner()).as_mut()
+                && caster.alive()
+            {
+                return Ok((ScreenFeed::Wayland, caster.src_w, caster.src_h));
+            }
+            // Not under the lock: the portal may wait for the user.
+            let dims = |w: u32, h: u32| target_dimensions(w, h, RECORD_MAX_EDGE);
+            let caster = WaylandScreenCaster::open(2, Some(prompt), dims)?;
+            let (width, height) = (caster.src_w, caster.src_h);
+            let mut guard = WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner());
+            // A phone may have started seeing the screen meanwhile: its screencast stays.
+            if guard.as_mut().is_none_or(|c| !c.alive()) {
+                *guard = Some(caster);
+            }
+            Ok((ScreenFeed::Wayland, width, height))
+        }
+
+        /// The newest picture of the screen, at `width` x `height`.
+        pub(crate) fn frame(&self, width: u32, height: u32, bgra: &mut Vec<u8>) -> FeedFrame {
+            match self {
+                ScreenFeed::X11 => {
+                    if capture_screen(None, width, height, bgra).is_some() {
+                        FeedFrame::Got
+                    } else {
+                        FeedFrame::NotYet
+                    }
+                }
+                ScreenFeed::Wayland => {
+                    let (slot, src_w, src_h) = {
+                        let mut guard = WAYLAND_CASTER.lock().unwrap_or_else(|e| e.into_inner());
+                        match guard.as_mut() {
+                            Some(caster) if caster.alive() => {
+                                (Arc::clone(&caster.latest_frame), caster.dst_w, caster.dst_h)
+                            }
+                            _ => return FeedFrame::Gone,
+                        }
+                    };
+                    let latest = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    let Some(picture) = latest.as_ref() else { return FeedFrame::NotYet };
+                    if scale_bgra(picture, src_w, src_h, width, height, bgra) {
+                        FeedFrame::Got
+                    } else {
+                        FeedFrame::NotYet
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scales a `src_w` x `src_h` BGRA picture to `dst_w` x `dst_h` (nearest
+    /// pixel) into `dst`. False when `src` is shorter than its size says.
+    pub(crate) fn scale_bgra(
+        src: &[u8],
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+        dst: &mut Vec<u8>,
+    ) -> bool {
+        let (sw, sh, dw, dh) = (src_w as usize, src_h as usize, dst_w as usize, dst_h as usize);
+        if sw == 0 || sh == 0 || dw == 0 || dh == 0 || src.len() < sw * sh * 4 {
+            return false;
+        }
+        if (sw, sh) == (dw, dh) {
+            dst.clear();
+            dst.extend_from_slice(&src[..sw * sh * 4]);
+            return true;
+        }
+        dst.resize(dw * dh * 4, 0);
+        for (y, row) in dst.chunks_exact_mut(dw * 4).enumerate() {
+            let sy = y * sh / dh;
+            let src_row = &src[sy * sw * 4..(sy + 1) * sw * 4];
+            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                let sx = x * sw / dw;
+                px.copy_from_slice(&src_row[sx * 4..sx * 4 + 4]);
+            }
+        }
+        true
     }
 
     fn capture_screen(
@@ -1877,13 +2162,14 @@ mod imp {
             }
         }
 
-        // Only when no newer session took over: the screencast is shared.
-        if ACTIVE
+        // Only when no newer session took over and nothing records the screen:
+        // the screencast is shared.
+        let newest = ACTIVE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .is_none_or(|s| Arc::ptr_eq(&s.stop, &stop))
-        {
+            .is_none_or(|s| Arc::ptr_eq(&s.stop, &stop));
+        if newest && !crate::pc_capture::is_recording() {
             stop_wayland_screencast();
         }
         tracing::info!(%peer, "stopped sharing this PC's screen");
@@ -1984,6 +2270,21 @@ mod imp {
         }
 
         use super::*;
+
+        #[test]
+        fn recordings_take_the_screen_at_any_size() {
+            // One row: red, then blue.
+            let src = [0, 0, 255, 255, 255, 0, 0, 255];
+            let mut dst = Vec::new();
+            assert!(scale_bgra(&src, 2, 1, 4, 2, &mut dst));
+            assert_eq!(dst.len(), 4 * 2 * 4);
+            assert_eq!(dst[..8], [0, 0, 255, 255, 0, 0, 255, 255], "red, twice");
+            assert_eq!(dst[24..], [255, 0, 0, 255, 255, 0, 0, 255], "blue, twice, a row down");
+            assert!(scale_bgra(&src, 2, 1, 2, 1, &mut dst));
+            assert_eq!(dst, src);
+            assert!(!scale_bgra(&src, 3, 1, 2, 1, &mut dst), "too short for its size");
+            assert!(!scale_bgra(&src, 2, 1, 0, 1, &mut dst));
+        }
 
         #[test]
         fn wayland_capture_reads_the_stream_through_the_portal_connection() {

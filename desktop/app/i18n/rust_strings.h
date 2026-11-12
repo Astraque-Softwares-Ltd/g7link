@@ -399,6 +399,15 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Obs", "OBS isn't reachable on port %1. Turn on its WebSocket server."), // desktop/app/src/obs.rs
     QT_TRANSLATE_NOOP("Obs", "OBS: %1"), // desktop/app/src/obs.rs
     QT_TRANSLATE_NOOP("Obs", "The service on that port isn't OBS."), // desktop/app/src/obs.rs
+    QT_TRANSLATE_NOOP("PcCapture", "%1 is recording this screen"), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "%1 took a screenshot"), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "It's on this PC's clipboard too."), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "Open"), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "Screen recording saved in Videos"), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "Show in folder"), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "Stop"), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "With its sound. Stop it here or on the phone."), // desktop/app/src/pc_capture.rs
+    QT_TRANSLATE_NOOP("PcCapture", "Your phone"), // desktop/app/src/pc_capture.rs
     QT_TRANSLATE_NOOP("PcMirror", "Can't find the player's window. Play the video on this PC again, then turn on Play on phone."), // desktop/app/src/pc_mirror.rs
     QT_TRANSLATE_NOOP("PhoneMic", "Tap Start on %1 to use its microphone."), // desktop/app/src/phone_mic.rs
     QT_TRANSLATE_NOOP("PhoneMic", "The microphone is turned off for this PC on %1."), // desktop/app/src/phone_mic.rs

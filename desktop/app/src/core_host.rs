@@ -172,6 +172,11 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     if pc_mirror_enabled && crate::pc_mirror::is_capture_available() {
         caps.push(g7link_core::MIRROR_CAPTURE.into());
     }
+    // Offered whenever the screen can be captured, so phones can offer it; the
+    // phone's `pc_mirror` toggle decides each time.
+    if crate::pc_mirror::is_capture_available() {
+        caps.push(g7link_core::pc_capture::CAP.into());
+    }
     let input_available = crate::sys::input::is_available();
     if remote_input_enabled && input_available {
         caps.push(g7link_core::MIRROR_INPUT.into());
@@ -351,6 +356,7 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
                 crate::messages::on_event(&event);
                 crate::mirror::on_event(&event);
                 crate::pc_mirror::on_event(&event);
+                crate::pc_capture::on_event(&event);
                 crate::remote::on_event(&event);
                 crate::transfers::on_event(&event);
                 crate::send_to::on_event(&event);

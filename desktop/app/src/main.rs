@@ -37,6 +37,7 @@ mod notification_store;
 mod notifications;
 mod obs;
 mod pc_audio_stream;
+mod pc_capture;
 mod pc_mirror;
 mod pc_notifications;
 mod pc_storage;
@@ -144,6 +145,26 @@ impl Platform for DesktopPlatform {
     }
     fn mirror_input(&self, peer: &g7link_core::DeviceId, session: u32, input: MirrorInput) {
         pc_mirror::handle_input(peer, session, input);
+    }
+    fn pc_capture_shot(
+        &self,
+        peer: &g7link_core::DeviceId,
+        prompt: g7link_core::CapturePrompt,
+    ) -> Result<PathBuf, g7link_core::PcCaptureError> {
+        pc_capture::shot(*peer, prompt)
+    }
+    fn pc_capture_record_start(
+        &self,
+        peer: &g7link_core::DeviceId,
+        prompt: g7link_core::CapturePrompt,
+    ) -> Result<(), g7link_core::PcCaptureError> {
+        pc_capture::record_start(*peer, prompt)
+    }
+    fn pc_capture_record_stop(
+        &self,
+        peer: &g7link_core::DeviceId,
+    ) -> Result<PathBuf, g7link_core::PcCaptureError> {
+        pc_capture::record_stop(*peer)
     }
     fn mirror_sink(
         &self,
@@ -662,6 +683,7 @@ fn main() -> ExitCode {
     drop(engine);
     mirror::stop_decoders();
     pc_audio_stream::set_enabled(false);
+    pc_capture::shutdown();
     pc_mirror::stop_all();
     local_api::stop();
     sys::ble_beacon::stop();

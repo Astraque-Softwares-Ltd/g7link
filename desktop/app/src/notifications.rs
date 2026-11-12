@@ -696,6 +696,14 @@ pub fn on_toast(event: ToastEvent) {
         {
             return;
         }
+        // A phone's screenshot or recording of this screen: Stop ends a recording.
+        ToastEvent::Action { device, action, .. } if device == crate::pc_capture::TOAST_GROUP => {
+            if action == crate::pc_capture::ACTION_STOP {
+                crate::pc_capture::stop_from_pc();
+            }
+            return;
+        }
+        ToastEvent::Dismissed { device, .. } if device == crate::pc_capture::TOAST_GROUP => return,
         ToastEvent::Action { device, action, .. } if device == crate::clipboard::TOAST_GROUP => {
             if action == crate::clipboard::ACTION_CLIP_SUGGESTION {
                 crate::clipboard::run_last_suggestion();
