@@ -1239,11 +1239,9 @@ impl FolderStorage {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "trashed".into());
             // Never over an earlier trashed file of the same name.
-            let dest = crate::transfer::unique_path(trash_dir, &name);
-            if std::fs::rename(&target, &dest).is_err() {
-                std::fs::copy(&target, &dest).map_err(|e| StorageError::Failed(e.to_string()))?;
-                std::fs::remove_file(&target).map_err(|e| StorageError::Failed(e.to_string()))?;
-            }
+            let failed = |e: std::io::Error| StorageError::Failed(e.to_string());
+            let (dest, claimed) = crate::transfer::claim_unique_file(trash_dir, &name).map_err(failed)?;
+            crate::transfer::move_into_claimed(&target, &dest, claimed).map_err(failed)?;
             return Ok(());
         }
         if !confirmed {

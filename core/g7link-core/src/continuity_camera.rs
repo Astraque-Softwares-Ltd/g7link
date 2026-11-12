@@ -343,19 +343,10 @@ async fn take_result(
     // Safe to save on any filesystem, removable drives included.
     let safe_name = crate::transfer::storable_name(&crate::transfer::safe_file_name(raw_name));
 
-    let saved_path = match tokio::fs::create_dir_all(&shared.downloads_dir).await {
-        Ok(()) => {
-            let dest = crate::transfer::unique_path(&shared.downloads_dir, &safe_name);
-            match tokio::fs::write(&dest, &data).await {
-                Ok(()) => Some(dest),
-                Err(e) => {
-                    tracing::warn!(error = %e, "can't save continuity camera capture");
-                    None
-                }
-            }
-        }
+    let saved_path = match save_capture(&shared.downloads_dir, &safe_name, &data).await {
+        Ok(dest) => Some(dest),
         Err(e) => {
-            tracing::warn!(error = %e, "can't create downloads dir for continuity camera capture");
+            tracing::warn!(error = %e, "can't save continuity camera capture");
             None
         }
     };
@@ -388,6 +379,25 @@ async fn take_result(
     });
 
     Ok(())
+}
+
+/// Saves a capture in `dir` under a free name, never over another file or
+/// through a symlink.
+async fn save_capture(dir: &std::path::Path, name: &str, data: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    use tokio::io::AsyncWriteExt;
+    tokio::fs::create_dir_all(dir).await?;
+    let (dest, claimed) = crate::transfer::claim_unique_file(dir, name)?;
+    let mut file = tokio::fs::File::from_std(claimed);
+    let written = async {
+        file.write_all(data).await?;
+        file.flush().await
+    }
+    .await;
+    if let Err(e) = written {
+        let _ = tokio::fs::remove_file(&dest).await;
+        return Err(e);
+    }
+    Ok(dest)
 }
 
 #[cfg(test)]

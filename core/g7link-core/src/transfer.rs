@@ -264,20 +264,58 @@ pub fn safe_file_name(name: &str) -> String {
     if is_valid_file_name(&clean) { clean } else { "file".into() }
 }
 
-/// `dir/name`, or `dir/name (2).ext` and so on if that's taken.
-pub(crate) fn unique_path(dir: &Path, name: &str) -> PathBuf {
-    let first = dir.join(name);
-    if !first.exists() {
-        return first;
-    }
+/// How far `name (2).ext`, `name (3).ext`… go before a random number.
+const MAX_NUMBERED: u32 = 10_000;
+
+/// Takes the first free one of `dir/name`, `dir/name (2).ext` and so on with
+/// `claim`, which fails with `AlreadyExists` when the name is taken.
+fn claim_free_name<T>(
+    dir: &Path,
+    name: &str,
+    mut claim: impl FnMut(&Path) -> std::io::Result<T>,
+) -> std::io::Result<(PathBuf, T)> {
     let (stem, ext) = match name.rfind('.') {
         Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
         _ => (name, ""),
     };
-    (2..)
-        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
-        .find(|p| !p.exists())
-        .unwrap_or_else(|| dir.join(format!("{stem} ({}){ext}", new_id())))
+    let numbered = (2..MAX_NUMBERED).map(|n| dir.join(format!("{stem} ({n}){ext}")));
+    let random = std::iter::repeat_with(|| dir.join(format!("{stem} ({}){ext}", new_id()))).take(4);
+    for path in std::iter::once(dir.join(name)).chain(numbered).chain(random) {
+        match claim(&path) {
+            Ok(claimed) => return Ok((path, claimed)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free name"))
+}
+
+/// A free name for a received file, `dir/name` or `dir/name (2).ext` and so
+/// on, created empty here: another save can't take it meanwhile, and a file
+/// or symlink already there is never written through.
+pub(crate) fn claim_unique_file(dir: &Path, name: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    claim_free_name(dir, name, |path| std::fs::OpenOptions::new().write(true).create_new(true).open(path))
+}
+
+/// The same for a received folder.
+pub(crate) fn claim_unique_dir(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    claim_free_name(dir, name, |path| std::fs::DirBuilder::new().create(path)).map(|(path, ())| path)
+}
+
+/// Moves `from` onto `to`, the empty file `claimed` for it: renamed when
+/// they're on the same volume, which replaces only that file, or copied into
+/// it otherwise. `to` is removed again if neither works.
+pub(crate) fn move_into_claimed(from: &Path, to: &Path, mut claimed: std::fs::File) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    let copied = std::fs::File::open(from).and_then(|mut source| std::io::copy(&mut source, &mut claimed));
+    drop(claimed);
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(to);
+        return Err(e);
+    }
+    std::fs::remove_file(from)
 }
 
 pub(crate) fn new_id() -> String {
@@ -2112,8 +2150,7 @@ fn save_files(target: &Path, entries: &[FileEntry], parts: Vec<PathBuf>) -> std:
                     let mut at = match folders.get(&top) {
                         Some(at) => at.clone(),
                         None => {
-                            let at = unique_path(target, &top);
-                            std::fs::create_dir(&at)?;
+                            let at = claim_unique_dir(target, &top)?;
                             folders.insert(top, at.clone());
                             saved.push(at.clone());
                             at
@@ -2124,8 +2161,8 @@ fn save_files(target: &Path, entries: &[FileEntry], parts: Vec<PathBuf>) -> std:
                     at
                 }
             };
-            let to = unique_path(&at, &storable_name(&entry.name));
-            move_file(&part, &to)?;
+            let (to, claimed) = claim_unique_file(&at, &storable_name(&entry.name))?;
+            move_into_claimed(&part, &to, claimed)?;
             moved.push((to.clone(), part));
             if entry.folder.is_none() {
                 saved.push(to);
@@ -2364,14 +2401,33 @@ mod tests {
     #[test]
     fn taken_names_get_a_number() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(unique_path(dir.path(), "a.txt"), dir.path().join("a.txt"));
-        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let claim = |name: &str| claim_unique_file(dir.path(), name).unwrap().0;
+        assert_eq!(claim("a.txt"), dir.path().join("a.txt"));
         std::fs::write(dir.path().join("a (2).txt"), "x").unwrap();
-        assert_eq!(unique_path(dir.path(), "a.txt"), dir.path().join("a (3).txt"));
+        assert_eq!(claim("a.txt"), dir.path().join("a (3).txt"));
         std::fs::write(dir.path().join("README"), "x").unwrap();
-        assert_eq!(unique_path(dir.path(), "README"), dir.path().join("README (2)"));
+        assert_eq!(claim("README"), dir.path().join("README (2)"));
         std::fs::write(dir.path().join(".env"), "x").unwrap();
-        assert_eq!(unique_path(dir.path(), ".env"), dir.path().join(".env (2)"));
+        assert_eq!(claim(".env"), dir.path().join(".env (2)"));
+        std::fs::create_dir(dir.path().join("Trip")).unwrap();
+        assert_eq!(claim_unique_dir(dir.path(), "Trip").unwrap(), dir.path().join("Trip (2)"));
+        assert!(dir.path().join("Trip (2)").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_received_file_is_never_saved_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join("a.txt")).unwrap();
+        let (to, claimed) = claim_unique_file(dir.path(), "a.txt").unwrap();
+        assert_eq!(to, dir.path().join("a (2).txt"));
+        let part = dir.path().join("a.part");
+        std::fs::write(&part, "hello").unwrap();
+        move_into_claimed(&part, &to, claimed).unwrap();
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "hello");
+        assert!(!part.exists());
+        assert!(!elsewhere.exists());
     }
 
     #[test]

@@ -55,8 +55,9 @@ use crate::{
     node::Shared,
     timeline::NewTimelineEntry,
     transfer::{
-        Direction, FileSource, OutgoingFile, Transfer, TransferFailure, TransferState, outgoing_target_path,
-        safe_file_name, storable_name, transfer_timeline_title, unique_path,
+        Direction, FileSource, OutgoingFile, Transfer, TransferFailure, TransferState, claim_unique_dir,
+        claim_unique_file, move_into_claimed, outgoing_target_path, safe_file_name, storable_name,
+        transfer_timeline_title,
     },
 };
 
@@ -1357,8 +1358,7 @@ async fn finalize_uploaded_file(
                 let mut at = match guard.folder_roots.get(&top) {
                     Some(existing) => existing.clone(),
                     None => {
-                        let root = unique_path(&downloads_dir, &top);
-                        fs::create_dir_all(&root)?;
+                        let root = claim_unique_dir(&downloads_dir, &top)?;
                         guard.folder_roots.insert(top, root.clone());
                         guard.saved_items.push(root.clone());
                         root
@@ -1370,11 +1370,8 @@ async fn finalize_uploaded_file(
             }
         };
 
-        let dest = unique_path(&target_dir, &storable_name(&safe_name));
-        if fs::rename(&part_path, &dest).is_err() {
-            fs::copy(&part_path, &dest)?;
-            let _ = fs::remove_file(&part_path);
-        }
+        let (dest, claimed) = claim_unique_file(&target_dir, &storable_name(&safe_name))?;
+        move_into_claimed(&part_path, &dest, claimed)?;
         if folder.is_none() {
             guard.saved_items.push(dest);
         }
