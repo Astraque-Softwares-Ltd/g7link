@@ -2289,7 +2289,7 @@ impl Platform for TerminalPlatform {
         let sender = MEDIA_COMMANDS.get().ok_or(MediaError::NotFound)?;
         sender.send((action, position)).map_err(|_| MediaError::NotFound)
     }
-    fn open_link(&self, _from: &DeviceId, url: &str) -> Result<(), String> {
+    fn open_link(&self, _from: &DeviceId, url: &str, _user_shared: bool) -> Result<(), String> {
         println!("A paired device sent a link: {url}");
         Ok(())
     }

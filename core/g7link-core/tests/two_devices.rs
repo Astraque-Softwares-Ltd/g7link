@@ -36,6 +36,8 @@ struct RecordingPlatform {
     media: Mutex<Vec<(String, MediaAction, Option<u64>)>>,
     power: Mutex<Vec<PowerAction>>,
     links: Mutex<Vec<String>>,
+    /// Whether each link in `links` came as shared from the sender's share sheet.
+    links_shared: Mutex<Vec<bool>>,
     calls: Mutex<Vec<(String, g7link_core::CallCommand)>>,
     dialed: Mutex<Vec<String>>,
     texts: Mutex<Vec<(Vec<String>, String)>>,
@@ -121,8 +123,9 @@ impl Platform for RecordingPlatform {
         self.power.lock().unwrap().push(action);
         Ok(())
     }
-    fn open_link(&self, _from: &g7link_core::DeviceId, url: &str) -> Result<(), String> {
+    fn open_link(&self, _from: &g7link_core::DeviceId, url: &str, user_shared: bool) -> Result<(), String> {
         self.links.lock().unwrap().push(url.to_owned());
+        self.links_shared.lock().unwrap().push(user_shared);
         Ok(())
     }
     fn task_notify(
@@ -2242,6 +2245,25 @@ async fn phones_lock_pcs_and_links_open_on_either_side() {
     let script = pc.node.open_link(phone_id, "javascript:alert(1)".into()).await;
     assert!(script.is_err());
     assert_eq!(phone.platform.links.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_links_shared_from_the_share_sheet_skip_the_question() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &["pc.power"]).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let pc_id = pc.node.device_id();
+
+    with_timeout("asked", phone.node.open_link(pc_id, "https://example.com/ask".into())).await.unwrap();
+    with_timeout("shared", phone.node.open_shared_link(pc_id, "https://example.com/shared".into()))
+        .await
+        .unwrap();
+    assert_eq!(*pc.platform.links.lock().unwrap(), ["https://example.com/ask", "https://example.com/shared"]);
+    // The PC hears which one the user shared; any other link is for it to ask about.
+    assert_eq!(*pc.platform.links_shared.lock().unwrap(), [false, true]);
+
+    phone.node.shutdown().await;
+    pc.node.shutdown().await;
 }
 
 /// Deterministic, incompressible-looking test data.

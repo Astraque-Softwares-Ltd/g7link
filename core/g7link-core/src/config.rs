@@ -230,7 +230,14 @@ pub trait Platform: Send + Sync + 'static {
     }
 
     /// Open a web link a paired device sent (http or https; checked).
-    fn open_link(&self, _from: &g7link_protocol::DeviceId, _url: &str) -> Result<(), String> {
+    /// `user_shared` is the sender's word that its user shared the link
+    /// from the share sheet; otherwise the user here should be asked first.
+    fn open_link(
+        &self,
+        _from: &g7link_protocol::DeviceId,
+        _url: &str,
+        _user_shared: bool,
+    ) -> Result<(), String> {
         Err("this device doesn't open links".into())
     }
 

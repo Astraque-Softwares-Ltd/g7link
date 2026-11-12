@@ -2348,8 +2348,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    /** Opens a link, video with timestamp, or map location on a PC; returns what to tell the user. */
-    suspend fun openLinkOnPc(id: String, url: String): String {
+    /**
+     * Opens a link, video with timestamp, or map location on a PC; returns what to tell the user.
+     * The PC asks its user before opening it, unless [userShared]: pass true only when the user
+     * shared this link from the system share sheet.
+     */
+    suspend fun openLinkOnPc(id: String, url: String, userShared: Boolean = false): String {
         startJob?.join()
         val node = node ?: return context.getString(R.string.clip_no_pc)
         val name = _state.value.nameOf(id).orEmpty()
@@ -2366,7 +2370,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             handoff?.url ?: url
         }
         return try {
-            node.openLink(id, finalUrl)
+            if (userShared) node.openSharedLink(id, finalUrl) else node.openLink(id, finalUrl)
             if (wasOnline) {
                 context.getString(R.string.link_opened_on, name)
             } else {

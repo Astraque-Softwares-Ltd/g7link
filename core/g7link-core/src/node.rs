@@ -3209,9 +3209,17 @@ impl Node {
         session.try_send_realtime(env)
     }
 
-    /// Opens a web link on a paired device.
+    /// Opens a web link on a paired device. The other device asks its user
+    /// before opening it.
     pub async fn open_link(&self, peer: DeviceId, url: String) -> Result<()> {
-        crate::actions::open_link(&self.shared, peer, url).await
+        crate::actions::open_link(&self.shared, peer, url, false).await
+    }
+
+    /// Opens a link this device's user shared from the system share sheet
+    /// themselves on a paired device, which opens it without asking. Only
+    /// the share-sheet flow may call this.
+    pub async fn open_shared_link(&self, peer: DeviceId, url: String) -> Result<()> {
+        crate::actions::open_link(&self.shared, peer, url, true).await
     }
 
     /// Sends an ongoing or completed task notification (`task.notify`) to a
@@ -5140,8 +5148,9 @@ async fn deliver_queued_rpc(
             }
             _ => Err(Error::Internal("Queued clipboard image payload is missing".into())),
         },
-        crate::QueuePayload::Link { url, title } => {
-            crate::actions::open_link_on_session(shared, session, url.clone(), title.clone()).await
+        crate::QueuePayload::Link { url, title, user_shared } => {
+            crate::actions::open_link_on_session(shared, session, url.clone(), title.clone(), *user_shared)
+                .await
         }
         crate::QueuePayload::TaskNotify { task } => {
             crate::actions::task_notify_on_session(shared, session, task).await

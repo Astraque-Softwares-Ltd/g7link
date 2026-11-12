@@ -345,6 +345,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Hotspot", "%1's hotspot didn't show up. Check that it's on, then pick %2 in the Wi-Fi menu."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Connected to %1's hotspot."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Couldn't join %1's hotspot. Pick %2 in the Wi-Fi menu."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Links", "%1 sent a link"), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "%1: tap the notification on your phone to continue watching."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "%1: tap the notification on your phone to open in Maps."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "Copy a link or address first"), // desktop/app/src/links.rs
@@ -352,11 +353,13 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Links", "Copy a web link, video URL, or street address, then choose this again to open it on your phone."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "Couldn't send it"), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "No phone to open it on"), // desktop/app/src/links.rs
+    QT_TRANSLATE_NOOP("Links", "Open"), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "Pair a phone first, or enable opening links on your phone."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "Sent to %1"), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "Tap the notification on your phone to open it."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "That's not a link or address"), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "Update G7 Link on %1."), // desktop/app/src/links.rs
+    QT_TRANSLATE_NOOP("Links", "Your phone"), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Media", "Media is turned off for that device."), // desktop/app/src/media.rs
     QT_TRANSLATE_NOOP("Media", "That player can't do that."), // desktop/app/src/media.rs
     QT_TRANSLATE_NOOP("Media", "That player isn't playing anymore."), // desktop/app/src/media.rs

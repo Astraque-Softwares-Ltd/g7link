@@ -3031,7 +3031,7 @@ impl core::Platform for PlatformAdapter {
     ) -> Result<(), core::MediaError> {
         Ok(self.0.media_command(player.to_owned(), action.into(), position)?)
     }
-    fn open_link(&self, from: &DeviceId, url: &str) -> Result<(), String> {
+    fn open_link(&self, from: &DeviceId, url: &str, _user_shared: bool) -> Result<(), String> {
         if self.0.open_link(from.to_string(), url.to_owned()) { Ok(()) } else { Err("not shown".into()) }
     }
     fn watch_offered(
@@ -4250,11 +4250,20 @@ impl G7LinkNode {
         self.run(async move { Ok(node.wake(id).await?) }).await
     }
 
-    /// Opens a web link on a paired PC.
+    /// Opens a web link on a paired PC, which asks its user first.
     pub async fn open_link(&self, id: String, url: String) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
         self.run(async move { Ok(node.open_link(id, url).await?) }).await
+    }
+
+    /// Opens a link the user shared from the system share sheet on a paired
+    /// PC, which opens it without asking. Call it only from the share-sheet
+    /// flow, never for links the app picked by itself.
+    pub async fn open_shared_link(&self, id: String, url: String) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.open_shared_link(id, url).await?) }).await
     }
 
     // ---- Remote input (touchpad, keyboard, presentation) ----

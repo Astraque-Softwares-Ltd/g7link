@@ -27,7 +27,7 @@ requests answered with `ok` or `error`; `pc.wake_info` is a one-way event (no
 
 ```
 t = "pc.power"           id = n   b = { action: "lock" | "sleep" }
-t = "link.open"          id = n   b = { url: text, title?: text }
+t = "link.open"          id = n   b = { url: text, title?: text, user_shared?: bool }
 t = "task.notify"        id = n   b = { id: text, title: text, active: bool, elapsed_ms: uint, exit_code?: int }
 t = "wake.relay"         id = n   b = { mac: bytes(6), broadcast?: text }
 t = "elevated.usb"       id = n   b = { apk: text, token: text, grants?: [text] }
@@ -63,6 +63,20 @@ Map handoff uses either `geo:<lat>,<lon>?q=...` URIs or web map URLs (Google
 Maps, Apple Maps, Bing Maps, OpenStreetMap). Video handoff preserves or
 attaches the playback timestamp in the URL (`?t=<seconds>` / `&t=<seconds>s` on
 YouTube, `#t=<seconds>s` on Vimeo, `?t=<seconds>` on Twitch).
+
+`user_shared` (default `false`, left out when `false`) says the sender's
+user shared this link from the system share sheet themselves. Senders
+**MUST** set it only for that flow, never for links the app picked by itself
+(clipboard suggestions, handoff, queued items it made up). A sender that
+doesn't know the field leaves it out, so its links are asked about.
+
+A PC asks before opening a link that isn't `user_shared`: it shows a
+notification "<phone> sent a link" with the link's host on the first line
+(any `user@` before the host is left out) and the link below, and opens it
+only when the user clicks **Open**. Clicking the notification itself or
+dismissing it drops the link. At most 5 links per phone wait like this;
+more are dropped with `INTERNAL` and logged, and a link nobody answered
+stops waiting after 15 minutes. A `user_shared` link opens right away.
 
 A PC opens `http`/`https` links in its default browser and converts `geo:`
 URIs to an HTTPS map search URL. When the Android app is in the foreground, it

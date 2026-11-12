@@ -116,8 +116,8 @@ impl Platform for DesktopPlatform {
     fn power(&self, action: PowerAction) -> Result<(), String> {
         links::power(action)
     }
-    fn open_link(&self, _from: &g7link_core::DeviceId, url: &str) -> Result<(), String> {
-        links::open_here(url)
+    fn open_link(&self, from: &g7link_core::DeviceId, url: &str, user_shared: bool) -> Result<(), String> {
+        if user_shared { links::open_here(url) } else { links::ask_to_open(*from, url) }
     }
     fn media_command(
         &self,

@@ -200,6 +200,9 @@ pub enum QueuePayload {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The user shared it from the share sheet: the receiver needn't ask.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        user_shared: bool,
     },
     HandoffDocument {
         file: QueuedFileSpec,
@@ -326,7 +329,7 @@ impl QueuePayload {
                 };
                 ("Copied image".into(), detail)
             }
-            QueuePayload::Link { url, title } => {
+            QueuePayload::Link { url, title, .. } => {
                 let display_title = title
                     .as_deref()
                     .map(str::trim)
@@ -3676,7 +3679,11 @@ mod tests {
                 .enqueue_send_item(
                     "q-mig-1",
                     &peer,
-                    &QueuePayload::Link { url: "https://g7.astraque.io".into(), title: None },
+                    &QueuePayload::Link {
+                        url: "https://g7.astraque.io".into(),
+                        title: None,
+                        user_shared: false,
+                    },
                     None,
                     paired_at * 1000,
                 )
@@ -3944,7 +3951,11 @@ mod tests {
             .enqueue_send_item(
                 "link-a1",
                 &peer_a,
-                &QueuePayload::Link { url: "https://g7.astraque.io/docs".into(), title: None },
+                &QueuePayload::Link {
+                    url: "https://g7.astraque.io/docs".into(),
+                    title: None,
+                    user_shared: false,
+                },
                 None,
                 now_ms + 20,
             )
@@ -4099,7 +4110,11 @@ mod tests {
                 .enqueue_send_item(
                     &format!("item-{i}"),
                     &peer_b,
-                    &QueuePayload::Link { url: format!("https://g7.astraque.io/{i}"), title: None },
+                    &QueuePayload::Link {
+                        url: format!("https://g7.astraque.io/{i}"),
+                        title: None,
+                        user_shared: false,
+                    },
                     None,
                     now_ms + i as i64,
                 )
@@ -4108,7 +4123,11 @@ mod tests {
         let over_cap = store.enqueue_send_item(
             "item-200",
             &peer_b,
-            &QueuePayload::Link { url: "https://g7.astraque.io/overflow".into(), title: None },
+            &QueuePayload::Link {
+                url: "https://g7.astraque.io/overflow".into(),
+                title: None,
+                user_shared: false,
+            },
             None,
             now_ms + 999,
         );
@@ -4261,7 +4280,7 @@ mod tests {
         let peer = DeviceId([0x56; 32]);
         store.upsert_peer(&peer, &info("Pixel 9"), 100).unwrap();
         let id = "q-guard";
-        let link = QueuePayload::Link { url: "https://example.com".into(), title: None };
+        let link = QueuePayload::Link { url: "https://example.com".into(), title: None, user_shared: false };
         store.enqueue_send_item(id, &peer, &link, None, 1_000).unwrap();
         store.mark_queue_failed(id, "Denied").unwrap();
         assert!(!store.mark_queue_sending(id).unwrap(), "a failed item stays failed");
@@ -4334,7 +4353,11 @@ mod tests {
             .enqueue_send_item(
                 "off-1",
                 &offline_peer,
-                &QueuePayload::Link { url: "https://g7.astraque.io/off".into(), title: None },
+                &QueuePayload::Link {
+                    url: "https://g7.astraque.io/off".into(),
+                    title: None,
+                    user_shared: false,
+                },
                 None,
                 now_ms,
             )
@@ -4487,7 +4510,7 @@ mod tests {
         let peer = DeviceId([7; 32]);
         store.upsert_peer(&peer, &info("Phone"), 1).unwrap();
         let clip = QueuePayload::Clipboard { text: "x".into(), html: None, rtf: None };
-        let link = QueuePayload::Link { url: "https://example.com".into(), title: None };
+        let link = QueuePayload::Link { url: "https://example.com".into(), title: None, user_shared: false };
         store.enqueue_send_item("c", &peer, &clip, None, 1000).unwrap();
         store.enqueue_send_item("l", &peer, &link, None, 1000).unwrap();
         assert_eq!(store.remove_queue_items_of_kinds(&[QueueKind::Clipboard]).unwrap(), 1);

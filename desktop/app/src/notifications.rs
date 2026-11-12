@@ -761,6 +761,15 @@ pub fn on_toast(event: ToastEvent) {
             return;
         }
         ToastEvent::Dismissed { device, .. } if device == crate::pc_capture::TOAST_GROUP => return,
+        // A link a phone sent: only Open opens it.
+        ToastEvent::Action { device, key, action } if device == crate::links::PROMPT_GROUP => {
+            return crate::links::on_prompt(key, Some(action.as_str()));
+        }
+        ToastEvent::Opened { device, key } | ToastEvent::Dismissed { device, key }
+            if device == crate::links::PROMPT_GROUP =>
+        {
+            return crate::links::on_prompt(key, None);
+        }
         ToastEvent::Action { device, action, .. } if device == crate::clipboard::TOAST_GROUP => {
             if action == crate::clipboard::ACTION_CLIP_SUGGESTION {
                 crate::clipboard::run_last_suggestion();

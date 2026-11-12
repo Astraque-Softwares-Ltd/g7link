@@ -229,6 +229,7 @@ pub(crate) async fn open_link_on_session(
     session: &Session,
     url: String,
     title_override: Option<String>,
+    user_shared: bool,
 ) -> Result<()> {
     if !valid_link(&url) {
         return Err(Error::Internal("not a web or map link".into()));
@@ -241,7 +242,8 @@ pub(crate) async fn open_link_on_session(
             .is_some_and(|h| h.kind == crate::handoff::HandoffKind::VideoLink);
         if is_video { shared.players.active_title() } else { None }
     });
-    let env = Envelope::new(types::LINK_OPEN, &LinkOpen { url: url.clone(), title: media_title.clone() })?;
+    let body = LinkOpen { url: url.clone(), title: media_title.clone(), user_shared };
+    let env = Envelope::new(types::LINK_OPEN, &body)?;
     session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect(types::OK)?;
     let (title, detail) = crate::handoff::timeline_link_title_and_detail(&url, media_title.as_deref());
     let _ = shared.record_timeline(crate::timeline::NewTimelineEntry {
@@ -260,7 +262,14 @@ pub(crate) async fn open_link_on_session(
     Ok(())
 }
 
-pub(crate) async fn open_link(shared: &Arc<Shared>, peer: DeviceId, url: String) -> Result<()> {
+/// Sends a link for `peer` to open. `user_shared` says this device's user
+/// shared it from the share sheet, so `peer` may open it without asking.
+pub(crate) async fn open_link(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    url: String,
+    user_shared: bool,
+) -> Result<()> {
     if !valid_link(&url) {
         return Err(Error::Internal("not a web or map link".into()));
     }
@@ -277,7 +286,7 @@ pub(crate) async fn open_link(shared: &Arc<Shared>, peer: DeviceId, url: String)
     if !shared.store.has_active_queue_for_peer(&peer).unwrap_or(false)
         && let Some(session) = shared.session(&peer)
     {
-        match open_link_on_session(shared, &session, url.clone(), media_title.clone()).await {
+        match open_link_on_session(shared, &session, url.clone(), media_title.clone(), user_shared).await {
             Ok(()) => return Ok(()),
             Err(e) if !is_transient_send_error(&e) => return Err(e),
             Err(_) => {}
@@ -285,7 +294,7 @@ pub(crate) async fn open_link(shared: &Arc<Shared>, peer: DeviceId, url: String)
     }
 
     let id = crate::transfer::new_id();
-    let payload = crate::QueuePayload::Link { url, title: media_title };
+    let payload = crate::QueuePayload::Link { url, title: media_title, user_shared };
     shared.store.enqueue_send_item(&id, &peer, &payload, None, crate::now_unix_ms())?;
     shared.emit(crate::NodeEvent::QueueChanged);
     shared.queue_notify.notify_waiters();
@@ -447,16 +456,14 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             }
         }
         types::LINK_OPEN => {
-            let LinkOpen { url, title: sender_title } = env.body()?;
+            let LinkOpen { url, title: sender_title, user_shared } = env.body()?;
             if !valid_link(&url) {
                 Envelope::error(ErrorCode::BadMessage, "not a web link")
             } else {
                 let platform = shared.platform.clone();
                 let url_for_open = url.clone();
-                match tokio::task::spawn_blocking(move || platform.open_link(&peer, &url_for_open))
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
-                {
+                let open = move || platform.open_link(&peer, &url_for_open, user_shared);
+                match tokio::task::spawn_blocking(open).await.unwrap_or_else(|e| Err(e.to_string())) {
                     Ok(()) => {
                         let (title, detail) =
                             crate::handoff::timeline_link_title_and_detail(&url, sender_title.as_deref());

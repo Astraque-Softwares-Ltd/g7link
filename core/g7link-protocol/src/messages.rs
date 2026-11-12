@@ -3005,6 +3005,10 @@ pub struct LinkOpen {
     /// Optional human-readable title (e.g. the active video's title from the sender's media player).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The user shared this link from the sender's share sheet themselves,
+    /// so the receiver may open it without asking. Absent means ask.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user_shared: bool,
 }
 
 /// Never prints the link or title (protocol v0 §11).
@@ -3013,6 +3017,7 @@ impl std::fmt::Debug for LinkOpen {
         f.debug_struct("LinkOpen")
             .field("bytes", &self.url.len())
             .field("has_title", &self.title.is_some())
+            .field("user_shared", &self.user_shared)
             .finish()
     }
 }
@@ -6063,6 +6068,26 @@ mod tests {
         assert_eq!(clamped.chip.as_deref(), Some("Arrivingsoon"));
         assert_eq!(clamped.segments, vec![LiveSegment { length: 100, color: None }]);
         assert!(!clamped.countdown);
+    }
+
+    #[test]
+    fn link_open_says_whether_the_user_shared_it() {
+        #[derive(Serialize)]
+        struct OldLinkOpen {
+            url: String,
+        }
+        let old = Envelope::new(types::LINK_OPEN, &OldLinkOpen { url: "https://a.example".into() }).unwrap();
+        let back: LinkOpen = Envelope::from_cbor(&old.to_cbor()).unwrap().body().unwrap();
+        assert!(!back.user_shared, "an older sender's link asks first");
+
+        let shared = LinkOpen { url: "https://a.example".into(), title: None, user_shared: true };
+        let env = Envelope::new(types::LINK_OPEN, &shared).unwrap();
+        let back: LinkOpen = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back, shared);
+
+        let asked = LinkOpen { user_shared: false, ..shared };
+        let plain = Envelope::new(types::LINK_OPEN, &asked).unwrap();
+        assert_eq!(plain.to_cbor(), old.to_cbor(), "false isn't sent");
     }
 
     #[test]
