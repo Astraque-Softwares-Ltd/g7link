@@ -902,11 +902,20 @@ impl AppState {
         Changes::HISTORY
     }
 
-    /// Drops history older than a day, and beyond the most kept.
+    /// Drops history older than a day, and beyond the most kept, and the
+    /// pictures of notifications neither showing, in history, nor waiting
+    /// for an undo.
     pub fn prune_history(&mut self, now: i64) -> Changes {
         let before = self.history.len();
         self.history.retain(|h| now - h.removed_at < HISTORY_MS);
         self.history.truncate(MAX_HISTORY);
+        let (notifications, history, undo) = (&self.notifications, &self.history, &self.last_dismissed);
+        self.notification_images.retain(|(device, key), _| {
+            let is_it = |n: &NotificationView| n.device == *device && n.notification.key == *key;
+            notifications.iter().any(is_it)
+                || undo.iter().any(is_it)
+                || history.iter().any(|h| h.device == *device && h.notification.key == *key)
+        });
         if self.history.len() == before { Changes::NONE } else { Changes::HISTORY }
     }
 
@@ -1536,6 +1545,27 @@ mod tests {
         s.apply(&NodeEvent::NotificationPosted { device: phone, notification: note("d", 40) });
         s.apply(&NodeEvent::NotificationRemoved { device: phone, key: "d".into() });
         assert!(s.history.is_empty());
+    }
+
+    #[test]
+    fn pictures_go_with_the_history_they_belong_to() {
+        let phone = DeviceId([1; 32]);
+        let mut s = AppState { history_enabled: true, ..AppState::default() };
+        s.apply(&NodeEvent::NotificationsReset { device: phone, items: vec![note("a", 10), note("b", 20)] });
+        for key in ["a", "b"] {
+            s.set_notification_image((phone, key.into()), PathBuf::from(format!("{key}.jpg")));
+        }
+
+        // Showing, or gone into history: kept.
+        s.apply(&NodeEvent::NotificationRemoved { device: phone, key: "a".into() });
+        assert_eq!(s.notification_images.len(), 2);
+
+        // Out of history: its picture goes too.
+        let later = s.history[0].removed_at + HISTORY_MS + 1;
+        s.prune_history(later);
+        assert!(s.history.is_empty());
+        assert_eq!(s.notification_images.get(&(phone, "a".to_owned())), None);
+        assert_eq!(s.notification_images.get(&(phone, "b".to_owned())), Some(&PathBuf::from("b.jpg")));
     }
 
     #[test]
