@@ -2666,6 +2666,17 @@ Item {
                         }
                         SettingRow {
                             width: parent.width
+                            iconPath: Icons.wifi
+                            title: qsTr("Network interface")
+                            Button {
+                                variant: "tonal"
+                                size: "sm"
+                                text: Preferences.networkInterface || qsTr("System default")
+                                onClicked: networkInterfaceSheet.openWithChoices()
+                            }
+                        }
+                        SettingRow {
+                            width: parent.width
                             iconPath: Icons.power
                             title: qsTr("Wake from your phone")
                             description: {
@@ -3120,6 +3131,72 @@ Item {
                         folderSyncSheet.close()
                     }
                 }
+            }
+        }
+    }
+
+    Sheet {
+        id: networkInterfaceSheet
+        property var options: []
+        property bool failed: false
+        cardWidth: 420
+
+        function openWithChoices() {
+            try { options = JSON.parse(AppController.networkInterfaces()) } catch (e) { options = [] }
+            failed = false
+            open()
+        }
+        function choose(name) {
+            if (name === Preferences.networkInterface) {
+                close()
+                return
+            }
+            const result = AppController.selectRelayInterface(name)
+            if (result === "failed") {
+                failed = true
+                return
+            }
+            Preferences.networkInterface = name
+            close()
+            if (result === "applied")
+                relaySheet.open()
+        }
+
+        Column {
+            width: parent.width
+            spacing: 12
+            Txt { width: parent.width; text: qsTr("Network interface"); role: "headline"; wrapMode: Text.WordWrap }
+            Txt {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                role: "body"
+                muted: true
+                text: qsTr("Relays switch right away if G7 Link started with one picked. Local connections switch after a restart.")
+            }
+            Repeater {
+                model: [{ name: "", direct: false }].concat(networkInterfaceSheet.options)
+                delegate: Button {
+                    required property var modelData
+                    width: parent.width
+                    variant: modelData.name === Preferences.networkInterface ? "tonal" : "text"
+                    iconPath: modelData.name === Preferences.networkInterface ? Icons.check : ""
+                    text: modelData.name.length === 0 ? qsTr("System default")
+                        : modelData.direct ? qsTr("%1 · Direct, past any VPN").arg(modelData.name)
+                        : modelData.name
+                    onClicked: networkInterfaceSheet.choose(modelData.name)
+                }
+            }
+            Txt {
+                width: parent.width
+                visible: networkInterfaceSheet.failed
+                wrapMode: Text.WordWrap
+                role: "bodySmall"
+                color: Theme.error
+                text: qsTr("Couldn't use this interface.")
+            }
+            Row {
+                anchors.right: parent.right
+                Button { variant: "text"; text: qsTr("Close"); onClicked: networkInterfaceSheet.close() }
             }
         }
     }

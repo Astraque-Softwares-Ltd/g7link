@@ -204,7 +204,9 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
         std::env::var("G7LINK_ADB_ONLY_SERIAL").is_ok_and(|s| s.trim().starts_with("emulator-"));
     let adb_disabled = !only_emulator && std::env::var_os("G7LINK_NO_ADB").is_some_and(|v| v == "1");
     config.adb_server = (!adb_disabled).then_some(g7link_core::DEFAULT_ADB_ADDR);
-    config.away_mode = crate::settings::Settings::load(&data_dir).away_mode;
+    let settings = crate::settings::Settings::load(&data_dir);
+    config.away_mode = settings.away_mode;
+    config.network_interface = Some(settings.network_interface);
     // This PC's own players, for phones (crate::sys::media_sessions).
     config.capabilities = compute_capabilities(None);
     let initial_caps = config.capabilities.clone();
