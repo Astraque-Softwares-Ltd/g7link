@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.remote
 
+import android.os.SystemClock
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.geometry.Offset
@@ -24,6 +25,7 @@ internal const val TOUCHPAD_REFERENCE_DENSITY = 2.625f
  * touch. [onTouch] follows the finger (null once it lifts), [onDragging] says
  * when the button is held, and [onTap] runs after a click. While
  * [scrollLocked] says so, one finger scrolls like two, in any direction.
+ * [onHaptic] is told what to play for each click, drag and scroll notch sent.
  */
 internal suspend fun PointerInputScope.touchpadGestures(
     pcId: String,
@@ -35,6 +37,7 @@ internal suspend fun PointerInputScope.touchpadGestures(
     onDragging: (Boolean) -> Unit = {},
     onTap: () -> Unit = {},
     scrollLocked: () -> Boolean = { false },
+    onHaptic: (TrackpadHaptic) -> Unit = {},
 ) {
     val tapSlop = viewConfiguration.touchSlop
     // Movement in reference-density pixels, so the same physical swipe moves
@@ -44,12 +47,17 @@ internal suspend fun PointerInputScope.touchpadGestures(
     val doubleTapWindowMs = 260L
     var lastSingleTapTime = 0L
     var fling: Job? = null
+    val detents = ScrollDetents()
+    val scrolled: (ScrollClicks) -> Unit = { clicks ->
+        if (detents.onScroll(clicks.x, clicks.y, SystemClock.uptimeMillis())) onHaptic(TrackpadHaptic.ScrollDetent)
+    }
 
     awaitEachGesture {
         val firstDown = awaitFirstDown(requireUnconsumed = false)
         // A touch catches a gliding scroll, like on a touchscreen.
         fling?.cancel()
         fling = null
+        detents.reset()
         val downTime = System.currentTimeMillis()
         var lastEventTime = firstDown.uptimeMillis
         var maxPointers = 1
@@ -93,7 +101,10 @@ internal suspend fun PointerInputScope.touchpadGestures(
                 val delta = change.positionChange()
                 totalMoved += hypot(delta.x, delta.y)
                 val clicks = twoFinger.onMove(delta.x * toReference, delta.y * toReference, change.uptimeMillis)
-                if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+                if (!clicks.isZero) {
+                    core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+                    scrolled(clicks)
+                }
                 change.consume()
             } else if (pressedCount == 1 && maxPointers == 1) {
                 val change = firstPressed
@@ -106,6 +117,7 @@ internal suspend fun PointerInputScope.touchpadGestures(
                     dragStarted = true
                     onDragging(true)
                     core.remoteButton(pcId, "left", "down", onStatus)
+                    onHaptic(TrackpadHaptic.DragStart)
                 }
 
                 if (dist > 0f) {
@@ -140,7 +152,10 @@ internal suspend fun PointerInputScope.touchpadGestures(
                     avgDy * toReference,
                     firstPressed.uptimeMillis,
                 )
-                if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+                if (!clicks.isZero) {
+                    core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+                    scrolled(clicks)
+                }
             }
         }
 
@@ -153,20 +168,22 @@ internal suspend fun PointerInputScope.touchpadGestures(
         } else if (scrolling && maxPointers == 1 && twoFinger.isScroll) {
             lastSingleTapTime = 0L
             fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
-                ?.let { flingScope.launchScrollFling(core, pcId, it) }
+                ?.let { flingScope.launchScrollFling(core, pcId, it, onStep = scrolled) }
         } else if (maxPointers >= 2) {
             lastSingleTapTime = 0L
             if (twoFinger.isScroll) {
                 fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
-                    ?.let { flingScope.launchScrollFling(core, pcId, it) }
+                    ?.let { flingScope.launchScrollFling(core, pcId, it, onStep = scrolled) }
             } else if (maxPointers == 2 && totalMoved <= tapSlop * 1.5f &&
                 twoFinger.onUp(elapsed, tapTimeoutMs) == TwoFingerRelease.RightClick
             ) {
                 core.remoteButton(pcId, "right", "click", onStatus)
+                onHaptic(TrackpadHaptic.Tap)
             }
         } else if (elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f) {
             lastSingleTapTime = System.currentTimeMillis()
             core.remoteButton(pcId, "left", "click", onStatus)
+            onHaptic(TrackpadHaptic.Tap)
             onTap()
         } else {
             lastSingleTapTime = 0L
@@ -174,13 +191,24 @@ internal suspend fun PointerInputScope.touchpadGestures(
     }
 }
 
-/** Glides a flicked scroll on after the fingers lift, one display frame at a time. */
-internal fun CoroutineScope.launchScrollFling(core: Core, pcId: String, fling: ScrollFling): Job = launch {
+/**
+ * Glides a flicked scroll on after the fingers lift, one display frame at a
+ * time; [onStep] hears each step sent.
+ */
+internal fun CoroutineScope.launchScrollFling(
+    core: Core,
+    pcId: String,
+    fling: ScrollFling,
+    onStep: (ScrollClicks) -> Unit = {},
+): Job = launch {
     var last = withFrameNanos { it }
     while (true) {
         val now = withFrameNanos { it }
         val clicks = fling.step((now - last) / 1_000_000f) ?: break
         last = now
-        if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+        if (!clicks.isZero) {
+            core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+            onStep(clicks)
+        }
     }
 }
