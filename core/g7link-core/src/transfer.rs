@@ -253,11 +253,22 @@ pub enum FileSource {
     File(std::fs::File),
 }
 
+/// Characters that reorder or hide how a name reads, as in `invoice\u{202E}fdp.exe`
+/// shown as `invoiceexe.pdf`.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
+}
+
 /// A file name the spec allows, from whatever the sender has.
 pub fn safe_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    let mut clean: String =
-        base.chars().map(|c| if c.is_control() { '_' } else { c }).collect::<String>().trim().to_owned();
+    let mut clean: String = base
+        .chars()
+        .filter(|&c| !is_bidi_control(c))
+        .map(|c| if c.is_control() { '_' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_owned();
     while clean.len() > files::MAX_NAME_BYTES {
         clean.pop();
     }
@@ -2395,6 +2406,9 @@ mod tests {
         assert_eq!(safe_file_name("a\nb"), "a_b");
         assert_eq!(safe_file_name(".."), "file");
         assert_eq!(safe_file_name(""), "file");
+        assert_eq!(safe_file_name("invoice\u{202E}fdp.exe"), "invoicefdp.exe");
+        assert_eq!(safe_file_name("\u{2066}a\u{2069}\u{200F}\u{061C}.txt"), "a.txt");
+        assert_eq!(safe_file_name("\u{202E}"), "file");
         assert!(safe_file_name(&"é".repeat(300)).len() <= files::MAX_NAME_BYTES);
     }
 
