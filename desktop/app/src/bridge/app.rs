@@ -20,7 +20,7 @@ use g7link_core::{DeviceId, Error, FeatureState, LinkState, PhoneToggleValue, fe
 use crate::{
     core_host,
     state::{Changes, CoreStatus},
-    sys::{self, sound, tray},
+    sys::{self, tray},
 };
 
 #[cxx_qt::bridge]
