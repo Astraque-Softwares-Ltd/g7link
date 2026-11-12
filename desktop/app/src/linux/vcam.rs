@@ -377,6 +377,14 @@ fn v4l2_worker_loop(stop: &AtomicBool) {
             bgrx.resize((OUT_W * OUT_H * 4) as usize, 0);
         }
 
+        // The frame sent last, still there: nothing to copy, scale or send.
+        if let Some(ts) = map.live_timestamp()
+            && last_ts == Some((true, ts))
+        {
+            thread::sleep(Duration::from_millis(8));
+            continue;
+        }
+
         let state = map.read_bgrx(OUT_W, OUT_H, &mut bgrx);
         if state.0 && last_ts == Some(state) {
             thread::sleep(Duration::from_millis(8));

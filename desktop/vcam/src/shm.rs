@@ -286,6 +286,23 @@ impl SharedFrameMapping {
         h.seq.store(odd.wrapping_add(1), Ordering::Release);
     }
 
+    /// The live frame's timestamp, read from the header alone without touching
+    /// its pixels, so a reader can tell a frame it already has before copying
+    /// it; `None` while idle or while the writer is busy.
+    pub fn live_timestamp(&self) -> Option<u64> {
+        let h = self.header();
+        if h.magic.load(Ordering::Acquire) != MAGIC {
+            return None;
+        }
+        let seq1 = h.seq.load(Ordering::Acquire);
+        if seq1 == 0 || (seq1 & 1) != 0 || h.active.load(Ordering::Acquire) != 1 {
+            return None;
+        }
+        let ts = h.timestamp_us.load(Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Acquire);
+        (h.seq.load(Ordering::Acquire) == seq1).then_some(ts)
+    }
+
     /// Reads the latest frame into `out_bgrx` (`out_width * out_height * 4` bytes).
     /// Returns `(true, timestamp_us)` when a live frame was read, or
     /// `(false, 0)` when idle (in which case `out_bgrx` is filled with the
@@ -890,6 +907,24 @@ mod tests {
         mapping.header().seq.store(seq + 1, Ordering::Release);
         assert_eq!(mapping.read_bgrx(160, 120, &mut output), (false, 0));
         assert_ne!(output, second, "an idle transition must clear the cached live frame");
+    }
+
+    #[test]
+    fn a_frame_is_known_by_its_timestamp_before_its_pixels_are_read() {
+        let name = format!("vcam_read_cache_{}_timestamp", std::process::id());
+        let mapping = SharedFrameMapping::open_or_create(&name).unwrap();
+        assert_eq!(mapping.live_timestamp(), None);
+        mapping.write_frame("Pixel", 160, 120, 123, &vec![42u8; 160 * 120 * 4], false);
+        assert_eq!(mapping.live_timestamp(), Some(123));
+
+        let seq = mapping.header().seq.load(Ordering::Acquire);
+        mapping.header().seq.store(seq + 1, Ordering::Release);
+        assert_eq!(mapping.live_timestamp(), None, "a busy writer's frame isn't known yet");
+        mapping.header().seq.store(seq + 2, Ordering::Release);
+        assert_eq!(mapping.live_timestamp(), Some(123));
+
+        mapping.set_idle("Pixel");
+        assert_eq!(mapping.live_timestamp(), None);
     }
 
     #[test]
