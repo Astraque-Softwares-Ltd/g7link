@@ -87,7 +87,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                         shared.emit(NodeEvent::ClipboardReceived { device: peer });
                         let lifetime = shared.private_clip_lifetime;
                         let cancel = shared.cancel.clone();
-                        tokio::spawn(async move {
+                        let clear = tokio::spawn(async move {
                             tokio::select! {
                                 _ = tokio::time::sleep(lifetime) => {}
                                 _ = cancel.cancelled() => {}
@@ -97,6 +97,16 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                             })
                             .await;
                         });
+                        // Only the latest is waited on: the platform leaves a newer value alone
+                        // anyway, so a replaced one isn't kept around until its time is up.
+                        let replaced = shared
+                            .private_clip_clear
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .replace(clear.abort_handle());
+                        if let Some(replaced) = replaced {
+                            replaced.abort();
+                        }
                         Envelope::empty(types::OK)
                     }
                     Ok(Ok(())) => {

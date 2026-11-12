@@ -2079,6 +2079,24 @@ async fn a_password_arrives_marked_private_and_leaves_no_record() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_newer_password_replaces_the_one_waiting_to_be_cleared() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    phone.node.set_device_toggle(pc_id, "clipboard", true).unwrap();
+    pc.node.set_device_toggle(phone_id, "clipboard", true).unwrap();
+    with_timeout("first", phone.node.send_clipboard_private(pc_id, "hunter2".into())).await.expect("sent");
+    with_timeout("second", phone.node.send_clipboard_private(pc_id, "swordfish".into())).await.expect("sent");
+
+    until("the clipboard cleared", || !pc.platform.clipboard_cleared.lock().unwrap().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    // Only the one still there is cleared; the replaced one was let go, not kept for its timer.
+    assert_eq!(pc.platform.clipboard_cleared.lock().unwrap().as_slice(), ["swordfish"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn clipboard_images_go_both_ways_with_consent() {
     let mut pc = device("Desktop", DeviceKind::Desktop).await;
     let mut phone = device("Pixel", DeviceKind::Phone).await;
