@@ -10,10 +10,10 @@ use std::{
     path::PathBuf,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use g7link_core::{DeviceId, Error, NodeEvent, Notification};
@@ -204,6 +204,13 @@ pub fn maybe_auto_copy_otp(code: &str) {
 
 /// Pictures from notifications, kept for a couple of days (history lasts one).
 const KEEP_IMAGES: std::time::Duration = std::time::Duration::from_secs(2 * 24 * 3600);
+/// At most this many notification pictures and thumbnails are kept, and at
+/// most this many bytes of them, newest first: a phone posting a new picture
+/// every few seconds would otherwise fill the disk well within two days.
+const MAX_IMAGE_FILES: usize = 1000;
+const MAX_IMAGE_BYTES: u64 = 200 * 1024 * 1024;
+/// How many new pictures are written between checks of those caps.
+const CAP_CHECK_EVERY: u32 = 50;
 
 pub(crate) fn images_dir() -> std::path::PathBuf {
     core_host::host().data_dir.join("cache").join("images")
@@ -287,10 +294,17 @@ fn write_thumb(picture: &std::path::Path, bytes: &[u8]) {
 /// Writes pictures on the files thread; each shows on its notification once
 /// it's there.
 fn write_pictures(pictures: Vec<Picture>) {
+    static WRITTEN_SINCE_CAP: AtomicU32 = AtomicU32::new(0);
     let dir = images_dir();
+    let mut written = 0;
     for Picture { key, path, bytes } in pictures {
-        let saved = std::fs::create_dir_all(&dir)
-            .and_then(|()| if path.exists() { Ok(()) } else { std::fs::write(&path, &bytes) });
+        let saved = std::fs::create_dir_all(&dir).and_then(|()| {
+            if path.exists() {
+                return Ok(());
+            }
+            written += 1;
+            std::fs::write(&path, &bytes)
+        });
         if let Err(e) = &saved {
             tracing::debug!(error = %e, "can't save a notification picture");
         } else {
@@ -305,6 +319,14 @@ fn write_pictures(pictures: Vec<Picture>) {
                 core_host::host().hub.update(|s| s.set_notification_image(key, path));
             }
         });
+    }
+    // Only ever called on the files thread, so the count can't race.
+    let since_cap = WRITTEN_SINCE_CAP.load(Ordering::Relaxed).saturating_add(written);
+    if since_cap >= CAP_CHECK_EVERY {
+        cap_images();
+        WRITTEN_SINCE_CAP.store(0, Ordering::Relaxed);
+    } else {
+        WRITTEN_SINCE_CAP.store(since_cap, Ordering::Relaxed);
     }
 }
 
@@ -321,6 +343,41 @@ pub fn prune_images() {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+    cap_images();
+}
+
+/// Deletes the oldest notification pictures and thumbnails beyond
+/// [`MAX_IMAGE_FILES`] or [`MAX_IMAGE_BYTES`].
+fn cap_images() {
+    let Ok(entries) = std::fs::read_dir(images_dir()) else { return };
+    let files = entries
+        .flatten()
+        .filter_map(|e| {
+            if !is_notification_image_file(e.file_name().to_str()?) {
+                return None;
+            }
+            let meta = e.metadata().ok().filter(std::fs::Metadata::is_file)?;
+            Some((e.path(), meta.modified().ok()?, meta.len()))
+        })
+        .collect();
+    for path in over_cap(files, MAX_IMAGE_FILES, MAX_IMAGE_BYTES) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Of `files` (path, modified, length), those to delete so the newest fit
+/// within `max_files` and `max_bytes`.
+fn over_cap(mut files: Vec<(PathBuf, SystemTime, u64)>, max_files: usize, max_bytes: u64) -> Vec<PathBuf> {
+    files.sort_by_key(|f| std::cmp::Reverse(f.1));
+    let mut bytes = 0u64;
+    files
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (path, _, len))| {
+            bytes = bytes.saturating_add(len);
+            (i >= max_files || bytes > max_bytes).then_some(path)
+        })
+        .collect()
 }
 
 fn is_notification_image_file(name: &str) -> bool {
@@ -836,6 +893,23 @@ mod tests {
     use g7link_core::NotificationLive;
 
     use super::*;
+
+    #[test]
+    fn the_oldest_pictures_go_first_once_over_the_caps() {
+        let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let files = || {
+            vec![
+                (PathBuf::from("b.jpg"), at(20), 10),
+                (PathBuf::from("a.jpg"), at(10), 10),
+                (PathBuf::from("c.jpg"), at(30), 10),
+            ]
+        };
+        assert!(over_cap(files(), 3, 30).is_empty());
+        assert_eq!(over_cap(files(), 2, 30), [PathBuf::from("a.jpg")]);
+        assert_eq!(over_cap(files(), 3, 15), [PathBuf::from("b.jpg"), PathBuf::from("a.jpg")]);
+        assert_eq!(over_cap(files(), 0, 30).len(), 3);
+        assert!(over_cap(Vec::new(), 0, 0).is_empty());
+    }
 
     #[test]
     fn a_quiet_update_of_a_shown_notification_does_not_pop_up_again() {
