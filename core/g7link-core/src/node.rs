@@ -886,6 +886,13 @@ impl Shared {
         lock(&self.usb_inbound).contains(peer) && self.usb_peer_addr(peer).is_some()
     }
 
+    /// Whether `peer` is a phone this PC is plugged into: this device dialed the
+    /// tunnel to a phone it found over ADB. The phone's end, a loopback port,
+    /// is open to any app on the phone.
+    pub(crate) fn usb_tunnel_dialed(&self, peer: &DeviceId) -> bool {
+        self.usb_peer_addr(peer).is_some() && !lock(&self.usb_inbound).contains(peer)
+    }
+
     pub(crate) fn is_usb_connection(&self, conn: &Connection) -> bool {
         let peer = crate::device_id(&conn.remote_id());
         if self.usb_peer_addr(&peer).is_some() {
@@ -978,9 +985,24 @@ impl Shared {
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 if !s.store.is_paired(&peer).unwrap_or(false) {
-                    let _ = pairing::start_nearby(&s, peer).await;
+                    let _ = pairing::start_usb_auto(&s, peer).await;
                 }
             });
+        }
+    }
+
+    /// This phone's pairing screen just opened: starts the code check with
+    /// each unpaired PC it's plugged into. The PC tried when the cable went
+    /// in, and the phone refused while its pairing screen was closed.
+    pub(crate) fn pair_with_plugged_in_pcs(self: &Arc<Self>) {
+        let pcs: Vec<DeviceId> = lock(&self.usb_inbound).iter().copied().collect();
+        for pc in pcs {
+            if self.usb_tunnel_inbound(&pc) && !self.store.is_paired(&pc).unwrap_or(false) {
+                let s = self.clone();
+                tokio::spawn(async move {
+                    let _ = pairing::start_nearby(&s, pc).await;
+                });
+            }
         }
     }
 
@@ -1115,7 +1137,7 @@ impl Shared {
             if !self.store.is_paired(&peer).unwrap_or(false) {
                 let s = self.clone();
                 tokio::spawn(async move {
-                    let _ = pairing::start_nearby(&s, peer).await;
+                    let _ = pairing::start_usb_auto(&s, peer).await;
                 });
             }
         }
@@ -2332,11 +2354,15 @@ impl Node {
     /// on the LAN only then, and a phone takes pairing over USB only then.
     pub fn set_discovery_fast(&self, fast: bool) {
         self.shared.pairing.set_screen_open(fast);
+        let _runtime = self.shared.runtime.enter();
+        if fast {
+            self.shared.pair_with_plugged_in_pcs();
+        }
         let running = lock(&self.shared.lan_discovery).as_ref().map(|(_, f)| *f);
         if running.is_none_or(|f| f == fast) {
+            sync_name_on_lan(&self.shared);
             return;
         }
-        let _runtime = self.shared.runtime.enter();
         if let Err(e) = install_mdns(&self.shared, fast) {
             tracing::warn!(error = %e, fast, "can't change how often mDNS asks");
         }

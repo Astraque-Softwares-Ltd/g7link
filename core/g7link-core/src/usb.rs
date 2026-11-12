@@ -18,10 +18,11 @@
 //!    mirroring, audio, camera, clipboard) run unmodified over the USB cable
 //!    even when Wi-Fi is off.
 //! 5. If the two devices are not paired yet, the PC automatically initiates the
-//!    nearby 6-digit SAS code ceremony over the USB tunnel; the phone accepts
-//!    the ceremony on a verified USB loopback connection without requiring manual
-//!    host mode, and both users must confirm the 6-digit code before any trust
-//!    is stored.
+//!    nearby 6-digit SAS code ceremony over the USB tunnel. The phone accepts it
+//!    on a verified USB loopback connection only while its pairing screen is
+//!    open (any app on the phone can reach its loopback port), and starts it
+//!    itself when that screen opens. Both users must confirm the 6-digit code
+//!    before any trust is stored.
 
 use std::{
     collections::HashMap,

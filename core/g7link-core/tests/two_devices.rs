@@ -6209,6 +6209,8 @@ async fn usb_auto_pair_requires_consent_on_both_sides_and_connects_over_usb() {
     let usb_port = phone.node.usb_port().expect("phone bound ephemeral USB TCP listener");
     let tunnel_addr: SocketAddr = ("127.0.0.1".parse::<std::net::IpAddr>().unwrap(), usb_port).into();
 
+    // The phone shows "Pair with PC".
+    phone.node.set_discovery_fast(true);
     pc.node.connect_usb_tunnel(tunnel_addr).await.expect("connect USB tunnel");
 
     // 1. Both PC and Phone emit NodeEvent::Discovered for each other.
@@ -6337,6 +6339,65 @@ async fn usb_auto_pair_requires_consent_on_both_sides_and_connects_over_usb() {
     phone.node.shutdown().await;
 }
 
+/// Any app on a phone can reach the phone's end of a USB tunnel, so the phone
+/// takes a pairing over it only while its own pairing screen is open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn usb_pairing_waits_for_the_phones_pairing_screen() {
+    let mut phone = start_usb_device("Pixel USB", DeviceKind::Phone, Some(0), &[]).await;
+    let mut pc = start_usb_device("Desktop USB", DeviceKind::Desktop, None, &[]).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let usb_port = phone.node.usb_port().expect("phone USB TCP listener");
+    let tunnel_addr: SocketAddr = ("127.0.0.1".parse::<std::net::IpAddr>().unwrap(), usb_port).into();
+
+    // Plugged in with the phone's pairing screen closed: the phone refuses the PC's
+    // attempt, and neither side shows a code, nor a failure nobody asked about.
+    pc.node.connect_usb_tunnel(tunnel_addr).await.expect("connect USB tunnel");
+    let quiet_until = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < quiet_until {
+        tokio::select! {
+            ev = pc.events.recv() => if let Ok(NodeEvent::Pairing(p)) = ev { panic!("pc: {p:?}") },
+            ev = phone.events.recv() => if let Ok(NodeEvent::Pairing(p)) = ev { panic!("phone: {p:?}") },
+            () = tokio::time::sleep_until(quiet_until) => {}
+        }
+    }
+    // Asking from the PC doesn't get past it either.
+    assert!(
+        with_timeout("pair over USB", pc.node.pairing_start_nearby(phone_id)).await.is_err(),
+        "the phone isn't in pairing mode"
+    );
+    assert!(pc.node.paired_devices().unwrap().is_empty());
+    assert!(phone.node.paired_devices().unwrap().is_empty());
+
+    // The phone's "Pair with PC" opens: it starts the code check with the PC itself.
+    phone.node.set_discovery_fast(true);
+    let code_phone = wait_for(&mut phone, "phone sas code", |e| match e {
+        NodeEvent::Pairing(PairingEvent::SasCode { peer, code }) if *peer == pc_id => Some(code.clone()),
+        _ => None,
+    })
+    .await;
+    let code_pc = wait_for(&mut pc, "pc sas code", |e| match e {
+        NodeEvent::Pairing(PairingEvent::SasCode { peer, code }) if *peer == phone_id => Some(code.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(code_pc, code_phone);
+    phone.node.pairing_confirm(true).unwrap();
+    pc.node.pairing_confirm(true).unwrap();
+    wait_for(&mut pc, "pc paired over usb", |e| match e {
+        NodeEvent::Pairing(PairingEvent::Paired(d)) if d.id == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    wait_for(&mut phone, "phone paired over usb", |e| match e {
+        NodeEvent::Pairing(PairingEvent::Paired(d)) if d.id == pc_id => Some(()),
+        _ => None,
+    })
+    .await;
+
+    pc.node.shutdown().await;
+    phone.node.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn usb_transport_carries_features_when_wifi_unavailable() {
     use g7link_core::{ConnectionPath, MirrorSend, PacketKind};
@@ -6355,6 +6416,7 @@ async fn usb_transport_carries_features_when_wifi_unavailable() {
 
     let usb_port = phone.node.usb_port().expect("phone USB TCP listener");
     let tunnel_addr: SocketAddr = ("127.0.0.1".parse::<std::net::IpAddr>().unwrap(), usb_port).into();
+    phone.node.set_discovery_fast(true);
     pc.node.connect_usb_tunnel(tunnel_addr).await.expect("connect USB tunnel");
 
     let code_pc = wait_for(&mut pc, "pc sas code", |e| match e {

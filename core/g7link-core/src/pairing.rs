@@ -293,6 +293,18 @@ pub(crate) async fn join_qr(shared: &Arc<Shared>, uri: &PairingUri) -> Result<()
 /// mode. The 6-digit code arrives as [`PairingEvent::SasCode`]; answer with
 /// [`crate::Node::pairing_confirm`].
 pub(crate) async fn start_nearby(shared: &Arc<Shared>, peer: DeviceId) -> Result<()> {
+    run_nearby(shared, peer, true).await
+}
+
+/// Starts the nearby flow with a phone plugged in over USB, unasked. A phone
+/// whose pairing screen is closed refuses it; that isn't reported as a
+/// failure, as nobody here asked. The phone starts it itself when its
+/// pairing screen opens.
+pub(crate) async fn start_usb_auto(shared: &Arc<Shared>, peer: DeviceId) -> Result<()> {
+    run_nearby(shared, peer, false).await
+}
+
+async fn run_nearby(shared: &Arc<Shared>, peer: DeviceId, asked: bool) -> Result<()> {
     let nearby = shared.pairing.begin_nearby().ok_or(Error::Denied)?;
     let conn = match dial(shared, &peer).await {
         Ok(conn) => conn,
@@ -301,6 +313,7 @@ pub(crate) async fn start_nearby(shared: &Arc<Shared>, peer: DeviceId) -> Result
             return Err(e);
         }
     };
+    let mut code_shown = false;
     let result = async {
         let (mut send, mut recv) = conn.open_bi().await.map_err(crate::error::net)?;
         let n_a: [u8; NONCE_LEN] = rand::random();
@@ -311,12 +324,21 @@ pub(crate) async fn start_nearby(shared: &Arc<Shared>, peer: DeviceId) -> Result
 
         // We are A (initiator), the host is B.
         let code = proto::sas_code(&n_a, &nonce.n_b, &shared.id, &peer);
+        code_shown = true;
         exchange_decisions(shared, peer, code, &mut send, &mut recv, Role::Initiator).await?;
         finish_initiator(&conn, send).await?;
         Ok(nonce.device.sanitized())
     }
     .await;
     drop(nearby);
+    if !asked
+        && !code_shown
+        && let Err(err) = result
+    {
+        tracing::debug!(peer = %peer.short(), error = %err, "the plugged-in phone didn't take pairing now");
+        conn.close(VarInt::from_u32(CLOSE_FAILED), b"failed");
+        return Err(err);
+    }
     settle_initiator(shared, &conn, peer, result).await
 }
 
@@ -356,8 +378,12 @@ async fn settle_initiator(
 /// Handles an incoming pairing connection (host side of both flows).
 pub(crate) async fn accept(shared: Arc<Shared>, conn: Connection) {
     let peer = crate::device_id(&conn.remote_id());
-    let is_usb = shared.is_usb_connection(&conn);
-    if !shared.pairing.is_hosting() && !is_usb {
+    // Over USB, outside pairing mode, only through a tunnel this device dialed
+    // (a PC), or while its pairing screen is open: any app on a phone can
+    // reach the phone's end of the tunnel.
+    let usb_may_pair = shared.is_usb_connection(&conn)
+        && (shared.pairing.screen_open() || shared.usb_tunnel_dialed(&peer));
+    if !shared.pairing.is_hosting() && !usb_may_pair {
         tracing::debug!(peer = %peer.short(), "refusing pairing connection: not in pairing mode");
         conn.close(VarInt::from_u32(ErrorCode::Denied.close_code()), b"not pairing");
         return;
@@ -374,7 +400,7 @@ pub(crate) async fn accept(shared: Arc<Shared>, conn: Connection) {
         let device = match first.t.as_str() {
             types::PAIR_REQUEST => accept_qr(&shared, peer, first, &mut send).await?,
             types::PAIR_COMMIT => {
-                match accept_nearby(&shared, peer, first, &mut send, &mut recv, is_usb).await {
+                match accept_nearby(&shared, peer, first, &mut send, &mut recv, usb_may_pair).await {
                     Ok(Some(device)) => device,
                     Ok(None) => return Err(Error::Denied),
                     Err((e, sas_shown)) => {
@@ -451,9 +477,9 @@ async fn accept_nearby(
     env: Envelope,
     send: &mut SendStream,
     recv: &mut RecvStream,
-    is_usb: bool,
+    usb_may_pair: bool,
 ) -> std::result::Result<Option<DeviceInfo>, (Error, bool)> {
-    if !shared.pairing.is_hosting() && !is_usb {
+    if !shared.pairing.is_hosting() && !usb_may_pair {
         send_env(send, Envelope::error(ErrorCode::Denied, "pairing mode ended"))
             .await
             .map_err(|e| (e, false))?;
