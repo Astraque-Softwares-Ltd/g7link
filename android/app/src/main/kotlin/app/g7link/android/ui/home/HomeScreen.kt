@@ -80,12 +80,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -110,6 +113,7 @@ import app.g7link.android.core.WakeState
 import app.g7link.android.core.isFinished
 import app.g7link.android.files.ReceivedFiles
 import app.g7link.android.files.transferTitle
+import app.g7link.android.media.sampleSizeToCover
 import app.g7link.android.mirror.InputService
 import app.g7link.android.mirror.MirrorSession
 import app.g7link.android.notifications.NotificationListener
@@ -1611,14 +1615,7 @@ private fun ClipboardHistoryRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 ClipboardItemKind.IMAGE -> {
-                    val bitmap by produceState<ImageBitmap?>(initialValue = previewBitmapCache.get(entry.id), entry.id) {
-                        if (value != null) return@produceState
-                        val bytes = loadImage(entry.id) ?: return@produceState
-                        val decoded = withContext(Dispatchers.Default) { previewBitmap(bytes)?.asImageBitmap() }
-                        if (decoded != null) previewBitmapCache.put(entry.id, decoded)
-                        value = decoded
-                    }
-                    val image = bitmap
+                    val image = rememberClipPreview(entry.id, loadImage)
                     if (image != null) {
                         Image(
                             bitmap = image,
@@ -1659,18 +1656,60 @@ private fun ClipboardHistoryRow(
     }
 }
 
-private val previewBitmapCache = LruCache<String, ImageBitmap>(24)
+/** Decoded clipboard image previews, bounded by their pixel bytes rather than their count. */
+internal object ClipPreviewCache {
+    private const val BUDGET_BYTES = 8 * 1024 * 1024
 
-/** A history image decoded small enough for its row (a clip can be a large photo). */
-private fun previewBitmap(bytes: ByteArray): android.graphics.Bitmap? {
+    private val cache = object : LruCache<String, ImageBitmap>(BUDGET_BYTES) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int = value.asAndroidBitmap().allocationByteCount
+    }
+
+    fun get(key: String): ImageBitmap? = cache.get(key)
+
+    fun put(key: String, bitmap: ImageBitmap) {
+        cache.put(key, bitmap)
+    }
+
+    fun clear() = cache.evictAll()
+}
+
+/**
+ * A history image decoded only as large as its row shows it: the window's width by the
+ * tallest a preview gets (a clip can be a large photo).
+ */
+@Composable
+private fun rememberClipPreview(clipId: String, load: suspend (String) -> ByteArray?): ImageBitmap? {
+    val maxWidth = LocalWindowInfo.current.containerSize.width
+    val maxHeight = with(LocalDensity.current) { PREVIEW_MAX_HEIGHT.roundToPx() }
+    val key = "$clipId@${maxWidth}x$maxHeight"
+    val bitmap by produceState(initialValue = ClipPreviewCache.get(key), key) {
+        ClipPreviewCache.get(key)?.let { cached ->
+            value = cached
+            return@produceState
+        }
+        val bytes = load(clipId) ?: return@produceState
+        val decoded = withContext(Dispatchers.Default) {
+            previewBitmap(bytes, maxWidth, maxHeight)?.asImageBitmap()
+        }
+        if (decoded != null) ClipPreviewCache.put(key, decoded)
+        value = decoded
+    }
+    return bitmap
+}
+
+private fun previewBitmap(bytes: ByteArray, maxWidth: Int, maxHeight: Int): android.graphics.Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= PREVIEW_PX) sample *= 2
+    // Never larger than the 720 px long side previews always had, so each lays out as before.
+    fun bound(px: Int) = if (px > 0) minOf(px, PREVIEW_PX) else PREVIEW_PX
+    val sample = sampleSizeToCover(bounds.outWidth, bounds.outHeight, bound(maxWidth), bound(maxHeight))
     return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
 }
 
 private const val PREVIEW_PX = 720
+
+/** The tallest a clipboard image preview is shown (history rows; timeline rows are shorter). */
+private val PREVIEW_MAX_HEIGHT = 120.dp
 
 @Composable
 private fun LocalSendCard(
@@ -2407,14 +2446,7 @@ private fun TimelineRow(
             )
             val clipId = entry.refId
             if (entry.kind == TimelineKind.CLIP && entry.clipAvailable && clipId != null && entry.imageDataUrl != null) {
-                val bitmap by produceState<ImageBitmap?>(initialValue = previewBitmapCache.get(clipId), clipId) {
-                    if (value != null) return@produceState
-                    val bytes = loadClipImage(clipId) ?: return@produceState
-                    val decoded = withContext(Dispatchers.Default) { previewBitmap(bytes)?.asImageBitmap() }
-                    if (decoded != null) previewBitmapCache.put(clipId, decoded)
-                    value = decoded
-                }
-                bitmap?.let { img ->
+                rememberClipPreview(clipId, loadClipImage)?.let { img ->
                     Image(
                         bitmap = img,
                         contentDescription = stringResource(R.string.clipboard_history_image),

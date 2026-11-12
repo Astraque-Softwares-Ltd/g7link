@@ -2,6 +2,7 @@
 package app.g7link.android
 
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -12,6 +13,7 @@ import app.g7link.android.banking.BankingPause
 import app.g7link.android.core.Core
 import app.g7link.android.elevated.Elevated
 import app.g7link.android.ui.Preferences
+import app.g7link.android.ui.home.ClipPreviewCache
 import app.g7link.android.update.AppUpdater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,6 +92,12 @@ class G7LinkApplication : Application(), DefaultLifecycleObserver {
         if (!Preferences.isBackgroundServiceEnabled(this)) {
             scheduleStop()
         }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // Previews are redrawn from the clip when the screen shows them again.
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) ClipPreviewCache.clear()
     }
 
     fun onBackgroundServiceDisabled() {
