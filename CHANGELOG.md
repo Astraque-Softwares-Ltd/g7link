@@ -4,6 +4,55 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.11 (2026-11-12)
+
+Screenshots and recordings of the PC from the phone, a Paste chip, your own
+say over Bluetooth media, and G7's own themes.
+
+### Added
+
+- **Screenshot the PC from the phone.** Home's "Screenshot" takes the PC's
+  screen at full resolution: crop it on the phone, then save it, share it or
+  copy it back to the PC. It is on the PC's clipboard too.
+- **Record the PC's screen from the phone,** with its sound, from Home or
+  the remote's Screen tab. The video lands in the PC's Videos and on the
+  phone when you stop. Both need "See this screen" on for that phone, never
+  work while the PC is locked, and the PC says each time.
+- **Paste chip.** When the PC copies something while the phone's trackpad
+  is open, a chip with its first line appears: tap to paste. Terminals get
+  Ctrl+Shift+V. On GNOME this needs the G7 Linux extension 1.4.
+- **Phone media on this PC,** per phone, in Home and Settings. Off by
+  default: a phone connected over Bluetooth keeps its music on its own
+  speaker or headphones. A change made while one device is away carries
+  over when they reconnect, the latest one winning.
+- **Type like a chat app.** The phone's keyboard field grows, Enter makes a
+  new line, and a round button sends or dictates (hold to talk). Images
+  paste where the PC is typing.
+- **The phone's keyboard opens by itself** when a text box gets the focus on
+  the PC.
+- **Middle locks the trackpad to scrolling.**
+- **Relays:** add, check and pick relay servers on both apps.
+
+### Changed
+
+- **G7's own themes.** Both apps use G7 Linux's palettes, or follow G7 Linux
+  with "Match G7 Linux". The old Hive, Glass, Graphite and Bloom looks are
+  gone.
+- **What's on is visible.** Active buttons, tabs and rows use the accent in
+  both apps.
+- **The PC's player** puts its controls under the title, centred.
+- **Copy says "Copied" where you clicked.**
+
+### Fixed
+
+- Phone notification pictures show whole instead of squeezed.
+- An old chat no longer pops up again when another one gets a message.
+- No message box and no Call for senders that take no replies.
+- On GNOME, the phone's clipboard reaches the PC's clipboard whether or not
+  G7 Link has the focus, and password managers' copies are never recorded.
+- Many hardening fixes for pairing, storage paths, USB, Elevated and
+  untrusted replies.
+
 ## 0.1.10 (2026-11-12)
 
 Faster and more truthful everywhere: mirroring, calls, copying, the trackpad
