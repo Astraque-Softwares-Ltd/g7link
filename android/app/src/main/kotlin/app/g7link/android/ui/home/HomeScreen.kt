@@ -637,7 +637,7 @@ fun HomeScreen(
                         tint = tints.lavender,
                         // Offline, the clip waits in the send queue.
                         enabled = !online || pc.usable("clipboard.auto_phone_to_pc"),
-                        onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, pc.id)) },
+                        onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, pc.id, preview = true)) },
                     )
                     G7Row(
                         label = stringResource(R.string.home_link),
@@ -1131,7 +1131,7 @@ private fun PeerRows(
             icon = G7Icons.clipboard,
             tint = tints.lavender,
             enabled = !device.online || device.has("pair.clipboard"),
-            onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, device.id)) },
+            onClick = { context.startActivity(SendActivity.sendClipboardIntent(context, device.id, preview = true)) },
         )
         G7Row(
             label = stringResource(if (ringing) R.string.action_stop_ringing else R.string.action_ring_device),

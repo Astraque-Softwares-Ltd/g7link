@@ -80,8 +80,9 @@ class SendActivity : ComponentActivity() {
                 finish()
                 return
             }
-            // The clipboard is read in onWindowFocusChanged, and shown in the sheet.
-            showClipboardSheet()
+            // The clipboard is read in onWindowFocusChanged: shown in the sheet first
+            // when asked (Home), sent at once otherwise (tile, notification, widget).
+            if (intent.getBooleanExtra(EXTRA_PREVIEW, false)) showClipboardSheet()
             return
         }
         if (intent.action == ACTION_SEND_FILES) {
@@ -279,6 +280,10 @@ class SendActivity : ComponentActivity() {
         }
         if (clipRead) return
         clipRead = true
+        if (!currentIntent.getBooleanExtra(EXTRA_PREVIEW, false)) {
+            sendClipboardNow()
+            return
+        }
         val copiedAt = PhoneClipboard.copiedAt(this)
         clipSheet.value = when (val clip = PhoneClipboard.read(this)) {
             is PhoneClipboard.Read.Text -> ClipSheetState.Preview(
@@ -289,6 +294,18 @@ class SendActivity : ComponentActivity() {
             is PhoneClipboard.Read.Sensitive -> ClipSheetState.Preview(CopiedClip.Hidden(clip.text), copiedAt)
             PhoneClipboard.Read.Private -> ClipSheetState.Note(getString(R.string.clip_private), isPrivate = true)
             PhoneClipboard.Read.Empty -> ClipSheetState.Empty
+        }
+    }
+
+    /** Sends the clipboard without a sheet, as the tile, notification and widget always have. */
+    private fun sendClipboardNow() {
+        val pcId = targetPcId()
+        when (val clip = PhoneClipboard.read(this)) {
+            is PhoneClipboard.Read.Text -> send(clip.text, clip.html)
+            is PhoneClipboard.Read.Image -> sendInBackground { sendClipboardImage(clip.uri, pcId) }
+            is PhoneClipboard.Read.Sensitive -> sendInBackground { sendClipboardSensitive(clip.text, pcId) }
+            PhoneClipboard.Read.Private -> finishWith(getString(R.string.clip_private))
+            PhoneClipboard.Read.Empty -> finishWith(getString(R.string.clip_sheet_nothing_title))
         }
     }
 
@@ -479,6 +496,7 @@ class SendActivity : ComponentActivity() {
         internal fun isShareSheet(pkg: String?): Boolean = pkg != null && pkg in SHARE_SHEETS
 
         const val ACTION_SEND_CLIPBOARD = "app.g7link.action.SEND_CLIPBOARD"
+        private const val EXTRA_PREVIEW = "app.g7link.extra.CLIPBOARD_PREVIEW"
         const val ACTION_SEND_FILES = "app.g7link.action.SEND_FILES"
         const val EXTRA_PC_ID = "app.g7link.extra.PC_ID"
         private const val EXTRA_INTERNAL_TOKEN = "app.g7link.extra.INTERNAL_TOKEN"
@@ -519,10 +537,12 @@ class SendActivity : ComponentActivity() {
             return generated
         }
 
-        fun sendClipboardIntent(context: Context, pcId: String? = null): Intent =
+        /** [preview]: show what's on the clipboard first (Home's row); else send at once. */
+        fun sendClipboardIntent(context: Context, pcId: String? = null, preview: Boolean = false): Intent =
             Intent(context, SendActivity::class.java)
                 .setAction(ACTION_SEND_CLIPBOARD)
                 .putExtra(EXTRA_INTERNAL_TOKEN, internalToken(context))
+                .putExtra(EXTRA_PREVIEW, preview)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 .apply {
                     if (!pcId.isNullOrEmpty()) putExtra(EXTRA_PC_ID, pcId)
