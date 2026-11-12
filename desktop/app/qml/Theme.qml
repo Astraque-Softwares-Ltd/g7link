@@ -229,6 +229,9 @@ QtObject {
     // Raised fields and keycaps, the selected or hovered row, and the 1 px lines.
     readonly property color raised: surfaceContainer
     readonly property color selection: surfaceContainerHigh
+    // A mode that's on, or the item shown: the accent, faint, with an accent
+    // edge, so it never reads as hover.
+    readonly property color activeFill: Qt.rgba(accent.r, accent.g, accent.b, dark ? 0.20 : 0.14)
     readonly property color line: outlineVariant
 
     // ---- Glyph tints ----

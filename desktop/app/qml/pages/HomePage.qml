@@ -479,7 +479,7 @@ Item {
                 { label: home.typingHere ? qsTr("Stop typing on phone") : qsTr("Type on phone"), icon: Icons.keyboard,
                   tint: Theme.tintPink, checked: home.typingHere, enabled: home.online, run: () => home.toggleTyping() },
                 { label: home.ringing ? qsTr("Stop ringing") : qsTr("Find phone"), icon: Icons.ring, tint: Theme.tintRed,
-                  enabled: home.usable("device.find_phone"), run: () => home.findPhone() },
+                  checked: home.ringing, enabled: home.usable("device.find_phone"), run: () => home.findPhone() },
                 { label: qsTr("Phone sound on this PC"), icon: Icons.music, tint: Theme.tintPink,
                   checked: home.phoneSound !== "off",
                   enabled: home.phoneSound !== "off" || (home.online && home.feature("mirroring.sound").state === "available"),
@@ -608,7 +608,7 @@ Item {
                     Accessible.role: Accessible.ToolBar
                     Accessible.name: qsTr("Actions")
                     BarAction {
-                        label: qsTr("Mirror screen")
+                        label: home.mirroring ? qsTr("Mirroring") : qsTr("Mirror screen")
                         iconPath: Icons.mirror
                         tint: Theme.tintLavender
                         keys: "Ctrl M"
@@ -2366,7 +2366,7 @@ Item {
                                 }
                                 IconButton {
                                     iconPath: Icons.pin
-                                    iconColor: clipRow.modelData.pinned ? Theme.accent : Theme.surfaceContentVariant
+                                    checked: clipRow.modelData.pinned
                                     label: clipRow.modelData.pinned ? qsTr("Unpin") : qsTr("Pin")
                                     onClicked: AppController.pinClipboardHistory(clipRow.modelData.id, !clipRow.modelData.pinned)
                                 }
@@ -2433,9 +2433,9 @@ Item {
         Rectangle {
             anchors.fill: parent
             radius: Theme.rowRadius
-            color: bar.active || (barHover.hovered && bar.available) ? Theme.selection : Theme.raised
-            border.width: Theme.focusVisible(bar) ? 2 : 0
-            border.color: Theme.focusRing
+            color: bar.active ? Theme.activeFill : (barHover.hovered && bar.available ? Theme.selection : Theme.raised)
+            border.width: Theme.focusVisible(bar) ? 2 : (bar.active ? 1 : 0)
+            border.color: Theme.focusVisible(bar) ? Theme.focusRing : Theme.accent
         }
         Row {
             id: barRow
@@ -2450,7 +2450,7 @@ Item {
             Txt {
                 anchors.verticalCenter: parent.verticalCenter
                 text: bar.label
-                color: bar.available ? Theme.surfaceContent : Theme.surfaceContentVariant
+                color: bar.active ? Theme.accent : (bar.available ? Theme.surfaceContent : Theme.surfaceContentVariant)
             }
             Keycap {
                 anchors.verticalCenter: parent.verticalCenter

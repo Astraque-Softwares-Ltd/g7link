@@ -15,7 +15,7 @@ Rectangle {
     implicitWidth: row.implicitWidth + (Theme.quiet ? 20 : 24)
     radius: Theme.quiet ? Theme.radiusSm : Theme.pill(height)
     color: Theme.quiet
-        ? (selected ? Theme.selection : (interactive ? "transparent" : Theme.raised))
+        ? (selected ? Theme.activeFill : (interactive ? "transparent" : Theme.raised))
         : Theme.graphite
         ? (selected ? Theme.surfaceContent : "transparent")
         : (Theme.glass
@@ -24,8 +24,8 @@ Rectangle {
                 : Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.50))
             : (selected ? Theme.secondaryContainer : Theme.surfaceContainerHigh))
     Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-    border.width: !Theme.quiet && (Theme.graphite || Theme.glass) ? 1 : 0
-    border.color: Theme.glass
+    border.width: Theme.quiet ? (selected ? 1 : 0) : (Theme.graphite || Theme.glass ? 1 : 0)
+    border.color: Theme.quiet ? Theme.accent : Theme.glass
         ? (selected ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.55) : Qt.rgba(1, 1, 1, Theme.dark ? 0.22 : 0.68))
         : (selected ? Theme.surfaceContent : Theme.outlineVariant)
     scale: chip.interactive && mouse.pressed && !Theme.reduceMotion ? Theme.pressScale : 1.0
@@ -76,7 +76,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             text: chip.text
             role: Theme.quiet ? "bodySmall" : "label"
-            color: Theme.quiet ? (chip.selected || !chip.interactive ? Theme.surfaceContent : Theme.surfaceContentVariant)
+            color: Theme.quiet ? (chip.selected ? Theme.accent : !chip.interactive ? Theme.surfaceContent : Theme.surfaceContentVariant)
                 : Theme.graphite ? (chip.selected ? Theme.surface : Theme.surfaceContent)
                                   : (chip.selected ? Theme.secondaryContainerContent : Theme.surfaceContent)
         }

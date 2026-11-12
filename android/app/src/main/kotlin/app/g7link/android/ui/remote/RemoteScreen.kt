@@ -407,7 +407,7 @@ private fun RemoteToolbar(
             contentDescription = stringResource(R.string.remote_keyboard),
             onClick = onKeyboard,
             tint = tints.pink,
-            filled = keyboardOn,
+            selected = keyboardOn,
             enabled = device.online,
             modifier = Modifier.weight(1f),
         )
@@ -1474,13 +1474,14 @@ private fun SpecialKeysBar(
                 val selected = id in activeMods
                 Surface(
                     shape = MaterialTheme.shapes.small,
+                    // A held modifier goes with the next key: drawn in the accent so it's never missed.
                     color = if (selected) {
-                        MaterialTheme.colorScheme.secondaryContainer
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
                     } else {
                         MaterialTheme.colorScheme.surfaceContainer
                     },
                     contentColor = if (selected) {
-                        MaterialTheme.colorScheme.onSecondaryContainer
+                        MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.onSurface
                     },

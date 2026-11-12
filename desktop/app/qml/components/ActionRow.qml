@@ -46,7 +46,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         radius: Theme.rowRadius
-        color: row.selected ? Theme.selection : (row.interactive && mouse.containsMouse ? Theme.raised : "transparent")
+        color: row.selected ? Theme.activeFill : (row.interactive && mouse.containsMouse ? Theme.raised : "transparent")
         border.width: Theme.focusVisible(row) ? 2 : 0
         border.color: Theme.focusRing
     }

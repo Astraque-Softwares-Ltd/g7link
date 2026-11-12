@@ -706,6 +706,7 @@ fun HomeScreen(
                         icon = G7Icons.bell,
                         tint = tints.blue,
                         enabled = online,
+                        active = ringing,
                         onClick = { onRing(pc.id, !ringing) },
                     )
                     if (pc.has("device.pc_actions")) {
@@ -715,6 +716,7 @@ fun HomeScreen(
                             icon = G7Icons.lock,
                             tint = tints.teal,
                             enabled = online,
+                            busy = inFlight == false,
                             onClick = { power(pc.id, false) },
                         )
                         G7Row(
@@ -722,6 +724,7 @@ fun HomeScreen(
                             icon = G7Icons.moon,
                             tint = tints.red,
                             enabled = online,
+                            busy = inFlight == true,
                             onClick = { power(pc.id, true) },
                         )
                     }
@@ -746,6 +749,7 @@ fun HomeScreen(
                         icon = G7Icons.camera,
                         tint = tints.coral,
                         enabled = online,
+                        active = webcamSession.active,
                         onClick = { onWebcam(pc.id) },
                     )
                     G7Row(
@@ -753,6 +757,7 @@ fun HomeScreen(
                         icon = G7Icons.mic,
                         tint = tints.red,
                         enabled = online,
+                        active = recorderSession.active,
                         onClick = { onRecord(pc.id) },
                     )
                     G7Row(
@@ -1137,6 +1142,7 @@ private fun PeerRows(
             icon = G7Icons.ring,
             tint = tints.blue,
             enabled = device.online && device.has("pair.ring"),
+            active = ringing,
             onClick = { onRing(device.id, !ringing) },
         )
     }

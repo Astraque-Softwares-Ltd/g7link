@@ -11,6 +11,8 @@ FocusScope {
     property string label
     property bool tonal: false
     property color iconColor: tonal ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
+    // A mode this button turns on and off is on: drawn in the accent.
+    property bool checked: false
     signal clicked
 
     readonly property bool hasText: text.length > 0
@@ -25,6 +27,8 @@ FocusScope {
     onEnabledChanged: if (!enabled) { tooltipPill.shown = false; tipAutoHide.stop() }
 
     Accessible.role: Accessible.Button
+    Accessible.checkable: checked
+    Accessible.checked: checked
     Accessible.name: hasText ? text : label
     Accessible.description: hasText && label.length > 0 && label !== text ? label : ""
     Accessible.onPressAction: if (enabled) button.clicked()
@@ -39,14 +43,14 @@ FocusScope {
         id: body
         anchors.fill: parent
         radius: Theme.quiet ? Theme.radiusSm : Theme.pill(height)
-        color: button.tonal
+        color: button.checked ? Theme.activeFill : button.tonal
             ? (Theme.quiet ? Theme.selection : Theme.glass
                 ? Qt.tint(Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.54), Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.18 : 0.14))
                 : Theme.secondaryContainer)
             : "transparent"
         Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-        border.width: (Theme.graphite && button.hasText) || (Theme.glass && button.tonal) ? 1 : 0
-        border.color: Theme.glass
+        border.width: button.checked || (Theme.graphite && button.hasText) || (Theme.glass && button.tonal) ? 1 : 0
+        border.color: button.checked ? Theme.accent : Theme.glass
             ? Qt.rgba(1, 1, 1, Theme.dark ? 0.12 : 0.38)
             : (button.tonal ? Theme.surfaceContent : Theme.outlineVariant)
         scale: mouse.pressed ? Theme.pressScale : 1
@@ -64,7 +68,7 @@ FocusScope {
             anchors.centerIn: parent
             width: button.iconSize; height: button.iconSize
             path: button.iconPath
-            color: button.iconColor
+            color: button.checked ? Theme.accent : button.iconColor
         }
         Row {
             id: contentRow
@@ -76,7 +80,7 @@ FocusScope {
                 anchors.verticalCenter: parent.verticalCenter
                 width: button.iconSize; height: button.iconSize
                 path: button.iconPath
-                color: button.iconColor
+                color: button.checked ? Theme.accent : button.iconColor
             }
             Txt {
                 anchors.verticalCenter: parent.verticalCenter

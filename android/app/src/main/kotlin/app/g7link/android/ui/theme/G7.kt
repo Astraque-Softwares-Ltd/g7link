@@ -675,7 +675,8 @@ fun G7SectionLabel(text: String, modifier: Modifier = Modifier) {
 /**
  * A row: a tinted icon, a label (and maybe a line under it), a muted note on the
  * right, and whatever [trailing] adds. At least 48 dp tall, with a 10 dp corner
- * when it highlights.
+ * when it highlights. [active] is a mode or session that's on (drawn in the
+ * accent); [busy] is an action under way (a spinner, and no second tap).
  */
 @Composable
 fun G7Row(
@@ -688,6 +689,8 @@ fun G7Row(
     enabled: Boolean = true,
     highlighted: Boolean = false,
     role: Role = Role.Button,
+    active: Boolean = false,
+    busy: Boolean = false,
     onClick: (() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
@@ -698,10 +701,21 @@ fun G7Row(
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .clip(shape)
-            .then(if (highlighted) Modifier.background(scheme.surfaceContainerHigh) else Modifier)
             .then(
-                if (onClick != null) Modifier.clickable(enabled = enabled, role = role, onClick = onClick) else Modifier,
+                when {
+                    active -> Modifier.background(scheme.primary.copy(alpha = 0.14f)).border(1.dp, scheme.primary, shape)
+                    highlighted -> Modifier.background(scheme.surfaceContainerHigh)
+                    else -> Modifier
+                },
             )
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(enabled = enabled && !busy, role = role, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            )
+            .semantics { if (active) selected = true }
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
         verticalAlignment = Alignment.CenterVertically,
@@ -720,7 +734,7 @@ fun G7Row(
                 Text(
                     label,
                     style = MaterialTheme.typography.bodyLarge,
-                    color = scheme.onSurface,
+                    color = if (active) scheme.primary else scheme.onSurface,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -742,6 +756,13 @@ fun G7Row(
                 color = scheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (busy) {
+            androidx.compose.material3.CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = scheme.primary,
             )
         }
         trailing?.invoke(this)
@@ -892,16 +913,28 @@ fun G7IconButton(
     tint: Color = Color.Unspecified,
     enabled: Boolean = true,
     filled: Boolean = false,
+    selected: Boolean = false,
 ) {
     val scheme = MaterialTheme.colorScheme
     val description = contentDescription
+    val shape = RoundedCornerShape(10.dp)
     Box(
         modifier = modifier
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .then(if (filled) Modifier.background(scheme.surfaceContainer) else Modifier)
+            .clip(shape)
+            .then(
+                when {
+                    // A mode that's on: the accent, so it reads at a glance.
+                    selected -> Modifier.background(scheme.primary.copy(alpha = 0.18f)).border(1.dp, scheme.primary, shape)
+                    filled -> Modifier.background(scheme.surfaceContainer)
+                    else -> Modifier
+                },
+            )
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics { this.contentDescription = description }
+            .semantics {
+                this.contentDescription = description
+                this.selected = selected
+            }
             .padding(12.dp)
             .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
         contentAlignment = Alignment.Center,
@@ -909,7 +942,7 @@ fun G7IconButton(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (tint == Color.Unspecified) scheme.onSurface else tint,
+            tint = if (selected) scheme.primary else if (tint == Color.Unspecified) scheme.onSurface else tint,
             modifier = Modifier.size(22.dp),
         )
     }
@@ -980,14 +1013,16 @@ fun <T> G7Tabs(
     ) {
         options.forEach { (value, label) ->
             val isSelected = value == selected
+            val shape = RoundedCornerShape(8.dp)
             Text(
                 label,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (isSelected) scheme.onSurface else scheme.onSurfaceVariant,
+                color = if (isSelected) scheme.primary else scheme.onSurfaceVariant,
                 maxLines = 1,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (isSelected) scheme.surfaceContainerHigh else Color.Transparent)
+                    .clip(shape)
+                    .background(if (isSelected) scheme.primary.copy(alpha = 0.18f) else Color.Transparent)
+                    .then(if (isSelected) Modifier.border(1.dp, scheme.primary, shape) else Modifier)
                     .clickable(role = Role.Tab) { onSelect(value) }
                     .semantics { this.selected = isSelected; role = Role.Tab }
                     .padding(horizontal = 12.dp, vertical = 8.dp),

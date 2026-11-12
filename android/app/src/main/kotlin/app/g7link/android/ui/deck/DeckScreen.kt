@@ -629,15 +629,19 @@ private fun DeckTileButton(
     }
     Surface(
         shape = if (quiet) RoundedCornerShape(12.dp) else MaterialTheme.shapes.large,
+        // A tile that's on (playing, muted) is drawn in its own tint, edge and all.
         color = if (quiet) {
-            (if (highlighted) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainer)
-                .copy(alpha = if (enabled) 1f else 0.55f)
+            if (highlighted) {
+                tileTint.copy(alpha = if (enabled) 0.18f else 0.10f)
+            } else {
+                MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (enabled) 1f else 0.55f)
+            }
         } else {
             palette.bg.copy(alpha = if (enabled) 1f else 0.55f)
         },
         contentColor = if (quiet) MaterialTheme.colorScheme.onSurface else palette.fg,
         border = if (quiet) {
-            null
+            if (highlighted) BorderStroke(2.dp, tileTint) else null
         } else {
             BorderStroke(
                 width = if (highlighted) 2.dp else 1.dp,

@@ -35,9 +35,9 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         radius: Theme.radiusSm
-        color: action.selected ? Theme.selection : (mouse.containsMouse ? Theme.raised : "transparent")
-        border.width: Theme.focusVisible(action) ? 2 : 0
-        border.color: Theme.focusRing
+        color: action.selected ? Theme.activeFill : (mouse.containsMouse ? Theme.raised : "transparent")
+        border.width: Theme.focusVisible(action) ? 2 : (action.selected ? 1 : 0)
+        border.color: Theme.focusVisible(action) ? Theme.focusRing : Theme.accent
     }
     Row {
         id: content
@@ -63,7 +63,8 @@ FocusScope {
             anchors.verticalCenter: parent.verticalCenter
             text: action.text
             role: "bodySmall"
-            color: action.muted && !mouse.containsMouse ? Theme.surfaceContentVariant : Theme.surfaceContent
+            color: action.selected ? Theme.accent
+                : action.muted && !mouse.containsMouse ? Theme.surfaceContentVariant : Theme.surfaceContent
         }
         Txt {
             visible: action.badge.length > 0
