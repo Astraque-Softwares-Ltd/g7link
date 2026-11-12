@@ -1270,11 +1270,51 @@ pub fn scroll(dx: f32, dy: f32) {
     }
 }
 
+/// How long a reading of the lock state is trusted. Keys and text arrive one
+/// event at a time, and asking logind is a D-Bus round trip.
+const LOCK_FRESH: Duration = Duration::from_millis(500);
+static LOCK_STATE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
+/// Keys a phone may still press while this PC is locked: media and volume.
+/// Anything else could type into the unlock prompt.
+const KEYS_WHILE_LOCKED: [&str; 6] = [
+    "XF86AudioRaiseVolume",
+    "XF86AudioLowerVolume",
+    "XF86AudioMute",
+    "XF86AudioPlay",
+    "XF86AudioNext",
+    "XF86AudioPrev",
+];
+
+fn allowed_while_locked(sym: &str, mods: &[KeyMod]) -> bool {
+    mods.is_empty() && KEYS_WHILE_LOCKED.contains(&sym)
+}
+
+/// Whether this session is locked, asking logind at most every `LOCK_FRESH`.
+fn session_locked_cached() -> bool {
+    if let Ok(state) = LOCK_STATE.lock()
+        && let Some((at, locked)) = *state
+        && at.elapsed() < LOCK_FRESH
+    {
+        return locked;
+    }
+    let locked = super::session_locked();
+    if let Ok(mut state) = LOCK_STATE.lock() {
+        *state = Some((Instant::now(), locked));
+    }
+    locked
+}
+
 /// Types arbitrary Unicode text (filtering carriage returns `\r`) without
 /// exposing the text on any subprocess command line (`ps` / `/proc/<pid>/cmdline`).
+/// Nothing is typed while this PC is locked.
 pub fn type_text(text: &str) {
     let cleaned: String = text.chars().filter(|&c| c != '\r').collect();
     if cleaned.is_empty() {
+        return;
+    }
+    if session_locked_cached() {
+        tracing::debug!("not typing text from a phone: this PC is locked");
         return;
     }
 
@@ -1473,7 +1513,8 @@ fn mod_x11_keysym_name(m: KeyMod) -> &'static CStr {
     }
 }
 
-/// Presses a named key or shortcut with optional modifiers.
+/// Presses a named key or shortcut with optional modifiers. While this PC is
+/// locked only media and volume keys go through.
 pub fn press_key(key: &str, mods: &[KeyMod]) {
     if key.eq_ignore_ascii_case("lock") {
         let _ = crate::links::power(PowerAction::Lock);
@@ -1487,6 +1528,10 @@ pub fn press_key(key: &str, mods: &[KeyMod]) {
         if !all_mods.contains(&m) {
             all_mods.push(m);
         }
+    }
+    if !allowed_while_locked(&sym, &all_mods) && session_locked_cached() {
+        tracing::debug!("not pressing a key from a phone: this PC is locked");
+        return;
     }
 
     if let Some(evdev_code) = key_code_for_sym(&sym) {
@@ -1701,6 +1746,24 @@ mod tests {
         assert_eq!(resolve_key("volume_up"), Some(("XF86AudioRaiseVolume".to_owned(), &[][..])));
         assert_eq!(resolve_key("print"), Some(("Print".to_owned(), &[][..])));
         assert!(resolve_key("unknown_key").is_none());
+    }
+
+    #[test]
+    fn only_media_and_volume_keys_pass_while_locked() {
+        let allowed = |key: &str, mods: &[KeyMod]| {
+            let (sym, preset) = resolve_key(key).expect("a known key");
+            let all: Vec<KeyMod> = preset.iter().chain(mods).copied().collect();
+            allowed_while_locked(&sym, &all)
+        };
+        for key in ["volume_up", "volume_down", "volume_mute", "play_pause", "next_track", "prev_track"] {
+            assert!(allowed(key, &[]), "{key}");
+        }
+        assert!(allowed("XF86AudioMute", &[]));
+        for key in ["a", "1", "enter", "backspace", "escape", "tab", "space", "paste", "f5", "page_down"] {
+            assert!(!allowed(key, &[]), "{key}");
+        }
+        assert!(!allowed("volume_up", &[KeyMod::Ctrl]));
+        assert!(!allowed("d", &[KeyMod::Win]));
     }
 
     #[test]

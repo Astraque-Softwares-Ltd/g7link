@@ -142,3 +142,10 @@ SlideAction  = "next" | "previous" | "start" | "stop" | "black"
 - Per-peer token buckets bound incoming rates (240 datagrams/s with burst 60;
   60 control requests/s with burst 30).
 - Implementations **MUST NOT** log typed `text` (v0 §11).
+- While the PC session is locked, the PC drops `text`, `key` and `slide`
+  input, so a phone can't type into the unlock prompt. Pointer moves, button
+  presses and scrolling still work, and so do the media and volume keys
+  (`volume_up`, `volume_down`, `volume_mute`, `play_pause`, `next_track`,
+  `prev_track`) without modifiers. The same holds for typing from a mirrored
+  PC screen and from deck tiles. The phone isn't told; the input is just
+  dropped.
