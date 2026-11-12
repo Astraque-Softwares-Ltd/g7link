@@ -21,7 +21,6 @@ object AppLanguage {
         "tr" to "Türkçe",
         "pt-BR" to "Português (Brasil)",
         "vi" to "Tiếng Việt",
-        "es" to "Español",
     )
 
     /** Whether the phone lets the app pick its own language. */
@@ -56,7 +55,6 @@ object AppLanguage {
             lower == "tr" || lower.startsWith("tr-") -> "tr"
             lower == "pt" || (lower.startsWith("pt-") && lower.endsWith("-br")) -> "pt-BR"
             lower == "vi" || lower.startsWith("vi-") -> "vi"
-            lower == "es" || lower.startsWith("es-") -> "es"
             else -> ""
         }
     }
