@@ -1438,6 +1438,7 @@ impl Shared {
                 let _ = s.send(env).await;
             }
             shared.send_media_state(&s).await;
+            shared.send_bt_media_state(&s).await;
             shared.send_held_notifications(&s).await;
             shared.send_notification_snapshot(&s).await;
             shared.send_call_state(&s).await;
@@ -2441,7 +2442,11 @@ impl Node {
         if !self.shared.store.is_paired(&peer)? {
             return Err(Error::NotPaired);
         }
-        self.shared.store.set_toggle(&peer, toggle, enabled)?;
+        if toggle == crate::media::BT_MEDIA_TOGGLE {
+            self.shared.set_bt_media(peer, enabled)?;
+        } else {
+            self.shared.store.set_toggle(&peer, toggle, enabled)?;
+        }
         self.shared.refresh_capabilities(&peer);
         if toggle == notifications::TOGGLE {
             self.notifications_toggled(peer, enabled);
@@ -2451,9 +2456,6 @@ impl Node {
         }
         if toggle == crate::toggles::TOGGLE {
             self.shared.toggles_toggled(peer, enabled);
-        }
-        if toggle == crate::media::BT_MEDIA_TOGGLE {
-            self.shared.send_bt_media(peer, enabled);
         }
         if (toggle == crate::actions::POWER_TOGGLE || toggle == crate::deck::INPUT_TOGGLE)
             && let Some(session) = self.shared.session(&peer)

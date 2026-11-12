@@ -22,7 +22,7 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, Result, events::NodeEvent, node::Shared, session::Session};
+use crate::{Error, Result, events::NodeEvent, features::role_of, node::Shared, session::Session};
 
 /// How long a Play on phone offer stays open for the phone to take.
 const WATCH_OFFER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -212,26 +212,69 @@ impl Shared {
         });
     }
 
-    /// Tells `peer` the user changed `bt_media` for it here, so it keeps the
-    /// same (`audio.bt_media`). Queued right away, so quick changes arrive in
-    /// the order they were made.
-    pub(crate) fn send_bt_media(&self, peer: DeviceId, on_pc: bool) {
-        let Some(session) = self.session(&peer) else { return };
-        let Ok(env) = Envelope::new(types::AUDIO_BT_MEDIA, &AudioBtMedia { on_pc }) else { return };
+    /// The user changed `bt_media` for `peer` here: kept with when, and sent to
+    /// `peer` if it's connected so it keeps the same (`audio.bt_media`). Queued
+    /// right away, so quick changes arrive in the order they were made.
+    pub(crate) fn set_bt_media(&self, peer: DeviceId, on_pc: bool) -> Result<()> {
+        let stamp = self.store.set_toggle_changed(&peer, BT_MEDIA_TOGGLE, on_pc, crate::now_unix_ms())?;
+        let Some(session) = self.session(&peer) else { return Ok(()) };
+        let body = AudioBtMedia { on_pc, changed_ms: u64::try_from(stamp).ok() };
+        let Ok(env) = Envelope::new(types::AUDIO_BT_MEDIA, &body) else { return Ok(()) };
         if let Err(error) = session.send_now(env) {
             tracing::debug!(peer = %peer.short(), %error, "couldn't send bt_media");
         }
+        Ok(())
     }
 
-    /// `peer` changed `bt_media` for this device: kept here too, and not sent
-    /// back, so the two never bounce it between them.
-    pub(crate) fn bt_media_from_peer(&self, peer: DeviceId, on_pc: bool) -> Result<()> {
+    /// Sends a newly connected phone or PC this device's `bt_media` for it and
+    /// when it was changed, so a change made on either while they were apart
+    /// reaches the other (the later one wins there). Nothing when it was never
+    /// changed, so a default never replaces a choice made on the other device.
+    pub(crate) async fn send_bt_media_state(&self, session: &Arc<Session>) {
+        let peer = session.peer;
+        if !self.phone_and_pc(&peer) {
+            return;
+        }
+        let Ok(Some((on_pc, stamp))) = self.store.stamped_toggle(&peer, BT_MEDIA_TOGGLE) else { return };
+        let Ok(stamp) = u64::try_from(stamp) else { return };
+        let body = AudioBtMedia { on_pc, changed_ms: Some(stamp) };
+        if let Ok(env) = Envelope::new(types::AUDIO_BT_MEDIA, &body) {
+            let _ = session.send(env).await;
+        }
+    }
+
+    /// Whether one of this device and `peer` is a phone and the other a PC.
+    fn phone_and_pc(&self, peer: &DeviceId) -> bool {
+        let local = role_of(&self.local.read().unwrap_or_else(|e| e.into_inner()).device);
+        let remote = self.store.get_peer(peer).ok().flatten().and_then(|p| role_of(&p.info));
+        matches!((local, remote), (Some(local), Some(remote)) if local != remote)
+    }
+
+    /// `peer` changed `bt_media` for this device: kept here too unless it was
+    /// changed here at the same time or later, and never sent back, so the two
+    /// don't bounce it between them.
+    pub(crate) fn bt_media_from_peer(&self, peer: DeviceId, body: AudioBtMedia) -> Result<()> {
         if !self.store.is_paired(&peer)? {
             return Ok(());
         }
-        let changed = self.toggle_on(&peer, BT_MEDIA_TOGGLE) != on_pc;
-        self.store.set_toggle(&peer, BT_MEDIA_TOGGLE, on_pc)?;
-        if changed {
+        let AudioBtMedia { on_pc, changed_ms } = body;
+        let before = self.toggle_on(&peer, BT_MEDIA_TOGGLE);
+        let set = match changed_ms {
+            Some(changed_ms) => {
+                let Ok(changed_ms) = i64::try_from(changed_ms) else {
+                    tracing::debug!(peer = %peer.short(), "ignored an audio.bt_media from too far ahead");
+                    return Ok(());
+                };
+                self.store.set_toggle_if_newer(&peer, BT_MEDIA_TOGGLE, on_pc, changed_ms)?
+            }
+            // A version that doesn't say when only sends changes as they're
+            // made, so this one is the latest.
+            None => {
+                self.store.set_toggle_changed(&peer, BT_MEDIA_TOGGLE, on_pc, crate::now_unix_ms())?;
+                true
+            }
+        };
+        if set && before != on_pc {
             self.emit(NodeEvent::DeviceToggleChanged {
                 device: peer,
                 toggle: BT_MEDIA_TOGGLE.to_owned(),

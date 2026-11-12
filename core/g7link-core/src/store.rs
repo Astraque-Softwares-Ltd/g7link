@@ -596,6 +596,9 @@ const MIGRATIONS: &[&str] = &[
         ON send_queue(status, next_retry_ms ASC, expires_at ASC);",
     // v8: a device's install-stable ID, the only key used to merge re-paired entries
     "ALTER TABLE peers ADD COLUMN install_id TEXT;",
+    // v9: when a toggle both devices keep the same (`bt_media`) was last changed,
+    // in Unix ms, so the later change wins when they reconnect.
+    "ALTER TABLE peer_toggles ADD COLUMN changed_ms INTEGER;",
 ];
 
 /// A paired device as stored on disk.
@@ -985,6 +988,62 @@ impl Store {
             )?;
             self.toggle_cache().remove(id);
             Ok(())
+        })
+    }
+
+    /// A toggle both devices keep the same and when it was last changed (Unix
+    /// ms), or `None` if it wasn't since devices started recording that.
+    pub fn stamped_toggle(&self, id: &DeviceId, toggle: &str) -> Result<Option<(bool, i64)>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT enabled, changed_ms FROM peer_toggles
+                 WHERE peer = ?1 AND toggle = ?2 AND changed_ms IS NOT NULL",
+                params![id.as_bytes().as_slice(), toggle],
+                |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)?)),
+            )
+            .optional()
+        })
+    }
+
+    /// Sets a toggle the user changed on this device, stamped `now` or just
+    /// after the last change this device knows of if that's later (its clock
+    /// was set back, or the other device's clock is ahead), so a change made
+    /// after another always wins. Returns the stamp.
+    pub fn set_toggle_changed(&self, id: &DeviceId, toggle: &str, enabled: bool, now: i64) -> Result<i64> {
+        self.with(|c| {
+            let stamp = last_changed_ms(c, id, toggle)?.map_or(now, |last| now.max(last.saturating_add(1)));
+            c.execute(
+                "INSERT INTO peer_toggles (peer, toggle, enabled, changed_ms) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(peer, toggle) DO UPDATE
+                 SET enabled = excluded.enabled, changed_ms = excluded.changed_ms",
+                params![id.as_bytes().as_slice(), toggle, i64::from(enabled), stamp],
+            )?;
+            self.toggle_cache().remove(id);
+            Ok(stamp)
+        })
+    }
+
+    /// Sets a toggle the other device changed at `changed_ms`, unless the one
+    /// here changed at the same time or later. Returns whether it was set.
+    pub fn set_toggle_if_newer(
+        &self,
+        id: &DeviceId,
+        toggle: &str,
+        enabled: bool,
+        changed_ms: i64,
+    ) -> Result<bool> {
+        self.with(|c| {
+            let set = c.execute(
+                "INSERT INTO peer_toggles (peer, toggle, enabled, changed_ms) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(peer, toggle) DO UPDATE
+                 SET enabled = excluded.enabled, changed_ms = excluded.changed_ms
+                 WHERE peer_toggles.changed_ms IS NULL OR peer_toggles.changed_ms < excluded.changed_ms",
+                params![id.as_bytes().as_slice(), toggle, i64::from(enabled), changed_ms],
+            )? > 0;
+            if set {
+                self.toggle_cache().remove(id);
+            }
+            Ok(set)
         })
     }
 
@@ -2765,6 +2824,16 @@ fn kind_from_str(kind: &str) -> DeviceKind {
     }
 }
 
+fn last_changed_ms(conn: &Connection, id: &DeviceId, toggle: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT changed_ms FROM peer_toggles WHERE peer = ?1 AND toggle = ?2",
+        params![id.as_bytes().as_slice(), toggle],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let current = usize::try_from(current).unwrap_or(usize::MAX);
@@ -2854,8 +2923,8 @@ fn cleanup_peers(
             }
             let stale_str = row.id.to_string();
             let _ = conn.execute(
-                "INSERT OR IGNORE INTO peer_toggles (peer, toggle, enabled)
-                 SELECT ?1, toggle, enabled FROM peer_toggles WHERE peer = ?2",
+                "INSERT OR IGNORE INTO peer_toggles (peer, toggle, enabled, changed_ms)
+                 SELECT ?1, toggle, enabled, changed_ms FROM peer_toggles WHERE peer = ?2",
                 params![winner_id.as_bytes().as_slice(), row.id.as_bytes().as_slice()],
             );
             let _ = conn.execute(
@@ -2971,6 +3040,40 @@ mod tests {
         // Paired again, it starts from the defaults.
         store.upsert_peer(&id, &info("Pixel"), 2).unwrap();
         assert_eq!(store.toggle(&id, "clipboard").unwrap(), None);
+    }
+
+    #[test]
+    fn a_toggle_kept_the_same_on_both_devices_keeps_the_later_change() {
+        let store = Store::in_memory().unwrap();
+        let id = DeviceId([4; 32]);
+        store.upsert_peer(&id, &info("Pixel"), 1).unwrap();
+        // Set the old way (before it was stamped): a stamped change wins.
+        store.set_toggle(&id, "bt_media", true).unwrap();
+        assert_eq!(store.stamped_toggle(&id, "bt_media").unwrap(), None);
+        assert!(store.set_toggle_if_newer(&id, "bt_media", false, 100).unwrap());
+        assert_eq!(store.toggle(&id, "bt_media").unwrap(), Some(false));
+        assert_eq!(store.stamped_toggle(&id, "bt_media").unwrap(), Some((false, 100)));
+
+        // Older or as old as what's here: kept as it is.
+        assert!(!store.set_toggle_if_newer(&id, "bt_media", true, 99).unwrap());
+        assert!(!store.set_toggle_if_newer(&id, "bt_media", true, 100).unwrap());
+        assert_eq!(store.toggle(&id, "bt_media").unwrap(), Some(false));
+        assert_eq!(store.stamped_toggle(&id, "bt_media").unwrap(), Some((false, 100)));
+
+        // Changed here with a clock behind the last change: stamped just after it.
+        assert_eq!(store.set_toggle_changed(&id, "bt_media", true, 50).unwrap(), 101);
+        assert_eq!(store.toggle(&id, "bt_media").unwrap(), Some(true));
+        assert_eq!(store.set_toggle_changed(&id, "bt_media", false, 500).unwrap(), 500);
+        assert_eq!(store.stamped_toggle(&id, "bt_media").unwrap(), Some((false, 500)));
+        // Never set, never stamped; a plain set keeps the stamp.
+        assert_eq!(store.stamped_toggle(&id, "clipboard").unwrap(), None);
+        store.set_toggle(&id, "bt_media", true).unwrap();
+        assert_eq!(store.stamped_toggle(&id, "bt_media").unwrap(), Some((true, 500)));
+        // A first change from the other device is set.
+        let other = DeviceId([5; 32]);
+        store.upsert_peer(&other, &info("Pixel 2"), 1).unwrap();
+        assert!(store.set_toggle_if_newer(&other, "bt_media", true, 7).unwrap());
+        assert_eq!(store.toggle(&other, "bt_media").unwrap(), Some(true));
     }
 
     #[test]

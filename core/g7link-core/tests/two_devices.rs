@@ -1600,6 +1600,144 @@ async fn bt_media_is_kept_the_same_on_both_devices() {
     }
 }
 
+fn bt_media_on(dev: &TestDevice, peer: g7link_core::DeviceId) -> bool {
+    dev.node.device_toggles(peer).unwrap().contains(&(g7link_core::BT_MEDIA_TOGGLE, true))
+}
+
+fn bt_media_from(from: g7link_core::DeviceId, to: bool) -> impl FnMut(&NodeEvent) -> Option<()> {
+    move |e| match e {
+        NodeEvent::DeviceToggleChanged { device, toggle, on }
+            if *device == from && toggle == g7link_core::BT_MEDIA_TOGGLE && *on == to =>
+        {
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+/// Waits a second, then fails if `dev` reported a `bt_media` change since
+/// its events were last read.
+async fn no_bt_media_change(dev: &mut TestDevice) {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    while let Ok(event) = dev.events.try_recv() {
+        assert!(!matches!(event, NodeEvent::DeviceToggleChanged { .. }), "{}: {event:?}", dev.name);
+    }
+}
+
+fn online(dev: &TestDevice) -> bool {
+    dev.node.paired_devices().unwrap().iter().any(|d| matches!(d.link, LinkState::Online { .. }))
+}
+
+async fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !done() {
+        assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Disconnects the phone from the PC ("Stop reconnecting") until [`together`].
+async fn apart(pc: &TestDevice, phone: &TestDevice) {
+    phone.node.set_reconnect(pc.node.device_id(), false).unwrap();
+    until("both offline", || !online(pc) && !online(phone)).await;
+}
+
+/// Connects the two again. Events aren't read, so a change sent on connect
+/// is still there to wait for.
+async fn together(pc: &TestDevice, phone: &TestDevice) {
+    phone.node.set_reconnect(pc.node.device_id(), true).unwrap();
+    until("both online", || online(pc) && online(phone)).await;
+}
+
+/// A `bt_media` change made while the other device is offline reaches it when
+/// they connect again.
+#[tokio::test(flavor = "multi_thread")]
+async fn bt_media_changed_while_apart_reaches_the_other_device() {
+    use g7link_core::BT_MEDIA_TOGGLE;
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.set_device_toggle(phone_id, BT_MEDIA_TOGGLE, true).unwrap();
+    wait_for(&mut phone, "on from the PC", bt_media_from(pc_id, true)).await;
+
+    apart(&pc, &phone).await;
+    phone.node.set_device_toggle(pc_id, BT_MEDIA_TOGGLE, false).unwrap();
+    assert!(bt_media_on(&pc, phone_id), "the PC doesn't know yet");
+    no_bt_media_change(&mut phone).await;
+
+    together(&pc, &phone).await;
+    wait_for(&mut pc, "off from the phone", bt_media_from(phone_id, false)).await;
+    assert!(!bt_media_on(&pc, phone_id) && !bt_media_on(&phone, pc_id));
+    // The PC's older "on", sent as they connected, didn't undo it.
+    no_bt_media_change(&mut phone).await;
+    assert!(!bt_media_on(&phone, pc_id));
+}
+
+/// Changed on both while apart: the later change wins on both.
+#[tokio::test(flavor = "multi_thread")]
+async fn bt_media_changed_on_both_while_apart_keeps_the_later_change() {
+    use g7link_core::BT_MEDIA_TOGGLE;
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    apart(&pc, &phone).await;
+    phone.node.set_device_toggle(pc_id, BT_MEDIA_TOGGLE, true).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    pc.node.set_device_toggle(phone_id, BT_MEDIA_TOGGLE, false).unwrap();
+    pc.node.set_device_toggle(phone_id, BT_MEDIA_TOGGLE, true).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    phone.node.set_device_toggle(pc_id, BT_MEDIA_TOGGLE, false).unwrap();
+    no_bt_media_change(&mut pc).await;
+    no_bt_media_change(&mut phone).await;
+
+    // The phone turned it off last.
+    together(&pc, &phone).await;
+    wait_for(&mut pc, "off from the phone", bt_media_from(phone_id, false)).await;
+    no_bt_media_change(&mut phone).await;
+    assert!(!bt_media_on(&pc, phone_id) && !bt_media_on(&phone, pc_id));
+
+    // And the other way round: the PC last.
+    apart(&pc, &phone).await;
+    phone.node.set_device_toggle(pc_id, BT_MEDIA_TOGGLE, false).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    pc.node.set_device_toggle(phone_id, BT_MEDIA_TOGGLE, true).unwrap();
+    no_bt_media_change(&mut pc).await;
+    no_bt_media_change(&mut phone).await;
+    together(&pc, &phone).await;
+    wait_for(&mut phone, "on from the PC", bt_media_from(pc_id, true)).await;
+    no_bt_media_change(&mut pc).await;
+    assert!(bt_media_on(&pc, phone_id) && bt_media_on(&phone, pc_id));
+}
+
+/// A device that never changed `bt_media` sends nothing on connect, so its
+/// default doesn't replace a choice made on the other one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bt_media_never_changed_doesnt_override_the_other_device() {
+    use g7link_core::BT_MEDIA_TOGGLE;
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    // Never changed on either: nothing happens on connect.
+    apart(&pc, &phone).await;
+    together(&pc, &phone).await;
+    no_bt_media_change(&mut pc).await;
+    no_bt_media_change(&mut phone).await;
+    assert!(!bt_media_on(&pc, phone_id) && !bt_media_on(&phone, pc_id), "both still off");
+
+    // Turned on on the PC while apart; the phone's default "off" stays home.
+    apart(&pc, &phone).await;
+    pc.node.set_device_toggle(phone_id, BT_MEDIA_TOGGLE, true).unwrap();
+    together(&pc, &phone).await;
+    wait_for(&mut phone, "on from the PC", bt_media_from(pc_id, true)).await;
+    no_bt_media_change(&mut pc).await;
+    assert!(bt_media_on(&pc, phone_id) && bt_media_on(&phone, pc_id));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn clipboard_text_goes_both_ways_with_consent() {
     let mut pc = device("Desktop", DeviceKind::Desktop).await;

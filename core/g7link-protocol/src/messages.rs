@@ -1352,10 +1352,15 @@ pub struct AudioPcmFrame {
 
 /// Whether a phone may play its media on a PC over Bluetooth
 /// (`audio.bt_media`, docs/protocol/media.md §5): the sender's `bt_media`
-/// toggle for the receiver, which keeps the same.
+/// toggle for the receiver, which keeps the same unless its own changed at
+/// the same time or later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioBtMedia {
     pub on_pc: bool,
+    /// When the toggle was changed, in Unix ms by the sender's clock. Absent
+    /// (older versions): it counts as changed when it arrives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_ms: Option<u64>,
 }
 
 // ---- Screen mirroring (docs/protocol/mirror.md) ----

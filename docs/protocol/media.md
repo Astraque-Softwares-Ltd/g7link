@@ -163,12 +163,37 @@ touched); on a phone, the same for that PC. Unlike other toggles, both
 devices keep it the same:
 
 ```
-t = "audio.bt_media"  b = { on_pc: bool }   // either way, no reply
+t = "audio.bt_media"  b = { on_pc: bool, changed_ms?: u64 }   // either way, no reply
 ```
 
-A device sends it when its user changes `bt_media` for a connected device,
-in the order of the changes. The receiver stores `on_pc` as its own
-`bt_media` toggle for the sender and does **not** send it back, so a change
-never bounces between the two. A change made while the other device is
-offline isn't sent later. A body that isn't `{ on_pc: bool }` is ignored.
+`changed_ms` is when the toggle was changed, in Unix milliseconds. Each
+device keeps it with its own toggle: a change the user makes there is
+stamped with the device's clock, or 1 ms after the stamp it already has if
+that's later (its clock was set back, or the other device's is ahead), so a
+change made after one the device knows of always wins.
+
+A device sends `audio.bt_media`:
+
+- when its user changes `bt_media` for a connected device, in the order of
+  the changes;
+- when a session with a phone (if it's a PC) or a PC (if it's a phone)
+  starts, with its current toggle for that device and its stamp, so a
+  change made on either while they were apart reaches the other. A device
+  whose toggle was never changed (no stamp) sends nothing, so its default
+  never replaces a choice made on the other one.
+
+The receiver stores `on_pc` as its own `bt_media` toggle for the sender,
+with `changed_ms` as its stamp, only if that's later than the stamp it has
+(or it has none); at the same time or earlier, it keeps its own. It never
+sends it back, so a change doesn't bounce between the two. When both were
+changed while apart, both end up with the later change: last writer wins by
+each device's clock, so with clocks far apart the change made on the device
+whose clock is ahead can win though it was made first.
+
+`changed_ms` is optional for older versions, which don't send it (and only
+send changes as they're made): without it, the change counts as made when
+it arrives. An older receiver ignores `changed_ms` and takes every
+`audio.bt_media`, including the one sent as a session starts. A body that
+isn't `{ on_pc: bool, changed_ms?: u64 }`, or a `changed_ms` above 2^63 − 1,
+is ignored.
 

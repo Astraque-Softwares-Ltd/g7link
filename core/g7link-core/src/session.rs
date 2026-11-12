@@ -722,7 +722,7 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             }
         }
         types::AUDIO_BT_MEDIA => match env.body::<AudioBtMedia>() {
-            Ok(AudioBtMedia { on_pc }) => shared.bt_media_from_peer(peer, on_pc)?,
+            Ok(body) => shared.bt_media_from_peer(peer, body)?,
             Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed audio.bt_media"),
         },
         other => {
