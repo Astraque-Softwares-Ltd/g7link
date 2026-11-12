@@ -1417,7 +1417,14 @@ mod imp {
                         for chunk in buf.as_chunks_mut::<4>().0 {
                             chunk[3] = 0xFF;
                         }
-                        *frame_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(buf.clone());
+                        // The new frame takes the slot, and the one it held
+                        // is read over next: no copy or allocation per frame.
+                        let mut slot = frame_slot.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(shown) = slot.as_mut() {
+                            std::mem::swap(shown, &mut buf);
+                        } else {
+                            *slot = Some(std::mem::replace(&mut buf, vec![0u8; frame_bytes]));
+                        }
                     }
                 })
                 .ok()?;
