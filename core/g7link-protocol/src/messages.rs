@@ -2955,9 +2955,10 @@ pub struct PhotoGet {
 impl PhotoGet {
     /// Requested item IDs in order: `id` (when set), then `ids`, each once.
     pub fn requested_ids(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::with_capacity(self.ids.len() + 1);
+        let mut seen = std::collections::HashSet::with_capacity(self.ids.len() + 1);
+        let mut out = Vec::with_capacity(self.ids.len() + 1);
         for id in std::iter::once(&self.id).chain(&self.ids) {
-            if !id.is_empty() && !out.contains(id) {
+            if !id.is_empty() && seen.insert(id.as_str()) {
                 out.push(id.clone());
             }
         }
@@ -4714,6 +4715,12 @@ mod tests {
         assert_eq!(get.requested_ids(), ["a", "b", "c"]);
         assert_eq!(PhotoGet { id: String::new(), ids: vec!["b".into()] }.requested_ids(), ["b"]);
         assert!(PhotoGet { id: String::new(), ids: Vec::new() }.requested_ids().is_empty());
+        // A long list is gone through once, keeping the first of each in order.
+        let ids: Vec<String> = (0..100_000).map(|i| format!("{:08}", i % 60_000)).collect();
+        let many = PhotoGet { id: "00000007".into(), ids }.requested_ids();
+        assert_eq!(many.len(), 60_000);
+        assert_eq!(many[..3], ["00000007", "00000000", "00000001"]);
+        assert_eq!(many[59_999], "00059999");
 
         // Dialled numbers: pauses and waits are fine, control characters aren't.
         assert!(CallDial { number: "+1 555 0100,,23#".into(), sim: None }.is_valid());

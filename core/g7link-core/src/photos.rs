@@ -228,7 +228,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         }
         types::PHOTOS_GET => {
             let get: PhotoGet = env.body()?;
-            let reply = match send_photos(shared, peer, get.requested_ids()).await {
+            let reply = match send_photos(shared, peer, get).await {
                 Ok(transfer) => Envelope::new(types::PHOTOS_SENDING, &PhotoSending { transfer })?,
                 Err(Error::Denied) => {
                     Envelope::error(ErrorCode::Denied, "photos or files are off for this device")
@@ -348,13 +348,18 @@ fn sanitize_thumbs(thumbs: Vec<PhotoThumb>) -> Vec<PhotoThumb> {
         .collect()
 }
 
-async fn send_photos(shared: &Arc<Shared>, peer: DeviceId, mut ids: Vec<String>) -> Result<String> {
+async fn send_photos(shared: &Arc<Shared>, peer: DeviceId, get: PhotoGet) -> Result<String> {
     if !shared.toggle_on(&peer, TOGGLE) {
         return Err(Error::Denied);
     }
     if !shared.we_offer(photos::READ) {
         return Err(Error::Unsupported);
     }
+    // A PC asks for at most one transfer's worth at a time.
+    if get.ids.len() > photos::MAX_GET_ITEMS {
+        return Err(Error::Protocol("too many photo IDs".into()));
+    }
+    let mut ids = get.requested_ids();
     ids.retain(|id| is_valid_photo_id(id));
     ids.truncate(photos::MAX_GET_ITEMS);
     if ids.is_empty() {
