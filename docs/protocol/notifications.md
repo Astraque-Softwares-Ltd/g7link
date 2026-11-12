@@ -149,7 +149,11 @@ t = "notify.removed"    b = { key: text }
   The PC **MUST NOT** alert for snapshot items.
 - **`notify.posted`** adds a notification, or replaces the one with the same
   `key` (an update, such as a new message in the same conversation). The PC
-  alerts unless `silent` is set.
+  alerts unless `silent` is set; a `silent` update of a notification the PC
+  already showed changes only its entry, without showing it again (chat apps
+  re-post their other conversations, quietly, whenever a message arrives).
+  The phone doesn't send a re-post that shows nothing new, and a
+  conversation's `when` is its latest message's time.
 - **`notify.removed`** removes it: the user or the app dismissed it on the
   phone. The PC removes its desktop notification too.
 
