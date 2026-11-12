@@ -619,22 +619,23 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
         }
         types::EVENT_DEVICE => {
             let info = env.body::<DeviceInfo>()?.sanitized();
-            shared.store.update_info(&peer, &info)?;
-            let effective = shared.store.get_peer(&peer).ok().flatten().map(|p| p.info).unwrap_or(info);
+            let effective = store_blocking(shared, move |shared| update_info(shared, peer, info)).await?;
             shared.emit(NodeEvent::PeerInfoChanged { device: peer, info: effective });
         }
         types::HELLO_UPDATE => {
             let update: HelloUpdate = env.body()?;
             if let Some(info) = update.device.map(DeviceInfo::sanitized) {
-                shared.store.update_info(&peer, &info)?;
-                let effective = shared.store.get_peer(&peer).ok().flatten().map(|p| p.info).unwrap_or(info);
+                let effective = store_blocking(shared, move |shared| update_info(shared, peer, info)).await?;
                 shared.emit(NodeEvent::PeerInfoChanged { device: peer, info: effective });
             }
             let caps = update.caps.map(crate::features::sanitize_capabilities);
             let power = update.power.map(PowerLevel::effective);
             let had_caps = caps.is_some();
             if caps.is_some() || power.is_some() {
-                shared.store.update_capabilities(&peer, caps.as_ref(), power)?;
+                store_blocking(shared, move |shared| {
+                    shared.store.update_capabilities(&peer, caps.as_ref(), power)
+                })
+                .await?;
             }
             if let Some(power) = power {
                 shared.emit(NodeEvent::PeerPowerChanged { device: peer, power });
@@ -746,6 +747,23 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
         }
     }
     Ok(())
+}
+
+/// Runs store work on a blocking thread: a busy database or a slow disk then
+/// holds up that thread, not one of the runtime's workers (two on Android),
+/// which every session's heartbeat needs.
+pub(crate) async fn store_blocking<T: Send + 'static>(
+    shared: &Arc<Shared>,
+    work: impl FnOnce(&Shared) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let shared = shared.clone();
+    tokio::task::spawn_blocking(move || work(&shared)).await.map_err(|e| Error::Internal(e.to_string()))?
+}
+
+/// Stores what `peer` says about itself; what the apps show (the stored info).
+fn update_info(shared: &Shared, peer: DeviceId, info: DeviceInfo) -> Result<DeviceInfo> {
+    shared.store.update_info(&peer, &info)?;
+    Ok(shared.store.get_peer(&peer).ok().flatten().map(|p| p.info).unwrap_or(info))
 }
 
 /// Background requests one peer may have running at a time.

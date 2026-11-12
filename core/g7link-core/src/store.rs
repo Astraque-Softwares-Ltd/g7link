@@ -905,7 +905,7 @@ impl Store {
                 ],
             )?;
             tx.execute(
-                "UPDATE timeline SET device_name = ?2 WHERE device_id = ?1",
+                "UPDATE timeline SET device_name = ?2 WHERE device_id = ?1 AND device_name IS NOT ?2",
                 params![id.as_bytes().as_slice(), info.name],
             )?;
             tx.commit()

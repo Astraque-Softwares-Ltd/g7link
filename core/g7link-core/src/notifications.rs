@@ -25,7 +25,7 @@ use crate::{
     events::NodeEvent,
     features::{Role, role_of},
     node::Shared,
-    session::Session,
+    session::{Session, store_blocking},
 };
 
 /// The device toggle that allows notifications for a device.
@@ -365,15 +365,19 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     .filter_map(Notification::sanitized)
                     .take(SNAPSHOT_ITEMS)
                     .collect();
-                let mut changed_thread = None;
-                for n in &items {
-                    let cached_icon = shared.notifications.peer_icon(peer, &n.app, n.icon.as_deref());
-                    if let Ok(Some(tid)) =
-                        shared.store.upsert_chat_notification(&peer, n, cached_icon.as_deref(), true)
-                    {
-                        changed_thread = Some(tid);
+                let (items, changed_thread) = store_blocking(shared, move |shared| {
+                    let mut changed_thread = None;
+                    for n in &items {
+                        let cached_icon = shared.notifications.peer_icon(peer, &n.app, n.icon.as_deref());
+                        if let Ok(Some(tid)) =
+                            shared.store.upsert_chat_notification(&peer, n, cached_icon.as_deref(), true)
+                        {
+                            changed_thread = Some(tid);
+                        }
                     }
-                }
+                    Ok((items, changed_thread))
+                })
+                .await?;
                 if let Some(thread) = changed_thread {
                     shared.emit(NodeEvent::SmsChanged { device: peer, thread: Some(thread) });
                 }
@@ -385,11 +389,19 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 && !shared.notifications.is_holding()
                 && let Some(notification) = env.body::<Notification>()?.sanitized()
             {
-                let cached_icon =
-                    shared.notifications.peer_icon(peer, &notification.app, notification.icon.as_deref());
-                if let Ok(Some(thread)) =
-                    shared.store.upsert_chat_notification(&peer, &notification, cached_icon.as_deref(), false)
-                {
+                let (notification, chat) = store_blocking(shared, move |shared| {
+                    let cached_icon =
+                        shared.notifications.peer_icon(peer, &notification.app, notification.icon.as_deref());
+                    let chat = shared.store.upsert_chat_notification(
+                        &peer,
+                        &notification,
+                        cached_icon.as_deref(),
+                        false,
+                    );
+                    Ok((notification, chat))
+                })
+                .await?;
+                if let Ok(Some(thread)) = chat {
                     shared.emit(NodeEvent::SmsChanged { device: peer, thread: Some(thread) });
                 }
                 shared.emit(NodeEvent::NotificationPosted { device: peer, notification });
@@ -401,7 +413,12 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 && !key.is_empty()
                 && key.len() <= g7link_protocol::messages::notify_limits::KEY_BYTES
             {
-                if let Ok(Some(thread)) = shared.store.mark_chat_notification_removed(&peer, &key) {
+                let (key, chat) = store_blocking(shared, move |shared| {
+                    let chat = shared.store.mark_chat_notification_removed(&peer, &key);
+                    Ok((key, chat))
+                })
+                .await?;
+                if let Ok(Some(thread)) = chat {
                     shared.emit(NodeEvent::SmsChanged { device: peer, thread: Some(thread) });
                 }
                 shared.emit(NodeEvent::NotificationRemoved { device: peer, key });
