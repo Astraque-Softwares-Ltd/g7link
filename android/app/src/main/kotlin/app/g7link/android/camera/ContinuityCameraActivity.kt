@@ -86,6 +86,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.G7LinkApplication
 import app.g7link.android.R
+import app.g7link.android.media.sampleSizeToCover
 import app.g7link.android.ui.Preferences
 import app.g7link.android.ui.detached
 import app.g7link.android.ui.theme.LocalReducedMotion
@@ -890,26 +891,35 @@ private fun extractUprightLuma(image: ImageProxy): Triple<ByteArray, Int, Int>? 
     Triple(out, dstW, dstH)
 }.getOrNull()
 
+/**
+ * The capture, upright and at most [MAX_OUTPUT_PX] on its long side. A JPEG is decoded at
+ * the coarsest power-of-two size still at least that large, then rotated, mirrored and
+ * scaled in one pass, so no full-resolution copy is ever held twice.
+ */
 private fun imageProxyToBitmap(image: ImageProxy, mirrorHorizontally: Boolean): Bitmap? = runCatching {
     val rawBitmap = if (image.format == ImageFormat.JPEG || image.planes.size == 1) {
         val buf = image.planes[0].buffer
         val bytes = ByteArray(buf.remaining()).also { buf.get(it) }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val sample = sampleSizeToCover(bounds.outWidth, bounds.outHeight, MAX_OUTPUT_PX, MAX_OUTPUT_PX)
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
     } else {
         yuv420ToBitmap(image)
     } ?: return null
 
     val rot = ((image.imageInfo.rotationDegrees % 360) + 360) % 360
-    val rotated = if (rot != 0 || mirrorHorizontally) {
-        val matrix = Matrix().apply {
-            if (rot != 0) postRotate(rot.toFloat())
-            if (mirrorHorizontally) postScale(-1f, 1f)
-        }
-        Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
-    } else {
-        rawBitmap
+    val longest = max(rawBitmap.width, rawBitmap.height)
+    val scale = if (longest > MAX_OUTPUT_PX) MAX_OUTPUT_PX.toFloat() / longest.toFloat() else 1f
+    if (rot == 0 && !mirrorHorizontally && scale == 1f) return rawBitmap
+    val matrix = Matrix().apply {
+        if (scale != 1f) postScale(scale, scale)
+        if (rot != 0) postRotate(rot.toFloat())
+        if (mirrorHorizontally) postScale(-1f, 1f)
     }
-    scaleDownIfNeeded(rotated, MAX_OUTPUT_PX)
+    val upright = Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+    if (upright !== rawBitmap) rawBitmap.recycle()
+    upright
 }.getOrNull()
 
 private fun yuv420ToBitmap(image: ImageProxy): Bitmap? {
