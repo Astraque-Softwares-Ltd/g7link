@@ -204,10 +204,14 @@ internal class PhonePlatform(
     // Real events when Elevated runs; gestures through the accessibility service otherwise.
     override fun mirrorInput(pcId: String, session: UInt, requested: MirrorInputEvent) {
         // No control while the phone is locked; the PC hears why once per lock.
-        when (lockGate.check(PhoneLock.locked(context), pcId, session)) {
-            PhoneLock.Input.Pass -> {}
-            PhoneLock.Input.Drop -> return
-            PhoneLock.Input.DropAndTell -> return onLockedInput(pcId, session)
+        // Its keyboard going away still goes through.
+        val releasing = requested is MirrorInputEvent.Key && requested.key == "keyboard_off"
+        if (!releasing) {
+            when (lockGate.check(PhoneLock.locked(context), pcId, session)) {
+                PhoneLock.Input.Pass -> {}
+                PhoneLock.Input.Drop -> return
+                PhoneLock.Input.DropAndTell -> return onLockedInput(pcId, session)
+            }
         }
         lastMirrorInput = pcId to session
         // Send needs the accessibility service. Without it, it's a plain Enter.
