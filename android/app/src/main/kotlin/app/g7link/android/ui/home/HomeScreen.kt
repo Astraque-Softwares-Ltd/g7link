@@ -1229,33 +1229,73 @@ internal fun PcSoundRows(
     val volumeLabel = stringResource(R.string.pc_audio_volume)
 
     if (mediaSummary != null) {
-        G7Row(
-            label = mediaSummary.title,
-            sublabel = mediaSummary.subtitle.takeIf { it.isNotBlank() },
-            icon = G7Icons.music,
-            tint = tints.pink,
-            highlighted = highlighted,
+        // What plays: artwork and the title on their own line, the controls
+        // centred under them, so a long title never squeezes them.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                .then(if (highlighted) Modifier.background(scheme.surfaceContainerHigh) else Modifier)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            G7IconButton(
-                icon = G7Icons.previous,
-                contentDescription = stringResource(R.string.media_previous),
-                onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.PREVIOUS) },
-            )
-            G7IconButton(
-                icon = if (mediaSummary.playing) G7Icons.pause else G7Icons.play,
-                contentDescription = stringResource(if (mediaSummary.playing) R.string.media_pause else R.string.media_play),
-                onClick = {
-                    pcMedia?.pressed(
-                        pcId,
-                        if (mediaSummary.playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY,
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                val artwork = mediaSummary.artwork
+                if (artwork != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = remember(artwork) { artwork.asImageBitmap() },
+                        contentDescription = null,
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        modifier = Modifier.size(44.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
                     )
-                },
-            )
-            G7IconButton(
-                icon = G7Icons.next,
-                contentDescription = stringResource(R.string.media_next),
-                onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.NEXT) },
-            )
+                } else {
+                    Icon(G7Icons.music, contentDescription = null, tint = tints.pink, modifier = Modifier.size(22.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        mediaSummary.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (mediaSummary.subtitle.isNotBlank()) {
+                        Text(
+                            mediaSummary.subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                G7IconButton(
+                    icon = G7Icons.previous,
+                    contentDescription = stringResource(R.string.media_previous),
+                    onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.PREVIOUS) },
+                )
+                G7IconButton(
+                    icon = if (mediaSummary.playing) G7Icons.pause else G7Icons.play,
+                    contentDescription = stringResource(if (mediaSummary.playing) R.string.media_pause else R.string.media_play),
+                    filled = true,
+                    onClick = {
+                        pcMedia?.pressed(
+                            pcId,
+                            if (mediaSummary.playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY,
+                        )
+                    },
+                )
+                G7IconButton(
+                    icon = G7Icons.next,
+                    contentDescription = stringResource(R.string.media_next),
+                    onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.NEXT) },
+                )
+            }
         }
     }
     Row(

@@ -551,7 +551,11 @@ Item {
                         IconButton {
                             iconPath: Icons.copy
                             label: qsTr("Copy number")
-                            onClicked: PhoneCall.copy(numRow.modelData.number)
+                            doneLabel: qsTr("Copied")
+                            onClicked: {
+                                PhoneCall.copy(numRow.modelData.number)
+                                flashDone()
+                            }
                         }
                         IconButton {
                             iconPath: Icons.messages

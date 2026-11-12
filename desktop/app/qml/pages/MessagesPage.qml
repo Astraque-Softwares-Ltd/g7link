@@ -1398,7 +1398,11 @@ Item {
             Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
             iconPath: Icons.copy
             label: qsTr("Copy text")
-            onClicked: Messages.copy(bubble.message.body)
+            doneLabel: qsTr("Copied")
+            onClicked: {
+                Messages.copy(bubble.message.body)
+                flashDone()
+            }
         }
         // A one-time code, one click from the clipboard.
         Item {

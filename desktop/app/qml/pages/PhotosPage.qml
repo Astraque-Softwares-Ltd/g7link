@@ -517,13 +517,21 @@ Item {
                 onClicked: page.clearSelection()
             }
             Button {
+                id: copySelected
+                property bool copied: false
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !page.confirmDelete
                 variant: "outline"
                 size: "sm"
-                text: qsTr("Copy")
+                iconPath: copied ? Icons.check : ""
+                text: copied ? qsTr("Copied") : qsTr("Copy")
                 enabled: page.canCopySelection
-                onClicked: Photos.copyItem(page.selectedIds[0])
+                onClicked: {
+                    Photos.copyItem(page.selectedIds[0])
+                    copied = true
+                    copiedSelectedTimer.restart()
+                }
+                Timer { id: copiedSelectedTimer; interval: 1600; onTriggered: copySelected.copied = false }
             }
             Button {
                 anchors.verticalCenter: parent.verticalCenter
@@ -768,13 +776,23 @@ Item {
                 spacing: 8
 
                 Button {
+                    id: copyViewed
+                    property bool copied: false
                     anchors.verticalCenter: parent.verticalCenter
                     visible: page.viewedItem !== null && !page.viewedItem.isVideo
                     variant: "outline"
                     size: "sm"
-                    text: qsTr("Copy")
+                    iconPath: copied ? Icons.check : ""
+                    text: copied ? qsTr("Copied") : qsTr("Copy")
                     enabled: !Photos.saving
-                    onClicked: if (page.viewedItem) Photos.copyItem(page.viewedItem.id)
+                    onClicked: {
+                        if (!page.viewedItem)
+                            return
+                        Photos.copyItem(page.viewedItem.id)
+                        copied = true
+                        copiedViewedTimer.restart()
+                    }
+                    Timer { id: copiedViewedTimer; interval: 1600; onTriggered: copyViewed.copied = false }
                 }
                 Button {
                     anchors.verticalCenter: parent.verticalCenter

@@ -553,7 +553,11 @@ Item {
                         visible: rowRoot.canCopy
                         iconPath: Icons.copy
                         label: qsTr("Copy")
-                        onClicked: TimelineModel.copyEntry(rowRoot.entryId)
+                        doneLabel: qsTr("Copied")
+                        onClicked: {
+                            TimelineModel.copyEntry(rowRoot.entryId)
+                            flashDone()
+                        }
                     }
                     RowButton {
                         visible: rowRoot.canSendAgain

@@ -13,10 +13,24 @@ FocusScope {
     property color iconColor: tonal ? Theme.secondaryContainerContent : Theme.surfaceContentVariant
     // A mode this button turns on and off is on: drawn in the accent.
     property bool checked: false
+    // A one-shot action that worked (Copy): a green check and `doneLabel`
+    // in the button itself for a moment, from flashDone().
+    property string doneLabel: ""
+    property bool done: false
+    function flashDone() {
+        done = true
+        doneTimer.restart()
+        if (doneLabel.length > 0) {
+            tooltipPill.reposition()
+            tooltipPill.shown = true
+            tipAutoHide.restart()
+        }
+    }
+    Timer { id: doneTimer; interval: 1600; onTriggered: button.done = false }
     signal clicked
 
     readonly property bool hasText: text.length > 0
-    readonly property string effectiveTip: label.length > 0 ? label : text
+    readonly property string effectiveTip: done && doneLabel.length > 0 ? doneLabel : (label.length > 0 ? label : text)
 
     implicitWidth: hasText ? contentRow.implicitWidth + (Theme.quiet ? 20 : 24) : (Theme.quiet ? 30 : 34)
     implicitHeight: Theme.quiet ? 30 : 34
@@ -67,8 +81,8 @@ FocusScope {
             visible: !button.hasText
             anchors.centerIn: parent
             width: button.iconSize; height: button.iconSize
-            path: button.iconPath
-            color: button.checked ? Theme.accent : button.iconColor
+            path: button.done ? Icons.check : button.iconPath
+            color: button.done ? Theme.tintGreen : button.checked ? Theme.accent : button.iconColor
         }
         Row {
             id: contentRow
@@ -79,8 +93,8 @@ FocusScope {
                 visible: button.iconPath.length > 0
                 anchors.verticalCenter: parent.verticalCenter
                 width: button.iconSize; height: button.iconSize
-                path: button.iconPath
-                color: button.checked ? Theme.accent : button.iconColor
+                path: button.done ? Icons.check : button.iconPath
+                color: button.done ? Theme.tintGreen : button.checked ? Theme.accent : button.iconColor
             }
             Txt {
                 anchors.verticalCenter: parent.verticalCenter

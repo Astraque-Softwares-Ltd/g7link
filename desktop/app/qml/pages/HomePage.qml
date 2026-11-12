@@ -2362,7 +2362,11 @@ Item {
                                 IconButton {
                                     iconPath: Icons.copy
                                     label: qsTr("Copy")
-                                    onClicked: AppController.copyClipboardHistory(clipRow.modelData.id)
+                                    doneLabel: qsTr("Copied")
+                                    onClicked: {
+                                        AppController.copyClipboardHistory(clipRow.modelData.id)
+                                        flashDone()
+                                    }
                                 }
                                 IconButton {
                                     iconPath: Icons.pin
