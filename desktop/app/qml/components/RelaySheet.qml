@@ -79,7 +79,7 @@ Sheet {
 
     Column {
         width: parent.width
-        spacing: Theme.quiet ? 4 : 8
+        spacing: 4
 
         Item {
             width: parent.width
@@ -88,7 +88,7 @@ Sheet {
                 id: heading
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("Relay servers")
-                role: Theme.quiet ? "title" : "headline"
+                role: "title"
             }
             Spinner {
                 id: busy
