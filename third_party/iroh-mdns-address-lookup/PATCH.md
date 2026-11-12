@@ -15,6 +15,16 @@ one the OS picks for multicast. On a PC with Docker, libvirt or VPN adapters
 ranked above Wi-Fi, that's a virtual adapter, so the PC never hears or
 answers phones on the LAN.
 
+When an address goes away, the patch starts a fresh swarm-discovery
+`Discoverer` rather than calling its `remove_interface_v4`. That call (in
+swarm-discovery 0.6.3) drops the socket from its map but leaves the
+interface's receiver task running, and the receiver holds the socket, so a
+UDP socket bound to the old address on port 5353 stayed open for every
+network the PC left (and another piled up each time an address came back).
+Dropping the old `Discoverer` aborts its receivers, closing their sockets.
+If upstream swarm-discovery stops the receiver itself, this can go back to
+`remove_interface_v4`.
+
 The tests in `src/lib.rs` are upstream's and need its dev-dependencies, so
 they aren't built here.
 

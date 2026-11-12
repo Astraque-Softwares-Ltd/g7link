@@ -324,7 +324,8 @@ impl MdnsAddressLookup {
         let (send, mut recv) = mpsc::channel(64);
         let task_sender = send.clone();
         let rt = tokio::runtime::Handle::current();
-        let address_lookup = MdnsAddressLookup::spawn_discoverer(
+        let discoverer_service_name = service_name.clone();
+        let mut address_lookup = MdnsAddressLookup::spawn_discoverer(
             endpoint_id,
             advertise,
             task_sender.clone(),
@@ -356,8 +357,35 @@ impl MdnsAddressLookup {
                         tracing::trace!(?data, "Mdns address changed");
                         if let Some(include) = multicast_interfaces {
                             let wanted = local_ipv4s(data.ip_addrs(), include);
-                            for gone in interfaces.difference(&wanted) {
-                                address_lookup.remove_interface_v4(*gone);
+                            // G7 Link patch: swarm-discovery's `remove_interface_v4`
+                            // leaves that interface's receiver running, and the
+                            // receiver keeps its socket (bound to the old
+                            // address, port 5353) open, so sockets piled up as
+                            // networks changed. When an interface goes, start
+                            // a fresh discoverer instead: dropping the old one
+                            // aborts its receivers, closing their sockets. The
+                            // addresses and TXT attributes are set again below.
+                            if interfaces.difference(&wanted).next().is_some() {
+                                match MdnsAddressLookup::spawn_discoverer(
+                                    endpoint_id,
+                                    advertise,
+                                    task_sender.clone(),
+                                    BTreeSet::new(),
+                                    discoverer_service_name.clone(),
+                                    cadence,
+                                    &rt,
+                                ) {
+                                    Ok(fresh) => {
+                                        address_lookup = fresh;
+                                        interfaces.clear();
+                                    }
+                                    Err(err) => {
+                                        warn!("Failed to restart mDNS for a gone interface: {err:?}");
+                                        for gone in interfaces.difference(&wanted) {
+                                            address_lookup.remove_interface_v4(*gone);
+                                        }
+                                    }
+                                }
                             }
                             for new in wanted.difference(&interfaces) {
                                 address_lookup.add_interface_v4(*new);
