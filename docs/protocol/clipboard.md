@@ -64,7 +64,35 @@ after 60 seconds.
 Receivers offer the image the way their platform's apps paste it best:
 Linux as `image/png`; Android as a content URI from the app's own provider.
 
-## 4. Rules
+## 4. What the PC copied
+
+```
+t = "clip.changed"   b = { kind: "text" | "image" | "private", ?preview: text }
+```
+
+**`clip.changed`** (PC → phone, one way, no reply) says that something new
+is on the PC's clipboard, so the phone can offer to paste it on the PC: its
+remote shows a Paste chip that sends the paste shortcut (`paste`,
+[remote](remote.md)). A PC sends it to each connected phone with the
+`clipboard` toggle on, for copies made on the PC (not for what a phone just
+put there), at most once a second: a burst of copies goes as its last.
+
+- `kind`: `text`, `image`, or `private` for a clip its app marked private
+  (§5), of which nothing else is told.
+- `preview`: the text's first line that isn't blank, at most 80 characters
+  (cut with `…`), with no control characters. Only for `text`, and only to a
+  phone the PC sends what the user copies anyway (automatic sending on).
+
+A receiver drops a `clip.changed` with a preview out of these bounds, or a
+`kind` it doesn't know, and one from a PC whose `clipboard` toggle is off.
+
+A Linux PC on GNOME's Wayland, which tells other apps nothing of copies,
+learns of them from G7 Linux's GNOME Shell extension (its `ClipboardChanged`
+signal), which reports a private clip as `application/x-vicinae-concealed`
+with no content. A Linux PC pastes into a terminal with Ctrl+Shift+V when
+the accessibility bus says a terminal has the focus.
+
+## 5. Rules
 
 - **Consent.** Each device sends and accepts only with the `clipboard`
   toggle on for the other device.

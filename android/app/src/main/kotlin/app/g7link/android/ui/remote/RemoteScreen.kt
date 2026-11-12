@@ -73,6 +73,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -120,6 +121,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
+import app.g7link.android.core.PcClipNotice
 import app.g7link.android.core.WakeState
 import app.g7link.android.ui.home.PcSoundRows
 import app.g7link.android.ui.home.linkText
@@ -131,6 +133,7 @@ import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.g7Tints
+import app.g7link.core.PcClipKind
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlinx.coroutines.Job
@@ -199,6 +202,24 @@ fun RemoteScreen(
             keyboardOpenedForPc = false
         }
     }
+    // Something copied on the PC after the remote opened can be pasted there from
+    // here: a chip for a while, and the Paste key in the accent until it's used.
+    val openedAt = rememberSaveable(device.id) { System.currentTimeMillis() }
+    var pastedUpTo by rememberSaveable(device.id) { mutableLongStateOf(0L) }
+    val pcClip by remember(core, device.id) {
+        core.state.map { it.pcClip[device.id] }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = null)
+    val freshClip = pcClip?.takeIf { it.at > openedAt && it.at > pastedUpTo }
+    var pasteChip by remember(device.id) { mutableStateOf<PcClipNotice?>(null) }
+    LaunchedEffect(freshClip) {
+        pasteChip = freshClip
+        if (freshClip != null) {
+            delay(PASTE_CHIP_MS)
+            pasteChip = null
+        }
+    }
+    val onPasted: () -> Unit = { pcClip?.let { pastedUpTo = it.at } }
+
     DisposableEffect(view, touchpadOnly) {
         val window = (context as? Activity)?.window
         val bars = window?.let { WindowCompat.getInsetsController(it, view) }
@@ -309,6 +330,9 @@ fun RemoteScreen(
                         showKeyboard = it
                         keyboardOpenedForPc = false
                     },
+                    pasteChip = pasteChip,
+                    pasteReady = freshClip != null,
+                    onPasted = onPasted,
                     modifier = Modifier.fillMaxSize(),
                 )
                 RemoteMode.AirMouse -> AirMouseView(
@@ -634,6 +658,9 @@ private fun TouchpadView(
     onTouchpadOnly: (Boolean) -> Unit,
     showKeyboard: Boolean,
     onShowKeyboard: (Boolean) -> Unit,
+    pasteChip: PcClipNotice?,
+    pasteReady: Boolean,
+    onPasted: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // What's been typed since the last Enter: a real field, so the keyboard
@@ -686,6 +713,16 @@ private fun TouchpadView(
                 )
             }
 
+            if (pasteChip != null) {
+                PasteChip(
+                    clip = pasteChip,
+                    onPaste = {
+                        core.remoteKey(pcId, "paste", emptyList(), onStatus)
+                        onPasted()
+                    },
+                )
+            }
+
             // The mouse buttons, and in landscape the switch to the touchpad alone
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -728,6 +765,7 @@ private fun TouchpadView(
             SpecialKeysBar(
                 activeMods = activeMods,
                 showExtraKeys = showKeyboard,
+                pasteReady = pasteReady,
                 onToggleMod = { mod ->
                     if (mod in activeMods) activeMods.remove(mod) else activeMods.add(mod)
                 },
@@ -735,6 +773,7 @@ private fun TouchpadView(
                     val mods = forceMods ?: activeMods.toList()
                     core.remoteKey(pcId, key, mods, onStatus)
                     if (forceMods == null) activeMods.clear()
+                    if (key == "paste") onPasted()
                 },
             )
 
@@ -1653,6 +1692,7 @@ private fun TypingComposer(
 private fun SpecialKeysBar(
     activeMods: List<String>,
     showExtraKeys: Boolean,
+    pasteReady: Boolean,
     onToggleMod: (String) -> Unit,
     onKey: (key: String, forceMods: List<String>?) -> Unit,
 ) {
@@ -1772,17 +1812,21 @@ private fun SpecialKeysBar(
             ) {
                 for ((key, label, a11yLabel) in extra) {
                     val isShortcut = key == "copy" || key == "paste"
+                    // Something new was copied on the PC: the key that pastes it stands out.
+                    val ready = key == "paste" && pasteReady
+                    val scheme = MaterialTheme.colorScheme
                     Surface(
                         shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surface,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        color = if (ready) scheme.primary.copy(alpha = 0.18f) else scheme.surface,
+                        contentColor = if (ready) scheme.primary else scheme.onSurface,
+                        border = BorderStroke(1.dp, if (ready) scheme.primary else scheme.outlineVariant),
                         modifier = Modifier
                             .weight(1f)
                             .height(36.dp)
                             .semantics(mergeDescendants = true) {
                                 role = Role.Button
                                 contentDescription = a11yLabel
+                                if (ready) selected = true
                             }
                             .clickable(role = Role.Button) { onKey(key, if (isShortcut) emptyList() else null) },
                     ) {
@@ -1799,6 +1843,26 @@ private fun SpecialKeysBar(
             }
         }
     }
+}
+
+/** How long the Paste chip stays for something copied on the PC. */
+private const val PASTE_CHIP_MS = 30_000L
+
+/** Something just copied on the PC: one tap pastes it there. */
+@Composable
+private fun PasteChip(clip: PcClipNotice, onPaste: () -> Unit) {
+    G7Row(
+        label = stringResource(R.string.remote_key_paste),
+        sublabel = when (clip.kind) {
+            PcClipKind.TEXT -> clip.preview
+            PcClipKind.IMAGE -> stringResource(R.string.clipboard_history_image)
+            PcClipKind.PRIVATE -> stringResource(R.string.remote_paste_hidden)
+        },
+        icon = G7Icons.clipboard,
+        tint = g7Tints().teal,
+        active = true,
+        onClick = onPaste,
+    )
 }
 
 @Composable

@@ -587,6 +587,7 @@
     <string name="remote_key_del_desc">Entfernen</string>
     <string name="remote_key_copy">Kopieren</string>
     <string name="remote_key_paste">Einfügen</string>
+    <string name="remote_paste_hidden">Verborgen</string>
     <string name="remote_key_undo">Rückgängig</string>
 
     <!-- Webcam formatting -->

@@ -11,6 +11,7 @@ import app.g7link.core.Link
 import app.g7link.core.Notification
 import app.g7link.core.PairedDevice
 import app.g7link.core.PairingFailure
+import app.g7link.core.PcClipKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -91,6 +92,23 @@ class CoreStateTest {
         // Unknown devices are ignored; removal drops the device.
         state = state.reduce(Event.LinkChanged("zz", Link.Connecting)).reduce(Event.DeviceRemoved("b"))
         assertEquals(listOf("a"), state.devices.map { it.id })
+    }
+
+    @Test
+    fun aPcsLatestClipIsKeptWhileItIsOnline() {
+        var state = CoreState()
+            .reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
+            .reduce(Event.LinkChanged("a", Link.Online(relayed = false, usb = false, rttMs = 5u)))
+            .reduce(Event.PcClip("a", PcClipKind.TEXT, "Meeting at 3"))
+        assertEquals(PcClipKind.TEXT, state.pcClip["a"]!!.kind)
+        assertEquals("Meeting at 3", state.pcClip["a"]!!.preview)
+
+        state = state.reduce(Event.PcClip("a", PcClipKind.PRIVATE, null))
+        assertEquals("the next replaces it", PcClipKind.PRIVATE, state.pcClip["a"]!!.kind)
+        assertNull(state.pcClip["a"]!!.preview)
+
+        state = state.reduce(Event.LinkChanged("a", Link.Offline(null)))
+        assertNull("a PC that went away can't paste", state.pcClip["a"])
     }
 
     @Test

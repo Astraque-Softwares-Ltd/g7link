@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use g7link_core::{DeviceId, LinkState, NodeEvent, RemoteInput};
+use g7link_core::{DeviceId, KeyMod, LinkState, NodeEvent, RemoteInput, remote_keys};
 
 use crate::{core_host, state::Changes, sys};
 
@@ -33,6 +33,14 @@ pub fn handle_input(peer: &DeviceId, input: RemoteInput) {
         RemoteInput::Button { button, action } => sys::input::mouse_button(button, action),
         RemoteInput::Scroll { dx, dy } => sys::input::scroll(dx, dy),
         RemoteInput::Text { text } => sys::input::type_text(&text),
+        // Terminals paste with Ctrl+Shift+V: Ctrl+V is a key of their own.
+        RemoteInput::Key { key, mods }
+            if mods.is_empty()
+                && key.eq_ignore_ascii_case(remote_keys::PASTE)
+                && sys::text_focus::in_terminal() =>
+        {
+            sys::input::press_key("v", &[KeyMod::Ctrl, KeyMod::Shift])
+        }
         RemoteInput::Key { key, mods } => sys::input::press_key(&key, &mods),
         RemoteInput::Slide { action } => sys::input::slide(action),
         RemoteInput::Laser { on: true, x, y } => {

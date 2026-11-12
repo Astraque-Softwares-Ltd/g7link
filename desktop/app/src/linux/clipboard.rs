@@ -2,7 +2,8 @@
 //! The Linux clipboard (`wl-copy`/`wl-paste` on Wayland, `xclip`/`xsel` on X11,
 //! with an in-memory fallback for headless test environments): watching for
 //! copied text and images, reading them, and writing what a phone sent
-//! (docs/protocol/clipboard.md).
+//! (docs/protocol/clipboard.md). On GNOME's Wayland, copies in other apps are
+//! seen through G7 Linux's companion extension (`shell_clipboard`).
 //!
 //! Content that password managers mark as private (`x-kde-passwordManagerHint`
 //! set to `"secret"`, or `x-gnome-privacy-hint`) is never read for sending.
@@ -31,6 +32,14 @@ type OnCopy = Box<dyn Fn(Clip) + Send + Sync>;
 type WrittenRich = (String, Option<String>, Option<String>);
 
 static ON_COPY: OnceLock<OnCopy> = OnceLock::new();
+
+/// Told when something marked private by its app is copied. Nothing of it is read.
+static ON_PRIVATE: OnceLock<fn()> = OnceLock::new();
+
+/// When G7 Link last put private text on the clipboard: seeing it there soon
+/// after isn't the user copying something.
+static OWN_PRIVATE_AT: Mutex<Option<Instant>> = Mutex::new(None);
+const OWN_PRIVATE_ECHO: Duration = Duration::from_secs(3);
 
 /// Fingerprint of the most recently reported or locally-written clipboard
 /// item so the watcher thread never echoes our own writes back to the phone.
@@ -168,14 +177,16 @@ pub(crate) fn seed_initial_clipboard() {
 
 /// Starts watching the Linux clipboard on a background thread (`"clipboard"`).
 /// Newly copied text or images that are not marked private and were not
-/// written by G7 Link are passed to `on_copy`.
-pub fn start<F>(on_copy: F)
+/// written by G7 Link are passed to `on_copy`; `on_private` hears that
+/// something private was copied.
+pub fn start<F>(on_copy: F, on_private: fn())
 where
     F: Fn(Clip) + Send + Sync + 'static,
 {
     if ON_COPY.set(Box::new(on_copy)).is_err() {
         return;
     }
+    let _ = ON_PRIVATE.set(on_private);
     if !has_display_server() {
         return;
     }
@@ -188,6 +199,11 @@ where
         // What was already on the clipboard stays where it is. Qt couldn't see it.
         seed_initial_clipboard();
         return;
+    }
+    // Mutter has no data-control: copies in other apps come through the
+    // extension, once it answers.
+    if is_gnome_wayland() {
+        super::shell_clipboard::follow(on_shell_copy);
     }
     if wayland_helpers() {
         let spawned = std::thread::Builder::new().name("clipboard-wayland".into()).spawn(wayland_watch_loop);
@@ -205,6 +221,12 @@ fn on_data_control_change() {
             let _ = report_if_changed(read(), on_copy);
         }
     });
+}
+
+fn on_shell_copy(clip: Clip) {
+    if let Some(on_copy) = ON_COPY.get() {
+        let _ = report_if_changed(clip, on_copy);
+    }
 }
 
 /// Follows the clipboard while another app has focus, on compositors with only
@@ -281,12 +303,26 @@ fn watcher_loop() {
     }
 }
 
+/// Something private is on the clipboard: told unless G7 Link just put it there.
+fn private_copied() {
+    let ours = OWN_PRIVATE_AT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|at| at.elapsed() < OWN_PRIVATE_ECHO);
+    if !ours && let Some(on_private) = ON_PRIVATE.get() {
+        on_private();
+    }
+}
+
 /// Evaluates `clip` against [`LAST_REPORTED`] and [`LAST_WRITTEN_RICH`],
 /// invoking ` callback ` only when `clip` represents new non-private content.
 pub(crate) fn report_if_changed<F>(mut clip: Clip, callback: F) -> bool
 where
     F: FnOnce(Clip),
 {
+    if matches!(clip, Clip::Private) {
+        private_copied();
+    }
     if matches!(clip, Clip::Private | Clip::Empty) {
         return false;
     }
@@ -707,6 +743,7 @@ fn write_text(text: &str, html: Option<&str>, rtf: Option<&str>, private: bool) 
     }
 
     if private {
+        *OWN_PRIVATE_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         *LAST_WRITTEN_RICH.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *LAST_PRIVATE_TEXT.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_owned());
         *LAST_CLIP.lock().unwrap_or_else(|e| e.into_inner()) = Clip::Private;

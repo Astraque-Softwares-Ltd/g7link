@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Whether what has the keyboard focus takes text, from the desktop's
 //! accessibility bus (AT-SPI): a focused object with the `EDITABLE` state.
-//! Apps that don't publish accessibility (some Electron and Chromium builds
-//! until a screen reader runs) aren't seen.
+//! Also whether it's a terminal, which pastes with Ctrl+Shift+V. Apps that
+//! don't publish accessibility (some Electron and Chromium builds until a
+//! screen reader runs, and terminals such as kitty or Alacritty) aren't seen.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -16,10 +18,20 @@ const OBJECT_EVENTS: &str = "org.a11y.atspi.Event.Object";
 const FOCUS_EVENT: &str = "object:state-changed:focused";
 /// `ATSPI_STATE_EDITABLE`.
 const STATE_EDITABLE: u32 = 7;
+/// `ATSPI_ROLE_TERMINAL`, which VTE terminals (GNOME Terminal, Ptyxis) publish.
+const ROLE_TERMINAL: u32 = 60;
 /// An app that doesn't answer in this time is taken as not taking text.
 const CALL_TIMEOUT: Duration = Duration::from_millis(500);
 /// The watcher tries the accessibility bus again after this when it can't reach it.
 const RETRY: Duration = Duration::from_secs(60);
+
+static IN_TERMINAL: AtomicBool = AtomicBool::new(false);
+
+/// Whether a terminal has the keyboard focus, as far as the accessibility bus
+/// tells.
+pub fn in_terminal() -> bool {
+    IN_TERMINAL.load(Ordering::Relaxed)
+}
 
 /// Calls `changed` with whether the focus takes text each time that changes.
 /// One thread for the app's lifetime.
@@ -81,11 +93,13 @@ fn follow(changed: fn(bool)) {
         let (Some(sender), Some(path)) = (header.sender(), header.path()) else { continue };
         let Some(gained) = focus_gained(&message) else { continue };
         let now = gained && takes_text(&conn, sender.as_str(), path.as_str());
+        IN_TERMINAL.store(gained && is_terminal(&conn, sender.as_str(), path.as_str()), Ordering::Relaxed);
         if now != editable {
             editable = now;
             changed(editable);
         }
     }
+    IN_TERMINAL.store(false, Ordering::Relaxed);
 }
 
 /// Whether a `StateChanged` signal is the focus arriving (`Some(true)`) or
@@ -109,6 +123,14 @@ fn takes_text(conn: &zbus::blocking::Connection, sender: &str, path: &str) -> bo
         .ok()
         .and_then(|reply| reply.body().deserialize::<Vec<u32>>().ok())
         .is_some_and(|states| has_state(&states, STATE_EDITABLE))
+}
+
+/// Whether the object at `path` in the app `sender` is a terminal.
+fn is_terminal(conn: &zbus::blocking::Connection, sender: &str, path: &str) -> bool {
+    conn.call_method(Some(sender), path, Some(ACCESSIBLE), "GetRole", &())
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<u32>().ok())
+        .is_some_and(|role| role == ROLE_TERMINAL)
 }
 
 /// Whether `state` is set in AT-SPI's state set (32-bit words, lowest first).

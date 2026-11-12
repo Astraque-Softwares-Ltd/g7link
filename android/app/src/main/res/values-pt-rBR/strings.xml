@@ -587,6 +587,7 @@
     <string name="remote_key_del_desc">Delete</string>
     <string name="remote_key_copy">Copiar</string>
     <string name="remote_key_paste">Colar</string>
+    <string name="remote_paste_hidden">Oculto</string>
     <string name="remote_key_undo">Desfazer</string>
 
     <!-- Webcam formatting -->

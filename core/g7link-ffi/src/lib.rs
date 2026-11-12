@@ -622,6 +622,13 @@ pub enum Event {
         id: String,
         editable: bool,
     },
+    /// PC `id`'s clipboard got something new: offer to paste it. `preview` is
+    /// the text's first line, when that PC sends this phone what it copies.
+    PcClip {
+        id: String,
+        kind: PcClipKind,
+        preview: Option<String>,
+    },
     Discovered {
         device: DiscoveredDevice,
     },
@@ -926,6 +933,24 @@ impl From<core::DeckState> for DeckState {
             muted: s.muted,
             mic_muted: s.mic_muted,
             output_devices: s.output_devices.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// What a PC's clipboard got (`clip.changed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PcClipKind {
+    Text,
+    Image,
+    Private,
+}
+
+impl From<core::PcClipKind> for PcClipKind {
+    fn from(kind: core::PcClipKind) -> Self {
+        match kind {
+            core::PcClipKind::Text => PcClipKind::Text,
+            core::PcClipKind::Image => PcClipKind::Image,
+            core::PcClipKind::Private => PcClipKind::Private,
         }
     }
 }
@@ -2460,6 +2485,9 @@ impl Event {
             NodeEvent::RemoteRing { device, on } => Event::RemoteRing { id: device.to_string(), on },
             NodeEvent::PcTextFocus { device, editable } => {
                 Event::PcTextFocus { id: device.to_string(), editable }
+            }
+            NodeEvent::PcClip { device, kind, preview } => {
+                Event::PcClip { id: device.to_string(), kind: kind.into(), preview }
             }
             NodeEvent::Discovered(device) => Event::Discovered { device: device.into() },
             NodeEvent::DiscoveryExpired(id) => Event::DiscoveryExpired { id: id.to_string() },

@@ -1207,6 +1207,43 @@ async fn a_pc_says_when_a_text_box_has_the_focus() {
     assert_eq!(second, (pc_id, false));
 }
 
+/// A PC tells a phone what its clipboard got, for the phone's Paste chip: only
+/// with the clipboard on for it, and a preview only with text.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pc_says_what_its_clipboard_got() {
+    use g7link_core::PcClipKind;
+
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let pick = |e: &NodeEvent| match e {
+        NodeEvent::PcClip { device, kind, preview } => Some((*device, *kind, preview.clone())),
+        _ => None,
+    };
+
+    // The clipboard is off for the phone: nothing goes.
+    pc.node.set_device_toggle(phone_id, "clipboard", false).unwrap();
+    with_timeout("clip while off", pc.node.announce_clip(phone_id, PcClipKind::Image, None)).await.unwrap();
+    pc.node.set_device_toggle(phone_id, "clipboard", true).unwrap();
+
+    // Text the PC doesn't send the phone by itself (automatic sending is off): no preview.
+    with_timeout("text", pc.node.announce_clip(phone_id, PcClipKind::Text, None)).await.unwrap();
+    // The first the phone hears is the one sent with the clipboard on.
+    assert_eq!(wait_for(&mut phone, "text", pick).await, (pc_id, PcClipKind::Text, None));
+
+    let preview = Some("Meeting at 3".to_owned());
+    with_timeout("previewed", pc.node.announce_clip(phone_id, PcClipKind::Text, preview.clone()))
+        .await
+        .unwrap();
+    assert_eq!(wait_for(&mut phone, "previewed", pick).await, (pc_id, PcClipKind::Text, preview));
+
+    // Nothing of a private clip is told, whatever the caller passes.
+    let leaked = Some("hunter2".to_owned());
+    with_timeout("private", pc.node.announce_clip(phone_id, PcClipKind::Private, leaked)).await.unwrap();
+    assert_eq!(wait_for(&mut phone, "private", pick).await, (pc_id, PcClipKind::Private, None));
+}
+
 /// A phone that refuses the PC's taps (Xiaomi without USB debugging (Security
 /// settings)) says so, and the PC hears which window it's about.
 #[tokio::test(flavor = "multi_thread")]

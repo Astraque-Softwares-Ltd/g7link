@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use g7link_protocol::{
     DeviceId,
-    messages::{Battery, CameraCaptureMode, DeviceInfo, MediaPlayer, Notification, PowerLevel},
+    messages::{Battery, CameraCaptureMode, DeviceInfo, MediaPlayer, Notification, PcClipKind, PowerLevel},
 };
 
 use crate::{features::CapabilityMatrix, transfer::Transfer};
@@ -188,6 +188,14 @@ pub enum NodeEvent {
     PcTextFocus {
         device: DeviceId,
         editable: bool,
+    },
+    /// A PC's clipboard got something new (`clip.changed`): the phone can offer
+    /// to paste it. `preview` is the text's first line, when the PC sends this
+    /// phone what it copies anyway.
+    PcClip {
+        device: DeviceId,
+        kind: PcClipKind,
+        preview: Option<String>,
     },
     /// A phone says something about a mirroring shown here (`mirror.notice`),
     /// by code (`mirror::NOTICE_*`).

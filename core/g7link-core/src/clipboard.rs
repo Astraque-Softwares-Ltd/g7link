@@ -7,7 +7,7 @@ use std::{sync::Arc, time::Duration};
 
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
-    messages::{ClipImage, ClipSet, StreamHeader, clip, types},
+    messages::{ClipChanged, ClipImage, ClipSet, PcClipKind, StreamHeader, clip, types},
     read_frame, write_frame,
 };
 use iroh::endpoint::{RecvStream, SendStream};
@@ -23,8 +23,37 @@ const IMAGE_CAPABILITY: &str = "clip.image";
 /// The device toggle that allows the clipboard for a device.
 pub(crate) const TOGGLE: &str = "clipboard";
 
-/// Handles `clip.set`. Returns false for other message types.
+/// Tells a phone that this PC's clipboard got something new (`clip.changed`),
+/// when the clipboard is on for it. A preview goes only with text.
+pub(crate) async fn announce(
+    shared: &Shared,
+    session: &Session,
+    kind: PcClipKind,
+    preview: Option<String>,
+) -> Result<()> {
+    if !shared.toggle_on(&session.peer, TOGGLE) {
+        return Ok(());
+    }
+    let mut changed = ClipChanged { kind, preview };
+    if !changed.is_valid() {
+        changed.preview = None;
+    }
+    session.send(Envelope::new(types::CLIP_CHANGED, &changed)?).await
+}
+
+/// Handles `clip.set` and `clip.changed`. Returns false for other message types.
 pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+    // One way, no reply. One this app doesn't understand is dropped.
+    if env.t == types::CLIP_CHANGED {
+        if shared.toggle_on(&session.peer, TOGGLE)
+            && let Ok(changed) = env.body::<ClipChanged>()
+            && changed.is_valid()
+        {
+            let ClipChanged { kind, preview } = changed;
+            shared.emit(NodeEvent::PcClip { device: session.peer, kind, preview });
+        }
+        return Ok(true);
+    }
     if env.t != types::CLIP_SET {
         return Ok(false);
     }

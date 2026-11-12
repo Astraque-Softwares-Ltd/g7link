@@ -3,7 +3,8 @@
 //! (docs/protocol/clipboard.md): what the user copies (text or an image)
 //! goes to connected phones (unless turned off in Settings), "Send
 //! clipboard" sends it on demand, and what a phone sends lands on the
-//! PC clipboard.
+//! PC clipboard. Connected phones hear when something new is copied
+//! (`clip.changed`), for their Paste chip.
 
 use crate::i18n::tr;
 use std::{
@@ -12,12 +13,13 @@ use std::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use data_encoding::BASE64;
 use g7link_core::{
     CLIP_MAX_IMAGE_BYTES, ClipKind, ClipSuggestion, ClipboardItemKind, DeviceId, Error, FeatureState,
-    LinkState, Node, NodeEvent,
+    LinkState, Node, NodeEvent, PcClipKind, clip_preview,
 };
 use serde_json::json;
 
@@ -195,9 +197,75 @@ pub fn clear_history() {
     }
 }
 
+/// What phones hear next of this PC's clipboard, and when they last heard: a
+/// burst of copies goes as its last one.
+struct Announcing {
+    next: Option<(PcClipKind, Option<String>)>,
+    last: Option<Instant>,
+    scheduled: bool,
+}
+
+static ANNOUNCING: Mutex<Announcing> = Mutex::new(Announcing { next: None, last: None, scheduled: false });
+/// At most one `clip.changed` a second.
+const ANNOUNCE_EVERY: Duration = Duration::from_secs(1);
+
 /// Starts watching the clipboard.
 pub fn start() {
-    clipboard::start(on_copy);
+    clipboard::start(on_copy, on_private_copy);
+}
+
+/// Something marked private by its app was copied: phones hear only that.
+fn on_private_copy() {
+    announce(PcClipKind::Private, None);
+}
+
+/// Tells connected phones that this PC's clipboard got something new, so
+/// they can offer to paste it.
+fn announce(kind: PcClipKind, text: Option<&str>) {
+    if core_host::try_host().is_none() {
+        return;
+    }
+    let preview = text.and_then(clip_preview);
+    let wait = {
+        let mut announcing = ANNOUNCING.lock().unwrap_or_else(|e| e.into_inner());
+        announcing.next = Some((kind, preview));
+        if announcing.scheduled {
+            return;
+        }
+        announcing.scheduled = true;
+        announcing.last.map_or(Duration::ZERO, |at| ANNOUNCE_EVERY.saturating_sub(at.elapsed()))
+    };
+    core_host::spawn(async move {
+        tokio::time::sleep(wait).await;
+        let next = {
+            let mut announcing = ANNOUNCING.lock().unwrap_or_else(|e| e.into_inner());
+            announcing.scheduled = false;
+            announcing.last = Some(Instant::now());
+            announcing.next.take()
+        };
+        if let Some((kind, preview)) = next {
+            send_announcement(kind, preview).await;
+        }
+    });
+}
+
+async fn send_announcement(kind: PcClipKind, preview: Option<String>) {
+    let Some(node) = core_host::node() else { return };
+    let phones: Vec<DeviceId> = core_host::host().hub.read(|s| {
+        s.devices.iter().filter(|d| matches!(d.link, LinkState::Online { .. })).map(|d| d.id).collect()
+    });
+    let sent_anyway = if AUTO_SEND.load(Ordering::Relaxed) { receivers() } else { Vec::new() };
+    for phone in phones {
+        let preview = preview_for(phone, &sent_anyway, preview.as_deref());
+        if let Err(error) = node.announce_clip(phone, kind, preview).await {
+            tracing::debug!(%error, "couldn't tell a phone about the clipboard");
+        }
+    }
+}
+
+/// The text's first line goes only to phones that get what's copied anyway.
+fn preview_for(phone: DeviceId, sent_anyway: &[DeviceId], preview: Option<&str>) -> Option<String> {
+    preview.filter(|_| sent_anyway.contains(&phone)).map(str::to_owned)
 }
 
 /// Connected phones that take this PC's clipboard (capable and allowed).
@@ -217,6 +285,11 @@ fn receivers() -> Vec<DeviceId> {
 
 /// The user copied text or an image on this PC.
 fn on_copy(clip: Clip) {
+    match &clip {
+        Clip::Text { text, .. } => announce(PcClipKind::Text, Some(text.as_str())),
+        Clip::Image(_) => announce(PcClipKind::Image, None),
+        Clip::Private | Clip::Empty => {}
+    }
     if !AUTO_SEND.load(Ordering::Relaxed) {
         return;
     }
@@ -437,5 +510,21 @@ pub fn run_last_suggestion() {
     };
     if let Err(e) = result {
         tracing::debug!(kind = ?suggestion.kind, error = %e, "clipboard suggestion action failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_phones_sent_what_is_copied_see_its_first_line() {
+        let (shown, other) = (DeviceId([1; 32]), DeviceId([2; 32]));
+        let sent_anyway = [shown];
+        assert_eq!(preview_for(shown, &sent_anyway, Some("Meeting at 3")).as_deref(), Some("Meeting at 3"));
+        assert_eq!(preview_for(other, &sent_anyway, Some("Meeting at 3")), None);
+        // Automatic sending is off: nobody gets it.
+        assert_eq!(preview_for(shown, &[], Some("Meeting at 3")), None);
+        assert_eq!(preview_for(shown, &sent_anyway, None), None);
     }
 }

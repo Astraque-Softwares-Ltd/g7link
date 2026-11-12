@@ -2866,6 +2866,19 @@ impl Node {
         Ok(())
     }
 
+    /// Tells a connected phone that this PC's clipboard got something new
+    /// (`clip.changed`), so it can offer to paste it. Nothing is sent when the
+    /// clipboard is off for the phone; `preview` goes only with text.
+    pub async fn announce_clip(
+        &self,
+        peer: DeviceId,
+        kind: crate::PcClipKind,
+        preview: Option<String>,
+    ) -> Result<()> {
+        let session = self.connected(&peer)?;
+        crate::clipboard::announce(&self.shared, &session, kind, preview).await
+    }
+
     /// Puts a password or the like on a connected device's clipboard, as the user
     /// chose to allow. Never recorded on either side and never queued:
     /// [`Error::Offline`] when the device isn't connected.

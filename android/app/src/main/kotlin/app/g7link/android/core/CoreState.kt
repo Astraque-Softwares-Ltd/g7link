@@ -13,9 +13,18 @@ import app.g7link.core.Link
 import app.g7link.core.LocalSendPeer
 import app.g7link.core.PairedDevice
 import app.g7link.core.PairingFailure
+import app.g7link.core.PcClipKind
 import app.g7link.core.PowerLevel
 import app.g7link.core.TimelineEntry
 import app.g7link.core.Transfer
+
+/**
+ * What a PC last said its clipboard got (`clip.changed`): [preview] is the
+ * text's first line when that PC sends this phone what it copies, and [at]
+ * when it arrived (ms since the Unix epoch).
+ */
+@androidx.compose.runtime.Immutable
+data class PcClipNotice(val kind: PcClipKind, val preview: String?, val at: Long)
 
 /** An item in the persistent outbound Send Queue as rendered by the UI. */
 @androidx.compose.runtime.Immutable
@@ -190,6 +199,8 @@ data class CoreState(
     val ringingDevices: Set<String> = emptySet(),
     /** PCs where what has the focus takes text: the remote's keyboard opens for them. */
     val pcTextFocus: Set<String> = emptySet(),
+    /** What each connected PC's clipboard last got, by PC: the remote offers to paste it. */
+    val pcClip: Map<String, PcClipNotice> = emptyMap(),
     /** Whether the user let G7 Link read notifications (to mirror them). */
     val notificationAccess: Boolean = false,
     /** Whether Android lets G7 Link reach the local network (Android 17). */
@@ -323,6 +334,7 @@ data class CoreState(
             if (d.online) d.copy(link = Link.Offline(System.currentTimeMillis() / 1000L), wakeState = WakeState.Idle) else d
         }.sortedWith(deviceOrder),
         keyboardFromPc = emptySet(),
+        pcClip = emptyMap(),
         micRequestFrom = null,
     )
 
@@ -338,6 +350,7 @@ data class CoreState(
             ringingPeer = ringingPeer?.takeUnless { it == event.id },
             ringingDevices = ringingDevices - event.id,
             pcTextFocus = pcTextFocus - event.id,
+            pcClip = pcClip - event.id,
             storageRequestedFrom = if (storageRequestedFrom == event.id) null else storageRequestedFrom,
             webcamRequest = if (webcamRequest?.pcId == event.id) null else webcamRequest,
             micRequestFrom = if (micRequestFrom == event.id) null else micRequestFrom,
@@ -370,6 +383,7 @@ data class CoreState(
                             devices = if (onlineChanged) updated.devices.sortedWith(deviceOrder) else updated.devices,
                             keyboardFromPc = if (newLink is Link.Offline) updated.keyboardFromPc - event.id else updated.keyboardFromPc,
                             pcTextFocus = if (newLink is Link.Offline) updated.pcTextFocus - event.id else updated.pcTextFocus,
+                            pcClip = if (newLink is Link.Offline) updated.pcClip - event.id else updated.pcClip,
                             // A PC that went away can't take the microphone it asked for.
                             micRequestFrom = updated.micRequestFrom.takeUnless { newLink is Link.Offline && it == event.id },
                         )
@@ -402,6 +416,9 @@ data class CoreState(
         is Event.Ring -> copy(ringingPeer = if (event.on) event.id else ringingPeer?.takeUnless { it == event.id })
         is Event.RemoteRing -> copy(ringingDevices = if (event.on) ringingDevices + event.id else ringingDevices - event.id)
         is Event.PcTextFocus -> copy(pcTextFocus = if (event.editable) pcTextFocus + event.id else pcTextFocus - event.id)
+        is Event.PcClip -> copy(
+            pcClip = pcClip + (event.id to PcClipNotice(event.kind, event.preview, System.currentTimeMillis())),
+        )
         is Event.Discovered -> copy(discovered = discovered.filterNot { it.id == event.device.id } + event.device)
         is Event.DiscoveryExpired -> copy(discovered = discovered.filterNot { it.id == event.id })
         is Event.PairingCode -> copy(pairing = PairingState.Comparing(event.peer, event.code))

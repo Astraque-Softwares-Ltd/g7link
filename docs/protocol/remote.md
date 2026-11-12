@@ -126,7 +126,8 @@ SlideAction  = "next" | "previous" | "start" | "stop" | "black"
     `shift`, `win`).
   - Named shortcuts (with empty `mods`): `copy` (`Ctrl+C`), `paste`
     (`Ctrl+V`), `cut` (`Ctrl+X`), `undo` (`Ctrl+Z`), `select_all` (`Ctrl+A`),
-    `task_view` (`Win+Tab`), `lock` (`Win+L`).
+    `task_view` (`Win+Tab`), `lock` (`Win+L`). A PC that knows a terminal
+    has the focus pastes there with `Ctrl+Shift+V`.
 - **Presentation (`slide`):** `next` (next slide), `previous` (previous
   slide), `start` (`F5`), `stop` (`Escape`), `black` (`B`).
 - **Laser pointer (`laser`):** when `on` is `true`, `x` and `y` are finite

@@ -37,6 +37,8 @@ pub mod types {
     pub const NOTIFY_HOLD: &str = "notify.hold";
 
     pub const CLIP_SET: &str = "clip.set";
+    /// PC to phone: its clipboard got something new.
+    pub const CLIP_CHANGED: &str = "clip.changed";
     pub const NOTIFY_DISMISS: &str = "notify.dismiss";
     pub const NOTIFY_ACTION: &str = "notify.action";
     pub const MEDIA_STATE: &str = "media.state";
@@ -3284,6 +3286,68 @@ impl std::fmt::Debug for ClipSet {
     }
 }
 
+/// What a PC's clipboard got (`clip.changed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PcClipKind {
+    Text,
+    Image,
+    /// Marked private by its app (a password manager): nothing of it is told.
+    Private,
+}
+
+/// The longest `clip.changed` preview, in characters.
+pub const CLIP_PREVIEW_MAX_CHARS: usize = 80;
+
+/// Body of `clip.changed` (PC → phone, one way): the PC's clipboard got
+/// something new, so the phone can offer to paste it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipChanged {
+    pub kind: PcClipKind,
+    /// The text's first line, only for text the PC sends that phone anyway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+impl ClipChanged {
+    /// Whether a preview, if any, is one line of text within the limit.
+    pub fn is_valid(&self) -> bool {
+        self.preview.as_deref().is_none_or(|p| {
+            self.kind == PcClipKind::Text
+                && !p.trim().is_empty()
+                && p.chars().count() <= CLIP_PREVIEW_MAX_CHARS
+                && !p.chars().any(char::is_control)
+        })
+    }
+}
+
+/// Never prints content (protocol v0 §11).
+impl std::fmt::Debug for ClipChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipChanged")
+            .field("kind", &self.kind)
+            .field("has_preview", &self.preview.is_some())
+            .finish()
+    }
+}
+
+/// The preview `clip.changed` carries for `text`: its first line that isn't
+/// blank, cut to [`CLIP_PREVIEW_MAX_CHARS`] with an ellipsis.
+pub fn clip_preview(text: &str) -> Option<String> {
+    let line = text
+        .lines()
+        .map(|line| line.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>())
+        .find(|line| !line.trim().is_empty())?;
+    let line = line.trim();
+    if line.chars().count() <= CLIP_PREVIEW_MAX_CHARS {
+        return Some(line.to_owned());
+    }
+    let mut cut: String = line.chars().take(CLIP_PREVIEW_MAX_CHARS - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    Some(cut)
+}
+
 /// Clipboard images, which travel on their own stream.
 pub mod clip {
     pub const SERVICE: &str = "clip";
@@ -6059,6 +6123,48 @@ mod tests {
         let env_secret = Envelope::new(types::CLIP_SET, &secret).unwrap();
         let back_secret: ClipSet = Envelope::from_cbor(&env_secret.to_cbor()).unwrap().body().unwrap();
         assert!(back_secret.sensitive);
+    }
+
+    #[test]
+    fn clip_changed_carries_a_kind_and_at_most_one_short_line() {
+        let text = ClipChanged { kind: PcClipKind::Text, preview: Some("Meeting at 3".into()) };
+        assert!(text.is_valid());
+        assert!(!format!("{text:?}").contains("Meeting"));
+        let env = Envelope::new(types::CLIP_CHANGED, &text).unwrap();
+        let back: ClipChanged = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back, text);
+
+        let private = ClipChanged { kind: PcClipKind::Private, preview: None };
+        let env = Envelope::new(types::CLIP_CHANGED, &private).unwrap();
+        assert!(!format!("{:?}", env.b).contains("preview"));
+        let back: ClipChanged = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back, private);
+
+        // A preview is for text, one line, within the limit.
+        assert!(!ClipChanged { kind: PcClipKind::Private, preview: Some("x".into()) }.is_valid());
+        assert!(!ClipChanged { kind: PcClipKind::Image, preview: Some("x".into()) }.is_valid());
+        assert!(!ClipChanged { kind: PcClipKind::Text, preview: Some("a\nb".into()) }.is_valid());
+        assert!(!ClipChanged { kind: PcClipKind::Text, preview: Some("a".repeat(81)) }.is_valid());
+
+        #[derive(Serialize)]
+        struct Future {
+            kind: &'static str,
+        }
+        let env = Envelope::new(types::CLIP_CHANGED, &Future { kind: "video" }).unwrap();
+        assert!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<ClipChanged>().is_err());
+    }
+
+    #[test]
+    fn clip_preview_is_the_first_line_cut_short() {
+        assert_eq!(clip_preview("\n  Hello there  \nsecond").as_deref(), Some("Hello there"));
+        assert_eq!(clip_preview(" \n\t\n"), None);
+        assert_eq!(clip_preview("a\tb").as_deref(), Some("a b"));
+        let long = clip_preview(&"word ".repeat(40)).unwrap();
+        assert_eq!(long.chars().count(), CLIP_PREVIEW_MAX_CHARS);
+        assert!(long.ends_with("word…"));
+        let wide = clip_preview(&"é".repeat(200)).unwrap();
+        assert_eq!(wide.chars().count(), CLIP_PREVIEW_MAX_CHARS);
+        assert!(ClipChanged { kind: PcClipKind::Text, preview: Some(wide) }.is_valid());
     }
 
     #[test]
