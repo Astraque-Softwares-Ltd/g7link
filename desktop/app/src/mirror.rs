@@ -1089,15 +1089,16 @@ pub fn resize(window: Window, width: u32, height: u32) {
     });
 }
 
-/// Each request's number per window, so an earlier request's timer can't
-/// end a retry of the same window.
+/// Each window's latest request's number, so an earlier request's timer
+/// can't end a retry of the same window. Numbers never repeat, so a window's
+/// entry can go when it closes.
 static ATTEMPTS: Mutex<Option<HashMap<Window, u64>>> = Mutex::new(None);
+static ATTEMPT_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn next_attempt(window: Window) -> u64 {
-    let mut attempts = ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner());
-    let n = attempts.get_or_insert_with(HashMap::new).entry(window).or_default();
-    *n += 1;
-    *n
+    let n = ATTEMPT_SEQ.fetch_add(1, Ordering::Relaxed);
+    ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(window, n);
+    n
 }
 
 fn is_latest_attempt(window: Window, attempt: u64) -> bool {
@@ -1221,6 +1222,9 @@ const APP_START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15
 pub fn stop(window: Window) {
     stop_recording(window);
     clear_window_buffers(&window);
+    if let Some(attempts) = ATTEMPTS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        attempts.remove(&window);
+    }
     state(|s| {
         s.windows.remove(&window);
         s.notices.remove(&window);
