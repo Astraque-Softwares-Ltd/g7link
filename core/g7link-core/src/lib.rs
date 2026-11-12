@@ -150,11 +150,7 @@ pub use mic::{MicSink, TOGGLE as MIC_TOGGLE};
 pub use mirror::{MirrorSend, MirrorSink, MirrorStream, PC_MIRROR_TOGGLE};
 pub use node::{DataRetentionCounts, Node, PeerDiagnostics};
 pub use notifications::{NotificationError, SHOW as NOTIFY_SHOW};
-pub use palette::{
-    ACHROMATIC_SEED_RGB, MAX_SAMPLE_SIDE, Palette as ThemePaletteMap, RolePalette, ThemeScheme,
-    achromatic_scheme, downsample_rgb, downsample_rgba, extract_artwork_scheme_rgb,
-    extract_artwork_scheme_rgba, scheme_from_seed_rgb, scheme_json, seed_from_grid, seed_from_pixels,
-};
+pub use palette::{RolePalette, ThemeScheme, extract_artwork_scheme_rgba};
 pub use play_on_phone::PlayOnPhone;
 pub use remote::{ButtonAction, INPUT_INJECT, KeyMod, MouseButton, RemoteInput, SlideAction, remote_keys};
 pub use session::is_lan_ip;

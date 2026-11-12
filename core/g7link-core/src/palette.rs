@@ -48,8 +48,8 @@ enum Key {
     NeutralVariant = 3,
 }
 
-/// Bloom's 15 color roles (names as in `docs/design/tokens.json`) and the tone
-/// each takes from its palette in light and dark mode.
+/// The 15 Material color roles of a scheme and the tone each takes from its
+/// palette in light and dark mode.
 pub const ROLES: [(&str, usize, i32, i32); 15] = [
     ("primary", Key::Primary as usize, 40, 80),
     ("onPrimary", Key::Primary as usize, 100, 20),
@@ -722,12 +722,6 @@ pub fn scheme_from_seed_rgb(seed_rgb: u32) -> ThemeScheme {
     }
 }
 
-/// `{ "seed": "#RRGGBB", "achromatic": bool, "light": {...}, "dark": {...} }`,
-/// the shape of a seed in `docs/design/tokens.json`.
-pub fn scheme_json(seed: Rgb) -> serde_json::Value {
-    scheme_from_seed_rgb(seed.as_u32()).to_json()
-}
-
 fn cache_lookup(key: &str) -> Option<ThemeScheme> {
     let mut guard = SCHEME_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(pos) = guard.iter().position(|(k, _)| k == key) {
@@ -832,39 +826,8 @@ mod tests {
     }
 
     #[test]
-    fn has_the_structure_of_the_token_presets() {
-        let tokens: serde_json::Value =
-            serde_json::from_str(include_str!("../../../docs/design/tokens.json")).unwrap();
-        let seeds = tokens["themes"]["bloom"]["seeds"].as_object().unwrap();
-        assert!(!seeds.is_empty());
-        let mut mismatches = Vec::new();
-        for (name, preset) in seeds {
-            if name == "black" {
-                continue;
-            }
-            let built = scheme_json(hex(preset["seed"].as_str().unwrap()));
-            for mode in ["light", "dark"] {
-                let roles = preset[mode].as_object().unwrap();
-                assert_eq!(roles.len(), ROLES.len(), "{name} {mode}: roles changed in the tokens");
-                for (role, value) in roles {
-                    let ours = Hct::new(hex(built[mode][role].as_str().unwrap()));
-                    let theirs = Hct::new(hex(value.as_str().unwrap()));
-                    let tone = (ours.get_tone() - theirs.get_tone()).abs();
-                    let chromatic = ours.get_chroma() > 10.0 && theirs.get_chroma() > 10.0;
-                    let hue = if chromatic { hue_distance(ours.get_hue(), theirs.get_hue()) } else { 0.0 };
-                    if tone > 2.0 || hue > 15.0 {
-                        mismatches
-                            .push(format!("{name} {mode} {role}: tone off by {tone:.1}, hue by {hue:.0}"));
-                    }
-                }
-            }
-        }
-        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-    }
-
-    #[test]
     fn json_has_every_role_in_both_modes() {
-        let scheme = scheme_json(Rgb::new(0x3D, 0x7D, 0xA8));
+        let scheme = scheme_from_seed_rgb(0x3D7DA8).to_json();
         assert_eq!(scheme["seed"], "#3D7DA8");
         assert_eq!(scheme["achromatic"], false);
         for mode in ["light", "dark"] {
@@ -915,7 +878,7 @@ mod tests {
         ];
 
         for (label, seed) in extremes {
-            let scheme = scheme_json(seed);
+            let scheme = scheme_from_seed_rgb(seed.as_u32()).to_json();
             for mode in ["light", "dark"] {
                 let p = &scheme[mode];
                 let pairs = [

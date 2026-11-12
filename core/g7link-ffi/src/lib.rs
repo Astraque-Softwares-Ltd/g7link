@@ -4873,12 +4873,6 @@ pub fn extract_artwork_scheme(
     core::extract_artwork_scheme_rgba(&rgba, width, height, cache_key.as_deref()).map(Into::into)
 }
 
-/// Builds a complete light + dark [`FfiThemeScheme`] from a `0xRRGGBB` seed color.
-#[uniffi::export]
-pub fn theme_scheme_from_seed(seed_rgb: u32) -> FfiThemeScheme {
-    core::scheme_from_seed_rgb(seed_rgb).into()
-}
-
 /// The install ID for a platform ID that survives reinstalls (Android's `ANDROID_ID`):
 /// a salted hash, so the raw ID never leaves the device. `None` for an empty input.
 #[uniffi::export]

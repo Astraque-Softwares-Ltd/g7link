@@ -14,10 +14,15 @@ On the PC, **Settings** uses a two-pane layout with 9 categories in the left nav
 
 ### 1. Appearance
 
-Controls the visual theme, light/dark mode, accent palette, and OLED black surfaces.
+Controls the colors, light or dark, and the app's size. Themes are colors only: every theme keeps the same layout.
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
+| **Theme** | **G7** (default), **Match G7 Linux**, **Catppuccin**, **Gruvbox**, **Rosé Pine**, **Solarized**, **Nord**, **Tokyo Night**, **Kanagawa**, **Dracula**, **Ayu** | Picks the colors. **G7** is G7's own charcoal and paper with lavender. **Match G7 Linux** follows the theme the G7 Linux launcher uses now (its light or dark one, as **Mode** picks) and changes with it; the row shows which theme that is. The others are G7 Linux's own palettes. Tokyo Night, Kanagawa, Dracula and Ayu are dark only. |
+| **Mode** | `System` (default), `Light`, `Dark` | Follows your desktop's light/dark preference or locks G7 Link to Light or Dark. A dark-only theme stays dark. |
+| **App size** | `100%` (default), `110%`, `125%`, `150%` | Scales the whole window, after a restart. |
+
+--- | :--- | :--- |
 | **Theme** | `Hive`, `Bloom` (default), `Glass`, `Graphite` | Selects the visual style. **Hive** is honey on charcoal (dark) or warm wax (light), with a living honeycomb behind the whole window that grows from the logo, breathes, and sends soft pulses of light; its colors are fixed, so the color options below are hidden. **Bloom** uses soft, tinted Material You surfaces. **Glass** renders translucent cards, each with a lit glass rim: a specular edge from the top left, a softer reflection at the bottom right, and a faint inner glow. **Graphite** uses high-contrast monochrome ink-on-paper surfaces. |
 | **Mode** | `System` (default), `Light`, `Dark` | Follows your desktop's light/dark preference or locks G7 Link to Light or Dark. |
 | **Color** *(shown in Bloom and Glass)* | **Wallpaper** (default), **Honey**, **Lavender**, **Ocean**, **Sage**, **Black**, **Media artwork**, or **Phone color pills** | Picks the accent seed color. **Wallpaper** extracts colors from your desktop wallpaper. **Media artwork** dynamically adapts the app's palette to the album art of whatever song is currently playing. **Phone color pills** sync live with each paired phone's Material You wallpaper palette. |
@@ -206,13 +211,8 @@ On Android, tap **Settings** in the floating bottom dock. You can view all setti
 
 | Setting | Options / Default | What It Does |
 | :--- | :--- | :--- |
-| **Theme** | `Hive`, `Graphite` (default), `Bloom`, `Glass` | Selects the visual style on Android, matching the PC themes. **Hive** draws the same honeycomb behind every screen, with fixed honey colors (no wallpaper or artwork colors). In **Glass** on Android 13 and newer, the floating Home and Settings dock is Liquid Glass: content scrolling beneath it bends at the rim. |
-| **Mode** | `System` (default), `Light`, `Dark` | Follows Android's system dark theme or locks the app to Light or Dark. |
-| **Animated comb** *(Hive)* | **On** (default) | Lets Hive's honeycomb breathe and pulse. It holds still with **Remove animations** or battery saver on, and while the app isn't in front. |
-| **Pure black (AMOLED)** | **Off** (default) | Shown in Graphite Dark or as an inline **AMOLED** pill when the **Black** seed swatch is selected. Uses true `#000000` black surfaces for OLED phone screens. |
-| **Media artwork color** *(Bloom and Glass)* | **Off** (default) | Tints the app to match the artwork of what is playing on the phone or a paired PC. Applies only while this is on. With nothing playing, the app uses the wallpaper or preset colors. |
-| **Colors from wallpaper** *(Android 12+)* | **On** (default) | Uses your wallpaper's colors and updates when the wallpaper changes. On Samsung phones with One UI's **Color palette** off, G7 Link reads the colors from the wallpaper itself. Paired PCs that select **My phone's colors** use the same seed. |
-| **Color swatches** | **Honey**, **Lavender**, **Ocean**, **Sage**, **Black** | Selects a preset accent color when **Media artwork color** and **Colors from wallpaper** are off. |
+| **Theme** | **G7** (default), **Catppuccin**, **Gruvbox**, **Rosé Pine**, **Solarized**, **Nord**, **Tokyo Night**, **Kanagawa**, **Dracula**, **Ayu** | Picks the colors, the same palettes as on the PC. Every theme keeps the same layout. Tokyo Night, Kanagawa, Dracula and Ayu are dark only. |
+| **Mode** | `System` (default), `Light`, `Dark` | Follows Android's system dark theme or locks the app to Light or Dark. A dark-only theme stays dark. |
 
 ### 2. PCs (`Devices`)
 

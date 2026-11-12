@@ -1,19 +1,17 @@
 # Fonts
 
-The typefaces both apps ship with, as named in `docs/design/tokens.json`.
+The typefaces G7 Link ships with.
 All are under the [SIL Open Font License 1.1](https://openfontlicense.org);
 each license sits next to its font and is packaged with it.
 
 | File | Family | Used for |
 |---|---|---|
-| `Figtree.ttf` | Figtree (variable, weights 300 to 900) | All text in Bloom; body text in Graphite |
-| `GeistMono-Variable.ttf` | Geist Mono (variable) | Codes and other monospace text in the G7 theme, the same file G7 ships |
-| `InstrumentSerif-Regular.ttf` | Instrument Serif | Graphite headings |
-| `SpaceMono-Regular.ttf`, `SpaceMono-Bold.ttf` | Space Mono | Codes, IDs and Graphite labels |
+| `GeistMono-Variable.ttf` | Geist Mono (variable) | All text in both apps, the same file G7 ships |
+| `Figtree.ttf` | Figtree (variable, weights 300 to 900) | The virtual camera's "Start the webcam" card |
 
-Taken unmodified from [google/fonts](https://github.com/google/fonts) at
-commit `6e8069ff8ba3dab2a397fb30e7fbd243aba9b57a` (`ofl/figtree`,
-`ofl/instrumentserif`, `ofl/spacemono`).
+Figtree is taken unmodified from [google/fonts](https://github.com/google/fonts)
+at commit `6e8069ff8ba3dab2a397fb30e7fbd243aba9b57a` (`ofl/figtree`).
 
-The desktop app compiles them into its resources (`desktop/app/build.rs`);
-the Android app packages this folder as assets (`android/app/build.gradle.kts`).
+The desktop app compiles Geist Mono into its resources (`desktop/app/build.rs`)
+and the virtual camera Figtree (`desktop/vcam`); the Android app packages Geist
+Mono as an asset (`android/app/build.gradle.kts`).
