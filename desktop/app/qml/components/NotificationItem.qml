@@ -433,14 +433,17 @@ Item {
             }
         }
 
-        // The picture it shows (a photo in a message).
+        // The picture it shows (a photo in a message), whole, as the phone
+        // shows it opened: across the row, or as tall as fits and narrower.
         RoundedImage {
-            width: Math.min(parent.width, 320)
-            height: status === Image.Ready
-                    ? Math.min(220, width * implicitImageHeight / Math.max(1, implicitImageWidth)) : 0
+            readonly property real aspect: implicitImageWidth > 0 ? implicitImageHeight / implicitImageWidth : 0
+            readonly property real maxHeight: 360
+            width: aspect > 0 ? Math.min(parent.width, maxHeight / aspect) : parent.width
+            height: status === Image.Ready ? width * aspect : 0
+            fillMode: Image.PreserveAspectFit
             visible: item.open && item.imageUrl.length > 0 && status === Image.Ready
             source: item.open ? item.imageUrl : ""
-            sourceSize.width: 640
+            sourceSize.width: 1080
             HoverHandler { cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: item.imageClicked(item.imageUrl) }
         }

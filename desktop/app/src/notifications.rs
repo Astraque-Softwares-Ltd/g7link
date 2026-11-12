@@ -256,6 +256,34 @@ fn pictures_of(event: &NodeEvent) -> (Vec<(NotificationKey, Option<PathBuf>)>, V
     (without, pictures)
 }
 
+/// The square version of a notification's picture, for the desktop's
+/// notification, which draws a picture in a square: cut from the middle,
+/// never squeezed.
+pub(crate) fn thumb_path(picture: &std::path::Path) -> PathBuf {
+    picture.with_extension("thumb.png")
+}
+
+/// Side of [`thumb_path`]'s square, in pixels.
+const THUMB_SIDE: u32 = 192;
+
+fn write_thumb(picture: &std::path::Path, bytes: &[u8]) {
+    let thumb = thumb_path(picture);
+    if thumb.exists() {
+        return;
+    }
+    use crate::sys::image;
+    let made = image::decode(bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|bitmap| {
+            let square = image::scale_to(&image::crop_square(&bitmap), THUMB_SIDE);
+            image::encode_png(&square).map_err(|e| e.to_string())
+        })
+        .and_then(|png| std::fs::write(&thumb, png).map_err(|e| e.to_string()));
+    if let Err(error) = made {
+        tracing::debug!(%error, "can't make a notification picture's thumbnail");
+    }
+}
+
 /// Writes pictures on the files thread; each shows on its notification once
 /// it's there.
 fn write_pictures(pictures: Vec<Picture>) {
@@ -265,6 +293,8 @@ fn write_pictures(pictures: Vec<Picture>) {
             .and_then(|()| if path.exists() { Ok(()) } else { std::fs::write(&path, &bytes) });
         if let Err(e) = &saved {
             tracing::debug!(error = %e, "can't save a notification picture");
+        } else {
+            write_thumb(&path, &bytes);
         }
         wanted_pictures(|wanted| {
             if wanted.get(&key) != Some(&path) {
@@ -574,7 +604,8 @@ fn show(device: DeviceId, n: &Notification) {
         body: n.text.clone().unwrap_or_default(),
         attribution: n.app_name.clone(),
         icon,
-        image,
+        // A square slot: the square version when it's made, so it isn't squeezed.
+        image: image.map(|p| Some(thumb_path(&p)).filter(|t| t.exists()).unwrap_or(p)),
         actions,
         reply: reply.map(|a| (a.id.clone(), a.title.clone())),
         silent: n.silent,

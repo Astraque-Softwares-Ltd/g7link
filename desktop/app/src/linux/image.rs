@@ -965,6 +965,19 @@ pub fn decode(bytes: &[u8]) -> Result<Bitmap> {
 }
 
 /// Scales down (never up) so neither side exceeds `max`, averaging covered pixels.
+/// The largest square from the middle of `bitmap`, for a slot that is always
+/// square: cut down to fit, never squeezed.
+pub fn crop_square(bitmap: &Bitmap) -> Bitmap {
+    let side = bitmap.width.min(bitmap.height);
+    let (x0, y0) = ((bitmap.width - side) / 2, (bitmap.height - side) / 2);
+    let mut bgra = Vec::with_capacity((side * side * 4) as usize);
+    for y in y0..y0 + side {
+        let start = ((y * bitmap.width + x0) * 4) as usize;
+        bgra.extend_from_slice(&bitmap.bgra[start..start + (side * 4) as usize]);
+    }
+    Bitmap { width: side, height: side, bgra }
+}
+
 pub fn scale_to(bitmap: &Bitmap, max: u32) -> Bitmap {
     let longest = bitmap.width.max(bitmap.height);
     if longest <= max || max == 0 || bitmap.width == 0 || bitmap.height == 0 {
@@ -1041,6 +1054,19 @@ pub fn bmp_from_dib(dib: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_square_is_cut_from_the_middle() {
+        // 4 x 2: columns 0..4 hold their index in every channel.
+        let bgra = (0..2).flat_map(|_| (0..4u8).flat_map(|x| [x; 4])).collect();
+        let square = crop_square(&Bitmap { width: 4, height: 2, bgra });
+        assert_eq!((square.width, square.height), (2, 2));
+        assert_eq!(square.bgra, [1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2]);
+        // A tall one keeps its middle rows.
+        let bgra = [[0u8; 4], [9; 4], [0; 4]].concat();
+        let tall = crop_square(&Bitmap { width: 1, height: 3, bgra });
+        assert_eq!(tall.bgra, [9; 4]);
+    }
 
     fn sample_bitmap(width: u32, height: u32) -> Bitmap {
         let mut bgra = Vec::with_capacity((width * height * 4) as usize);
