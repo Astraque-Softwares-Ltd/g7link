@@ -25,6 +25,7 @@ pub mod mp4;
 pub mod net;
 pub mod share_target;
 pub mod shell;
+pub mod shell_clipboard;
 pub mod shortcut;
 pub mod single_instance;
 pub mod smtc;

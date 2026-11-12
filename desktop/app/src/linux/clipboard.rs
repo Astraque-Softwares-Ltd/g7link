@@ -732,6 +732,14 @@ fn write_text(text: &str, html: Option<&str>, rtf: Option<&str>, private: bool) 
         return Ok(());
     }
 
+    // GNOME's Wayland: through the shell, which reaches the clipboard whatever
+    // has the focus. Never for a private text: it can't carry the privacy hint,
+    // so a clipboard history would keep it.
+    if !cfg!(test) && !private && is_gnome_wayland() && super::shell_clipboard::write_text(text) {
+        *MAYBE_STALE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        return Ok(());
+    }
+
     if !cfg!(test) && wayland_helpers() {
         let args: &[&str] = if private { &["--sensitive"] } else { &[] };
         if pipe_to_cmd("wl-copy", args, text.as_bytes()).is_ok() {
@@ -776,6 +784,10 @@ pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), String> {
         && super::data_control::active()
         && super::data_control::write(vec![("image/png".to_owned(), png.clone())])
     {
+        return Ok(());
+    }
+
+    if !cfg!(test) && is_gnome_wayland() && super::shell_clipboard::write_png(&png) {
         return Ok(());
     }
 
