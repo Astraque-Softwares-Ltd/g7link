@@ -632,9 +632,13 @@ pub fn disconnect_audio() {
 /// A2DP sink: what this PC offers a phone that plays media to it.
 const UUID_A2DP_SINK: &str = "0000110b-0000-1000-8000-00805f9b34fb";
 
-/// The paired phones, to tell them from other Bluetooth devices, and what
-/// records the address a phone's device is found at.
-static PHONES: OnceLock<(fn() -> Vec<BtPhone>, fn(&str, &str))> = OnceLock::new();
+/// Lists the paired phones, to tell them from other Bluetooth devices.
+type ListPhones = fn() -> Vec<BtPhone>;
+/// Records the address a phone's device is found at.
+type RecordAddress = fn(&str, &str);
+
+/// The paired phones and what records where their devices are found.
+static PHONES: OnceLock<(ListPhones, RecordAddress)> = OnceLock::new();
 
 /// Sends media back to the phones that may no longer play it here, after one
 /// of them stopped being allowed to.
