@@ -814,15 +814,31 @@ pub(crate) fn describe(error: &Error) -> String {
     }
 }
 
+/// The retention summary being worked out: it reads whole caches, so one at a
+/// time, and one more after it when something changed meanwhile.
+static RETENTION_REFRESH: Mutex<OneAtATime> = Mutex::new(OneAtATime { running: false, again: false });
+
+fn retention_refresh(f: impl FnOnce(&mut OneAtATime) -> bool) -> bool {
+    f(&mut RETENTION_REFRESH.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 fn spawn_data_retention_refresh(qt: CxxQtThread<qobject::AppController>) {
+    if !retention_refresh(OneAtATime::start) {
+        return;
+    }
     core_host::host().runtime.spawn_blocking(move || {
-        let summary = compute_data_retention_json();
-        let _ = qt.queue(move |mut object| {
-            let q = QString::from(&summary);
-            if *object.data_retention_summary() != q {
-                object.as_mut().set_data_retention_summary(q);
+        loop {
+            let summary = compute_data_retention_json();
+            let _ = qt.queue(move |mut object| {
+                let q = QString::from(&summary);
+                if *object.data_retention_summary() != q {
+                    object.as_mut().set_data_retention_summary(q);
+                }
+            });
+            if !retention_refresh(OneAtATime::finish) {
+                break;
             }
-        });
+        }
     });
 }
 
