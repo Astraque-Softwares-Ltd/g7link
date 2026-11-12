@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use super::clipboard::{Clip, Image};
 
 const SHELL: &str = "org.gnome.Shell";
+const BUS: &str = "org.freedesktop.DBus";
 const PATH: &str = "/org/gnome/Shell/Extensions/G7Linux/Clipboard";
 const INTERFACE: &str = "org.gnome.Shell.Extensions.Clipboard";
 const CHANGED: &str = "ClipboardChanged";
@@ -100,18 +101,50 @@ fn follow_shell(changed: fn(Clip)) {
             return;
         }
     }
+    // Asked after subscribing, so a restart in between still comes as a signal.
+    let mut owner = shell_owner(&conn);
     listen(&conn);
     for message in messages {
         let Ok(message) = message else { break };
-        match shell_signal(&message) {
-            Some(Signal::Restarted) => listen(&conn),
-            Some(Signal::Copied { content, mime }) => {
+        let Some(signal) = shell_signal(&message) else { continue };
+        let header = message.header();
+        if !trusted_sender(&signal, header.sender().map(|s| s.as_str()), owner.as_deref()) {
+            continue;
+        }
+        match signal {
+            Signal::Owner(new) => {
+                let restarted = new.is_some();
+                owner = new;
+                if restarted {
+                    listen(&conn);
+                }
+            }
+            Signal::Copied { content, mime } => {
                 if let Some(clip) = clip_from(content, &mime) {
                     changed(clip);
                 }
             }
-            None => {}
         }
+    }
+}
+
+/// The unique name GNOME Shell has on the bus now.
+fn shell_owner(conn: &zbus::blocking::Connection) -> Option<String> {
+    let reply = conn
+        .call_method(Some(BUS), "/org/freedesktop/DBus", Some(BUS), "GetNameOwner", &(SHELL,))
+        .inspect_err(|error| tracing::debug!(%error, "can't find GNOME Shell on the bus"))
+        .ok()?;
+    reply.body().deserialize::<String>().ok()
+}
+
+/// Whether a signal came from who may send it: the bus itself for the shell's
+/// name changing hands, the shell's current owner for a copy. Any client on
+/// the session bus can send signals straight to this connection, past the
+/// match rules, so a fake copy must not reach the phone.
+fn trusted_sender(signal: &Signal, sender: Option<&str>, shell_owner: Option<&str>) -> bool {
+    match signal {
+        Signal::Owner(_) => sender == Some(BUS),
+        Signal::Copied { .. } => sender.is_some() && sender == shell_owner,
     }
 }
 
@@ -128,8 +161,8 @@ fn watched_signals() -> Vec<zbus::MatchRule<'static>> {
     let signal = || zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal);
     [
         signal()
-            .sender("org.freedesktop.DBus")
-            .and_then(|b| b.interface("org.freedesktop.DBus"))
+            .sender(BUS)
+            .and_then(|b| b.interface(BUS))
             .and_then(|b| b.member("NameOwnerChanged"))
             .and_then(|b| b.arg(0, SHELL)),
         signal()
@@ -145,8 +178,10 @@ fn watched_signals() -> Vec<zbus::MatchRule<'static>> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Signal {
-    /// GNOME Shell started again: its extension no longer knows who listens.
-    Restarted,
+    /// `org.gnome.Shell` changed hands: GNOME Shell's new unique name, or
+    /// `None` when it left the bus. A new shell's extension no longer knows
+    /// who listens.
+    Owner(Option<String>),
     Copied {
         content: Vec<u8>,
         mime: String,
@@ -160,11 +195,11 @@ fn shell_signal(message: &zbus::Message) -> Option<Signal> {
     };
     let body = message.body();
     match (interface.as_str(), member.as_str()) {
-        ("org.freedesktop.DBus", "NameOwnerChanged") => body
+        (BUS, "NameOwnerChanged") => body
             .deserialize::<(String, String, String)>()
             .ok()
-            .filter(|(name, _, owner)| name == SHELL && !owner.is_empty())
-            .map(|_| Signal::Restarted),
+            .filter(|(name, _, _)| name == SHELL)
+            .map(|(_, _, owner)| Signal::Owner(Some(owner).filter(|o| !o.is_empty()))),
         (INTERFACE, CHANGED) if header.path().is_some_and(|path| path.as_str() == PATH) => {
             let (content, mime, _app) = body.deserialize::<(Vec<u8>, String, String)>().ok()?;
             Some(Signal::Copied { content, mime })
@@ -251,8 +286,24 @@ mod tests {
                 .build(&(name, ":1.4", new))
                 .unwrap()
         };
-        assert_eq!(shell_signal(&owner(SHELL, ":1.9")), Some(Signal::Restarted));
-        assert_eq!(shell_signal(&owner(SHELL, "")), None);
+        assert_eq!(shell_signal(&owner(SHELL, ":1.9")), Some(Signal::Owner(Some(":1.9".into()))));
+        assert_eq!(shell_signal(&owner(SHELL, "")), Some(Signal::Owner(None)));
         assert_eq!(shell_signal(&owner("org.example", ":1.9")), None);
+    }
+
+    #[test]
+    fn only_the_shell_and_the_bus_are_believed() {
+        let copied = Signal::Copied { content: b"hi".to_vec(), mime: "text/plain".into() };
+        assert!(trusted_sender(&copied, Some(":1.9"), Some(":1.9")));
+        // Another client on the session bus, or a copy before the shell is known.
+        assert!(!trusted_sender(&copied, Some(":1.42"), Some(":1.9")));
+        assert!(!trusted_sender(&copied, Some(":1.9"), None));
+        assert!(!trusted_sender(&copied, None, None));
+        // The bus can't send a copy, nor a client a name change.
+        assert!(!trusted_sender(&copied, Some(BUS), Some(":1.9")));
+        let restarted = Signal::Owner(Some(":1.10".into()));
+        assert!(trusted_sender(&restarted, Some(BUS), Some(":1.9")));
+        assert!(!trusted_sender(&restarted, Some(":1.42"), Some(":1.9")));
+        assert!(!trusted_sender(&Signal::Owner(None), Some(":1.9"), Some(":1.9")));
     }
 }
