@@ -28,9 +28,11 @@ import app.g7link.android.R
 import app.g7link.android.ui.MainActivity
 import app.g7link.core.MediaAction
 import app.g7link.core.MediaPlayer
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -45,7 +47,8 @@ import kotlinx.coroutines.launch
  * the PC's: Android then sends the phone's volume buttons to it (unless
  * the phone plays something itself), and [setPcAudio] passes them on.
  *
- * Applies snapshots in arrival order and decodes artwork off the main thread.
+ * Applies each PC's newest snapshot, in arrival order, and decodes artwork
+ * off the main thread.
  */
 class PcMedia(
     context: Context,
@@ -107,14 +110,19 @@ class PcMedia(
     private val _summaries = MutableStateFlow<Map<String, Summary>>(emptyMap())
     val summaries: StateFlow<Map<String, Summary>> = _summaries
 
-    private data class Snapshot(val pc: String, val name: String, val players: List<MediaPlayer>)
-    private val updates = Channel<Snapshot>(Channel.UNLIMITED)
+    private val waiting = SnapshotCoalescer<MediaPlayer>(artKeyOf = { it.artKey }, artOf = { it.art })
+    private val wake = Channel<Unit>(Channel.CONFLATED)
 
     init {
-        // The Rust listener delivers snapshots and disconnects in order. Keep
-        // that order even when an earlier snapshot takes longer to decode.
+        // The Rust listener delivers snapshots and disconnects in order; the
+        // coalescer keeps that order. The next batch is taken only once the
+        // main thread has applied the last, so a slow phone skips snapshots
+        // rather than queueing them.
         scope.launch(Dispatchers.Default) {
-            for (update in updates) applyUpdate(update.pc, update.name, update.players)
+            wake.consumeEach {
+                val batch = waiting.take() ?: return@consumeEach
+                applyBatch(batch)
+            }
         }
     }
 
@@ -152,22 +160,25 @@ class PcMedia(
 
     /** A PC's players changed (empty: nothing plays there, or it's offline). */
     fun update(pc: String, pcName: String, list: List<MediaPlayer>) {
-        updates.trySend(Snapshot(pc, pcName, list))
+        waiting.offer(pc, pcName, list)
+        wake.trySend(Unit)
     }
 
-    private fun applyUpdate(pc: String, pcName: String, list: List<MediaPlayer>) {
-        val decoded = list.mapNotNull { player ->
-            val key = player.artKey ?: return@mapNotNull null
-            val bytes = player.art ?: return@mapNotNull null
+    private suspend fun applyBatch(batch: SnapshotCoalescer.Batch<MediaPlayer>) {
+        val decoded = batch.art.mapNotNull { (cacheKey, bytes) ->
             val bmp = decodeArtwork(bytes) ?: return@mapNotNull null
-            "$pc/$key" to (bmp to extractArtworkSeedColor(bmp, "$pc/$key"))
+            cacheKey to (bmp to extractArtworkSeedColor(bmp, cacheKey))
         }
+        val applied = CompletableDeferred<Unit>()
         main.post {
-            names[pc] = pcName
             for ((cacheKey, entry) in decoded) {
                 art[cacheKey] = entry
             }
-            if (list.isEmpty()) players.remove(pc) else players[pc] = list
+            for (update in batch.updates) {
+                names[update.pc] = update.name
+                if (update.reattach) players.remove(update.pc)
+                if (update.players.isEmpty()) players.remove(update.pc) else players[update.pc] = update.players
+            }
             _playing.value = players.flatMap { (id, all) -> all.map { "$id/${it.id}" to it.playing } }.toMap()
             val now = android.os.SystemClock.elapsedRealtime()
             _timelines.value = players.flatMap { (id, all) ->
@@ -183,7 +194,9 @@ class PcMedia(
                 }
             }.toMap()
             render()
+            applied.complete(Unit)
         }
+        applied.await()
     }
 
     /** The volume of each PC this phone may set (from its deck state). */
