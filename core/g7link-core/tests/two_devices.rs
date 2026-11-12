@@ -7441,6 +7441,21 @@ async fn play_on_phone_offers_a_video_file_the_phone_reads_in_ranges() {
     let after = phone.node.watch_file_read(pc_id, 0, 10).await;
     assert!(matches!(after, Err(Error::Denied)), "{after:?}");
 
+    // Turning media off for the phone takes the offer back, and turning it on again doesn't restore it.
+    with_timeout(
+        "offer the file again",
+        pc.node.offer_watch_file(phone_id, "vlc".into(), None, movie.clone(), 0),
+    )
+    .await
+    .unwrap();
+    with_timeout("read it again", phone.node.watch_file_read(pc_id, 0, 10)).await.unwrap();
+    pc.node.set_device_toggle(phone_id, "media", false).unwrap();
+    let off = phone.node.watch_file_read(pc_id, 0, 10).await;
+    assert!(matches!(off, Err(Error::Denied)), "{off:?}");
+    pc.node.set_device_toggle(phone_id, "media", true).unwrap();
+    let on_again = phone.node.watch_file_read(pc_id, 0, 10).await;
+    assert!(matches!(on_again, Err(Error::Denied)), "{on_again:?}");
+
     pc.node.shutdown().await;
     phone.node.shutdown().await;
 }

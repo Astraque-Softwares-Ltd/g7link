@@ -193,6 +193,10 @@ impl Shared {
     /// Brings both sides in line after the user allowed or stopped media
     /// for a device.
     pub(crate) fn media_toggled(self: &Arc<Self>, peer: DeviceId, enabled: bool) {
+        if !enabled {
+            // A Play on phone offer goes with it: the phone can't take it or read its file.
+            self.watch_offers.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
+        }
         let Some(session) = self.session(&peer) else {
             if !enabled {
                 self.emit(NodeEvent::MediaChanged { device: peer, players: Vec::new() });
@@ -374,6 +378,9 @@ pub(crate) async fn offer_watch(
 /// Whether `peer` may watch `player`: this PC offered it, and the phone
 /// takes it (or comes back to it) in time. Taking it renews the offer.
 pub(crate) fn watch_allowed(shared: &Shared, peer: &DeviceId, player: &str) -> bool {
+    if !shared.toggle_on(peer, TOGGLE) {
+        return false;
+    }
     let mut offers = shared.watch_offers.lock().unwrap_or_else(|e| e.into_inner());
     match offers.get_mut(peer) {
         Some(offer) if offer.player == player && offer.at.elapsed() < WATCH_OFFER => {
@@ -387,12 +394,13 @@ pub(crate) fn watch_allowed(shared: &Shared, peer: &DeviceId, player: &str) -> b
 /// Whether `peer` has a Play on phone offer from this PC open (so this PC
 /// may open the stream to it).
 pub(crate) fn watch_open(shared: &Shared, peer: &DeviceId) -> bool {
-    shared
-        .watch_offers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(peer)
-        .is_some_and(|offer| offer.at.elapsed() < WATCH_OFFER)
+    shared.toggle_on(peer, TOGGLE)
+        && shared
+            .watch_offers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(peer)
+            .is_some_and(|offer| offer.at.elapsed() < WATCH_OFFER)
 }
 
 /// Watching stopped: the offer stays open for a while from now.
@@ -402,8 +410,12 @@ pub(crate) fn renew_watch(shared: &Shared, peer: &DeviceId) {
     }
 }
 
-/// The file `peer` may read, while its offer is open (reading renews it).
+/// The file `peer` may read, while its offer is open and media is on for
+/// it (reading renews it).
 fn offered_file(shared: &Shared, peer: &DeviceId) -> Option<std::path::PathBuf> {
+    if !shared.toggle_on(peer, TOGGLE) {
+        return None;
+    }
     let mut offers = shared.watch_offers.lock().unwrap_or_else(|e| e.into_inner());
     let offer = offers.get_mut(peer).filter(|offer| offer.at.elapsed() < WATCH_OFFER)?;
     offer.at = std::time::Instant::now();
