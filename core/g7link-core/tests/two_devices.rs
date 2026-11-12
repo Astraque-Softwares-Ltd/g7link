@@ -4493,6 +4493,39 @@ async fn webcam_round_trip(hevc: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_webcam_turned_off_before_its_format_arrives_doesnt_start() {
+    use g7link_core::PacketKind;
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::WEBCAM_VIRTUAL]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::WEBCAM_STREAM]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    // The PC has the stream's header and waits for its format when the user turns the webcam off.
+    let stream = Arc::new(with_timeout("webcam_open", phone.node.webcam_open(pc_id)).await.unwrap());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    pc.node.set_device_toggle(phone_id, "webcam", false).unwrap();
+
+    let config = g7link_core::WebcamConfig {
+        codec: "h264".into(),
+        width: 1920,
+        height: 1080,
+        camera: g7link_core::WEBCAM_CAMERA_BACK.into(),
+        fps: 30,
+        max_height: 2160,
+    };
+    let sender = stream.clone();
+    tokio::task::spawn_blocking(move || sender.send(PacketKind::Config, 0, config.to_cbor())).await.unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !stream.is_closed() && tokio::time::Instant::now() < deadline {
+        let s = stream.clone();
+        tokio::task::spawn_blocking(move || s.send(PacketKind::Frame, 0, vec![0])).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(stream.is_closed(), "the PC refuses the phone's webcam stream");
+    assert!(!pc.platform.webcam_asks.lock().unwrap().iter().any(|a| a == "sink"), "no webcam started");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pc_audio_volume_mute_output_devices_and_smart_clipboard_context_chips_flow_end_to_end() {
     use g7link_core::{AudioOutputDevice, ClipKind, DECK_ACTIONS, DeckState, PC_AUDIO};
 

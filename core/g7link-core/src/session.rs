@@ -254,7 +254,13 @@ impl Session {
             // Fail any requests still waiting for a reply.
             s.pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
             tracing::debug!(peer = %s.peer.short(), "session ended");
+            let ended = s.clone();
             on_end(s);
+            // Streams the peer opened run on tasks of their own, holding the
+            // connection: closing it ends them with the session.
+            if ended.conn.close_reason().is_none() {
+                ended.conn.close(VarInt::from_u32(CLOSE_NORMAL), b"session ended");
+            }
         });
         session
     }
@@ -745,6 +751,9 @@ const MAX_BACKGROUND_RPCS: usize = 32;
 
 /// Concurrent incoming data streams allowed from one peer at a time.
 const MAX_INCOMING_STREAMS: usize = 32;
+
+/// How long a webcam or microphone stream may take to say its format.
+pub(crate) const FIRST_CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Streams the other device opens (file transfers), each handled on its own.
 async fn streams(session: &Arc<Session>, shared: &Weak<Shared>) {

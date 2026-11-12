@@ -246,12 +246,14 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
         let _ = recv.stop(VarInt::from_u32(mirror::STOPPED));
     };
     let shows = shared.we_offer(mirror::VIEW);
-    let allowed = if is_local_desktop(&shared) {
-        shared.toggle_on(&peer, TOGGLE)
-    } else {
-        shared.store.toggle(&peer, PC_MIRROR_TOGGLE).ok().flatten().unwrap_or(true)
+    let toggle_on = || {
+        if is_local_desktop(&shared) {
+            shared.toggle_on(&peer, TOGGLE)
+        } else {
+            shared.store.toggle(&peer, PC_MIRROR_TOGGLE).ok().flatten().unwrap_or(true)
+        }
     };
-    if !shows || !allowed {
+    if !shows || !toggle_on() {
         return refuse(send, recv);
     }
     let first = match read_video_packet(&mut recv).await {
@@ -275,12 +277,21 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
         return refuse(send, recv);
     };
     let mirroring = config.session;
+    // Turned off, or unpaired, while the format was on its way: it doesn't start.
+    let allowed = || shared.session(&peer).is_some() && toggle_on();
+    if !allowed() {
+        return refuse(send, recv);
+    }
     let Some(sink) = shared.platform.mirror_sink(&peer, mirroring) else {
         return refuse(send, recv);
     };
     // Ready to be stopped before anyone hears it's showing: a stop sent the
     // moment it appears must not be lost.
     let stopped = shared.new_mirror_stop(&peer, mirroring, mirror::OP_VIDEO);
+    // Turned off since: no one could stop it, so it stops itself.
+    if !allowed() {
+        stopped.notify_one();
+    }
     let started_at = std::time::Instant::now();
     let title = if mirroring == mirror::SCREEN {
         "Screen mirroring".to_owned()

@@ -12,7 +12,12 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream, VarInt};
 
-use crate::{Error, MirrorStream, Result, events::NodeEvent, node::Shared, session::Session};
+use crate::{
+    Error, MirrorStream, Result,
+    events::NodeEvent,
+    node::Shared,
+    session::{FIRST_CONFIG_TIMEOUT, Session},
+};
 
 /// The device toggle that allows a device's microphone on this PC (or this
 /// phone's microphone for a PC).
@@ -63,8 +68,9 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
     if !listens || !shared.toggle_on(&peer, TOGGLE) {
         return refuse(send, recv);
     }
-    let first = match read_video_packet(&mut recv).await {
-        Ok(Some(p)) if p.kind == PacketKind::Config => {
+    let first = tokio::time::timeout(FIRST_CONFIG_TIMEOUT, read_video_packet(&mut recv));
+    let first = match first.await {
+        Ok(Ok(Some(p))) if p.kind == PacketKind::Config => {
             MirrorAudioConfig::from_cbor(&p.data).ok().filter(MirrorAudioConfig::is_valid)
         }
         _ => None,
@@ -73,10 +79,19 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
         tracing::warn!("a phone sent a microphone format this PC can't play");
         return refuse(send, recv);
     };
+    // Turned off, or unpaired, while the format was on its way: it doesn't start.
+    let allowed = || shared.session(&peer).is_some() && shared.toggle_on(&peer, TOGGLE);
+    if !allowed() {
+        return refuse(send, recv);
+    }
     let Some(sink) = shared.platform.mic_sink(&peer) else {
         return refuse(send, recv);
     };
     let stopped = shared.new_mic_stop(&peer);
+    // Turned off since: no one could stop it, so it stops itself.
+    if !allowed() {
+        stopped.notify_one();
+    }
     shared.emit(NodeEvent::Mic { device: peer, on: true });
     sink.config(config);
     loop {

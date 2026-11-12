@@ -13,7 +13,12 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream, VarInt};
 
-use crate::{Error, MirrorStream, Result, events::NodeEvent, node::Shared, session::Session};
+use crate::{
+    Error, MirrorStream, Result,
+    events::NodeEvent,
+    node::Shared,
+    session::{FIRST_CONFIG_TIMEOUT, Session},
+};
 
 /// The device toggle that allows webcam streaming for a device.
 pub const TOGGLE: &str = "webcam";
@@ -70,18 +75,30 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
     let accepted = |config: &WebcamConfig| {
         config.is_valid() && (config.codec != webcam::H265 || shared.we_offer(webcam::HEVC))
     };
-    let first = match read_video_packet(&mut recv).await {
-        Ok(Some(p)) if p.kind == PacketKind::Config => WebcamConfig::from_cbor(&p.data).ok().filter(accepted),
+    let first = tokio::time::timeout(FIRST_CONFIG_TIMEOUT, read_video_packet(&mut recv));
+    let first = match first.await {
+        Ok(Ok(Some(p))) if p.kind == PacketKind::Config => {
+            WebcamConfig::from_cbor(&p.data).ok().filter(accepted)
+        }
         _ => None,
     };
     let Some(config) = first else {
         tracing::warn!("a phone sent a webcam format this PC can't decode");
         return refuse(send, recv);
     };
+    // Turned off, or unpaired, while the format was on its way: it doesn't start.
+    let allowed = || shared.session(&peer).is_some() && shared.toggle_on(&peer, TOGGLE);
+    if !allowed() {
+        return refuse(send, recv);
+    }
     let Some(sink) = shared.platform.webcam_sink(&peer) else {
         return refuse(send, recv);
     };
     let stopped = shared.new_webcam_stop(&peer);
+    // Turned off since: no one could stop it, so it stops itself.
+    if !allowed() {
+        stopped.notify_one();
+    }
     let started_at = std::time::Instant::now();
     let tl_row = shared.record_timeline(crate::timeline::NewTimelineEntry {
         kind: crate::TimelineKind::Session,
