@@ -13,7 +13,7 @@ use g7link_protocol::{
     ALPN_PAIR, ALPN_SESSION, DeviceId, Envelope, ErrorCode,
     messages::{
         Battery, ClipSet, DeviceInfo, DeviceKind, HelloUpdate, MediaCommand, MediaPlayer, Notification,
-        NotifyAction, NotifyKey, PowerLevel, Ring, types,
+        NotificationChatMessage, NotificationConversation, NotifyAction, NotifyKey, PowerLevel, Ring, types,
     },
     pairing::PairingUri,
 };
@@ -300,6 +300,48 @@ impl std::fmt::Debug for Shared {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The text of `n` for the in-memory notification history, which is only
+/// listed and searched: its icon, picture and avatars stay out.
+fn history_copy(n: &Notification) -> Notification {
+    Notification {
+        key: n.key.clone(),
+        app: n.app.clone(),
+        app_name: n.app_name.clone(),
+        title: n.title.clone(),
+        text: n.text.clone(),
+        sub: n.sub.clone(),
+        when: n.when,
+        actions: n.actions.clone(),
+        silent: n.silent,
+        ongoing: n.ongoing,
+        icon: None,
+        image: None,
+        live: n.live.clone(),
+        conversation: n.conversation.as_ref().map(|c| NotificationConversation {
+            v: c.v,
+            title: c.title.clone(),
+            group: c.group,
+            avatar: None,
+            messages: c
+                .messages
+                .iter()
+                .map(|m| NotificationChatMessage {
+                    sender: m.sender.clone(),
+                    text: m.text.clone(),
+                    time: m.time,
+                    self_sent: m.self_sent,
+                    avatar: None,
+                })
+                .collect(),
+        }),
+    }
+}
+
+/// The notification history's order: newest first, then by key.
+fn history_order(a: &Notification, b: &Notification) -> std::cmp::Ordering {
+    b.when.cmp(&a.when).then_with(|| a.key.cmp(&b.key))
 }
 
 impl Shared {
@@ -3834,12 +3876,12 @@ impl Node {
     }
 
     pub async fn notification_posted(&self, notification: Notification) {
-        if let Some(clean) = notification.clone().sanitized() {
+        if let Some(clean) = history_copy(&notification).sanitized() {
             let mut hist = lock(&self.shared.notification_history);
             hist.retain(|n| n.key != clean.key);
-            hist.push(clean);
-            hist.sort_by(|a, b| b.when.cmp(&a.when).then_with(|| a.key.cmp(&b.key)));
-            // Kept in memory with icons and pictures: drop the oldest past the cap.
+            let at = hist.partition_point(|n| history_order(n, &clean).is_lt());
+            hist.insert(at, clean);
+            // Kept in memory: drop the oldest past the cap.
             hist.truncate(NOTIFICATION_HISTORY_MAX);
         }
         self.shared.notification_posted(notification).await;
@@ -3853,15 +3895,15 @@ impl Node {
     /// Everything this phone shows now (when the notification listener
     /// connects, or an empty list when access was revoked).
     pub async fn notifications_reset(&self, items: Vec<Notification>) {
-        self.record_notification_history(items.clone());
+        self.record_notification_history(&items);
         self.shared.notifications_reset(items).await;
     }
 
     /// Records a batch of notifications in the local notification history for
     /// listing and substring search.
-    pub fn record_notification_history(&self, items: Vec<Notification>) {
-        let mut clean: Vec<Notification> = items.into_iter().filter_map(Notification::sanitized).collect();
-        clean.sort_by(|a, b| b.when.cmp(&a.when).then_with(|| a.key.cmp(&b.key)));
+    pub fn record_notification_history(&self, items: &[Notification]) {
+        let mut clean: Vec<Notification> = items.iter().filter_map(|n| history_copy(n).sanitized()).collect();
+        clean.sort_by(history_order);
         *lock(&self.shared.notification_history) = clean;
     }
 
