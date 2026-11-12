@@ -308,6 +308,13 @@
     <string name="remote_middle_click">Clique do meio</string>
     <string name="remote_scroll_mode">Rolar</string>
     <string name="remote_scroll_mode_hint">Modo de rolagem · Deslize em qualquer direção · Toque em Rolar para parar · Segure para clique do meio</string>
+    <string name="remote_scroll_lock">Modo de rolagem</string>
+    <string name="remote_gestures">Gestos</string>
+    <string name="remote_gesture_move">Mover</string>
+    <string name="remote_gesture_tap">Toque · clique</string>
+    <string name="remote_gesture_scroll">Dois dedos · rolar</string>
+    <string name="remote_gesture_right_click">Toque com dois dedos · clique direito</string>
+    <string name="remote_gesture_drag">Toque e segure · arrastar</string>
     <string name="remote_keyboard">Teclado</string>
     <string name="remote_more_controls">Mais</string>
     <string name="remote_touchpad_only">Somente touchpad</string>

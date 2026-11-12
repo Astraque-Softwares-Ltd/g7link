@@ -295,6 +295,13 @@
     <string name="remote_middle_click">中键</string>
     <string name="remote_scroll_mode">滚动</string>
     <string name="remote_scroll_mode_hint">滚动模式 · 向任意方向滑动即可滚动 · 点按“滚动”停止 · 长按为中键点击</string>
+    <string name="remote_scroll_lock">滚动模式</string>
+    <string name="remote_gestures">手势</string>
+    <string name="remote_gesture_move">移动</string>
+    <string name="remote_gesture_tap">点按 · 单击</string>
+    <string name="remote_gesture_scroll">双指 · 滚动</string>
+    <string name="remote_gesture_right_click">双指点按 · 右键</string>
+    <string name="remote_gesture_drag">点按并按住 · 拖拽</string>
     <string name="remote_keyboard">键盘</string>
     <string name="remote_more_controls">更多</string>
     <string name="remote_touchpad_only">仅触控板</string>

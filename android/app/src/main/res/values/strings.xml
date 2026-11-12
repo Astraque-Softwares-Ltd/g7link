@@ -310,6 +310,13 @@
     <string name="remote_middle_click">Middle</string>
     <string name="remote_scroll_mode">Scroll</string>
     <string name="remote_scroll_mode_hint">Scroll mode · Swipe any way to scroll · Tap Scroll to stop · Hold it to middle-click</string>
+    <string name="remote_scroll_lock">Scroll lock</string>
+    <string name="remote_gestures">Gestures</string>
+    <string name="remote_gesture_move">Move</string>
+    <string name="remote_gesture_tap">Tap · click</string>
+    <string name="remote_gesture_scroll">Two fingers · scroll</string>
+    <string name="remote_gesture_right_click">Two-finger tap · right-click</string>
+    <string name="remote_gesture_drag">Tap, hold · drag</string>
     <string name="remote_keyboard">Keyboard</string>
     <string name="remote_more_controls">More</string>
     <string name="remote_touchpad_only">Touchpad only</string>

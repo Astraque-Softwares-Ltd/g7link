@@ -1,40 +1,67 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.theme
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.PointMode
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalDensity
@@ -48,6 +75,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.g7link.android.R
@@ -362,6 +391,13 @@ object G7Icons {
             "M8 2.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11M1 8a7 7 0 1 1 14 0A7 7 0 0 1 1 8m7 4a1 1 0 0 0 1-1V8a1 1 0 0 0-2 0v3a1 1 0 0 0 1 1m0-6a1 1 0 1 1 0-2 1 1 0 0 1 0 2",
         )
     }
+    /** G7 Linux's question-mark-circle. */
+    val help by lazy {
+        glyph(
+            "help",
+            "M2.5 8a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1m-.75 5.25a1 1 0 0 1 2 0v.125c0 .621-.504 1.125-1.125 1.125H8a.75.75 0 0 0-.75.75V9a.75.75 0 0 0 1.5 0v-.075c1.148-.28 2-1.316 2-2.55V6.25a2.5 2.5 0 0 0-5 0 .75.75 0 0 0 1.5 0m.75 4a1 1 0 1 0 0 2 1 1 0 0 0 0-2",
+        )
+    }
     val keyboard by lazy {
         glyph(
             "keyboard",
@@ -421,6 +457,13 @@ object G7Icons {
         glyph(
             "back",
             "M6.8 4.24a.75.75 0 0 1-.04 1.06l-2.1 1.95h8.59a.75.75 0 0 1 0 1.5H4.66l2.1 1.95a.75.75 0 1 1-1.02 1.1l-3.5-3.25a.75.75 0 0 1 0-1.1l3.5-3.25a.75.75 0 0 1 1.06.04",
+        )
+    }
+    /** G7 Linux's chevron-up-down: the touchpad scrolling instead of pointing. */
+    val scroll by lazy {
+        glyph(
+            "scroll",
+            "M7.47 2.47a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1-1.06 1.06L8 4.06 5.53 6.53a.75.75 0 0 1-1.06-1.06zm-3 7a.75.75 0 0 1 1.06 0L8 11.94l2.47-2.47a.75.75 0 1 1 1.06 1.06l-3 3a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06",
         )
     }
     val chevronDown by lazy {
@@ -971,6 +1014,270 @@ fun G7IconButton(
             modifier = Modifier.size(22.dp),
         )
     }
+}
+
+/** Whether the theme shows dark: keycaps and wells shade differently on a light ground. */
+@Composable
+@ReadOnlyComposable
+private fun g7ShowsDark(): Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
+
+/**
+ * A keycap's body: a raised face on a darker edge, with a soft shadow under
+ * it. [pressed] sinks the face onto its edge; [selected] (a key latched on)
+ * tints it in the accent and holds it part way down; [ready] (something waits
+ * for this key) rings it in the accent with a faint glow. [face] replaces the
+ * face's color, and its edge is darkened from it.
+ */
+@Composable
+fun G7KeycapSurface(
+    pressed: Boolean,
+    modifier: Modifier = Modifier,
+    selected: Boolean = false,
+    ready: Boolean = false,
+    shape: Shape = RoundedCornerShape(14.dp),
+    edge: Dp = 5.dp,
+    face: Color = Color.Unspecified,
+    contentColor: Color = Color.Unspecified,
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val dark = g7ShowsDark()
+    val ownFace = face != Color.Unspecified
+    val restFace = if (ownFace) face else scheme.surfaceContainerHigh
+    val faceColor = if (selected && !ownFace) lerp(restFace, scheme.primary, 0.16f) else restFace
+    val edgeColor = lerp(
+        faceColor,
+        Color.Black,
+        when {
+            !dark -> 0.24f
+            selected || ownFace -> 0.5f
+            else -> 0.7f
+        },
+    )
+    // The face's top catches the light: a 1 dp line along its upper edge.
+    val litFace = Color.White.copy(alpha = if (dark) 0.09f else 0.6f).compositeOver(faceColor)
+    val accentRing = selected || ready
+    val fg = when {
+        contentColor != Color.Unspecified -> contentColor
+        accentRing -> scheme.primary
+        else -> scheme.onSurface
+    }
+    val shadow = Shadow(
+        radius = 6.dp,
+        color = Color.Black,
+        offset = DpOffset(0.dp, 3.dp),
+        alpha = if (dark) 0.45f else 0.14f,
+    )
+    val glow = if (ready) Shadow(radius = 10.dp, color = scheme.primary, alpha = 0.35f) else null
+    val travel = when {
+        pressed -> edge - 1.dp
+        selected -> minOf(2.dp, edge - 1.dp)
+        else -> 0.dp
+    }
+    val sink = animateDpAsState(
+        targetValue = travel,
+        animationSpec = if (LocalReducedMotion.current) snap<Dp>() else tween<Dp>(durationMillis = 60),
+        label = "KeycapPress",
+    )
+    Box(modifier = modifier, propagateMinConstraints = true) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .padding(top = edge)
+                .then(if (glow != null) Modifier.dropShadow(shape, glow) else Modifier)
+                .dropShadow(shape, shadow)
+                .background(edgeColor, shape),
+        )
+        Box(
+            modifier = Modifier
+                .padding(bottom = edge)
+                .offset { IntOffset(0, sink.value.roundToPx()) }
+                .clip(shape)
+                .background(litFace)
+                .drawWithCache {
+                    val outline = shape.createOutline(size, layoutDirection, this)
+                    val lift = 1.dp.toPx()
+                    onDrawBehind { translate(top = lift) { drawOutline(outline, faceColor) } }
+                }
+                .then(if (accentRing) Modifier.border(1.dp, scheme.primary, shape) else Modifier)
+                .padding(contentPadding),
+            contentAlignment = Alignment.Center,
+        ) {
+            CompositionLocalProvider(LocalContentColor provides fg) { content() }
+        }
+    }
+}
+
+/**
+ * A raised key that goes down under the finger: mouse buttons, special keys,
+ * quick actions. [selected] is a key latched on (a held modifier, a mode);
+ * [ready] is a key with something waiting for it; [onLongClick] is a second
+ * action on a hold. The caller plays any haptics.
+ */
+@Composable
+fun G7Keycap(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    ready: Boolean = false,
+    corner: Dp = 14.dp,
+    edge: Dp = 5.dp,
+    role: Role = Role.Button,
+    contentDescription: String? = null,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 8.dp),
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
+    val description = contentDescription
+    G7KeycapSurface(
+        pressed = pressed && enabled,
+        selected = selected,
+        ready = ready,
+        shape = RoundedCornerShape(corner),
+        edge = edge,
+        contentPadding = contentPadding,
+        modifier = modifier
+            .combinedClickable(
+                interactionSource = interactions,
+                indication = null,
+                enabled = enabled,
+                role = role,
+                onLongClick = onLongClick,
+                hapticFeedbackEnabled = false,
+                onClick = onClick,
+            )
+            .semantics {
+                this.selected = selected || ready
+                if (description != null) this.contentDescription = description
+            }
+            .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
+        content = content,
+    )
+}
+
+/** A [G7Keycap] with a one-line label in the app's mono face. */
+@Composable
+fun G7Keycap(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    ready: Boolean = false,
+    corner: Dp = 14.dp,
+    edge: Dp = 5.dp,
+    role: Role = Role.Button,
+    contentDescription: String? = null,
+    style: TextStyle = MaterialTheme.typography.labelLarge,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 8.dp),
+) {
+    G7Keycap(
+        onClick = onClick,
+        modifier = modifier,
+        onLongClick = onLongClick,
+        enabled = enabled,
+        selected = selected,
+        ready = ready,
+        corner = corner,
+        edge = edge,
+        role = role,
+        contentDescription = contentDescription,
+        contentPadding = contentPadding,
+    ) {
+        Text(label, style = style, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** A rounded-square [G7Keycap] with an icon in its tint, for a row of quick actions. */
+@Composable
+fun G7IconKeycap(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    tint: Color = Color.Unspecified,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+) {
+    G7Keycap(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        selected = selected,
+        corner = 18.dp,
+        contentDescription = contentDescription,
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (selected || tint == Color.Unspecified) LocalContentColor.current else tint,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+/**
+ * A sunken well, as the touchpad is: a ground a shade under the screen's with
+ * its top edge in shadow. [dots] lays a faint grid over it, and [outline] rings
+ * its inside in that color.
+ */
+@Composable
+fun G7Well(
+    modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(22.dp),
+    dots: Boolean = false,
+    outline: Color? = null,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val dark = g7ShowsDark()
+    val ground = lerp(scheme.surface, scheme.surfaceContainer, if (dark) 0.35f else 0.8f)
+    val shade = Color.Black.copy(alpha = if (dark) 0.42f else 0.09f)
+    val rim = if (dark) Color.White.copy(alpha = 0.035f) else Color.Black.copy(alpha = 0.05f)
+    val dot = if (dark) Color.White.copy(alpha = 0.055f) else Color.Black.copy(alpha = 0.06f)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(ground)
+            .drawWithCache {
+                val shadeHeight = 16.dp.toPx()
+                val shadeBrush = Brush.verticalGradient(
+                    colors = listOf(shade, Color.Transparent),
+                    startY = 0f,
+                    endY = shadeHeight,
+                )
+                val wellOutline = shape.createOutline(size, layoutDirection, this)
+                // Strokes are centred on the edge and the clip keeps their inner half.
+                val rimStroke = Stroke(width = 2.dp.toPx())
+                val outlineStroke = Stroke(width = 3.dp.toPx())
+                val step = 18.dp.toPx()
+                val dotWidth = 1.dp.toPx()
+                val columns = if (dots && step > 0f) (size.width / step).toInt().coerceAtLeast(0) else 0
+                val rows = if (dots && step > 0f) (size.height / step).toInt().coerceAtLeast(0) else 0
+                val left = (size.width - (columns - 1) * step) / 2f
+                val top = (size.height - (rows - 1) * step) / 2f
+                val points = buildList(columns * rows) {
+                    for (row in 0 until rows) {
+                        for (column in 0 until columns) add(Offset(left + column * step, top + row * step))
+                    }
+                }
+                onDrawBehind {
+                    drawRect(shadeBrush, size = Size(size.width, shadeHeight))
+                    if (points.isNotEmpty()) {
+                        drawPoints(points, PointMode.Points, dot, strokeWidth = dotWidth, cap = StrokeCap.Round)
+                    }
+                    drawOutline(wellOutline, rim, style = rimStroke)
+                    if (outline != null) drawOutline(wellOutline, outline, style = outlineStroke)
+                }
+            },
+        content = content,
+    )
 }
 
 /** A sub-screen's header: Back, the title, and a muted note after it. */

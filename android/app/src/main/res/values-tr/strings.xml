@@ -308,6 +308,13 @@
     <string name="remote_middle_click">Orta</string>
     <string name="remote_scroll_mode">Kaydır</string>
     <string name="remote_scroll_mode_hint">Kaydırma modu · Her yöne kaydırın · Durdurmak için Kaydır\'a dokunun · Orta tık için basılı tutun</string>
+    <string name="remote_scroll_lock">Kaydırma modu</string>
+    <string name="remote_gestures">Hareketler</string>
+    <string name="remote_gesture_move">Taşı</string>
+    <string name="remote_gesture_tap">Dokun · tıkla</string>
+    <string name="remote_gesture_scroll">İki parmak · kaydır</string>
+    <string name="remote_gesture_right_click">İki parmakla dokun · sağ tık</string>
+    <string name="remote_gesture_drag">Dokun, basılı tut · sürükle</string>
     <string name="remote_keyboard">Klavye</string>
     <string name="remote_more_controls">Daha fazla</string>
     <string name="remote_touchpad_only">Yalnızca dokunmatik yüzey</string>
