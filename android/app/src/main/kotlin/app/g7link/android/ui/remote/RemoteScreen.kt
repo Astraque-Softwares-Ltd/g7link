@@ -537,17 +537,19 @@ private fun TouchpadSurface(
     sensitivity: Float,
     onStatus: (Core.RemoteAccess) -> Unit,
     modifier: Modifier = Modifier,
+    scrollLocked: Boolean = false,
 ) {
     var dragging by remember { mutableStateOf(false) }
     var touchPoint by remember { mutableStateOf<Offset?>(null) }
     val flingScope = rememberCoroutineScope()
+    val currentScrollLocked by rememberUpdatedState(scrollLocked)
     val primaryColor = MaterialTheme.colorScheme.primary
     val outlineColor = MaterialTheme.colorScheme.outlineVariant
     val touchpadDesc = stringResource(R.string.remote_mode_touchpad)
     Surface(
         shape = MaterialTheme.shapes.extraLarge,
         color = MaterialTheme.colorScheme.surfaceContainer,
-        border = if (dragging) BorderStroke(2.dp, primaryColor) else null,
+        border = if (dragging || scrollLocked) BorderStroke(2.dp, primaryColor) else null,
         modifier = modifier
             .semantics { contentDescription = touchpadDesc }
             .pointerInput(pcId, sensitivity) {
@@ -559,6 +561,7 @@ private fun TouchpadSurface(
                     onStatus = onStatus,
                     onTouch = { touchPoint = it },
                     onDragging = { dragging = it },
+                    scrollLocked = { currentScrollLocked },
                 )
             },
     ) {
@@ -578,9 +581,9 @@ private fun TouchpadSurface(
                 }
             }
             Text(
-                stringResource(R.string.remote_touchpad_hint),
+                stringResource(if (scrollLocked) R.string.remote_scroll_mode_hint else R.string.remote_touchpad_hint),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (scrollLocked) primaryColor else MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -610,6 +613,8 @@ private fun TouchpadView(
     // keeps its page, autocorrects, and has something to delete.
     var typed by remember { mutableStateOf(TextFieldValue("")) }
     val activeMods = remember { mutableStateListOf<String>() }
+    // Middle locks the touchpad to scrolling, as a middle click starts autoscroll.
+    var scrollLocked by rememberSaveable(pcId) { mutableStateOf(false) }
 
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -643,6 +648,7 @@ private fun TouchpadView(
                     sensitivity = sensitivity,
                     onStatus = onStatus,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
+                    scrollLocked = scrollLocked,
                 )
             }
 
@@ -657,8 +663,10 @@ private fun TouchpadView(
                     modifier = Modifier.weight(1f),
                 )
                 G7RaisedButton(
-                    label = stringResource(R.string.remote_middle_click),
-                    onClick = { core.remoteButton(pcId, "middle", "click", onStatus) },
+                    label = stringResource(if (scrollLocked) R.string.remote_scroll_mode else R.string.remote_middle_click),
+                    onClick = { scrollLocked = !scrollLocked },
+                    onLongClick = { core.remoteButton(pcId, "middle", "click", onStatus) },
+                    selected = scrollLocked,
                     modifier = Modifier.weight(1f),
                 )
                 G7RaisedButton(
@@ -771,6 +779,7 @@ private fun TouchpadView(
                     sensitivity = sensitivity,
                     onStatus = onStatus,
                     modifier = Modifier.height(PAD_WHILE_TYPING).fillMaxWidth(),
+                    scrollLocked = scrollLocked,
                 )
             }
         }

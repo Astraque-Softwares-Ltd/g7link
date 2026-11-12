@@ -310,6 +310,8 @@
     <string name="remote_left_click">Links</string>
     <string name="remote_right_click">Rechts</string>
     <string name="remote_middle_click">Mitte</string>
+    <string name="remote_scroll_mode">Scrollen</string>
+    <string name="remote_scroll_mode_hint">Scrollmodus · In jede Richtung wischen · Zum Beenden auf Scrollen tippen · Gedrückt halten für Mittelklick</string>
     <string name="remote_keyboard">Tastatur</string>
     <string name="remote_more_controls">Mehr</string>
     <string name="remote_touchpad_only">Nur Touchpad</string>

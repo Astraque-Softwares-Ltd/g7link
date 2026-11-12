@@ -310,6 +310,8 @@
     <string name="remote_left_click">Clique esquerdo</string>
     <string name="remote_right_click">Clique direito</string>
     <string name="remote_middle_click">Clique do meio</string>
+    <string name="remote_scroll_mode">Rolar</string>
+    <string name="remote_scroll_mode_hint">Modo de rolagem · Deslize em qualquer direção · Toque em Rolar para parar · Segure para clique do meio</string>
     <string name="remote_keyboard">Teclado</string>
     <string name="remote_more_controls">Mais</string>
     <string name="remote_touchpad_only">Somente touchpad</string>

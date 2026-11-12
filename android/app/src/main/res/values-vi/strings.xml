@@ -307,6 +307,8 @@
 <string name="remote_left_click">Trái</string>
 <string name="remote_right_click">Phải</string>
 <string name="remote_middle_click">Giữa</string>
+<string name="remote_scroll_mode">Cuộn</string>
+<string name="remote_scroll_mode_hint">Chế độ cuộn · Vuốt theo mọi hướng để cuộn · Chạm Cuộn để dừng · Giữ để nhấp chuột giữa</string>
 <string name="remote_keyboard">Bàn phím</string>
 <string name="remote_more_controls">Thêm</string>
 <string name="remote_touchpad_only">Chỉ Touchpad</string>

@@ -22,7 +22,8 @@ internal const val TOUCHPAD_REFERENCE_DENSITY = 2.625f
  * clicks, tap then drag holds the button, two fingers scroll and a two-finger
  * tap right-clicks. A flicked scroll glides on in [flingScope] until the next
  * touch. [onTouch] follows the finger (null once it lifts), [onDragging] says
- * when the button is held, and [onTap] runs after a click.
+ * when the button is held, and [onTap] runs after a click. While
+ * [scrollLocked] says so, one finger scrolls like two, in any direction.
  */
 internal suspend fun PointerInputScope.touchpadGestures(
     pcId: String,
@@ -33,6 +34,7 @@ internal suspend fun PointerInputScope.touchpadGestures(
     onTouch: (Offset?) -> Unit = {},
     onDragging: (Boolean) -> Unit = {},
     onTap: () -> Unit = {},
+    scrollLocked: () -> Boolean = { false },
 ) {
     val tapSlop = viewConfiguration.touchSlop
     // Movement in reference-density pixels, so the same physical swipe moves
@@ -53,7 +55,8 @@ internal suspend fun PointerInputScope.touchpadGestures(
         var maxPointers = 1
         var totalMoved = 0f
         val twoFinger = TwoFingerGesture(tapSlop * toReference)
-        var isDragHold = (downTime - lastSingleTapTime) <= doubleTapWindowMs
+        val scrolling = scrollLocked()
+        var isDragHold = !scrolling && (downTime - lastSingleTapTime) <= doubleTapWindowMs
         var dragStarted = false
         val ballistics = TouchpadBallistics()
 
@@ -84,7 +87,15 @@ internal suspend fun PointerInputScope.touchpadGestures(
                 isDragHold = false
             }
 
-            if (pressedCount == 1 && maxPointers == 1) {
+            if (pressedCount == 1 && maxPointers == 1 && scrolling) {
+                val change = firstPressed
+                onTouch(change.position)
+                val delta = change.positionChange()
+                totalMoved += hypot(delta.x, delta.y)
+                val clicks = twoFinger.onMove(delta.x * toReference, delta.y * toReference, change.uptimeMillis)
+                if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
+                change.consume()
+            } else if (pressedCount == 1 && maxPointers == 1) {
                 val change = firstPressed
                 onTouch(change.position)
                 val delta = change.positionChange()
@@ -139,6 +150,10 @@ internal suspend fun PointerInputScope.touchpadGestures(
             core.remoteButton(pcId, "left", "up", onStatus)
             onDragging(false)
             lastSingleTapTime = 0L
+        } else if (scrolling && maxPointers == 1 && twoFinger.isScroll) {
+            lastSingleTapTime = 0L
+            fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
+                ?.let { flingScope.launchScrollFling(core, pcId, it) }
         } else if (maxPointers >= 2) {
             lastSingleTapTime = 0L
             if (twoFinger.isScroll) {

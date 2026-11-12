@@ -2,7 +2,9 @@
 package app.g7link.android.ui.theme
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -842,7 +844,11 @@ fun G7PrimaryButton(label: String, onClick: () -> Unit, modifier: Modifier = Mod
     }
 }
 
-/** A raised, quiet button: clicks, keys, secondary actions. */
+/**
+ * A raised, quiet button: clicks, keys, secondary actions. [selected] is a
+ * mode that's on, drawn in the accent so it reads at a glance;
+ * [onLongClick] is a second action on a hold.
+ */
 @Composable
 fun G7RaisedButton(
     label: String,
@@ -850,14 +856,18 @@ fun G7RaisedButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     selected: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(10.dp)
     Box(
         modifier = modifier
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) scheme.surfaceContainerHigh else scheme.surfaceContainer)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .clip(shape)
+            .background(if (selected) scheme.primary.copy(alpha = 0.18f) else scheme.surfaceContainer)
+            .then(if (selected) Modifier.border(1.dp, scheme.primary, shape) else Modifier)
+            .combinedClickable(enabled = enabled, role = Role.Button, onLongClick = onLongClick, onClick = onClick)
+            .semantics { this.selected = selected }
             .padding(horizontal = 8.dp, vertical = 12.dp)
             .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
         contentAlignment = Alignment.Center,
@@ -865,7 +875,7 @@ fun G7RaisedButton(
         Text(
             label,
             style = MaterialTheme.typography.labelLarge,
-            color = if (selected) scheme.onSurface else scheme.onSurfaceVariant,
+            color = if (selected) scheme.primary else scheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
