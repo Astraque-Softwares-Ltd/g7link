@@ -473,7 +473,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Timeline", "From %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "In progress"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "No phone is paired yet."), // desktop/app/src/bridge/timeline.rs
-    QT_TRANSLATE_NOOP("Timeline", "Opened from %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Opened on %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Phone microphone"), // desktop/app/src/i18n.rs
     QT_TRANSLATE_NOOP("Timeline", "Phone webcam"), // desktop/app/src/i18n.rs
@@ -482,6 +481,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Timeline", "Screen mirroring"), // desktop/app/src/i18n.rs
     QT_TRANSLATE_NOOP("Timeline", "Sending to %1…"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Sent clip to %1."), // desktop/app/src/bridge/timeline.rs
+    QT_TRANSLATE_NOOP("Timeline", "Sent from %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Sent to %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Session"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "That clip is no longer in clipboard history."), // desktop/app/src/bridge/timeline.rs

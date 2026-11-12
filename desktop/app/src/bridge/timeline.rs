@@ -621,7 +621,7 @@ fn describe_entry(
     let dev = if device_name.is_empty() { tr!("Timeline", "device") } else { device_name.to_owned() };
     // Whole phrases, so a language can put the name where it goes.
     let who = match (entry.kind, entry.incoming) {
-        (TimelineKind::Link, true) => tr!("Timeline", "Opened from %1", dev),
+        (TimelineKind::Link, true) => tr!("Timeline", "Sent from %1", dev),
         (TimelineKind::Link, false) => tr!("Timeline", "Opened on %1", dev),
         (TimelineKind::Photo, _) => tr!("Timeline", "Saved from %1", dev),
         (TimelineKind::Recording, _) => tr!("Timeline", "Recorded on %1", dev),
