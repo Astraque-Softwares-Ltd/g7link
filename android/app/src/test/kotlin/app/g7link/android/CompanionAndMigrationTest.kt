@@ -4,10 +4,8 @@ package app.g7link.android
 import app.g7link.android.companion.PcCompanion
 import app.g7link.android.ui.Preferences
 import app.g7link.android.ui.theme.Appearance
-import app.g7link.android.ui.theme.Tokens
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -55,35 +53,21 @@ class CompanionAndMigrationTest {
     }
 
     @Test
-    fun `Preferences sanitizeAppearance falls back on unknown legacy theme, mode, and seed values`() {
-        val legacy = Preferences.sanitizeAppearance(
-            theme = "sepia",
-            mode = "neon",
-            seed = "cyberpunk",
-            dynamicColor = false,
-        )
+    fun `Preferences sanitizeAppearance falls back on unknown legacy theme and mode values`() {
+        val legacy = Preferences.sanitizeAppearance(theme = "sepia", mode = "neon")
         assertEquals("quiet", legacy.theme)
         assertEquals("dark", legacy.mode)
-        assertEquals(Tokens.DEFAULT_SEED, legacy.seed)
-        assertFalse(legacy.dynamicColor)
 
-        val empty = Preferences.sanitizeAppearance(
-            Appearance(theme = "", mode = "", seed = "", dynamicColor = true),
-        )
+        val empty = Preferences.sanitizeAppearance(Appearance(theme = "", mode = ""))
         assertEquals("quiet", empty.theme)
         assertEquals("dark", empty.mode)
-        assertEquals(Tokens.DEFAULT_SEED, empty.seed)
-        assertTrue(empty.dynamicColor)
 
-        val valid = Preferences.sanitizeAppearance(
-            theme = "graphite",
-            mode = "dark",
-            seed = "ocean",
-            dynamicColor = false,
-        )
-        assertEquals("graphite", valid.theme)
-        assertEquals("dark", valid.mode)
-        assertEquals("ocean", valid.seed)
-        assertFalse(valid.dynamicColor)
+        val graphite = Preferences.sanitizeAppearance(theme = "graphite", mode = "light")
+        assertEquals("quiet", graphite.theme)
+        assertEquals("light", graphite.mode)
+
+        val palette = Preferences.sanitizeAppearance(theme = "nord", mode = "system")
+        assertEquals("nord", palette.theme)
+        assertEquals("system", palette.mode)
     }
 }

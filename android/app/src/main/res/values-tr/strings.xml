@@ -48,10 +48,13 @@
     <string name="settings_title">Ayarlar</string>
     <string name="settings_appearance">Görünüm</string>
     <string name="settings_theme">Tema</string>
+    <string name="settings_theme_note">Yalnızca renkler: her tema aynı düzeni korur.</string>
+    <string name="theme_g7_sub">Varsayılan · açık ve koyu</string>
+    <string name="theme_light_and_dark">Açık ve koyu</string>
+    <string name="theme_dark_only">Yalnızca koyu</string>
     <string name="settings_mode">Mod</string>
     <string name="settings_language">Dil</string>
     <string name="settings_language_more">Daha fazla</string>
-    <string name="settings_dynamic_color">Duvar kağıdından renkler</string>
     <string name="settings_devices">Bilgisayarlar</string>
     <string name="settings_about">Hakkında</string>
     <string name="notifications_title">Bildirimleri bilgisayarınızda göster</string>
@@ -191,15 +194,9 @@
     <string name="battery_guide_huawei">Huawei / Honor\'da: Uygulama başlatma\'yı (Telefon Yöneticisi) açın, G7 Link için Otomatik olarak yönet\'i kapatın ve Otomatik başlatma, İkincil başlatma ve Arka planda çalıştır seçeneklerini açık tutun.</string>
     <string name="battery_guide_pixel">Pixel\'de: Uygulama bilgileri › Uygulama pil kullanımı bölümünü açın, Arka plan kullanımına izin ver\'e dokunun ve Kısıtlanmamış\'ı seçin.</string>
     <string name="action_app_info">Uygulama bilgileri</string>
-    <string name="theme_hive">Hive</string>
-    <string name="hive_invite_title">Yeni tema Hive\'ı deneyin</string>
-    <string name="hive_invite_try">Hive\'ı dene</string>
     <string name="star_channel">G7 Link projesi</string>
     <string name="star_title">G7 Link\'i beğendin mi?</string>
     <string name="star_text">GitHub\'da yıldızlamak için dokun. Başkalarının bulmasına yardımcı olur.</string>
-    <string name="settings_comb_motion">Hareketli petek</string>
-    <string name="theme_bloom">Bloom</string>
-    <string name="theme_graphite">Graphite</string>
     <string name="mode_system">Sistem</string>
     <string name="mode_light">Açık</string>
     <string name="mode_dark">Koyu</string>
@@ -556,12 +553,6 @@
     <string name="error_generic">Bir sorun oluştu.</string>
 
     <!-- Theme seed names -->
-    <string name="settings_seed_honey">Bal</string>
-    <string name="settings_seed_lavender">Lavanta</string>
-    <string name="settings_seed_ocean">Okyanus</string>
-    <string name="settings_seed_sage">Adaçayı</string>
-    <string name="settings_seed_black">Siyah</string>
-    <string name="settings_amoled">Saf siyah (AMOLED)</string>
 
     <!-- Deck defaults & accessibility -->
     <string name="deck_tile_with_badge">%1$s, %2$s</string>
@@ -1156,7 +1147,6 @@
     <string name="home_whats_new_guide">Yenilikler: Özellik rehberi</string>
     <string name="home_no_pc_paired">Henüz eşleştirilmiş bilgisayar yok</string>
     <string name="home_background_clipboard_title">Arka planda pano ve tam kontrol</string>
-    <string name="settings_theme_artwork_color">Medya kapak görseli rengi</string>
     <string name="settings_background_clipboard_title">Arka planda pano erişimi</string>
     <string name="desk_exit">Masa Modundan çık</string>
     <string name="desk_media_playing">Bilgisayar medyası · Çalıyor</string>

@@ -45,10 +45,13 @@
 <string name="settings_title">Cài đặt</string>
 <string name="settings_appearance">Giao diện</string>
 <string name="settings_theme">Chủ đề</string>
+<string name="settings_theme_note">Chỉ đổi màu: mọi chủ đề giữ nguyên bố cục.</string>
+<string name="theme_g7_sub">Mặc định · sáng và tối</string>
+<string name="theme_light_and_dark">Sáng và tối</string>
+<string name="theme_dark_only">Chỉ tối</string>
 <string name="settings_mode">Chế độ</string>
 <string name="settings_language">Ngôn ngữ</string>
 <string name="settings_language_more">Thêm</string>
-<string name="settings_dynamic_color">Màu từ ảnh nền</string>
 <string name="settings_devices">PC</string>
 <string name="settings_about">Giới thiệu</string>
 <string name="notifications_title">Hiển thị thông báo trên PC của bạn</string>
@@ -190,15 +193,9 @@
 <string name="battery_guide_huawei">Trên Huawei / Honor: mở Khởi chạy ứng dụng (Phone Manager) › tắt Quản lý tự động cho G7 Link và giữ Tự khởi động, Khởi động phụ và Chạy nền được bật.</string>
 <string name="battery_guide_pixel">Trên Pixel: mở Thông tin ứng dụng › Mức sử dụng pin của ứng dụng › chạm Cho phép sử dụng nền và chọn Không giới hạn.</string>
 <string name="action_app_info">Thông tin ứng dụng</string>
-<string name="theme_hive">Hive</string>
-<string name="hive_invite_title">Thử Hive, chủ đề mới</string>
-<string name="hive_invite_try">Thử Hive</string>
 <string name="star_channel">Dự án G7 Link</string>
 <string name="star_title">Thích G7 Link?</string>
 <string name="star_text">Chạm để gắn sao trên GitHub. Nó giúp nhiều người khác tìm thấy.</string>
-<string name="settings_comb_motion">Tổ ong động</string>
-<string name="theme_bloom">Bloom</string>
-<string name="theme_graphite">Graphite</string>
 <string name="mode_system">Hệ thống</string>
 <string name="mode_light">Sáng</string>
 <string name="mode_dark">Tối</string>
@@ -543,12 +540,6 @@
 <string name="error_unsupported">Ứng dụng trên PC vẫn chưa hỗ trợ tính năng đó.</string>
 <string name="error_generic">Đã xảy ra lỗi.</string>
 <!-- Theme seed names -->
-<string name="settings_seed_honey">Honey</string>
-<string name="settings_seed_lavender">Lavender</string>
-<string name="settings_seed_ocean">Ocean</string>
-<string name="settings_seed_sage">Sage</string>
-<string name="settings_seed_black">Black</string>
-<string name="settings_amoled">Đen tuyền (AMOLED)</string>
 <!-- Deck defaults & accessibility -->
 <string name="deck_tile_with_badge">%1$s, %2$s</string>
 <string name="deck_default_page_main">Chính</string>
@@ -1093,7 +1084,6 @@
 <string name="home_no_pc_paired">Chưa ghép nối PC nào</string>
 
 <string name="home_background_clipboard_title">Bảng nhớ tạm nền &amp; toàn quyền điều khiển</string>
-<string name="settings_theme_artwork_color">Màu từ ảnh bìa media</string>
 <string name="settings_background_clipboard_title">Truy cập bảng nhớ tạm ở chế độ nền</string>
 <string name="desk_exit">Thoát Chế độ Bàn làm việc</string>
 <string name="desk_media_playing">PC Media · Đang phát</string>

@@ -120,13 +120,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.sms.PhoneSms
 import app.g7link.android.ui.guide.GuideHighlightTarget
-import app.g7link.android.ui.theme.LocalGlassTheme
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.bentoWell
-import app.g7link.android.ui.theme.glassModalBlur
-import app.g7link.android.ui.theme.glassModalContainerColor
-import app.g7link.android.ui.theme.glassModalScrimColor
-import app.g7link.android.ui.theme.liquidGlassCard
 import app.g7link.android.update.AppUpdater
 import app.g7link.android.update.UpdateCard
 import app.g7link.android.webcam.WebcamSession
@@ -178,7 +173,6 @@ import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.G7SwitchRow
-import app.g7link.android.ui.theme.LocalQuietTheme
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.walkthrough.AccessRows
 import app.g7link.android.ui.walkthrough.rememberAccessItems
@@ -253,9 +247,6 @@ fun HomeScreen(
     onStopRecorder: () -> Unit = {},
     showWhatsNewGuideBanner: Boolean = false,
     onDismissWhatsNewGuide: () -> Unit = {},
-    showHiveInvite: Boolean = false,
-    onTryHive: () -> Unit = {},
-    onDismissHiveInvite: () -> Unit = {},
     backgroundServiceEnabled: Boolean = true,
     onTurnOnBackgroundService: () -> Unit = {},
     onOpenFeaturesGuide: () -> Unit = {},
@@ -284,12 +275,9 @@ fun HomeScreen(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState(
         cacheWindow = androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow(aheadFraction = 1f, behindFraction = 1f),
     )
-    val isGlass = LocalGlassTheme.current
-    val quiet = LocalQuietTheme.current
     val tints = g7Tints()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val anyModalOpen = browseFilesPcId != null || showClipboardHistory || showTimeline || linkPcId != null
 
     val pcs = state.devices.filter { !it.isAndroid }
     val peers = state.devices.filter { it.isAndroid }
@@ -341,12 +329,12 @@ fun HomeScreen(
 
     LazyColumn(
         state = listState,
-        modifier = modifier.glassModalBlur(isGlass && anyModalOpen),
+        modifier = modifier,
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
             start = 10.dp,
             top = 8.dp,
             end = 10.dp,
-            bottom = if (quiet) 16.dp else 104.dp,
+            bottom = 16.dp,
         ),
     ) {
         item(key = "home_header", contentType = "header") {
@@ -381,19 +369,6 @@ fun HomeScreen(
                         onOpenFeaturesGuide()
                     },
                     onDismiss = onDismissWhatsNewGuide,
-                )
-            }
-        }
-        // After the What's new notice, one at a time.
-        if (showHiveInvite && !showWhatsNewGuideBanner) {
-            item(key = "hive_invite", contentType = "notice") {
-                NoticeRow(
-                    title = stringResource(R.string.hive_invite_title),
-                    icon = G7Icons.palette,
-                    tint = tints.amber,
-                    actionLabel = stringResource(R.string.hive_invite_try),
-                    onAction = onTryHive,
-                    onDismiss = onDismissHiveInvite,
                 )
             }
         }
@@ -1163,7 +1138,7 @@ private fun LinkDialog(pcName: String, onOpen: (String) -> Unit, onDismiss: () -
     val url = text.trim()
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = glassModalContainerColor(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         title = { Text(stringResource(R.string.home_link_title, pcName)) },
         text = {
             androidx.compose.material3.OutlinedTextField(
@@ -1420,7 +1395,7 @@ internal fun PcAudioOutputsDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = glassModalContainerColor(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         title = { Text(stringResource(R.string.pc_audio_outputs_title, pcName)) },
         text = {
             Column(
@@ -1506,7 +1481,7 @@ private fun ClipboardHistoryDialog(
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = glassModalContainerColor(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         title = {
             Column {
                 Text(stringResource(R.string.clipboard_history_title))
@@ -1689,18 +1664,10 @@ private fun LocalSendCard(
     onRefresh: () -> Unit,
     onSendFiles: (pcId: String, uris: List<Uri>) -> Unit,
 ) {
-    val isGlass = LocalGlassTheme.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .liquidGlassCard(
-                cornerRadius = 28.dp,
-                isGlass = isGlass,
-                baseColor = MaterialTheme.colorScheme.surfaceContainer,
-                tintColor = MaterialTheme.colorScheme.primary,
-                outlineColor = if (isGlass) MaterialTheme.colorScheme.outlineVariant else Color.Transparent,
-            )
-            .padding(if (LocalQuietTheme.current) androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp) else androidx.compose.foundation.layout.PaddingValues(20.dp)),
+            .padding(vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(
@@ -1767,7 +1734,6 @@ private fun SendQueueCard(
 ) {
     val items = state.sendQueue
     if (items.isEmpty()) return
-    val isGlass = LocalGlassTheme.current
     val hasActive = items.any { it.status is FfiQueueStatus.Waiting || it.status is FfiQueueStatus.Sending }
     val hasFinished = items.any { it.status is FfiQueueStatus.Failed || it.status is FfiQueueStatus.Expired }
     val showPeerChip = state.devices.size > 1
@@ -1775,14 +1741,7 @@ private fun SendQueueCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .liquidGlassCard(
-                cornerRadius = 28.dp,
-                isGlass = isGlass,
-                baseColor = MaterialTheme.colorScheme.surfaceContainer,
-                tintColor = MaterialTheme.colorScheme.primary,
-                outlineColor = if (isGlass) MaterialTheme.colorScheme.outlineVariant else Color.Transparent,
-            )
-            .padding(if (LocalQuietTheme.current) androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp) else androidx.compose.foundation.layout.PaddingValues(20.dp)),
+            .padding(horizontal = 12.dp, vertical = 4.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2011,18 +1970,10 @@ private fun TransfersCard(
     onPause: (String) -> Unit = {},
     onResume: (String) -> Unit = {},
 ) {
-    val isGlass = LocalGlassTheme.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .liquidGlassCard(
-                cornerRadius = 28.dp,
-                isGlass = isGlass,
-                baseColor = MaterialTheme.colorScheme.surfaceContainer,
-                tintColor = MaterialTheme.colorScheme.primary,
-                outlineColor = if (isGlass) MaterialTheme.colorScheme.outlineVariant else Color.Transparent,
-            )
-            .padding(if (LocalQuietTheme.current) androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp) else androidx.compose.foundation.layout.PaddingValues(20.dp)),
+            .padding(horizontal = 12.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text(
@@ -2201,7 +2152,7 @@ private fun TimelineDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = glassModalContainerColor(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         title = {
             Column {
                 Text(stringResource(R.string.timeline_title))
@@ -2622,8 +2573,8 @@ private fun PcFilesSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = glassModalContainerColor(),
-        scrimColor = glassModalScrimColor(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        scrimColor = Color.Black.copy(alpha = 0.38f),
     ) {
         Column(
             modifier = Modifier

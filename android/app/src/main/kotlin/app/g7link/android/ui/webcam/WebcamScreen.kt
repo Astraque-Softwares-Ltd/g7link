@@ -8,14 +8,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
-import app.g7link.android.ui.theme.G7Colors
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.G7Tabs
-import app.g7link.android.ui.theme.LocalQuietTheme
+import app.g7link.android.ui.theme.LocalG7Look
 import app.g7link.android.ui.theme.g7Tints
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -159,12 +158,12 @@ fun WebcamScreen(
     val tints = g7Tints()
     val scheme = MaterialTheme.colorScheme
     // A deeper ground around the camera in G7's dark look; the controls sit on the usual one.
-    val deep = LocalQuietTheme.current && scheme.surface.luminance() < 0.5f
+    val deep = scheme.surface.luminance() < 0.5f
     val raised = if (deep) scheme.surface else scheme.surfaceContainer
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(if (deep) G7Colors.deepGround else scheme.background),
+            .background(if (deep) LocalG7Look.current.deepGround else scheme.background),
     ) {
         // Back, whether it's live, and what it streams
         Row(

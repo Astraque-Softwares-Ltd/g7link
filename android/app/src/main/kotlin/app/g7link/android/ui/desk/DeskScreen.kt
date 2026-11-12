@@ -9,11 +9,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import app.g7link.android.ui.home.linkText
-import app.g7link.android.ui.theme.G7Colors
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7StatusDot
-import app.g7link.android.ui.theme.G7Tints
 import app.g7link.android.ui.theme.LocalAppFonts
+import app.g7link.android.ui.theme.LocalG7Look
 import android.app.Activity
 import android.text.format.DateFormat
 import android.view.WindowManager
@@ -143,12 +142,15 @@ fun DeskScreen(
     var lastSentVolInt by remember { mutableIntStateOf(-1) }
     val scope = rememberCoroutineScope()
 
-    val tints = G7Tints.dark
-    val ink = Color(0xFFF2F2F3)
-    val muted = Color(0xFFA1A1A8)
-    val raised = Color(0xFF18181B)
+    // Always dark: the theme's dark variant on its deeper ground.
+    val look = LocalG7Look.current
+    val deep = look.deep.palette
+    val tints = look.deep.tints
+    val ink = deep.onSurface
+    val muted = deep.onSurfaceVariant
+    val raised = deep.surface
     Surface(
-        color = G7Colors.deepGround,
+        color = look.deepGround,
         contentColor = ink,
         modifier = modifier.fillMaxSize(),
     ) {
@@ -201,7 +203,7 @@ fun DeskScreen(
                     Modifier
                         .fillMaxWidth()
                         .height(1.dp)
-                        .background(Color(0xFF222226)),
+                        .background(deep.surfaceContainer),
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
@@ -312,7 +314,7 @@ fun DeskScreen(
                             },
                             valueRange = 0f..100f,
                             tint = tints.teal,
-                            trackColor = Color(0xFF2B2B30),
+                            trackColor = deep.surfaceContainerHigh,
                             modifier = Modifier.weight(1f),
                         )
                         Text(
@@ -417,7 +419,7 @@ private fun DeskIconButton(
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
         if (text != null) {
-            Text(text, style = MaterialTheme.typography.labelLarge, color = Color(0xFFF2F2F3))
+            Text(text, style = MaterialTheme.typography.labelLarge, color = LocalG7Look.current.deep.palette.onSurface)
         }
     }
 }
@@ -448,6 +450,7 @@ private fun DeskClockDisplay() {
     val secText = remember(secondKey, locale) { secFormat.format(Date(secondKey * 1_000L)) }
 
     val mono = LocalAppFonts.current.mono
+    val deep = LocalG7Look.current.deep.palette
     Row(verticalAlignment = Alignment.Bottom) {
         Text(
             text = timeText,
@@ -456,13 +459,13 @@ private fun DeskClockDisplay() {
             fontWeight = FontWeight.Normal,
             fontFamily = mono,
             letterSpacing = (-2).sp,
-            color = Color(0xFFF2F2F3),
+            color = deep.onSurface,
         )
         Text(
             text = secText,
             fontSize = 24.sp,
             fontFamily = mono,
-            color = Color(0xFFA1A1A8),
+            color = deep.onSurfaceVariant,
             modifier = Modifier.padding(bottom = 10.dp, start = 4.dp),
         )
     }
@@ -470,7 +473,7 @@ private fun DeskClockDisplay() {
     Text(
         text = dateText,
         style = MaterialTheme.typography.bodyLarge,
-        color = Color(0xFFA1A1A8),
+        color = deep.onSurfaceVariant,
         modifier = Modifier.padding(top = 8.dp),
     )
 }

@@ -24,8 +24,9 @@ Then, from `android/`:
 Gradle builds the core with cargo-ndk (cargo profile `android`: release
 optimizations, symbols kept for UniFFI and stripped when packaging) and
 generates the Kotlin bindings from the built library. Both are generated
-sources; nothing generated is checked in except the theme tokens
-(`ui/theme/Tokens.kt`, from `cargo xtask tokens`).
+sources; nothing generated is checked in except the color-only palettes
+(`ui/theme/Palettes.kt`, from `scripts/gen-palettes.py` and G7 Linux's theme
+files).
 
 ## Layout
 
@@ -52,8 +53,8 @@ sources; nothing generated is checked in except the theme tokens
   keeps the phone reachable and holds the Wi-Fi multicast lock local
   discovery needs.
 - `ui/`: pairing (QR scanner with CameraX + ZXing, no Google Play services;
-  nearby pairing with a 6-digit code), home and settings. Bloom uses
-  Material You colors from the wallpaper on Android 12+.
+  nearby pairing with a 6-digit code), home and settings. Every theme is
+  G7's layout; the palettes from G7 Linux only change its colors.
 
 The identity lives in `noBackupFilesDir`, so it's never restored onto
 another phone. `g7link://pair?...` links (a PC's QR code scanned with any

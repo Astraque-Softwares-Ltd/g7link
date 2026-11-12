@@ -51,7 +51,6 @@
     <string name="settings_mode">Modo</string>
     <string name="settings_language">Idioma</string>
     <string name="settings_language_more">Más</string>
-    <string name="settings_dynamic_color">Colores del fondo de pantalla</string>
     <string name="settings_devices">PC</string>
     <string name="settings_about">Acerca de</string>
     <string name="notifications_title">Mostrar notificaciones en tu PC</string>
@@ -194,15 +193,9 @@
     <string name="battery_guide_huawei">En Huawei / Honor: abre Inicio de aplicaciones (Administrador del teléfono) › desactiva Administrar automáticamente para G7 Link y mantén activados Inicio automático, Inicio secundario y Ejecutar en segundo plano.</string>
     <string name="battery_guide_pixel">En Pixel: abre Información de la aplicación › Uso de batería de la aplicación › toca Permitir uso en segundo plano y selecciona Sin restricciones.</string>
     <string name="action_app_info">Información de la aplicación</string>
-    <string name="theme_hive">Hive</string>
-    <string name="hive_invite_title">Prueba Hive, el nuevo tema</string>
-    <string name="hive_invite_try">Probar Hive</string>
     <string name="star_channel">Proyecto G7 Link</string>
     <string name="star_title">¿Estás disfrutando de G7 Link?</string>
     <string name="star_text">Toca para darle una estrella en GitHub. Ayudará a que otras personas lo encuentren.</string>
-    <string name="settings_comb_motion">Panal animado</string>
-    <string name="theme_bloom">Bloom</string>
-    <string name="theme_graphite">Graphite</string>
     <string name="mode_system">Sistema</string>
     <string name="mode_light">Claro</string>
     <string name="mode_dark">Oscuro</string>
@@ -553,12 +546,6 @@
     <string name="error_generic">Algo salió mal.</string>
 
     <!-- Theme seed names -->
-    <string name="settings_seed_honey">Miel</string>
-    <string name="settings_seed_lavender">Lavanda</string>
-    <string name="settings_seed_ocean">Océano</string>
-    <string name="settings_seed_sage">Salvia</string>
-    <string name="settings_seed_black">Negro</string>
-    <string name="settings_amoled">Negro puro (AMOLED)</string>
 
     <!-- Deck defaults & accessibility -->
     <string name="deck_tile_with_badge">%1$s, %2$s</string>
@@ -1160,7 +1147,6 @@
     <string name="home_whats_new_guide">Novedades: guía de funciones</string>
     <string name="home_no_pc_paired">Aún no hay ningún PC emparejado</string>
     <string name="home_background_clipboard_title">Portapapeles en segundo plano y control total</string>
-    <string name="settings_theme_artwork_color">Color de la carátula multimedia</string>
     <string name="settings_background_clipboard_title">Acceso al portapapeles en segundo plano</string>
     <string name="desk_exit">Salir del modo escritorio</string>
     <string name="desk_media_playing">Multimedia del PC · Reproduciendo</string>

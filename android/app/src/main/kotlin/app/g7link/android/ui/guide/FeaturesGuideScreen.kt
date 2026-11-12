@@ -13,7 +13,6 @@ import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.G7Tints
-import app.g7link.android.ui.theme.LocalQuietTheme
 import app.g7link.android.ui.theme.g7Tints
 import android.content.Context
 import android.content.Intent
@@ -80,11 +79,7 @@ import app.g7link.android.photos.RecentPhotos
 import app.g7link.android.sms.PhoneSms
 import app.g7link.android.storage.PhoneStorage
 import app.g7link.android.toggles.PhoneToggles
-import app.g7link.android.ui.theme.LocalGlassTheme
 import app.g7link.android.ui.theme.bentoWell
-import app.g7link.android.ui.theme.glassModalBlur
-import app.g7link.android.ui.theme.glassModalContainerColor
-import app.g7link.android.ui.theme.liquidGlassCard
 import kotlinx.coroutines.launch
 
 /**
@@ -118,7 +113,6 @@ fun FeaturesGuideScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val isGlass = LocalGlassTheme.current
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var selectedAreaId by rememberSaveable { mutableStateOf(FeatureArea.All.id) }
     var activeLearnMoreId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -233,10 +227,8 @@ fun FeaturesGuideScreen(
     val tints = g7Tints()
     val scheme = MaterialTheme.colorScheme
     LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .glassModalBlur(isGlass && activeLearnMoreEntry != null),
-        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = if (LocalQuietTheme.current) 16.dp else 104.dp),
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 16.dp),
     ) {
         item(key = "guide_header", contentType = "guide_header") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(horizontal = 6.dp)) {
@@ -358,7 +350,7 @@ fun FeaturesGuideScreen(
         ModalBottomSheet(
             onDismissRequest = { activeLearnMoreId = null },
             sheetState = sheetState,
-            containerColor = glassModalContainerColor(),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             FeatureLearnMoreSheetContent(
                 entry = activeLearnMoreEntry,

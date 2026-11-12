@@ -48,10 +48,13 @@
     <string name="settings_title">Settings</string>
     <string name="settings_appearance">Appearance</string>
     <string name="settings_theme">Theme</string>
+    <string name="settings_theme_note">Colors only: every theme keeps the same layout.</string>
+    <string name="theme_g7_sub">Default · light and dark</string>
+    <string name="theme_light_and_dark">Light and dark</string>
+    <string name="theme_dark_only">Dark only</string>
     <string name="settings_mode">Mode</string>
     <string name="settings_language">Language</string>
     <string name="settings_language_more">More</string>
-    <string name="settings_dynamic_color">Colors from wallpaper</string>
     <string name="settings_devices">PCs</string>
     <string name="settings_about">About</string>
     <string name="notifications_title">Show notifications on your PC</string>
@@ -193,15 +196,9 @@
     <string name="battery_guide_huawei">On Huawei / Honor: open App launch (Phone Manager) › turn off Manage automatically for G7 Link and keep Auto-launch, Secondary launch, and Run in background on.</string>
     <string name="battery_guide_pixel">On Pixel: open App info › App battery usage › tap Allow background usage and select Unrestricted.</string>
     <string name="action_app_info">App info</string>
-    <string name="theme_hive">Hive</string>
-    <string name="hive_invite_title">Try Hive, the new theme</string>
-    <string name="hive_invite_try">Try Hive</string>
     <string name="star_channel">G7 Link project</string>
     <string name="star_title">Enjoying G7 Link?</string>
     <string name="star_text">Tap to star it on GitHub. It helps other people find it.</string>
-    <string name="settings_comb_motion">Animated comb</string>
-    <string name="theme_bloom">Bloom</string>
-    <string name="theme_graphite">Graphite</string>
     <string name="mode_system">System</string>
     <string name="mode_light">Light</string>
     <string name="mode_dark">Dark</string>
@@ -558,12 +555,6 @@
     <string name="error_generic">Something went wrong.</string>
 
     <!-- Theme seed names -->
-    <string name="settings_seed_honey">Honey</string>
-    <string name="settings_seed_lavender">Lavender</string>
-    <string name="settings_seed_ocean">Ocean</string>
-    <string name="settings_seed_sage">Sage</string>
-    <string name="settings_seed_black">Black</string>
-    <string name="settings_amoled">Pure black (AMOLED)</string>
 
     <!-- Deck defaults & accessibility -->
     <string name="deck_tile_with_badge">%1$s, %2$s</string>
@@ -1158,7 +1149,6 @@
     <string name="home_whats_new_guide">What is new: Features guide</string>
     <string name="home_no_pc_paired">No PC paired yet</string>
     <string name="home_background_clipboard_title">Background clipboard &amp; full control</string>
-    <string name="settings_theme_artwork_color">Media artwork color</string>
     <string name="settings_background_clipboard_title">Background clipboard access</string>
     <string name="desk_exit">Exit Desk Mode</string>
     <string name="desk_media_playing">PC Media · Playing</string>

@@ -12,8 +12,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,21 +22,20 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -52,7 +51,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -61,8 +61,6 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -93,12 +91,11 @@ import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.G7SwitchRow
 import app.g7link.android.ui.theme.G7Tabs
-import app.g7link.android.ui.theme.LocalGlassTheme
-import app.g7link.android.ui.theme.LocalQuietTheme
-import app.g7link.android.ui.theme.Tokens
+import app.g7link.android.ui.theme.Palettes
+import app.g7link.android.ui.theme.ThemeColors
 import app.g7link.android.ui.theme.g7Tints
-import app.g7link.android.ui.theme.glassModalBlur
-import app.g7link.android.ui.theme.glassModalContainerColor
+import app.g7link.android.ui.theme.isDark
+import app.g7link.android.ui.theme.themeColors
 import app.g7link.android.update.AppUpdater
 import app.g7link.android.update.CheckForUpdates
 import kotlinx.coroutines.delay
@@ -110,7 +107,7 @@ private object Items {
     const val ACCESS = 2
     const val CONNECTION = 3
     const val CLIPBOARD = 4
-    const val DATA = 7
+    const val DATA = 8
 }
 
 @Composable
@@ -160,10 +157,7 @@ fun SettingsScreen(
     var powerOpen by rememberSaveable { mutableStateOf(false) }
     var pulsing by remember { mutableStateOf<String?>(null) }
     var jumpToControl by remember { mutableStateOf(0) }
-    val isGlass = LocalGlassTheme.current
-    val quiet = LocalQuietTheme.current
     val tints = g7Tints()
-    val anyDialogOpen = confirmUnpair != null || confirmClearEverything
 
     // Keep a screen of rows composed on each side, so scrolling back does not rebuild them.
     @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -206,8 +200,8 @@ fun SettingsScreen(
 
     LazyColumn(
         state = listState,
-        modifier = modifier.glassModalBlur(isGlass && anyDialogOpen),
-        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = if (quiet) 16.dp else 104.dp),
+        modifier = modifier,
+        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 16.dp),
     ) {
         item(key = "header", contentType = "header") {
             Text(
@@ -461,22 +455,13 @@ fun SettingsScreen(
             }
         }
 
+        item(key = "theme", contentType = "group") {
+            ThemeList(appearance = appearance, onSelect = { id -> onAppearance { it.copy(theme = id) } })
+        }
+
         item(key = "appearance", contentType = "group") {
             Column {
                 G7SectionLabel(stringResource(R.string.settings_appearance))
-                ChoiceRow(
-                    label = stringResource(R.string.settings_theme),
-                    icon = G7Icons.palette,
-                    tint = tints.lavender,
-                    options = listOf(
-                        "quiet" to "G7",
-                        "hive" to stringResource(R.string.theme_hive),
-                        "bloom" to stringResource(R.string.theme_bloom),
-                        "glass" to "Glass",
-                        "graphite" to stringResource(R.string.theme_graphite),
-                    ),
-                    selected = appearance.theme,
-                ) { value -> onAppearance { it.copy(theme = value) } }
                 ChoiceRow(
                     label = stringResource(R.string.settings_mode),
                     icon = G7Icons.moon,
@@ -507,7 +492,6 @@ fun SettingsScreen(
                         if (value == "" || value == "en") AppLanguage.set(context, value) else pickLanguage = true
                     }
                 }
-                ThemeExtras(appearance = appearance, onAppearance = onAppearance)
             }
         }
 
@@ -620,7 +604,7 @@ fun SettingsScreen(
     confirmUnpair?.let { device ->
         AlertDialog(
             onDismissRequest = { confirmUnpair = null },
-            containerColor = glassModalContainerColor(),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             title = { Text(stringResource(R.string.unpair_title, device.name)) },
             text = { Text(stringResource(R.string.unpair_text)) },
             confirmButton = {
@@ -643,7 +627,7 @@ fun SettingsScreen(
         val language = remember { AppLanguage.current(context) }
         AlertDialog(
             onDismissRequest = { pickLanguage = false },
-            containerColor = glassModalContainerColor(),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             title = { Text(stringResource(R.string.settings_language)) },
             text = {
                 Column {
@@ -674,7 +658,7 @@ fun SettingsScreen(
     if (confirmClearEverything) {
         AlertDialog(
             onDismissRequest = { confirmClearEverything = false },
-            containerColor = glassModalContainerColor(),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             title = { Text(stringResource(R.string.data_clear_everything_dialog_title)) },
             text = { Text(stringResource(R.string.data_clear_everything_dialog_body)) },
             confirmButton = {
@@ -694,106 +678,89 @@ fun SettingsScreen(
     }
 }
 
-/** A theme's own options: Hive's comb, Graphite's black, Bloom and Glass's colors. */
+/**
+ * The themes: G7, then the palettes from G7 Linux. Each row previews its colors
+ * as the mode shows them; picking one only recolors.
+ */
 @Composable
-private fun ThemeExtras(appearance: Appearance, onAppearance: ((Appearance) -> Appearance) -> Unit) {
-    if (appearance.theme == "hive") {
-        G7SwitchRow(
-            label = stringResource(R.string.settings_comb_motion),
-            checked = appearance.combMotion,
-            onCheckedChange = { on -> onAppearance { it.copy(combMotion = on) } },
+private fun ThemeList(appearance: Appearance, onSelect: (String) -> Unit) {
+    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    fun colorsOf(id: String) = themeColors(id, isDark(appearance.copy(theme = id), systemDark))
+    Column(Modifier.selectableGroup()) {
+        G7SectionLabel(stringResource(R.string.settings_theme))
+        Text(
+            stringResource(R.string.settings_theme_note),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
         )
-    }
-    if (appearance.theme == "graphite" && appearance.mode != "light") {
-        G7SwitchRow(
-            label = stringResource(R.string.settings_amoled),
-            checked = appearance.amoled,
-            onCheckedChange = { on -> onAppearance { it.copy(amoled = on) } },
+        ThemeRow(
+            name = "G7",
+            sublabel = stringResource(R.string.theme_g7_sub),
+            colors = colorsOf("quiet"),
+            selected = appearance.theme == "quiet",
+            onClick = { onSelect("quiet") },
         )
+        Palettes.families.forEach { family ->
+            ThemeRow(
+                name = family.name,
+                sublabel = stringResource(
+                    if (family.light == null) R.string.theme_dark_only else R.string.theme_light_and_dark,
+                ),
+                colors = colorsOf(family.id),
+                selected = appearance.theme == family.id,
+                onClick = { onSelect(family.id) },
+            )
+        }
     }
-    if (appearance.theme != "bloom" && appearance.theme != "glass") return
-    val artworkSync = appearance.seed == "artwork"
-    G7SwitchRow(
-        label = stringResource(R.string.settings_theme_artwork_color),
-        checked = artworkSync,
-        onCheckedChange = { on -> onAppearance { it.copy(seed = if (on) "artwork" else Tokens.DEFAULT_SEED) } },
-    )
-    if (artworkSync) return
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        G7SwitchRow(
-            label = stringResource(R.string.settings_dynamic_color),
-            checked = appearance.dynamicColor,
-            onCheckedChange = { on -> onAppearance { it.copy(dynamicColor = on) } },
-        )
-    }
-    val swatchesActive = !appearance.dynamicColor || Build.VERSION.SDK_INT < Build.VERSION_CODES.S
+}
+
+/** A theme: a tile in its ground with its accent and five tints, its name, and a check when it's on. */
+@Composable
+private fun ThemeRow(name: String, sublabel: String, colors: ThemeColors, selected: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(10.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .heightIn(min = 48.dp)
+            .clip(shape)
+            .then(if (selected) Modifier.background(scheme.surfaceContainer) else Modifier)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Tokens.bloomSeeds.forEach { (name, seed) ->
-            val isSelected = swatchesActive && appearance.seed == name
-            val seedLabel = stringResource(
-                when (name) {
-                    "honey" -> R.string.settings_seed_honey
-                    "lavender" -> R.string.settings_seed_lavender
-                    "ocean" -> R.string.settings_seed_ocean
-                    "sage" -> R.string.settings_seed_sage
-                    "black" -> R.string.settings_seed_black
-                    else -> R.string.settings_seed_honey
-                },
-            )
-            val isBlackSeed = name == "black"
-            val borderColor = when {
-                isSelected -> MaterialTheme.colorScheme.onSurface
-                isBlackSeed -> Color.White.copy(alpha = 0.28f)
-                else -> MaterialTheme.colorScheme.outlineVariant
-            }
-            val borderWidth = when {
-                isSelected -> 2.5.dp
-                isBlackSeed -> 1.2.dp
-                else -> 1.dp
-            }
+        val tints = colors.tints
+        Column(
+            modifier = Modifier
+                .size(width = 76.dp, height = 40.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(colors.palette.surface)
+                .border(1.dp, scheme.outlineVariant, RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
             Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(38.dp)
-                    .drawBehind {
-                        drawCircle(color = seed.color)
-                        val strokePx = borderWidth.toPx()
-                        drawCircle(
-                            color = borderColor,
-                            radius = (size.minDimension - strokePx) * 0.5f,
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokePx),
-                        )
-                    }
-                    .clickable { onAppearance { it.copy(dynamicColor = false, seed = name) } }
-                    .semantics {
-                        role = Role.RadioButton
-                        selected = isSelected
-                        contentDescription = seedLabel
-                    },
-            ) {
-                if (isSelected) {
-                    Text(
-                        text = "✓",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (isBlackSeed) Color.White else Color.Black,
-                    )
+                Modifier
+                    .size(width = 34.dp, height = 6.dp)
+                    .background(colors.palette.primary, RoundedCornerShape(3.dp)),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                listOf(tints.blue, tints.green, tints.amber, tints.red, tints.pink).forEach { dot ->
+                    Box(Modifier.size(7.dp).background(dot, CircleShape))
                 }
             }
         }
-    }
-    // Pure black goes with the Black swatch.
-    if (swatchesActive && appearance.seed == "black") {
-        G7SwitchRow(
-            label = stringResource(R.string.settings_amoled),
-            checked = appearance.amoled,
-            onCheckedChange = { on -> onAppearance { it.copy(amoled = on) } },
+        Column(Modifier.weight(1f)) {
+            Text(name, style = MaterialTheme.typography.bodyLarge, color = scheme.onSurface)
+            Text(sublabel, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+        }
+        Icon(
+            G7Icons.check,
+            contentDescription = null,
+            tint = scheme.primary,
+            modifier = Modifier.size(18.dp).alpha(if (selected) 1f else 0f),
         )
     }
 }
@@ -1294,7 +1261,7 @@ private fun ChoiceRow(
 /** The third language choice when it isn't a picked language: opens the list. */
 private const val MORE_LANGUAGES = "more"
 
-/** A row of choices, one picked: text tabs in G7, segmented buttons in the other themes. */
+/** A row of choices, one picked: text tabs. */
 @Composable
 internal fun Choice(
     options: List<Pair<String, String>>,
@@ -1302,17 +1269,5 @@ internal fun Choice(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (LocalQuietTheme.current) {
-        G7Tabs(options = options, selected = selected, onSelect = onSelect, modifier = modifier.fillMaxWidth())
-        return
-    }
-    SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
-        options.forEachIndexed { index, (value, label) ->
-            SegmentedButton(
-                selected = value == selected,
-                onClick = { onSelect(value) },
-                shape = SegmentedButtonDefaults.itemShape(index, options.size),
-            ) { Text(label) }
-        }
-    }
+    G7Tabs(options = options, selected = selected, onSelect = onSelect, modifier = modifier.fillMaxWidth())
 }

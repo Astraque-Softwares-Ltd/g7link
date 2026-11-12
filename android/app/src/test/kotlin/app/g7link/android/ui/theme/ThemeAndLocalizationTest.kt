@@ -5,7 +5,6 @@ import app.g7link.android.ui.Preferences
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -15,64 +14,60 @@ import org.w3c.dom.Element
 class ThemeAndLocalizationTest {
 
     @Test
-    fun `sanitizeAppearance accepts valid themes, modes, and seeds and falls back on unknown or null values`() {
-        val themes = listOf("hive", "bloom", "graphite", "glass")
-        val modes = listOf("system", "light", "dark")
-        val seeds = Tokens.bloomSeeds.keys + "artwork"
-
+    fun `sanitizeAppearance keeps G7, the palettes and the modes, and falls back on anything else`() {
+        val themes = listOf("quiet") + Palettes.families.map { it.id }
         for (theme in themes) {
-            for (mode in modes) {
-                for (seed in seeds) {
-                    val sanitized = Preferences.sanitizeAppearance(
-                        Appearance(theme = theme, mode = mode, seed = seed),
-                    )
-                    assertEquals(theme, sanitized.theme)
-                    assertEquals(mode, sanitized.mode)
-                    assertEquals(seed, sanitized.seed)
-                }
+            for (mode in listOf("system", "light", "dark")) {
+                val sanitized = Preferences.sanitizeAppearance(Appearance(theme = theme, mode = mode))
+                assertEquals(theme, sanitized.theme)
+                assertEquals(mode, sanitized.mode)
             }
         }
-
-        val defaults = Appearance()
-
-        val fromUnknown = Preferences.sanitizeAppearance(
-            Appearance(
-                theme = "unknown_theme",
-                mode = "unknown_mode",
-                seed = "unknown_seed",
-                dynamicColor = false,
-                amoled = true,
-                combMotion = false,
-            ),
-        )
-        assertEquals(defaults.theme, fromUnknown.theme)
-        assertEquals(defaults.mode, fromUnknown.mode)
-        assertEquals(defaults.seed, fromUnknown.seed)
-        assertFalse(fromUnknown.dynamicColor)
-        assertTrue(fromUnknown.amoled)
-        assertFalse(fromUnknown.combMotion)
-
-        val fromNulls = Preferences.sanitizeAppearance(
-            theme = null,
-            mode = null,
-            seed = null,
-        )
-        assertEquals(defaults, fromNulls)
+        assertEquals(Appearance(), Preferences.sanitizeAppearance(theme = "unknown_theme", mode = "unknown_mode"))
+        assertEquals(Appearance(), Preferences.sanitizeAppearance(theme = null, mode = null))
     }
 
     @Test
-    fun `tokens define distinct light and dark palettes for Hive, Graphite, and all Bloom seeds`() {
-        assertNotEquals(Tokens.hiveWax.surface, Tokens.hiveComb.surface)
-        assertNotEquals(Tokens.hiveWax.onSurface, Tokens.hiveComb.onSurface)
-        assertNotEquals(Tokens.graphitePaper.surface, Tokens.graphiteSlate.surface)
-        assertNotEquals(Tokens.graphitePaper.onSurface, Tokens.graphiteSlate.onSurface)
+    fun `themes from before colors-only become G7`() {
+        for (old in listOf("hive", "bloom", "glass", "blurry", "graphite")) {
+            assertEquals(old, "quiet", Preferences.sanitizeAppearance(theme = old, mode = "light").theme)
+        }
+    }
 
-        assertTrue(Tokens.bloomSeeds.containsKey(Tokens.DEFAULT_SEED))
-        for ((name, seed) in Tokens.bloomSeeds) {
-            assertNotNull("seed '$name' missing light palette", seed.light)
-            assertNotNull("seed '$name' missing dark palette", seed.dark)
-            assertNotEquals("seed '$name' light and dark surfaces must differ", seed.light.surface, seed.dark.surface)
-            assertNotEquals("seed '$name' light and dark onSurface must differ", seed.light.onSurface, seed.dark.onSurface)
+    @Test
+    fun `a dark-only palette stays dark, the others follow the mode`() {
+        assertTrue(isDark(Appearance(theme = "dracula", mode = "light"), systemDark = false))
+        assertFalse(isDark(Appearance(theme = "catppuccin", mode = "light"), systemDark = true))
+        assertTrue(isDark(Appearance(theme = "catppuccin", mode = "system"), systemDark = true))
+        assertFalse(isDark(Appearance(theme = "quiet", mode = "system"), systemDark = false))
+    }
+
+    @Test
+    fun `a palette maps onto every G7 role`() {
+        val mocha = Palettes.families.first { it.id == "catppuccin" }.dark
+        val colors = themeColors("catppuccin", dark = true)
+        assertEquals(mocha.background, colors.palette.surface)
+        assertEquals(mocha.foreground, colors.palette.onSurface)
+        assertEquals(mocha.border, colors.palette.outlineVariant)
+        assertEquals(mocha.accent, colors.palette.primary)
+        assertEquals(mocha.red, colors.error)
+        assertEquals(mocha.magenta, colors.tints.pink)
+        assertEquals(mocha.cyan, colors.tints.teal)
+        assertEquals(mocha.purple, colors.tints.lavender)
+        // The raised surface sits between the ground and the ink.
+        assertTrue(colors.palette.surfaceContainer.red > mocha.background.red)
+        assertTrue(colors.palette.surfaceContainer.red < colors.palette.surfaceContainerHigh.red)
+        // Text on the accent is the ground or the ink.
+        assertTrue(colors.palette.onPrimary == mocha.background || colors.palette.onPrimary == mocha.foreground)
+        assertEquals(ThemeColors.g7Dark, themeColors("quiet", dark = true))
+        assertEquals(ThemeColors.g7Light, themeColors("unknown", dark = false))
+    }
+
+    @Test
+    fun `every palette has a dark variant and distinct light and dark grounds`() {
+        for (family in Palettes.families) {
+            val light = family.light ?: continue
+            assertNotEquals(family.id, light.background, family.dark.background)
         }
     }
 

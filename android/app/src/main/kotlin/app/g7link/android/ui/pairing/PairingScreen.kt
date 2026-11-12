@@ -5,7 +5,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.Color
-import app.g7link.android.ui.theme.G7Colors
 import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
@@ -64,6 +63,7 @@ import app.g7link.android.R
 import app.g7link.android.core.CoreState
 import app.g7link.android.core.PairingState
 import app.g7link.android.ui.theme.LocalAppFonts
+import app.g7link.android.ui.theme.LocalG7Look
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.core.DiscoveredDevice
 import app.g7link.core.PairingFailure
@@ -277,7 +277,7 @@ private fun Scan(onLink: (String) -> Unit) {
             .fillMaxWidth()
             .aspectRatio(1f)
             .clip(androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
-            .background(G7Colors.deepGround),
+            .background(LocalG7Look.current.deepGround),
         contentAlignment = Alignment.Center,
     ) {
         QrScanner(onLink = onLink, modifier = Modifier.fillMaxSize())

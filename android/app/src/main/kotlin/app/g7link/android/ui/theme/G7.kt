@@ -35,7 +35,6 @@ import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalDensity
@@ -55,7 +54,8 @@ import app.g7link.android.R
 
 /**
  * G7's "Quiet Tool" colors (docs/design-language.md in G7 Linux): charcoal grounds,
- * one lavender accent, and icons drawn in their own tints.
+ * one lavender accent, and icons drawn in their own tints. Palettes map theirs onto
+ * the same roles (see [toThemeColors]).
  */
 object G7Colors {
     val darkPalette = Palette(
@@ -140,10 +140,9 @@ data class G7Tints(
     }
 }
 
-/** The tints for the current theme's lightness. */
+/** The active theme's tints: G7's own, or a palette's. */
 @Composable
-fun g7Tints(): G7Tints =
-    if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) G7Tints.dark else G7Tints.light
+fun g7Tints(): G7Tints = LocalG7Look.current.tints
 
 private fun strokeIcon(name: String, path: String, width: Float = 1.7f): ImageVector =
     ImageVector.Builder(
@@ -500,6 +499,12 @@ object G7Icons {
         glyph(
             "palette",
             "M1 1.75A.75.75 0 0 1 1.75 1h4.5a.75.75 0 0 1 .75.75v10.5A2.75 2.75 0 0 1 4.25 15h-.5A2.75 2.75 0 0 1 1 12.25zm1.5.75V5h3V2.5zm3 4h-3V9h3zm0 4h-3v1.75c0 .69.56 1.25 1.25 1.25h.5c.69 0 1.25-.56 1.25-1.25zm5.22-9.28a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1 0 1.06l-5.5 5.5a.75.75 0 1 1-1.06-1.06l4.97-4.97-1.94-1.94-1.97 1.97a.75.75 0 0 1-1.06-1.06z",
+        )
+    }
+    val check by lazy {
+        glyph(
+            "check",
+            "M12.707 3.293a1 1 0 0 1 0 1.414c-2.512 2.512-4.325 4.347-5.245 7.568a1 1 0 0 1-1.81.255l-2.5-4a1 1 0 0 1 1.696-1.06l1.418 2.268c1.18-2.598 2.975-4.393 4.969-6.387l.058-.058a1 1 0 0 1 1.414 0",
         )
     }
     val trash by lazy {

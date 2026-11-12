@@ -3,27 +3,23 @@ package app.g7link.android.ui.theme
 
 import android.animation.ValueAnimator
 import android.app.Activity
-import android.graphics.Color as AndroidColor
-import android.os.Build
-import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
@@ -31,20 +27,17 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.ColorUtils
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 
 val LocalReducedMotion = compositionLocalOf { false }
-val LocalGlassTheme = compositionLocalOf { false }
-val LocalAmoledTheme = compositionLocalOf { false }
-val LocalQuietTheme = compositionLocalOf { false }
 
 /** True when Android's "Remove animations" (animator duration scale 0) is enabled. */
 @Composable
@@ -63,410 +56,206 @@ fun rememberReducedMotion(): Boolean {
     return reduced
 }
 
-/**
- * The G7 theme's line color while it's active, null otherwise. Set by [G7LinkTheme]; read
- * while modifiers are built, so a theme switch rebuilds them.
- */
-private var quietLine by mutableStateOf<Color?>(G7Colors.darkPalette.outlineVariant)
+/** Material color roles of one theme variant. */
+@Immutable
+data class Palette(
+    val primary: Color,
+    val onPrimary: Color,
+    val primaryContainer: Color,
+    val onPrimaryContainer: Color,
+    val secondaryContainer: Color,
+    val onSecondaryContainer: Color,
+    val surface: Color,
+    val surfaceContainerLow: Color,
+    val surfaceContainer: Color,
+    val surfaceContainerHigh: Color,
+    val surfaceContainerHighest: Color,
+    val onSurface: Color,
+    val onSurfaceVariant: Color,
+    val outline: Color,
+    val outlineVariant: Color,
+)
 
 /** The user's look choices (see Preferences). */
-@androidx.compose.runtime.Immutable
+@Immutable
 data class Appearance(
+    /** "quiet" (G7) or the id of one of [Palettes.families]. */
     val theme: String = "quiet",
     val mode: String = "dark",
-    val seed: String = Tokens.DEFAULT_SEED,
-    /** Bloom/Glass takes its colors from the wallpaper (Android 12+). */
-    val dynamicColor: Boolean = true,
-    /** True #000000 OLED black surfaces when in dark mode. */
-    val amoled: Boolean = false,
-    /** Hive's comb breathes and pulses (still with reduced motion or battery saver). */
-    val combMotion: Boolean = true,
 )
 
-private fun hslTone(hue: Float, sat: Float, lightness: Float): Color {
-    val argb = ColorUtils.HSLToColor(
-        floatArrayOf(
-            hue.coerceIn(0f, 360f),
-            sat.coerceIn(0f, 1f),
-            lightness.coerceIn(0f, 1f),
+/** One variant of a theme: its Material roles, error color and glyph tints. */
+@Immutable
+data class ThemeColors(val palette: Palette, val error: Color, val onError: Color?, val tints: G7Tints) {
+    companion object {
+        val g7Dark = ThemeColors(G7Colors.darkPalette, G7Colors.darkError, null, G7Tints.dark)
+        val g7Light = ThemeColors(G7Colors.lightPalette, G7Colors.lightError, null, G7Tints.light)
+    }
+}
+
+/**
+ * What the active theme paints beyond Material's roles: the glyph tints, and the
+ * always-dark look of the camera, scanner and desk screens (the theme's dark variant
+ * on a deeper ground).
+ */
+@Immutable
+data class G7Look(val tints: G7Tints, val deep: ThemeColors, val deepGround: Color)
+
+val LocalG7Look = staticCompositionLocalOf {
+    G7Look(G7Tints.dark, ThemeColors.g7Dark, G7Colors.deepGround)
+}
+
+/** Per channel, in sRGB: [a] at 0, [b] at 1. */
+private fun mix(a: Color, b: Color, t: Float) = Color(
+    red = a.red + (b.red - a.red) * t,
+    green = a.green + (b.green - a.green) * t,
+    blue = a.blue + (b.blue - a.blue) * t,
+)
+
+private fun contrast(a: Color, b: Color): Float {
+    val la = a.luminance()
+    val lb = b.luminance()
+    return (maxOf(la, lb) + 0.05f) / (minOf(la, lb) + 0.05f)
+}
+
+/** The ground or the ink, whichever reads better on [color]. */
+private fun LauncherColors.inkOn(color: Color) =
+    if (contrast(background, color) >= contrast(foreground, color)) background else foreground
+
+/**
+ * A G7 Linux theme's colors on the G7 theme's roles: the same layout, its colors.
+ * Raised and selected surfaces are the ground with a little of the ink in it.
+ */
+internal fun LauncherColors.toThemeColors(): ThemeColors {
+    val raised = mix(background, foreground, 0.06f)
+    val selection = mix(background, foreground, 0.11f)
+    val muted = mix(background, foreground, 0.62f)
+    return ThemeColors(
+        palette = Palette(
+            primary = accent,
+            onPrimary = inkOn(accent),
+            primaryContainer = selection,
+            onPrimaryContainer = foreground,
+            secondaryContainer = selection,
+            onSecondaryContainer = foreground,
+            surface = background,
+            surfaceContainerLow = background,
+            surfaceContainer = raised,
+            surfaceContainerHigh = selection,
+            surfaceContainerHighest = mix(background, foreground, 0.14f),
+            onSurface = foreground,
+            onSurfaceVariant = muted,
+            outline = mix(background, foreground, 0.40f),
+            outlineVariant = border,
+        ),
+        error = red,
+        onError = inkOn(red),
+        tints = G7Tints(
+            blue = blue,
+            teal = cyan,
+            coral = orange,
+            pink = magenta,
+            amber = yellow,
+            green = green,
+            red = red,
+            lavender = purple,
+            muted = muted,
         ),
     )
-    return Color(argb)
 }
 
-private fun rgbColor(rgb: UInt): Color = Color(0xFF00_0000L or (rgb.toLong() and 0xFF_FFFFL))
-
-/**
- * Builds a Material 3 [ColorScheme] from a `0xRRGGBB` media artwork seed color
- * using the shared Rust perceptual tonal palette engine (`app.g7link.core.themeSchemeFromSeed`),
- * ensuring identical light and dark schemes on Android and Desktop.
- */
-private fun schemeFromArtworkSeed(rgb: UInt, dark: Boolean, error: Color): ColorScheme {
-    val ffiScheme = runCatching { app.g7link.core.themeSchemeFromSeed(rgb) }.getOrNull()
-    if (ffiScheme != null) {
-        val role = if (dark) ffiScheme.dark else ffiScheme.light
-        return Palette(
-            primary = rgbColor(role.primary),
-            onPrimary = rgbColor(role.onPrimary),
-            primaryContainer = rgbColor(role.primaryContainer),
-            onPrimaryContainer = rgbColor(role.onPrimaryContainer),
-            secondaryContainer = rgbColor(role.secondaryContainer),
-            onSecondaryContainer = rgbColor(role.onSecondaryContainer),
-            surface = rgbColor(role.surface),
-            surfaceContainerLow = rgbColor(role.surfaceContainerLow),
-            surfaceContainer = rgbColor(role.surfaceContainer),
-            surfaceContainerHigh = rgbColor(role.surfaceContainerHigh),
-            surfaceContainerHighest = rgbColor(role.surfaceContainerHighest),
-            onSurface = rgbColor(role.onSurface),
-            onSurfaceVariant = rgbColor(role.onSurfaceVariant),
-            outline = rgbColor(role.outline),
-            outlineVariant = rgbColor(role.outlineVariant),
-        ).toScheme(dark, error)
-    }
-
-    val r = ((rgb shr 16) and 0xFFu).toInt()
-    val g = ((rgb shr 8) and 0xFFu).toInt()
-    val b = (rgb and 0xFFu).toInt()
-    val hsl = FloatArray(3)
-    ColorUtils.RGBToHSL(r, g, b, hsl)
-    val h = hsl[0]
-    val s = hsl[1].coerceIn(0.36f, 0.88f)
-    val seedLuma = (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255f
-    val secondaryHue = (h + 24f) % 360f
-    val neutralS = (s * 0.24f).coerceIn(0.08f, 0.20f)
-    val variantS = (s * 0.36f).coerceIn(0.14f, 0.30f)
-    val contrastBoost = (seedLuma - 0.5f) * 0.04f
-
-    val pal = if (dark) {
-        Palette(
-            primary = hslTone(h, (s * 0.92f).coerceAtLeast(0.55f), (0.78f + contrastBoost).coerceIn(0.74f, 0.84f)),
-            onPrimary = hslTone(h, (s * 0.85f).coerceAtLeast(0.45f), 0.15f),
-            primaryContainer = hslTone(h, (s * 0.80f).coerceAtLeast(0.45f), (0.27f + contrastBoost).coerceIn(0.22f, 0.32f)),
-            onPrimaryContainer = hslTone(h, (s * 0.92f).coerceAtLeast(0.55f), 0.91f),
-            secondaryContainer = hslTone(secondaryHue, (s * 0.54f).coerceAtLeast(0.30f), 0.26f),
-            onSecondaryContainer = hslTone(secondaryHue, (s * 0.72f).coerceAtLeast(0.42f), 0.89f),
-            surface = hslTone(h, neutralS, 0.07f),
-            surfaceContainerLow = hslTone(h, neutralS, 0.05f),
-            surfaceContainer = hslTone(h, neutralS, 0.11f),
-            surfaceContainerHigh = hslTone(h, neutralS, 0.16f),
-            surfaceContainerHighest = hslTone(h, neutralS, 0.21f),
-            onSurface = hslTone(h, neutralS, 0.92f),
-            onSurfaceVariant = hslTone(h, variantS, 0.79f),
-            outline = hslTone(h, variantS, 0.56f),
-            outlineVariant = hslTone(h, variantS, 0.28f),
-        )
-    } else {
-        Palette(
-            primary = hslTone(h, (s * 0.88f).coerceAtLeast(0.52f), (0.34f - contrastBoost).coerceIn(0.28f, 0.40f)),
-            onPrimary = Color.White,
-            primaryContainer = hslTone(h, (s * 0.88f).coerceAtLeast(0.50f), 0.88f),
-            onPrimaryContainer = hslTone(h, (s * 0.85f).coerceAtLeast(0.45f), 0.13f),
-            secondaryContainer = hslTone(secondaryHue, (s * 0.56f).coerceAtLeast(0.30f), 0.89f),
-            onSecondaryContainer = hslTone(secondaryHue, (s * 0.62f).coerceAtLeast(0.34f), 0.14f),
-            surface = hslTone(h, neutralS, 0.98f),
-            surfaceContainerLow = hslTone(h, neutralS, 0.95f),
-            surfaceContainer = hslTone(h, neutralS, 0.93f),
-            surfaceContainerHigh = hslTone(h, neutralS, 0.90f),
-            surfaceContainerHighest = hslTone(h, neutralS, 0.87f),
-            onSurface = hslTone(h, neutralS, 0.10f),
-            onSurfaceVariant = hslTone(h, variantS, 0.27f),
-            outline = hslTone(h, variantS, 0.46f),
-            outlineVariant = hslTone(h, variantS, 0.78f),
-        )
-    }
-    return pal.toScheme(dark, error)
-}
-
-private fun Palette.toScheme(dark: Boolean, error: Color): ColorScheme {
-    val base = if (dark) darkColorScheme() else lightColorScheme()
-    return base.copy(
-        primary = primary,
-        onPrimary = onPrimary,
-        primaryContainer = primaryContainer,
-        onPrimaryContainer = onPrimaryContainer,
-        secondary = primary,
-        onSecondary = onPrimary,
-        secondaryContainer = secondaryContainer,
-        onSecondaryContainer = onSecondaryContainer,
-        tertiary = primary,
-        onTertiary = onPrimary,
-        tertiaryContainer = secondaryContainer,
-        onTertiaryContainer = onSecondaryContainer,
-        background = surface,
-        onBackground = onSurface,
-        surface = surface,
-        onSurface = onSurface,
-        surfaceVariant = surfaceContainerHigh,
-        onSurfaceVariant = onSurfaceVariant,
-        surfaceContainerLowest = surface,
-        surfaceContainerLow = surfaceContainerLow,
-        surfaceContainer = surfaceContainer,
-        surfaceContainerHigh = surfaceContainerHigh,
-        surfaceContainerHighest = surfaceContainerHighest,
-        outline = outline,
-        outlineVariant = outlineVariant,
-        error = error,
-    )
-}
-
-/**
- * Applies adaptive surface translucency in Glass mode with a subtle uniform
- * hairline border and high-legibility modal containers.
- */
-private fun ColorScheme.toGlassScheme(dark: Boolean): ColorScheme {
-    val tintArgb = primary.let {
-        android.graphics.Color.argb(
-            (it.alpha * 255).toInt(),
-            (it.red * 255).toInt(),
-            (it.green * 255).toInt(),
-            (it.blue * 255).toInt(),
-        )
-    }
-    fun blendWithTint(c: Color, ratio: Float, alpha: Float): Color {
-        val cArgb = android.graphics.Color.argb(
-            255,
-            (c.red * 255).toInt(),
-            (c.green * 255).toInt(),
-            (c.blue * 255).toInt(),
-        )
-        return Color(ColorUtils.blendARGB(cArgb, tintArgb, ratio)).copy(alpha = alpha)
-    }
-    return if (dark) {
-        copy(
-            surfaceContainerLowest = surface.copy(alpha = 0.52f),
-            surfaceContainerLow = blendWithTint(surfaceContainerLow, 0.08f, 0.62f),
-            surfaceContainer = blendWithTint(surfaceContainer, 0.10f, 0.72f),
-            surfaceContainerHigh = blendWithTint(surfaceContainerHigh, 0.12f, 0.88f),
-            surfaceContainerHighest = blendWithTint(surfaceContainerHighest, 0.14f, 0.94f),
-            surfaceVariant = blendWithTint(surfaceVariant, 0.10f, 0.78f),
-            primaryContainer = primaryContainer.copy(alpha = 0.82f),
-            secondaryContainer = secondaryContainer.copy(alpha = 0.78f),
-            tertiaryContainer = tertiaryContainer.copy(alpha = 0.80f),
-            outlineVariant = Color.White.copy(alpha = 0.12f),
-        )
-    } else {
-        copy(
-            surfaceContainerLowest = Color.White.copy(alpha = 0.64f),
-            surfaceContainerLow = blendWithTint(Color.White, 0.04f, 0.74f),
-            surfaceContainer = blendWithTint(Color.White, 0.06f, 0.82f),
-            surfaceContainerHigh = blendWithTint(surfaceContainerHigh, 0.10f, 0.92f),
-            surfaceContainerHighest = blendWithTint(surfaceContainerHighest, 0.12f, 0.96f),
-            surfaceVariant = blendWithTint(surfaceVariant, 0.08f, 0.84f),
-            primaryContainer = primaryContainer.copy(alpha = 0.86f),
-            secondaryContainer = secondaryContainer.copy(alpha = 0.84f),
-            tertiaryContainer = tertiaryContainer.copy(alpha = 0.86f),
-            outlineVariant = primary.copy(alpha = 0.18f),
-        )
-    }
-}
-
-/**
- * Stock accents that some skins (Samsung One UI with its "Color palette" option off)
- * report from `system_accent1_*` regardless of the wallpaper.
- */
-private val STOCK_SYSTEM_ACCENTS = setOf(0xFF697E9B.toInt(), 0xFF006782.toInt())
-
-/**
- * The wallpaper's primary color as an `0xRRGGBB` seed, kept current through
- * [android.app.WallpaperManager.OnColorsChangedListener]. Null when disabled or unavailable.
- */
-@Composable
-private fun rememberWallpaperSeed(enabled: Boolean): UInt? {
-    val context = LocalContext.current
-    var seed by remember { mutableStateOf<UInt?>(null) }
-    DisposableEffect(context, enabled) {
-        if (!enabled || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            seed = null
-            return@DisposableEffect onDispose { }
-        }
-        val wm = context.getSystemService(android.app.WallpaperManager::class.java)
-        fun read(colors: android.app.WallpaperColors?): UInt? =
-            colors?.primaryColor?.toArgb()?.let { (it.toLong() and 0xFF_FFFFL).toUInt() }
-        seed = runCatching {
-            read(
-                wm?.getWallpaperColors(android.app.WallpaperManager.FLAG_SYSTEM)
-                    ?: wm?.getWallpaperColors(android.app.WallpaperManager.FLAG_LOCK),
-            )
-        }.getOrNull()
-        val listener = android.app.WallpaperManager.OnColorsChangedListener { colors, which ->
-            if (which and android.app.WallpaperManager.FLAG_SYSTEM != 0) {
-                read(colors)?.let { seed = it }
-            }
-        }
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        runCatching { wm?.addOnColorsChangedListener(listener, handler) }
-        onDispose { runCatching { wm?.removeOnColorsChangedListener(listener) } }
-    }
-    return seed
-}
-
-/**
- * Wallpaper colors: the system's Material You scheme when the device provides a real one,
- * otherwise a scheme built from the wallpaper's own primary color.
- */
-@androidx.annotation.RequiresApi(Build.VERSION_CODES.S)
-private fun wallpaperScheme(
-    context: android.content.Context,
-    dark: Boolean,
-    error: Color,
-    wallpaperSeed: UInt?,
-): ColorScheme {
-    val systemAccent = runCatching { context.getColor(android.R.color.system_accent1_500) }.getOrNull()
-    val systemIsStock = systemAccent == null || systemAccent in STOCK_SYSTEM_ACCENTS
-    if (systemIsStock && wallpaperSeed != null) {
-        return schemeFromArtworkSeed(wallpaperSeed, dark, error)
-    }
-    return if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-}
-
-/** Applies true #000000 OLED black surfaces and deep contrast containers when in dark + AMOLED mode. */
-private fun ColorScheme.toAmoledScheme(glass: Boolean): ColorScheme = copy(
-    background = Color.Black,
-    surface = Color.Black,
-    surfaceContainerLowest = Color.Black,
-    surfaceContainerLow = Color(0xFF050608).copy(alpha = if (glass) 0.74f else 1f),
-    surfaceContainer = Color(0xFF0A0B0E).copy(alpha = if (glass) 0.80f else 1f),
-    surfaceContainerHigh = Color(0xFF111318).copy(alpha = if (glass) 0.90f else 1f),
-    surfaceContainerHighest = Color(0xFF191C24).copy(alpha = if (glass) 0.95f else 1f),
-    surfaceVariant = Color(0xFF12141A).copy(alpha = if (glass) 0.86f else 1f),
-    outlineVariant = if (glass) Color.White.copy(alpha = 0.12f) else Color(0xFF22252E),
-)
-
-/** Shapes from the tokens: Glass and Bloom are smoothly rounded, Hive a little firmer, Graphite crisp. */
-private fun shapes(graphite: Boolean, glass: Boolean, hive: Boolean, quiet: Boolean) = when {
-    quiet -> Shapes(
-        extraSmall = RoundedCornerShape(5.dp),
-        small = RoundedCornerShape(8.dp),
-        medium = RoundedCornerShape(10.dp),
-        large = RoundedCornerShape(10.dp),
-        extraLarge = RoundedCornerShape(14.dp),
-    )
-    hive -> Shapes(
-        extraSmall = RoundedCornerShape(6.dp),
-        small = RoundedCornerShape(10.dp),
-        medium = RoundedCornerShape(14.dp),
-        large = RoundedCornerShape(18.dp),
-        extraLarge = RoundedCornerShape(24.dp),
-    )
-    graphite -> Shapes(
-        extraSmall = RoundedCornerShape(2.dp),
-        small = RoundedCornerShape(3.dp),
-        medium = RoundedCornerShape(4.dp),
-        large = RoundedCornerShape(4.dp),
-        extraLarge = RoundedCornerShape(6.dp),
-    )
-    glass -> Shapes(
-        extraSmall = RoundedCornerShape(10.dp),
-        small = RoundedCornerShape(14.dp),
-        medium = RoundedCornerShape(20.dp),
-        large = RoundedCornerShape(24.dp),
-        extraLarge = RoundedCornerShape(30.dp),
-    )
-    else -> Shapes(
-        extraSmall = RoundedCornerShape(8.dp),
-        small = RoundedCornerShape(12.dp),
-        medium = RoundedCornerShape(16.dp),
-        large = RoundedCornerShape(20.dp),
-        extraLarge = RoundedCornerShape(28.dp),
-    )
-}
-
-/** Frosted Switch colors when Glass mode is active, or standard Material 3 Switch colors otherwise. */
-@Composable
-fun g7SwitchColors(): androidx.compose.material3.SwitchColors {
-    val isGlass = LocalGlassTheme.current
-    val scheme = MaterialTheme.colorScheme
-    if (LocalQuietTheme.current) {
-        // G7: lavender when on, a quiet line when off, no outline.
-        return androidx.compose.material3.SwitchDefaults.colors(
-            checkedThumbColor = scheme.surface,
-            checkedTrackColor = scheme.primary,
-            checkedBorderColor = scheme.primary,
-            uncheckedThumbColor = scheme.onSurfaceVariant,
-            uncheckedTrackColor = scheme.outlineVariant,
-            uncheckedBorderColor = scheme.outlineVariant,
-        )
-    }
-    return if (isGlass) {
-        androidx.compose.material3.SwitchDefaults.colors(
-            checkedThumbColor = Color.White,
-            checkedTrackColor = scheme.primary.copy(alpha = 0.62f),
-            checkedBorderColor = scheme.outlineVariant,
-            uncheckedThumbColor = scheme.onSurface.copy(alpha = 0.82f),
-            uncheckedTrackColor = scheme.surfaceContainerHighest.copy(alpha = 0.42f),
-            uncheckedBorderColor = scheme.outlineVariant,
-        )
-    } else {
-        androidx.compose.material3.SwitchDefaults.colors()
-    }
-}
-
-/**
- * The app's theme. `backdrop`: this is the app's main window, which draws the
- * theme's background itself (and Hive's comb on it); other screens keep a
- * plain opaque background.
- */
-@Composable
-fun G7LinkTheme(
-    appearance: Appearance = Appearance(),
-    mediaSeedColor: UInt? = null,
-    backdrop: Boolean = false,
-    content: @Composable () -> Unit,
-) {
-    val dark = when (appearance.mode) {
+/** Whether [appearance] shows dark: the mode's choice, or always for a dark-only palette. */
+fun isDark(appearance: Appearance, systemDark: Boolean): Boolean {
+    val family = Palettes.families.firstOrNull { it.id == appearance.theme }
+    if (family != null && family.light == null) return true
+    return when (appearance.mode) {
         "light" -> false
         "dark" -> true
-        else -> isSystemInDarkTheme()
+        else -> systemDark
     }
-    val graphite = appearance.theme == "graphite"
-    val quiet = appearance.theme == "quiet"
-    val glass = appearance.theme == "glass"
-    // Hive keeps its own honey: no wallpaper, artwork or phone colors.
-    val hive = appearance.theme == "hive"
-    val isBlackSwatch = !appearance.dynamicColor && appearance.seed == "black"
-    val amoledActive = dark && appearance.amoled && (graphite || isBlackSwatch)
-    val error = when {
-        hive -> if (dark) Tokens.hiveCombError else Tokens.hiveWaxError
-        quiet -> if (dark) G7Colors.darkError else G7Colors.lightError
-        else -> if (dark) Tokens.errorDark else Tokens.errorLight
+}
+
+/** The colors [appearance] shows in light or dark: G7's own, or a palette's. */
+fun themeColors(theme: String, dark: Boolean): ThemeColors {
+    val family = Palettes.families.firstOrNull { it.id == theme }
+        ?: return if (dark) ThemeColors.g7Dark else ThemeColors.g7Light
+    return (if (dark) family.dark else family.light ?: family.dark).toThemeColors()
+}
+
+private fun ThemeColors.toScheme(dark: Boolean): ColorScheme {
+    val p = palette
+    val base = if (dark) darkColorScheme() else lightColorScheme()
+    val scheme = base.copy(
+        primary = p.primary,
+        onPrimary = p.onPrimary,
+        primaryContainer = p.primaryContainer,
+        onPrimaryContainer = p.onPrimaryContainer,
+        secondary = p.primary,
+        onSecondary = p.onPrimary,
+        secondaryContainer = p.secondaryContainer,
+        onSecondaryContainer = p.onSecondaryContainer,
+        tertiary = p.primary,
+        onTertiary = p.onPrimary,
+        tertiaryContainer = p.secondaryContainer,
+        onTertiaryContainer = p.onSecondaryContainer,
+        background = p.surface,
+        onBackground = p.onSurface,
+        surface = p.surface,
+        onSurface = p.onSurface,
+        surfaceVariant = p.surfaceContainerHigh,
+        onSurfaceVariant = p.onSurfaceVariant,
+        surfaceContainerLowest = p.surface,
+        surfaceContainerLow = p.surfaceContainerLow,
+        surfaceContainer = p.surfaceContainer,
+        surfaceContainerHigh = p.surfaceContainerHigh,
+        surfaceContainerHighest = p.surfaceContainerHighest,
+        outline = p.outline,
+        outlineVariant = p.outlineVariant,
+        error = error,
+    )
+    return if (onError != null) scheme.copy(onError = onError) else scheme
+}
+
+/** G7's shapes: small radii, the same for every palette. */
+private val g7Shapes = Shapes(
+    extraSmall = RoundedCornerShape(5.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(10.dp),
+    large = RoundedCornerShape(10.dp),
+    extraLarge = RoundedCornerShape(14.dp),
+)
+
+/** G7: the accent when on, a quiet line when off, no outline. */
+@Composable
+fun g7SwitchColors(): androidx.compose.material3.SwitchColors {
+    val scheme = MaterialTheme.colorScheme
+    return androidx.compose.material3.SwitchDefaults.colors(
+        checkedThumbColor = scheme.surface,
+        checkedTrackColor = scheme.primary,
+        checkedBorderColor = scheme.primary,
+        uncheckedThumbColor = scheme.onSurfaceVariant,
+        uncheckedTrackColor = scheme.outlineVariant,
+        uncheckedBorderColor = scheme.outlineVariant,
+    )
+}
+
+/**
+ * The app's theme: G7's layout, type and shapes, in G7's colors or a palette's.
+ * Switching palettes only recolors.
+ */
+@Composable
+fun G7LinkTheme(appearance: Appearance = Appearance(), content: @Composable () -> Unit) {
+    val dark = isDark(appearance, isSystemInDarkTheme())
+    val colors = remember(appearance.theme, dark) { themeColors(appearance.theme, dark) }
+    val scheme = remember(colors, dark) { colors.toScheme(dark) }
+    val look = remember(appearance.theme, colors) {
+        val deep = themeColors(appearance.theme, dark = true)
+        // G7's deeper ground is its dark ground at 60%; palettes go the same way.
+        val isPalette = Palettes.families.any { it.id == appearance.theme }
+        val ground = if (isPalette) mix(deep.palette.surface, Color.Black, 0.4f) else G7Colors.deepGround
+        G7Look(tints = colors.tints, deep = deep, deepGround = ground)
     }
-    val context = LocalContext.current
-    // The settings alone pick the color source. Artwork applies only when the user turned
-    // "Media artwork color" on; with nothing playing, it falls back to the wallpaper or preset.
-    val artworkSeed = if (!graphite && !hive && !quiet && appearance.seed == "artwork") mediaSeedColor else null
-    val wallpaper = !graphite && !hive && !quiet && appearance.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-    val wallpaperSeed = rememberWallpaperSeed(enabled = wallpaper && artworkSeed == null)
-    val baseScheme = when {
-        hive -> remember(dark, error) {
-            (if (dark) Tokens.hiveComb else Tokens.hiveWax).toScheme(dark, error)
-        }
-        quiet -> remember(dark, error) {
-            (if (dark) G7Colors.darkPalette else G7Colors.lightPalette).toScheme(dark, error)
-        }
-        graphite -> remember(dark, error) {
-            (if (dark) Tokens.graphiteSlate else Tokens.graphitePaper).toScheme(dark, error)
-        }
-        artworkSeed != null -> remember(artworkSeed, dark, error) {
-            schemeFromArtworkSeed(artworkSeed, dark, error)
-        }
-        wallpaper && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> remember(context, dark, error, wallpaperSeed) {
-            wallpaperScheme(context, dark, error, wallpaperSeed)
-        }
-        else -> remember(appearance.seed, dark, error) {
-            val seed = Tokens.bloomSeeds[appearance.seed] ?: Tokens.bloomSeeds.getValue(Tokens.DEFAULT_SEED)
-            (if (dark) seed.dark else seed.light).toScheme(dark, error)
-        }
-    }
-    val combBehind = hive && backdrop
-    val targetScheme = remember(baseScheme, glass, dark, amoledActive, combBehind) {
-        val withGlass = if (glass) baseScheme.toGlassScheme(dark) else baseScheme
-        val withAmoled = if (amoledActive) withGlass.toAmoledScheme(glass) else withGlass
-        // Screens let the comb show through; the window paints the surface under it.
-        if (combBehind) withAmoled.copy(background = Color.Transparent) else withAmoled
-    }
-    androidx.compose.runtime.SideEffect { quietLine = if (quiet) targetScheme.outlineVariant else null }
     val reducedMotion = rememberReducedMotion()
-    val powerSaver = rememberPowerSaver()
 
     // System bar icons follow the app's theme, which can differ from the system's.
     val view = LocalView.current
@@ -479,121 +268,17 @@ fun G7LinkTheme(
             }
         }
     }
-    val assets = context.assets
-    val fonts = remember(assets, quiet) { AppFonts(assets, quiet) }
-    val currentShapes = remember(graphite, glass, hive, quiet) { shapes(graphite, glass, hive, quiet) }
-    val currentTypography = remember(fonts, graphite, quiet) { typography(fonts, graphite, quiet) }
+    val assets = LocalContext.current.assets
+    val fonts = remember(assets) { AppFonts(assets) }
+    val type = remember(fonts) { typography(fonts) }
     CompositionLocalProvider(
         LocalAppFonts provides fonts,
         LocalReducedMotion provides reducedMotion,
-        LocalGlassTheme provides glass,
-        LocalAmoledTheme provides amoledActive,
-        LocalQuietTheme provides quiet,
-        LocalHiveTheme provides hive,
+        LocalG7Look provides look,
     ) {
-        MaterialTheme(
-            colorScheme = targetScheme,
-            shapes = currentShapes,
-            typography = currentTypography,
-        ) {
-            // The content stays in one place for every theme: calling it from
-            // separate branches would rebuild the whole app on a switch to or
-            // from Hive, losing state such as the selected tab.
-            androidx.compose.foundation.layout.Box(
-                androidx.compose.ui.Modifier.fillMaxSize().then(
-                    if (combBehind) androidx.compose.ui.Modifier.background(baseScheme.surface) else androidx.compose.ui.Modifier,
-                ),
-            ) {
-                if (combBehind) {
-                    HiveComb(
-                        dark = dark,
-                        animate = appearance.combMotion && !reducedMotion && !powerSaver,
-                    )
-                }
-                content()
-            }
-        }
+        MaterialTheme(colorScheme = scheme, shapes = g7Shapes, typography = type, content = content)
     }
 }
-
-/**
- * Single-pass cached card background with a subtle uniform hairline border and no top-edge glare.
- */
-fun Modifier.liquidGlassCard(
-    cornerRadius: Dp = 24.dp,
-    isGlass: Boolean,
-    baseColor: Color,
-    @Suppress("UNUSED_PARAMETER") tintColor: Color = Color.Transparent,
-    outlineColor: Color = Color.Transparent,
-    /** Keeps its fill in the G7 theme: for chrome that floats over other content. */
-    solid: Boolean = false,
-): Modifier {
-    // The G7 theme has no boxes around groups: a group is its label and its rows.
-    if (quietLine != null && !solid) return this
-    return this.drawWithCache {
-        val radiusPx = cornerRadius.toPx()
-        val cr = CornerRadius(radiusPx, radiusPx)
-        val strokePx = 1.dp.toPx()
-        val halfStroke = strokePx * 0.5f
-        val topLeftOffset = Offset(halfStroke, halfStroke)
-        val insetSize = Size(
-            (size.width - strokePx).coerceAtLeast(0f),
-            (size.height - strokePx).coerceAtLeast(0f),
-        )
-        val isDarkSurface = (baseColor.red * 0.299f + baseColor.green * 0.587f + baseColor.blue * 0.114f) < 0.5f
-        val uniformRimColor = if (isGlass) {
-            if (outlineColor.alpha > 0f) {
-                outlineColor.copy(alpha = outlineColor.alpha.coerceAtMost(if (isDarkSurface) 0.14f else 0.22f))
-            } else {
-                Color.White.copy(alpha = if (isDarkSurface) 0.10f else 0.22f)
-            }
-        } else {
-            outlineColor
-        }
-        val strokeStyle = Stroke(width = strokePx)
-        onDrawBehind {
-            drawRoundRect(color = baseColor, cornerRadius = cr)
-            if (uniformRimColor.alpha > 0f) {
-                drawRoundRect(
-                    color = uniformRimColor,
-                    topLeft = topLeftOffset,
-                    size = insetSize,
-                    cornerRadius = cr,
-                    style = strokeStyle,
-                )
-            }
-        }
-    }
-}
-
-/**
- * No-op modifier kept for source compatibility; modal sheets use [glassModalScrimColor]
- * and [glassModalContainerColor] instead of blurring the entire root viewport into an FBO.
- */
-fun Modifier.glassModalBlur(@Suppress("UNUSED_PARAMETER") modalOpen: Boolean): Modifier = this
-
-/** High-legibility adaptive frosted container color for modal sheets and dialogs in Glass mode. */
-@Composable
-fun glassModalContainerColor(): Color {
-    val isGlass = LocalGlassTheme.current
-    val scheme = MaterialTheme.colorScheme
-    if (!isGlass) return scheme.surfaceContainerHigh
-    val luma = scheme.surface.red * 0.299f + scheme.surface.green * 0.587f + scheme.surface.blue * 0.114f
-    val base = if (luma < 0.5f) Color(0xFF141720) else Color(0xFFF7F8FC)
-    val tinted = Color(
-        ColorUtils.blendARGB(
-            android.graphics.Color.argb(255, (base.red * 255).toInt(), (base.green * 255).toInt(), (base.blue * 255).toInt()),
-            android.graphics.Color.argb(255, (scheme.primary.red * 255).toInt(), (scheme.primary.green * 255).toInt(), (scheme.primary.blue * 255).toInt()),
-            if (luma < 0.5f) 0.12f else 0.06f,
-        ),
-    )
-    return tinted.copy(alpha = if (luma < 0.5f) 0.95f else 0.97f)
-}
-
-/** Deepened backdrop scrim color when sheets or dialogs open in Glass mode so background text never bleeds through. */
-@Composable
-fun glassModalScrimColor(): Color =
-    if (LocalGlassTheme.current) Color.Black.copy(alpha = 0.62f) else Color.Black.copy(alpha = 0.38f)
 
 /**
  * Lightweight zero-RenderNode interior well for bento strips and inner rows.
@@ -626,4 +311,3 @@ fun Modifier.bentoWell(
         }
     }
 }
-

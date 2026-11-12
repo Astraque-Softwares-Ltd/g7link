@@ -11,7 +11,6 @@ import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.G7Tints
-import app.g7link.android.ui.theme.LocalQuietTheme
 import app.g7link.android.ui.theme.g7Tints
 import android.app.Activity
 import android.content.Context
@@ -45,7 +44,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -88,7 +86,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -528,39 +525,6 @@ private fun DeckBanner(
     }
 }
 
-private data class TilePalette(
-    val bg: Color,
-    val border: Color,
-    val accent: Color,
-    val fg: Color,
-    val iconWell: Color,
-)
-
-@Composable
-private fun tilePalette(
-    @Suppress("UNUSED_PARAMETER") colorName: String,
-    highlighted: Boolean,
-): TilePalette {
-    val scheme = MaterialTheme.colorScheme
-    return if (highlighted) {
-        TilePalette(
-            bg = scheme.primaryContainer,
-            border = scheme.primary,
-            accent = scheme.primary,
-            fg = scheme.onPrimaryContainer,
-            iconWell = scheme.surfaceContainerHigh,
-        )
-    } else {
-        TilePalette(
-            bg = scheme.surfaceContainerHigh,
-            border = scheme.outlineVariant,
-            accent = scheme.primary,
-            fg = scheme.onSurface,
-            iconWell = scheme.secondaryContainer,
-        )
-    }
-}
-
 @Composable
 private fun liveBadgeText(kind: String, state: DeckState): String? = when (kind) {
     "media_play_pause" -> stringResource(if (state.playing) R.string.deck_playing else R.string.deck_paused)
@@ -602,7 +566,6 @@ private fun DeckTileButton(
     val reducedMotion = LocalReducedMotion.current
     val badge = liveBadgeText(tile.kind, liveState)
     val highlighted = isLiveHighlighted(tile.kind, liveState)
-    val palette = tilePalette(tile.color, highlighted)
     val iconName = effectiveIcon(tile, liveState)
 
     var pressed by remember { mutableStateOf(false) }
@@ -620,34 +583,22 @@ private fun DeckTileButton(
     val fontScale = LocalConfiguration.current.fontScale.coerceIn(1f, 1.35f)
     val tileHeight = ((if (compact) 98 else 118) * fontScale).dp
 
-    val quiet = LocalQuietTheme.current
-    val tileTint = if (quiet) deckTint(iconName, g7Tints()) else palette.fg
-    val workingTint = (if (quiet) tileTint else palette.accent).copy(alpha = 0.14f)
+    val tileTint = deckTint(iconName, g7Tints())
+    val workingTint = tileTint.copy(alpha = 0.14f)
     val progressOverlay = Modifier.drawWithContent {
         drawContent()
         if (progress == DeckTileProgress.Working) drawRect(workingTint)
     }
     Surface(
-        shape = if (quiet) RoundedCornerShape(12.dp) else MaterialTheme.shapes.large,
+        shape = RoundedCornerShape(12.dp),
         // A tile that's on (playing, muted) is drawn in its own tint, edge and all.
-        color = if (quiet) {
-            if (highlighted) {
-                tileTint.copy(alpha = if (enabled) 0.18f else 0.10f)
-            } else {
-                MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (enabled) 1f else 0.55f)
-            }
+        color = if (highlighted) {
+            tileTint.copy(alpha = if (enabled) 0.18f else 0.10f)
         } else {
-            palette.bg.copy(alpha = if (enabled) 1f else 0.55f)
+            MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (enabled) 1f else 0.55f)
         },
-        contentColor = if (quiet) MaterialTheme.colorScheme.onSurface else palette.fg,
-        border = if (quiet) {
-            if (highlighted) BorderStroke(2.dp, tileTint) else null
-        } else {
-            BorderStroke(
-                width = if (highlighted) 2.dp else 1.dp,
-                color = if (highlighted) palette.accent else palette.border,
-            )
-        },
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = if (highlighted) BorderStroke(2.dp, tileTint) else null,
         modifier = Modifier
             .fillMaxWidth()
             .height(tileHeight)
@@ -681,93 +632,33 @@ private fun DeckTileButton(
                 )
             },
     ) {
-        if (quiet) {
-            Column(
-                modifier = progressOverlay.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                if (progress == DeckTileProgress.Done) {
-                    DeckCheck(tint = tileTint, modifier = Modifier.size(24.dp))
-                } else {
-                    DeckIcon(name = iconName, tint = tileTint, modifier = Modifier.size(24.dp))
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = tile.label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (badge != null) {
-                    Text(
-                        text = badge,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (highlighted) tileTint else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                    )
-                }
-            }
-            return@Surface
-        }
         Column(
-            modifier = progressOverlay
-                .fillMaxSize()
-                .padding(horizontal = 11.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+            modifier = progressOverlay.fillMaxSize().padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(if (compact) 34.dp else 36.dp)
-                        .background(palette.iconWell, MaterialTheme.shapes.medium),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (progress == DeckTileProgress.Done) {
-                        DeckCheck(tint = palette.fg, modifier = Modifier.size(if (compact) 18.dp else 20.dp))
-                    } else {
-                        DeckIcon(
-                            name = iconName,
-                            tint = palette.fg,
-                            modifier = Modifier.size(if (compact) 18.dp else 20.dp),
-                        )
-                    }
-                }
-
-                if (badge != null) {
-                    Spacer(Modifier.width(6.dp))
-                    Surface(
-                        shape = CircleShape,
-                        color = if (highlighted) palette.accent else palette.iconWell,
-                        contentColor = if (highlighted) MaterialTheme.colorScheme.onPrimary else palette.fg,
-                    ) {
-                        Text(
-                            text = badge,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                    }
-                }
+            if (progress == DeckTileProgress.Done) {
+                DeckCheck(tint = tileTint, modifier = Modifier.size(24.dp))
+            } else {
+                DeckIcon(name = iconName, tint = tileTint, modifier = Modifier.size(24.dp))
             }
-
+            Spacer(Modifier.height(8.dp))
             Text(
                 text = tile.label,
-                style = if (compact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = palette.fg,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (badge != null) {
+                Text(
+                    text = badge,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (highlighted) tileTint else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
