@@ -1277,6 +1277,7 @@
     <string name="pc_shot_save">Kaydet</string>
     <string name="pc_shot_share">Paylaş</string>
     <string name="pc_shot_copy">%1$s cihazına kopyala</string>
+    <string name="pc_shot_copied">%1$s cihazına kopyalandı</string>
     <string name="pc_shot_saved">Resimler/G7 Link klasörüne kaydedildi.</string>
     <string name="pc_shot_not_saved">Ekran görüntüsü kaydedilemedi.</string>
     <string name="pc_shot_unreadable">Ekran görüntüsü açılamadı.</string>

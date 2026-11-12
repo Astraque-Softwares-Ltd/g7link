@@ -1277,6 +1277,7 @@
     <string name="pc_shot_save">Salvar</string>
     <string name="pc_shot_share">Compartilhar</string>
     <string name="pc_shot_copy">Copiar para %1$s</string>
+    <string name="pc_shot_copied">Copiado para %1$s</string>
     <string name="pc_shot_saved">Salva em Imagens/G7 Link.</string>
     <string name="pc_shot_not_saved">Não foi possível salvar a captura de tela.</string>
     <string name="pc_shot_unreadable">Não foi possível abrir a captura de tela.</string>

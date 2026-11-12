@@ -1280,6 +1280,7 @@
     <string name="pc_shot_save">Save</string>
     <string name="pc_shot_share">Share</string>
     <string name="pc_shot_copy">Copy to %1$s</string>
+    <string name="pc_shot_copied">Copied to %1$s</string>
     <string name="pc_shot_saved">Saved to Pictures/G7 Link.</string>
     <string name="pc_shot_not_saved">Couldn\'t save the screenshot.</string>
     <string name="pc_shot_unreadable">Couldn\'t open the screenshot.</string>

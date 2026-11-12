@@ -1144,6 +1144,7 @@
     <string name="pc_shot_save">保存</string>
     <string name="pc_shot_share">分享</string>
     <string name="pc_shot_copy">复制到 %1$s</string>
+    <string name="pc_shot_copied">已复制到 %1$s</string>
     <string name="pc_shot_saved">已保存到 Pictures/G7 Link。</string>
     <string name="pc_shot_not_saved">无法保存截图。</string>
     <string name="pc_shot_unreadable">无法打开截图。</string>

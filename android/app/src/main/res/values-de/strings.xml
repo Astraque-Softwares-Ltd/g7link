@@ -1277,6 +1277,7 @@
     <string name="pc_shot_save">Speichern</string>
     <string name="pc_shot_share">Teilen</string>
     <string name="pc_shot_copy">Auf %1$s kopieren</string>
+    <string name="pc_shot_copied">Auf %1$s kopiert</string>
     <string name="pc_shot_saved">In Bilder/G7 Link gespeichert.</string>
     <string name="pc_shot_not_saved">Das Bildschirmfoto konnte nicht gespeichert werden.</string>
     <string name="pc_shot_unreadable">Das Bildschirmfoto konnte nicht geöffnet werden.</string>

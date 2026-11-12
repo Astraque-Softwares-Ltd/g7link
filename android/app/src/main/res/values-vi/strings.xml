@@ -1213,6 +1213,7 @@
 <string name="pc_shot_save">Lưu</string>
 <string name="pc_shot_share">Chia sẻ</string>
 <string name="pc_shot_copy">Sao chép sang %1$s</string>
+<string name="pc_shot_copied">Đã sao chép sang %1$s</string>
 <string name="pc_shot_saved">Đã lưu vào Pictures/G7 Link.</string>
 <string name="pc_shot_not_saved">Không thể lưu ảnh chụp màn hình.</string>
 <string name="pc_shot_unreadable">Không thể mở ảnh chụp màn hình.</string>

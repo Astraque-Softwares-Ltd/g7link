@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -75,6 +76,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -134,6 +136,13 @@ private fun PcShotScreen(core: Core, pcId: String, pcName: String, file: File, o
     var unreadable by remember { mutableStateOf(false) }
     var crop by remember { mutableStateOf(CropRect.FULL) }
     var working by remember { mutableStateOf(false) }
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(2_000)
+            copied = false
+        }
+    }
     val name = remember(file) { file.name.substringAfter('-') }
     LaunchedEffect(file) {
         val picture = withContext(Dispatchers.IO) { ShotFiles.load(file) }
@@ -161,7 +170,7 @@ private fun PcShotScreen(core: Core, pcId: String, pcName: String, file: File, o
         Column(Modifier.fillMaxSize().padding(padding)) {
             G7Header(title = stringResource(R.string.pc_shot_title), onBack = onClose, note = pcName)
             Box(
-                Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                Modifier.weight(1f).fillMaxWidth().padding(horizontal = 32.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 val picture = loaded
@@ -216,10 +225,22 @@ private fun PcShotScreen(core: Core, pcId: String, pcName: String, file: File, o
                     )
                 }
                 G7RaisedButton(
-                    label = stringResource(R.string.pc_shot_copy, pcName),
+                    label = stringResource(if (copied) R.string.pc_shot_copied else R.string.pc_shot_copy, pcName),
                     enabled = ready,
+                    selected = copied,
                     modifier = Modifier.fillMaxWidth(),
-                    onClick = { withPng { png -> core.sendClipboardPng(pcId, png) } },
+                    onClick = {
+                        withPng { png ->
+                            val result = core.sendClipboardPng(pcId, png)
+                            // Said on the button itself; anything else as a message.
+                            if (result == resources.getString(R.string.clip_sent_to, pcName)) {
+                                copied = true
+                                null
+                            } else {
+                                result
+                            }
+                        }
+                    },
                 )
             }
         }
@@ -254,6 +275,8 @@ private fun CropView(
         Canvas(
             Modifier
                 .fillMaxSize()
+                // The handles sit near the screen's sides: dragging them isn't Back.
+                .systemGestureExclusion()
                 .semantics { contentDescription = description }
                 .pointerInput(fit) {
                     if (fit.width <= 0f || fit.height <= 0f) return@pointerInput
