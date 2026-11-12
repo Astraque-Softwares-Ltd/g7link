@@ -14,6 +14,7 @@ extern "C" {
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
@@ -617,6 +618,9 @@ struct AacEncoder
             flushing = true;
             return;
         }
+        // PCM can arrive a slice at a time: drop what was already encoded first.
+        pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(pending_offset));
+        pending_offset = 0;
         pending.insert(pending.end(), pcm, pcm + frames * static_cast<size_t>(channels));
     }
 

@@ -10,7 +10,7 @@
 
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -143,14 +143,15 @@ struct RecordedFrame {
     size: u32,
 }
 
-fn temp_payload_path_for(mp4_path: &Path) -> PathBuf {
+/// A hidden temporary file next to `mp4_path`, ending `.<kind>.tmp`.
+fn temp_path_for(mp4_path: &Path, kind: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let parent = mp4_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let stem = mp4_path.file_stem().and_then(|s| s.to_str()).unwrap_or("rec");
     let pid = std::process::id();
-    parent.join(format!(".{stem}.{pid}.{seq}.mdat.tmp"))
+    parent.join(format!(".{stem}.{pid}.{seq}.{kind}.tmp"))
 }
 
 fn open_private_temp_file(path: &Path) -> std::io::Result<File> {
@@ -214,7 +215,11 @@ pub struct MirrorRecorder {
     first_pts_us: Option<u64>,
     last_pts_us: u64,
     frames: Vec<RecordedFrame>,
-    audio_pcm: Vec<u8>,
+    /// The sound as it arrives (16-bit PCM), kept on disk until `finish`
+    /// encodes it, so a long recording doesn't hold it in memory.
+    audio_tmp_path: PathBuf,
+    audio_file: Option<File>,
+    audio_bytes: u64,
 }
 
 impl MirrorRecorder {
@@ -227,7 +232,8 @@ impl MirrorRecorder {
     ) -> MirrorRecorder {
         let started_epoch_ms =
             SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        let payload_tmp_path = temp_payload_path_for(&path);
+        let payload_tmp_path = temp_path_for(&path, "mdat");
+        let audio_tmp_path = temp_path_for(&path, "pcm");
         MirrorRecorder {
             path,
             payload_tmp_path,
@@ -244,7 +250,9 @@ impl MirrorRecorder {
             first_pts_us: None,
             last_pts_us: 0,
             frames: Vec::new(),
-            audio_pcm: Vec::new(),
+            audio_tmp_path,
+            audio_file: None,
+            audio_bytes: 0,
         }
     }
 
@@ -330,11 +338,28 @@ impl MirrorRecorder {
         self.write_video_sample(pts_100ns, is_keyframe, data)
     }
 
-    /// Processes an incoming 16-bit interleaved PCM audio packet.
+    /// Processes an incoming 16-bit interleaved PCM audio packet, appending
+    /// it to the temporary sound file on disk.
     pub fn on_audio(&mut self, _time_us: u64, pcm: &[u8]) -> Result<(), String> {
-        if self.audio_cfg.is_some() && !pcm.is_empty() {
-            self.audio_pcm.extend_from_slice(pcm);
+        if self.audio_cfg.is_none() || pcm.is_empty() {
+            return Ok(());
         }
+        if self.audio_file.is_none() {
+            let f = open_private_temp_file(&self.audio_tmp_path).map_err(|e| {
+                format!("create temporary recording sound {}: {e}", self.audio_tmp_path.display())
+            })?;
+            self.audio_file = Some(f);
+        }
+        if let Some(f) = self.audio_file.as_mut()
+            && let Err(e) = f.write_all(pcm)
+        {
+            // Take back any part of this packet that went in, so later ones
+            // still start on a whole sample.
+            let _ = f.set_len(self.audio_bytes);
+            let _ = f.seek(SeekFrom::Start(self.audio_bytes));
+            return Err(format!("write recording sound: {e}"));
+        }
+        self.audio_bytes = self.audio_bytes.saturating_add(pcm.len() as u64);
         Ok(())
     }
 
@@ -342,7 +367,9 @@ impl MirrorRecorder {
     pub fn finish(mut self) -> Result<PathBuf, String> {
         if self.frames.is_empty() || self.payload_bytes == 0 {
             self.payload_file = None;
+            self.audio_file = None;
             let _ = fs::remove_file(&self.payload_tmp_path);
+            let _ = fs::remove_file(&self.audio_tmp_path);
             let _ = fs::remove_file(&self.path);
             return Err("No video frames were recorded yet.".into());
         }
@@ -354,9 +381,14 @@ impl MirrorRecorder {
         }
 
         let audio_cfg =
-            self.audio_cfg.filter(|&(rate, channels)| !self.audio_pcm.is_empty() && rate > 0 && channels > 0);
-        let encoded_audio =
-            audio_cfg.and_then(|(rate, channels)| encode_pcm_to_aac(rate, channels, &self.audio_pcm));
+            self.audio_cfg.filter(|&(rate, channels)| self.audio_bytes > 0 && rate > 0 && channels > 0);
+        let mut audio_file = self.audio_file.take();
+        let encoded_audio = audio_cfg.and_then(|(rate, channels)| {
+            let f = audio_file.as_mut()?;
+            f.seek(SeekFrom::Start(0)).ok()?;
+            encode_pcm_to_aac(rate, channels, f)
+        });
+        drop(audio_file);
 
         let write_res = write_mp4_container(
             &self.path,
@@ -375,8 +407,9 @@ impl MirrorRecorder {
         if encoded_audio.is_none()
             && let Some((rate, channels)) = audio_cfg
         {
-            mux_audio_with_ffmpeg(&self.path, rate, channels, &self.audio_pcm);
+            mux_audio_with_ffmpeg(&self.path, rate, channels, &self.audio_tmp_path);
         }
+        let _ = fs::remove_file(&self.audio_tmp_path);
 
         Ok(self.path.clone())
     }
@@ -385,18 +418,21 @@ impl MirrorRecorder {
 impl Drop for MirrorRecorder {
     fn drop(&mut self) {
         self.payload_file = None;
+        self.audio_file = None;
         let _ = fs::remove_file(&self.payload_tmp_path);
+        let _ = fs::remove_file(&self.audio_tmp_path);
     }
 }
 
-fn mux_audio_with_ffmpeg(mp4_path: &Path, rate: u32, channels: u8, pcm: &[u8]) {
+/// Muxes the 16-bit PCM in `pcm_path` into `mp4_path` with `ffmpeg`, when
+/// `libavcodec` couldn't encode it in-process.
+fn mux_audio_with_ffmpeg(mp4_path: &Path, rate: u32, channels: u8, pcm_path: &Path) {
     use std::os::unix::fs::OpenOptionsExt;
 
     let parent = mp4_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = mp4_path.file_stem().and_then(|s| s.to_str()).unwrap_or("rec");
     let pid = std::process::id();
     let video_tmp = parent.join(format!(".{stem}.{pid}.video.mp4"));
-    let audio_tmp = parent.join(format!(".{stem}.{pid}.audio.pcm"));
 
     let Ok(mut src_file) = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(mp4_path)
     else {
@@ -419,30 +455,11 @@ fn mux_audio_with_ffmpeg(mp4_path: &Path, rate: u32, channels: u8, pcm: &[u8]) {
     drop(v_out);
     drop(src_file);
 
-    let Ok(mut a_out) = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(&audio_tmp)
-    else {
-        let _ = fs::remove_file(&video_tmp);
-        return;
-    };
-    if a_out.write_all(pcm).is_err() {
-        drop(a_out);
-        let _ = fs::remove_file(&video_tmp);
-        let _ = fs::remove_file(&audio_tmp);
-        return;
-    }
-    drop(a_out);
-
     let status = Command::new("ffmpeg")
         .args(["-y", "-loglevel", "error", "-i"])
         .arg(&video_tmp)
         .args(["-f", "s16le", "-ar", &rate.to_string(), "-ac", &channels.to_string(), "-i"])
-        .arg(&audio_tmp)
+        .arg(pcm_path)
         .args(["-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart"])
         .arg(mp4_path)
         .stdin(Stdio::null())
@@ -455,7 +472,6 @@ fn mux_audio_with_ffmpeg(mp4_path: &Path, rate: u32, channels: u8, pcm: &[u8]) {
         let _ = fs::copy(&video_tmp, mp4_path);
     }
     let _ = fs::remove_file(&video_tmp);
-    let _ = fs::remove_file(&audio_tmp);
 }
 
 const TIMESCALE: u32 = 90_000;
@@ -512,23 +528,23 @@ unsafe extern "C" {
     ) -> std::ffi::c_int;
 }
 
-/// Encodes 16-bit signed little-endian interleaved PCM (`pcm_s16le`) into raw AAC-LC packets
-/// in-process using the FFmpeg ABI adapter (`linux_video_codec.cpp`).
+/// PCM frames read from the recording's sound file per call into the encoder.
 #[cfg(linux_ffmpeg_video)]
-fn encode_pcm_to_aac(rate: u32, channels: u8, pcm_s16le: &[u8]) -> Option<EncodedAacTrack> {
+const PCM_SLICE_FRAMES: usize = 4096;
+
+/// Encodes 16-bit signed little-endian interleaved PCM (`pcm_s16le`) into raw AAC-LC packets
+/// in-process using the FFmpeg ABI adapter (`linux_video_codec.cpp`). The PCM is read and
+/// encoded a slice at a time; a trailing partial frame is dropped.
+#[cfg(linux_ffmpeg_video)]
+fn encode_pcm_to_aac(rate: u32, channels: u8, mut pcm_s16le: impl Read) -> Option<EncodedAacTrack> {
     let ch = channels.clamp(1, 2) as usize;
-    let total_pcm_frames = pcm_s16le.len() / (ch * 2);
-    if total_pcm_frames == 0 || rate == 0 {
+    if rate == 0 {
         return None;
     }
-    let samples: Vec<i16> = pcm_s16le
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .copied()
-        .take(total_pcm_frames * ch)
-        .map(i16::from_le_bytes)
-        .collect();
+    let slice_bytes = PCM_SLICE_FRAMES * ch * 2;
+    let mut bytes = Vec::with_capacity(slice_bytes);
+    let mut samples: Vec<i16> = Vec::with_capacity(PCM_SLICE_FRAMES * ch);
+    let mut sent_frames = 0usize;
 
     unsafe {
         let mut error = [0 as std::ffi::c_char; 256];
@@ -548,41 +564,65 @@ fn encode_pcm_to_aac(rate: u32, channels: u8, pcm_s16le: &[u8]) -> Option<Encode
             }
         }
         let guard = Guard(enc);
-        if g7link_video_aac_encoder_send(
-            guard.0,
-            samples.as_ptr(),
-            total_pcm_frames,
-            error.as_mut_ptr(),
-            error.len(),
-        ) < 0
-            || g7link_video_aac_encoder_send(guard.0, std::ptr::null(), 0, error.as_mut_ptr(), error.len())
-                < 0
-        {
-            return None;
-        }
 
         let mut frame_sizes = Vec::new();
         let mut payload = Vec::new();
-        loop {
-            let mut ptr: *const u8 = std::ptr::null();
-            let mut len = 0usize;
-            let status = g7link_video_aac_encoder_receive(
-                guard.0,
-                &mut ptr,
-                &mut len,
-                error.as_mut_ptr(),
-                error.len(),
-            );
-            if status < 0 {
-                return None;
+        // Takes every packet the encoder has ready; `false` on an error.
+        let mut drain = |error: &mut [std::ffi::c_char; 256]| -> bool {
+            loop {
+                let mut ptr: *const u8 = std::ptr::null();
+                let mut len = 0usize;
+                let status = g7link_video_aac_encoder_receive(
+                    guard.0,
+                    &mut ptr,
+                    &mut len,
+                    error.as_mut_ptr(),
+                    error.len(),
+                );
+                if status < 0 {
+                    return false;
+                }
+                if status == 0 {
+                    return true;
+                }
+                if !ptr.is_null() && len > 0 {
+                    frame_sizes.push(len as u32);
+                    payload.extend_from_slice(std::slice::from_raw_parts(ptr, len));
+                }
             }
-            if status == 0 {
+        };
+
+        loop {
+            bytes.clear();
+            let filled = pcm_s16le.by_ref().take(slice_bytes as u64).read_to_end(&mut bytes).ok()?;
+            let frames = filled / (ch * 2);
+            if frames > 0 {
+                let whole = &bytes[..frames * ch * 2];
+                samples.clear();
+                samples.extend(whole.as_chunks::<2>().0.iter().copied().map(i16::from_le_bytes));
+                let sent = g7link_video_aac_encoder_send(
+                    guard.0,
+                    samples.as_ptr(),
+                    frames,
+                    error.as_mut_ptr(),
+                    error.len(),
+                );
+                if sent < 0 || !drain(&mut error) {
+                    return None;
+                }
+                sent_frames += frames;
+            }
+            if filled < slice_bytes {
                 break;
             }
-            if !ptr.is_null() && len > 0 {
-                frame_sizes.push(len as u32);
-                payload.extend_from_slice(std::slice::from_raw_parts(ptr, len));
-            }
+        }
+        if sent_frames == 0 {
+            return None;
+        }
+        let flushed =
+            g7link_video_aac_encoder_send(guard.0, std::ptr::null(), 0, error.as_mut_ptr(), error.len());
+        if flushed < 0 || !drain(&mut error) {
+            return None;
         }
         if frame_sizes.is_empty() || payload.is_empty() {
             return None;
@@ -592,7 +632,7 @@ fn encode_pcm_to_aac(rate: u32, channels: u8, pcm_s16le: &[u8]) -> Option<Encode
 }
 
 #[cfg(not(linux_ffmpeg_video))]
-fn encode_pcm_to_aac(_rate: u32, _channels: u8, _pcm_s16le: &[u8]) -> Option<EncodedAacTrack> {
+fn encode_pcm_to_aac(_rate: u32, _channels: u8, _pcm_s16le: impl Read) -> Option<EncodedAacTrack> {
     None
 }
 
@@ -1251,7 +1291,7 @@ mod tests {
             pcm_bytes.extend_from_slice(&s.to_le_bytes());
         }
 
-        let encoded = encode_pcm_to_aac(48_000, 2, &pcm_bytes)
+        let encoded = encode_pcm_to_aac(48_000, 2, &pcm_bytes[..])
             .expect("in-process libavcodec AAC encoder should encode PCM");
         assert_eq!(encoded.sample_rate, 48_000);
         assert_eq!(encoded.channels, 2);
@@ -1275,5 +1315,61 @@ mod tests {
         assert!(contains_subslice(&bytes, b"mp4a"), "missing audio mp4a sample entry");
         assert!(contains_subslice(&bytes, b"esds"), "missing audio esds descriptor box");
         assert!(contains_subslice(&bytes, b"soun"), "missing soun handler box");
+    }
+
+    #[test]
+    fn recorder_keeps_sound_on_disk_in_order_and_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut silent = MirrorRecorder::new(dir.path().join("silent.mp4"), 320, 240, 30, None);
+        silent.on_audio(0, &[1, 2, 3, 4]).unwrap();
+        assert!(!silent.audio_tmp_path.exists(), "sound kept for a recording without sound");
+
+        let mut rec = MirrorRecorder::new(dir.path().join("sound.mp4"), 320, 240, 30, Some((48_000, 2)));
+        let pcm: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        // Packet sizes that split samples and frames.
+        for chunk in pcm.chunks(997) {
+            rec.on_audio(0, chunk).unwrap();
+        }
+        assert_eq!(rec.audio_bytes, pcm.len() as u64);
+        assert_eq!(fs::read(&rec.audio_tmp_path).unwrap(), pcm);
+        let tmp = rec.audio_tmp_path.clone();
+        drop(rec);
+        assert!(!tmp.exists(), "the temporary sound file outlived the recorder");
+    }
+
+    #[cfg(linux_ffmpeg_video)]
+    #[test]
+    fn recorder_encodes_sound_that_arrived_in_many_packets() {
+        let dir = tempfile::tempdir().unwrap();
+        let mp4_path = dir.path().join("many_packets.mp4");
+
+        // One second of 48 kHz stereo: several encoder slices.
+        let mut pcm_bytes = Vec::with_capacity(48_000 * 4);
+        for i in 0..48_000 {
+            let t = i as f32 / 48_000.0;
+            let s = ((t * 440.0 * std::f32::consts::TAU).sin() * 12_000.0) as i16;
+            pcm_bytes.extend_from_slice(&s.to_le_bytes());
+            pcm_bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        let whole = encode_pcm_to_aac(48_000, 2, &pcm_bytes[..]).expect("AAC from the whole PCM");
+
+        let mut rec = MirrorRecorder::new(mp4_path, 320, 240, 30, Some((48_000, 2)));
+        let sps_pps = [
+            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1F, 0xDA, 0x01, 0x40, 0x16, 0xEC, 0x04, 0x40, 0x00,
+            0x00, 0x00, 0x01, 0x68, 0xCE, 0x3C, 0x80,
+        ];
+        rec.on_packet(false, 0, &sps_pps).unwrap();
+        let mut idr = vec![0x00, 0x00, 0x00, 0x01, 0x65];
+        idr.extend_from_slice(&[0x88u8; 64]);
+        rec.on_packet(true, 33_333, &idr).unwrap();
+        let tmp = rec.audio_tmp_path.clone();
+        for chunk in pcm_bytes.chunks(1_001) {
+            rec.on_audio(0, chunk).unwrap();
+        }
+
+        let saved = rec.finish().unwrap();
+        let bytes = fs::read(&saved).unwrap();
+        assert!(contains_subslice(&bytes, &whole.payload), "the sound differs from encoding it in one go");
+        assert!(!tmp.exists(), "the temporary sound file outlived the recording");
     }
 }
