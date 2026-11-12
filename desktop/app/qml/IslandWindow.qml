@@ -102,10 +102,9 @@ Window {
     // renders; with the main window closed (App.qml) the Island is alone, so
     // its clock freezes. A wall-clock timer repaints each frame to re-advance
     // it, but only while something is really moving: the looping equalizer or
-    // scrolling title, or a transition. A still pill is left alone.
+    // a transition. A still pill is left alone.
     readonly property bool animating:
         (mode === "media" && mediaPlaying && !expanded && !Theme.reduceMotion)
-        || compactTitleClip.shouldMarquee
         || transitionSettle.running
 
     // Holds `animating` true through the drop-in and expand/collapse Behaviors,
