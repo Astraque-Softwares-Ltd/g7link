@@ -3041,6 +3041,37 @@ impl Node {
         crate::actions::pc_power(&self.shared, &session, action).await
     }
 
+    // ---- Screenshots and recordings of a PC (docs/protocol/pc-capture.md) ----
+
+    /// Asks a paired PC for a screenshot. The answer names the transfer that
+    /// brings the PNG, which arrives as any other [`NodeEvent::Transfer`].
+    pub async fn pc_capture_shot(
+        &self,
+        pc: DeviceId,
+    ) -> Result<crate::PcCaptureResult, crate::PcCaptureError> {
+        crate::pc_capture::shot(&self.shared, pc).await
+    }
+
+    /// Asks a paired PC to record its screen; returns once it records.
+    pub async fn pc_capture_record_start(&self, pc: DeviceId) -> Result<(), crate::PcCaptureError> {
+        crate::pc_capture::record_start(&self.shared, pc).await
+    }
+
+    /// Stops a recording of a PC's screen this phone started. The answer names
+    /// the transfer that brings the video.
+    pub async fn pc_capture_record_stop(
+        &self,
+        pc: DeviceId,
+    ) -> Result<crate::PcCaptureResult, crate::PcCaptureError> {
+        crate::pc_capture::record_stop(&self.shared, pc).await
+    }
+
+    /// A recording a phone started ended on this PC by itself (its user, a lock,
+    /// the length limit): sends `file`, when there is one, and tells the phone.
+    pub async fn pc_capture_record_ended(&self, phone: DeviceId, file: Option<std::path::PathBuf>) {
+        crate::pc_capture::record_ended(&self.shared, phone, file).await;
+    }
+
     /// Sets this PC's Wake-on-LAN adapter addresses (`pc.wake_info`) and sends
     /// them to every connected phone when they changed.
     pub async fn set_wake_info(&self, info: g7link_protocol::messages::PcWakeInfo) {

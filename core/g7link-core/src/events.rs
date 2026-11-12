@@ -221,6 +221,17 @@ pub enum NodeEvent {
         device: DeviceId,
         options: crate::MirrorStart,
     },
+    /// A PC this phone asked for a screenshot or a recording shows its
+    /// screen-sharing dialog (`pc.capture.prompt`): someone there has to answer it.
+    PcCapturePrompt {
+        device: DeviceId,
+    },
+    /// A recording of a PC's screen this phone started ended on the PC by itself
+    /// (`pc.capture.record.ended`); `file` names the transfer bringing it.
+    PcCaptureRecordEnded {
+        device: DeviceId,
+        file: Option<crate::PcCaptureResult>,
+    },
     /// A paired phone's quick settings state (on connect and on change).
     PhoneToggles {
         device: DeviceId,

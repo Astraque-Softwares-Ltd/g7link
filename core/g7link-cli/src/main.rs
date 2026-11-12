@@ -4909,6 +4909,14 @@ fn print_event(node: &Node, event: &NodeEvent) {
             name(device),
             device.short()
         ),
+        NodeEvent::PcCapturePrompt { device } => {
+            println!("{}: approve sharing the screen on that PC", name(device));
+        }
+        NodeEvent::PcCaptureRecordEnded { device, file } => println!(
+            "{}: stopped recording its screen{}",
+            name(device),
+            file.as_ref().map(|f| format!(", sending {}", f.name)).unwrap_or_default()
+        ),
         NodeEvent::StorageRequested { device } => println!(
             "{}: asked to browse phone storage (allow with: g7link toggle {} storage on)",
             name(device),

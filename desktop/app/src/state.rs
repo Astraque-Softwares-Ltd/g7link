@@ -587,6 +587,8 @@ impl AppState {
             // Heard on phones only.
             | NodeEvent::PcTextFocus { .. }
             | NodeEvent::PcClip { .. }
+            | NodeEvent::PcCapturePrompt { .. }
+            | NodeEvent::PcCaptureRecordEnded { .. }
             | NodeEvent::WakeInfoChanged { .. }
             | NodeEvent::DeckLayout { .. }
             | NodeEvent::DeckState { .. }

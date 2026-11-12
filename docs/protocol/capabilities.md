@@ -86,6 +86,7 @@ capability is missing.
 |---|---|---|
 | `pc.power` | Locks or sleeps on request ([actions](actions.md)) | app update |
 | `pc.wake` | Shares network adapter addresses (`pc.wake_info`) so a paired phone can wake it with Wake-on-LAN ([actions](actions.md)) | app update |
+| `pc.capture` | Takes screenshots and records its screen for a paired phone ([screenshots and recordings](pc-capture.md)) | the ScreenCast portal and PipeWire (Wayland) |
 | `photos.show` | Shows a phone's new photos and gallery ([photos](photos.md)) | app update |
 | `call.show` | Shows a phone's calls, recent calls and dialer ([calls](calls.md)) | app update |
 | `contacts.show` | Shows a phone's contacts ([contacts](contacts.md)) | app update |

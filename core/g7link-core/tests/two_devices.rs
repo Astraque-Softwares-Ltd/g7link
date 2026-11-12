@@ -11,8 +11,8 @@ use std::{
 use g7link_core::{
     Battery, DeviceInfo, DeviceKind, Direction, Error, FeatureState, FileSource, LinkState, MediaAction,
     MediaError, MediaPlayer, Node, NodeConfig, NodeEvent, Notification, NotificationAction,
-    NotificationError, OutgoingFile, PairingEvent, PairingFailure, PairingUri, PlainKeyProtector, Platform,
-    PowerAction, PowerLevel, Transfer, TransferFailure, TransferState,
+    NotificationError, OutgoingFile, PairingEvent, PairingFailure, PairingUri, PcCaptureError,
+    PlainKeyProtector, Platform, PowerAction, PowerLevel, Transfer, TransferFailure, TransferState,
     features::{Effort, Upgrade, UpgradeAction},
 };
 use tempfile::TempDir;
@@ -61,6 +61,13 @@ struct RecordingPlatform {
     pc_audio_outputs: Mutex<Vec<String>>,
     tasks: Mutex<Vec<g7link_core::TaskNotify>>,
     storage: Mutex<Option<g7link_core::FolderStorage>>,
+    /// What a phone asked of this PC's screen: `shot`, `record`, `stop`.
+    capture_asks: Mutex<Vec<String>>,
+    /// The file a screenshot or a stopped recording is saved to; without one
+    /// the PC answers that it's locked.
+    capture_file: Mutex<Option<std::path::PathBuf>>,
+    /// Whether taking one shows the screen-sharing dialog first.
+    capture_prompts: std::sync::atomic::AtomicBool,
 }
 
 impl Platform for RecordingPlatform {
@@ -571,6 +578,40 @@ impl Platform for RecordingPlatform {
         let guard = self.storage.lock().unwrap();
         let storage = guard.as_ref().ok_or(g7link_core::StorageError::Unsupported)?;
         storage.delete(path, confirmed)
+    }
+    fn pc_capture_shot(
+        &self,
+        _peer: &g7link_core::DeviceId,
+        prompt: g7link_core::CapturePrompt,
+    ) -> Result<std::path::PathBuf, PcCaptureError> {
+        self.capture_asks.lock().unwrap().push("shot".into());
+        if self.capture_prompts.load(std::sync::atomic::Ordering::SeqCst) {
+            prompt();
+        }
+        self.capture_file.lock().unwrap().clone().ok_or(PcCaptureError::Locked)
+    }
+    fn pc_capture_record_start(
+        &self,
+        _peer: &g7link_core::DeviceId,
+        _prompt: g7link_core::CapturePrompt,
+    ) -> Result<(), PcCaptureError> {
+        let mut asks = self.capture_asks.lock().unwrap();
+        if asks.last().is_some_and(|a| a == "record") {
+            return Err(PcCaptureError::Busy);
+        }
+        asks.push("record".into());
+        Ok(())
+    }
+    fn pc_capture_record_stop(
+        &self,
+        _peer: &g7link_core::DeviceId,
+    ) -> Result<std::path::PathBuf, PcCaptureError> {
+        let mut asks = self.capture_asks.lock().unwrap();
+        if asks.last().is_none_or(|a| a != "record") {
+            return Err(PcCaptureError::NotRecording);
+        }
+        asks.push("stop".into());
+        self.capture_file.lock().unwrap().clone().ok_or_else(|| PcCaptureError::Failed("no file".into()))
     }
 }
 
@@ -7700,4 +7741,66 @@ async fn spoofed_usb_hello_is_not_trusted_without_matching_quic_identity() {
     server_task.abort();
     pc.node.shutdown().await;
     phone.node.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_takes_screenshots_and_recordings_of_a_pc_that_lets_it_see_the_screen() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::pc_capture::CAP]).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let shots = tempfile::tempdir().unwrap();
+    let png = shots.path().join("G7 Link screenshot.png");
+    std::fs::write(&png, b"\x89PNG not really").unwrap();
+    *pc.platform.capture_file.lock().unwrap() = Some(png.clone());
+
+    // Seeing the screen is off until the PC allows it, and then nothing is captured.
+    assert_eq!(phone.node.pc_capture_shot(pc_id).await, Err(PcCaptureError::Off));
+    assert_eq!(phone.node.pc_capture_record_start(pc_id).await, Err(PcCaptureError::Off));
+    assert!(pc.platform.capture_asks.lock().unwrap().is_empty());
+
+    // Allowed: the PC shows its dialog, takes the shot and sends it as a transfer.
+    pc.node.set_device_toggle(phone_id, g7link_core::PC_MIRROR_TOGGLE, true).unwrap();
+    pc.platform.capture_prompts.store(true, std::sync::atomic::Ordering::SeqCst);
+    let file = with_timeout("shot", phone.node.pc_capture_shot(pc_id)).await.expect("a screenshot");
+    assert_eq!(file.name, "G7 Link screenshot.png");
+    wait_for(&mut phone, "the PC's dialog", |e| match e {
+        NodeEvent::PcCapturePrompt { device } if *device == pc_id => Some(()),
+        _ => None,
+    })
+    .await;
+    let received = wait_transfer(&mut phone, &file.transfer, "the screenshot", saved).await;
+    assert_eq!(std::fs::read(&received[0]).unwrap(), b"\x89PNG not really");
+
+    // A locked PC says so.
+    *pc.platform.capture_file.lock().unwrap() = None;
+    assert_eq!(phone.node.pc_capture_shot(pc_id).await, Err(PcCaptureError::Locked));
+
+    // One recording at a time; stopping it brings the video.
+    let video = shots.path().join("G7 Link screen recording.mp4");
+    std::fs::write(&video, b"not really a video").unwrap();
+    *pc.platform.capture_file.lock().unwrap() = Some(video.clone());
+    assert_eq!(phone.node.pc_capture_record_stop(pc_id).await, Err(PcCaptureError::NotRecording));
+    with_timeout("record", phone.node.pc_capture_record_start(pc_id)).await.expect("recording");
+    assert_eq!(phone.node.pc_capture_record_start(pc_id).await, Err(PcCaptureError::Busy));
+    let file = with_timeout("stop", phone.node.pc_capture_record_stop(pc_id)).await.expect("the video");
+    assert_eq!(file.name, "G7 Link screen recording.mp4");
+    let received = wait_transfer(&mut phone, &file.transfer, "the recording", saved).await;
+    assert_eq!(std::fs::read(&received[0]).unwrap(), b"not really a video");
+    assert_eq!(*pc.platform.capture_asks.lock().unwrap(), ["shot", "shot", "record", "stop"]);
+
+    // A recording the PC ends by itself still reaches the phone, which hears why it stopped.
+    with_timeout("ended", pc.node.pc_capture_record_ended(phone_id, Some(video))).await;
+    let ended = wait_for(&mut phone, "the recording ended", |e| match e {
+        NodeEvent::PcCaptureRecordEnded { device, file } if *device == pc_id => Some(file.clone()),
+        _ => None,
+    })
+    .await
+    .expect("the video is on its way");
+    wait_transfer(&mut phone, &ended.transfer, "the ended recording", saved).await;
+
+    // With files off for the phone, the PC can't send the shot.
+    *pc.platform.capture_file.lock().unwrap() = Some(png);
+    pc.node.set_device_toggle(phone_id, "files", false).unwrap();
+    assert_eq!(phone.node.pc_capture_shot(pc_id).await, Err(PcCaptureError::FilesOff));
 }

@@ -116,6 +116,12 @@ pub mod types {
     pub const CAMERA_CAPTURE_REQUEST: &str = "camera.capture.request";
     pub const CAMERA_CAPTURE_OK: &str = "camera.capture.ok";
     pub const CAMERA_CAPTURE_CANCEL: &str = "camera.capture.cancel";
+    pub const PC_CAPTURE_SHOT: &str = "pc.capture.shot";
+    pub const PC_CAPTURE_RECORD_START: &str = "pc.capture.record.start";
+    pub const PC_CAPTURE_RECORD_STOP: &str = "pc.capture.record.stop";
+    pub const PC_CAPTURE_RESULT: &str = "pc.capture.result";
+    pub const PC_CAPTURE_PROMPT: &str = "pc.capture.prompt";
+    pub const PC_CAPTURE_RECORD_ENDED: &str = "pc.capture.record.ended";
     pub const FILES_RESUME: &str = "files.resume";
     pub const FILES_CANCEL: &str = "files.cancel";
     pub const WAKE_RELAY: &str = "wake.relay";
@@ -1977,6 +1983,49 @@ impl WebcamConfig {
             && (self.camera == webcam::CAMERA_BACK || self.camera == webcam::CAMERA_FRONT)
             && (1..=120).contains(&self.fps)
     }
+}
+
+// ---- Screenshots and recordings of a PC (docs/protocol/pc-capture.md) ----
+
+pub mod pc_capture {
+    /// Offered by PCs that take screenshots and record their screen for a paired phone.
+    pub const CAP: &str = "pc.capture";
+    /// `msg` of a `denied` answer: the PC's `pc_mirror` toggle for the phone is off.
+    pub const OFF: &str = "off";
+    /// `msg` of a `denied` answer: the PC's session is locked.
+    pub const LOCKED: &str = "locked";
+    /// `msg` of a `denied` answer: the person at the PC dismissed its screen-sharing dialog.
+    pub const DECLINED: &str = "declined";
+    /// `msg` of a `denied` answer: the PC's `files` toggle for the phone is off, so the
+    /// file can't go to it.
+    pub const FILES_OFF: &str = "files_off";
+    /// The longest recording, in seconds: the PC stops one there.
+    pub const MAX_RECORD_SECS: u64 = 30 * 60;
+}
+
+/// `pc.capture.result`: the answer to `pc.capture.shot` and `pc.capture.record.stop`,
+/// and the file in `pc.capture.record.ended`. The file itself comes as an ordinary
+/// transfer (`docs/protocol/files.md`) with this ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcCaptureResult {
+    /// The transfer's ID.
+    pub transfer: String,
+    /// The file's name.
+    pub name: String,
+}
+
+impl PcCaptureResult {
+    pub fn is_valid(&self) -> bool {
+        is_valid_transfer_id(&self.transfer) && is_valid_file_name(&self.name)
+    }
+}
+
+/// `pc.capture.record.ended`: the PC stopped a recording the phone started, on its
+/// own (its user, a lock, the length limit). `file` is the recording on its way.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PcCaptureRecordEnded {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<PcCaptureResult>,
 }
 
 // ---- Continuity Camera (docs/protocol/v0.md §Continuity Camera) ----
@@ -6414,5 +6463,30 @@ mod tests {
         for code in ["", "Input_Blocked", "input blocked", &"a".repeat(33), "über"] {
             assert!(!MirrorNotice { session: 0, code: code.into() }.is_valid(), "{code}");
         }
+    }
+
+    #[test]
+    fn pc_capture_results_name_a_transfer_and_a_plain_file() {
+        let file = PcCaptureResult {
+            transfer: "abcdefghijklmnop0123".into(),
+            name: "G7 Link screenshot 2026-11-12 14.03.22.png".into(),
+        };
+        assert!(file.is_valid());
+        let env = crate::Envelope::new(types::PC_CAPTURE_RESULT, &file).unwrap();
+        let decoded: PcCaptureResult = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(decoded, file);
+        assert!(!PcCaptureResult { transfer: "short".into(), ..file.clone() }.is_valid());
+        assert!(!PcCaptureResult { transfer: "abcdefghijklmnop/123".into(), ..file.clone() }.is_valid());
+        for name in ["", "..", "a/b.png", "a\nb.png"] {
+            assert!(!PcCaptureResult { name: name.into(), ..file.clone() }.is_valid(), "{name}");
+        }
+
+        // A recording that ended without a file says so by leaving it out.
+        let empty = PcCaptureRecordEnded::default();
+        let ended = crate::Envelope::new(types::PC_CAPTURE_RECORD_ENDED, &empty).unwrap();
+        assert_eq!(ended.body::<PcCaptureRecordEnded>().unwrap().file, None);
+        let with_file = PcCaptureRecordEnded { file: Some(file.clone()) };
+        let env = crate::Envelope::new(types::PC_CAPTURE_RECORD_ENDED, &with_file).unwrap();
+        assert_eq!(env.body::<PcCaptureRecordEnded>().unwrap(), with_file);
     }
 }

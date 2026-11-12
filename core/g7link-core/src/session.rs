@@ -575,6 +575,9 @@ fn is_background_rpc(t: &str) -> bool {
             | types::MIRROR_APPS
             | types::WEBCAM_START
             | types::CAMERA_CAPTURE_REQUEST
+            | types::PC_CAPTURE_SHOT
+            | types::PC_CAPTURE_RECORD_START
+            | types::PC_CAPTURE_RECORD_STOP
             | types::STORAGE_LIST
             | types::STORAGE_MKDIR
             | types::STORAGE_RENAME
@@ -653,6 +656,7 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
         }
         t if t.starts_with("notify.") && crate::notifications::handle(shared, session, &env).await? => {}
         t if t.starts_with("media.") && crate::media::handle(shared, session, &env).await? => {}
+        t if t.starts_with("pc.capture.") && crate::pc_capture::handle(shared, session, &env).await? => {}
         t if (t.starts_with("pc.") || t.starts_with("link.") || t.starts_with("task."))
             && crate::actions::handle(shared, session, &env).await? => {}
         t if t.starts_with("clip.") && crate::clipboard::handle(shared, session, &env).await? => {}

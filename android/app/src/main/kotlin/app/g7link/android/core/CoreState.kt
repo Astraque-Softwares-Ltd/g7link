@@ -463,6 +463,9 @@ data class CoreState(
         is Event.PcMirrorConfig,
         is Event.PcMirrorFrame,
         is Event.PcMirrorEnded,
+        // Screenshots and recordings of a PC: kept by Core.pcCapture.
+        is Event.PcCapturePrompt,
+        is Event.PcCaptureRecordEnded,
         -> this
     }
 
@@ -548,6 +551,8 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.PcMirrorConfig,
     is Event.PcMirrorFrame,
     is Event.PcMirrorEnded,
+    is Event.PcCapturePrompt,
+    is Event.PcCaptureRecordEnded,
     -> false
     else -> true
 }

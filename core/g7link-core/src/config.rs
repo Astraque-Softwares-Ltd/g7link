@@ -343,6 +343,37 @@ pub trait Platform: Send + Sync + 'static {
     ) {
     }
 
+    /// A paired phone asked for a screenshot of this PC (`pc.capture.shot`, with its
+    /// `pc_mirror` toggle on): take one and return the saved PNG, which goes to the
+    /// phone. May wait for the screen-sharing dialog: call `prompt` when it shows.
+    /// Runs on a blocking thread.
+    fn pc_capture_shot(
+        &self,
+        _peer: &g7link_protocol::DeviceId,
+        _prompt: crate::CapturePrompt,
+    ) -> Result<PathBuf, crate::PcCaptureError> {
+        Err(crate::PcCaptureError::Unsupported)
+    }
+
+    /// A paired phone asked to record this PC's screen (`pc.capture.record.start`):
+    /// return once it records. Waits as [`Platform::pc_capture_shot`] does.
+    fn pc_capture_record_start(
+        &self,
+        _peer: &g7link_protocol::DeviceId,
+        _prompt: crate::CapturePrompt,
+    ) -> Result<(), crate::PcCaptureError> {
+        Err(crate::PcCaptureError::Unsupported)
+    }
+
+    /// The phone that started a recording stopped it (`pc.capture.record.stop`):
+    /// finish it and return the saved video, which goes to the phone.
+    fn pc_capture_record_stop(
+        &self,
+        _peer: &g7link_protocol::DeviceId,
+    ) -> Result<PathBuf, crate::PcCaptureError> {
+        Err(crate::PcCaptureError::NotRecording)
+    }
+
     /// The apps a PC may open in windows of their own (launchable ones),
     /// with small PNG icons (a PC asked).
     fn phone_apps(&self) -> Result<Vec<crate::PhoneApp>, String> {

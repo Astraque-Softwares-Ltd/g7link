@@ -161,6 +161,57 @@ pub struct LocalSendPeer {
     pub protocol: String,
 }
 
+/// What a PC answered when asked for a screenshot or a recording of its screen
+/// (`docs/protocol/pc-capture.md`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum PcCaptureOutcome {
+    /// The file is on its way: transfer `transfer` brings it.
+    File { transfer: String, name: String },
+    /// The recording started.
+    Started,
+    /// The PC doesn't let this phone see its screen (its `pc_mirror` toggle).
+    Off,
+    /// The PC is locked.
+    Locked,
+    /// Someone at the PC dismissed its screen-sharing dialog.
+    Declined,
+    /// The PC doesn't send files to this phone (its `files` toggle).
+    FilesOff,
+    /// The PC is already recording, or taking another screenshot.
+    Busy,
+    /// The PC can't capture its screen.
+    Unsupported,
+    /// There was no recording to stop.
+    NotRecording,
+    /// The PC isn't connected.
+    Offline,
+    /// Anything else; `reason` is for logs.
+    Failed { reason: String },
+}
+
+impl From<core::PcCaptureError> for PcCaptureOutcome {
+    fn from(err: core::PcCaptureError) -> Self {
+        match err {
+            core::PcCaptureError::Off => PcCaptureOutcome::Off,
+            core::PcCaptureError::Locked => PcCaptureOutcome::Locked,
+            core::PcCaptureError::Declined => PcCaptureOutcome::Declined,
+            core::PcCaptureError::FilesOff => PcCaptureOutcome::FilesOff,
+            core::PcCaptureError::Busy => PcCaptureOutcome::Busy,
+            core::PcCaptureError::Unsupported => PcCaptureOutcome::Unsupported,
+            core::PcCaptureError::NotRecording => PcCaptureOutcome::NotRecording,
+            core::PcCaptureError::Offline => PcCaptureOutcome::Offline,
+            core::PcCaptureError::Failed(reason) => PcCaptureOutcome::Failed { reason },
+        }
+    }
+}
+
+fn capture_file(answer: Result<core::PcCaptureResult, core::PcCaptureError>) -> PcCaptureOutcome {
+    match answer {
+        Ok(file) => PcCaptureOutcome::File { transfer: file.transfer, name: file.name },
+        Err(err) => err.into(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum PairingFailure {
     Rejected,
@@ -794,6 +845,19 @@ pub enum Event {
     /// A paired PC's screen stream ended.
     PcMirrorEnded {
         id: String,
+    },
+    /// A PC this phone asked for a screenshot or a recording shows its
+    /// screen-sharing dialog: someone there has to answer it (phones only).
+    PcCapturePrompt {
+        id: String,
+    },
+    /// A recording of a PC's screen this phone started ended on the PC by
+    /// itself. `transfer` brings the video named `name`, when it was saved
+    /// (phones only).
+    PcCaptureRecordEnded {
+        id: String,
+        transfer: Option<String>,
+        name: Option<String>,
     },
     /// The persistent outgoing send queue changed.
     QueueChanged,
@@ -2543,6 +2607,12 @@ impl Event {
             NodeEvent::RemoteInputRequested { device } => {
                 Event::RemoteInputRequested { id: device.to_string() }
             }
+            NodeEvent::PcCapturePrompt { device } => Event::PcCapturePrompt { id: device.to_string() },
+            NodeEvent::PcCaptureRecordEnded { device, file } => Event::PcCaptureRecordEnded {
+                id: device.to_string(),
+                transfer: file.as_ref().map(|f| f.transfer.clone()),
+                name: file.map(|f| f.name),
+            },
             NodeEvent::PhoneToggles { device, toggles } => {
                 Event::PhoneToggles { id: device.to_string(), toggles: toggles.into() }
             }
@@ -4138,6 +4208,37 @@ impl G7LinkNode {
         let node = self.node.clone();
         let action = if sleep { core::PowerAction::Sleep } else { core::PowerAction::Lock };
         self.run(async move { Ok(node.pc_power(id, action).await?) }).await
+    }
+
+    /// Asks a paired PC for a screenshot (`pc.capture.shot`). The PNG then
+    /// arrives as the transfer the answer names. Waits while the PC shows its
+    /// screen-sharing dialog (`Event::PcCapturePrompt`).
+    pub async fn pc_capture_shot(&self, pc_id: String) -> Result<PcCaptureOutcome> {
+        let id = parse_id(&pc_id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(capture_file(node.pc_capture_shot(id).await)) }).await
+    }
+
+    /// Asks a paired PC to record its screen (`pc.capture.record.start`);
+    /// answers once it records.
+    pub async fn pc_capture_record_start(&self, pc_id: String) -> Result<PcCaptureOutcome> {
+        let id = parse_id(&pc_id)?;
+        let node = self.node.clone();
+        self.run(async move {
+            Ok(match node.pc_capture_record_start(id).await {
+                Ok(()) => PcCaptureOutcome::Started,
+                Err(err) => err.into(),
+            })
+        })
+        .await
+    }
+
+    /// Stops a recording of a PC's screen this phone started
+    /// (`pc.capture.record.stop`); the video arrives as the transfer the answer names.
+    pub async fn pc_capture_record_stop(&self, pc_id: String) -> Result<PcCaptureOutcome> {
+        let id = parse_id(&pc_id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(capture_file(node.pc_capture_record_stop(id).await)) }).await
     }
 
     /// Sends Wake-on-LAN magic packets for a paired PC over UDP to its stored

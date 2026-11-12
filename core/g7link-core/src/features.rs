@@ -659,6 +659,14 @@ pub const FEATURES: &[FeatureDef] = &[
         requires: &[desktop("pc.power", UPDATE), DeviceToggle("pc_actions")],
         partial: None,
     },
+    // Screenshots and recordings of the PC's screen, taken from the phone. The
+    // PC's own `pc_mirror` toggle decides; it answers `denied` while that is off.
+    FeatureDef {
+        id: "device.pc_capture",
+        group: FeatureGroup::Device,
+        requires: &[desktop("pc.capture", UPDATE)],
+        partial: None,
+    },
     FeatureDef {
         id: "device.links_to_pc",
         group: FeatureGroup::Device,
