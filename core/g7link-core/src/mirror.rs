@@ -1173,9 +1173,10 @@ mod tests {
             queue,
             closed: Arc::default(),
             stop: Arc::default(),
-            resyncing: Mutex::new(false),
+            resyncing: Arc::default(),
             audio: false,
             link_rate: Arc::default(),
+            link_bytes: Arc::default(),
         });
         // Fill the 1-slot queue.
         let s1 = stream.clone();
