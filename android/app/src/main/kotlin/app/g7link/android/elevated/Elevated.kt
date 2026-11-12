@@ -655,6 +655,7 @@ object Elevated {
         Thread {
             runCatching {
                 local.inputStream.bufferedReader().lineSequence().forEach { line ->
+                    if (line == "BLOCKED") onInputBlocked()
                     if (line.startsWith("CLIP\t")) {
                         val parts = line.split('\t')
                         val b64Text = parts.getOrNull(1).orEmpty()
@@ -887,6 +888,9 @@ object Elevated {
     /** Told when the shell helper observes a primary clipboard change in the background: `(text, html)`. */
     @Volatile var onClipboardChanged: (String, String?) -> Unit = { _, _ -> }
     @Volatile var onSensitiveCopied: (String) -> Unit = {}
+
+    /** The phone refuses the helper's taps and keys (Xiaomi, until USB debugging (Security settings) is on). */
+    @Volatile var onInputBlocked: () -> Unit = {}
 
     // ---- Input ----
 

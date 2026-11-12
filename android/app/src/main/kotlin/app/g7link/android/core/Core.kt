@@ -1617,6 +1617,14 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
      * Automatically sends non-sensitive text copied in the background while Elevated mode is running.
      * Skips clips G7 Link itself wrote from a PC (`PhoneClipboard.isRecentEcho`).
      */
+    /** Elevated's taps are refused: tells the PC that sent the last ones what to turn on. */
+    fun onElevatedInputBlocked() {
+        val (pcId, session) = PhonePlatform.lastMirrorInput ?: return
+        scope.launch(Dispatchers.IO) {
+            runCatching { node?.mirrorInputBlocked(pcId, session) }
+        }
+    }
+
     fun onElevatedClipboardChanged(text: String, html: String?) {
         if (text.isBlank() || PhoneClipboard.isRecentEcho(text, html)) return
         val now = android.os.SystemClock.elapsedRealtime()
