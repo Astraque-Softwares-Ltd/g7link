@@ -1379,13 +1379,13 @@ Sink #95
             eprintln!("skipped: dbus-daemon isn't installed");
             return;
         };
-        let phone = FakePhone::default();
-        let _bluez = fake_bluez(&bus, true, &phone);
+        let fake = FakePhone::default();
+        let _bluez = fake_bluez(&bus, true, &fake);
         let conn = bus.connect();
         let pixel = phone("a", &["Pixel 8 Pro"], None);
         let endpoint = connect_link(&conn, &conn, Some(&pixel), &[]).unwrap();
         assert_eq!(endpoint.mac, "AA:BB:CC:DD:EE:FF");
-        assert_eq!(*phone.connects.lock().unwrap(), [UUID_HFP_AG]);
+        assert_eq!(*fake.connects.lock().unwrap(), [UUID_HFP_AG]);
     }
 
     #[test]
@@ -1394,13 +1394,13 @@ Sink #95
             eprintln!("skipped: dbus-daemon isn't installed");
             return;
         };
-        let phone = FakePhone::default();
-        let _bluez = fake_bluez(&bus, false, &phone);
+        let fake = FakePhone::default();
+        let _bluez = fake_bluez(&bus, false, &fake);
         let conn = bus.connect();
         let pixel = phone("a", &["Pixel 8 Pro"], None);
         let failure = connect_link(&conn, &conn, Some(&pixel), &[]).unwrap_err().0;
         assert_eq!(failure, ConnectFailure::Off);
-        assert!(phone.connects.lock().unwrap().is_empty());
+        assert!(fake.connects.lock().unwrap().is_empty());
     }
 
     #[test]
