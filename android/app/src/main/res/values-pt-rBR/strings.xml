@@ -1126,7 +1126,6 @@
     <string name="guide_doctor_privacy">Os diagnósticos rodam localmente entre o celular e o PC pareado.</string>
     <string name="guide_doctor_limits">A economia de bateria de alguns fabricantes precisa ficar em Sem restrições.</string>
     <string name="pair_link_title">Parear com %1$s?</string>
-    <string name="pair_link_body">Foi aberto um link de pareamento. Só pareie se você acabou de escanear ou abrir o código deste dispositivo. Um dispositivo pareado pode receber as notificações e mensagens deste celular.</string>
     <string name="pair_link_confirm">Parear</string>
     <string name="pair_link_cancel">Cancelar</string>
     <string name="pair_link_unknown_pc">este dispositivo</string>
@@ -1292,4 +1291,9 @@
     <string name="elevated_paused_title">O Elevated está pausado</string>
     <string name="elevated_paused_notice">O Elevated está pausado na rede Wi-Fi em %1$s. Confie nela para continuar usando o Elevated aqui.</string>
     <string name="mirror_controlling">%1$s está controlando este celular</string>
+    <string name="pair_link_title_other_app">Parear com este dispositivo?</string>
+    <string name="pair_link_from_other_app">Este link de pareamento veio de outro app. Só continue se você o abriu pelo G7 Link no seu PC. Um dispositivo pareado pode receber as notificações e mensagens deste celular.</string>
+    <string name="pair_link_named">Nome no link: %1$s</string>
+    <string name="pair_link_check_code">Confira se o PC mostra:</string>
+    <string name="pair_link_own_code">Código: %1$s</string>
 </resources>

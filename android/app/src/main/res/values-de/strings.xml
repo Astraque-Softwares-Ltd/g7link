@@ -1126,7 +1126,6 @@
     <string name="guide_doctor_privacy">Diagnosen laufen lokal zwischen deinem Gerät und deinem gekoppelten PC ab.</string>
     <string name="guide_doctor_limits">Bei manchen Geräteherstellern muss die Akkuoptimierung auf „Nicht eingeschränkt“ gestellt werden.</string>
     <string name="pair_link_title">Mit %1$s koppeln?</string>
-    <string name="pair_link_body">Ein Kopplungslink wurde geöffnet. Kopple nur, wenn du den Code dieses Geräts gerade selbst gescannt oder geöffnet hast. Ein gekoppeltes Gerät kann deine Benachrichtigungen und Nachrichten empfangen.</string>
     <string name="pair_link_confirm">Koppeln</string>
     <string name="pair_link_cancel">Abbrechen</string>
     <string name="pair_link_unknown_pc">diesem Gerät</string>
@@ -1292,4 +1291,9 @@
     <string name="elevated_paused_title">Erweitert ist pausiert</string>
     <string name="elevated_paused_notice">Erweitert ist im WLAN bei %1$s pausiert. Vertraue ihm, um Erweitert hier weiter zu nutzen.</string>
     <string name="mirror_controlling">%1$s steuert dieses Smartphone</string>
+    <string name="pair_link_title_other_app">Mit diesem Gerät koppeln?</string>
+    <string name="pair_link_from_other_app">Dieser Kopplungslink kam aus einer anderen App. Fahre nur fort, wenn du ihn in G7 Link auf deinem PC geöffnet hast. Ein gekoppeltes Gerät kann deine Benachrichtigungen und Nachrichten empfangen.</string>
+    <string name="pair_link_named">Name im Link: %1$s</string>
+    <string name="pair_link_check_code">Prüfe, ob der PC das anzeigt:</string>
+    <string name="pair_link_own_code">Code: %1$s</string>
 </resources>

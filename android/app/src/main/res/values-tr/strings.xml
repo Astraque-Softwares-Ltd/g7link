@@ -1126,7 +1126,6 @@
     <string name="guide_doctor_privacy">Tanılama işlemleri telefonunuz ile eşleştirilmiş bilgisayarınız arasında yerel olarak çalışır.</string>
     <string name="guide_doctor_limits">Bazı telefon üreticilerinin pil tasarrufu ayarları Kısıtlanmamış olarak ayarlanmalıdır.</string>
     <string name="pair_link_title">%1$s ile eşleştirilsin mi?</string>
-    <string name="pair_link_body">Bir eşleştirme bağlantısı açıldı. Yalnızca bu cihazın kodunu az önce kendiniz taradıysanız veya açtıysanız eşleştirin. Eşleştirilmiş bir cihaz bu telefonun bildirimlerini ve mesajlarını alabilir.</string>
     <string name="pair_link_confirm">Eşleştir</string>
     <string name="pair_link_cancel">İptal</string>
     <string name="pair_link_unknown_pc">bu cihaz</string>
@@ -1292,4 +1291,9 @@
     <string name="elevated_paused_title">Yükseltilmiş mod duraklatıldı</string>
     <string name="elevated_paused_notice">Yükseltilmiş mod, %1$s adresindeki Wi-Fi ağında duraklatıldı. Burada kullanmaya devam etmek için bu ağa güvenin.</string>
     <string name="mirror_controlling">%1$s bu telefonu kontrol ediyor</string>
+    <string name="pair_link_title_other_app">Bu cihazla eşleştirilsin mi?</string>
+    <string name="pair_link_from_other_app">Bu eşleştirme bağlantısı başka bir uygulamadan geldi. Yalnızca bilgisayarınızdaki G7 Link\'ten açtıysanız devam edin. Eşleştirilmiş bir cihaz bu telefonun bildirimlerini ve mesajlarını alabilir.</string>
+    <string name="pair_link_named">Bağlantıdaki ad: %1$s</string>
+    <string name="pair_link_check_code">Bilgisayarda şunun göründüğünü kontrol edin:</string>
+    <string name="pair_link_own_code">Kod: %1$s</string>
 </resources>

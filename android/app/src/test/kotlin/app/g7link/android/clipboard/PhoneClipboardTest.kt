@@ -158,6 +158,15 @@ class PhoneClipboardTest {
     }
 
     @Test
+    fun `only the system share sheet counts as the user sharing`() {
+        assertTrue(SendActivity.isShareSheet("android"))
+        assertTrue(SendActivity.isShareSheet("com.android.intentresolver"))
+        assertTrue(SendActivity.isShareSheet("com.google.android.intentresolver"))
+        assertFalse(SendActivity.isShareSheet("com.example.app"))
+        assertFalse(SendActivity.isShareSheet(null))
+    }
+
+    @Test
     fun `isAppPrivatePath blocks app-private directories while allowing clipboard cache`() {
         val priv = listOf(File("/data/user/0/app.g7link"))
         val clipCache = listOf(File("/data/user/0/app.g7link/cache/clipboard"))

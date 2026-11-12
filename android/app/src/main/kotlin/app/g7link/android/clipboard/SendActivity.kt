@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Process
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.annotation.StringRes
 import androidx.core.content.IntentCompat
 import app.g7link.android.G7LinkApplication
 import app.g7link.android.R
@@ -35,6 +36,10 @@ import kotlinx.coroutines.launch
 class SendActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var sent = false
+    /** Shared from the system share sheet: the user chose to send it. */
+    private var userShared = false
+    /** Sent here directly by another app: the user picks the PC first, even with only one. */
+    private var askFirst = false
     private val pickFilesLauncher = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -85,7 +90,30 @@ class SendActivity : ComponentActivity() {
             return
         }
 
+        val share = intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE
+        userShared = share && pickedInShareSheet(intent)
+        // Another app sent it here directly: the user picks the PC before anything goes.
+        askFirst = share && !userShared
         dispatchImmediate(payload)
+    }
+
+    /**
+     * Whether the user picked G7 Link in the share sheet (or one of its Direct
+     * Share targets), rather than another app starting this directly. The
+     * sheet starts its target as the app that shared, so the caller looks the
+     * same either way; what tells them apart is what the sheet adds: the flag
+     * it starts targets with, a Direct Share shortcut, or the sheet as the
+     * referrer. An app could add those too, so this only decides whether to
+     * ask first and whether the PC may treat a link as shared by the user.
+     */
+    private fun pickedInShareSheet(intent: Intent): Boolean {
+        if (intent.flags and Intent.FLAG_ACTIVITY_FORWARD_RESULT != 0) return true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID) != null) {
+            return true
+        }
+        val launcher = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) launchedFromPackage else null
+        val from = launcher ?: referrer?.takeIf { it.scheme == "android-app" }?.host
+        return isShareSheet(from)
     }
 
     private fun isTrustedInternalCall(intent: Intent): Boolean {
@@ -255,11 +283,12 @@ class SendActivity : ComponentActivity() {
         sent = true
         val core = (application as G7LinkApplication).core
         val chosenPcId = targetPcId()
+        val open = { pc: Device -> scope.launch { finishWith(core.openLinkOnPc(pc.id, url, userShared)) }.let {} }
         if (chosenPcId != null) {
             val pc = core.state.value.device(chosenPcId)
             if (pc != null) {
                 if (!pc.online || pc.has("device.links_to_pc")) {
-                    scope.launch { finishWith(core.openLinkOnPc(pc.id, url)) }
+                    pickPc(R.string.link_pick_pc, listOf(pc), open)
                 } else {
                     send(text)
                 }
@@ -270,20 +299,30 @@ class SendActivity : ComponentActivity() {
         val pcs = onlineLinkPcs.ifEmpty {
             if (core.state.value.devices.none { it.online }) core.state.value.devices else emptyList()
         }
-        when (pcs.size) {
-            0 -> send(text)
-            1 -> scope.launch { finishWith(core.openLinkOnPc(pcs[0].id, url)) }
-            else -> AlertDialog.Builder(this)
-                .setTitle(R.string.link_pick_pc)
-                .setItems(pcs.map { it.name }.toTypedArray()) { _, which ->
-                    scope.launch { finishWith(core.openLinkOnPc(pcs[which].id, url)) }
-                }
-                .setOnCancelListener { finish() }
-                .show()
-        }
+        if (pcs.isEmpty()) send(text) else pickPc(R.string.link_pick_pc, pcs, open)
+    }
+
+    /**
+     * Goes on with the PC: at once when there's one, or once the user picks one
+     * of several. For something another app sent here directly ([askFirst]),
+     * the user picks even the only one, so nothing goes without them.
+     */
+    private fun pickPc(@StringRes title: Int, pcs: List<Device>, then: (Device) -> Unit) {
+        if (pcs.size == 1 && !askFirst) return then(pcs[0])
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setItems(pcs.map { it.name }.toTypedArray()) { _, which -> then(pcs[which]) }
+            .setOnCancelListener { finish() }
+            .show()
     }
 
     private fun send(text: String, html: String? = null) {
+        val core = (application as G7LinkApplication).core
+        val pcs = core.state.value.devices.let { all -> all.filter { it.online }.ifEmpty { all } }
+        if (askFirst && pcs.isNotEmpty()) {
+            pickPc(R.string.transfer_pick_pc, pcs) { pc -> sendInBackground { sendClipboard(text, pc.id, html) } }
+            return
+        }
         val pcId = targetPcId()
         sendInBackground { sendClipboard(text, pcId, html) }
     }
@@ -333,6 +372,11 @@ class SendActivity : ComponentActivity() {
             }
             return webLink(text)
         }
+
+        /** The system share sheet and app picker, by package (in Android, or the IntentResolver module). */
+        private val SHARE_SHEETS = setOf("android", "com.android.intentresolver", "com.google.android.intentresolver")
+
+        internal fun isShareSheet(pkg: String?): Boolean = pkg != null && pkg in SHARE_SHEETS
 
         const val ACTION_SEND_CLIPBOARD = "app.g7link.action.SEND_CLIPBOARD"
         const val ACTION_SEND_FILES = "app.g7link.action.SEND_FILES"

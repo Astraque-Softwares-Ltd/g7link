@@ -96,7 +96,24 @@ fun PairingScreen(
     onDone: () -> Unit,
 ) {
     var showing by rememberSaveable { mutableStateOf(false) }
+    // A scanned code, until the user compares the PC's code and pairs.
+    var scanned by rememberSaveable { mutableStateOf<String?>(null) }
+    var declined by rememberSaveable { mutableStateOf<String?>(null) }
     val pairing = state.pairing
+    scanned?.let { link ->
+        PairingLinkDialog(
+            link = link,
+            fromOtherApp = false,
+            onConfirm = {
+                scanned = null
+                actions.join(link)
+            },
+            onDismiss = {
+                scanned = null
+                declined = link
+            },
+        )
+    }
     val reducedMotion = LocalReducedMotion.current
     DisposableEffect(Unit) {
         actions.visible(true)
@@ -154,7 +171,8 @@ fun PairingScreen(
                             .verticalScroll(rememberScrollState())
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                     ) {
-                        Scan(actions::join)
+                        // The camera keeps finding a code it was told no to: asked once.
+                        Scan { link -> if (link != declined) scanned = link }
                         NearbyList(state.discovered, actions::pairNearby)
                     }
                 }
@@ -234,6 +252,18 @@ private fun ShowCode(actions: PairingActions) {
             } else {
                 QrCode(current)
             }
+        }
+        // The device that scans it shows the same code before pairing.
+        val code = androidx.compose.runtime.remember(current) {
+            current?.let { runCatching { app.g7link.core.pairingLinkCode(it) }.getOrNull() }
+        }
+        if (code != null) {
+            Spacer(Modifier.height(16.dp))
+            Text(
+                stringResource(R.string.pair_link_own_code, "${code.take(3)} ${code.drop(3)}"),
+                style = MaterialTheme.typography.titleMedium,
+                fontFamily = LocalAppFonts.current.mono,
+            )
         }
     }
 }

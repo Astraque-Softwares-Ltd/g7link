@@ -995,7 +995,6 @@
     <string name="guide_doctor_privacy">诊断在手机与已配对电脑之间本地运行。</string>
     <string name="guide_doctor_limits">部分手机厂商的省电模式必须设为不受限制。</string>
     <string name="pair_link_title">要与 %1$s 配对吗？</string>
-    <string name="pair_link_body">已打开一个配对链接。仅当您刚刚亲自扫描或打开此设备的配对码时才进行配对。已配对的设备可以接收此手机的通知和消息。</string>
     <string name="pair_link_confirm">配对</string>
     <string name="pair_link_cancel">取消</string>
     <string name="pair_link_unknown_pc">此设备</string>
@@ -1159,4 +1158,9 @@
     <string name="elevated_paused_title">高级权限已暂停</string>
     <string name="elevated_paused_notice">高级权限已在 %1$s 的 Wi-Fi 网络上暂停。信任此网络即可继续在这里使用。</string>
     <string name="mirror_controlling">%1$s 正在控制此手机</string>
+    <string name="pair_link_title_other_app">要与此设备配对吗？</string>
+    <string name="pair_link_from_other_app">此配对链接来自其他应用。仅当它是您从电脑上的 G7 Link 打开的时才继续。已配对的设备可以接收此手机的通知和消息。</string>
+    <string name="pair_link_named">链接中的名称：%1$s</string>
+    <string name="pair_link_check_code">请确认电脑上显示：</string>
+    <string name="pair_link_own_code">代码：%1$s</string>
 </resources>

@@ -20,6 +20,7 @@ pub const NONCE_LEN: usize = 16;
 
 const PROOF_LABEL: &[u8] = b"g7link-pair-v0";
 const SAS_LABEL: &[u8] = b"g7link-sas-v0";
+const LINK_CODE_LABEL: &[u8] = b"g7link-link-code-v0";
 
 /// Contents of the pairing QR code shown by the PC.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +147,18 @@ pub fn sas_code(n_a: &[u8], n_b: &[u8], id_a: &DeviceId, id_b: &DeviceId) -> Str
     format!("{value:06}")
 }
 
+/// The 6-digit code of the device a pairing link names, which that device
+/// shows beside its QR code, so the user can tell the link came from the PC
+/// in front of them: `uint32(SHA-256("g7link-link-code-v0" || id)[0..4]) mod 1,000,000`.
+pub fn link_code(id: &DeviceId) -> String {
+    let mut hash = Sha256::new();
+    hash.update(LINK_CODE_LABEL);
+    hash.update(id.as_bytes());
+    let digest = hash.finalize();
+    let value = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
+    format!("{value:06}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +230,14 @@ mod tests {
         // A man in the middle presents a different identity on one side.
         assert_ne!(code, sas_code(&n_a, &n_b, &id(1), &id(3)));
         assert_ne!(code, sas_code(&n_b, &n_a, &id(1), &id(2)));
+    }
+
+    #[test]
+    fn link_code_is_the_devices_own() {
+        // Known answers, so every app shows the same code for the same device.
+        assert_eq!(link_code(&id(1)), "835480");
+        assert_eq!(link_code(&id(3)), "606249");
+        // A link made by another device shows that device's code.
+        assert_ne!(link_code(&id(1)), link_code(&id(2)));
     }
 }

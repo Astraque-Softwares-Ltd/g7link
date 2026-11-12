@@ -1128,7 +1128,6 @@
     <string name="guide_doctor_privacy">Diagnostics run locally between your phone and paired PC.</string>
     <string name="guide_doctor_limits">Some phone makers\' battery savers must be set to Unrestricted.</string>
     <string name="pair_link_title">Pair with %1$s?</string>
-    <string name="pair_link_body">A pairing link was opened. Pair only if you just scanned or opened this device\'s code yourself. A paired device can receive this phone\'s notifications and messages.</string>
     <string name="pair_link_confirm">Pair</string>
     <string name="pair_link_cancel">Cancel</string>
     <string name="pair_link_unknown_pc">this device</string>
@@ -1295,4 +1294,9 @@
     <string name="elevated_paused_title">Elevated is paused</string>
     <string name="elevated_paused_notice">Elevated is paused on the Wi-Fi network at %1$s. Trust it to keep using Elevated here.</string>
     <string name="mirror_controlling">%1$s is controlling this phone</string>
+    <string name="pair_link_title_other_app">Pair with this device?</string>
+    <string name="pair_link_from_other_app">This pairing link came from another app. Only continue if you opened it from G7 Link on your PC. A paired device can receive this phone\'s notifications and messages.</string>
+    <string name="pair_link_named">Name in the link: %1$s</string>
+    <string name="pair_link_check_code">Check the PC shows:</string>
+    <string name="pair_link_own_code">Code: %1$s</string>
 </resources>

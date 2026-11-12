@@ -1063,7 +1063,6 @@
 <string name="guide_doctor_privacy">Chẩn đoán chạy cục bộ giữa điện thoại và PC đã ghép nối.</string>
 <string name="guide_doctor_limits">Một số chế độ tiết kiệm pin của hãng điện thoại phải được đặt thành Không hạn chế.</string>
 <string name="pair_link_title">Ghép nối với %1$s?</string>
-<string name="pair_link_body">Một liên kết ghép nối vừa được mở. Chỉ ghép nối nếu bạn vừa quét hoặc tự mở mã của thiết bị này. Thiết bị đã ghép nối có thể nhận thông báo và tin nhắn của điện thoại này.</string>
 <string name="pair_link_confirm">Ghép nối</string>
 <string name="pair_link_cancel">Hủy</string>
 <string name="pair_link_unknown_pc">thiết bị này</string>
@@ -1228,4 +1227,9 @@
 <string name="elevated_paused_title">Elevated đã tạm dừng</string>
 <string name="elevated_paused_notice">Elevated đã tạm dừng trên mạng Wi-Fi tại %1$s. Hãy tin cậy mạng này để tiếp tục dùng Elevated tại đây.</string>
 <string name="mirror_controlling">%1$s đang điều khiển điện thoại này</string>
+<string name="pair_link_title_other_app">Ghép nối với thiết bị này?</string>
+<string name="pair_link_from_other_app">Liên kết ghép nối này đến từ một ứng dụng khác. Chỉ tiếp tục nếu bạn đã mở nó từ G7 Link trên PC của mình. Thiết bị đã ghép nối có thể nhận thông báo và tin nhắn của điện thoại này.</string>
+<string name="pair_link_named">Tên trong liên kết: %1$s</string>
+<string name="pair_link_check_code">Kiểm tra PC có hiển thị:</string>
+<string name="pair_link_own_code">Mã: %1$s</string>
 </resources>

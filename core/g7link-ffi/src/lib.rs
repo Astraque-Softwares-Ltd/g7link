@@ -1272,6 +1272,13 @@ pub fn mirror_config(width: u32, height: u32, session: u32) -> Vec<u8> {
     core::MirrorConfig { codec: "h264".into(), width, height, session }.to_cbor()
 }
 
+/// The 6-digit code of the device a pairing link (`g7link://pair?…`) names,
+/// which that device shows beside its QR code; None for anything else.
+#[uniffi::export]
+pub fn pairing_link_code(link: String) -> Option<String> {
+    core::PairingUri::parse(&link).ok().map(|uri| core::pairing_link_code(&uri.id))
+}
+
 /// The bytes of a config packet for a stream of `codec` (`"h264"`, `"h265"`, or `"av1"`).
 #[uniffi::export]
 pub fn mirror_config_codec(codec: String, width: u32, height: u32, session: u32) -> Vec<u8> {

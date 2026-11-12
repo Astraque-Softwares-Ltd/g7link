@@ -76,6 +76,7 @@ import app.g7link.android.ui.home.HomeScreen
 import app.g7link.android.ui.capture.PcShotActivity
 import androidx.lifecycle.repeatOnLifecycle
 import app.g7link.android.ui.pairing.PairingActions
+import app.g7link.android.ui.pairing.PairingLinkDialog
 import app.g7link.android.ui.pairing.PairingScreen
 import app.g7link.android.ui.recorder.RecorderScreen
 import app.g7link.android.ui.remote.RemoteMode
@@ -192,32 +193,23 @@ class MainActivity : ComponentActivity() {
                         onElevatedSettingsConsumed = { requestedElevatedSettings = false },
                     )
                     pendingPairingLink?.let { link ->
-                        val pcName = remember(link) {
-                            android.net.Uri.parse(link).getQueryParameter("n")?.trim()?.takeIf { it.isNotEmpty() }
-                        } ?: stringResource(R.string.pair_link_unknown_pc)
                         val clearPending = {
                             pendingPairingLink = null
                             if (intent?.action == Intent.ACTION_VIEW) {
                                 setIntent(Intent(this@MainActivity, MainActivity::class.java))
                             }
                         }
-                        androidx.compose.material3.AlertDialog(
-                            onDismissRequest = clearPending,
-                            title = { Text(stringResource(R.string.pair_link_title, pcName)) },
-                            text = { Text(stringResource(R.string.pair_link_body)) },
-                            confirmButton = {
-                                androidx.compose.material3.TextButton(onClick = {
-                                    clearPending()
-                                    if (PairingLinks(this@MainActivity).consume(link)) {
-                                        core.joinWhenReady(link)
-                                    }
-                                }) { Text(stringResource(R.string.pair_link_confirm)) }
-                            },
-                            dismissButton = {
-                                androidx.compose.material3.TextButton(onClick = clearPending) {
-                                    Text(stringResource(R.string.pair_link_cancel))
+                        // Opened by another app (a browser, a chat, the camera): any app can.
+                        PairingLinkDialog(
+                            link = link,
+                            fromOtherApp = true,
+                            onConfirm = {
+                                clearPending()
+                                if (PairingLinks(this@MainActivity).consume(link)) {
+                                    core.joinWhenReady(link)
                                 }
                             },
+                            onDismiss = clearPending,
                         )
                     }
                 }

@@ -1126,7 +1126,6 @@
     <string name="guide_doctor_privacy">Los diagnósticos se ejecutan localmente entre tu teléfono y el PC emparejado.</string>
     <string name="guide_doctor_limits">El ahorro de batería de algunos fabricantes debe configurarse en Sin restricciones.</string>
     <string name="pair_link_title">¿Emparejar con %1$s?</string>
-    <string name="pair_link_body">Se abrió un enlace de emparejamiento. Empareja solo si acabas de escanear o abrir el código de este dispositivo tú mismo. Un dispositivo emparejado puede recibir las notificaciones y mensajes de este teléfono.</string>
     <string name="pair_link_confirm">Emparejar</string>
     <string name="pair_link_cancel">Cancelar</string>
     <string name="pair_link_unknown_pc">este dispositivo</string>
