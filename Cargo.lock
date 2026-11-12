@@ -420,9 +420,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.10.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e055fa6e3e40ad6187ba25b6855eeb635d5271f8e0f0e1e9a5826b8d75bea0"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1337,6 +1337,139 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "g7link-adb"
+version = "0.1.10"
+dependencies = [
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "g7link-cli"
+version = "0.1.10"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "g7link-core",
+ "hostname",
+ "libc",
+ "qrcode",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "g7link-core"
+version = "0.1.10"
+dependencies = [
+ "blake3",
+ "bytes",
+ "data-encoding",
+ "g7link-adb",
+ "g7link-protocol",
+ "iroh",
+ "iroh-mdns-address-lookup",
+ "libc",
+ "material-colors",
+ "n0-future",
+ "noq-proto",
+ "rand",
+ "ring",
+ "rusqlite",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "zbus",
+]
+
+[[package]]
+name = "g7link-desktop"
+version = "0.1.10"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "cc",
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "data-encoding",
+ "dirs",
+ "g7link-core",
+ "g7link-vcam",
+ "hostname",
+ "libc",
+ "material-colors",
+ "pkg-config",
+ "qrcode",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "zbus",
+]
+
+[[package]]
+name = "g7link-ffi"
+version = "0.1.10"
+dependencies = [
+ "g7link-core",
+ "jni-sys 0.4.1",
+ "paranoid-android",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uniffi",
+]
+
+[[package]]
+name = "g7link-protocol"
+version = "0.1.10"
+dependencies = [
+ "ciborium",
+ "data-encoding",
+ "hmac",
+ "serde",
+ "serde_bytes",
+ "sha2",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "g7link-vcam"
+version = "0.1.10"
+dependencies = [
+ "ab_glyph",
+ "libc",
 ]
 
 [[package]]
@@ -2400,139 +2533,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c196769dd60fd4f363e11d948139556a344e79d451aeb2fa2fd040738ef7691"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "g7link-adb"
-version = "0.1.10"
-dependencies = [
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "g7link-cli"
-version = "0.1.10"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "hostname",
- "libc",
- "g7link-core",
- "qrcode",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "g7link-core"
-version = "0.1.10"
-dependencies = [
- "blake3",
- "bytes",
- "data-encoding",
- "iroh",
- "iroh-mdns-address-lookup",
- "libc",
- "material-colors",
- "n0-future",
- "g7link-adb",
- "g7link-protocol",
- "noq-proto",
- "rand",
- "ring",
- "rusqlite",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2",
- "socket2",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
- "zbus",
-]
-
-[[package]]
-name = "g7link-desktop"
-version = "0.1.10"
-dependencies = [
- "anyhow",
- "blake3",
- "cc",
- "cxx",
- "cxx-qt",
- "cxx-qt-build",
- "cxx-qt-lib",
- "data-encoding",
- "dirs",
- "hostname",
- "libc",
- "material-colors",
- "g7link-core",
- "g7link-vcam",
- "pkg-config",
- "qrcode",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wayland-client",
- "wayland-protocols",
- "zbus",
-]
-
-[[package]]
-name = "g7link-ffi"
-version = "0.1.10"
-dependencies = [
- "jni-sys 0.4.1",
- "g7link-core",
- "paranoid-android",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uniffi",
-]
-
-[[package]]
-name = "g7link-protocol"
-version = "0.1.10"
-dependencies = [
- "ciborium",
- "data-encoding",
- "hmac",
- "serde",
- "serde_bytes",
- "sha2",
- "thiserror 2.0.21",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "g7link-vcam"
-version = "0.1.10"
-dependencies = [
- "ab_glyph",
- "libc",
 ]
 
 [[package]]
