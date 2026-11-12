@@ -10,6 +10,7 @@ pub mod ble_beacon;
 pub mod browser;
 pub mod bt_hfp;
 pub mod clipboard;
+pub mod confined;
 pub mod data_control;
 pub mod dir_watch;
 pub mod doctor;

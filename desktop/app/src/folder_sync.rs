@@ -15,7 +15,7 @@ use std::{
 use g7link_core::{ConnectionPath, DeviceId, LinkState, Node};
 use serde::{Deserialize, Serialize};
 
-use crate::{core_host, settings};
+use crate::{core_host, settings, sys::confined::ConfinedDir};
 
 /// User-configured folder synchronization rule persisted in `settings.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,32 +444,92 @@ async fn list_phone_entries(
     Ok((out, complete))
 }
 
-fn temp_part_path(dest: &Path) -> Option<PathBuf> {
-    let file_name = dest.file_name()?.to_string_lossy();
-    Some(dest.with_file_name(format!(".{file_name}.g7link.part")))
+/// `rel_path`'s folders, outermost first, and its file name.
+fn split_rel_path(rel_path: &str) -> (Vec<&str>, &str) {
+    match rel_path.rsplit_once('/') {
+        Some((dirs, name)) => (dirs.split('/').collect(), name),
+        None => (Vec::new(), rel_path),
+    }
+}
+
+/// A `.g7link.part` file a received file is written to, opened inside its sync
+/// folder. Nothing below the folder may be a link: one there could lead outside it.
+#[derive(Debug)]
+struct PartFile {
+    dir: ConfinedDir,
+    part_name: String,
+    name: String,
+}
+
+impl PartFile {
+    /// Opens a new part for `rel_path` under `root`, making its folders.
+    fn create(root: &Path, rel_path: &str) -> std::io::Result<(Self, std::fs::File)> {
+        let (dirs, name) = split_rel_path(rel_path);
+        let dir = ConfinedDir::open(root, &dirs, true)?;
+        let part_name = format!(".{name}.g7link.part");
+        // One left by a pass that was cut short.
+        let _ = dir.remove_file(&part_name);
+        let file = dir.create_new(&part_name)?;
+        Ok((Self { dir, part_name, name: name.to_owned() }, file))
+    }
+
+    /// Checks `file` holds `len` bytes hashing to `hash`, then gives it its name
+    /// and the phone's date. The part is removed when it doesn't.
+    fn place(
+        &self,
+        mut file: std::fs::File,
+        len: u64,
+        hash: blake3::Hash,
+        modified_ms: i64,
+    ) -> std::io::Result<()> {
+        let placed = verify_part(&mut file, len, hash);
+        let placed = placed.and_then(|()| self.dir.rename(&self.part_name, &self.name));
+        match placed {
+            Ok(()) => keep_phone_date(&file, modified_ms),
+            Err(_) => self.discard(),
+        }
+        placed
+    }
+
+    fn discard(&self) {
+        let _ = self.dir.remove_file(&self.part_name);
+    }
+}
+
+/// Whether `file` holds `len` bytes that hash to `hash`, as read back from disk.
+fn verify_part(file: &mut std::fs::File, len: u64, hash: blake3::Hash) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+
+    file.seek(SeekFrom::Start(0))?;
+    let on_disk = file.metadata()?.len();
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(file, &mut hasher)?;
+    if on_disk != len || hasher.finalize() != hash {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "staged file size or BLAKE3 hash mismatch",
+        ));
+    }
+    Ok(())
 }
 
 /// Streams a chunked reader to a `.g7link.part` temporary file, verifies
 /// that the byte count and BLAKE3 digest match the written file on disk, and
-/// atomically renames the temporary file to `dest`.
+/// atomically renames the temporary file to `rel_path` under `root`.
 #[cfg(test)]
 pub async fn write_verified_part_file<R>(
     mut reader: R,
     expected_len: u64,
-    dest: &Path,
+    root: &Path,
+    rel_path: &str,
 ) -> std::io::Result<blake3::Hash>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let part_path = temp_part_path(dest)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing file name"))?;
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
-    let mut file = tokio::fs::File::create(&part_path).await?;
+    let (part, file) = PartFile::create(root, rel_path)?;
+    let mut file = tokio::fs::File::from_std(file);
     let mut stream_hasher = blake3::Hasher::new();
     let mut written = 0u64;
     let mut buf = vec![0u8; STREAM_CHUNK_SIZE];
@@ -502,37 +562,13 @@ where
     }
     .await;
 
-    drop(file);
+    let file = file.into_std().await;
     if let Err(err) = write_res {
-        let _ = tokio::fs::remove_file(&part_path).await;
+        part.discard();
         return Err(err);
     }
-
     let streamed_hash = stream_hasher.finalize();
-    let part_clone = part_path.clone();
-    let verified = tokio::task::spawn_blocking(move || -> std::io::Result<(u64, blake3::Hash)> {
-        let mut f = std::fs::File::open(&part_clone)?;
-        let len = f.metadata()?.len();
-        let mut disk_hasher = blake3::Hasher::new();
-        std::io::copy(&mut f, &mut disk_hasher)?;
-        Ok((len, disk_hasher.finalize()))
-    })
-    .await
-    .map_err(std::io::Error::other)??;
-
-    if verified.0 != expected_len || verified.1 != streamed_hash {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "staged file size or BLAKE3 hash mismatch",
-        ));
-    }
-
-    if let Err(err) = tokio::fs::rename(&part_path, dest).await {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return Err(err);
-    }
-
+    part.place(file, expected_len, streamed_hash, 0)?;
     Ok(streamed_hash)
 }
 
@@ -540,7 +576,8 @@ async fn pull_phone_file_streaming(
     node: &Node,
     peer: DeviceId,
     remote: String,
-    dest: &Path,
+    root: &Path,
+    rel_path: &str,
 ) -> Option<(u64, i64)> {
     use tokio::io::AsyncWriteExt;
 
@@ -548,12 +585,20 @@ async fn pull_phone_file_streaming(
     if meta.length != meta.size {
         return None;
     }
-    let part_path = temp_part_path(dest)?;
-    if let Some(parent) = dest.parent() {
-        tokio::fs::create_dir_all(parent).await.ok()?;
-    }
-
-    let mut file = tokio::fs::File::create(&part_path).await.ok()?;
+    let created = tokio::task::spawn_blocking({
+        let (root, rel_path) = (root.to_owned(), rel_path.to_owned());
+        move || PartFile::create(&root, &rel_path)
+    })
+    .await
+    .ok()?;
+    let (part, file) = match created {
+        Ok(created) => created,
+        Err(error) => {
+            tracing::warn!(%error, "can't write a synced file inside its folder");
+            return None;
+        }
+    };
+    let mut file = tokio::fs::File::from_std(file);
     let mut stream_hasher = blake3::Hasher::new();
     let mut written = 0u64;
 
@@ -578,50 +623,34 @@ async fn pull_phone_file_streaming(
     }
     .await;
 
-    drop(file);
-    if ok.is_none() {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return None;
-    }
-
+    let file = file.into_std().await;
     let streamed_hash = stream_hasher.finalize();
-    let part_clone = part_path.clone();
-    let verified = tokio::task::spawn_blocking(move || -> Option<(u64, blake3::Hash)> {
-        let mut f = std::fs::File::open(&part_clone).ok()?;
-        let len = f.metadata().ok()?.len();
-        let mut disk_hasher = blake3::Hasher::new();
-        std::io::copy(&mut f, &mut disk_hasher).ok()?;
-        Some((len, disk_hasher.finalize()))
+    let (length, modified) = (meta.length, meta.modified);
+    let placed = tokio::task::spawn_blocking(move || match ok {
+        Some(()) => part.place(file, length, streamed_hash, modified).is_ok(),
+        None => {
+            part.discard();
+            false
+        }
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or(false);
+    placed.then_some((meta.size, meta.modified))
+}
 
-    let Some((disk_len, disk_hash)) = verified else {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return None;
-    };
-    if disk_len != meta.length || disk_hash != streamed_hash {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return None;
-    }
-
-    if tokio::fs::rename(&part_path, dest).await.is_err() {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return None;
-    }
-
-    keep_phone_date(dest, meta.modified);
-    Some((meta.size, meta.modified))
+/// Moves the PC's copy of `rel_path` aside to `conflict_rel_path`, in the same folder.
+fn move_aside(root: &Path, rel_path: &str, conflict_rel_path: &str) -> std::io::Result<()> {
+    let (dirs, name) = split_rel_path(rel_path);
+    let (_, conflict_name) = split_rel_path(conflict_rel_path);
+    ConfinedDir::open(root, &dirs, false)?.rename(name, conflict_name)
 }
 
 /// Gives the copy the phone's date. That's what later passes compare to tell
 /// whether the file changed on the PC since it was synced.
-fn keep_phone_date(path: &Path, modified_ms: i64) {
+fn keep_phone_date(file: &std::fs::File, modified_ms: i64) {
     let Ok(ms) = u64::try_from(modified_ms) else { return };
     let date = UNIX_EPOCH + Duration::from_millis(ms);
-    let set = std::fs::OpenOptions::new().write(true).open(path).and_then(|f| f.set_modified(date));
-    if let Err(error) = set {
+    if let Err(error) = file.set_modified(date) {
         tracing::debug!(%error, "can't keep a synced file's date");
     }
 }
@@ -748,8 +777,8 @@ pub async fn sync_now(node: &Node) -> SyncReport {
             match action {
                 SyncAction::PullToPc { rel_path } => {
                     let remote = join_phone_path(&rule.phone_folder, &rel_path);
-                    let dest = pc_dir.join(&rel_path);
-                    if let Some((size, modified)) = pull_phone_file_streaming(node, peer, remote, &dest).await
+                    if let Some((size, modified)) =
+                        pull_phone_file_streaming(node, peer, remote, &pc_dir, &rel_path).await
                     {
                         updated_baseline.insert(rel_path, (size, modified));
                         report.copied += 1;
@@ -768,14 +797,14 @@ pub async fn sync_now(node: &Node) -> SyncReport {
                     }
                 }
                 SyncAction::ConflictRenamePcAndPull { rel_path, conflict_rel_path } => {
-                    let src = pc_dir.join(&rel_path);
-                    let conflict_dst = pc_dir.join(&conflict_rel_path);
-                    if let Some(parent) = conflict_dst.parent() {
-                        let _ = tokio::fs::create_dir_all(parent).await;
-                    }
-                    let _ = tokio::fs::rename(&src, &conflict_dst).await;
+                    let _ = tokio::task::spawn_blocking({
+                        let (root, rel_path) = (pc_dir.clone(), rel_path.clone());
+                        move || move_aside(&root, &rel_path, &conflict_rel_path)
+                    })
+                    .await;
                     let remote = join_phone_path(&rule.phone_folder, &rel_path);
-                    if let Some((size, modified)) = pull_phone_file_streaming(node, peer, remote, &src).await
+                    if let Some((size, modified)) =
+                        pull_phone_file_streaming(node, peer, remote, &pc_dir, &rel_path).await
                     {
                         updated_baseline.insert(rel_path, (size, modified));
                         report.copied += 1;
@@ -886,7 +915,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.jpg");
         std::fs::write(&path, b"x").unwrap();
-        keep_phone_date(&path, 1_700_000_000_000);
+        keep_phone_date(&std::fs::File::options().write(true).open(&path).unwrap(), 1_700_000_000_000);
         let read = read_pc_entries(dir.path());
         assert_eq!(read[0].modified_ms, 1_700_000_000_000);
     }
@@ -1068,19 +1097,49 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let payload = vec![0x5Au8; 150_000];
         let expected_hash = blake3::hash(&payload);
-        let dest = dir.path().join("nested").join("video.mp4");
+        let (root, len) = (dir.path(), payload.len() as u64);
+        let nested = root.join("nested");
 
-        let hash = write_verified_part_file(&payload[..], payload.len() as u64, &dest).await.unwrap();
+        let hash = write_verified_part_file(&payload[..], len, root, "nested/video.mp4").await.unwrap();
         assert_eq!(hash, expected_hash);
-        assert_eq!(std::fs::read(&dest).unwrap(), payload);
-        assert!(!temp_part_path(&dest).unwrap().exists());
+        assert_eq!(std::fs::read(nested.join("video.mp4")).unwrap(), payload);
+        assert!(!nested.join(".video.mp4.g7link.part").exists());
 
         // Truncated stream must fail and remove the `.g7link.part` file.
-        let bad_dest = dir.path().join("nested").join("truncated.mp4");
-        let res = write_verified_part_file(&payload[..1024], payload.len() as u64, &bad_dest).await;
+        let res = write_verified_part_file(&payload[..1024], len, root, "nested/truncated.mp4").await;
         assert!(res.is_err());
-        assert!(!bad_dest.exists());
-        assert!(!temp_part_path(&bad_dest).unwrap().exists());
+        assert!(!nested.join("truncated.mp4").exists());
+        assert!(!nested.join(".truncated.mp4.g7link.part").exists());
+    }
+
+    #[test]
+    fn a_received_file_stays_inside_its_folder() {
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel.txt");
+        std::fs::write(&sentinel, b"keep").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("work")).unwrap();
+
+        // A folder link under the sync folder is refused, however deep the file.
+        assert!(PartFile::create(root.path(), "work/sentinel.txt").is_err());
+        assert!(PartFile::create(root.path(), "work/new/sentinel.txt").is_err());
+        assert!(PartFile::create(root.path(), "../sentinel.txt").is_err());
+        assert!(move_aside(root.path(), "work/sentinel.txt", "work/moved.txt").is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 1);
+
+        // A link to a file, or one left at the part's name, is replaced rather than written through.
+        std::os::unix::fs::symlink(&sentinel, root.path().join("note.txt")).unwrap();
+        std::os::unix::fs::symlink(&sentinel, root.path().join(".note.txt.g7link.part")).unwrap();
+        let (part, mut file) = PartFile::create(root.path(), "note.txt").unwrap();
+        file.write_all(b"new").unwrap();
+        part.place(file, 3, blake3::hash(b"new"), 1_700_000_000_000).unwrap();
+        let note = root.path().join("note.txt");
+        assert!(std::fs::symlink_metadata(&note).unwrap().is_file());
+        assert_eq!(std::fs::read(&note).unwrap(), b"new");
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
     }
 
     #[test]
