@@ -315,6 +315,8 @@ fun RemoteScreen(
                         core = core,
                         isFullScreen = screenFullScreen,
                         onFullScreenChange = { screenFullScreen = it },
+                        touchpadSensitivity = sensitivity,
+                        onStatus = onStatus,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                     // The touchpad under the screen: watch the PC and move its pointer together.
@@ -544,128 +546,15 @@ private fun TouchpadSurface(
         modifier = modifier
             .semantics { contentDescription = touchpadDesc }
             .pointerInput(pcId, sensitivity) {
-                val tapSlop = viewConfiguration.touchSlop
-                // Movement in reference-density pixels, so the same physical swipe moves
-                // the PC pointer and scrolls the same amount on every phone's screen.
-                val toReference = TOUCHPAD_REFERENCE_DENSITY / density
-                val tapTimeoutMs = 240L
-                val doubleTapWindowMs = 260L
-                var lastSingleTapTime = 0L
-                var fling: Job? = null
-
-                awaitEachGesture {
-                    val firstDown = awaitFirstDown(requireUnconsumed = false)
-                    // A touch catches a gliding scroll, like on a touchscreen.
-                    fling?.cancel()
-                    fling = null
-                    val downTime = System.currentTimeMillis()
-                    var lastEventTime = firstDown.uptimeMillis
-                    var maxPointers = 1
-                    var totalMoved = 0f
-                    val twoFinger = TwoFingerGesture(tapSlop * toReference)
-                    var isDragHold = (downTime - lastSingleTapTime) <= doubleTapWindowMs
-                    var dragStarted = false
-                    val ballistics = TouchpadBallistics()
-
-                    touchPoint = firstDown.position
-
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val changes = event.changes
-                        var pressedCount = 0
-                        var firstPressed: androidx.compose.ui.input.pointer.PointerInputChange? = null
-                        for (i in 0 until changes.size) {
-                            val c = changes[i]
-                            if (c.pressed) {
-                                if (firstPressed == null) firstPressed = c
-                                pressedCount++
-                            }
-                        }
-                        if (changes.isNotEmpty()) lastEventTime = changes[0].uptimeMillis
-                        if (pressedCount == 0 || firstPressed == null) break
-
-                        if (pressedCount > maxPointers) {
-                            maxPointers = pressedCount
-                            if (dragStarted) {
-                                core.remoteButton(pcId, "left", "up", onStatus)
-                                dragStarted = false
-                                dragging = false
-                            }
-                            isDragHold = false
-                        }
-
-                        if (pressedCount == 1 && maxPointers == 1) {
-                            val change = firstPressed
-                            touchPoint = change.position
-                            val delta = change.positionChange()
-                            val dist = hypot(delta.x, delta.y)
-                            totalMoved += dist
-
-                            if (isDragHold && !dragStarted && totalMoved > tapSlop * 0.6f) {
-                                dragStarted = true
-                                dragging = true
-                                core.remoteButton(pcId, "left", "down", onStatus)
-                            }
-
-                            if (dist > 0f) {
-                                val dtMs = change.uptimeMillis - change.previousUptimeMillis
-                                val gain = ballistics.gain(dist * toReference, dtMs)
-                                core.remoteMove(
-                                    pcId,
-                                    delta.x * toReference * gain * sensitivity,
-                                    delta.y * toReference * gain * sensitivity,
-                                )
-                                change.consume()
-                            }
-                        } else if (pressedCount >= 2) {
-                            touchPoint = firstPressed.position
-                            var avgDx = 0f
-                            var avgDy = 0f
-                            for (i in 0 until changes.size) {
-                                val c = changes[i]
-                                if (c.pressed) {
-                                    val d = c.positionChange()
-                                    avgDx += d.x
-                                    avgDy += d.y
-                                    c.consume()
-                                }
-                            }
-                            avgDx /= pressedCount
-                            avgDy /= pressedCount
-                            totalMoved += hypot(avgDx, avgDy)
-
-                            val clicks = twoFinger.onMove(
-                                avgDx * toReference,
-                                avgDy * toReference,
-                                firstPressed.uptimeMillis,
-                            )
-                            if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
-                        }
-                    }
-
-                    touchPoint = null
-                    val elapsed = System.currentTimeMillis() - downTime
-                    if (dragStarted) {
-                        core.remoteButton(pcId, "left", "up", onStatus)
-                        dragging = false
-                        lastSingleTapTime = 0L
-                    } else if (maxPointers >= 2) {
-                        lastSingleTapTime = 0L
-                        if (twoFinger.isScroll) {
-                            fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
-                                ?.let { flingScope.launchScrollFling(core, pcId, it) }
-                        } else if (maxPointers == 2 && totalMoved <= tapSlop * 1.5f &&
-                            twoFinger.onUp(elapsed, tapTimeoutMs) == TwoFingerRelease.RightClick
-                        ) {
-                            core.remoteButton(pcId, "right", "click", onStatus)
-                        }
-                    } else if (elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f) {
-                        lastSingleTapTime = System.currentTimeMillis()
-                        core.remoteButton(pcId, "left", "click", onStatus)
-                    } else {
-                        lastSingleTapTime = 0L
-                    }
-                }
+                touchpadGestures(
+                    pcId = pcId,
+                    core = core,
+                    sensitivity = sensitivity,
+                    flingScope = flingScope,
+                    onStatus = onStatus,
+                    onTouch = { touchPoint = it },
+                    onDragging = { dragging = it },
+                )
             },
     ) {
         Box(Modifier.fillMaxSize()) {
@@ -880,17 +769,6 @@ private fun TouchpadView(
                 )
             }
         }
-    }
-}
-
-/** Glides a flicked scroll on after the fingers lift, one display frame at a time. */
-private fun CoroutineScope.launchScrollFling(core: Core, pcId: String, fling: ScrollFling): Job = launch {
-    var last = withFrameNanos { it }
-    while (true) {
-        val now = withFrameNanos { it }
-        val clicks = fling.step((now - last) / 1_000_000f) ?: break
-        last = now
-        if (!clicks.isZero) core.remoteScroll(pcId, clicks.x, clicks.y, fast = true)
     }
 }
 
@@ -1882,4 +1760,3 @@ private fun PresentationView(
 }
 
 /** The screen density (xxhdpi) the touchpad speeds and scroll steps were tuned at. */
-private const val TOUCHPAD_REFERENCE_DENSITY = 2.625f
