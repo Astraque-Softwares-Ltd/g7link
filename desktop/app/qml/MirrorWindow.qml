@@ -205,6 +205,13 @@ Window {
     }
     width: 380
     height: 820
+    // Wayland gives no app a way to keep its window above others.
+    readonly property bool canKeepOnTop: !Qt.platform.pluginName.startsWith("wayland")
+    readonly property bool staysOnTop: (win.flags & Qt.WindowStaysOnTopHint) !== 0
+    function toggleStayOnTop() {
+        win.flags = staysOnTop ? (win.flags & ~Qt.WindowStaysOnTopHint) : (win.flags | Qt.WindowStaysOnTopHint)
+    }
+
     onClosing: {
         if (info.app && sized && ownSize)
             Mirror.saveGeometry(mirrorKey, x, y, width, height)
@@ -667,6 +674,9 @@ Window {
             list.push({ label: Mirror.muted ? qsTr("Play the phone's sound here") : qsTr("Play the sound on the phone"),
                         icon: Mirror.muted ? Icons.soundOff : Icons.speaker, tint: Theme.tintTeal,
                         run: () => Mirror.toggleSound() })
+        if (win.canKeepOnTop)
+            list.push({ label: qsTr("Keep on top"), icon: Icons.pin, tint: Theme.tintBlue, checked: win.staysOnTop,
+                        run: () => win.toggleStayOnTop() })
         list.push({ label: qsTr("Keep phone awake"), icon: Icons.coffee, tint: Theme.tintAmber, checked: win.info.stayAwake === true,
                     run: () => Mirror.setStayAwake(win.mirrorKey, !(win.info.stayAwake === true)) })
         if (win.info.canScreenOff === true)
