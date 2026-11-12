@@ -1037,9 +1037,9 @@ Card #52
     const MEDIA_NODES: &str = "\
 Source #93
 \tState: SUSPENDED
-\tName: bluez_input.B8_DB_38_7E_95_09.2
+\tName: bluez_input.AA_BB_CC_DD_EE_02.2
 \tProperties:
-\t\tapi.bluez5.address = \"B8:DB:38:7E:95:09\"
+\t\tapi.bluez5.address = \"AA:BB:CC:DD:EE:02\"
 \t\tapi.bluez5.codec = \"aac\"
 \t\tapi.bluez5.profile = \"a2dp-source\"
 \t\tfactory.name = \"api.bluez5.a2dp.source\"
@@ -1057,9 +1057,9 @@ Source #94
     /// The Pixel's call audio, as PipeWire makes it for SCO.
     const CALL_NODES: &str = "\
 Sink #95
-\tName: bluez_output.B8_DB_38_7E_95_09.1
+\tName: bluez_output.AA_BB_CC_DD_EE_02.1
 \tProperties:
-\t\tapi.bluez5.address = \"B8:DB:38:7E:95:09\"
+\t\tapi.bluez5.address = \"AA:BB:CC:DD:EE:02\"
 \t\tapi.bluez5.codec = \"msbc\"
 \t\tapi.bluez5.profile = \"headset-audio-gateway\"
 \t\tfactory.name = \"api.bluez5.sco.sink\"
@@ -1068,7 +1068,7 @@ Sink #95
 
     #[test]
     fn call_audio_is_a_hands_free_node_not_media() {
-        let pixel = "b8:db:38:7e:95:09";
+        let pixel = "aa:bb:cc:dd:ee:02";
         assert!(!has_call_audio_node(MEDIA_NODES, pixel));
         assert!(has_call_audio_node(CALL_NODES, pixel));
         assert!(has_call_audio_node(&format!("{MEDIA_NODES}{CALL_NODES}"), pixel));
