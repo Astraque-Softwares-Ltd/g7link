@@ -221,9 +221,7 @@ fn strip_jsonc(text: &str) -> String {
                 in_string = true;
                 out.push(c);
             }
-            '/' if chars.peek() == Some(&'/') => {
-                while chars.next_if(|&next| next != '\n').is_some() {}
-            }
+            '/' if chars.peek() == Some(&'/') => while chars.next_if(|&next| next != '\n').is_some() {},
             '/' if chars.peek() == Some(&'*') => {
                 chars.next();
                 let mut last = ' ';
