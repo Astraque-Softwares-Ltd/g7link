@@ -7789,15 +7789,27 @@ async fn a_phone_takes_screenshots_and_recordings_of_a_pc_that_lets_it_see_the_s
     assert_eq!(std::fs::read(&received[0]).unwrap(), b"not really a video");
     assert_eq!(*pc.platform.capture_asks.lock().unwrap(), ["shot", "shot", "record", "stop"]);
 
-    // A recording the PC ends by itself still reaches the phone, which hears why it stopped.
+    // A recording the PC ends by itself still reaches the phone, which hears that it stopped.
     with_timeout("ended", pc.node.pc_capture_record_ended(phone_id, Some(video))).await;
-    let ended = wait_for(&mut phone, "the recording ended", |e| match e {
-        NodeEvent::PcCaptureRecordEnded { device, file } if *device == pc_id => Some(file.clone()),
-        _ => None,
+    let mut ended = None;
+    let mut arrived = std::collections::HashSet::new();
+    wait_for(&mut phone, "the recording ended, and its file", |e| {
+        match e {
+            NodeEvent::PcCaptureRecordEnded { device, file } if *device == pc_id => {
+                ended = Some(file.clone());
+            }
+            NodeEvent::Transfer(t) if matches!(t.state, TransferState::Done { .. }) => {
+                arrived.insert(t.id.clone());
+            }
+            _ => {}
+        }
+        match &ended {
+            Some(Some(file)) if arrived.contains(&file.transfer) => Some(()),
+            Some(None) => panic!("the PC saved the recording, so it sends it"),
+            _ => None,
+        }
     })
-    .await
-    .expect("the video is on its way");
-    wait_transfer(&mut phone, &ended.transfer, "the ended recording", saved).await;
+    .await;
 
     // With files off for the phone, the PC can't send the shot.
     *pc.platform.capture_file.lock().unwrap() = Some(png);
