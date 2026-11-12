@@ -40,6 +40,8 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <vector>
 
 namespace {
 QIcon &appIcon()
@@ -442,12 +444,35 @@ bool runOnQtMainThreadSync(F &&fn, uint32_t timeout_ms = 500)
 }
 } // namespace
 
+namespace {
+// This process's arguments, as the kernel has them.
+std::vector<std::string> processArguments()
+{
+    std::vector<std::string> args;
+    std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
+    std::string arg;
+    while (std::getline(cmdline, arg, '\0'))
+        args.push_back(arg);
+    if (args.empty())
+        args.emplace_back("g7link");
+    return args;
+}
+} // namespace
+
 std::unique_ptr<QGuiApplication> create_qt_app()
 {
-    static int s_argc = 1;
-    static char s_arg0[] = "g7link";
-    static char *s_argv[] = { s_arg0, nullptr };
-    auto app = std::unique_ptr<QGuiApplication>(new QApplication(s_argc, s_argv));
+    // The real arguments: QML reads --minimized and --send-to from them. Qt
+    // keeps pointers to them, so they live on.
+    static std::vector<std::string> s_args = processArguments();
+    static std::vector<char *> s_argv_list = [] {
+        std::vector<char *> list;
+        for (std::string &arg : s_args)
+            list.push_back(arg.data());
+        list.push_back(nullptr);
+        return list;
+    }();
+    static int s_argc = static_cast<int>(s_args.size());
+    auto app = std::unique_ptr<QGuiApplication>(new QApplication(s_argc, s_argv_list.data()));
     // On Wayland this is the app id, which is how the dock finds our icon and name.
     QGuiApplication::setDesktopFileName(QStringLiteral("g7link"));
     QObject::connect(app.get(), &QCoreApplication::aboutToQuit, app.get(), []() {
