@@ -316,6 +316,7 @@
     <string name="remote_more_controls">Mais</string>
     <string name="remote_touchpad_only">Somente touchpad</string>
     <string name="remote_type_placeholder">Digite em %1$s…</string>
+    <string name="remote_paste_image">Colar uma imagem em %1$s</string>
     <string name="remote_dictate">Ditar</string>
     <string name="remote_dictate_stop">Parar</string>
     <string name="remote_dictate_hint">Toque ou segure Ditar para falar em %1$s</string>

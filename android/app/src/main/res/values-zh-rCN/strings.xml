@@ -303,6 +303,7 @@
     <string name="remote_more_controls">更多</string>
     <string name="remote_touchpad_only">仅触控板</string>
     <string name="remote_type_placeholder">在 %1$s 上输入…</string>
+    <string name="remote_paste_image">在 %1$s 上粘贴图片</string>
     <string name="remote_dictate">语音输入</string>
     <string name="remote_dictate_stop">停止</string>
     <string name="remote_dictate_hint">点按或按住“语音输入”向 %1$s 说话</string>

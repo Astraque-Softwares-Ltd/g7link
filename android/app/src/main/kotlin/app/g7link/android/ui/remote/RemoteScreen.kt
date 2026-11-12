@@ -28,6 +28,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
@@ -722,6 +723,9 @@ private fun TouchpadView(
             // Soft keyboard input row when toggled open
             if (showKeyboard) {
                 val typePlaceholder = stringResource(R.string.remote_type_placeholder, pcName)
+                val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                    if (uri != null) core.pasteImageOnPc(pcId, uri, onStatus)
+                }
                 OutlinedTextField(
                     value = typed,
                     onValueChange = { next ->
@@ -744,6 +748,20 @@ private fun TouchpadView(
                         typed = next
                     },
                     placeholder = { Text(typePlaceholder) },
+                    // An image goes where the PC is typing too, as a paste.
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            },
+                        ) {
+                            Icon(
+                                G7Icons.photo,
+                                contentDescription = stringResource(R.string.remote_paste_image, pcName),
+                                tint = g7Tints().coral,
+                            )
+                        }
+                    },
                     maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(

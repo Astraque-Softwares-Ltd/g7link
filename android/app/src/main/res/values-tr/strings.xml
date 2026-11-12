@@ -316,6 +316,7 @@
     <string name="remote_more_controls">Daha fazla</string>
     <string name="remote_touchpad_only">Yalnızca dokunmatik yüzey</string>
     <string name="remote_type_placeholder">%1$s cihazına yazın…</string>
+    <string name="remote_paste_image">%1$s üzerine görsel yapıştır</string>
     <string name="remote_dictate">Dikte et</string>
     <string name="remote_dictate_stop">Durdur</string>
     <string name="remote_dictate_hint">%1$s cihazına konuşmak için Dikte et\'e dokunun veya basılı tutun</string>

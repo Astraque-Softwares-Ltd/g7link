@@ -1669,6 +1669,42 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return sendToPcs(image = true, pcId = pcId) { node, pc -> node.sendClipboardImage(pc, image.mime, image.bytes) }
     }
 
+    /**
+     * Pastes an image where the PC is typing: onto its clipboard, then Ctrl+V,
+     * as the phone's typing field does with text. Only to a PC that's online
+     * now, so nothing pastes later somewhere else.
+     */
+    fun pasteImageOnPc(pcId: String, uri: Uri, onStatus: ((RemoteAccess) -> Unit)? = null) {
+        scope.launch {
+            val pc = _state.value.device(pcId)
+            if (pc == null || !pc.online) {
+                _messages.tryEmit(context.getString(R.string.clip_no_pc))
+                return@launch
+            }
+            val image = when (val read = withContext(Dispatchers.IO) { PhoneClipboard.readImage(context, uri) }) {
+                is PhoneClipboard.ImageResult.Ready -> read.image
+                PhoneClipboard.ImageResult.TooLarge -> {
+                    _messages.tryEmit(context.getString(R.string.clip_image_too_large))
+                    return@launch
+                }
+                PhoneClipboard.ImageResult.Unreadable -> {
+                    _messages.tryEmit(context.getString(R.string.clip_image_unreadable))
+                    return@launch
+                }
+            }
+            val node = node ?: return@launch
+            try {
+                node.sendClipboardImage(pcId, image.mime, image.bytes)
+            } catch (e: G7LinkException) {
+                _messages.tryEmit(
+                    if (e is G7LinkException.Denied) context.getString(R.string.clip_off_for, pc.name) else describe(e),
+                )
+                return@launch
+            }
+            remoteKey(pcId, "v", listOf("ctrl"), onStatus)
+        }
+    }
+
     private suspend fun sendToPcs(
         image: Boolean,
         pcId: String? = null,

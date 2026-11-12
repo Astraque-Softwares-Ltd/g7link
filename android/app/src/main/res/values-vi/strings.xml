@@ -313,6 +313,7 @@
 <string name="remote_more_controls">Thêm</string>
 <string name="remote_touchpad_only">Chỉ Touchpad</string>
 <string name="remote_type_placeholder">Gõ trên %1$s…</string>
+<string name="remote_paste_image">Dán ảnh vào %1$s</string>
 <string name="remote_dictate">Nhập giọng nói</string>
 <string name="remote_dictate_stop">Dừng</string>
 <string name="remote_dictate_hint">Chạm hoặc giữ Nhập giọng nói để nói vào %1$s</string>
