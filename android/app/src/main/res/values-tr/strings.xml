@@ -319,6 +319,10 @@
     <string name="remote_paste_image">%1$s üzerine görsel yapıştır</string>
     <string name="remote_dictate">Dikte et</string>
     <string name="remote_dictate_stop">Durdur</string>
+    <string name="remote_send">Gönder</string>
+    <string name="remote_send_files">%1$s cihazına dosya gönder</string>
+    <string name="remote_dictate_hold_hint">Yazmak için bırakın · iptal için sola kaydırın</string>
+    <string name="remote_dictate_tap_hint">Yazmak için tekrar dokunun</string>
     <string name="remote_dictate_hint">%1$s cihazına konuşmak için Dikte et\'e dokunun veya basılı tutun</string>
     <string name="remote_dictate_listening">%1$s için dinleniyor…</string>
     <string name="remote_dictate_typing">%1$s cihazına yazılıyor…</string>

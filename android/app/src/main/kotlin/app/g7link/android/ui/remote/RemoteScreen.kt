@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.remote
 
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import app.g7link.android.ui.home.PcSoundRows
-import app.g7link.android.ui.home.linkText
-import app.g7link.android.ui.theme.G7Header
-import app.g7link.android.ui.theme.G7IconButton
-import app.g7link.android.ui.theme.G7Icons
-import app.g7link.android.ui.theme.G7RaisedButton
-import app.g7link.android.ui.theme.G7Row
-import app.g7link.android.ui.theme.G7Tabs
-import app.g7link.android.ui.theme.g7Tints
 import android.Manifest
 import android.app.Activity
 import android.content.Context
@@ -42,21 +32,23 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
@@ -65,30 +57,25 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -96,9 +83,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -110,7 +99,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -119,6 +107,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -127,11 +116,21 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.core.WakeState
+import app.g7link.android.ui.home.PcSoundRows
+import app.g7link.android.ui.home.linkText
+import app.g7link.android.ui.theme.G7Header
+import app.g7link.android.ui.theme.G7IconButton
+import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.theme.G7RaisedButton
+import app.g7link.android.ui.theme.G7Row
+import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.LocalReducedMotion
+import app.g7link.android.ui.theme.g7Tints
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlinx.coroutines.Job
@@ -647,6 +646,12 @@ private fun TouchpadView(
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) core.pasteImageOnPc(pcId, uri, onStatus)
+    }
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) core.sendFiles(pcId, uris)
+    }
 
     LaunchedEffect(showKeyboard) {
         if (showKeyboard) {
@@ -669,13 +674,14 @@ private fun TouchpadView(
                 .then(if (touchpadOnly) Modifier.padding(8.dp) else Modifier),
             verticalArrangement = Arrangement.spacedBy(if (touchpadOnly) 6.dp else 10.dp),
         ) {
-            if (!imeVisible) {
+            // The touchpad takes whatever room the keys and the keyboard leave.
+            if (!imeVisible || padWhileTyping) {
                 TouchpadSurface(
                     pcId = pcId,
                     core = core,
                     sensitivity = sensitivity,
                     onStatus = onStatus,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    modifier = Modifier.weight(1f).heightIn(min = PAD_WHILE_TYPING).fillMaxWidth(),
                     scrollLocked = scrollLocked,
                 )
             }
@@ -718,115 +724,68 @@ private fun TouchpadView(
 
             if (!showKeyboard) return@Column
 
-            // Scroll rather than squeeze the typing field when the keyboard is up.
-            Column(
-                modifier = if (imeVisible) Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()) else Modifier,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                // Voice typing bar (Dictate button: hold to talk, or tap to start/stop)
-                VoiceTypingBar(
-                    pcId = pcId,
-                    pcName = pcName,
-                    core = core,
-                    utteranceJoiner = utteranceJoiner,
-                    onStatus = onStatus,
-                )
+            // Special keys & modifiers bar (always accessible in Touchpad mode)
+            SpecialKeysBar(
+                activeMods = activeMods,
+                showExtraKeys = showKeyboard,
+                onToggleMod = { mod ->
+                    if (mod in activeMods) activeMods.remove(mod) else activeMods.add(mod)
+                },
+                onKey = { key, forceMods ->
+                    val mods = forceMods ?: activeMods.toList()
+                    core.remoteKey(pcId, key, mods, onStatus)
+                    if (forceMods == null) activeMods.clear()
+                },
+            )
 
-                // Special keys & modifiers bar (always accessible in Touchpad mode)
-                SpecialKeysBar(
-                    activeMods = activeMods,
-                    showExtraKeys = showKeyboard,
-                    onToggleMod = { mod ->
-                        if (mod in activeMods) activeMods.remove(mod) else activeMods.add(mod)
-                    },
-                    onKey = { key, forceMods ->
-                        val mods = forceMods ?: activeMods.toList()
-                        core.remoteKey(pcId, key, mods, onStatus)
-                        if (forceMods == null) activeMods.clear()
-                    },
-                )
-            }
-
-            // Soft keyboard input row when toggled open
-            if (showKeyboard) {
-                val typePlaceholder = stringResource(R.string.remote_type_placeholder, pcName)
-                val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-                    if (uri != null) core.pasteImageOnPc(pcId, uri, onStatus)
-                }
-                OutlinedTextField(
-                    value = typed,
-                    onValueChange = { next ->
-                        val diff = typingDiff(typed.text, next.text)
-                        if (activeMods.isNotEmpty() && diff.backspaces == 0 && diff.added.length == 1 &&
-                            diff.added[0].isLetterOrDigit()
-                        ) {
-                            // A shortcut (Ctrl+C...), not text: it stays out of the field.
-                            core.remoteKey(pcId, diff.added.lowercase(), activeMods.toList(), onStatus)
-                            activeMods.clear()
-                            return@OutlinedTextField
-                        }
-                        repeat(diff.backspaces) { i ->
-                            core.remoteKey(pcId, "backspace", if (i == 0) activeMods.toList() else emptyList(), onStatus)
-                        }
-                        if (diff.added.isNotEmpty()) core.remoteText(pcId, diff.added, onStatus)
-                        if (diff.backspaces > 0 || diff.added.isNotEmpty()) activeMods.clear()
-                        // The cursor and selection here are free to move: an edit anywhere
-                        // goes over as Backspaces from the end, then what follows it again.
-                        typed = next
-                    },
-                    placeholder = { Text(typePlaceholder) },
-                    // An image goes where the PC is typing too, as a paste.
-                    trailingIcon = {
-                        IconButton(
-                            onClick = {
-                                pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            },
-                        ) {
-                            Icon(
-                                G7Icons.photo,
-                                contentDescription = stringResource(R.string.remote_paste_image, pcName),
-                                tint = g7Tints().coral,
-                            )
-                        }
-                    },
-                    maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(
-                        onSend = {
-                            core.remoteKey(pcId, "enter", activeMods.toList(), onStatus)
-                            activeMods.clear()
-                            typed = TextFieldValue("")
-                        },
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(focusRequester)
-                        // Backspace with nothing typed here still deletes on the PC.
-                        .onPreviewKeyEvent { event ->
-                            if (event.type == KeyEventType.KeyDown && event.key == Key.Backspace && typed.text.isEmpty()) {
-                                core.remoteKey(pcId, "backspace", activeMods.toList(), onStatus)
-                                activeMods.clear()
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        .semantics { contentDescription = typePlaceholder },
-                )
-            }
-
-            // While typing, the strip sits right above the keyboard, under the
-            // field, where both thumbs reach it (#52).
-            if (imeVisible && padWhileTyping) {
-                TouchpadSurface(
-                    pcId = pcId,
-                    core = core,
-                    sensitivity = sensitivity,
-                    onStatus = onStatus,
-                    modifier = Modifier.height(PAD_WHILE_TYPING).fillMaxWidth(),
-                    scrollLocked = scrollLocked,
-                )
-            }
+            // Typing as in a chat app: what's typed appears on the PC as it's typed,
+            // the phone's Enter is a new line, and the round button sends or dictates.
+            TypingComposer(
+                pcId = pcId,
+                pcName = pcName,
+                core = core,
+                utteranceJoiner = utteranceJoiner,
+                onStatus = onStatus,
+                typed = typed,
+                onTyped = { next ->
+                    val diff = typingDiff(typed.text, next.text)
+                    if (activeMods.isNotEmpty() && diff.backspaces == 0 && diff.added.length == 1 &&
+                        diff.added[0].isLetterOrDigit()
+                    ) {
+                        // A shortcut (Ctrl+C...), not text: it stays out of the field.
+                        core.remoteKey(pcId, diff.added.lowercase(), activeMods.toList(), onStatus)
+                        activeMods.clear()
+                        return@TypingComposer
+                    }
+                    repeat(diff.backspaces) { i ->
+                        core.remoteKey(pcId, "backspace", if (i == 0) activeMods.toList() else emptyList(), onStatus)
+                    }
+                    // A new line is Shift+Enter on the PC: a line break in chats and
+                    // prompts, where Enter alone would send.
+                    diff.added.split('\n').forEachIndexed { i, line ->
+                        if (i > 0) core.remoteKey(pcId, "enter", listOf("shift"), onStatus)
+                        if (line.isNotEmpty()) core.remoteText(pcId, line, onStatus)
+                    }
+                    if (diff.backspaces > 0 || diff.added.isNotEmpty()) activeMods.clear()
+                    // The cursor and selection here are free to move: an edit anywhere
+                    // goes over as Backspaces from the end, then what follows it again.
+                    typed = next
+                },
+                onSend = {
+                    core.remoteKey(pcId, "enter", activeMods.toList(), onStatus)
+                    activeMods.clear()
+                    typed = TextFieldValue("")
+                },
+                onBackspaceWhenEmpty = {
+                    core.remoteKey(pcId, "backspace", activeMods.toList(), onStatus)
+                    activeMods.clear()
+                },
+                onPickImage = {
+                    pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onPickFiles = { pickFiles.launch(arrayOf("*/*")) },
+                focusRequester = focusRequester,
+            )
         }
     }
 }
@@ -1100,14 +1059,25 @@ private sealed interface DictateState {
     data class Error(val kind: DictateError) : DictateState
 }
 
+/**
+ * Speech typed into the PC: what dictation is doing, and starting (asking for
+ * the microphone first when needed), stopping (what was heard is typed) and
+ * cancelling it (nothing is typed).
+ */
+private class Dictation(
+    val state: DictateState,
+    val start: () -> Unit,
+    val stop: () -> Unit,
+    val cancel: () -> Unit,
+)
+
 @Composable
-private fun VoiceTypingBar(
+private fun rememberDictation(
     pcId: String,
-    pcName: String,
     core: Core,
     utteranceJoiner: UtteranceJoiner,
     onStatus: (Core.RemoteAccess) -> Unit,
-) {
+): Dictation {
     val context = LocalContext.current
     var state by remember(pcId) { mutableStateOf<DictateState>(DictateState.Idle()) }
     var recognizer by remember { mutableStateOf<SpeechRecognizer?>(null) }
@@ -1285,6 +1255,41 @@ private fun VoiceTypingBar(
         }
     }
 
+    fun cancelRecognition() {
+        destroyRecognizer()
+        state = DictateState.Idle()
+    }
+
+    fun startOrAsk() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            startRecognition()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    return Dictation(
+        state = state,
+        start = { startOrAsk() },
+        stop = { stopRecognition() },
+        cancel = { cancelRecognition() },
+    )
+}
+
+@Composable
+private fun VoiceTypingBar(
+    pcId: String,
+    pcName: String,
+    core: Core,
+    utteranceJoiner: UtteranceJoiner,
+    onStatus: (Core.RemoteAccess) -> Unit,
+) {
+    val dictation = rememberDictation(pcId, core, utteranceJoiner, onStatus)
+    val state = dictation.state
+    val latest by rememberUpdatedState(dictation)
+
     val isListening = state is DictateState.Listening
     val isError = state is DictateState.Error
 
@@ -1377,18 +1382,7 @@ private fun VoiceTypingBar(
                         role = Role.Button
                         contentDescription = dictateLabel
                         onClick(label = dictateLabel) {
-                            if (currentIsListening) {
-                                stopRecognition()
-                            } else if (
-                                ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.RECORD_AUDIO,
-                                ) == PackageManager.PERMISSION_GRANTED
-                            ) {
-                                startRecognition()
-                            } else {
-                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
+                            if (currentIsListening) latest.stop() else latest.start()
                             true
                         }
                     }
@@ -1404,30 +1398,15 @@ private fun VoiceTypingBar(
                                     val ev = awaitPointerEvent()
                                     if (ev.changes.none { it.pressed }) break
                                 }
-                                stopRecognition()
+                                latest.stop()
                             } else {
-                                val hasPerm = ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.RECORD_AUDIO,
-                                ) == PackageManager.PERMISSION_GRANTED
-
-                                if (!hasPerm) {
-                                    while (true) {
-                                        val ev = awaitPointerEvent()
-                                        if (ev.changes.none { it.pressed }) break
-                                    }
-                                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                } else {
-                                    startRecognition()
-                                    while (true) {
-                                        val ev = awaitPointerEvent()
-                                        if (ev.changes.none { it.pressed }) break
-                                    }
-                                    val heldMs = System.currentTimeMillis() - downTime
-                                    if (heldMs >= holdThresholdMs) {
-                                        stopRecognition()
-                                    }
+                                latest.start()
+                                while (true) {
+                                    val ev = awaitPointerEvent()
+                                    if (ev.changes.none { it.pressed }) break
                                 }
+                                val heldMs = System.currentTimeMillis() - downTime
+                                if (heldMs >= holdThresholdMs) latest.stop()
                             }
                         }
                     },
@@ -1443,6 +1422,229 @@ private fun VoiceTypingBar(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Typing into the PC the way a chat app types: a round field that grows to
+ * five lines, a paperclip (send files) and a picture (paste an image) inside
+ * it, and a round button beside it. With text it sends (Enter on the PC) and
+ * clears the field; empty it dictates: a tap starts and the next one stops, or
+ * hold to talk, let go to type it and slide left to drop it, as a voice note.
+ */
+@Composable
+private fun TypingComposer(
+    pcId: String,
+    pcName: String,
+    core: Core,
+    utteranceJoiner: UtteranceJoiner,
+    onStatus: (Core.RemoteAccess) -> Unit,
+    typed: TextFieldValue,
+    onTyped: (TextFieldValue) -> Unit,
+    onSend: () -> Unit,
+    onBackspaceWhenEmpty: () -> Unit,
+    onPickImage: () -> Unit,
+    onPickFiles: () -> Unit,
+    focusRequester: FocusRequester,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val tints = g7Tints()
+    val dictation = rememberDictation(pcId, core, utteranceJoiner, onStatus)
+    val latest by rememberUpdatedState(dictation)
+    val state = dictation.state
+    val listening = state is DictateState.Listening
+    val sends = typed.text.isNotEmpty() && !listening
+    val currentSends by rememberUpdatedState(sends)
+    val currentOnSend by rememberUpdatedState(onSend)
+    // Held down to talk, and dragged far enough left to drop what's heard.
+    var holding by remember { mutableStateOf(false) }
+    var dropping by remember { mutableStateOf(false) }
+    val placeholder = stringResource(R.string.remote_type_placeholder, pcName)
+    val pillShape = RoundedCornerShape(24.dp)
+
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (listening) {
+                // Like a voice note: the field gives way to what's heard.
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clip(pillShape)
+                        .background(scheme.surfaceContainer)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(tints.red))
+                    Text(
+                        (state as? DictateState.Listening)?.partial?.ifEmpty { null }
+                            ?: stringResource(R.string.remote_dictate_listening, pcName),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (dropping) scheme.onSurfaceVariant else scheme.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clip(pillShape)
+                        .background(scheme.surfaceContainer)
+                        .padding(start = 16.dp, end = 2.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    BasicTextField(
+                        value = typed,
+                        onValueChange = onTyped,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = scheme.onSurface),
+                        cursorBrush = SolidColor(scheme.primary),
+                        maxLines = 5,
+                        // Enter is a new line here, as in a chat app; the round button sends.
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Sentences,
+                            imeAction = ImeAction.Default,
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = 13.dp)
+                            .focusRequester(focusRequester)
+                            // Backspace with nothing typed here still deletes on the PC.
+                            .onPreviewKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown && event.key == Key.Backspace &&
+                                    typed.text.isEmpty()
+                                ) {
+                                    onBackspaceWhenEmpty()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            .semantics { contentDescription = placeholder },
+                        decorationBox = { field ->
+                            Box {
+                                if (typed.text.isEmpty()) {
+                                    Text(
+                                        placeholder,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = scheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                field()
+                            }
+                        },
+                    )
+                    IconButton(onClick = onPickFiles) {
+                        Icon(
+                            G7Icons.paperclip,
+                            contentDescription = stringResource(R.string.remote_send_files, pcName),
+                            tint = scheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    IconButton(onClick = onPickImage) {
+                        Icon(
+                            G7Icons.photo,
+                            contentDescription = stringResource(R.string.remote_paste_image, pcName),
+                            tint = scheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+
+            val buttonLabel = stringResource(
+                when {
+                    sends -> R.string.remote_send
+                    listening -> R.string.remote_dictate_stop
+                    else -> R.string.remote_dictate
+                },
+            )
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(if (listening) tints.red else scheme.primary)
+                    .semantics(mergeDescendants = true) {
+                        role = Role.Button
+                        contentDescription = buttonLabel
+                        onClick(label = buttonLabel) {
+                            when {
+                                currentSends -> currentOnSend()
+                                latest.state is DictateState.Listening -> latest.stop()
+                                else -> latest.start()
+                            }
+                            true
+                        }
+                    }
+                    .pointerInput(pcId) {
+                        val holdMs = 350L
+                        val dropPx = 80.dp.toPx()
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val downTime = System.currentTimeMillis()
+                            if (currentSends) {
+                                waitForUpOrCancellation()?.let { currentOnSend() }
+                                return@awaitEachGesture
+                            }
+                            if (latest.state is DictateState.Listening) {
+                                waitForUpOrCancellation()
+                                latest.stop()
+                                return@awaitEachGesture
+                            }
+                            latest.start()
+                            while (true) {
+                                val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                                if (change == null || !change.pressed) break
+                                if (System.currentTimeMillis() - downTime >= holdMs) holding = true
+                                dropping = holding && change.position.x - down.position.x < -dropPx
+                            }
+                            // A tap leaves it listening until the next tap; a hold ends on lifting.
+                            if (holding) {
+                                if (dropping) latest.cancel() else latest.stop()
+                            }
+                            holding = false
+                            dropping = false
+                        }
+                    },
+            ) {
+                Icon(
+                    if (sends) G7Icons.arrowUp else G7Icons.mic,
+                    contentDescription = null,
+                    tint = if (listening) scheme.surface else scheme.onPrimary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+
+        // What dictation is doing, under the field, only while there's something to say.
+        val status = when (val s = state) {
+            is DictateState.Listening -> stringResource(
+                if (holding) R.string.remote_dictate_hold_hint else R.string.remote_dictate_tap_hint,
+            )
+            is DictateState.Typing -> stringResource(R.string.remote_dictate_typing, pcName)
+            is DictateState.Error -> when (s.kind) {
+                DictateError.NoRecognizer -> stringResource(R.string.remote_dictate_no_recognizer)
+                DictateError.PermissionNeeded -> stringResource(R.string.remote_dictate_permission_needed, pcName)
+                DictateError.NoSpeech -> stringResource(R.string.remote_dictate_no_speech)
+                DictateError.Failed -> stringResource(R.string.remote_dictate_error)
+            }
+            is DictateState.Idle -> null
+        }
+        if (status != null) {
+            Text(
+                status,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (state is DictateState.Error) tints.red else scheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp),
+            )
         }
     }
 }

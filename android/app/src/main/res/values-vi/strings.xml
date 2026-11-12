@@ -316,6 +316,10 @@
 <string name="remote_paste_image">Dán ảnh vào %1$s</string>
 <string name="remote_dictate">Nhập giọng nói</string>
 <string name="remote_dictate_stop">Dừng</string>
+<string name="remote_send">Gửi</string>
+<string name="remote_send_files">Gửi tệp tới %1$s</string>
+<string name="remote_dictate_hold_hint">Thả ra để nhập · vuốt sang trái để hủy</string>
+<string name="remote_dictate_tap_hint">Chạm lần nữa để nhập</string>
 <string name="remote_dictate_hint">Chạm hoặc giữ Nhập giọng nói để nói vào %1$s</string>
 <string name="remote_dictate_listening">Đang lắng nghe để nhập vào %1$s…</string>
 <string name="remote_dictate_typing">Đang nhập trên %1$s…</string>

@@ -306,6 +306,10 @@
     <string name="remote_paste_image">在 %1$s 上粘贴图片</string>
     <string name="remote_dictate">语音输入</string>
     <string name="remote_dictate_stop">停止</string>
+    <string name="remote_send">发送</string>
+    <string name="remote_send_files">发送文件到 %1$s</string>
+    <string name="remote_dictate_hold_hint">松开即输入 · 向左滑动取消</string>
+    <string name="remote_dictate_tap_hint">再次点按即输入</string>
     <string name="remote_dictate_hint">点按或按住“语音输入”向 %1$s 说话</string>
     <string name="remote_dictate_listening">正在为 %1$s 聆听…</string>
     <string name="remote_dictate_typing">正在 %1$s 上输入…</string>

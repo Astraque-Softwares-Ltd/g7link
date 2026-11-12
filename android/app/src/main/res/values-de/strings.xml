@@ -319,6 +319,10 @@
     <string name="remote_paste_image">Bild auf %1$s einfügen</string>
     <string name="remote_dictate">Diktieren</string>
     <string name="remote_dictate_stop">Stopp</string>
+    <string name="remote_send">Senden</string>
+    <string name="remote_send_files">Dateien an %1$s senden</string>
+    <string name="remote_dictate_hold_hint">Loslassen zum Tippen · nach links wischen zum Abbrechen</string>
+    <string name="remote_dictate_tap_hint">Erneut tippen, um es einzugeben</string>
     <string name="remote_dictate_hint">Tippe oder halte „Diktieren“, um auf %1$s zu sprechen</string>
     <string name="remote_dictate_listening">Höre zu für %1$s…</string>
     <string name="remote_dictate_typing">Tippe auf %1$s…</string>

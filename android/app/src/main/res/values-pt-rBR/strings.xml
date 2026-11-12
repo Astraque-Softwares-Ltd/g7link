@@ -319,6 +319,10 @@
     <string name="remote_paste_image">Colar uma imagem em %1$s</string>
     <string name="remote_dictate">Ditar</string>
     <string name="remote_dictate_stop">Parar</string>
+    <string name="remote_send">Enviar</string>
+    <string name="remote_send_files">Enviar arquivos para %1$s</string>
+    <string name="remote_dictate_hold_hint">Solte para digitar · deslize para a esquerda para cancelar</string>
+    <string name="remote_dictate_tap_hint">Toque de novo para digitar</string>
     <string name="remote_dictate_hint">Toque ou segure Ditar para falar em %1$s</string>
     <string name="remote_dictate_listening">Ouvindo para digitar em %1$s…</string>
     <string name="remote_dictate_typing">Digitando em %1$s…</string>
