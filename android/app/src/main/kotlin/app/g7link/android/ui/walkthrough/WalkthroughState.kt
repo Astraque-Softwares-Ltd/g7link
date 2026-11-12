@@ -94,6 +94,7 @@ data class StartupWalkthroughResolution(
 fun resolveStartupWalkthrough(
     persistence: WalkthroughPersistence,
     hasPairedDevices: Boolean,
+    walkthroughAlreadyActive: Boolean = false,
 ): StartupWalkthroughResolution {
     if (persistence.completed) {
         return StartupWalkthroughResolution(
@@ -101,6 +102,15 @@ fun resolveStartupWalkthrough(
             initialStep = WalkthroughStep.Welcome,
             markCompletedAutomatically = false,
             showWhatsNewGuideBanner = !persistence.whatsNewGuideDismissed && hasPairedDevices,
+        )
+    }
+    // A first run under way stays open, even when a PC pairs through a link meanwhile.
+    if (walkthroughAlreadyActive) {
+        return StartupWalkthroughResolution(
+            showWalkthrough = true,
+            initialStep = WalkthroughStep.Welcome,
+            markCompletedAutomatically = false,
+            showWhatsNewGuideBanner = false,
         )
     }
     if (hasPairedDevices) {
