@@ -1553,6 +1553,53 @@ async fn notification_toggles_are_honored_on_both_devices() {
     wait_for(&mut pc, "synced again", snapshot(1)).await;
 }
 
+/// Unlike other toggles, `bt_media` is kept the same on both devices: a
+/// change on either reaches the other, which doesn't send it back.
+#[tokio::test(flavor = "multi_thread")]
+async fn bt_media_is_kept_the_same_on_both_devices() {
+    use g7link_core::BT_MEDIA_TOGGLE;
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let allowed = |dev: &TestDevice, peer: g7link_core::DeviceId| {
+        dev.node.device_toggles(peer).unwrap().contains(&(BT_MEDIA_TOGGLE, true))
+    };
+    let changed_by = |from: g7link_core::DeviceId, to: bool| {
+        move |e: &NodeEvent| match e {
+            NodeEvent::DeviceToggleChanged { device, toggle, on }
+                if *device == from && toggle == BT_MEDIA_TOGGLE && *on == to =>
+            {
+                Some(())
+            }
+            _ => None,
+        }
+    };
+    assert!(!allowed(&pc, phone_id) && !allowed(&phone, pc_id), "off by default on both");
+
+    // Turned on and straight off again on the PC: the phone ends up off.
+    pc.node.set_device_toggle(phone_id, BT_MEDIA_TOGGLE, true).unwrap();
+    pc.node.set_device_toggle(phone_id, BT_MEDIA_TOGGLE, false).unwrap();
+    wait_for(&mut phone, "on from the PC", changed_by(pc_id, true)).await;
+    wait_for(&mut phone, "off from the PC", changed_by(pc_id, false)).await;
+    assert!(!allowed(&phone, pc_id));
+    // No echo: an "on" sent back would turn the PC's on again.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!allowed(&pc, phone_id), "the phone didn't send the change back");
+    while let Ok(event) = pc.events.try_recv() {
+        assert!(!matches!(event, NodeEvent::DeviceToggleChanged { .. }), "echoed: {event:?}");
+    }
+
+    // On the phone: the PC follows.
+    phone.node.set_device_toggle(pc_id, BT_MEDIA_TOGGLE, true).unwrap();
+    wait_for(&mut pc, "on from the phone", changed_by(phone_id, true)).await;
+    assert!(allowed(&pc, phone_id) && allowed(&phone, pc_id));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    while let Ok(event) = phone.events.try_recv() {
+        assert!(!matches!(event, NodeEvent::DeviceToggleChanged { .. }), "echoed: {event:?}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn clipboard_text_goes_both_ways_with_consent() {
     let mut pc = device("Desktop", DeviceKind::Desktop).await;

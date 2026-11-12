@@ -369,6 +369,8 @@
     <string name="mic_request_text">Başlatmak için dokunun. Siz veya bilgisayar durdurana kadar açık kalır.</string>
     <string name="mic_request_start">Başlat</string>
     <string name="mic_pc_toggle">Bu telefonu mikrofon olarak kullan</string>
+    <string name="bt_media_pc_toggle">Telefon sesini %1$s üzerinde çal</string>
+    <string name="bt_media_pc_hint">Bluetooth ile</string>
     <string name="start_without_asking_toggle">Kamerayı ve mikrofonu sormadan başlat</string>
     <string name="start_without_asking_hint">Bu bilgisayar istediğinde telefona dokunmadan hemen açılırlar. Elevated gerekir. Elevated olmadan telefon her zamanki gibi sorar.</string>
     <string name="recorder_notification_recording">%1$s için kaydediliyor</string>

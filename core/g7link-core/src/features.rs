@@ -342,6 +342,9 @@ pub const DEVICE_TOGGLES: &[(&str, bool)] = &[
     ("clipboard", true),
     ("files", true),
     ("media", true),
+    // A phone's media stays on the phone (its headphones) unless the user
+    // lets it play on the PC over Bluetooth. Kept the same on both devices.
+    ("bt_media", false),
     ("photos", true),
     ("recordings", true),
     ("toggles", true),

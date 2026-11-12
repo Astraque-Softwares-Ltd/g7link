@@ -145,7 +145,7 @@ pub use localsend::{
     LOCALSEND_DEFAULT_PORT, LOCALSEND_MULTICAST_ADDR, LOCALSEND_PROTOCOL_VERSION, LocalSendPeer,
     peer_device_id as localsend_peer_device_id,
 };
-pub use media::{MediaAction, MediaError};
+pub use media::{BT_MEDIA_TOGGLE, MediaAction, MediaError};
 pub use mic::{MicSink, TOGGLE as MIC_TOGGLE};
 pub use mirror::{MirrorSend, MirrorSink, MirrorStream, PC_MIRROR_TOGGLE};
 pub use node::{DataRetentionCounts, Node, PeerDiagnostics};

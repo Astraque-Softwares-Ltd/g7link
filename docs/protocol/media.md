@@ -152,3 +152,23 @@ same 10 minutes as for watching, renewed by every read), so a phone can't
 read anything else on the PC; without one the answer is `DENIED`.
 A newer offer, streamed or not, replaces it.
 
+## 5. A phone's media over Bluetooth
+
+A phone connected to a PC over Bluetooth (for calls, or by hand) also
+opens a media link, and Android then plays everything on the PC instead of
+the headphones it was using. Each device has a `bt_media` device toggle for
+the other, off by default: on a PC, whether that phone may play its media
+there (off, the PC closes the phone's media link as it opens; calls aren't
+touched); on a phone, the same for that PC. Unlike other toggles, both
+devices keep it the same:
+
+```
+t = "audio.bt_media"  b = { on_pc: bool }   // either way, no reply
+```
+
+A device sends it when its user changes `bt_media` for a connected device,
+in the order of the changes. The receiver stores `on_pc` as its own
+`bt_media` toggle for the sender and does **not** send it back, so a change
+never bounces between the two. A change made while the other device is
+offline isn't sent later. A body that isn't `{ on_pc: bool }` is ignored.
+

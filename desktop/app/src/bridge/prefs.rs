@@ -59,8 +59,6 @@ pub mod qobject {
         #[qproperty(bool, pause_media_on_call)]
         /// Connect a call's audio to this PC over Bluetooth when it rings.
         #[qproperty(bool, auto_call_audio)]
-        /// Let a paired phone play its media on this PC over Bluetooth.
-        #[qproperty(bool, phone_media_on_pc, cxx_name = "phoneMediaOnPc")]
         /// Mute this PC while a phone watches its playback (Play on phone).
         #[qproperty(bool, mute_while_watched, cxx_name = "muteWhileWatched")]
         /// The app's language: "" for the system's, "en", "zh_CN".
@@ -329,7 +327,6 @@ pub struct PreferencesRust {
     auto_copy_otp: bool,
     pause_media_on_call: bool,
     auto_call_audio: bool,
-    phone_media_on_pc: bool,
     mute_while_watched: bool,
     language: QString,
     sync_dnd: bool,
@@ -423,7 +420,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         crate::notifications::set_auto_copy_otp(settings.auto_copy_otp);
         self.as_mut().set_pause_media_on_call(settings.pause_media_on_call);
         self.as_mut().set_auto_call_audio(settings.auto_call_audio);
-        self.as_mut().set_phone_media_on_pc(settings.phone_media_on_pc);
         self.as_mut().set_mute_while_watched(settings.mute_while_watched);
         self.as_mut().set_language(QString::from(&settings.language));
         crate::pc_mirror::set_mute_while_watched(settings.mute_while_watched);
@@ -563,12 +559,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut()
             .on_auto_call_audio_changed(|p| {
                 crate::calls::set_auto_call_audio(p.auto_call_audio);
-                p.save();
-            })
-            .release();
-        self.as_mut()
-            .on_phone_media_on_pc_changed(|p| {
-                crate::calls::set_phone_media_on_pc(p.phone_media_on_pc);
                 p.save();
             })
             .release();
@@ -1135,7 +1125,6 @@ impl qobject::Preferences {
             auto_copy_otp: p.auto_copy_otp,
             pause_media_on_call: p.pause_media_on_call,
             auto_call_audio: p.auto_call_audio,
-            phone_media_on_pc: p.phone_media_on_pc,
             mute_while_watched: p.mute_while_watched,
             language: String::from(&p.language),
             sync_dnd: p.sync_dnd,

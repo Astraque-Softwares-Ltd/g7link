@@ -365,6 +365,8 @@
 <string name="mic_request_text">Chạm để bắt đầu. Micrô sẽ bật cho đến khi bạn hoặc PC tắt.</string>
 <string name="mic_request_start">Bắt đầu</string>
 <string name="mic_pc_toggle">Dùng điện thoại này làm micrô</string>
+<string name="bt_media_pc_toggle">Phát âm thanh điện thoại trên %1$s</string>
+<string name="bt_media_pc_hint">Qua Bluetooth</string>
 <string name="start_without_asking_toggle">Bật máy ảnh và micrô mà không cần hỏi</string>
 <string name="start_without_asking_hint">Khi PC này yêu cầu, chúng sẽ bật ngay mà không cần chạm trên điện thoại. Cần quyền Elevated. Nếu không có, điện thoại sẽ hỏi như thường lệ.</string>
 <string name="recorder_notification_recording">Đang ghi âm cho %1$s</string>

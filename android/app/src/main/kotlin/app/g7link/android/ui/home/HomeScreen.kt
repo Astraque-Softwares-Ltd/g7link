@@ -232,6 +232,7 @@ fun HomeScreen(
     onClearTimeline: () -> Unit = {},
     onResendTimelineEntry: (entry: TimelineEntry) -> Unit = {},
     onSetPcAudio: (pcId: String, volume: Int?, muted: Boolean?) -> Unit = { _, _, _ -> },
+    onSetBtMedia: (pcId: String, on: Boolean) -> Unit = { _, _ -> },
     onStopKeyboardFromPc: (pcId: String) -> Unit = {},
     onListPcFiles: (pcId: String, path: String, onResult: (PcFolder) -> Unit) -> Unit = { _, _, onResult ->
         onResult(PcFolder(emptyList()))
@@ -736,6 +737,8 @@ fun HomeScreen(
                             deckState = deckState,
                             highlighted = pulsingTarget == GuideHighlightTarget.HOME_PC_AUDIO,
                             onSetPcAudio = { volume, muted -> onSetPcAudio(pc.id, volume, muted) },
+                            btMedia = pc.btMedia,
+                            onSetBtMedia = { on -> onSetBtMedia(pc.id, on) },
                         )
                     }
                 }
@@ -1200,6 +1203,8 @@ internal fun PcSoundRows(
     deckState: DeckState,
     onSetPcAudio: (volume: Int?, muted: Boolean?) -> Unit,
     highlighted: Boolean = false,
+    btMedia: Boolean? = null,
+    onSetBtMedia: (on: Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val tints = g7Tints()
@@ -1357,6 +1362,17 @@ internal fun PcSoundRows(
         icon = G7Icons.speaker,
         tint = tints.teal,
     )
+    if (btMedia != null) {
+        // The other way round: this phone's media on the PC over Bluetooth (off by default).
+        G7SwitchRow(
+            label = stringResource(R.string.bt_media_pc_toggle, pcName),
+            sublabel = stringResource(R.string.bt_media_pc_hint),
+            checked = btMedia,
+            onCheckedChange = onSetBtMedia,
+            icon = G7Icons.bluetooth,
+            tint = tints.blue,
+        )
+    }
 
     if (showOutputs && hardwareOutputs.isNotEmpty()) {
         PcAudioOutputsDialog(

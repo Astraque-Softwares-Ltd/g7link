@@ -441,10 +441,6 @@ pub struct Settings {
     /// Connect a call's audio to this PC over Bluetooth when it rings.
     #[serde(default, alias = "auto_call_audio")]
     pub auto_call_audio: bool,
-    /// Let a paired phone play its media on this PC over Bluetooth. Off, its
-    /// media stays on the phone even while it's connected here for calls.
-    #[serde(default)]
-    pub phone_media_on_pc: bool,
     /// The app's language: a locale name from `i18n::LANGUAGES`, or "" for
     /// the system's.
     pub language: String,
@@ -675,7 +671,6 @@ impl Default for Settings {
             auto_copy_otp: false,
             pause_media_on_call: true,
             auto_call_audio: false,
-            phone_media_on_pc: false,
             mute_while_watched: true,
             language: String::new(),
             sync_dnd: false,
@@ -806,7 +801,6 @@ impl Settings {
             self.window_maximized,
         );
         crate::calls::set_auto_call_audio(self.auto_call_audio);
-        crate::calls::set_phone_media_on_pc(self.phone_media_on_pc);
     }
 
     /// Loads the settings, falling back to defaults if the file is missing.
@@ -945,7 +939,6 @@ mod tests {
             auto_copy_otp: true,
             pause_media_on_call: false,
             auto_call_audio: true,
-            phone_media_on_pc: true,
             mute_while_watched: false,
             language: "zh_CN".into(),
             sync_dnd: true,

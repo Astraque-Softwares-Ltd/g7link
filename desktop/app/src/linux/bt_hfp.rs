@@ -559,28 +559,27 @@ pub fn disconnect_audio() {
 /// A2DP sink: what this PC offers a phone that plays media to it.
 const UUID_A2DP_SINK: &str = "0000110b-0000-1000-8000-00805f9b34fb";
 
-/// Whether a paired phone may play its media on this PC over Bluetooth.
-static PHONE_MEDIA_ALLOWED: AtomicBool = AtomicBool::new(false);
-
-/// The names paired phones go by, to tell them from other Bluetooth devices.
+/// The names of the paired phones whose media stays on the phone, to tell
+/// them from other Bluetooth devices.
 static PHONE_NAMES: OnceLock<fn() -> Vec<String>> = OnceLock::new();
 
-/// Lets paired phones play media on this PC, or sends their media back.
-pub fn set_phone_media_allowed(on: bool) {
-    let was = PHONE_MEDIA_ALLOWED.swap(on, Ordering::AcqRel);
-    if was && !on && PHONE_NAMES.get().is_some() {
-        let _ = std::thread::Builder::new().name("bt-media-off".into()).spawn(|| {
-            if let Some(conn) = system_bus(CONNECT_TIMEOUT) {
-                drop_phone_media(&conn);
-            }
-        });
+/// Sends media back to the phones that may no longer play it here, after one
+/// of them stopped being allowed to.
+pub fn recheck_phone_media() {
+    if PHONE_NAMES.get().is_none() {
+        return;
     }
+    let _ = std::thread::Builder::new().name("bt-media-off".into()).spawn(|| {
+        if let Some(conn) = system_bus(CONNECT_TIMEOUT) {
+            drop_phone_media(&conn);
+        }
+    });
 }
 
 /// Keeps paired phones' media on the phone. A phone that connects to this PC
 /// over Bluetooth (for calls, or by the user) also opens a media link, and
-/// Android then plays everything here instead of on its headphones. Unless
-/// [`set_phone_media_allowed`], that link is closed as it opens; calls and
+/// Android then plays everything here instead of on its headphones. For the
+/// phones `phone_names` names, that link is closed as it opens; calls and
 /// other devices aren't touched. One thread for the app's lifetime.
 pub fn keep_phone_media_on_phone(phone_names: fn() -> Vec<String>) {
     if PHONE_NAMES.set(phone_names).is_err() {
@@ -677,11 +676,8 @@ pub(crate) fn phones_playing_here(
         .collect()
 }
 
-/// Closes the media link of every paired phone playing here, unless allowed.
+/// Closes the media link of every phone `PHONE_NAMES` names that plays here.
 fn drop_phone_media(conn: &zbus::blocking::Connection) {
-    if PHONE_MEDIA_ALLOWED.load(Ordering::Acquire) {
-        return;
-    }
     let Some(names) = PHONE_NAMES.get().map(|f| f()) else { return };
     if names.is_empty() {
         return;

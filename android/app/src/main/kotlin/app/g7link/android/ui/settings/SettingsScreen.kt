@@ -126,6 +126,7 @@ fun SettingsScreen(
     updater: AppUpdater,
     onSetStorageEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onSetMicEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    onSetBtMedia: (pcId: String, on: Boolean) -> Unit = { _, _ -> },
     startWithoutAsking: Set<String> = emptySet(),
     onSetStartWithoutAsking: (pcId: String, on: Boolean) -> Unit = { _, _ -> },
     onAddSafFolder: (Uri) -> Unit = {},
@@ -247,6 +248,12 @@ fun SettingsScreen(
                                     label = stringResource(R.string.mic_pc_toggle),
                                     checked = device.micEnabled,
                                     onCheckedChange = { enabled -> onSetMicEnabled(device.id, enabled) },
+                                )
+                                G7SwitchRow(
+                                    label = stringResource(R.string.bt_media_pc_toggle, device.name),
+                                    sublabel = stringResource(R.string.bt_media_pc_hint),
+                                    checked = device.btMedia,
+                                    onCheckedChange = { on -> onSetBtMedia(device.id, on) },
                                 )
                                 G7SwitchRow(
                                     label = stringResource(R.string.start_without_asking_toggle),

@@ -543,6 +543,7 @@ fn main() -> ExitCode {
     notifications::set_hold_when_locked(settings.hold_when_locked);
     notifications::start_lock_watch();
     calls::set_pause_media_on_call(settings.pause_media_on_call);
+    calls::keep_phone_media_on_phone();
     pc_mirror::set_mute_while_watched(settings.mute_while_watched);
     recordings::init(&settings);
     send_to::set_enabled(settings.send_to_menu);

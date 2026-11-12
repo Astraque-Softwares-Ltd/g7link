@@ -118,6 +118,7 @@ pub mod types {
     pub const FILES_CANCEL: &str = "files.cancel";
     pub const WAKE_RELAY: &str = "wake.relay";
     pub const AUDIO_PCM: &str = "audio.pcm";
+    pub const AUDIO_BT_MEDIA: &str = "audio.bt_media";
 }
 
 /// What kind of device this is.
@@ -1347,6 +1348,14 @@ pub struct AudioPcmFrame {
     pub channels: u8,
     #[serde(with = "serde_bytes")]
     pub pcm: Vec<u8>,
+}
+
+/// Whether a phone may play its media on a PC over Bluetooth
+/// (`audio.bt_media`, docs/protocol/media.md §5): the sender's `bt_media`
+/// toggle for the receiver, which keeps the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioBtMedia {
+    pub on_pc: bool,
 }
 
 // ---- Screen mirroring (docs/protocol/mirror.md) ----

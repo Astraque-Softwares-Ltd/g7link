@@ -379,7 +379,8 @@ Item {
         storage: qsTr("Phone storage in Files"),
         remote_input: qsTr("Control this PC"),
         commands: qsTr("Run Deck shell commands"),
-        remote_files: qsTr("Browse PC folders")
+        remote_files: qsTr("Browse PC folders"),
+        bt_media: qsTr("Phone media on this PC")
     })
     readonly property var toggleDetails: ({
         notifications: qsTr("Show on this PC"),
@@ -400,7 +401,8 @@ Item {
         storage: qsTr("Its folders in your file manager"),
         remote_input: qsTr("Mouse, keyboard and Deck"),
         commands: qsTr("Only for a phone you trust"),
-        remote_files: qsTr("Your PC's folders on the phone")
+        remote_files: qsTr("Your PC's folders on the phone"),
+        bt_media: qsTr("Over Bluetooth. Off: it keeps playing on the phone's own speaker or headphones")
     })
     readonly property var toggleTints: ({
         notifications: Theme.tintBlue,
@@ -421,7 +423,8 @@ Item {
         storage: Theme.tintAmber,
         remote_input: Theme.tintTeal,
         commands: Theme.tintGreen,
-        remote_files: Theme.tintAmber
+        remote_files: Theme.tintAmber,
+        bt_media: Theme.tintBlue
     })
     // Higher-trust access: off until the user turns it on.
     readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage"]
@@ -445,7 +448,8 @@ Item {
         storage: Icons.folder,
         remote_input: Icons.mouse,
         commands: Icons.terminal,
-        remote_files: Icons.folder
+        remote_files: Icons.folder,
+        bt_media: Icons.bluetooth
     })
 
     FolderDialog {
@@ -1364,17 +1368,6 @@ Item {
                                 label: qsTr("Call audio on this PC")
                                 checked: Preferences.autoCallAudio
                                 onToggled: (on) => Preferences.autoCallAudio = on
-                            }
-                        }
-                        SettingRow {
-                            width: parent.width
-                            iconPath: Icons.speaker
-                            title: qsTr("Phone media on this PC")
-                            description: qsTr("Off: a phone connected over Bluetooth keeps playing on its own speaker or headphones")
-                            Toggle {
-                                label: qsTr("Phone media on this PC")
-                                checked: Preferences.phoneMediaOnPc
-                                onToggled: (on) => Preferences.phoneMediaOnPc = on
                             }
                         }
 

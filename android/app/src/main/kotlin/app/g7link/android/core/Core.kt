@@ -479,7 +479,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             updateLocalSendMulticast(lsEnabled)
             pruneOldTempCaches()
             _state.update {
-                it.withDevices(devices, pcToggles.storageAllowed, pcToggles.micOff).copy(
+                it.withDevices(devices, pcToggles.storageAllowed, pcToggles.micOff, pcToggles.btMediaOn).copy(
                     sendQueue = initialQueue,
                     clipboardHistoryEnabled = clipHistEnabled,
                     clipboardHistory = clipHist,
@@ -794,7 +794,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                             localNetwork = localNetwork,
                             devices = if (pcToggles != null) {
                                 it.devices.map { d ->
-                                    d.copy(storageEnabled = d.id in pcToggles.storageAllowed, micEnabled = d.id !in pcToggles.micOff)
+                                    d.copy(
+                                        storageEnabled = d.id in pcToggles.storageAllowed,
+                                        micEnabled = d.id !in pcToggles.micOff,
+                                        btMedia = d.id in pcToggles.btMediaOn,
+                                    )
                                 }
                             } else {
                                 it.devices
@@ -1243,18 +1247,37 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    /** Which PCs may browse this phone's storage, and which may not ask for its microphone. */
-    private class PerPcToggles(val storageAllowed: Set<String>, val micOff: Set<String>)
+    /**
+     * Lets this phone play its media on [pcId] over Bluetooth, or keeps it on the phone (off by
+     * default). The core tells the PC, which keeps the same.
+     */
+    fun setBtMedia(pcId: String, on: Boolean) {
+        _state.update { it.withBtMedia(pcId, on) }
+        scope.launch(Dispatchers.IO) {
+            startJob?.join()
+            val currentNode = node ?: return@launch
+            runCatching { currentNode.setDeviceToggle(pcId, BT_MEDIA_TOGGLE, on) }
+                .onFailure { Log.w(TAG, "can't change the Bluetooth media toggle", it) }
+        }
+    }
+
+    /**
+     * Which PCs may browse this phone's storage, which may not ask for its microphone, and which
+     * it may play its media on over Bluetooth.
+     */
+    private class PerPcToggles(val storageAllowed: Set<String>, val micOff: Set<String>, val btMediaOn: Set<String>)
 
     private fun perPcToggles(node: G7LinkNode, ids: List<String>): PerPcToggles {
         val storage = mutableSetOf<String>()
         val micOff = mutableSetOf<String>()
+        val btMediaOn = mutableSetOf<String>()
         for (id in ids) {
             val toggles = runCatching { node.deviceToggles(id) }.getOrNull() ?: continue
             if (toggles.any { it.name == PhoneStorage.TOGGLE_NAME && it.enabled }) storage += id
             if (toggles.any { it.name == app.g7link.android.mic.MicService.TOGGLE_NAME && !it.enabled }) micOff += id
+            if (toggles.any { it.name == BT_MEDIA_TOGGLE && it.enabled }) btMediaOn += id
         }
-        return PerPcToggles(storage, micOff)
+        return PerPcToggles(storage, micOff, btMediaOn)
     }
 
     fun clearWebcamRequest(pcId: String? = null) {

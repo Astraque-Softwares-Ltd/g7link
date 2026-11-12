@@ -726,6 +726,13 @@ pub enum Event {
         id: String,
         on: bool,
     },
+    /// Device `id` changed a toggle for this one that both keep the same
+    /// (`bt_media`); changes made here aren't reported.
+    DeviceToggleChanged {
+        id: String,
+        toggle: String,
+        on: bool,
+    },
     /// A paired PC's Deck layout arrived or changed (phones only).
     DeckLayout {
         id: String,
@@ -2516,6 +2523,9 @@ impl Event {
             }
             NodeEvent::ReconnectChanged { device, on } => {
                 Event::ReconnectChanged { id: device.to_string(), on }
+            }
+            NodeEvent::DeviceToggleChanged { device, toggle, on } => {
+                Event::DeviceToggleChanged { id: device.to_string(), toggle, on }
             }
             NodeEvent::DeckLayout { device, layout } => {
                 Event::DeckLayout { id: device.to_string(), layout: layout.into() }

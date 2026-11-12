@@ -248,7 +248,8 @@ pub struct AppState {
     pub discovered: Vec<DiscoveredDevice>,
     pub pairing: PairingView,
     pub matrices: HashMap<DeviceId, CapabilityMatrix>,
-    /// Bumped whenever `matrices` changes.
+    /// Bumped whenever `matrices` or a device toggle the other device keeps
+    /// the same changes (the UI reads toggles with the capabilities).
     pub matrices_version: u32,
     /// Latest quick settings toggles per paired phone.
     pub toggles: HashMap<DeviceId, PhoneToggles>,
@@ -442,6 +443,10 @@ impl AppState {
                 changes | self.set_media(*id, Vec::new())
             }
             NodeEvent::ReconnectChanged { device, on } => self.update_device(device, |d| d.reconnect = *on),
+            NodeEvent::DeviceToggleChanged { .. } => {
+                self.matrices_version = self.matrices_version.wrapping_add(1);
+                Changes::CAPABILITIES
+            }
             NodeEvent::LinkChanged { device, link } => {
                 let tier_or_path_changed = self.device(device).is_some_and(|d| {
                     !matches!(

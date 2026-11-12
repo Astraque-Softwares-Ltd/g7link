@@ -1646,6 +1646,20 @@ Item {
                         caption: home.phoneSound === "asking" ? qsTr("Allow it on %1").arg(home.name) : ""
                         onToggled: (on) => MediaList.setPhoneSound(home.deviceId, on)
                     }
+                    // The phone's media over Bluetooth (the bt_media device toggle,
+                    // as in Settings). Off, it stays on the phone's headphones.
+                    SwitchBar {
+                        readonly property var toggle: AppController.capsRevision >= 0 && AppController.togglesRevision >= 0
+                            ? AppController.deviceToggles(home.deviceId).find((t) => t.name === "bt_media") : undefined
+                        width: parent.width
+                        visible: toggle !== undefined
+                        iconPath: Icons.bluetooth
+                        tint: Theme.tintBlue
+                        title: qsTr("Phone media on this PC")
+                        caption: qsTr("Over Bluetooth")
+                        checked: Boolean(toggle && toggle.on)
+                        onToggled: (on) => AppController.setDeviceToggle(home.deviceId, "bt_media", on)
+                    }
                 }
 
                 // ---- Now playing (phone or this PC) ----

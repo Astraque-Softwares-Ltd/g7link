@@ -58,6 +58,18 @@ class CoreStateTest {
     }
 
     @Test
+    fun bluetoothMediaFollowsThePc() {
+        var state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
+        assertFalse("off by default", state.device("a")!!.btMedia)
+        state = state.reduce(Event.DeviceToggleChanged("a", BT_MEDIA_TOGGLE, true))
+        assertTrue(state.device("a")!!.btMedia)
+        state = state.reduce(Event.DeviceToggleChanged("a", "other", false))
+        assertTrue("other toggles leave it alone", state.device("a")!!.btMedia)
+        state = state.reduce(Event.DeviceToggleChanged("a", BT_MEDIA_TOGGLE, false))
+        assertFalse(state.device("a")!!.btMedia)
+    }
+
+    @Test
     fun devicesFollowEventsInPairingOrder() {
         var state = CoreState()
             .reduce(Event.DeviceAdded(pc("b", "Laptop", 20)))

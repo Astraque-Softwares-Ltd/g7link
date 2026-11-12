@@ -15,8 +15,8 @@ use std::{
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, MAX_FRAME_LEN,
     messages::{
-        MediaCommand, MediaFileMeta, MediaFileRead, MediaPlayer, MediaState, MediaWatch, StreamHeader,
-        WatchFile, media_actions, media_limits::PLAYERS, media_watch, types,
+        AudioBtMedia, MediaCommand, MediaFileMeta, MediaFileRead, MediaPlayer, MediaState, MediaWatch,
+        StreamHeader, WatchFile, media_actions, media_limits::PLAYERS, media_watch, types,
     },
     read_frame, write_frame,
 };
@@ -29,6 +29,9 @@ const WATCH_OFFER: std::time::Duration = std::time::Duration::from_secs(10 * 60)
 
 /// The device toggle that allows media for a device.
 pub(crate) const TOGGLE: &str = "media";
+/// The device toggle that lets a phone play its media on a PC over
+/// Bluetooth. Both devices keep it the same (`audio.bt_media`).
+pub const BT_MEDIA_TOGGLE: &str = "bt_media";
 /// Offered by devices that show and control other devices' players.
 const REMOTE: &str = "media.remote";
 /// Offered by devices that share their own players.
@@ -207,6 +210,35 @@ impl Shared {
                 shared.emit(NodeEvent::MediaChanged { device: peer, players: Vec::new() });
             }
         });
+    }
+
+    /// Tells `peer` the user changed `bt_media` for it here, so it keeps the
+    /// same (`audio.bt_media`). Queued right away, so quick changes arrive in
+    /// the order they were made.
+    pub(crate) fn send_bt_media(&self, peer: DeviceId, on_pc: bool) {
+        let Some(session) = self.session(&peer) else { return };
+        let Ok(env) = Envelope::new(types::AUDIO_BT_MEDIA, &AudioBtMedia { on_pc }) else { return };
+        if let Err(error) = session.send_now(env) {
+            tracing::debug!(peer = %peer.short(), %error, "couldn't send bt_media");
+        }
+    }
+
+    /// `peer` changed `bt_media` for this device: kept here too, and not sent
+    /// back, so the two never bounce it between them.
+    pub(crate) fn bt_media_from_peer(&self, peer: DeviceId, on_pc: bool) -> Result<()> {
+        if !self.store.is_paired(&peer)? {
+            return Ok(());
+        }
+        let changed = self.toggle_on(&peer, BT_MEDIA_TOGGLE) != on_pc;
+        self.store.set_toggle(&peer, BT_MEDIA_TOGGLE, on_pc)?;
+        if changed {
+            self.emit(NodeEvent::DeviceToggleChanged {
+                device: peer,
+                toggle: BT_MEDIA_TOGGLE.to_owned(),
+                on: on_pc,
+            });
+        }
+        Ok(())
     }
 }
 

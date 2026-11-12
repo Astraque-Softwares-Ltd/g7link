@@ -135,10 +135,13 @@ Unsupported, as two Android devices have the PC features.
 
 `notifications`, `messages`, `calls`, `contacts`, `clipboard`, `files`,
 `media`, `photos`, `recordings`, `toggles`, `pc_actions`, `mirroring`,
-`webcam` (on by default) and `storage`, `remote_input`, `commands`, `remote_files` (off by default). Toggles are this
+`webcam` (on by default) and `storage`, `remote_input`, `commands`, `remote_files`, `bt_media` (off by default). Toggles are this
 device's policy for that peer and are stored locally, so a feature the PC
 user switched off is Locked on the PC while the phone may still show it as
 Available. Everything else in the matrix is identical on both devices.
+`bt_media` (a phone's media on the PC over Bluetooth) is the exception: it
+gates no feature, and both devices keep it the same (`audio.bt_media`,
+[media.md](../protocol/media.md) §5).
 
 ## Examples (phone at Basic, all Basic permissions granted)
 

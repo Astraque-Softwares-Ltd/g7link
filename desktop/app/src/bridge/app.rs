@@ -1808,6 +1808,9 @@ impl qobject::AppController {
         if name_str == "storage" {
             crate::storage::sync();
         }
+        if name_str == g7link_core::BT_MEDIA_TOGGLE && !on {
+            crate::sys::bt_hfp::recheck_phone_media();
+        }
         let revision = self.toggles_revision.wrapping_add(1);
         self.as_mut().set_toggles_revision(revision);
     }

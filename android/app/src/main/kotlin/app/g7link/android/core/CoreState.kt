@@ -147,6 +147,8 @@ data class Device(
     val storageEnabled: Boolean = false,
     /** Whether this PC may ask for this phone's microphone (on by default). */
     val micEnabled: Boolean = true,
+    /** Whether this phone may play its media on this PC over Bluetooth (off by default; the PC keeps the same). */
+    val btMedia: Boolean = false,
 ) {
     /** A paired phone or tablet rather than a PC. */
     val isAndroid: Boolean
@@ -168,6 +170,9 @@ data class Device(
 
 /** The output a PC's deck state lists while it plays its sound on this phone. */
 const val PHONE_SPEAKER_OUTPUT = "g7link:phone_speaker"
+
+/** The device toggle that lets this phone play its media on a PC over Bluetooth. */
+const val BT_MEDIA_TOGGLE = "bt_media"
 
 private val deviceOrder: Comparator<Device> =
     compareByDescending<Device> { it.online }.thenBy { it.pairedAt }
@@ -277,6 +282,7 @@ data class CoreState(
         paired: List<PairedDevice>,
         storageAllowed: Set<String> = emptySet(),
         micOff: Set<String> = emptySet(),
+        btMediaOn: Set<String> = emptySet(),
     ): CoreState {
         val prevById = devices.associateBy { it.id }
         return copy(
@@ -287,6 +293,7 @@ data class CoreState(
                     deckState = prev?.deckState,
                     storageEnabled = if (p.id in storageAllowed) true else prev?.storageEnabled ?: false,
                     micEnabled = p.id !in micOff,
+                    btMedia = p.id in btMediaOn,
                 )
             }.sortedWith(deviceOrder),
         )
@@ -299,6 +306,8 @@ data class CoreState(
         update(id) { it.copy(micEnabled = enabled) }.copy(
             micRequestFrom = if (!enabled && micRequestFrom == id) null else micRequestFrom,
         )
+
+    fun withBtMedia(id: String, on: Boolean): CoreState = update(id) { it.copy(btMedia = on) }
 
     fun withStorageEnabled(id: String, enabled: Boolean): CoreState =
         update(id) { it.copy(storageEnabled = enabled) }.copy(
@@ -384,6 +393,8 @@ data class CoreState(
             )
         }
         is Event.ReconnectChanged -> update(event.id) { it.copy(reconnect = event.on) }
+        // Changed on the PC; the core already keeps it.
+        is Event.DeviceToggleChanged -> if (event.toggle == BT_MEDIA_TOGGLE) withBtMedia(event.id, event.on) else this
         is Event.Battery -> update(event.id) { it.copy(battery = event.battery) }
         is Event.Capabilities -> update(event.id) { it.copy(features = event.features) }
         is Event.DeckLayout -> update(event.id) { it.copy(deckLayout = event.layout) }

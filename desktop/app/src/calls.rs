@@ -17,8 +17,8 @@ use std::{
 };
 
 use g7link_core::{
-    CallCommand, CallLogEntry, CallSims, CallState, Contact, DeviceId, Error, FeatureState, LinkState,
-    NodeEvent,
+    BT_MEDIA_TOGGLE, CallCommand, CallLogEntry, CallSims, CallState, Contact, DeviceId, Error, FeatureState,
+    LinkState, NodeEvent,
 };
 use serde_json::{Value, json};
 
@@ -47,24 +47,25 @@ pub fn set_auto_call_audio(on: bool) {
     AUTO_CALL_AUDIO.store(on, Ordering::Relaxed);
 }
 
-/// Lets paired phones play their media on this PC over Bluetooth (off: their
-/// media stays on the phone, on its headphones or speaker).
-pub fn set_phone_media_on_pc(on: bool) {
-    bt_hfp::set_phone_media_allowed(on);
-    bt_hfp::keep_phone_media_on_phone(paired_phone_names);
+/// Keeps each paired phone's media on the phone (its headphones or speaker)
+/// unless its `bt_media` toggle lets it play on this PC over Bluetooth.
+pub fn keep_phone_media_on_phone() {
+    bt_hfp::keep_phone_media_on_phone(phones_keeping_media);
 }
 
-/// What paired phones are called, by their own name and any nickname here.
-fn paired_phone_names() -> Vec<String> {
-    let Some(host) = core_host::try_host() else { return Vec::new() };
-    host.hub.read(|s| {
-        s.devices
-            .iter()
-            .flat_map(|d| [Some(d.info.name.clone()), crate::settings::nickname_for(&d.id.to_string())])
-            .flatten()
-            .filter(|n| !n.trim().is_empty())
-            .collect()
-    })
+/// What the paired phones that may not play media here are called, by their
+/// own name and any nickname here.
+fn phones_keeping_media() -> Vec<String> {
+    let (Some(host), Some(node)) = (core_host::try_host(), core_host::node()) else { return Vec::new() };
+    let devices: Vec<(DeviceId, String)> =
+        host.hub.read(|s| s.devices.iter().map(|d| (d.id, d.info.name.clone())).collect());
+    devices
+        .into_iter()
+        .filter(|(id, _)| node.device_toggles(*id).is_ok_and(|t| !t.contains(&(BT_MEDIA_TOGGLE, true))))
+        .flat_map(|(id, name)| [Some(name), crate::settings::nickname_for(&id.to_string())])
+        .flatten()
+        .filter(|n| !n.trim().is_empty())
+        .collect()
 }
 
 /// Phones that currently have a ringing or active call, for media auto-pause/resume.
@@ -403,6 +404,10 @@ pub fn on_event(event: &NodeEvent) {
                     load_contacts();
                 }
             }
+        }
+        // Turned off on the phone: media it still plays here goes back to it.
+        NodeEvent::DeviceToggleChanged { toggle, on: false, .. } if toggle == BT_MEDIA_TOGGLE => {
+            bt_hfp::recheck_phone_media();
         }
         _ => {}
     }

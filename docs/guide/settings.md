@@ -78,6 +78,7 @@ Lists your paired phones (with a device selector pill bar at the top when more t
 | Per-Device Toggle | Default | What It Controls for the Selected Phone |
 | :--- | :--- | :--- |
 | **Media controls** (`media`) | **On** | Showing now-playing media and transport controls in both directions, and streaming PC audio via **Phone as speaker**. |
+| **Phone media on this PC** (`bt_media`) | **Off** | Letting the phone play its media on this PC over Bluetooth. Off, a phone connected over Bluetooth (for calls, say) keeps playing on its own speaker or headphones. Also on PC Home and on the phone; changing it on either side changes it on both. |
 | **Phone controls** (`toggles`) | **On** | Viewing and changing the phone's volume, ringer mode, Do Not Disturb, flashlight, brightness, Wi-Fi, and Bluetooth from PC Home. |
 | **Screen mirroring** (`mirroring`) | **On** | Mirroring the phone's screen and opening phone apps in windows (`app window`) on this PC. |
 | **Share PC screen to phone** (`pc_mirror`) | **Off** | Allowing this phone to view this PC's screen (reverse mirroring) without showing a one-time consent dialog on every session. |

@@ -2433,6 +2433,7 @@ impl Node {
     }
 
     /// Allows or disallows something for one device, e.g. `"clipboard"`.
+    /// `bt_media` is sent to the device too, which keeps the same.
     pub fn set_device_toggle(&self, peer: DeviceId, toggle: &str, enabled: bool) -> Result<()> {
         if features::toggle_default(toggle).is_none() {
             return Err(Error::Unsupported);
@@ -2450,6 +2451,9 @@ impl Node {
         }
         if toggle == crate::toggles::TOGGLE {
             self.shared.toggles_toggled(peer, enabled);
+        }
+        if toggle == crate::media::BT_MEDIA_TOGGLE {
+            self.shared.send_bt_media(peer, enabled);
         }
         if (toggle == crate::actions::POWER_TOGGLE || toggle == crate::deck::INPUT_TOGGLE)
             && let Some(session) = self.shared.session(&peer)

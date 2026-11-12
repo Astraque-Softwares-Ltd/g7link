@@ -229,6 +229,13 @@ pub enum NodeEvent {
         device: DeviceId,
         on: bool,
     },
+    /// `device` changed a toggle for this one that both keep the same
+    /// (`bt_media`, by `audio.bt_media`). Changes made here aren't reported.
+    DeviceToggleChanged {
+        device: DeviceId,
+        toggle: String,
+        on: bool,
+    },
     /// A paired PC's Deck layout arrived or changed (`docs/protocol/deck.md`).
     DeckLayout {
         device: DeviceId,
