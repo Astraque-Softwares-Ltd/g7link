@@ -72,6 +72,9 @@ pub(crate) struct PairingState {
     /// True while a nearby ceremony is in flight, so a second one cannot
     /// overwrite `sas_decision`.
     nearby_active: std::sync::atomic::AtomicBool,
+    /// True while this device's pairing screen (its list of nearby devices)
+    /// is open (`Node::set_discovery_fast`).
+    screen_open: std::sync::atomic::AtomicBool,
 }
 
 pub(crate) struct NearbyGuard<'a>(&'a PairingState);
@@ -108,6 +111,14 @@ impl PairingState {
 
     pub(crate) fn is_hosting(&self) -> bool {
         self.host_secret().is_some()
+    }
+
+    pub(crate) fn set_screen_open(&self, open: bool) {
+        self.screen_open.store(open, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn screen_open(&self) -> bool {
+        self.screen_open.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn end_host(&self) {
@@ -191,8 +202,10 @@ pub(crate) async fn start_host(shared: &Arc<Shared>) -> Result<PairingUri> {
                 shared.pairing.end_host();
                 shared.emit(NodeEvent::Pairing(PairingEvent::Failed(PairingFailure::Expired)));
             }
+            crate::node::sync_name_on_lan(&shared);
         }
     });
+    crate::node::sync_name_on_lan(shared);
 
     let name = local_device(shared).name;
     Ok(PairingUri {
@@ -388,6 +401,8 @@ pub(crate) async fn accept(shared: Arc<Shared>, conn: Connection) {
         Ok(device)
     }
     .await;
+    // Pairing mode may have ended: done, or too many wrong codes.
+    crate::node::sync_name_on_lan(&shared);
 
     match result {
         Ok(device) => match shared.complete_pairing(peer, device).await {

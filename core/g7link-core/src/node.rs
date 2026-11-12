@@ -171,6 +171,8 @@ pub(crate) struct Shared {
     /// The running mDNS's task and whether it asks often (`install_mdns`);
     /// `None` without LAN discovery.
     lan_discovery: Mutex<Option<(CancellationToken, bool)>>,
+    /// Whether this device's mDNS record carries its name (`announced_name`).
+    name_on_lan: std::sync::atomic::AtomicBool,
     /// Per incoming transfer: whose turn it is on its part files, and how to
     /// tell the one running to stop.
     #[allow(clippy::type_complexity)]
@@ -1977,6 +1979,7 @@ impl Node {
             paired_localsend: Mutex::new(HashMap::new()),
             update_hints: Mutex::new(HashMap::new()),
             lan_discovery: Mutex::new(None),
+            name_on_lan: std::sync::atomic::AtomicBool::new(false),
             incoming_turns: Mutex::new(HashMap::new()),
             dial_failures: Mutex::new(HashMap::new()),
             matrices: Mutex::new(HashMap::new()),
@@ -2029,7 +2032,7 @@ impl Node {
         });
 
         if config.lan_discovery {
-            start_lan_discovery(&shared, &config.device.name)?;
+            start_lan_discovery(&shared)?;
         }
         if shared.localsend.enabled() {
             shared.localsend.start(&shared);
@@ -2254,6 +2257,8 @@ impl Node {
     /// Leaves pairing mode and abandons any code comparison.
     pub fn pairing_cancel(&self) {
         pairing::cancel(&self.shared);
+        let _runtime = self.shared.runtime.enter();
+        sync_name_on_lan(&self.shared);
     }
 
     /// Whether this device is currently showing a pairing code.
@@ -2323,7 +2328,10 @@ impl Node {
     /// Asks the LAN who's there often while a list of nearby devices is on
     /// screen (pairing), and rarely otherwise, which keeps phones asleep.
     /// No-op without LAN discovery.
+    /// Also says whether this device's pairing screen is open: its name is
+    /// on the LAN only then, and a phone takes pairing over USB only then.
     pub fn set_discovery_fast(&self, fast: bool) {
+        self.shared.pairing.set_screen_open(fast);
         let running = lock(&self.shared.lan_discovery).as_ref().map(|(_, f)| *f);
         if running.is_none_or(|f| f == fast) {
             return;
@@ -4789,23 +4797,60 @@ fn record_mdns_sighting(shared: &Shared, info: &iroh::address_lookup::EndpointIn
 }
 
 /// Announces this device on the LAN and watches for others.
-fn start_lan_discovery(shared: &Arc<Shared>, name: &str) -> Result<()> {
-    install_mdns(shared, false)?;
-    // Announce our name so nearby pairing can show it; truncate safely.
+fn start_lan_discovery(shared: &Arc<Shared>) -> Result<()> {
+    install_mdns(shared, false)
+}
+
+/// What this device's mDNS record says about it besides its ID and
+/// addresses: its name while someone may be pairing with it, so their nearby
+/// list can show it, and nothing otherwise. Paired devices find each other by
+/// ID and never need it.
+fn announced_name(name: &str, pairing: bool) -> Option<UserData> {
+    if !pairing {
+        return None;
+    }
     let mut announced = name.to_owned();
     while announced.len() > UserData::MAX_LENGTH {
         announced.pop();
     }
-    if let Ok(data) = UserData::try_from(announced) {
-        shared.endpoint.set_user_data_for_address_lookup(Some(data));
+    UserData::try_from(announced).ok()
+}
+
+/// Whether someone may be pairing with this device: its pairing screen or
+/// nearby list is open, or it shows a pairing code.
+fn open_for_pairing(shared: &Shared) -> bool {
+    shared.pairing.screen_open() || shared.pairing.is_hosting()
+}
+
+/// Sets the user data mDNS publishes to match [`open_for_pairing`].
+fn set_name_on_lan(shared: &Shared, on: bool) {
+    let name = shared.local.read().unwrap_or_else(|e| e.into_inner()).device.name.clone();
+    shared.endpoint.set_user_data_for_address_lookup(announced_name(&name, on));
+    shared.name_on_lan.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Puts this device's name in its mDNS record, or takes it out, when
+/// [`open_for_pairing`] changed. mDNS can't drop a TXT attribute, so taking
+/// the name out starts mDNS afresh. Call it within the runtime.
+pub(crate) fn sync_name_on_lan(shared: &Arc<Shared>) {
+    let Some(fast) = lock(&shared.lan_discovery).as_ref().map(|(_, fast)| *fast) else { return };
+    let wanted = open_for_pairing(shared);
+    if wanted == shared.name_on_lan.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
     }
-    Ok(())
+    if wanted {
+        set_name_on_lan(shared, true);
+    } else if let Err(e) = install_mdns(shared, fast) {
+        tracing::warn!(error = %e, "can't take this device's name off the LAN");
+    }
 }
 
 /// Starts mDNS, asking the LAN who's there every [`MDNS_FAST`] or
 /// [`MDNS_SLOW`], in place of the one running. iroh can't drop a single
 /// address lookup, so a swap clears them all and puts the others back.
 fn install_mdns(shared: &Arc<Shared>, fast: bool) -> Result<()> {
+    // Before the new mDNS is added, so it starts with what it should say.
+    set_name_on_lan(shared, open_for_pairing(shared));
     let builder = MdnsAddressLookup::builder().service_name("g7link").discovery_cadence(if fast {
         MDNS_FAST
     } else {
@@ -5335,6 +5380,16 @@ mod away_tests {
         drop(second);
         assert!(lock(&shared.incoming_turns).is_empty(), "nothing left behind");
         node.shutdown().await;
+    }
+
+    #[test]
+    fn the_name_is_on_the_lan_only_while_pairing() {
+        assert!(announced_name("Bee's phone", false).is_none());
+        let named = announced_name("Bee's phone", true).map(|d| d.to_string());
+        assert_eq!(named.as_deref(), Some("Bee's phone"));
+        let long = "é".repeat(UserData::MAX_LENGTH);
+        let cut = announced_name(&long, true).expect("a long name is cut, not dropped").to_string();
+        assert!(cut.len() <= UserData::MAX_LENGTH && long.starts_with(&cut));
     }
 
     #[test]
