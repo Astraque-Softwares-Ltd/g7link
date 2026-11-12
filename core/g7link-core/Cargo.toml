@@ -39,6 +39,7 @@ url.workspace = true
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+netdev = { version = "0.46", default-features = false }
 zbus.workspace = true
 
 [dev-dependencies]
