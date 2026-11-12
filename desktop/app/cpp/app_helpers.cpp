@@ -39,6 +39,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
