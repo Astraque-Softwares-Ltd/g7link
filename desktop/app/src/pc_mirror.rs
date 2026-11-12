@@ -1765,7 +1765,7 @@ mod imp {
         for (y, row) in dst.chunks_exact_mut(dw * 4).enumerate() {
             let sy = y * sh / dh;
             let src_row = &src[sy * sw * 4..(sy + 1) * sw * 4];
-            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            for (x, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let sx = x * sw / dw;
                 px.copy_from_slice(&src_row[sx * 4..sx * 4 + 4]);
             }
