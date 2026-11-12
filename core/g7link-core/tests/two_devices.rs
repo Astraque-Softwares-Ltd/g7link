@@ -6359,6 +6359,34 @@ async fn battery_signal_strength_and_peer_diagnostics_flow() {
     phone.node.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn lan_sightings_are_capped_and_paired_devices_keep_theirs() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+
+    let addr = |i: u16| SocketAddr::from(([192, 168, 1, 2], 40_000 + i));
+    let stranger = |i: u16| {
+        let mut id = [0u8; 32];
+        id[..2].copy_from_slice(&i.to_le_bytes());
+        g7link_core::DeviceId(id)
+    };
+    pc.node.record_lan_sighting(phone_id, vec![addr(0)]);
+    for i in 0..300 {
+        pc.node.record_lan_sighting(stranger(i), (0..20).map(addr).collect());
+    }
+
+    // Anyone on the LAN can announce identities: the oldest strangers made room, the paired
+    // phone kept its sighting, and each keeps a bounded number of addresses.
+    assert_eq!(pc.node.peer_diagnostics(&stranger(0)).mdns_seen_ago_secs, None);
+    assert_eq!(pc.node.peer_diagnostics(&stranger(299)).mdns_addrs.len(), 16);
+    assert_eq!(pc.node.peer_diagnostics(&phone_id).mdns_addrs, vec![addr(0)]);
+
+    pc.node.shutdown().await;
+    phone.node.shutdown().await;
+}
+
 async fn start_usb_device(
     name: &'static str,
     kind: DeviceKind,

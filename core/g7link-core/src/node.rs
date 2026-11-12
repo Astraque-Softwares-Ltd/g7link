@@ -65,6 +65,11 @@ const EVENT_CAPACITY: usize = 2048;
 /// Most payload bytes (sound, captured images) the event ring may hold for a
 /// subscriber that hasn't caught up before sound is let go (see [`Shared::emit`]).
 const EVENT_PAYLOAD_BUDGET: usize = 16 * 1024 * 1024;
+/// Most devices remembered as seen on the LAN. Anyone there can announce
+/// identities, so when it's full the oldest one not paired makes room.
+const MAX_LAN_SIGHTINGS: usize = 256;
+/// Most addresses kept from one LAN sighting.
+const MAX_SIGHTING_ADDRS: usize = 16;
 /// A connection with no traffic for this long is dead, and a quiet one gets a
 /// keep-alive this often. Both match iroh's own per-path limits (it pings an
 /// idle path every 5 s and drops one silent for 15 s), so a device that
@@ -793,6 +798,33 @@ impl Shared {
 
     pub(crate) fn is_allowed_peer_ip(&self, peer: &DeviceId, ip: std::net::IpAddr) -> bool {
         self.away_mode() || self.is_lan_peer_ip(peer, ip)
+    }
+
+    /// Remembers that `peer` announced `addrs` on this LAN just now.
+    pub(crate) fn remember_lan_sighting(&self, peer: DeviceId, mut addrs: Vec<SocketAddr>) {
+        addrs.truncate(MAX_SIGHTING_ADDRS);
+        let mut by_age: Vec<(std::time::Instant, DeviceId)> = {
+            let seen = lock(&self.lan_seen);
+            if seen.contains_key(&peer) || seen.len() < MAX_LAN_SIGHTINGS {
+                Vec::new()
+            } else {
+                seen.iter().map(|(id, (at, _))| (*at, *id)).collect()
+            }
+        };
+        // Full: the oldest sightings of devices not paired go (looked up without the lock held).
+        by_age.sort_unstable();
+        let excess = (by_age.len() + 1).saturating_sub(MAX_LAN_SIGHTINGS);
+        let evicted: Vec<DeviceId> = by_age
+            .into_iter()
+            .map(|(_, id)| id)
+            .filter(|id| !self.store.is_paired(id).unwrap_or(false))
+            .take(excess)
+            .collect();
+        let mut seen = lock(&self.lan_seen);
+        for id in &evicted {
+            seen.remove(id);
+        }
+        seen.insert(peer, (std::time::Instant::now(), addrs));
     }
 
     /// Whether `ip` reaches `peer` on this network (`session::is_lan_peer_ip`),
@@ -4619,7 +4651,7 @@ impl Node {
 
     /// Records a LAN discovery sighting for `peer` (e.g. from mDNS or LocalSend).
     pub fn record_lan_sighting(&self, peer: DeviceId, addrs: Vec<SocketAddr>) {
-        lock(&self.shared.lan_seen).insert(peer, (std::time::Instant::now(), addrs));
+        self.shared.remember_lan_sighting(peer, addrs);
     }
 
     /// Increments the consecutive dial failure counter for `peer`.
@@ -4862,8 +4894,7 @@ impl<T: iroh::address_lookup::AddressLookup> iroh::address_lookup::AddressLookup
 /// Notes that `info` was seen over mDNS here, so its addresses count as this network's.
 fn record_mdns_sighting(shared: &Shared, info: &iroh::address_lookup::EndpointInfo) -> DeviceId {
     let id = crate::device_id(&info.endpoint_id);
-    let addrs: Vec<SocketAddr> = info.ip_addrs().copied().collect();
-    lock(&shared.lan_seen).insert(id, (std::time::Instant::now(), addrs));
+    shared.remember_lan_sighting(id, info.ip_addrs().copied().collect());
     id
 }
 
@@ -4985,6 +5016,11 @@ fn install_mdns(shared: &Arc<Shared>, fast: bool) -> Result<()> {
                 }
                 DiscoveryEvent::Expired { endpoint_id } => {
                     let id = crate::device_id(&endpoint_id);
+                    // An unpaired device's sighting goes when it leaves the LAN; a paired
+                    // one's stays, for its Connection Doctor.
+                    if !shared.store.is_paired(&id).unwrap_or(false) {
+                        lock(&shared.lan_seen).remove(&id);
+                    }
                     if shared.usb_peer_addr(&id).is_none() && lock(&shared.discovered).remove(&id).is_some() {
                         shared.emit(NodeEvent::DiscoveryExpired(id));
                     }
