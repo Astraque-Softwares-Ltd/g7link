@@ -82,6 +82,8 @@ const MAX_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
 const SESSION_IDLE: Duration = Duration::from_secs(30 * 60);
 /// Connections served at once; more wait in the OS backlog.
 const MAX_CONNECTIONS: usize = 64;
+/// Transfers from one address waiting for the user's answer at once.
+const MAX_PROMPTS_PER_IP: usize = 3;
 
 /// A LocalSend device discovered on the local network.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,8 +272,17 @@ pub(crate) struct LocalSendState {
     client_tls: Arc<ClientConfig>,
     peers: Mutex<HashMap<DeviceId, LocalSendPeer>>,
     running: Mutex<Option<RunningState>>,
-    pending_approvals: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    pending_approvals: Mutex<HashMap<String, PendingApproval>>,
     sessions: Mutex<HashMap<String, Arc<Mutex<UploadSession>>>>,
+    /// Known peers whose claimed new address is being checked: a flood of
+    /// announces makes one check at a time per peer, not one per announce.
+    confirming: Mutex<std::collections::HashSet<DeviceId>>,
+}
+
+/// A transfer waiting for the user's answer, and the address that asked.
+struct PendingApproval {
+    ip: IpAddr,
+    answer: oneshot::Sender<bool>,
 }
 
 impl std::fmt::Debug for LocalSendState {
@@ -336,6 +347,7 @@ impl LocalSendState {
             running: Mutex::new(None),
             pending_approvals: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            confirming: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -413,9 +425,31 @@ impl LocalSendState {
         changed
     }
 
+    /// Records a peer from what it said of itself, unverified: an announce, a
+    /// register or an upload request. A peer already known keeps its address;
+    /// true when the update claimed another one.
+    pub fn upsert_unverified_peer(&self, shared: &Shared, mut peer: LocalSendPeer) -> bool {
+        if peer.fingerprint == self.identity.fingerprint {
+            return false;
+        }
+        let (changed, moved) = {
+            let mut map = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let known = map.get(&peer.id);
+            if downgrades(known, &peer) {
+                return false;
+            }
+            let moved = keep_known_address(known, &mut peer);
+            (map.insert(peer.id, peer.clone()).as_ref() != Some(&peer), moved)
+        };
+        if changed {
+            shared.emit(NodeEvent::LocalSendChanged);
+        }
+        moved
+    }
+
     pub fn resolve_transfer_approval(&self, id: &str, accepted: bool) -> bool {
-        if let Some(tx) = self.pending_approvals.lock().unwrap_or_else(|e| e.into_inner()).remove(id) {
-            let _ = tx.send(accepted);
+        if let Some(pending) = self.pending_approvals.lock().unwrap_or_else(|e| e.into_inner()).remove(id) {
+            let _ = pending.answer.send(accepted);
             true
         } else {
             false
@@ -585,8 +619,8 @@ impl LocalSendState {
         }
         self.receiving.store(false, Ordering::SeqCst);
         self.peers.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        for (_, tx) in self.pending_approvals.lock().unwrap_or_else(|e| e.into_inner()).drain() {
-            let _ = tx.send(false);
+        for (_, pending) in self.pending_approvals.lock().unwrap_or_else(|e| e.into_inner()).drain() {
+            let _ = pending.answer.send(false);
         }
         let sessions: Vec<_> = self.sessions.lock().unwrap_or_else(|e| e.into_inner()).drain().collect();
         for (_, session) in sessions {
@@ -618,6 +652,47 @@ impl LocalSendState {
 /// unauthenticated announce claiming its fingerprint mustn't do that.
 fn downgrades(known: Option<&LocalSendPeer>, update: &LocalSendPeer) -> bool {
     update.protocol == "http" && known.is_some_and(|known| known.protocol == "https")
+}
+
+/// Whether unverified `update` claims another address for a peer already
+/// known, and if so puts it back to the known one: anyone on the network can
+/// announce a known device's fingerprint with their own address. Only the
+/// peer's certificate moves it ([`confirm_new_address`]).
+fn keep_known_address(known: Option<&LocalSendPeer>, update: &mut LocalSendPeer) -> bool {
+    let Some(known) = known else { return false };
+    if known.ip == update.ip && known.port == update.port {
+        return false;
+    }
+    update.ip.clone_from(&known.ip);
+    update.port = known.port;
+    update.protocol.clone_from(&known.protocol);
+    true
+}
+
+/// Moves a known peer to the new address it claimed once its certificate
+/// there proves the fingerprint. A plain-HTTP peer can't prove it, so stays.
+fn confirm_new_address(shared: &Arc<Shared>, claimed: LocalSendPeer) {
+    if claimed.protocol != "https"
+        || !shared.localsend.confirming.lock().unwrap_or_else(|e| e.into_inner()).insert(claimed.id)
+    {
+        return;
+    }
+    let shared = shared.clone();
+    tokio::spawn(async move {
+        let id = claimed.id;
+        let expected = Some(claimed.fingerprint.as_str());
+        let reached = connect_peer_stream(&shared, &claimed.ip, claimed.port, true, expected).await;
+        if reached.is_ok() {
+            shared.localsend.upsert_peer(&shared, claimed);
+        }
+        shared.localsend.confirming.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    });
+}
+
+/// Whether another transfer from `ip` may wait for the user's answer, with
+/// those of `pending` already waiting.
+fn room_to_ask(pending: impl Iterator<Item = IpAddr>, ip: IpAddr) -> bool {
+    pending.filter(|p| *p == ip).count() < MAX_PROMPTS_PER_IP
 }
 
 /// Ends an upload session that's already out of the session map: stops it,
@@ -726,14 +801,17 @@ async fn handle_udp_packet(shared: &Arc<Shared>, data: &[u8], src: SocketAddr) {
         protocol: protocol.clone(),
     };
     let fingerprint = peer.fingerprint.clone();
-    shared.localsend.upsert_peer(shared, peer);
+    let moved = shared.localsend.upsert_unverified_peer(shared, peer.clone());
 
     let is_announce = dto.announce.or(dto.announcement).unwrap_or(false);
     if is_announce && shared.localsend.receiving() {
+        // Over HTTPS the callback checks the certificate, and moves the peer.
         let shared = shared.clone();
         tokio::spawn(async move {
             let _ = send_register_callback(&shared, &ip, port, &protocol, &fingerprint).await;
         });
+    } else if moved {
+        confirm_new_address(shared, peer);
     }
 }
 
@@ -781,7 +859,12 @@ async fn send_register_callback(
             port: peer_port,
             protocol: peer_proto,
         };
-        shared.localsend.upsert_peer(shared, peer);
+        // Only a certificate proves the fingerprint it answered with.
+        if protocol == "https" {
+            shared.localsend.upsert_peer(shared, peer);
+        } else {
+            shared.localsend.upsert_unverified_peer(shared, peer);
+        }
     }
     Ok(())
 }
@@ -970,7 +1053,9 @@ async fn handle_incoming_connection(
                     port,
                     protocol,
                 };
-                shared.localsend.upsert_peer(&shared, peer);
+                if shared.localsend.upsert_unverified_peer(&shared, peer.clone()) {
+                    confirm_new_address(&shared, peer);
+                }
             }
             let info = build_our_info_dto(&shared);
             let resp_body = serde_json::to_vec(&info).unwrap_or_default();
@@ -1036,7 +1121,9 @@ async fn handle_prepare_upload(
         port,
         protocol,
     };
-    shared.localsend.upsert_peer(shared, peer);
+    if shared.localsend.upsert_unverified_peer(shared, peer.clone()) {
+        confirm_new_address(shared, peer);
+    }
 
     let session_id = format!("lss_{}", random_token());
     let transfer_id = format!("ls_{}", random_token());
@@ -1102,15 +1189,23 @@ async fn handle_prepare_upload(
         open_on_arrival: false,
     };
 
+    // One address can't fill the screen with prompts.
+    let (approval_tx, approval_rx) = oneshot::channel::<bool>();
+    let asked = {
+        let ip = remote_addr.ip();
+        let mut pending = shared.localsend.pending_approvals.lock().unwrap_or_else(|e| e.into_inner());
+        let room = room_to_ask(pending.values().map(|p| p.ip), ip);
+        if room {
+            pending.insert(transfer_id.clone(), PendingApproval { ip, answer: approval_tx });
+        }
+        room
+    };
+    if !asked {
+        let _ = write_http_response(stream, 429, "Too Many Requests", None, &[]).await;
+        return;
+    }
     let cancel = CancellationToken::new();
     shared.register_transfer(&transfer_id, cancel.clone());
-    let (approval_tx, approval_rx) = oneshot::channel::<bool>();
-    shared
-        .localsend
-        .pending_approvals
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.clone(), approval_tx);
 
     shared.emit(NodeEvent::Transfer(transfer.clone()));
 
@@ -2218,18 +2313,26 @@ fn split_localsend_file_name(raw: &str) -> (Option<String>, String) {
         normalized.split('/').map(str::trim).filter(|s| !s.is_empty() && *s != "." && *s != "..").collect();
     match parts.as_slice() {
         [] => (None, "file".into()),
-        [single] => (None, safe_file_name(single)),
+        [single] => (None, localsend_name(single)),
         [folders @ .., last] => {
             // As deep and as long as the protocol allows (files::MAX_FOLDER_DEPTH).
             let folder = folders
                 .iter()
                 .take(files::MAX_FOLDER_DEPTH)
-                .map(|s| storable_name(&safe_file_name(s)))
+                .map(|s| storable_name(&localsend_name(s)))
                 .collect::<Vec<_>>()
                 .join("/");
-            (Some(folder), safe_file_name(last))
+            (Some(folder), localsend_name(last))
         }
     }
+}
+
+/// A LocalSend sender's name for a file or folder, made safe and never
+/// hidden: anyone on the network can send, so no name starts with a dot.
+fn localsend_name(raw: &str) -> String {
+    let safe = safe_file_name(raw);
+    let shown = safe.trim_start_matches(|c: char| c == '.' || c.is_whitespace());
+    if shown.is_empty() { "file".into() } else { shown.to_owned() }
 }
 
 fn guess_mime(name: &str) -> &'static str {
@@ -2465,6 +2568,57 @@ impl ServerCertVerifier for LocalSendCertVerifier {
 mod tests {
     use super::*;
     use crate::identity::PlainKeyProtector;
+
+    #[test]
+    fn received_names_are_neither_hidden_nor_reordered() {
+        assert_eq!(split_localsend_file_name(".bashrc"), (None, "bashrc".into()));
+        assert_eq!(split_localsend_file_name(". .profile"), (None, "profile".into()));
+        assert_eq!(split_localsend_file_name("a/.git/config"), (Some("a/git".into()), "config".into()));
+        assert_eq!(split_localsend_file_name("invoice\u{202E}fdp.exe"), (None, "invoicefdp.exe".into()));
+        assert_eq!(split_localsend_file_name("report.v2.pdf"), (None, "report.v2.pdf".into()));
+    }
+
+    fn peer_at(ip: &str, port: u16, protocol: &str) -> LocalSendPeer {
+        LocalSendPeer {
+            id: peer_device_id("ab", ip, port),
+            alias: "Phone".into(),
+            device_model: None,
+            device_type: "mobile".into(),
+            fingerprint: "ab".into(),
+            ip: ip.into(),
+            port,
+            protocol: protocol.into(),
+        }
+    }
+
+    #[test]
+    fn an_unverified_update_keeps_a_known_peers_address() {
+        let known = peer_at("192.168.1.20", LOCALSEND_DEFAULT_PORT, "https");
+        // A new peer is learned where it says it is.
+        let mut new = peer_at("192.168.1.66", 9000, "http");
+        assert!(!keep_known_address(None, &mut new));
+        assert_eq!((new.ip.as_str(), new.port), ("192.168.1.66", 9000));
+        // The same address with a new name is taken as it is.
+        let mut renamed = peer_at("192.168.1.20", LOCALSEND_DEFAULT_PORT, "https");
+        renamed.alias = "Pixel".into();
+        assert!(!keep_known_address(Some(&known), &mut renamed));
+        assert_eq!(renamed.alias, "Pixel");
+        // Anyone claiming its fingerprint elsewhere doesn't move it.
+        let mut moved = peer_at("192.168.1.66", 9000, "http");
+        assert!(keep_known_address(Some(&known), &mut moved));
+        assert_eq!((moved.ip.as_str(), moved.port), ("192.168.1.20", LOCALSEND_DEFAULT_PORT));
+        assert_eq!(moved.protocol, "https");
+    }
+
+    #[test]
+    fn one_address_has_a_few_prompts_at_most() {
+        let a: IpAddr = Ipv4Addr::new(192, 168, 1, 5).into();
+        let b: IpAddr = Ipv4Addr::new(192, 168, 1, 6).into();
+        assert!(room_to_ask(std::iter::empty(), a));
+        assert!(room_to_ask([a, a, b, b, b].into_iter(), a));
+        assert!(!room_to_ask([a, a, a].into_iter(), a));
+        assert!(room_to_ask([a, a, a].into_iter(), b));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
