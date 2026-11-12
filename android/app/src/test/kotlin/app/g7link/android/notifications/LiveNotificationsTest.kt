@@ -203,4 +203,88 @@ class LiveNotificationsTest {
         assertEquals("Took 4m 12s · My-PC", TaskNotifications.completionBody("My-PC", 252_000L))
         assertEquals("cargo…", TaskNotifications.shortChipText("cargo build --release"))
     }
+
+    @Test
+    fun `canSenderReadUri prevents confused-deputy URI access from notifications`() {
+        // Reject file:// URIs unconditionally.
+        assertFalse(
+            NotificationReader.canSenderReadUri(
+                scheme = "file",
+                authority = null,
+                appPackage = "app.g7link",
+                appUid = 10100,
+                postingUid = 10200,
+                providerUid = null,
+                providerExported = false,
+                providerReadPerm = null,
+                hasExplicitUriGrant = false,
+                holdsReadPerm = false,
+                holdsMediaPerm = false,
+            ),
+        )
+        // Reject G7 Link's own FileProvider even if an explicit URI grant were somehow claimed.
+        assertFalse(
+            NotificationReader.canSenderReadUri(
+                scheme = "content",
+                authority = "app.g7link.files",
+                appPackage = "app.g7link",
+                appUid = 10100,
+                postingUid = 10200,
+                providerUid = 10100,
+                providerExported = false,
+                providerReadPerm = null,
+                hasExplicitUriGrant = true,
+                holdsReadPerm = true,
+                holdsMediaPerm = true,
+            ),
+        )
+        // Allow when the posting app owns the ContentProvider (e.g. chat app attachment).
+        assertTrue(
+            NotificationReader.canSenderReadUri(
+                scheme = "content",
+                authority = "com.whatsapp.provider.media",
+                appPackage = "app.g7link",
+                appUid = 10100,
+                postingUid = 10200,
+                providerUid = 10200,
+                providerExported = false,
+                providerReadPerm = null,
+                hasExplicitUriGrant = false,
+                holdsReadPerm = false,
+                holdsMediaPerm = false,
+            ),
+        )
+        // Reject MediaStore URI when posting app has neither an explicit URI grant nor media permission.
+        assertFalse(
+            NotificationReader.canSenderReadUri(
+                scheme = "content",
+                authority = "media",
+                appPackage = "app.g7link",
+                appUid = 10100,
+                postingUid = 10200,
+                providerUid = 10050,
+                providerExported = true,
+                providerReadPerm = null,
+                hasExplicitUriGrant = false,
+                holdsReadPerm = false,
+                holdsMediaPerm = false,
+            ),
+        )
+        // Allow MediaStore URI when posting app holds media permission.
+        assertTrue(
+            NotificationReader.canSenderReadUri(
+                scheme = "content",
+                authority = "media",
+                appPackage = "app.g7link",
+                appUid = 10100,
+                postingUid = 10200,
+                providerUid = 10050,
+                providerExported = true,
+                providerReadPerm = null,
+                hasExplicitUriGrant = false,
+                holdsReadPerm = false,
+                holdsMediaPerm = true,
+            ),
+        )
+    }
 }

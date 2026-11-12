@@ -3,8 +3,11 @@ package app.g7link.android.clipboard
 
 import app.g7link.android.clipboard.PhoneClipboard.ClipCandidate
 import app.g7link.android.clipboard.PhoneClipboard.ItemChoice
+import app.g7link.android.files.OutgoingFiles
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PhoneClipboardTest {
@@ -110,5 +113,58 @@ class PhoneClipboardTest {
             isTextEcho = { it == "coerced intent text" },
         )
         assertEquals(ItemChoice.Empty, echoed)
+    }
+
+    @Test
+    fun `SendActivity and OutgoingFiles reject file URIs, blocked authorities, and ungranted streams`() {
+        assertFalse(OutgoingFiles.isAllowedShareUri("file", "", "app.g7link"))
+        assertFalse(OutgoingFiles.isAllowedShareUri("content", "sms", "app.g7link"))
+        assertFalse(OutgoingFiles.isAllowedShareUri("content", "call_log", "app.g7link"))
+        assertFalse(OutgoingFiles.isAllowedShareUri("content", "com.android.contacts", "app.g7link"))
+        assertFalse(OutgoingFiles.isAllowedShareUri("content", "app.g7link.shizuku", "app.g7link"))
+        assertTrue(OutgoingFiles.isAllowedShareUri("content", "media", "app.g7link"))
+
+        data class FakeUri(val raw: String, val scheme: String?, val auth: String?)
+        val good = FakeUri("content://media/external/images/1", "content", "media")
+        val ungranted = FakeUri("content://media/external/images/2", "content", "media")
+        val sms = FakeUri("content://sms/inbox", "content", "sms")
+        val fileUri = FakeUri("file:///data/data/app.g7link/no_backup/adb/adb.key", "file", null)
+
+        assertTrue(
+            SendActivity.filterGrantedStreamUris(
+                hasReadGrantFlag = false,
+                streams = listOf(good),
+                clipUris = setOf(good),
+                schemeOf = { it.scheme },
+                authorityOf = { it.auth },
+                appPackage = "app.g7link",
+            ).isEmpty(),
+        )
+
+        val filtered = SendActivity.filterGrantedStreamUris(
+            hasReadGrantFlag = true,
+            streams = listOf(good, ungranted, sms, fileUri),
+            clipUris = setOf(good, sms, fileUri),
+            schemeOf = { it.scheme },
+            authorityOf = { it.auth },
+            appPackage = "app.g7link",
+        )
+        assertEquals(listOf(good), filtered)
+
+        assertTrue(SendActivity.isValidInternalToken("a1b2c3", "a1b2c3"))
+        assertFalse(SendActivity.isValidInternalToken("a1b2c3", "a1b2c4"))
+        assertFalse(SendActivity.isValidInternalToken("a1b2c3", null))
+        assertFalse(SendActivity.isValidInternalToken("", ""))
+    }
+
+    @Test
+    fun `isAppPrivatePath blocks app-private directories while allowing clipboard cache`() {
+        val priv = listOf(File("/data/user/0/app.g7link"))
+        val clipCache = listOf(File("/data/user/0/app.g7link/cache/clipboard"))
+
+        assertTrue(OutgoingFiles.isAppPrivatePath("/data/user/0/app.g7link/no_backup/adb/adb.key", priv))
+        assertTrue(OutgoingFiles.isAppPrivatePath("/data/user/0/app.g7link/cache/other.png", priv, clipCache))
+        assertFalse(OutgoingFiles.isAppPrivatePath("/data/user/0/app.g7link/cache/clipboard/Image 1.png", priv, clipCache))
+        assertFalse(OutgoingFiles.isAppPrivatePath("/storage/emulated/0/Download/report.pdf", priv, clipCache))
     }
 }
