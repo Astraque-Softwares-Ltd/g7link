@@ -44,9 +44,9 @@ import kotlinx.coroutines.launch
 class SendActivity : ComponentActivity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var sent = false
-    /** Shared from the system share sheet: the user chose to send it. */
+    /** The user picked the PC in G7 Link's own list, so a link opens there without asking again. */
     private var userShared = false
-    /** Sent here directly by another app: the user picks the PC first, even with only one. */
+    /** Text or a link from another app: the user picks the PC first, even with only one. */
     private var askFirst = false
     /** The clipboard has been read for the sheet; it's read once, on the first focus. */
     private var clipRead = false
@@ -107,29 +107,11 @@ class SendActivity : ComponentActivity() {
         }
 
         val share = intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE
-        userShared = share && pickedInShareSheet(intent)
-        // Another app sent it here directly: the user picks the PC before anything goes.
-        askFirst = share && !userShared
+        // Text and links from another app wait for the user to pick the PC here, even
+        // the only one: nothing tells the share sheet apart from an app starting this
+        // directly. Once picked here, the PC opens a link without asking again.
+        askFirst = share && (payload is SharePayload.Text || payload is SharePayload.Link)
         dispatchImmediate(payload)
-    }
-
-    /**
-     * Whether the user picked G7 Link in the share sheet (or one of its Direct
-     * Share targets), rather than another app starting this directly. The
-     * sheet starts its target as the app that shared, so the caller looks the
-     * same either way; what tells them apart is what the sheet adds: the flag
-     * it starts targets with, a Direct Share shortcut, or the sheet as the
-     * referrer. An app could add those too, so this only decides whether to
-     * ask first and whether the PC may treat a link as shared by the user.
-     */
-    private fun pickedInShareSheet(intent: Intent): Boolean {
-        if (intent.flags and Intent.FLAG_ACTIVITY_FORWARD_RESULT != 0) return true
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID) != null) {
-            return true
-        }
-        val launcher = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) launchedFromPackage else null
-        val from = launcher ?: referrer?.takeIf { it.scheme == "android-app" }?.host
-        return isShareSheet(from)
     }
 
     private fun isTrustedInternalCall(intent: Intent): Boolean {
@@ -432,7 +414,11 @@ class SendActivity : ComponentActivity() {
         if (pcs.size == 1 && !askFirst) return then(pcs[0])
         AlertDialog.Builder(this)
             .setTitle(title)
-            .setItems(pcs.map { it.name }.toTypedArray()) { _, which -> then(pcs[which]) }
+            .setItems(pcs.map { it.name }.toTypedArray()) { _, which ->
+                // Picked here, in G7 Link: the user's own choice.
+                userShared = true
+                then(pcs[which])
+            }
             .setOnCancelListener { finish() }
             .show()
     }
