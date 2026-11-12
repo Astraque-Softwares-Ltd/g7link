@@ -2,8 +2,8 @@
 import QtQuick
 import app.g7link
 
-// A pill button. Variants: "fill" (primary action), "tonal", "outline",
-// "text". Sizes: "md" (40 px) and "sm" (32 px). Works with mouse, touch and
+// A button. Variants: "fill" (primary action), "tonal", "outline",
+// "text". Sizes: "md" (34 px) and "sm" (26 px). Works with mouse, touch and
 // keyboard (Tab to focus, Enter or Space to press).
 FocusScope {
     id: button
@@ -16,37 +16,13 @@ FocusScope {
 
     readonly property bool small: size === "sm"
     readonly property bool interactive: enabled && !busy
-    readonly property color background: {
-        if (Theme.quiet)
-            return variant === "fill" ? Theme.accent
-                : (variant === "tonal" ? Theme.selection : (variant === "text" ? "transparent" : Theme.raised))
-        if (variant === "fill")
-            return Theme.graphite ? Theme.surfaceContent : Theme.primary
-        if (variant === "tonal") {
-            if (Theme.glass)
-                return Qt.tint(
-                    Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.54),
-                    Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.18 : 0.14)
-                )
-            return Theme.secondaryContainer
-        }
-        return "transparent"
-    }
-    readonly property color foreground: {
-        if (Theme.quiet)
-            return variant === "fill" ? Theme.accentContent
-                : (variant === "text" ? Theme.surfaceContentVariant : Theme.surfaceContent)
-        if (variant === "fill")
-            return Theme.graphite ? Theme.surface : Theme.primaryContent
-        if (variant === "tonal")
-            return Theme.glass ? Theme.surfaceContent : Theme.secondaryContainerContent
-        if (variant === "text")
-            return Theme.graphite ? Theme.surfaceContent : Theme.primary
-        return Theme.surfaceContent
-    }
+    readonly property color background: variant === "fill" ? Theme.accent
+        : (variant === "tonal" ? Theme.selection : (variant === "text" ? "transparent" : Theme.raised))
+    readonly property color foreground: variant === "fill" ? Theme.accentContent
+        : (variant === "text" ? Theme.surfaceContentVariant : Theme.surfaceContent)
 
-    implicitHeight: Theme.quiet ? (small ? 26 : 34) : (small ? 32 : 40)
-    implicitWidth: row.implicitWidth + (Theme.quiet ? (small ? 20 : 28) : (variant === "text" ? 20 : (small ? 26 : 36)))
+    implicitHeight: small ? 26 : 34
+    implicitWidth: row.implicitWidth + (small ? 20 : 28)
     activeFocusOnTab: true
     opacity: enabled ? 1 : 0.38
 
@@ -60,52 +36,15 @@ FocusScope {
         }
     }
 
-    // Hive: a soft honey halo around a filled button under the pointer.
-    Rectangle {
-        visible: Theme.hive && button.variant === "fill"
-        x: -4; y: -4
-        width: parent.width + 8; height: parent.height + 8
-        radius: body.radius + 4
-        color: Theme.glow
-        opacity: button.interactive && (mouse.containsMouse || Theme.focusVisible(button)) ? 1 : 0
-        scale: body.scale
-        Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-    }
-
-    // Graphite's flat offset shadow under filled buttons.
-    Rectangle {
-        visible: Theme.graphite && button.variant === "fill"
-        x: 3; y: 3
-        width: parent.width; height: parent.height
-        radius: body.radius
-        color: Theme.buttonShadow
-    }
-
     Rectangle {
         id: body
         width: parent.width
         height: parent.height
-        radius: Theme.quiet ? (button.small ? Theme.radiusSm : Theme.radiusMd) : Theme.pill(height)
+        radius: button.small ? Theme.radiusSm : Theme.radiusMd
         color: button.background
         Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-        border.width: !Theme.quiet && button.variant === "outline" || (Theme.glass && (button.variant === "tonal" || button.variant === "fill")) ? 1 : 0
-        border.color: button.variant === "outline"
-            ? (Theme.glass ? Qt.rgba(1, 1, 1, Theme.dark ? 0.14 : 0.38)
-                : (Theme.hive ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.42 : 0.38) : Theme.outline))
-            : Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.32)
         scale: mouse.pressed && button.interactive ? Theme.pressScale : 1
         Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
-
-        // Hive: honey catches the light along the top of a filled button.
-        Rectangle {
-            visible: Theme.hive && button.variant === "fill"
-            anchors.fill: parent
-            radius: parent.radius
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, Theme.dark ? 0.22 : 0.16) }
-                GradientStop { position: 0.55; color: Qt.rgba(1, 1, 1, 0) }
-            }
-        }
 
         // Hover & Press state layer.
         Rectangle {
@@ -129,7 +68,7 @@ FocusScope {
             Icon {
                 visible: button.iconPath.length > 0 && !button.busy
                 anchors.verticalCenter: parent.verticalCenter
-                width: button.small || Theme.quiet ? 16 : 18; height: width
+                width: 16; height: width
                 path: button.iconPath
                 color: button.foreground
             }
@@ -138,9 +77,8 @@ FocusScope {
                 text: button.text
                 role: "label"
                 color: button.foreground
-                size: Theme.graphite ? 11 : (Theme.quiet ? (button.small ? 12 : 13) : (button.small ? 13 : 14))
-                weight: Theme.quiet && button.variant !== "fill" ? 400 : Theme.typography.label.weight
-                font.underline: Theme.graphite && button.variant === "text"
+                size: button.small ? 12 : 13
+                weight: button.variant !== "fill" ? 400 : Theme.typography.label.weight
                 maximumLineCount: 1
                 elide: Text.ElideRight
             }

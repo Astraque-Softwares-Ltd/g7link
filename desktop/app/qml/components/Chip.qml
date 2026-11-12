@@ -2,7 +2,7 @@
 import QtQuick
 import app.g7link
 
-// A small pill with optional icon. `selected` uses the indicator colors.
+// A small tag with optional icon. `selected` takes the accent.
 Rectangle {
     id: chip
     property string text
@@ -11,23 +11,13 @@ Rectangle {
     property bool interactive: false
     signal clicked()
 
-    implicitHeight: Theme.quiet ? 24 : 30
-    implicitWidth: row.implicitWidth + (Theme.quiet ? 20 : 24)
-    radius: Theme.quiet ? Theme.radiusSm : Theme.pill(height)
-    color: Theme.quiet
-        ? (selected ? Theme.activeFill : (interactive ? "transparent" : Theme.raised))
-        : Theme.graphite
-        ? (selected ? Theme.surfaceContent : "transparent")
-        : (Theme.glass
-            ? (selected
-                ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.28 : 0.22)
-                : Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.50))
-            : (selected ? Theme.secondaryContainer : Theme.surfaceContainerHigh))
+    implicitHeight: 24
+    implicitWidth: row.implicitWidth + 20
+    radius: Theme.radiusSm
+    color: selected ? Theme.activeFill : (interactive ? "transparent" : Theme.raised)
     Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-    border.width: Theme.quiet ? (selected ? 1 : 0) : (Theme.graphite || Theme.glass ? 1 : 0)
-    border.color: Theme.quiet ? Theme.accent : Theme.glass
-        ? (selected ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.55) : Qt.rgba(1, 1, 1, Theme.dark ? 0.22 : 0.68))
-        : (selected ? Theme.surfaceContent : Theme.outlineVariant)
+    border.width: selected ? 1 : 0
+    border.color: Theme.accent
     scale: chip.interactive && mouse.pressed && !Theme.reduceMotion ? Theme.pressScale : 1.0
     Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
@@ -67,7 +57,7 @@ Rectangle {
         Icon {
             visible: chip.iconPath.length > 0
             anchors.verticalCenter: parent.verticalCenter
-            width: Theme.quiet ? 14 : 15; height: width
+            width: 14; height: width
             path: chip.iconPath
             color: label.color
         }
@@ -75,10 +65,8 @@ Rectangle {
             id: label
             anchors.verticalCenter: parent.verticalCenter
             text: chip.text
-            role: Theme.quiet ? "bodySmall" : "label"
-            color: Theme.quiet ? (chip.selected ? Theme.accent : !chip.interactive ? Theme.surfaceContent : Theme.surfaceContentVariant)
-                : Theme.graphite ? (chip.selected ? Theme.surface : Theme.surfaceContent)
-                                  : (chip.selected ? Theme.secondaryContainerContent : Theme.surfaceContent)
+            role: "bodySmall"
+            color: chip.selected ? Theme.accent : !chip.interactive ? Theme.surfaceContent : Theme.surfaceContentVariant
         }
     }
 

@@ -377,14 +377,6 @@ Item {
                     iconColor: Theme.tintBlue
                     onClicked: card.send("play_on_phone")
                 }
-                TextAction {
-                    visible: !Theme.graphite
-                    text: Theme.isArtworkSeed ? qsTr("Colors from artwork: on") : qsTr("Colors from artwork")
-                    selected: Theme.isArtworkSeed
-                    iconPath: Icons.colorSwatch
-                    iconColor: Theme.tintCoral
-                    onClicked: Preferences.seed = Theme.isArtworkSeed ? "wallpaper" : "artwork"
-                }
             }
         }
     }

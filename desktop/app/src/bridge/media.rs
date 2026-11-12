@@ -40,8 +40,6 @@ pub mod qobject {
         #[qproperty(i32, count)]
         /// Bumped when players come or go, for bindings on [`first_for`].
         #[qproperty(i32, revision)]
-        #[qproperty(QString, active_art, cxx_name = "activeArt")]
-        #[qproperty(QString, active_colors, cxx_name = "activeColors")]
         /// The phone Play on phone plays on (its name), or "" when none is online.
         #[qproperty(QString, play_on_phone_name, cxx_name = "playOnPhoneName")]
         /// Whether a video plays on this PC that Play on phone can take.
@@ -127,8 +125,6 @@ pub mod qobject {
 pub struct MediaListRust {
     count: i32,
     revision: i32,
-    active_art: QString,
-    active_colors: QString,
     play_on_phone_name: QString,
     can_play_on_phone: bool,
     play_on_phone_state: QString,
@@ -244,19 +240,6 @@ impl qobject::MediaList {
         }
         let count = self.rows.len() as i32;
         self.as_mut().set_count(count);
-        let (art_url, colors_json) = match media::active_artwork() {
-            Some((path, colors)) => {
-                let url = QUrl::from_local_file(&QString::from(&*path.to_string_lossy())).to_qstring();
-                (url, QString::from(&colors))
-            }
-            None => (QString::default(), QString::default()),
-        };
-        if *self.active_art() != art_url {
-            self.as_mut().set_active_art(art_url);
-        }
-        if *self.active_colors() != colors_json {
-            self.as_mut().set_active_colors(colors_json);
-        }
         let phone = QString::from(crate::play_on_phone::phone().map(|(_, name)| name).unwrap_or_default());
         if *self.play_on_phone_name() != phone {
             self.as_mut().set_play_on_phone_name(phone);

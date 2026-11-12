@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Window
-import QtQuick.Effects
 import QtQml
 import QtQml.Models
 import app.g7link
@@ -432,143 +431,11 @@ NativeWindow {
 
     function openPairing() { pairingSheet.open() }
 
-    // Window background: the theme's surface, tinted with its seed color.
-    readonly property color windowSurface: Theme.graphite || Theme.amoled || Theme.hive || Theme.quiet
-        ? Theme.surface
-        : Qt.tint(
-            Theme.surface,
-            Qt.rgba(
-                Theme.primaryContainer.r,
-                Theme.primaryContainer.g,
-                Theme.primaryContainer.b,
-                Theme.isPhoneSeed ? (Theme.dark ? 0.22 : 0.30) : (Theme.dark ? 0.12 : 0.18)
-            )
-        )
+    // Window background: the theme's surface.
     Rectangle {
         anchors.fill: parent
-        color: window.windowSurface
+        color: Theme.surface
         Behavior on color { ColorAnimation { duration: Theme.fadeNormal } }
-    }
-
-    // Hive: the living comb behind everything, growing from the logo. It
-    // holds its frame while the window isn't in front or is minimized.
-    HiveBackdrop {
-        id: hiveComb
-        anchors.fill: parent
-        visible: opacity > 0
-        opacity: Theme.hive ? 1 : 0
-        Behavior on opacity {
-            enabled: !Theme.reduceMotion
-            NumberAnimation { duration: 420; easing.type: Easing.OutCubic }
-        }
-        animate: Theme.combMotion
-        ownClock: false
-        time: Theme.combTime
-        cell: Theme.comb.cell
-        frameMs: Theme.comb.frameMs
-        breathSeconds: Theme.comb.breathSeconds
-        pulseSeconds: Theme.comb.pulseSeconds
-        lineColor: Theme.combLine
-        glowColor: Theme.combGlow
-        // The G7 mark in the footer; the comb and its pulses carry across
-        // the whole window.
-        origin: Qt.point(28, window.height - Theme.footerHeight / 2)
-        reach: 2.4
-        pulseReach: 1.05
-    }
-
-    // The comb's clock runs while this window is in front and showing Hive.
-    Binding {
-        target: Theme
-        property: "combClockRunning"
-        value: window.active && window.visible
-               && window.visibility !== Window.Minimized && window.visibility !== Window.Hidden
-    }
-
-    // Dynamic native GPU-blurred ambient layer when "Glass" theme mode is active.
-    Item {
-        id: artworkAmbient
-        anchors.fill: parent
-        clip: true
-        opacity: Theme.ambientBlurActive ? 1.0 : 0.0
-        visible: opacity > 0
-        Behavior on opacity {
-            enabled: !Theme.reduceMotion
-            NumberAnimation { duration: 420; easing.type: Easing.OutCubic }
-        }
-
-        // Fixed-resolution 256x256 ambient mesh + blur so window resizing never
-        // reallocates full-window GPU blur FBOs on every pixel.
-        Item {
-            id: glassColorMesh
-            width: 256
-            height: 256
-            visible: false
-            layer.enabled: glassMeshBlur.visible && window.visible && window.visibility !== Window.Minimized
-            layer.textureSize: Qt.size(256, 256)
-            layer.smooth: true
-
-            Rectangle {
-                width: 174; height: 174; radius: 87
-                x: -31; y: -42
-                color: Theme.primary
-                opacity: Theme.dark ? 0.56 : 0.44
-                Behavior on color { ColorAnimation { duration: 480 } }
-            }
-            Rectangle {
-                width: 154; height: 154; radius: 77
-                x: 123; y: 56
-                color: Theme.primaryContainer
-                opacity: Theme.dark ? 0.62 : 0.52
-                Behavior on color { ColorAnimation { duration: 480 } }
-            }
-            Rectangle {
-                width: 138; height: 138; radius: 69
-                x: 31; y: 128
-                color: Theme.secondaryContainer
-                opacity: Theme.dark ? 0.54 : 0.46
-                Behavior on color { ColorAnimation { duration: 480 } }
-            }
-            Rectangle {
-                width: 108; height: 108; radius: 54
-                x: 159; y: -15
-                color: Qt.lighter(Theme.primary, 1.35)
-                opacity: Theme.dark ? 0.34 : 0.28
-                Behavior on color { ColorAnimation { duration: 480 } }
-            }
-        }
-
-        MultiEffect {
-            id: glassMeshBlur
-            width: 256
-            height: 256
-            source: glassColorMesh
-            visible: Theme.glass
-            autoPaddingEnabled: false
-            blurEnabled: true
-            blurMax: 48
-            blur: 1.0
-            saturation: Theme.dark ? 0.42 : 0.30
-            transform: Scale {
-                xScale: artworkAmbient.width / 256
-                yScale: artworkAmbient.height / 256
-            }
-        }
-
-        // Translucent surface veil so UI cards and typography stay crisp over the blurred backdrop.
-        Rectangle {
-            anchors.fill: parent
-            color: Qt.rgba(
-                Theme.surface.r,
-                Theme.surface.g,
-                Theme.surface.b,
-                Theme.glass ? (Theme.amoled ? 0.62 : (Theme.dark ? 0.22 : 0.28)) : (Theme.dark ? 0.60 : 0.66)
-            )
-            Behavior on color {
-                enabled: !Theme.reduceMotion
-                ColorAnimation { duration: 360; easing.type: Easing.OutCubic }
-            }
-        }
     }
 
     // ---- The window: a header, a sidebar and a footer around the page ----
@@ -797,10 +664,7 @@ NativeWindow {
             id: pages
             anchors.fill: parent
             clip: true
-            // Hive and Glass let their backdrop show faintly through.
-            color: Theme.hive || Theme.glass
-                ? Qt.rgba(Theme.surface.r, Theme.surface.g, Theme.surface.b, Theme.dark ? 0.50 : 0.58)
-                : (Theme.amoled ? "#000000" : Theme.surface)
+            color: Theme.surface
 
             Loader {
                 id: pageLoader

@@ -18,8 +18,6 @@ Rectangle {
 
     radius: Theme.radiusLg
     color: "#FFFFFF"
-    border.width: Theme.graphite ? 1 : 0
-    border.color: Theme.outlineVariant
 
     Shape {
         width: qr.modules

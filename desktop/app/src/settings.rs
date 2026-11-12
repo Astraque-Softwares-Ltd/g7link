@@ -12,29 +12,76 @@ use serde::{Deserialize, Serialize};
 
 const FILE_NAME: &str = "desktop-settings.json";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-#[serde(rename_all = "lowercase")]
+/// The app's colors. Colors only: every theme keeps the same layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
-    /// G7's Quiet Tool language, with the bottom dock.
+    /// G7's own colors.
     #[default]
     Quiet,
-    Bloom,
-    /// Honey on charcoal or wax, with the living comb.
-    Hive,
-    Glass,
-    Graphite,
+    /// The G7 Linux launcher's current theme, followed live.
+    MatchLauncher,
+    // Palettes from G7 Linux's themes (qml/Palettes.qml).
+    Catppuccin,
+    Gruvbox,
+    RosePine,
+    Solarized,
+    Nord,
+    TokyoNight,
+    Kanagawa,
+    Dracula,
+    Ayu,
+}
+
+impl Theme {
+    const ALL: [Theme; 11] = [
+        Theme::Quiet,
+        Theme::MatchLauncher,
+        Theme::Catppuccin,
+        Theme::Gruvbox,
+        Theme::RosePine,
+        Theme::Solarized,
+        Theme::Nord,
+        Theme::TokyoNight,
+        Theme::Kanagawa,
+        Theme::Dracula,
+        Theme::Ayu,
+    ];
+
+    /// The stored name, also the one QML uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::Quiet => "quiet",
+            Theme::MatchLauncher => "g7linux",
+            Theme::Catppuccin => "catppuccin",
+            Theme::Gruvbox => "gruvbox",
+            Theme::RosePine => "rose-pine",
+            Theme::Solarized => "solarized",
+            Theme::Nord => "nord",
+            Theme::TokyoNight => "tokyo-night",
+            Theme::Kanagawa => "kanagawa",
+            Theme::Dracula => "dracula",
+            Theme::Ayu => "ayu",
+        }
+    }
+
+    /// Unknown names, and the themes from before colors only (Hive, Bloom,
+    /// Glass and Graphite), are G7's colors.
+    pub fn from_str_lossy(s: &str) -> Theme {
+        let s = s.trim().to_ascii_lowercase();
+        Theme::ALL.into_iter().find(|theme| theme.as_str() == s).unwrap_or_default()
+    }
+}
+
+impl Serialize for Theme {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 impl<'de> Deserialize<'de> for Theme {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer).unwrap_or_default();
-        Ok(match s.trim().to_ascii_lowercase().as_str() {
-            "quiet" => Theme::Quiet,
-            "hive" => Theme::Hive,
-            "graphite" => Theme::Graphite,
-            "glass" | "blurry" => Theme::Glass,
-            _ => Theme::Bloom,
-        })
+        Ok(Theme::from_str_lossy(&s))
     }
 }
 
@@ -407,19 +454,8 @@ pub fn set_window_geometry(
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub theme: Theme,
-    /// Bloom colors: "wallpaper" (from the desktop wallpaper) or a preset,
-    /// e.g. "honey" (see docs/design/tokens.json).
-    #[serde(alias = "accent")]
-    pub seed: String,
     #[serde(alias = "color_mode")]
     pub color_mode: ColorMode,
-    /// Pure #000000 OLED black surfaces when in dark mode.
-    #[serde(default)]
-    pub amoled: bool,
-    /// Hive's comb breathes and pulses (it holds still when off, and with
-    /// reduced motion or battery saver whatever this says).
-    #[serde(default = "default_true", alias = "comb_motion")]
-    pub comb_motion: bool,
     /// Closing the window keeps G7 Link running in the tray.
     #[serde(default = "default_close_to_tray", alias = "close_to_tray")]
     pub close_to_tray: bool,
@@ -607,9 +643,6 @@ pub struct Settings {
     /// Current step index (0..=6) in the first-run setup walkthrough for resuming after a restart.
     #[serde(default, alias = "walkthrough_step")]
     pub walkthrough_step: u8,
-    /// Whether the card on Home inviting to try Hive has been answered.
-    #[serde(default, alias = "hive_invite_dismissed")]
-    pub hive_invite_dismissed: bool,
     /// Whether the one-time ask for a star on GitHub has been answered.
     #[serde(default, alias = "star_prompt_done")]
     pub star_prompt_done: bool,
@@ -660,10 +693,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             theme: Theme::default(),
-            seed: "wallpaper".into(),
             color_mode: ColorMode::default(),
-            amoled: false,
-            comb_motion: true,
             close_to_tray: default_close_to_tray(),
             auto_clipboard: true,
             clipboard_history: true,
@@ -722,7 +752,6 @@ impl Default for Settings {
             network_interface: String::new(),
             walkthrough_completed: false,
             walkthrough_step: 0,
-            hive_invite_dismissed: false,
             star_prompt_done: false,
             star_prompt_updated: false,
             star_prompt_minutes: 0,
@@ -887,6 +916,31 @@ mod tests {
     }
 
     #[test]
+    fn every_theme_round_trips_and_old_ones_are_g7() {
+        for theme in Theme::ALL {
+            let json = serde_json::to_string(&theme).unwrap();
+            assert_eq!(serde_json::from_str::<Theme>(&json).unwrap(), theme, "{json}");
+        }
+        assert_eq!(Theme::from_str_lossy(" Rose-Pine "), Theme::RosePine);
+        assert_eq!(Theme::from_str_lossy("g7linux"), Theme::MatchLauncher);
+        for old in ["hive", "bloom", "glass", "blurry", "graphite", "sepia", ""] {
+            assert_eq!(Theme::from_str_lossy(old), Theme::Quiet, "{old}");
+        }
+        let stored: Theme = serde_json::from_str("42").unwrap();
+        assert_eq!(stored, Theme::Quiet, "not even a name");
+    }
+
+    #[test]
+    fn every_palette_theme_is_in_the_generated_palettes() {
+        let palettes = include_str!("../qml/Palettes.qml");
+        let bundled = Theme::ALL.into_iter().filter(|t| !matches!(t, Theme::Quiet | Theme::MatchLauncher));
+        for theme in bundled {
+            assert!(palettes.contains(&format!("\"id\": \"{}\"", theme.as_str())), "{theme:?}");
+        }
+        assert_eq!(palettes.matches("\"id\": ").count(), Theme::ALL.len() - 2, "every palette can be picked");
+    }
+
+    #[test]
     fn an_update_asks_for_a_star_unless_it_was_answered() {
         let mut new = Settings::default();
         assert!(new.ask_for_star_after_update());
@@ -927,11 +981,8 @@ mod tests {
         assert!(flow_follow_clipboard());
 
         let settings = Settings {
-            theme: Theme::Graphite,
-            seed: "ocean".into(),
+            theme: Theme::Nord,
             color_mode: ColorMode::Dark,
-            amoled: false,
-            comb_motion: false,
             close_to_tray: false,
             auto_clipboard: false,
             clipboard_history: false,
@@ -990,7 +1041,6 @@ mod tests {
             network_interface: "wlan0".into(),
             walkthrough_completed: true,
             walkthrough_step: 4,
-            hive_invite_dismissed: true,
             star_prompt_done: true,
             star_prompt_updated: true,
             star_prompt_minutes: 3,
@@ -1010,10 +1060,10 @@ mod tests {
     #[test]
     fn missing_fields_take_defaults_and_corrupt_files_are_set_aside() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(FILE_NAME), r#"{ "theme": "graphite" }"#).unwrap();
+        fs::write(dir.path().join(FILE_NAME), r#"{ "theme": "dracula" }"#).unwrap();
         let loaded = Settings::load(dir.path());
-        assert_eq!(loaded.theme, Theme::Graphite);
-        assert_eq!(loaded.seed, "wallpaper");
+        assert_eq!(loaded.theme, Theme::Dracula);
+        assert_eq!(loaded.color_mode, ColorMode::Dark);
 
         fs::write(dir.path().join(FILE_NAME), "{ not json").unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());
@@ -1025,7 +1075,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         // 1. Commit d16a106 (initial desktop app: theme, seed, colorMode, backdrop, closeToTray).
-        // `backdrop` (a window material) is gone: an old file with it still loads.
+        // `backdrop` (a window material) and `seed` (Bloom's colors) are gone, and Bloom
+        // and Graphite are G7's colors now: an old file still loads.
         let snap_d16a106 = r#"{
             "theme": "bloom",
             "seed": "honey",
@@ -1035,8 +1086,7 @@ mod tests {
         }"#;
         fs::write(dir.path().join(FILE_NAME), snap_d16a106).unwrap();
         let s = Settings::load(dir.path());
-        assert_eq!(s.theme, Theme::Bloom);
-        assert_eq!(s.seed, "honey");
+        assert_eq!(s.theme, Theme::Quiet);
         assert_eq!(s.color_mode, ColorMode::Dark);
         assert!(!s.close_to_tray);
         assert!(s.auto_clipboard);
@@ -1056,7 +1106,7 @@ mod tests {
         }"#;
         fs::write(dir.path().join(FILE_NAME), snap_4659bd9).unwrap();
         let s = Settings::load(dir.path());
-        assert_eq!(s.theme, Theme::Graphite);
+        assert_eq!(s.theme, Theme::Quiet);
         assert_eq!(s.color_mode, ColorMode::Light);
         assert!(!s.auto_clipboard);
         assert!(!s.send_to_menu);
@@ -1160,8 +1210,7 @@ mod tests {
         }"#;
         fs::write(dir.path().join(FILE_NAME), snap_ebe0012).unwrap();
         let s = Settings::load(dir.path());
-        assert_eq!(s.theme, Theme::Graphite);
-        assert_eq!(s.seed, "phone");
+        assert_eq!(s.theme, Theme::Quiet);
         assert_eq!(s.timeline_retention_days, 365);
         assert_eq!(s.continuity_photo_hotkey, "Ctrl+Shift+C");
         assert_eq!(s.continuity_scan_hotkey, "Ctrl+Shift+D");
@@ -1201,8 +1250,7 @@ mod tests {
         }"#;
         fs::write(dir.path().join(FILE_NAME), legacy_snake).unwrap();
         let s = Settings::load(dir.path());
-        assert_eq!(s.theme, Theme::Graphite);
-        assert_eq!(s.seed, "ocean");
+        assert_eq!(s.theme, Theme::Quiet);
         assert_eq!(s.start_with_windows, Some(true));
         assert!(!s.close_to_tray);
         assert!(!s.auto_clipboard);
@@ -1223,8 +1271,7 @@ mod tests {
         }"#;
         fs::write(dir.path().join(FILE_NAME), unknown_enums).unwrap();
         let s = Settings::load(dir.path());
-        assert_eq!(s.theme, Theme::Bloom);
-        assert_eq!(s.seed, "ultraviolet");
+        assert_eq!(s.theme, Theme::Quiet);
         assert_eq!(s.color_mode, ColorMode::System);
         assert_eq!(s.recordings_format, RecordingFormat::M4a);
     }

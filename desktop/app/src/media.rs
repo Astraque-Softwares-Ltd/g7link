@@ -26,10 +26,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Artwork files by (device, art key), for players that only send a key.
 static ART: Mutex<Option<HashMap<(DeviceId, String), PathBuf>>> = Mutex::new(None);
-/// Extracted Material 3 color scheme JSON by artwork file path.
-static ART_SCHEMES: Mutex<Option<HashMap<PathBuf, String>>> = Mutex::new(None);
-/// Artwork file for the currently active local PC media player (if any).
-static LOCAL_ART: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// Artwork files kept per device (older ones are deleted).
 const KEPT_ART: usize = 12;
 /// This PC's own artwork kept on disk (the `pc-` files: what its players show,
@@ -41,74 +37,6 @@ const LOCAL_ART_TIDY_EVERY: usize = 24;
 
 fn art_dir() -> PathBuf {
     core_host::host().data_dir.join("cache").join("art")
-}
-
-/// Computes or returns the cached Material 3 scheme JSON (`{"seed":...,"light":...,"dark":...}`)
-/// for an artwork image file on disk.
-pub fn scheme_for_path(path: &std::path::Path) -> String {
-    if let Some(existing) = lock(&ART_SCHEMES).as_ref().and_then(|m| m.get(path)).cloned() {
-        return existing;
-    }
-    let json = crate::sys::wallpaper::artwork_scheme_from_path(path).unwrap_or_default();
-    let mut cache = lock(&ART_SCHEMES);
-    let map = cache.get_or_insert_default();
-    if map.len() > 64 {
-        map.clear();
-    }
-    map.insert(path.to_path_buf(), json.clone());
-    json
-}
-
-fn cached_or_async_scheme(path: &std::path::Path) -> String {
-    /// Artwork whose scheme is being worked out: each media refresh asks again until it's
-    /// ready, and one worker per file is enough.
-    static PENDING: Mutex<Option<std::collections::HashSet<PathBuf>>> = Mutex::new(None);
-    if let Some(existing) = lock(&ART_SCHEMES).as_ref().and_then(|m| m.get(path)).cloned() {
-        return existing;
-    }
-    if !lock(&PENDING).get_or_insert_default().insert(path.to_path_buf()) {
-        return String::new();
-    }
-    let path_owned = path.to_path_buf();
-    std::thread::spawn(move || {
-        let _ = scheme_for_path(&path_owned);
-        if let Some(pending) = lock(&PENDING).as_mut() {
-            pending.remove(&path_owned);
-        }
-        core_host::host().hub.changed(crate::state::Changes::MEDIA);
-    });
-    String::new()
-}
-
-/// Returns the active media artwork path and its Material 3 color scheme JSON,
-/// prioritizing:
-/// 1. Any currently playing phone player with artwork
-/// 2. Any currently playing local PC player with artwork
-/// 3. Any paused phone player with artwork
-/// 4. Any paused local PC player with artwork
-pub fn active_artwork() -> Option<(PathBuf, String)> {
-    let phone_playing = core_host::host()
-        .hub
-        .read(|s| s.media.iter().find(|p| p.player.playing && p.art.is_some()).and_then(|p| p.art.clone()));
-    if let Some(path) = phone_playing {
-        let colors = cached_or_async_scheme(&path);
-        return Some((path, colors));
-    }
-    let local_playing = lock(&LOCAL_PLAYERS).iter().any(|(p, ..)| p.playing);
-    if local_playing && let Some(path) = lock(&LOCAL_ART).clone() {
-        let colors = cached_or_async_scheme(&path);
-        return Some((path, colors));
-    }
-    let phone_any = core_host::host().hub.read(|s| s.media.iter().find_map(|p| p.art.clone()));
-    if let Some(path) = phone_any {
-        let colors = cached_or_async_scheme(&path);
-        return Some((path, colors));
-    }
-    if let Some(path) = lock(&LOCAL_ART).clone() {
-        let colors = cached_or_async_scheme(&path);
-        return Some((path, colors));
-    }
-    None
 }
 
 /// Saves the artwork in a media event; returns every player's artwork file
@@ -140,9 +68,6 @@ pub fn save_art(event: &NodeEvent) -> HashMap<String, PathBuf> {
     }
     prune(art, *device, players.iter().filter_map(|p| p.art_key.clone()).collect());
     drop(guard);
-    for path in found.values() {
-        let _ = scheme_for_path(path);
-    }
     found
 }
 
@@ -313,15 +238,9 @@ pub fn local_changed(players: Vec<g7link_core::MediaPlayer>) {
             if !path.exists() {
                 let _ = std::fs::create_dir_all(art_dir()).and_then(|()| std::fs::write(&path, bytes));
             }
-            let _ = scheme_for_path(&path);
             per_player_art.insert(p.id.clone(), path);
         }
     }
-    let chosen_art = players
-        .iter()
-        .find(|p| p.playing && per_player_art.contains_key(&p.id))
-        .or_else(|| players.iter().find(|p| per_player_art.contains_key(&p.id)))
-        .and_then(|p| per_player_art.get(&p.id).cloned());
     static CHANGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(LOCAL_ART_TIDY_EVERY) {
         let in_use: Vec<PathBuf> = per_player_art.values().cloned().collect();
@@ -334,7 +253,6 @@ pub fn local_changed(players: Vec<g7link_core::MediaPlayer>) {
         });
     }
     *lock(&LOCAL_PLAYER_ART) = Some(per_player_art);
-    *lock(&LOCAL_ART) = chosen_art;
     core_host::host().hub.changed(crate::state::Changes::MEDIA);
     crate::deck::on_local_media_changed(&players);
     static UPDATES: OnceLock<tokio::sync::watch::Sender<Vec<g7link_core::MediaPlayer>>> = OnceLock::new();

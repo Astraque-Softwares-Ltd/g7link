@@ -3,7 +3,7 @@ pragma Singleton
 import QtQuick
 
 // Stroke icons as SVG paths on a 24×24 grid (round caps and joins), drawn
-// by Icon when G7Glyphs has no filled glyph for them or another theme is on.
+// by Icon when G7Glyphs has no filled glyph for them.
 // chevronLeft, sparkle, island, hotspot and the paths after shield are
 // Tabler Icons, MIT (LICENSES/MIT-Tabler-Icons.txt).
 QtObject {
@@ -69,8 +69,6 @@ QtObject {
     readonly property string copy: "M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2zM4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"
     readonly property string warning: "M21.73 18l-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3zM12 9v4M11.6 17a.4.4 0 1 0 .8 0 .4.4 0 1 0-.8 0"
     readonly property string info: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 16v-4M11.6 8a.4.4 0 1 0 .8 0 .4.4 0 1 0-.8 0"
-    readonly property string palette: "M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8zM13 6.5a.6.6 0 1 0 1.2 0 .6.6 0 1 0-1.2 0M17 10.5a.6.6 0 1 0 1.2 0 .6.6 0 1 0-1.2 0M6 12.5a.6.6 0 1 0 1.2 0 .6.6 0 1 0-1.2 0M8 7.5a.6.6 0 1 0 1.2 0 .6.6 0 1 0-1.2 0"
-    readonly property string colorSwatch: "M12 3a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM8.5 9a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM15.5 9a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"
     readonly property string power: "M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04"
     readonly property string folder: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"
     readonly property string sparkle: "M16 18a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm0 -12a2 2 0 0 1 2 2a2 2 0 0 1 2 -2a2 2 0 0 1 -2 -2a2 2 0 0 1 -2 2zm-7 12a6 6 0 0 1 6 -6a6 6 0 0 1 -6 -6a6 6 0 0 1 -6 6a6 6 0 0 1 6 6z"

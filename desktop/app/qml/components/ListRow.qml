@@ -18,8 +18,7 @@ Item {
 
     implicitHeight: stackTrailing
         ? texts.implicitHeight + trailingSlot.childrenRect.height + 34
-        : Math.max(Theme.quiet ? Theme.rowHeight : 56, texts.implicitHeight + (Theme.quiet ? 14 : 20),
-                   trailingSlot.childrenRect.height + (Theme.quiet ? 10 : 16))
+        : Math.max(Theme.rowHeight, texts.implicitHeight + 14, trailingSlot.childrenRect.height + 10)
 
     Icon {
         id: icon
@@ -27,7 +26,7 @@ Item {
         anchors.left: parent.left
         // On the title's first line, however many lines the text wraps to.
         y: texts.y + Math.round((titleText.lineHeight - height) / 2)
-        width: Theme.quiet ? 18 : implicitWidth
+        width: 18
         height: width
         path: row.iconPath
         color: row.iconColor
@@ -35,7 +34,7 @@ Item {
     Column {
         id: texts
         anchors.left: icon.visible ? icon.right : parent.left
-        anchors.leftMargin: icon.visible ? (Theme.quiet ? 12 : 14) : 0
+        anchors.leftMargin: icon.visible ? 12 : 0
         anchors.right: row.stackTrailing ? parent.right : trailingSlot.left
         anchors.rightMargin: row.stackTrailing ? 0 : 16
         y: row.stackTrailing ? 12 : Math.round((row.height - height) / 2)
@@ -44,8 +43,7 @@ Item {
             id: titleText
             width: parent.width
             text: row.title
-            role: Theme.quiet ? "body" : "title"
-            size: Theme.quiet ? Theme.typography.body.size : 14
+            role: "body"
             wrapMode: Text.WordWrap
             elide: Text.ElideNone
         }

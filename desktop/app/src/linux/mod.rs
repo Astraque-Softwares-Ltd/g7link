@@ -11,6 +11,7 @@ pub mod browser;
 pub mod bt_hfp;
 pub mod clipboard;
 pub mod data_control;
+pub mod dir_watch;
 pub mod doctor;
 pub mod elevated;
 pub mod h264;
@@ -40,7 +41,6 @@ pub(crate) mod video_decoder;
 #[cfg(linux_ffmpeg_video)]
 pub(crate) mod video_encoder;
 pub mod vmic;
-pub mod wallpaper;
 pub mod wifi;
 pub mod window_capture;
 pub mod wol;

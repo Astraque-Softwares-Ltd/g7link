@@ -17,8 +17,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("App", "G7 Link · 1 device connected"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "G7 Link · no devices paired"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "G7 Link · not connected"), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("App", "My phone's colors"), // desktop/app/src/bridge/app.rs
-    QT_TRANSLATE_NOOP("App", "My phone's colors (%1)"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "No phone is paired yet."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Open G7 Link"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Open copied link on phone"), // desktop/app/src/bridge/app.rs

@@ -5,10 +5,7 @@
 use crate::i18n::tr;
 use std::{
     pin::Pin,
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Mutex, OnceLock, atomic::Ordering},
 };
 
 use cxx_qt::{CxxQtThread, CxxQtType, Threading};
@@ -64,11 +61,9 @@ pub mod qobject {
         #[qproperty(bool, reduce_motion)]
         /// Battery saver is on: decorative animation rests.
         #[qproperty(bool, power_saver)]
-        /// Bloom colors from the desktop wallpaper, as JSON in the shape of
-        /// a tokens.json seed (`{ seed, light, dark }`); "" until known.
-        #[qproperty(QString, wallpaper_colors)]
-        /// Material You color schemes for paired phones (`[{ id, key, name, label, hasAccent, scheme }]`).
-        #[qproperty(QString, phone_colors)]
+        /// G7 Linux's current light and dark themes, for "Match G7 Linux", as
+        /// JSON: `{ light, dark }`, each `{ name, dark, colors }` (colors null: G7's own).
+        #[qproperty(QString, launcher_theme)]
         /// Whether the desktop shows this app's notifications.
         #[qproperty(bool, toasts_enabled)]
         #[qproperty(QString, version)]
@@ -467,8 +462,7 @@ pub struct AppControllerRust {
     system_dark: bool,
     reduce_motion: bool,
     power_saver: bool,
-    wallpaper_colors: QString,
-    phone_colors: QString,
+    launcher_theme: QString,
     toasts_enabled: bool,
     version: QString,
     doctor_checks: QString,
@@ -823,8 +817,11 @@ impl cxx_qt::Initialize for qobject::AppController {
             self.as_mut().set_apk_qr_size(qr.size as i32);
             self.as_mut().set_apk_qr_svg(QString::from(&svg));
         }
-        let initial_phone_colors = core_host::host().hub.read(|s| phone_colors_json(&s.devices));
-        self.as_mut().set_phone_colors(QString::from(&initial_phone_colors));
+        self.as_mut().set_launcher_theme(QString::from(&crate::launcher_theme::current_json()));
+        let qt = self.qt_thread();
+        crate::launcher_theme::watch(move |json| {
+            let _ = qt.queue(move |object| object.set_launcher_theme(QString::from(&json)));
+        });
         // Until the background check answers: no "notifications are off" flash at start.
         self.as_mut().set_toasts_enabled(true);
         self.as_mut().refresh_appearance();
@@ -1018,22 +1015,15 @@ fn dispatch_jump_task(qt: &CxxQtThread<qobject::AppController>, action: String) 
             let mode = &s["theme:".len()..];
             let dir = &core_host::host().data_dir;
             let mut st = crate::settings::Settings::load(dir);
-            // `<theme>` or `<theme>-dark` / `<theme>-light`; plain "graphite" is dark.
+            // `<theme>` or `<theme>-dark` / `<theme>-light`; plain names are light.
             use crate::settings::{ColorMode, Theme};
             let (name, color) = match mode.rsplit_once('-') {
                 Some((name, "dark")) => (name, Some(ColorMode::Dark)),
                 Some((name, "light")) => (name, Some(ColorMode::Light)),
                 _ => (mode, None),
             };
-            st.theme = match name {
-                "quiet" => Theme::Quiet,
-                "graphite" => Theme::Graphite,
-                "glass" => Theme::Glass,
-                "hive" => Theme::Hive,
-                _ => Theme::Bloom,
-            };
-            st.color_mode =
-                color.unwrap_or(if name == "graphite" { ColorMode::Dark } else { ColorMode::Light });
+            st.theme = Theme::from_str_lossy(name);
+            st.color_mode = color.unwrap_or(ColorMode::Light);
             let _ = st.save(dir);
             core_host::host().hub.changed(Changes::PREFS);
             object.activate_requested();
@@ -1116,103 +1106,6 @@ fn on_tray_event(qt: &CxxQtThread<qobject::AppController>, event: tray::TrayEven
     }
 }
 
-/// Bumped per wallpaper refresh, so a slow, older one can't overwrite a
-/// newer result.
-static WALLPAPER_GENERATION: AtomicU64 = AtomicU64::new(0);
-
-/// Works out the wallpaper's colors on a worker thread (decoding a photo
-/// takes a moment) and hands them to QML.
-fn refresh_wallpaper_colors(qt: CxxQtThread<qobject::AppController>) {
-    let generation = WALLPAPER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    let spawned = std::thread::Builder::new().name("wallpaper-colors".into()).spawn(move || {
-        let seed = sys::wallpaper::seed();
-        tracing::debug!(seed = ?seed.map(|s| format!("#{:06X}", s.as_u32())), "wallpaper colors");
-        let json = seed.map(|seed| crate::palette::scheme_json(seed).to_string());
-        if WALLPAPER_GENERATION.load(Ordering::SeqCst) != generation {
-            return;
-        }
-        let _ = qt.queue(move |object| {
-            // Checked again here: a newer one may have finished in between.
-            if WALLPAPER_GENERATION.load(Ordering::SeqCst) == generation {
-                object.set_wallpaper_colors(QString::from(json.as_deref().unwrap_or_default()));
-            }
-        });
-    });
-    if let Err(e) = spawned {
-        tracing::warn!(error = %e, "can't start reading the wallpaper's colors");
-    }
-}
-
-fn phone_colors_json(devices: &[crate::state::DeviceView]) -> String {
-    // One entry per name. When a phone was paired again (reinstalled, reset), an
-    // old entry can share its name: the connected, most recently paired one
-    // speaks for it, so its live colors (wallpaper, or the artwork playing) win.
-    let mut ordered: Vec<&crate::state::DeviceView> = devices.iter().collect();
-    ordered.sort_by_key(|d| (!matches!(d.link, LinkState::Online { .. }), std::cmp::Reverse(d.paired_at)));
-    let mut seen_names = std::collections::HashSet::new();
-    let deduped: Vec<&crate::state::DeviceView> = ordered
-        .into_iter()
-        .filter(|d| {
-            let key = d.info.name.trim().to_lowercase();
-            key.is_empty() || seen_names.insert(key)
-        })
-        .collect();
-    if deduped.is_empty() {
-        return serde_json::json!([{
-            "id": "",
-            "key": "phone",
-            "name": "",
-            "label": "My phone's colors",
-            "hasAccent": false,
-            "scheme": serde_json::Value::Null,
-        }])
-        .to_string();
-    }
-    let multiple = deduped.len() > 1;
-    let entries: Vec<serde_json::Value> = deduped
-        .into_iter()
-        .map(|d| {
-            let effective_accent = d.info.accent.or_else(|| {
-                devices
-                    .iter()
-                    .filter(|o| matches!(o.link, LinkState::Online { .. }))
-                    .find(|o| {
-                        o.info.name.trim().eq_ignore_ascii_case(d.info.name.trim()) && o.info.accent.is_some()
-                    })
-                    .or_else(|| {
-                        devices.iter().find(|o| {
-                            o.info.name.trim().eq_ignore_ascii_case(d.info.name.trim())
-                                && o.info.accent.is_some()
-                        })
-                    })
-                    .and_then(|o| o.info.accent)
-            });
-            let scheme = effective_accent.map(|argb| {
-                let r = ((argb >> 16) & 0xFF) as u8;
-                let g = ((argb >> 8) & 0xFF) as u8;
-                let b = (argb & 0xFF) as u8;
-                crate::palette::scheme_json(material_colors::color::Rgb::new(r, g, b))
-            });
-            let id_str = d.id.to_string();
-            let key = if multiple { format!("phone:{id_str}") } else { "phone".to_owned() };
-            let label = if multiple {
-                tr!("App", "My phone's colors (%1)", d.info.name)
-            } else {
-                tr!("App", "My phone's colors")
-            };
-            serde_json::json!({
-                "id": id_str,
-                "key": key,
-                "name": d.info.name,
-                "label": label,
-                "hasAccent": scheme.is_some(),
-                "scheme": scheme,
-            })
-        })
-        .collect();
-    serde_json::Value::Array(entries).to_string()
-}
-
 fn ring_device(device: DeviceId, on: bool) {
     let Some(node) = core_host::node() else { return };
     core_host::spawn(async move {
@@ -1229,7 +1122,6 @@ impl qobject::AppController {
         let (
             status,
             devices,
-            phone_colors,
             ringing,
             ringing_devices,
             online,
@@ -1273,7 +1165,6 @@ impl qobject::AppController {
             let wake_adapter = s.wake.primary().map(|a| a.label.clone()).unwrap_or_default();
             let wake_state = s.wake.state_str();
             let wake_wired = s.wake.primary().is_some_and(|a| a.wired);
-            let phone_colors = phone_colors_json(&s.devices);
             let waiting_count = s
                 .send_queue
                 .iter()
@@ -1284,7 +1175,6 @@ impl qobject::AppController {
             (
                 s.core_status(),
                 s.devices.len(),
-                phone_colors,
                 ringing,
                 ringing_devices,
                 connected.len(),
@@ -1322,10 +1212,6 @@ impl qobject::AppController {
         self.as_mut().set_status(QString::from(status_text));
         self.as_mut().set_error(QString::from(&error));
         self.as_mut().set_has_devices(devices > 0);
-        let phone_colors_q = QString::from(&phone_colors);
-        if *self.phone_colors() != phone_colors_q {
-            self.as_mut().set_phone_colors(phone_colors_q);
-        }
         self.as_mut().set_ringing_from(QString::from(&ringing));
         self.as_mut().set_ringing_devices(ringing_devices);
         let (prompt_id, prompt_name) = remote_prompt.unwrap_or_default();
@@ -1451,7 +1337,6 @@ impl qobject::AppController {
     fn refresh_appearance(mut self: Pin<&mut Self>) {
         self.as_mut().set_system_dark(sys::system_dark());
         self.as_mut().set_reduce_motion(sys::reduce_motion());
-        refresh_wallpaper_colors(self.qt_thread());
         // Power saver too.
         self.refresh_toasts_enabled();
     }
@@ -3676,40 +3561,6 @@ mod tests {
     fn shelf_times_compare_in_milliseconds() {
         assert_eq!(unix_ms(1_761_800_000), 1_761_800_000_000, "the timeline's seconds");
         assert_eq!(unix_ms(1_761_800_000_123), 1_761_800_000_123, "already milliseconds");
-    }
-
-    #[test]
-    fn phone_colors_come_from_the_connected_phone_when_an_old_pairing_shares_its_name() {
-        let phone = |n: u8, accent: u32, online: bool| crate::state::DeviceView {
-            id: DeviceId([n; 32]),
-            info: g7link_core::DeviceInfo {
-                name: "Galaxy".into(),
-                kind: g7link_core::DeviceKind::Phone,
-                os: "android".into(),
-                os_ver: "16".into(),
-                model: None,
-                accent: Some(accent),
-                screen: None,
-                install_id: None,
-            },
-            paired_at: i64::from(n),
-            link: if online {
-                LinkState::Online { path: g7link_core::ConnectionPath::Lan, rtt_ms: 4 }
-            } else {
-                LinkState::Offline { last_seen: None }
-            },
-            battery: None,
-            power: g7link_core::PowerLevel::Basic,
-            reconnect: true,
-        };
-        // The stale pairing is listed first and has its own (old) color.
-        let devices = [phone(1, 0xFF00_00FF, false), phone(2, 0xFFFF_8800, true)];
-        let entries: serde_json::Value = serde_json::from_str(&phone_colors_json(&devices)).unwrap();
-        let entries = entries.as_array().unwrap();
-        assert_eq!(entries.len(), 1, "one entry per name");
-        assert_eq!(entries[0]["id"], DeviceId([2; 32]).to_string(), "the connected phone");
-        let expected = crate::palette::scheme_json(material_colors::color::Rgb::new(0xFF, 0x88, 0x00));
-        assert_eq!(entries[0]["scheme"], serde_json::json!(expected));
     }
 
     #[test]

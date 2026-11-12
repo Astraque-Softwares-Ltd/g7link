@@ -73,11 +73,19 @@ between the app and the `v4l2loopback` virtual camera.
 checked in:
 
 ```sh
-cargo xtask tokens            # Tokens.qml and Tokens.kt from docs/design/tokens.json
-cargo xtask tokens --check    # fail if they are out of date
+cargo xtask tokens            # Tokens.qml from docs/design/tokens.json
+cargo xtask tokens --check    # fail if it is out of date
 cargo xtask strings           # translatable strings the desktop app builds in Rust
 cargo xtask strings --check
 cargo xtask notices           # THIRD-PARTY-NOTICES.txt
+```
+
+The color-only palettes (`desktop/app/qml/Palettes.qml` and the Android
+`Palettes.kt`) come from G7 Linux's theme files. They change only when those
+do; regenerate them by hand from a G7 Linux checkout:
+
+```sh
+python3 scripts/gen-palettes.py ../g7linux/extra/themes
 ```
 
 ### Android app

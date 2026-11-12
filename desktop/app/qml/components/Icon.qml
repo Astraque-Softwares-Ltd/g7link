@@ -9,8 +9,8 @@ Item {
     property string path
     property color color: Theme.surfaceContent
     property real stroke: 1.8
-    // In the G7 theme, G7's own filled glyph when it has one for this icon.
-    readonly property string glyph: Theme.quiet ? (G7Glyphs.byPath[path] || "") : ""
+    // G7's own filled glyph when it has one for this icon.
+    readonly property string glyph: G7Glyphs.byPath[path] || ""
     readonly property int grid: glyph.length > 0 ? 16 : 24
 
     implicitWidth: 20

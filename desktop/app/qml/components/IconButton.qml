@@ -32,8 +32,8 @@ FocusScope {
     readonly property bool hasText: text.length > 0
     readonly property string effectiveTip: done && doneLabel.length > 0 ? doneLabel : (label.length > 0 ? label : text)
 
-    implicitWidth: hasText ? contentRow.implicitWidth + (Theme.quiet ? 20 : 24) : (Theme.quiet ? 30 : 34)
-    implicitHeight: Theme.quiet ? 30 : 34
+    implicitWidth: hasText ? contentRow.implicitWidth + 20 : 30
+    implicitHeight: 30
     activeFocusOnTab: true
     opacity: enabled ? 1 : 0.38
     Component.onDestruction: tooltipPill.shown = false
@@ -56,17 +56,11 @@ FocusScope {
     Rectangle {
         id: body
         anchors.fill: parent
-        radius: Theme.quiet ? Theme.radiusSm : Theme.pill(height)
-        color: button.checked ? Theme.activeFill : button.tonal
-            ? (Theme.quiet ? Theme.selection : Theme.glass
-                ? Qt.tint(Qt.rgba(1, 1, 1, Theme.dark ? 0.10 : 0.54), Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.18 : 0.14))
-                : Theme.secondaryContainer)
-            : "transparent"
+        radius: Theme.radiusSm
+        color: button.checked ? Theme.activeFill : button.tonal ? Theme.selection : "transparent"
         Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
-        border.width: button.checked || (Theme.graphite && button.hasText) || (Theme.glass && button.tonal) ? 1 : 0
-        border.color: button.checked ? Theme.accent : Theme.glass
-            ? Qt.rgba(1, 1, 1, Theme.dark ? 0.12 : 0.38)
-            : (button.tonal ? Theme.surfaceContent : Theme.outlineVariant)
+        border.width: button.checked ? 1 : 0
+        border.color: Theme.accent
         scale: mouse.pressed ? Theme.pressScale : 1
         Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
@@ -100,7 +94,7 @@ FocusScope {
                 anchors.verticalCenter: parent.verticalCenter
                 text: button.text
                 role: "label"
-                size: Theme.graphite ? 11 : 13
+                size: 13
                 color: button.tonal ? Theme.secondaryContainerContent : Theme.surfaceContent
             }
         }
@@ -150,8 +144,8 @@ FocusScope {
         Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast } }
         width: Math.min(tipText.implicitWidth + 18, 300)
         height: tipText.implicitHeight + 10
-        radius: Theme.graphite ? Theme.radiusXs : Theme.radiusSm
-        color: Theme.graphite ? Theme.surface : Theme.surfaceContainerHighest
+        radius: Theme.radiusSm
+        color: Theme.surfaceContainerHighest
         border.width: 1
         border.color: Theme.outlineVariant
         onWidthChanged: if (shown) reposition()

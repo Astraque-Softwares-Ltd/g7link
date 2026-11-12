@@ -26,7 +26,7 @@ Sheet {
 
     Column {
         width: parent.width
-        spacing: Theme.quiet ? 10 : 16
+        spacing: 10
 
         Item {
             width: parent.width
@@ -35,7 +35,7 @@ Sheet {
                 id: heading
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("Connection Doctor")
-                role: Theme.quiet ? "title" : "headline"
+                role: "title"
             }
             Spinner {
                 id: busy
@@ -47,7 +47,7 @@ Sheet {
         Txt {
             width: parent.width
             wrapMode: Text.WordWrap
-            role: Theme.quiet ? "bodySmall" : "body"
+            role: "bodySmall"
             muted: true
             text: AppController.doctorBusy && sheet.checks.length === 0
                   ? qsTr("Checking network and firewall…")
@@ -79,37 +79,30 @@ Sheet {
                         required property var modelData
                         readonly property bool hasFix: row.modelData.fix !== undefined && row.modelData.fix !== ""
                         width: parent.width
-                        height: Theme.quiet
-                            ? Math.max(Theme.rowHeight, words.height + 16, actionsRow.height + 8)
-                            : Math.max(badge.height, words.height, actionsRow.height) + 20
+                        height: Math.max(Theme.rowHeight, words.height + 16, actionsRow.height + 8)
                         radius: Theme.radiusMd
                         color: "transparent"
 
                         Rectangle {
                             id: badge
-                            x: Theme.quiet ? Theme.rowPadding : 8
+                            x: Theme.rowPadding
                             // On the title's first line, however many lines it wraps to.
                             y: words.y + Math.round((checkTitle.lineHeight - height) / 2)
-                            width: Theme.quiet ? 18 : 28; height: width
+                            width: 18; height: width
                             radius: width / 2
-                            color: Theme.quiet ? "transparent" : row.modelData.outcome === "ok" ? Theme.secondaryContainer
-                                 : row.modelData.outcome === "warn" ? Qt.alpha(Theme.warning, 0.18)
-                                 : Qt.alpha(Theme.error, 0.16)
+                            color: "transparent"
                             Icon {
                                 anchors.centerIn: parent
-                                width: Theme.quiet ? 18 : 16; height: width
+                                width: 18; height: width
                                 path: row.modelData.outcome === "ok" ? Icons.check : Icons.warning
-                                color: Theme.quiet
-                                    ? (row.modelData.outcome === "ok" ? Theme.tintTeal
-                                       : row.modelData.outcome === "warn" ? Theme.tintAmber : Theme.tintRed)
-                                    : (row.modelData.outcome === "ok" ? Theme.secondaryContainerContent
-                                       : row.modelData.outcome === "warn" ? Theme.warning : Theme.error)
+                                color: row.modelData.outcome === "ok" ? Theme.tintTeal
+                                       : row.modelData.outcome === "warn" ? Theme.tintAmber : Theme.tintRed
                             }
                         }
                         Column {
                             id: words
                             anchors.left: badge.right
-                            anchors.leftMargin: Theme.quiet ? 12 : 14
+                            anchors.leftMargin: 12
                             anchors.right: actionsRow.visible ? actionsRow.left : parent.right
                             anchors.rightMargin: actionsRow.visible ? 12 : 8
                             anchors.verticalCenter: parent.verticalCenter
@@ -118,8 +111,7 @@ Sheet {
                                 id: checkTitle
                                 width: parent.width
                                 text: row.modelData.title
-                                role: Theme.quiet ? "body" : "title"
-                                size: Theme.quiet ? Theme.typography.body.size : 14
+                                role: "body"
                                 wrapMode: Text.WordWrap
                                 elide: Text.ElideNone
                             }

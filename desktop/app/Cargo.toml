@@ -3,8 +3,7 @@ name = "g7link-desktop"
 description = "G7 Link: the Linux desktop app"
 version.workspace = true
 edition.workspace = true
-# Above the workspace minimum: material-colors needs Rust 1.97.
-rust-version = "1.97"
+rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license = "GPL-3.0-or-later"
@@ -23,7 +22,6 @@ cxx-qt-lib.workspace = true
 data-encoding.workspace = true
 dirs.workspace = true
 hostname.workspace = true
-material-colors.workspace = true
 g7link-core.workspace = true
 g7link-vcam.workspace = true
 qrcode.workspace = true
@@ -31,6 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

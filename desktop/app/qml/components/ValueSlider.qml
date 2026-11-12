@@ -54,11 +54,9 @@ FocusScope {
         id: track
         anchors.verticalCenter: parent.verticalCenter
         width: parent.width
-        height: Theme.quiet ? 4 : 6
+        height: 4
         radius: height / 2
-        color: Theme.quiet ? Theme.line : Theme.surfaceContainerHighest
-        border.width: Theme.graphite ? 1 : 0
-        border.color: Theme.outlineVariant
+        color: Theme.line
 
         Rectangle {
             id: fill
@@ -77,7 +75,7 @@ FocusScope {
         id: handle
         x: Math.max(0, Math.min(slider.width - width, fill.width - width / 2))
         anchors.verticalCenter: parent.verticalCenter
-        width: Theme.quiet ? 14 : 16; height: width; radius: width / 2
+        width: 14; height: width; radius: width / 2
         color: Theme.accent
         border.width: Theme.focusVisible(slider) ? 2 : 0
         border.color: Theme.surface

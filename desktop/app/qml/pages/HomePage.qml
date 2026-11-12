@@ -916,25 +916,6 @@ Item {
                     }
                 }
 
-                // ---- Notice: an invitation to try Hive, until answered ----
-                ActionRow {
-                    id: hiveInvite
-                    width: parent.width
-                    visible: Preferences.walkthroughCompleted && !Preferences.hiveInviteDismissed
-                             && !Theme.hive && !Theme.quiet
-                    iconPath: Icons.sparkle
-                    tint: Theme.tintAmber
-                    title: qsTr("Try Hive")
-                    detail: qsTr("Honey on charcoal, with a living honeycomb")
-                    onClicked: {
-                        Preferences.hiveInviteDismissed = true
-                        Preferences.theme = "hive"
-                    }
-                    TextAction {
-                        text: qsTr("Not now")
-                        onClicked: Preferences.hiveInviteDismissed = true
-                    }
-                }
                 // Undo, after dismissing a notification or an app's group.
                 ActionRow {
                     width: parent.width
@@ -2079,8 +2060,8 @@ Item {
                 width: parent.width
                 height: 40
                 visible: NotificationHistory.count > 0
-                radius: Theme.graphite ? Theme.radiusSm : (Theme.quiet ? Theme.radiusMd : height / 2)
-                color: Theme.graphite ? "transparent" : Theme.raised
+                radius: Theme.radiusMd
+                color: Theme.raised
                 border.width: historySearch.activeFocus ? 2 : 1
                 border.color: historySearch.activeFocus ? Theme.focusRing : Theme.outlineVariant
                 Icon {
@@ -2209,8 +2190,8 @@ Item {
                 width: parent.width
                 height: 40
                 visible: clipboardSheet.items.length > 0
-                radius: Theme.graphite ? Theme.radiusSm : (Theme.quiet ? Theme.radiusMd : height / 2)
-                color: Theme.graphite ? "transparent" : Theme.raised
+                radius: Theme.radiusMd
+                color: Theme.raised
                 border.width: clipboardSearch.activeFocus ? 2 : 1
                 border.color: clipboardSearch.activeFocus ? Theme.focusRing : Theme.outlineVariant
                 Icon {
@@ -2810,8 +2791,6 @@ Item {
                 height: 4
                 radius: 2
                 color: Theme.selection
-                border.width: Theme.graphite ? 1 : 0
-                border.color: Theme.outlineVariant
                 opacity: slider.available ? 1 : 0.45
 
                 Rectangle {

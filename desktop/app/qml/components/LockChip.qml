@@ -69,13 +69,11 @@ Rectangle {
 
     visible: label.length > 0
     // G7 theme: a flat tag like a keycap, with the lock glyph.
-    implicitHeight: Theme.quiet ? 18 : 22
-    implicitWidth: textItem.implicitWidth + (Theme.quiet ? 28 : 34)
+    implicitHeight: 18
+    implicitWidth: textItem.implicitWidth + 28
     width: maxWidth > 0 ? Math.min(implicitWidth, maxWidth) : implicitWidth
-    radius: Theme.quiet ? 5 : Theme.pill(height)
-    color: Theme.quiet ? Theme.raised : "transparent"
-    border.width: Theme.quiet ? 0 : 1
-    border.color: Theme.outlineVariant
+    radius: 5
+    color: Theme.raised
     Component.onDestruction: helpTooltip.shown = false
 
     Txt {
@@ -91,14 +89,14 @@ Rectangle {
         spacing: 5
         Icon {
             anchors.verticalCenter: parent.verticalCenter
-            width: Theme.quiet ? 12 : 13; height: width
+            width: 12; height: width
             path: Icons.lock
             color: Theme.surfaceContentVariant
         }
         Txt {
             id: textItem
             anchors.verticalCenter: parent.verticalCenter
-            width: Math.min(implicitWidth, Math.max(0, chip.width - (Theme.quiet ? 28 : 34)))
+            width: Math.min(implicitWidth, Math.max(0, chip.width - 28))
             text: chip.shownLabel
             role: "caption"
             muted: true
@@ -162,8 +160,8 @@ Rectangle {
         Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast } }
         width: Math.min(helpTipTxt.implicitWidth + 20, 320)
         height: helpTipTxt.implicitHeight + 12
-        radius: Theme.graphite ? Theme.radiusXs : Theme.radiusSm
-        color: Theme.graphite ? Theme.surface : Theme.surfaceContainerHighest
+        radius: Theme.radiusSm
+        color: Theme.surfaceContainerHighest
         border.width: 1
         border.color: Theme.outlineVariant
         onWidthChanged: if (shown) reposition()

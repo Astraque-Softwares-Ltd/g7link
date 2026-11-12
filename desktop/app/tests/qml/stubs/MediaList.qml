@@ -4,7 +4,5 @@ import QtQuick
 
 // Stands in for the Rust MediaList in QML tests: nothing playing.
 ListModel {
-    property string activeArt: ""
-    property string activeColors: ""
     function command(id, action) {}
 }

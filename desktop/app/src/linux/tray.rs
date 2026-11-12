@@ -32,7 +32,7 @@ pub enum TrayEvent {
     Quit,
     /// The PC woke from sleep.
     Resumed,
-    /// Dark mode, the accent color, the wallpaper or the animation setting
+    /// Dark mode, the contrast, the accent color or the animation setting
     /// changed.
     AppearanceChanged,
 }

@@ -23,12 +23,10 @@ const QML: &[&str] = &[
     "qml/components/Button.qml",
     "qml/components/CallCard.qml",
     "qml/components/CaptionButtons.qml",
-    "qml/components/Card.qml",
     "qml/components/Chip.qml",
     "qml/components/CodeDigits.qml",
     "qml/components/CommandPalette.qml",
     "qml/components/Divider.qml",
-    "qml/components/GlassRim.qml",
     "qml/components/DoctorSheet.qml",
     "qml/components/Field.qml",
     "qml/components/HistoryItem.qml",
@@ -69,7 +67,6 @@ const QML: &[&str] = &[
     "qml/pages/TimelinePage.qml",
     "qml/pages/WalkthroughPage.qml",
     "qml/pages/WelcomePage.qml",
-    "qml/components/HiveBackdrop.qml",
 ];
 
 /// QML singletons.
@@ -77,13 +74,7 @@ const QML_SINGLETONS: &[&str] =
     &["qml/Tokens.qml", "qml/Palettes.qml", "qml/Theme.qml", "qml/Icons.qml", "qml/G7Glyphs.qml"];
 
 /// Bundled fonts (in `assets/fonts`), compiled in under `:/fonts/`.
-const FONTS: &[&str] = &[
-    "Figtree.ttf",
-    "GeistMono-Variable.ttf",
-    "InstrumentSerif-Regular.ttf",
-    "SpaceMono-Regular.ttf",
-    "SpaceMono-Bold.ttf",
-];
+const FONTS: &[&str] = &["GeistMono-Variable.ttf"];
 
 fn write_if_changed(path: &Path, content: impl AsRef<[u8]>) {
     let bytes = content.as_ref();
@@ -111,7 +102,7 @@ fn fonts_qrc() -> PathBuf {
 }
 
 /// Shaders, served under `qrc:/shaders/`.
-const SHADERS: &[&str] = &["glassrim.frag", "hive.frag", "nv12.frag", "nv12.vert"];
+const SHADERS: &[&str] = &["nv12.frag", "nv12.vert"];
 
 /// Compiles the shaders with Qt's `qsb` when it can be found (next to qmake, or on PATH),
 /// otherwise uses the compiled copies committed beside the sources. Returns the qrc path.

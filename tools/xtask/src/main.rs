@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Repository automation. Run as `cargo xtask <task>`.
 //!
-//! - `tokens`: generates the desktop and Android themes
-//!   (`desktop/app/qml/Tokens.qml`, `android/.../ui/theme/Tokens.kt`) from
-//!   `docs/design/tokens.json`, the single source of truth.
-//! - `tokens --check`: fails if the generated files are out of date (CI).
+//! - `tokens`: generates the desktop theme's tokens (`desktop/app/qml/Tokens.qml`)
+//!   from `docs/design/tokens.json`, the single source of truth.
+//! - `tokens --check`: fails if the generated file is out of date (CI).
 //! - `notices <out>`: the third-party notices shipped with the desktop app.
 //! - `strings [--check]`: the desktop app's Rust-built text for Qt's
 //!   translation tools (`desktop/app/i18n/rust_strings.h`).
@@ -23,7 +22,6 @@ use serde_json::{Map, Value};
 
 const TOKENS: &str = "docs/design/tokens.json";
 const QML_OUT: &str = "desktop/app/qml/Tokens.qml";
-const KOTLIN_OUT: &str = "android/app/src/main/kotlin/app/g7link/android/ui/theme/Tokens.kt";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -59,7 +57,7 @@ fn tokens(check: bool) -> Result<()> {
     let source = fs::read_to_string(root.join(TOKENS)).with_context(|| format!("reading {TOKENS}"))?;
     let tokens: Value = serde_json::from_str(&source).with_context(|| format!("parsing {TOKENS}"))?;
     validate(&tokens)?;
-    let outputs = [(QML_OUT, render_qml(&tokens)?), (KOTLIN_OUT, render_kotlin(&tokens)?)];
+    let outputs = [(QML_OUT, render_qml(&tokens)?)];
 
     let mut stale = Vec::new();
     for (path, content) in outputs {
@@ -104,29 +102,17 @@ const ROLES: &[&str] = &[
     "outlineVariant",
 ];
 
-/// Catches mistakes in the token file before they reach a theme.
+/// Catches mistakes in the token file before they reach the theme.
 fn validate(tokens: &Value) -> Result<()> {
-    let themes = tokens.get("themes").context("missing \"themes\"")?;
-    let status = themes.pointer("/bloom/status").context("missing bloom status")?;
-    let seeds = themes.pointer("/bloom/seeds").and_then(Value::as_object).context("missing bloom seeds")?;
-    for (seed, def) in seeds {
-        for mode in ["light", "dark"] {
-            let name = format!("bloom.{seed}.{mode}");
-            check_palette(def.get(mode), &name)?;
-            check_contrast(def.get(mode), status.get(mode), &name)?;
-        }
-    }
-    // Fixed-palette themes carry their own status colors.
-    for theme in ["graphite", "hive", "quiet"] {
-        let variants = themes
-            .pointer(&format!("/{theme}/variants"))
-            .and_then(Value::as_object)
-            .with_context(|| format!("missing {theme} variants"))?;
-        for (variant, palette) in variants {
-            let name = format!("{theme}.{variant}");
-            check_palette(Some(palette), &name)?;
-            check_contrast(Some(palette), Some(palette), &name)?;
-        }
+    let variants = tokens
+        .pointer("/themes/quiet/variants")
+        .and_then(Value::as_object)
+        .context("missing quiet variants")?;
+    // The G7 theme carries its own status colors.
+    for (variant, palette) in variants {
+        let name = format!("quiet.{variant}");
+        check_palette(Some(palette), &name)?;
+        check_contrast(Some(palette), Some(palette), &name)?;
     }
     Ok(())
 }
@@ -253,130 +239,6 @@ fn render_qml(tokens: &Value) -> Result<String> {
     ))
 }
 
-/// `#RRGGBB` as a Compose color literal.
-fn kotlin_color(hex: &str) -> String {
-    format!("Color(0xFF{})", hex.trim_start_matches('#').to_ascii_uppercase())
-}
-
-/// A `Palette(...)` expression, its lines indented by `indent` spaces.
-fn kotlin_palette(palette: &Value, indent: usize) -> Result<String> {
-    let pad = " ".repeat(indent);
-    let mut lines = vec!["Palette(".to_owned()];
-    for role in ROLES {
-        let hex = palette.get(*role).and_then(Value::as_str).with_context(|| format!("missing {role}"))?;
-        lines.push(format!("{pad}    {role} = {},", kotlin_color(hex)));
-    }
-    lines.push(format!("{pad})"));
-    Ok(lines.join(
-        "
-",
-    ))
-}
-
-fn render_kotlin(tokens: &Value) -> Result<String> {
-    let bloom = tokens.pointer("/themes/bloom").context("missing bloom")?;
-    let seeds = bloom.get("seeds").and_then(Value::as_object).context("missing seeds")?;
-    let default_seed = bloom.get("defaultSeed").and_then(Value::as_str).context("missing defaultSeed")?;
-    let variants = tokens.pointer("/themes/graphite/variants").context("missing graphite variants")?;
-    let status = bloom.get("status").context("missing bloom status")?;
-    let status_color = |mode: &str, key: &str| -> Result<String> {
-        let hex = status
-            .pointer(&format!("/{mode}/{key}"))
-            .and_then(Value::as_str)
-            .context("missing status color")?;
-        Ok(kotlin_color(hex))
-    };
-
-    let mut out: Vec<String> = vec![
-        "// SPDX-License-Identifier: GPL-3.0-or-later".into(),
-        "// Generated from docs/design/tokens.json by `cargo xtask tokens`. Do not edit.".into(),
-        "package app.g7link.android.ui.theme".into(),
-        String::new(),
-        "import androidx.compose.runtime.Immutable".into(),
-        "import androidx.compose.ui.graphics.Color".into(),
-        String::new(),
-        "/** Material color roles of one theme variant. */".into(),
-        "@Immutable".into(),
-        "data class Palette(".into(),
-    ];
-    out.extend(ROLES.iter().map(|r| format!("    val {r}: Color,")));
-    out.extend([
-        ")".into(),
-        String::new(),
-        "/** A Bloom color preset: its seed swatch and light and dark palettes. */".into(),
-        "@Immutable".into(),
-        "data class Seed(val color: Color, val light: Palette, val dark: Palette)".into(),
-        String::new(),
-        "object Tokens {".into(),
-        format!("    const val DEFAULT_SEED = \"{default_seed}\""),
-        String::new(),
-        "    val bloomSeeds: Map<String, Seed> = linkedMapOf(".into(),
-    ]);
-    for (name, def) in seeds {
-        let seed = def.get("seed").and_then(Value::as_str).context("missing seed color")?;
-        out.push(format!("        \"{name}\" to Seed("));
-        out.push(format!("            color = {},", kotlin_color(seed)));
-        out.push(format!("            light = {},", kotlin_palette(&def["light"], 12)?));
-        out.push(format!("            dark = {},", kotlin_palette(&def["dark"], 12)?));
-        out.push("        ),".into());
-    }
-    out.push("    )".into());
-    out.push(String::new());
-    out.push(format!("    val graphitePaper = {}", kotlin_palette(&variants["paper"], 4)?));
-    out.push(String::new());
-    out.push(format!("    val graphiteSlate = {}", kotlin_palette(&variants["slate"], 4)?));
-    out.push(String::new());
-    let hive = tokens.pointer("/themes/hive/variants").context("missing hive variants")?;
-    out.push(format!("    val hiveWax = {}", kotlin_palette(&hive["wax"], 4)?));
-    out.push(String::new());
-    out.push(format!("    val hiveComb = {}", kotlin_palette(&hive["comb"], 4)?));
-    out.push(String::new());
-    for (name, mode) in [("Wax", "wax"), ("Comb", "comb")] {
-        for key in ["warning", "error"] {
-            let hex = hive
-                .pointer(&format!("/{mode}/{key}"))
-                .and_then(Value::as_str)
-                .context("missing hive status")?;
-            let field = format!("hive{name}{}", if key == "warning" { "Warning" } else { "Error" });
-            out.push(format!("    val {field} = {}", kotlin_color(hex)));
-        }
-    }
-    out.push(String::new());
-    let quiet = tokens.pointer("/themes/quiet/variants").context("missing quiet variants")?;
-    out.push(format!("    val quietDark = {}", kotlin_palette(&quiet["dark"], 4)?));
-    out.push(String::new());
-    out.push(format!("    val quietLight = {}", kotlin_palette(&quiet["light"], 4)?));
-    out.push(String::new());
-    for (field, mode) in [("quietDarkError", "dark"), ("quietLightError", "light")] {
-        let hex = quiet
-            .pointer(&format!("/{mode}/error"))
-            .and_then(Value::as_str)
-            .context("missing quiet error")?;
-        out.push(format!("    val {field} = {}", kotlin_color(hex)));
-    }
-    let comb = tokens.pointer("/themes/hive/comb").context("missing hive comb")?;
-    let number =
-        |key: &str| comb.get(key).and_then(Value::as_f64).with_context(|| format!("missing comb.{key}"));
-    out.push(String::new());
-    out.push("    /** The honeycomb backdrop (themes.hive.comb). */".into());
-    out.push(format!("    const val COMB_CELL_DP = {}f", number("cell")?));
-    out.push(format!("    const val COMB_LINE_ALPHA_DARK = {}f", number("lineAlphaDark")?));
-    out.push(format!("    const val COMB_LINE_ALPHA_LIGHT = {}f", number("lineAlphaLight")?));
-    out.push(format!("    const val COMB_GLOW_ALPHA_DARK = {}f", number("glowAlphaDark")?));
-    out.push(format!("    const val COMB_GLOW_ALPHA_LIGHT = {}f", number("glowAlphaLight")?));
-    out.push(format!("    const val COMB_BREATH_SECONDS = {}f", number("breathSeconds")?));
-    out.push(format!("    const val COMB_PULSE_SECONDS = {}f", number("pulseSeconds")?));
-    out.push(format!("    const val COMB_FRAME_MS = {}L", number("frameMs")? as i64));
-    out.push(String::new());
-    out.push(format!("    val warningLight = {}", status_color("light", "warning")?));
-    out.push(format!("    val warningDark = {}", status_color("dark", "warning")?));
-    out.push(format!("    val errorLight = {}", status_color("light", "error")?));
-    out.push(format!("    val errorDark = {}", status_color("dark", "error")?));
-    out.push("}".into());
-    out.push(String::new());
-    Ok(out.join("\n"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,17 +263,6 @@ mod tests {
     }
 
     #[test]
-    fn kotlin_theme_has_every_seed() {
-        let source = fs::read_to_string(repo_root().join(TOKENS)).unwrap();
-        let tokens: Value = serde_json::from_str(&source).unwrap();
-        let kotlin = render_kotlin(&tokens).unwrap();
-        for seed in tokens.pointer("/themes/bloom/seeds").unwrap().as_object().unwrap().keys() {
-            assert!(kotlin.contains(&format!("\"{seed}\" to Seed(")), "{seed}");
-        }
-        assert!(kotlin.contains("primary = Color(0xFF8A5100)"));
-    }
-
-    #[test]
     fn documentation_keys_are_dropped() {
         let v: Value = serde_json::json!({"$note": 1, "a": {"$x": 2, "b": [ {"$y": 3, "c": 4} ]}});
         assert_eq!(strip_docs(&v), serde_json::json!({"a": {"b": [{"c": 4}]}}));
@@ -421,7 +272,7 @@ mod tests {
     fn rejects_low_contrast_palette() {
         let source = fs::read_to_string(repo_root().join(TOKENS)).unwrap();
         let mut tokens: Value = serde_json::from_str(&source).unwrap();
-        tokens.pointer_mut("/themes/bloom/status/light").unwrap()["warning"] = "#9A6700".into();
+        tokens.pointer_mut("/themes/quiet/variants/light").unwrap()["warning"] = "#D0B000".into();
         let err = validate(&tokens).unwrap_err().to_string();
         assert!(err.contains("warning"), "{err}");
     }

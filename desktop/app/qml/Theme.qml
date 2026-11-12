@@ -3,123 +3,115 @@ pragma Singleton
 import QtQuick
 import app.g7link
 
-// The active theme: Quiet (G7's own language, the default), Bloom
-// (Material You, seed presets), Hive (honey on charcoal or wax), Glass, or
-// Graphite (paper and slate), light or dark, resolved from Preferences and
-// the system. Every theme shares the same window (header, sidebar, footer)
-// and rows; themes only change tokens. Colors come from Tokens (generated from docs/design/tokens.json); Material's
-// "onX" roles are named "xContent" because QML reserves the "on" prefix.
+// The active theme: G7's own colors (Tokens, generated from
+// docs/design/tokens.json), G7 Linux's current theme, or a palette from
+// G7 Linux's themes (Palettes), light or dark, resolved from Preferences and
+// the system. Themes are colors only: every theme keeps the same layout,
+// type and shapes. Material's "onX" roles are named "xContent" because QML
+// reserves the "on" prefix.
 QtObject {
     id: theme
 
-    readonly property bool hive: Preferences.theme === "hive"
-    readonly property bool quiet: Preferences.theme === "quiet"
-    readonly property bool graphite: Preferences.theme === "graphite"
-    readonly property bool glass: Preferences.theme === "glass" || Preferences.theme === "blurry"
-    readonly property bool dark: Preferences.colorMode === "dark"
-                                 || (Preferences.colorMode === "system" && AppController.systemDark)
-    readonly property bool amoled: dark && Preferences.amoled && (graphite || Preferences.seed === "black")
+    // The Mode setting: light or dark.
+    readonly property bool modeDark: Preferences.colorMode === "dark"
+                                     || (Preferences.colorMode === "system" && AppController.systemDark)
     readonly property bool reduceMotion: AppController.reduceMotion
 
-    // ---- Hive's comb ----
-    readonly property var comb: Tokens.data.themes.hive.comb
-    // Breathes and pulses: the user's setting, never with reduced motion or
-    // battery saver (it holds still then).
-    readonly property bool combMotion: hive && Preferences.combMotion && !reduceMotion && !AppController.powerSaver
-    readonly property color combLine: Qt.rgba(primary.r, primary.g, primary.b,
-                                              dark ? comb.lineAlphaDark : comb.lineAlphaLight)
-    readonly property color combGlow: dark ? Qt.rgba(1.0, 0.62, 0.18, comb.glowAlphaDark)
-                                           : Qt.rgba(1.0, 0.72, 0.37, comb.glowAlphaLight)
-    // One clock for every comb in the app (seconds), so two combs never draw
-    // twice as often. The main window runs it while it's in front.
-    property real combTime: 0
-    property bool combClockRunning: false
-    // A comb is on screen outside Hive (the invitation to try it).
-    property bool combPreviewShown: false
-    property double _combSince: 0
-    property real _combBase: 0
-    readonly property Timer _combClock: Timer {
-        interval: theme.comb.frameMs
-        repeat: true
-        running: theme.combClockRunning
-                 && (theme.combMotion || (theme.combPreviewShown && !theme.reduceMotion && !AppController.powerSaver))
-        onRunningChanged: {
-            if (running)
-                theme._combSince = Date.now()
-            else
-                theme._combBase = theme.combTime
-        }
-        onTriggered: theme.combTime = theme._combBase + (Date.now() - theme._combSince) / 1000
-    }
-
-    readonly property var bloomSeeds: Tokens.data.themes.bloom.seeds
-    // Colors made from the desktop wallpaper (or null until they're known),
-    // in the shape of a preset seed.
-    readonly property var wallpaperSeed: AppController.wallpaperColors !== ""
-        ? JSON.parse(AppController.wallpaperColors) : null
-    // Material You color scheme extracted from the currently playing media artwork.
-    readonly property var artworkSeed: {
-        if (MediaList.activeColors === "")
+    // ---- Palettes ----
+    // G7 Linux's current themes, for "Match G7 Linux": { light, dark }, each
+    // { name, dark, colors } (colors null: G7's own).
+    readonly property var launcher: {
+        if (AppController.launcherTheme === "")
             return null
         try {
-            return JSON.parse(MediaList.activeColors)
+            return JSON.parse(AppController.launcherTheme)
         } catch (e) {
             return null
         }
     }
-    readonly property string artworkUrl: MediaList.activeArt
-    readonly property bool isArtworkSeed: Preferences.seed === "artwork"
-    readonly property bool artworkAmbientActive: false
-    readonly property bool ambientBlurActive: glass
-    // Material You color schemes from paired phones (`[{ id, key, name, label, hasAccent, scheme }]`).
-    readonly property var phoneSeeds: AppController.phoneColors !== ""
-        ? JSON.parse(AppController.phoneColors) : []
-    readonly property bool isPhoneSeed: Preferences.seed === "phone" || Preferences.seed.startsWith("phone:")
-    readonly property var activePhoneSeed: {
-        if (!isPhoneSeed)
+    // The launcher's theme the Mode picks.
+    readonly property var launcherNow: launcher ? launcher[modeDark ? "dark" : "light"] : null
+    // What a theme shows now: null for G7's own colors, else { dark, colors }
+    // with a palette's colors in the variant the Mode picks (a palette
+    // without a light variant stays dark).
+    function source(id) {
+        if (id === "g7linux")
+            return launcherNow && launcherNow.colors ? { dark: launcherNow.dark, colors: launcherNow.colors } : null
+        const family = Palettes.families.find((f) => f.id === id)
+        if (!family)
             return null
-        const targetId = Preferences.seed.startsWith("phone:") ? Preferences.seed.slice(6) : ""
-        for (let i = 0; i < phoneSeeds.length; i++) {
-            const p = phoneSeeds[i]
-            if (targetId !== "" && p.id === targetId && p.scheme)
-                return p.scheme
-        }
-        for (let i = 0; i < phoneSeeds.length; i++) {
-            if (phoneSeeds[i].scheme)
-                return phoneSeeds[i].scheme
-        }
-        return null
+        const useDark = modeDark || !family.light
+        return { dark: useDark, colors: useDark ? family.dark : family.light }
     }
-    function phonePalette(deviceId) {
-        for (let i = 0; i < phoneSeeds.length; i++) {
-            const p = phoneSeeds[i]
-            if ((deviceId === "" || p.id === deviceId) && p.scheme)
-                return p.scheme[dark ? "dark" : "light"]
-        }
-        return null
+    readonly property var current: source(Preferences.theme)
+    readonly property bool dark: current ? current.dark : modeDark
+
+    function rgb(hex) {
+        const v = parseInt(hex.slice(1), 16)
+        return Qt.rgba(((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, 1)
     }
-    // "artwork", "wallpaper", "phone" / "phone:<id>", or a preset name; dynamic
-    // seeds fall back to wallpaper or the default preset until their colors are known.
-    readonly property string seed: isArtworkSeed
-        ? (artworkSeed ? "artwork" : (wallpaperSeed ? "wallpaper" : Tokens.data.themes.bloom.defaultSeed))
-        : isPhoneSeed
-          ? (activePhoneSeed ? Preferences.seed : (wallpaperSeed ? "wallpaper" : Tokens.data.themes.bloom.defaultSeed))
-          : Preferences.seed === "wallpaper"
-            ? (wallpaperSeed ? "wallpaper" : Tokens.data.themes.bloom.defaultSeed)
-            : (bloomSeeds[Preferences.seed] ? Preferences.seed : Tokens.data.themes.bloom.defaultSeed)
-    readonly property var seedColors: seed === "artwork"
-        ? artworkSeed
-        : (seed === "phone" || seed.startsWith("phone:"))
-          ? activePhoneSeed
-          : (seed === "wallpaper" ? wallpaperSeed : bloomSeeds[seed])
-    readonly property var palette: hive
-        ? Tokens.data.themes.hive.variants[dark ? "comb" : "wax"]
-        : (quiet
-            ? Tokens.data.themes.quiet.variants[dark ? "dark" : "light"]
-            : (graphite
-                ? Tokens.data.themes.graphite.variants[dark ? "slate" : "paper"]
-                : seedColors[dark ? "dark" : "light"]))
-    readonly property var status: graphite || hive || quiet ? palette : Tokens.data.themes.bloom.status[dark ? "dark" : "light"]
+    function mix(a, b, t) {
+        return Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1)
+    }
+    function luminance(c) {
+        const channel = (v) => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+        return 0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+    }
+    function contrast(a, b) {
+        const la = luminance(a)
+        const lb = luminance(b)
+        return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+    }
+    // Text on a color: the ground or the ink, whichever reads better.
+    function onColor(c, ground, ink) {
+        return contrast(c, ground) >= contrast(c, ink) ? ground : ink
+    }
+    // A palette's colors on G7's roles.
+    function mapped(c) {
+        const ground = rgb(c.background)
+        const ink = rgb(c.foreground)
+        const accentColor = rgb(c.accent)
+        const red = rgb(c.red)
+        const raisedColor = mix(ground, ink, 0.06)
+        const selectionColor = mix(ground, ink, 0.11)
+        return {
+            primary: ink,
+            onPrimary: ground,
+            primaryContainer: selectionColor,
+            onPrimaryContainer: ink,
+            secondaryContainer: selectionColor,
+            onSecondaryContainer: ink,
+            surface: ground,
+            surfaceContainerLow: ground,
+            surfaceContainer: raisedColor,
+            surfaceContainerHigh: selectionColor,
+            surfaceContainerHighest: mix(ground, ink, 0.14),
+            onSurface: ink,
+            onSurfaceVariant: mix(ground, ink, 0.62),
+            outline: mix(ground, ink, 0.4),
+            outlineVariant: rgb(c.border),
+            accent: accentColor,
+            onAccent: onColor(accentColor, ground, ink),
+            warning: rgb(c.yellow),
+            error: red,
+            onError: onColor(red, ground, ink)
+        }
+    }
+    readonly property var palette: current ? mapped(current.colors)
+                                           : Tokens.data.themes.quiet.variants[dark ? "dark" : "light"]
+
+    // A theme's preview, as the Mode shows it: its ground, its accent and
+    // five of its tints.
+    function preview(id) {
+        const s = source(id)
+        if (!s) {
+            const v = Tokens.data.themes.quiet.variants[modeDark ? "dark" : "light"]
+            const t = Tokens.data.themes.quiet.tints[modeDark ? "dark" : "light"]
+            return { background: v.surface, accent: v.accent, dots: [t.blue, t.green, t.amber, t.red, t.pink] }
+        }
+        const c = s.colors
+        return { background: c.background, accent: c.accent, dots: [c.blue, c.green, c.yellow, c.red, c.magenta] }
+    }
 
     // ---- Color roles ----
     readonly property color primary: palette.primary
@@ -128,104 +120,27 @@ QtObject {
     readonly property color primaryContainerContent: palette.onPrimaryContainer
     readonly property color secondaryContainer: palette.secondaryContainer
     readonly property color secondaryContainerContent: palette.onSecondaryContainer
-    readonly property color surface: amoled ? "#000000" : palette.surface
-    readonly property color surfaceLow: amoled ? "#050507" : palette.surfaceContainerLow
-    readonly property color surfaceContainerLow: amoled ? "#050507" : palette.surfaceContainerLow
-    readonly property color surfaceContainer: amoled ? "#0A0B0E" : palette.surfaceContainer
-    readonly property color surfaceContainerHigh: amoled ? "#121318" : palette.surfaceContainerHigh
-    readonly property color surfaceContainerHighest: amoled ? "#1A1C23" : palette.surfaceContainerHighest
+    readonly property color surface: palette.surface
+    readonly property color surfaceContainerLow: palette.surfaceContainerLow
+    readonly property color surfaceContainer: palette.surfaceContainer
+    readonly property color surfaceContainerHigh: palette.surfaceContainerHigh
+    readonly property color surfaceContainerHighest: palette.surfaceContainerHighest
     readonly property color surfaceContent: palette.onSurface
     readonly property color surfaceContentVariant: palette.onSurfaceVariant
     readonly property color outline: palette.outline
-    readonly property color outlineVariant: amoled ? "#22242C" : palette.outlineVariant
-    // Success never gets its own (green) color: it uses the theme's ink.
-    readonly property color success: primary
-    readonly property color warning: status.warning
-    readonly property color error: status.error
-    readonly property color errorContent: status.onError
+    readonly property color outlineVariant: palette.outlineVariant
+    readonly property color warning: palette.warning
+    readonly property color error: palette.error
+    readonly property color errorContent: palette.onError
     // A quiet error surface (the "sharing your screen" pill): the error hue
     // over the surface, with the surface's own ink so text stays readable.
     readonly property color errorContainer: Qt.tint(surfaceContainerHigh, Qt.rgba(error.r, error.g, error.b, dark ? 0.22 : 0.14))
     readonly property color errorContainerContent: surfaceContent
 
-    // ---- Component colors (docs/design/assets/nl.css) ----
-    // Hive: nearly opaque, so the comb shows through as texture without
-    // ever crossing text.
-    readonly property color cardColor: quiet ? "transparent" : hive
-        ? (function() {
-            const c = Qt.tint(surfaceContainer, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, dark ? 0.12 : 0.18))
-            return Qt.rgba(c.r, c.g, c.b, dark ? 0.90 : 0.92)
-        })()
-        : graphite ? "transparent"
-        : (glass
-            ? Qt.tint(
-                Qt.rgba(surfaceContainer.r, surfaceContainer.g, surfaceContainer.b, amoled ? 0.56 : (dark ? 0.36 : 0.52)),
-                Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.08 : 0.06)
-            )
-            : (artworkAmbientActive
-                ? Qt.rgba(surfaceContainer.r, surfaceContainer.g, surfaceContainer.b, dark ? 0.74 : 0.80)
-                : (amoled
-                    ? Qt.tint(surfaceContainer, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, 0.08))
-                    : Qt.tint(
-                        surfaceContainer,
-                        Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, isPhoneSeed ? (dark ? 0.28 : 0.36) : (dark ? 0.16 : 0.22))
-                    ))))
-    // Hive: a faint honey edge, like wax around a cell.
-    readonly property color cardBorder: quiet ? "transparent" : hive
-        ? Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.14 : 0.16)
-        : graphite ? outlineVariant
-        : (glass
-            ? (dark ? Qt.rgba(1, 1, 1, 0.08) : Qt.rgba(1, 1, 1, 0.28))
-            : (artworkAmbientActive
-                ? Qt.rgba(outlineVariant.r, outlineVariant.g, outlineVariant.b, dark ? 0.36 : 0.45)
-                : (amoled ? "#1D1F27" : "transparent")))
-    readonly property color tileColor: quiet ? "transparent" : hive
-        ? Qt.tint(surfaceContainerHigh, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, dark ? 0.14 : 0.20))
-        : graphite ? "transparent"
-        : (glass
-            ? Qt.tint(
-                Qt.rgba(1, 1, 1, dark ? 0.08 : 0.48),
-                Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.08 : 0.06)
-            )
-            : (artworkAmbientActive
-                ? Qt.rgba(surfaceContainerHigh.r, surfaceContainerHigh.g, surfaceContainerHigh.b, dark ? 0.76 : 0.82)
-                : (amoled
-                    ? Qt.tint(surfaceContainerHigh, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, 0.10))
-                    : Qt.tint(
-                        surfaceContainerHigh,
-                        Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, isPhoneSeed ? (dark ? 0.32 : 0.42) : (dark ? 0.18 : 0.24))
-                    ))))
-    readonly property color heroColor: quiet ? "transparent" : hive
-        ? Qt.tint(surface, Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, dark ? 0.55 : 0.62))
-        : graphite ? "transparent"
-        : Qt.tint(
-            ambientBlurActive
-                ? Qt.rgba(surface.r, surface.g, surface.b, glass ? (amoled ? 0.54 : (dark ? 0.34 : 0.48)) : (dark ? 0.65 : 0.72))
-                : (amoled ? "#090A0E" : surface),
-            Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, glass ? (dark ? 0.30 : 0.38) : (artworkAmbientActive ? 0.52 : (amoled ? 0.32 : 0.68)))
-        )
-    readonly property color heroContent: graphite || quiet ? surfaceContent : primaryContainerContent
-    // Hive's rail is the comb itself.
-    readonly property color railColor: graphite || hive || quiet ? "transparent"
-        : (glass
-            ? Qt.rgba(surfaceLow.r, surfaceLow.g, surfaceLow.b, amoled ? 0.48 : (dark ? 0.28 : 0.42))
-            : (artworkAmbientActive
-                ? Qt.rgba(surfaceLow.r, surfaceLow.g, surfaceLow.b, dark ? 0.62 : 0.68)
-                : (amoled
-                    ? "#030305"
-                    : Qt.tint(
-                        surfaceLow,
-                        Qt.rgba(primaryContainer.r, primaryContainer.g, primaryContainer.b, isPhoneSeed ? (dark ? 0.24 : 0.32) : (dark ? 0.14 : 0.18))
-                    ))))
-    readonly property color indicator: graphite ? surfaceContent : (hive ? primaryContainer : secondaryContainer)
-    readonly property color indicatorContent: graphite ? surface : (hive ? primaryContainerContent : secondaryContainerContent)
-    // Hive: the honey halo around a primary control on hover.
-    readonly property color glow: Qt.rgba(primary.r, primary.g, primary.b, dark ? 0.30 : 0.22)
-    readonly property color buttonShadow: graphite ? palette.buttonShadow : "transparent"
-    // Lavender marks keyboard focus, the primary button and the G7 mark in the G7 theme.
-    readonly property color focusRing: quiet ? palette.accent : primary
-    readonly property color accent: quiet ? palette.accent : (graphite ? surfaceContent : primary)
-    readonly property color accentContent: quiet ? palette.onPrimary : (graphite ? surface : primaryContent)
+    // The accent marks keyboard focus, the primary button and the G7 mark.
+    readonly property color focusRing: palette.accent
+    readonly property color accent: palette.accent
+    readonly property color accentContent: palette.onAccent
     // Raised fields and keycaps, the selected or hovered row, and the 1 px lines.
     readonly property color raised: surfaceContainer
     readonly property color selection: surfaceContainerHigh
@@ -235,12 +150,20 @@ QtObject {
     readonly property color line: outlineVariant
 
     // ---- Glyph tints ----
-    // Each section and action draws its bare glyph in one tint (G7 theme);
-    // the other themes keep their single ink.
-    readonly property var tints: Tokens.data.themes.quiet.tints[dark ? "dark" : "light"]
+    // Each section and action draws its bare glyph in one tint.
+    readonly property var tints: current
+        ? {
+            lavender: current.colors.purple,
+            blue: current.colors.blue,
+            teal: current.colors.cyan,
+            coral: current.colors.orange,
+            pink: current.colors.magenta,
+            amber: current.colors.yellow,
+            green: current.colors.green,
+            red: current.colors.red
+        }
+        : Tokens.data.themes.quiet.tints[dark ? "dark" : "light"]
     function tint(name) {
-        if (!quiet)
-            return graphite ? surfaceContent : primary
         return tints[name] || surfaceContentVariant
     }
     readonly property color tintLavender: tint("lavender")
@@ -262,27 +185,20 @@ QtObject {
     readonly property color scrim: Qt.rgba(0, 0, 0, dark ? 0.5 : 0.32)
 
     // ---- Shape ----
-    readonly property var shape: quiet ? Tokens.data.themes.quiet.shape
-        : (graphite ? Tokens.data.themes.graphite.shape
-            : (hive ? Tokens.data.themes.hive.shape : Tokens.data.themes.bloom.shape))
+    readonly property var shape: Tokens.data.themes.quiet.shape
     readonly property int radiusXs: shape.xs
     readonly property int radiusSm: shape.sm
     readonly property int radiusMd: shape.md
     readonly property int radiusLg: shape.lg
     readonly property int radiusXl: shape.xl
-    // "Pill": half the height of whatever uses it, in Bloom.
-    function pill(height) { return graphite || quiet ? shape.full : height / 2 }
+    // Segmented controls and other once-pill shapes.
+    readonly property int radiusFull: shape.full
 
     // ---- Type ----
     // Bundled with the app (assets/fonts).
-    // The G7 theme follows the desktop's own interface font, as G7 does.
-    readonly property string fontUi: quiet ? "Geist Mono" : "Figtree"
-    readonly property string fontDisplay: graphite ? "Instrument Serif" : fontUi
-    readonly property string fontMono: quiet ? "Geist Mono" : "Space Mono"
-    readonly property var typography: quiet ? Tokens.data.themes.quiet.typography : Tokens.data.typography
-    readonly property var labelStyle: quiet ? Tokens.data.themes.quiet.label
-        : (graphite ? Tokens.data.themes.graphite.label
-            : (hive ? Tokens.data.themes.hive.label : Tokens.data.themes.bloom.label))
+    readonly property string fontUi: "Geist Mono"
+    readonly property string fontMono: "Geist Mono"
+    readonly property var typography: Tokens.data.themes.quiet.typography
 
     // ---- Layout and spacing ----
     readonly property var layout: Tokens.data.layout.desktop

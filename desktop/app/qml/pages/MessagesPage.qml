@@ -123,7 +123,7 @@ Item {
         toField.text = ""
     }
 
-    // A stable color for a contact (in Bloom).
+    // A stable color for a contact.
     function hueOf(name) {
         let h = 0
         for (let i = 0; i < name.length; i++)

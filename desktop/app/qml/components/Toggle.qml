@@ -2,7 +2,7 @@
 import QtQuick
 import app.g7link
 
-// A Material switch. Click, Space or Enter flips it; `toggled` reports the
+// A switch. Click, Space or Enter flips it; `toggled` reports the
 // user's choice (bind `checked` to the source of truth).
 FocusScope {
     id: toggle
@@ -10,8 +10,8 @@ FocusScope {
     property string label
     signal toggled(bool checked)
 
-    implicitWidth: Theme.quiet ? 34 : 46
-    implicitHeight: Theme.quiet ? 20 : 28
+    implicitWidth: 34
+    implicitHeight: 20
     activeFocusOnTab: true
     opacity: enabled ? 1 : 0.38
 
@@ -27,56 +27,23 @@ FocusScope {
         }
     }
 
-    // Hive: a soft honey halo around a switch that's on.
-    Rectangle {
-        visible: Theme.hive
-        anchors.fill: track
-        anchors.margins: -3
-        radius: track.radius + 3
-        color: Theme.glow
-        opacity: toggle.checked ? (mouse.containsMouse ? 1 : 0.55) : 0
-        Behavior on opacity { enabled: !Theme.reduceMotion; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-    }
-
     Rectangle {
         id: track
         anchors.fill: parent
-        radius: Theme.graphite ? Theme.radiusSm : height / 2
-        color: Theme.glass
-            ? (toggle.checked
-                ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.62 : 0.76)
-                : Qt.rgba(1, 1, 1, Theme.dark ? 0.12 : 0.44))
-            : (Theme.quiet ? (toggle.checked ? Theme.accent : Theme.line)
-                : (toggle.checked ? Theme.primary : Theme.surfaceContainerHighest))
-        border.width: Theme.glass ? 1 : (toggle.checked || Theme.quiet ? 0 : 1.5)
-        border.color: Theme.glass
-            ? (toggle.checked
-                ? Qt.rgba(1, 1, 1, Theme.dark ? 0.18 : 0.42)
-                : Qt.rgba(1, 1, 1, Theme.dark ? 0.12 : 0.34))
-            : Theme.outline
+        radius: height / 2
+        color: toggle.checked ? Theme.accent : Theme.line
         Behavior on color { ColorAnimation { duration: Theme.fadeFast } }
 
         Rectangle {
             id: thumb
-            property real size: Theme.quiet ? 14 : (mouse.pressed ? 20 : (mouse.containsMouse ? 20 : (toggle.checked ? 18 : 16)))
-            width: mouse.pressed && !Theme.quiet ? 22 : size
-            height: size
-            radius: Theme.graphite ? Theme.radiusXs : height / 2
+            width: 14
+            height: 14
+            radius: height / 2
             anchors.verticalCenter: parent.verticalCenter
-            x: Theme.quiet ? (toggle.checked ? parent.width - width - 3 : 3)
-                : (toggle.checked ? parent.width - width - 4.5 : 6.5)
-            color: Theme.glass
-                ? (toggle.checked
-                    ? "#FFFFFF"
-                    : (Theme.dark ? Qt.rgba(1, 1, 1, mouse.containsMouse ? 0.90 : 0.78) : Qt.rgba(Theme.surfaceContent.r, Theme.surfaceContent.g, Theme.surfaceContent.b, mouse.containsMouse ? 0.78 : 0.62)))
-                : (Theme.quiet ? (toggle.checked ? Theme.accentContent : Theme.surfaceContentVariant)
-                    : (toggle.checked ? Theme.primaryContent : (mouse.containsMouse ? Theme.surfaceContentVariant : Theme.outline)))
-            border.width: Theme.glass ? 1 : 0
-            border.color: Qt.rgba(1, 1, 1, Theme.dark ? 0.55 : 0.90)
+            x: toggle.checked ? parent.width - width - 3 : 3
+            color: toggle.checked ? Theme.accentContent : Theme.surfaceContentVariant
             // Quick and settled, never springy: a switch must feel immediate.
             Behavior on x { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.reduceMotion ? 0 : 140; easing.type: Easing.OutCubic } }
-            Behavior on width { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast; easing.type: Easing.OutCubic } }
-            Behavior on height { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeFast; easing.type: Easing.OutCubic } }
             Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
         }
     }

@@ -21,16 +21,10 @@ Rectangle {
     readonly property Item selectedItem: (selectedIndex >= 0 && selectedIndex < segRepeater.count)
         ? segRepeater.itemAt(selectedIndex) : null
 
-    implicitHeight: Theme.quiet ? 30 : 36
+    implicitHeight: 30
     implicitWidth: row.implicitWidth + 6
-    radius: Theme.graphite ? Theme.radiusSm : Theme.pill(height)
-    color: Theme.graphite || Theme.quiet
-        ? "transparent"
-        : (Theme.glass ? Qt.rgba(1, 1, 1, Theme.dark ? 0.08 : 0.44) : Theme.surfaceContainerHigh)
-    border.width: !Theme.quiet && (Theme.graphite || Theme.glass) ? 1 : 0
-    border.color: Theme.glass
-        ? Qt.rgba(1, 1, 1, Theme.dark ? 0.18 : 0.65)
-        : Theme.outlineVariant
+    radius: Theme.radiusFull
+    color: "transparent"
 
     Accessible.role: Accessible.PageTabList
 
@@ -42,15 +36,8 @@ Rectangle {
         y: 3
         width: segmented.selectedItem ? segmented.selectedItem.width : 0
         height: segmented.height - 6
-        radius: Theme.graphite ? Math.max(2, Theme.radiusSm - 2) : (Theme.quiet ? Theme.radiusSm : Theme.pill(height))
-        color: Theme.graphite
-            ? Theme.surfaceContent
-            : Theme.quiet ? Theme.selection
-            : (Theme.glass
-                ? Qt.tint(Qt.rgba(1, 1, 1, Theme.dark ? 0.16 : 0.78), Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, Theme.dark ? 0.24 : 0.14))
-                : (Theme.hive ? Theme.primaryContainer : Theme.surface))
-        border.width: Theme.glass ? 1 : 0
-        border.color: Qt.rgba(1, 1, 1, Theme.dark ? 0.28 : 0.85)
+        radius: Theme.radiusSm
+        color: Theme.selection
         Behavior on x {
             enabled: !Theme.reduceMotion && slideIndicator.width > 0
             SpringAnimation { spring: Theme.springSnappy; damping: Theme.dampingSnappy }
@@ -73,7 +60,7 @@ Rectangle {
                 required property var modelData
                 required property int index
                 readonly property bool selected: String(modelData.value) === segmented.value
-                width: label.implicitWidth + (Theme.quiet ? 20 : 26)
+                width: label.implicitWidth + 20
                 height: segmented.height - 6
                 activeFocusOnTab: true
                 scale: segMouse.pressed && !Theme.reduceMotion ? Theme.pressScale : 1.0
@@ -93,7 +80,7 @@ Rectangle {
                 }
                 Rectangle {
                     anchors.fill: parent
-                    radius: Theme.graphite ? Math.max(2, Theme.radiusSm - 2) : Theme.pill(height)
+                    radius: Theme.radiusFull
                     color: "transparent"
                     Rectangle {
                         anchors.fill: parent
@@ -109,9 +96,9 @@ Rectangle {
                     id: label
                     anchors.centerIn: parent
                     text: option.modelData.label
-                    role: Theme.quiet ? "bodySmall" : "label"
+                    role: "bodySmall"
                     color: option.selected
-                        ? (Theme.graphite ? Theme.surface : (Theme.hive ? Theme.primaryContainerContent : Theme.surfaceContent))
+                        ? Theme.surfaceContent
                         : (segMouse.containsMouse ? Theme.surfaceContent : Theme.surfaceContentVariant)
                     Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
                 }

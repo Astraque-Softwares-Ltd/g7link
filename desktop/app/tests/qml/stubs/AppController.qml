@@ -3,14 +3,13 @@ pragma Singleton
 import QtQuick
 
 // Stands in for the Rust AppController in QML tests: still, light, no
-// phone or wallpaper colors.
+// G7 Linux theme.
 QtObject {
     property list<string> ringingDevices
     property bool systemDark: false
     property bool reduceMotion: true
     property bool powerSaver: false
-    property string phoneColors: ""
-    property string wallpaperColors: ""
+    property string launcherTheme: ""
     property string currentPage: "home"
     property string highlightTarget: ""
     property bool doctorBusy: false

@@ -30,6 +30,19 @@ Item {
         { id: "connection", title: qsTr("Connection") },
         { id: "about", title: qsTr("About") }
     ]
+    // The themes to pick from: G7's own colors, G7 Linux's, then the palettes.
+    readonly property var themeChoices: [
+        { id: "quiet", name: "G7", detail: qsTr("Default · light and dark") },
+        {
+            id: "g7linux",
+            name: qsTr("Match G7 Linux"),
+            detail: qsTr("Now %1 · follows the launcher").arg(Theme.launcherNow ? Theme.launcherNow.name : "G7 Linux")
+        }
+    ].concat(Palettes.families.map((f) => ({
+        id: f.id,
+        name: f.name,
+        detail: f.light ? qsTr("Light and dark") : qsTr("Dark only")
+    })))
     readonly property string releaseUrl: "https://github.com/Astraque-Softwares-Ltd/g7link/releases/latest"
     // Matches the APK name on the GitHub release (see .github/workflows/release.yml).
     readonly property string adbCommand: "adb install -r G7Link-" + AppController.version + "-android.apk"
@@ -191,6 +204,113 @@ Item {
             visible: text.length > 0
             width: parent.width
             text: parent.title
+        }
+    }
+
+    // A theme to pick: a preview of its colors (its ground, an accent bar and
+    // five tints), its name with what it offers under it, and a check on the
+    // one in use.
+    component ThemeRow: FocusScope {
+        id: tr
+        required property var modelData
+        readonly property bool selected: Preferences.theme === modelData.id
+        readonly property var look: Theme.preview(modelData.id)
+        width: parent ? parent.width : 0
+        implicitHeight: Math.max(tile.height, trTexts.implicitHeight) + 16
+        activeFocusOnTab: true
+
+        Accessible.role: Accessible.RadioButton
+        Accessible.name: modelData.name
+        Accessible.description: modelData.detail
+        Accessible.checkable: true
+        Accessible.checked: selected
+        Accessible.onPressAction: Preferences.theme = tr.modelData.id
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                Preferences.theme = tr.modelData.id
+                event.accepted = true
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.rowRadius
+            color: tr.selected || trMouse.containsMouse ? Theme.raised : "transparent"
+            border.width: Theme.focusVisible(tr) ? 2 : 0
+            border.color: Theme.focusRing
+        }
+        MouseArea {
+            id: trMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: Preferences.theme = tr.modelData.id
+        }
+        Rectangle {
+            id: tile
+            x: Theme.rowPadding
+            anchors.verticalCenter: parent.verticalCenter
+            width: 76
+            height: 40
+            radius: Theme.radiusMd
+            color: tr.look.background
+            border.width: 1
+            border.color: Theme.line
+            Rectangle {
+                x: 8
+                y: 6
+                width: 34
+                height: 6
+                radius: 3
+                color: tr.look.accent
+            }
+            Row {
+                x: 8
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 6
+                spacing: 3
+                Repeater {
+                    model: tr.look.dots
+                    delegate: Rectangle {
+                        required property string modelData
+                        width: 7
+                        height: 7
+                        radius: 3.5
+                        color: modelData
+                    }
+                }
+            }
+        }
+        Column {
+            id: trTexts
+            anchors.left: tile.right
+            anchors.leftMargin: 12
+            anchors.right: trCheck.left
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            Txt {
+                width: parent.width
+                text: tr.modelData.name
+            }
+            Txt {
+                width: parent.width
+                text: tr.modelData.detail
+                role: "bodySmall"
+                muted: true
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+            }
+        }
+        Icon {
+            id: trCheck
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.rowPadding
+            anchors.verticalCenter: parent.verticalCenter
+            width: 16
+            height: 16
+            opacity: tr.selected ? 1 : 0
+            path: Icons.check
+            color: Theme.accent
         }
     }
 
@@ -762,327 +882,54 @@ Item {
 
                 Group {
                     width: parent.width
-                    Column {
+                    title: qsTr("Theme")
+                    Txt {
+                        x: Theme.rowPadding
+                        width: parent.width - 2 * Theme.rowPadding
+                        bottomPadding: 6
+                        text: qsTr("Colors only: every theme keeps the same layout.")
+                        role: "bodySmall"
+                        muted: true
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                    }
+                    Repeater {
+                        model: page.themeChoices
+                        delegate: ThemeRow {}
+                    }
+                }
+
+                Group {
+                    width: parent.width
+                    title: qsTr("Look")
+                    SettingRow {
                         width: parent.width
-                        SettingRow {
-                            width: parent.width
-                            iconPath: Icons.palette
-                            title: qsTr("Theme")
-                            Segmented {
-                                options: [
-                                    { value: "quiet", label: "G7" },
-                                    { value: "hive", label: qsTr("Hive") },
-                                    { value: "bloom", label: qsTr("Bloom") },
-                                    { value: "glass", label: qsTr("Glass") },
-                                    { value: "graphite", label: qsTr("Graphite") }
-                                ]
-                                value: Theme.hive ? "hive" : (Theme.glass ? "glass" : Preferences.theme)
-                                onPicked: (value) => Preferences.theme = value
-                            }
+                        iconPath: Icons.moon
+                        title: qsTr("Mode")
+                        Segmented {
+                            options: [
+                                { value: "system", label: qsTr("System") },
+                                { value: "light", label: qsTr("Light") },
+                                { value: "dark", label: qsTr("Dark") }
+                            ]
+                            value: Preferences.colorMode
+                            onPicked: (value) => Preferences.colorMode = value
                         }
-                        SettingRow {
-                            width: parent.width
-                            iconPath: Icons.moon
-                            title: qsTr("Mode")
-                            Segmented {
-                                options: [
-                                    { value: "system", label: qsTr("System") },
-                                    { value: "light", label: qsTr("Light") },
-                                    { value: "dark", label: qsTr("Dark") }
-                                ]
-                                value: Preferences.colorMode
-                                onPicked: (value) => Preferences.colorMode = value
-                            }
-                        }
-                        SettingRow {
-                            width: parent.width
-                            iconPath: Icons.text
-                            title: qsTr("App size")
-                            description: qsTr("After a restart")
-                            Segmented {
-                                options: [
-                                    { value: 100, label: "100%" },
-                                    { value: 110, label: "110%" },
-                                    { value: 125, label: "125%" },
-                                    { value: 150, label: "150%" }
-                                ]
-                                value: Preferences.uiScale
-                                onPicked: (value) => Preferences.uiScale = value
-                            }
-                        }
-                        // Hive's colors are fixed: no seed to pick.
-                        SettingRow {
-                            id: colorRow
-                            width: parent.width
-                            visible: !Theme.graphite && !Theme.hive && !Theme.quiet
-                            stackBelow: true
-                            iconPath: Icons.colorSwatch
-                            title: qsTr("Color")
-                            Column {
-                                id: colorControl
-                                width: Math.max(
-                                    swatchesRow.implicitWidth,
-                                    phonePillsRow.implicitWidth
-                                )
-                                spacing: 8
-
-                                Row {
-                                    id: swatchesRow
-                                    anchors.right: colorRow.stackTrailing ? undefined : parent.right
-                                    spacing: 8
-
-                                    // Wallpaper swatch
-                                    Rectangle {
-                                        id: wallpaperSwatch
-                                        readonly property bool selected: Preferences.seed === "wallpaper"
-                                        readonly property var wallpaperPalette: Theme.wallpaperSeed
-                                            ? Theme.wallpaperSeed[Theme.dark ? "dark" : "light"] : null
-                                        width: 28; height: 28; radius: 14
-                                        activeFocusOnTab: true
-                                        color: wallpaperPalette ? wallpaperPalette.primary : Theme.surfaceContainerHighest
-                                        border.width: selected || Theme.focusVisible(wallpaperSwatch) ? 2 : 0
-                                        border.color: Theme.focusVisible(wallpaperSwatch) ? Theme.primary : Theme.surfaceContent
-                                        Accessible.role: Accessible.RadioButton
-                                        Accessible.name: qsTr("Wallpaper")
-                                        Accessible.checked: selected
-                                        Accessible.onPressAction: Preferences.seed = "wallpaper"
-                                        Keys.onPressed: (event) => {
-                                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                                Preferences.seed = "wallpaper"
-                                                event.accepted = true
-                                            }
-                                        }
-                                        Icon {
-                                            anchors.centerIn: parent
-                                            width: 14; height: 14
-                                            stroke: 2
-                                            path: Icons.photo
-                                            color: wallpaperSwatch.wallpaperPalette ? wallpaperSwatch.wallpaperPalette.onPrimary : Theme.surfaceContent
-                                        }
-                                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                        TapHandler { onTapped: Preferences.seed = "wallpaper" }
-                                    }
-
-                                    // Preset seeds
-                                    Repeater {
-                                        model: Object.keys(Tokens.data.themes.bloom.seeds)
-                                        delegate: Rectangle {
-                                            id: swatch
-                                            required property string modelData
-                                            readonly property bool selected: Preferences.seed === modelData
-                                                || (!Theme.isPhoneSeed && !Theme.isArtworkSeed && Preferences.seed !== "wallpaper" && Theme.seed === modelData)
-                                            width: 28; height: 28; radius: 14
-                                            activeFocusOnTab: true
-                                            color: Tokens.data.themes.bloom.seeds[modelData].seed
-                                            border.width: selected || Theme.focusVisible(swatch) ? 2 : 0
-                                            border.color: Theme.focusVisible(swatch) ? Theme.primary : Theme.surfaceContent
-                                            Accessible.role: Accessible.RadioButton
-                                            Accessible.name: modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                                            Accessible.checked: selected
-                                            Accessible.onPressAction: Preferences.seed = modelData
-                                            Keys.onPressed: (event) => {
-                                                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                                    Preferences.seed = swatch.modelData
-                                                    event.accepted = true
-                                                }
-                                            }
-                                            Icon {
-                                                anchors.centerIn: parent
-                                                width: 14; height: 14
-                                                stroke: 2
-                                                path: Icons.check
-                                                color: "white"
-                                                visible: swatch.selected
-                                            }
-                                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                            TapHandler { onTapped: Preferences.seed = swatch.modelData }
-                                        }
-                                    }
-
-                                    // Compact inline AMOLED toggle shown inside the Color row when Black seed is selected
-                                    Rectangle {
-                                        id: inlineAmoledPill
-                                        visible: !Theme.graphite && Preferences.seed === "black"
-                                        height: 28
-                                        width: inlineAmoledRow.implicitWidth + 16
-                                        radius: 14
-                                        color: Theme.glass ? Theme.tileColor : Theme.surfaceContainerHigh
-                                        border.width: Theme.glass || Preferences.amoled ? 1 : 0
-                                        border.color: Preferences.amoled ? Theme.primary : Theme.cardBorder
-
-                                        Row {
-                                            id: inlineAmoledRow
-                                            anchors.centerIn: parent
-                                            spacing: 6
-
-                                            Txt {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                role: "caption"
-                                                weight: 600
-                                                text: qsTr("AMOLED")
-                                                color: Preferences.amoled ? Theme.primary : Theme.surfaceContentVariant
-                                            }
-
-                                            Toggle {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                scale: 0.78
-                                                checked: Preferences.amoled
-                                                label: qsTr("Pure black (AMOLED)")
-                                                onToggled: (on) => Preferences.amoled = on
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Dynamic pills row: Playing media artwork + paired phone color pills
-                                Row {
-                                    id: phonePillsRow
-                                    anchors.right: colorRow.stackTrailing ? undefined : parent.right
-                                    spacing: 8
-
-                                    // Media artwork dynamic sync pill
-                                    Rectangle {
-                                        id: artworkSwatch
-                                        readonly property bool selected: Theme.isArtworkSeed
-                                        readonly property var artworkPalette: Theme.artworkSeed
-                                            ? Theme.artworkSeed[Theme.dark ? "dark" : "light"] : null
-                                        height: 28
-                                        width: artworkSwatchRow.implicitWidth + 14
-                                        radius: Theme.pill(height)
-                                        activeFocusOnTab: true
-                                        color: selected ? Theme.secondaryContainer : Theme.surfaceContainerHigh
-                                        border.width: selected || Theme.focusVisible(artworkSwatch) ? 2 : 0
-                                        border.color: Theme.focusVisible(artworkSwatch) ? Theme.primary : Theme.surfaceContent
-                                        Accessible.role: Accessible.RadioButton
-                                        Accessible.name: qsTr("Media artwork")
-                                        Accessible.checked: selected
-                                        Accessible.onPressAction: Preferences.seed = "artwork"
-                                        Keys.onPressed: (event) => {
-                                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                                Preferences.seed = "artwork"
-                                                event.accepted = true
-                                            }
-                                        }
-                                        Row {
-                                            id: artworkSwatchRow
-                                            anchors.centerIn: parent
-                                            spacing: 6
-                                            Rectangle {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                width: 18; height: 18; radius: 9
-                                                color: Theme.artworkSeed && Theme.artworkSeed.seed
-                                                    ? Theme.artworkSeed.seed
-                                                    : (artworkSwatch.artworkPalette ? artworkSwatch.artworkPalette.primary : Theme.primary)
-                                                Icon {
-                                                    anchors.centerIn: parent
-                                                    width: 11; height: 11
-                                                    stroke: 2
-                                                    path: Icons.music
-                                                    color: "white"
-                                                }
-                                            }
-                                            Txt {
-                                                anchors.verticalCenter: parent.verticalCenter
-                                                role: "label"
-                                                size: 12
-                                                text: qsTr("Media artwork")
-                                                color: artworkSwatch.selected ? Theme.secondaryContainerContent : Theme.surfaceContent
-                                            }
-                                        }
-                                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                        TapHandler { onTapped: Preferences.seed = "artwork" }
-                                    }
-
-                                    Repeater {
-                                        model: Theme.phoneSeeds
-                                        delegate: Rectangle {
-                                            id: phoneSwatch
-                                            required property var modelData
-                                            required property int index
-                                            readonly property bool selected: Preferences.seed === modelData.key
-                                                || (Preferences.seed === "phone" && index === 0)
-                                                || (modelData.id.length > 0 && Preferences.seed === "phone:" + modelData.id)
-                                            readonly property var phonePalette: modelData.scheme
-                                                ? modelData.scheme[Theme.dark ? "dark" : "light"] : null
-                                            height: 28
-                                            width: phoneSwatchRow.implicitWidth + 14
-                                            radius: Theme.pill(height)
-                                            activeFocusOnTab: true
-                                            color: selected ? Theme.secondaryContainer : Theme.surfaceContainerHigh
-                                            border.width: selected || Theme.focusVisible(phoneSwatch) ? 2 : 0
-                                            border.color: Theme.focusVisible(phoneSwatch) ? Theme.primary : Theme.surfaceContent
-                                            Accessible.role: Accessible.RadioButton
-                                            Accessible.name: modelData.label
-                                            Accessible.checked: selected
-                                            Accessible.onPressAction: Preferences.seed = modelData.key
-                                            Keys.onPressed: (event) => {
-                                                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                                    Preferences.seed = phoneSwatch.modelData.key
-                                                    event.accepted = true
-                                                }
-                                            }
-                                            Row {
-                                                id: phoneSwatchRow
-                                                anchors.centerIn: parent
-                                                spacing: 6
-                                                Rectangle {
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    width: 18; height: 18; radius: 9
-                                                    color: phoneSwatch.modelData.scheme && phoneSwatch.modelData.scheme.seed
-                                                        ? phoneSwatch.modelData.scheme.seed
-                                                        : (phoneSwatch.phonePalette ? phoneSwatch.phonePalette.primary : Theme.primary)
-                                                    Icon {
-                                                        anchors.centerIn: parent
-                                                        width: 11; height: 11
-                                                        stroke: 2
-                                                        path: Icons.phone
-                                                        color: "white"
-                                                    }
-                                                }
-                                                Txt {
-                                                    anchors.verticalCenter: parent.verticalCenter
-                                                    role: "label"
-                                                    size: 12
-                                                    text: phoneSwatch.modelData.label
-                                                    color: phoneSwatch.selected ? Theme.secondaryContainerContent : Theme.surfaceContent
-                                                }
-                                            }
-                                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                            TapHandler { onTapped: Preferences.seed = phoneSwatch.modelData.key }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Hive: the comb's motion (Hive keeps its own colors).
-                        SettingRow {
-                            width: parent.width
-                            visible: Theme.hive
-                            iconPath: Icons.sparkle
-                            title: qsTr("Animated comb")
-                            description: AppController.reduceMotion
-                                ? (qsTr("Still while animations are off in system settings."))
-                                : (AppController.powerSaver
-                                    ? qsTr("Still while energy saver is on.")
-                                    : qsTr("The honeycomb breathes and pulses."))
-                            Toggle {
-                                label: qsTr("Animated comb")
-                                checked: Preferences.combMotion
-                                onToggled: (on) => Preferences.combMotion = on
-                            }
-                        }
-
-                        SettingRow {
-                            width: parent.width
-                            visible: !Theme.hive && Theme.graphite && Theme.dark
-                            iconPath: Icons.moon
-                            title: qsTr("Pure black (AMOLED)")
-                            Toggle {
-                                checked: Preferences.amoled
-                                label: qsTr("Pure black (AMOLED)")
-                                onToggled: (on) => Preferences.amoled = on
-                            }
+                    }
+                    SettingRow {
+                        width: parent.width
+                        iconPath: Icons.text
+                        title: qsTr("App size")
+                        description: qsTr("After a restart")
+                        Segmented {
+                            options: [
+                                { value: 100, label: "100%" },
+                                { value: 110, label: "110%" },
+                                { value: 125, label: "125%" },
+                                { value: 150, label: "150%" }
+                            ]
+                            value: Preferences.uiScale
+                            onPicked: (value) => Preferences.uiScale = value
                         }
                     }
                 }

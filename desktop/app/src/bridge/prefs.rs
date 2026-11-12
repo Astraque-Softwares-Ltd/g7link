@@ -35,17 +35,11 @@ pub mod qobject {
         #[qobject]
         #[qml_element]
         #[qml_singleton]
-        /// "quiet", "bloom", "hive", "glass" or "graphite".
+        /// The colors: "quiet" (G7's own), "g7linux" (G7 Linux's) or a
+        /// palette from Palettes.qml, e.g. "nord".
         #[qproperty(QString, theme)]
-        /// Bloom colors: "wallpaper", or a preset: "honey", "sage", "lavender"
-        /// or "ocean".
-        #[qproperty(QString, seed)]
         /// "system", "light" or "dark".
         #[qproperty(QString, color_mode)]
-        /// Pure #000000 OLED black surfaces in dark mode.
-        #[qproperty(bool, amoled)]
-        /// Hive's comb breathes and pulses.
-        #[qproperty(bool, comb_motion)]
         #[qproperty(bool, close_to_tray)]
         /// Send what's copied on this PC to connected phones.
         #[qproperty(bool, auto_clipboard)]
@@ -140,8 +134,6 @@ pub mod qobject {
         #[qproperty(bool, walkthrough_completed)]
         /// Current step index (`0..=6`) in the first-run setup walkthrough.
         #[qproperty(i32, walkthrough_step)]
-        /// Whether the card on Home inviting to try Hive has been answered.
-        #[qproperty(bool, hive_invite_dismissed)]
         /// Whether the one-time ask for a star on GitHub has been answered.
         #[qproperty(bool, star_prompt_done)]
         /// Updated without having answered it: ask as soon as the window opens.
@@ -316,10 +308,7 @@ pub mod qobject {
 #[derive(Default)]
 pub struct PreferencesRust {
     theme: QString,
-    seed: QString,
     color_mode: QString,
-    amoled: bool,
-    comb_motion: bool,
     close_to_tray: bool,
     auto_clipboard: bool,
     clipboard_history: bool,
@@ -370,7 +359,6 @@ pub struct PreferencesRust {
     start_at_login: bool,
     walkthrough_completed: bool,
     walkthrough_step: i32,
-    hive_invite_dismissed: bool,
     star_prompt_done: bool,
     star_prompt_updated: bool,
     star_prompt_minutes: i32,
@@ -393,21 +381,12 @@ impl cxx_qt::Initialize for qobject::Preferences {
     fn initialize(mut self: Pin<&mut Self>) {
         let settings = Settings::load(&core_host::host().data_dir);
         settings.apply_runtime();
-        self.as_mut().set_theme(QString::from(match settings.theme {
-            Theme::Quiet => "quiet",
-            Theme::Hive => "hive",
-            Theme::Bloom => "bloom",
-            Theme::Glass => "glass",
-            Theme::Graphite => "graphite",
-        }));
-        self.as_mut().set_seed(QString::from(&settings.seed));
+        self.as_mut().set_theme(QString::from(settings.theme.as_str()));
         self.as_mut().set_color_mode(QString::from(match settings.color_mode {
             ColorMode::System => "system",
             ColorMode::Light => "light",
             ColorMode::Dark => "dark",
         }));
-        self.as_mut().set_amoled(settings.amoled);
-        self.as_mut().set_comb_motion(settings.comb_motion);
         let close_to_tray = settings.close_to_tray;
         self.as_mut().set_close_to_tray(close_to_tray);
         self.as_mut().set_auto_clipboard(settings.auto_clipboard);
@@ -477,7 +456,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().set_network_interface(QString::from(&settings.network_interface));
         self.as_mut().set_walkthrough_completed(settings.walkthrough_completed);
         self.as_mut().set_walkthrough_step(i32::from(settings.walkthrough_step.min(6)));
-        self.as_mut().set_hive_invite_dismissed(settings.hive_invite_dismissed);
         self.as_mut().set_star_prompt_done(settings.star_prompt_done);
         self.as_mut().set_star_prompt_updated(settings.star_prompt_updated);
         self.as_mut().set_star_prompt_minutes(settings.star_prompt_minutes.min(i32::MAX as u32) as i32);
@@ -505,10 +483,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
         // Save after any change (connected after loading, so loading doesn't
         // rewrite the file).
         self.as_mut().on_theme_changed(|p| p.save()).release();
-        self.as_mut().on_seed_changed(|p| p.save()).release();
         self.as_mut().on_color_mode_changed(|p| p.save()).release();
-        self.as_mut().on_amoled_changed(|p| p.save()).release();
-        self.as_mut().on_comb_motion_changed(|p| p.save()).release();
         self.as_mut()
             .on_close_to_tray_changed(|p| {
                 p.save();
@@ -797,7 +772,6 @@ impl cxx_qt::Initialize for qobject::Preferences {
                 p.save();
             })
             .release();
-        self.as_mut().on_hive_invite_dismissed_changed(|p| p.save()).release();
         self.as_mut().on_star_prompt_done_changed(|p| p.save()).release();
         self.as_mut().on_star_prompt_minutes_changed(|p| p.save()).release();
 
@@ -812,13 +786,7 @@ impl qobject::Preferences {
             self.as_mut().set_stream_pc_audio_to_phone(on);
         }
         let disk = Settings::load(&core_host::host().data_dir);
-        let disk_theme = QString::from(match disk.theme {
-            Theme::Quiet => "quiet",
-            Theme::Hive => "hive",
-            Theme::Bloom => "bloom",
-            Theme::Glass => "glass",
-            Theme::Graphite => "graphite",
-        });
+        let disk_theme = QString::from(disk.theme.as_str());
         let disk_mode = QString::from(match disk.color_mode {
             ColorMode::System => "system",
             ColorMode::Light => "light",
@@ -1103,21 +1071,12 @@ impl qobject::Preferences {
         let p = self.rust();
         let (win_screen, win_x, win_y, win_w, win_h, win_max) = crate::settings::window_geometry();
         Settings {
-            theme: match String::from(&p.theme).as_str() {
-                "quiet" => Theme::Quiet,
-                "hive" => Theme::Hive,
-                "graphite" => Theme::Graphite,
-                "glass" | "blurry" => Theme::Glass,
-                _ => Theme::Bloom,
-            },
-            seed: String::from(&p.seed),
+            theme: Theme::from_str_lossy(&String::from(&p.theme)),
             color_mode: match String::from(&p.color_mode).as_str() {
                 "light" => ColorMode::Light,
                 "dark" => ColorMode::Dark,
                 _ => ColorMode::System,
             },
-            amoled: p.amoled,
-            comb_motion: p.comb_motion,
             close_to_tray: p.close_to_tray,
             auto_clipboard: p.auto_clipboard,
             clipboard_history: p.clipboard_history,
@@ -1179,7 +1138,6 @@ impl qobject::Preferences {
             network_interface: p.network_interface.to_string(),
             walkthrough_completed: p.walkthrough_completed,
             walkthrough_step: p.walkthrough_step.clamp(0, 6) as u8,
-            hive_invite_dismissed: p.hive_invite_dismissed,
             star_prompt_done: p.star_prompt_done,
             star_prompt_updated: p.star_prompt_updated,
             star_prompt_minutes: p.star_prompt_minutes.max(0) as u32,

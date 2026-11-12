@@ -11,7 +11,7 @@ Item {
     property real cardWidth: 460
     default property alias content: body.data
     signal dismissed
-    readonly property int inset: Theme.quiet ? 16 : 24
+    readonly property int inset: 16
 
     function open() {
         opened = true

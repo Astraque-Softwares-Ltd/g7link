@@ -2,19 +2,16 @@
 pragma Singleton
 import QtQuick
 
-// Stands in for the Rust Preferences in QML tests: Bloom, light.
+// Stands in for the Rust Preferences in QML tests: G7, light.
 QtObject {
-    property string theme: "bloom"
+    property string theme: "quiet"
     property string colorMode: "light"
-    property bool amoled: false
     property bool enterSends: false
     property bool starPromptDone: false
     property bool starPromptUpdated: false
     property int starPromptMinutes: 0
     property bool quietWhenLocked: false
     property int uiScale: 100
-    property bool combMotion: false
-    property string seed: ""
     property string commandPaletteHotkey: ""
     property bool streamPcAudioToPhone: false
     property bool g7Island: true
