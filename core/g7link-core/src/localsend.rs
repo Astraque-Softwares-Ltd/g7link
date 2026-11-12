@@ -1396,12 +1396,17 @@ async fn handle_cancel(
 
 // ---- Client (Outgoing file transfer to a LocalSendPeer) ----
 
+enum OutgoingLocalSendSource {
+    Path(PathBuf),
+    File(tokio::fs::File),
+}
+
 struct OutgoingLocalSendFile {
     file_id: String,
     file_name: String,
     folder: Option<String>,
     size: u64,
-    file: tokio::fs::File,
+    source: OutgoingLocalSendSource,
 }
 
 pub(crate) async fn send_files(
@@ -1418,17 +1423,32 @@ pub(crate) async fn send_files(
     let mut total_bytes: u64 = 0;
 
     for (idx, file) in files.into_iter().enumerate() {
-        let handle = match file.source {
+        let (size, source) = match file.source {
             FileSource::Path(path) => {
                 let target = outgoing_target_path(&path, file.folder.as_deref());
                 if !source_targets.contains(&target) {
                     source_targets.push(target);
                 }
-                std::fs::File::open(path)?
+                let path_for_meta = path.clone();
+                let size = tokio::task::spawn_blocking(move || -> std::io::Result<u64> {
+                    let f = std::fs::File::open(&path_for_meta)?;
+                    Ok(f.metadata()?.len())
+                })
+                .await
+                .map_err(|e| Error::Internal(e.to_string()))??;
+                (size, OutgoingLocalSendSource::Path(path))
             }
-            FileSource::File(handle) => handle,
+            FileSource::File(handle) => {
+                let (handle, size) =
+                    tokio::task::spawn_blocking(move || -> std::io::Result<(std::fs::File, u64)> {
+                        let len = handle.metadata()?.len();
+                        Ok((handle, len))
+                    })
+                    .await
+                    .map_err(|e| Error::Internal(e.to_string()))??;
+                (size, OutgoingLocalSendSource::File(tokio::fs::File::from_std(handle)))
+            }
         };
-        let size = handle.metadata()?.len();
         let clean_name = safe_file_name(&file.name);
         let wire_name = match file.folder.as_deref() {
             Some(folder) => {
@@ -1449,7 +1469,7 @@ pub(crate) async fn send_files(
             file_name: wire_name,
             folder: file.folder,
             size,
-            file: tokio::fs::File::from_std(handle),
+            source,
         });
     }
 
@@ -1628,6 +1648,16 @@ async fn run_outgoing_transfer(
             return Err(TransferState::Failed(TransferFailure::Other("upload header write failed".into())));
         }
 
+        let mut opened_path_file;
+        let reader: &mut tokio::fs::File = match &mut f.source {
+            OutgoingLocalSendSource::Path(path) => {
+                opened_path_file = tokio::fs::File::open(path)
+                    .await
+                    .map_err(|e| TransferState::Failed(TransferFailure::Other(e.to_string())))?;
+                &mut opened_path_file
+            }
+            OutgoingLocalSendSource::File(file) => file,
+        };
         let mut remaining = f.size;
         let mut buf = vec![0u8; UPLOAD_CHUNK];
         while remaining > 0 {
@@ -1637,7 +1667,7 @@ async fn run_outgoing_transfer(
                     let _ = send_cancel_request(shared, peer, use_tls, &prep.session_id).await;
                     return Err(TransferState::Cancelled);
                 }
-                r = f.file.read(&mut buf[..to_read]) => {
+                r = reader.read(&mut buf[..to_read]) => {
                     r.map_err(|e| TransferState::Failed(TransferFailure::Other(e.to_string())))?
                 }
             };
