@@ -572,6 +572,8 @@ fn is_background_rpc(t: &str) -> bool {
             | types::PHOTOS_THUMBS
             | types::PHOTOS_GET
             | types::CALL_LOG
+            | types::CALL_DIAL
+            | types::CALL_SIMS
             | types::CONTACTS_LIST
             | types::SMS_THREADS
             | types::SMS_MESSAGES

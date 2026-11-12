@@ -318,16 +318,14 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             Ok(true)
         }
         types::CALL_LOG | types::CALL_DIAL | types::CALL_SIMS => {
-            // Reading the call log or starting a call takes a moment: run off the session's loop,
-            // while keeping `call.state` and `call.action` in order on the stream.
-            let (shared, session, env) = (shared.clone(), session.clone(), env.clone());
-            tokio::spawn(async move {
-                let reply = answer_log_or_dial(&shared, &session, &env).await.unwrap_or_else(|e| {
-                    tracing::debug!(error = %e, "bad call request");
-                    Envelope::error(ErrorCode::BadMessage, "invalid request")
-                });
-                let _ = session.send(reply.reply_to(env.id)).await;
+            // Reading the call log or starting a call takes a moment: these run as background
+            // requests (`session::is_background_rpc`), which keep their slot until answered,
+            // while `call.state` and `call.action` stay in order on the stream.
+            let reply = answer_log_or_dial(shared, session, env).await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "bad call request");
+                Envelope::error(ErrorCode::BadMessage, "invalid request")
             });
+            let _ = session.send(reply.reply_to(env.id)).await;
             Ok(true)
         }
         _ => Ok(false),

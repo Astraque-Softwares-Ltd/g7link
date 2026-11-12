@@ -23,6 +23,33 @@ const WAIT: Duration = Duration::from_secs(20);
 type MmsRecord = (Vec<String>, String, Vec<g7link_core::SmsAttachment>);
 type RichClipboardRecord = (String, Option<String>, Option<String>);
 
+/// Holds platform calls until opened, counting the ones it holds.
+#[derive(Debug, Default)]
+struct Gate {
+    open: Mutex<bool>,
+    opened: std::sync::Condvar,
+    held: std::sync::atomic::AtomicUsize,
+}
+
+impl Gate {
+    fn pass(&self) {
+        self.held.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut open = self.open.lock().unwrap();
+        while !*open {
+            open = self.opened.wait(open).unwrap();
+        }
+    }
+
+    fn held(&self) -> usize {
+        self.held.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+
 #[derive(Debug, Default)]
 struct RecordingPlatform {
     rings: Mutex<Vec<bool>>,
@@ -58,6 +85,8 @@ struct RecordingPlatform {
     photos: Mutex<std::collections::HashMap<String, std::path::PathBuf>>,
     /// Optional barrier `open_photo` waits on to simulate a slow platform call.
     photo_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
+    /// While set, `contacts` waits for it to open.
+    contacts_gate: Mutex<Option<Arc<Gate>>>,
     remote_inputs: Mutex<Vec<g7link_core::RemoteInput>>,
     phone_toggles: Mutex<Vec<(String, g7link_core::PhoneToggleValue)>>,
     deck_presses: Mutex<Vec<String>>,
@@ -355,6 +384,10 @@ impl Platform for RecordingPlatform {
         limit: u32,
     ) -> Result<Vec<g7link_core::Contact>, String> {
         use g7link_core::{Contact, ContactNumber};
+        let gate = self.contacts_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.pass();
+        }
         let all = vec![
             Contact {
                 id: "c1".into(),
@@ -3307,6 +3340,40 @@ async fn contacts_list_search_page_and_respect_permissions_and_toggles() {
     // Turning `contacts` off for this PC refuses contact queries.
     phone.node.set_device_toggle(pc_id, "contacts", false).unwrap();
     assert!(matches!(pc.node.contacts(phone_id, None, 0, 10).await, Err(Error::Denied)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pc_cant_keep_more_contact_lookups_running_than_the_background_limit() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CONTACTS_SHOW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::CONTACTS_READ]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+
+    let gate = Arc::new(Gate::default());
+    *phone.platform.contacts_gate.lock().unwrap() = Some(gate.clone());
+    let asks: Vec<_> = (0..40)
+        .map(|_| {
+            let pc = pc.node.clone();
+            tokio::spawn(async move { pc.contacts(phone_id, None, 0, 10).await })
+        })
+        .collect();
+    let settled = || gate.held() + asks.iter().filter(|a| a.is_finished()).count() >= asks.len();
+    until("every lookup running or turned away", settled).await;
+    // The ones past the limit are turned away while the others run, not started on the side.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let running = gate.held();
+    assert!(running <= 32, "{running} lookups running at once");
+
+    gate.open();
+    let (mut answered, mut busy) = (0, 0);
+    for ask in asks {
+        match with_timeout("contacts lookup", ask).await.unwrap() {
+            Ok(_) => answered += 1,
+            Err(Error::Denied) => busy += 1,
+            Err(e) => panic!("unexpected {e:?}"),
+        }
+    }
+    assert_eq!((answered, busy), (running, 40 - running));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -82,15 +82,13 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     if env.t != types::CONTACTS_LIST {
         return Ok(false);
     }
-    // Querying contacts on the phone takes a moment: not on the session's loop.
-    let (shared, session, env) = (shared.clone(), session.clone(), env.clone());
-    tokio::spawn(async move {
-        let reply = answer(&shared, &session, &env).await.unwrap_or_else(|e| {
-            tracing::debug!(error = %e, "bad contacts request");
-            Envelope::error(ErrorCode::BadMessage, "invalid request")
-        });
-        let _ = session.send(reply.reply_to(env.id)).await;
+    // Querying contacts on the phone takes a moment: this runs as a background
+    // request (`session::is_background_rpc`), which keeps its slot until answered.
+    let reply = answer(shared, session, env).await.unwrap_or_else(|e| {
+        tracing::debug!(error = %e, "bad contacts request");
+        Envelope::error(ErrorCode::BadMessage, "invalid request")
     });
+    let _ = session.send(reply.reply_to(env.id)).await;
     Ok(true)
 }
 
