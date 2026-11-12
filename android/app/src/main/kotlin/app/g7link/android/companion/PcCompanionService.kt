@@ -47,7 +47,13 @@ class PcCompanionService : CompanionDeviceService() {
         if (!app.g7link.android.ui.Preferences.isBackgroundServiceEnabled(appContext)) {
             return
         }
+        val core = (appContext as? G7LinkApplication)?.core
+        val state = core?.state?.value
+        if (state != null && state.status is app.g7link.android.core.CoreStatus.Ready && state.devices.isEmpty()) {
+            PcCompanion.disassociateForRemovedPc(appContext, pcName = null, noDevicesRemaining = true)
+            return
+        }
         ConnectionService.start(appContext)
-        (appContext as? G7LinkApplication)?.core?.reconnectNow()
+        core?.reconnectNow()
     }
 }
