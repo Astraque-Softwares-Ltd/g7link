@@ -464,6 +464,9 @@ Window {
                                     anchors.fill: parent
                                     radius: Theme.rowRadius
                                     visible: mediaCard.hasItem && mediaCard.thumbSource !== ""
+                                    // Decoded at the tile's size (Qt applies the screen's scale), not the
+                                    // full photo or screenshot.
+                                    sourceSize: Qt.size(mediaCard.width, mediaCard.height)
                                     source: mediaCard.thumbSource
                                 }
                                 // Keeps the labels readable over a picture.
