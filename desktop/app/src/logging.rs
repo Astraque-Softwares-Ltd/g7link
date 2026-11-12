@@ -4,6 +4,7 @@
 
 use std::{
     fs,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -43,5 +44,5 @@ fn open_log_file(dir: &Path) -> std::io::Result<fs::File> {
     if fs::metadata(&path).is_ok_and(|m| m.len() > ROTATE_AT_BYTES) {
         let _ = fs::rename(&path, dir.join(PREVIOUS_FILE_NAME));
     }
-    fs::OpenOptions::new().create(true).append(true).open(path)
+    fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path)
 }

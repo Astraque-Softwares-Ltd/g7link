@@ -63,7 +63,8 @@ mod version;
 mod webcam;
 
 use std::{
-    path::PathBuf,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
     process::ExitCode,
     sync::{
         Arc,
@@ -372,6 +373,30 @@ fn default_data_dir() -> PathBuf {
     dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("G7Link")
 }
 
+/// The data folder holds messages, notifications, contacts and logs, so only
+/// the user may open it. Earlier versions left it, and the database, logs and
+/// lists in it, readable by every account on the computer.
+fn make_data_dir_private(data_dir: &Path) {
+    let restrict = |path: &Path, mode: u32| {
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            eprintln!("g7link: can't restrict {}: {e}", path.display());
+        }
+    };
+    restrict(data_dir, 0o700);
+    for dir in [data_dir.to_path_buf(), logging::logs_dir(data_dir)] {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            // The entry's own type: a symlink is left alone, not followed.
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            if entry.metadata().is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
+                restrict(&entry.path(), 0o600);
+            }
+        }
+    }
+}
+
 /// Network changes come in bursts; tell the core once things settle.
 fn watch_network() {
     static PENDING: AtomicBool = AtomicBool::new(false);
@@ -480,6 +505,7 @@ fn main() -> ExitCode {
         eprintln!("g7link: can't create {}: {e}", data_dir.display());
         return ExitCode::FAILURE;
     }
+    make_data_dir_private(&data_dir);
     logging::init(&data_dir);
     install_panic_logging();
     // Home and the other phone pages only load with a paired phone, and a
