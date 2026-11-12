@@ -101,3 +101,4 @@ strip = "debuginfo"
 # iroh's mDNS with one fix, until upstream has it: third_party/iroh-mdns-address-lookup/G7LINK.md.
 [patch.crates-io]
 iroh-mdns-address-lookup = { path = "third_party/iroh-mdns-address-lookup" }
+swarm-discovery = { path = "third_party/swarm-discovery" }

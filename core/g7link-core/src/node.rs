@@ -4856,18 +4856,14 @@ fn set_name_on_lan(shared: &Shared, on: bool) {
 }
 
 /// Puts this device's name in its mDNS record, or takes it out, when
-/// [`open_for_pairing`] changed. mDNS can't drop a TXT attribute, so taking
-/// the name out starts mDNS afresh. Call it within the runtime.
+/// [`open_for_pairing`] changed. Call it within the runtime.
 pub(crate) fn sync_name_on_lan(shared: &Arc<Shared>) {
-    let Some(fast) = lock(&shared.lan_discovery).as_ref().map(|(_, fast)| *fast) else { return };
-    let wanted = open_for_pairing(shared);
-    if wanted == shared.name_on_lan.load(std::sync::atomic::Ordering::SeqCst) {
+    if lock(&shared.lan_discovery).is_none() {
         return;
     }
-    if wanted {
-        set_name_on_lan(shared, true);
-    } else if let Err(e) = install_mdns(shared, fast) {
-        tracing::warn!(error = %e, "can't take this device's name off the LAN");
+    let wanted = open_for_pairing(shared);
+    if wanted != shared.name_on_lan.load(std::sync::atomic::Ordering::SeqCst) {
+        set_name_on_lan(shared, wanted);
     }
 }
 

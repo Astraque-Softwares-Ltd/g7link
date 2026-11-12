@@ -324,8 +324,7 @@ impl MdnsAddressLookup {
         let (send, mut recv) = mpsc::channel(64);
         let task_sender = send.clone();
         let rt = tokio::runtime::Handle::current();
-        let discoverer_service_name = service_name.clone();
-        let mut address_lookup = MdnsAddressLookup::spawn_discoverer(
+        let address_lookup = MdnsAddressLookup::spawn_discoverer(
             endpoint_id,
             advertise,
             task_sender.clone(),
@@ -357,35 +356,8 @@ impl MdnsAddressLookup {
                         tracing::trace!(?data, "Mdns address changed");
                         if let Some(include) = multicast_interfaces {
                             let wanted = local_ipv4s(data.ip_addrs(), include);
-                            // G7 Link patch: swarm-discovery's `remove_interface_v4`
-                            // leaves that interface's receiver running, and the
-                            // receiver keeps its socket (bound to the old
-                            // address, port 5353) open, so sockets piled up as
-                            // networks changed. When an interface goes, start
-                            // a fresh discoverer instead: dropping the old one
-                            // aborts its receivers, closing their sockets. The
-                            // addresses and TXT attributes are set again below.
-                            if interfaces.difference(&wanted).next().is_some() {
-                                match MdnsAddressLookup::spawn_discoverer(
-                                    endpoint_id,
-                                    advertise,
-                                    task_sender.clone(),
-                                    BTreeSet::new(),
-                                    discoverer_service_name.clone(),
-                                    cadence,
-                                    &rt,
-                                ) {
-                                    Ok(fresh) => {
-                                        address_lookup = fresh;
-                                        interfaces.clear();
-                                    }
-                                    Err(err) => {
-                                        warn!("Failed to restart mDNS for a gone interface: {err:?}");
-                                        for gone in interfaces.difference(&wanted) {
-                                            address_lookup.remove_interface_v4(*gone);
-                                        }
-                                    }
-                                }
+                            for gone in interfaces.difference(&wanted) {
+                                address_lookup.remove_interface_v4(*gone);
                             }
                             for new in wanted.difference(&interfaces) {
                                 address_lookup.add_interface_v4(*new);
@@ -407,9 +379,15 @@ impl MdnsAddressLookup {
                             && let Err(err) = address_lookup.set_txt_attribute(RELAY_URL_ATTRIBUTE.to_string(), Some(relay.to_string()))  {
                                 warn!("Failed to set the relay url in mDNS: {err:?}");
                         }
-                        if let Some(user_data) = data.user_data()
-                            && let Err(err) = address_lookup.set_txt_attribute(USER_DATA_ATTRIBUTE.to_string(), Some(user_data.to_string())) {
-                                warn!("Failed to set the user-defined data in mDNS: {err:?}");
+                        match data.user_data() {
+                            Some(user_data) => {
+                                if let Err(err) = address_lookup.set_txt_attribute(USER_DATA_ATTRIBUTE.to_string(), Some(user_data.to_string())) {
+                                    warn!("Failed to set the user-defined data in mDNS: {err:?}");
+                                }
+                            }
+                            // G7 Link patch: no user data takes it off the record, so
+                            // a device can stop announcing its name without a restart.
+                            None => address_lookup.remove_txt_attribute(USER_DATA_ATTRIBUTE.to_string()),
                         }
                         continue;
                     }
