@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Image decoding, scaling, square cropping, and PNG/JPEG/DIB encoding on Linux.
 
-use std::io::{Error, ErrorKind, Result};
+use std::{
+    io::{Error, ErrorKind, Result},
+    time::{Duration, Instant},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bitmap {
@@ -900,15 +903,36 @@ fn decode_with_qt(bytes: &[u8]) -> Option<Bitmap> {
     Some(Bitmap { width, height, bgra: bgra.to_vec() })
 }
 
-fn decode_via_python_or_ffmpeg(bytes: &[u8]) -> Option<Bitmap> {
-    use std::io::Write;
+/// The demuxers ffmpeg may pick for a picture: still-image formats, and
+/// `mov` for HEIC and AVIF. Playlists and concat lists, which read other
+/// files, never.
+const FFMPEG_FORMATS: &str = "image2pipe,png_pipe,jpeg_pipe,webp_pipe,gif,gif_pipe,bmp_pipe,tiff_pipe,\
+                              jpegxl_pipe,qoi_pipe,ico,mov";
+/// How long ffmpeg may take over one picture.
+const FFMPEG_TIMEOUT: Duration = Duration::from_secs(10);
+/// A BMP of the largest picture allowed, headers included.
+const MAX_FFMPEG_OUTPUT: u64 = MAX_PIXELS * 4 + 1024;
+
+/// The last resort, for HEIC, AVIF and other formats Qt has no plugin for.
+/// The bytes come from paired devices and other apps, so ffmpeg reads only
+/// stdin, as a picture format, no larger than `MAX_PIXELS`, and is stopped
+/// after `FFMPEG_TIMEOUT`.
+fn decode_with_ffmpeg(bytes: &[u8]) -> Option<Bitmap> {
+    use std::io::{Read, Write};
     use std::process::{Command, Stdio};
 
+    let max_pixels = MAX_PIXELS.to_string();
     let mut child = Command::new("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",
             "error",
+            "-protocol_whitelist",
+            "pipe",
+            "-format_whitelist",
+            FFMPEG_FORMATS,
+            "-max_pixels",
+            &max_pixels,
             "-i",
             "pipe:0",
             "-frames:v",
@@ -932,8 +956,31 @@ fn decode_via_python_or_ffmpeg(bytes: &[u8]) -> Option<Bitmap> {
             let _ = stdin.write_all(&input);
         });
     }
-    let output = child.wait_with_output().ok()?;
-    if output.status.success() { decode_bmp(&output.stdout) } else { None }
+    let (sent, received) = std::sync::mpsc::channel();
+    if let Some(stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let read = stdout.take(MAX_FFMPEG_OUTPUT + 1).read_to_end(&mut out);
+            let whole = read.is_ok() && out.len() as u64 <= MAX_FFMPEG_OUTPUT;
+            let _ = sent.send(whole.then_some(out));
+        });
+    }
+    let deadline = Instant::now() + FFMPEG_TIMEOUT;
+    let out = received.recv_timeout(FFMPEG_TIMEOUT).ok().flatten();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if out.is_some() && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    if status?.success() { decode_bmp(&out?) } else { None }
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Bitmap> {
@@ -958,7 +1005,7 @@ pub fn decode(bytes: &[u8]) -> Result<Bitmap> {
     if let Some(bmp) = decode_with_qt(bytes) {
         return Ok(bmp);
     }
-    if let Some(bmp) = decode_via_python_or_ffmpeg(bytes) {
+    if let Some(bmp) = decode_with_ffmpeg(bytes) {
         return Ok(bmp);
     }
     Err(Error::new(ErrorKind::InvalidData, "unsupported or corrupt image data"))
@@ -1158,6 +1205,23 @@ mod tests {
         // BGRA: red, then the half-transparent blue pixel.
         assert_eq!(&decoded.bgra[0..4], &[0, 0, 255, 255]);
         assert_eq!(&decoded.bgra[8..12], &[255, 0, 0, 128]);
+    }
+
+    #[test]
+    fn ffmpeg_reads_a_picture_but_not_a_list_of_other_files() {
+        if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let png = encode_png(&sample_bitmap(4, 3)).unwrap();
+        let decoded = decode_with_ffmpeg(&png).expect("ffmpeg decodes a PNG");
+        assert_eq!((decoded.width, decoded.height), (4, 3));
+
+        // A concat list naming a local picture must not be followed.
+        let dir = tempfile::tempdir().unwrap();
+        let picture = dir.path().join("secret.png");
+        std::fs::write(&picture, &png).unwrap();
+        let list = format!("ffconcat version 1.0\nfile '{}'\n", picture.display());
+        assert!(decode_with_ffmpeg(list.as_bytes()).is_none());
     }
 
     #[test]
