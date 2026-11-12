@@ -7409,6 +7409,41 @@ async fn pc_audio_reaches_the_phone_over_both_paths() {
     phone.node.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lagging_event_subscriber_doesnt_keep_sound_piling_up() {
+    use g7link_core::{DECK_ACTIONS, PC_AUDIO};
+
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[DECK_ACTIONS, PC_AUDIO]).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+
+    // `phone.events` isn't read from here on, so everything sent stays in the ring for it.
+    // A second subscriber that keeps up hears each frame before the next goes.
+    let mut listener = phone.node.events();
+    const FRAME: usize = 64 * 1024;
+    const SENT: usize = 400;
+    let mut heard = 0;
+    for _ in 0..SENT {
+        pc.node.send_pc_audio_pcm(&phone_id, 48_000, 2, vec![0; FRAME]).await.unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(1), async {
+            while !matches!(listener.recv().await, Ok(NodeEvent::PcAudioFrame { .. })) {}
+        })
+        .await;
+        if next.is_err() {
+            break;
+        }
+        heard += 1;
+    }
+    // Heard until the 16 MiB the ring may hold of sound was reached, and let go after.
+    assert!(heard > 0, "the phone never surfaced the PC's audio");
+    assert!(heard * FRAME <= 16 * 1024 * 1024, "{heard} frames of {FRAME} bytes held");
+    assert!(heard < SENT);
+
+    pc.node.shutdown().await;
+    phone.node.shutdown().await;
+}
+
 /// Play on phone for a video file: the phone reads only the file the PC
 /// offered, in ranges, while the offer is open.
 #[tokio::test(flavor = "multi_thread")]

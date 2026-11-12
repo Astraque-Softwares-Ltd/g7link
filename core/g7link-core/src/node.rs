@@ -62,6 +62,9 @@ const USB_DIAL_GRACE: Duration = Duration::from_secs(6);
 /// notification snapshots and multi-peer capability/state bursts without lagging
 /// UI or FFI subscribers.
 const EVENT_CAPACITY: usize = 2048;
+/// Most payload bytes (sound, captured images) the event ring may hold for a
+/// subscriber that hasn't caught up before sound is let go (see [`Shared::emit`]).
+const EVENT_PAYLOAD_BUDGET: usize = 16 * 1024 * 1024;
 /// A connection with no traffic for this long is dead, and a quiet one gets a
 /// keep-alive this often. Both match iroh's own per-path limits (it pings an
 /// idle path every 5 s and drops one silent for 15 s), so a device that
@@ -156,6 +159,8 @@ pub(crate) struct Shared {
     pub pairing: PairingState,
     pub cancel: CancellationToken,
     events: broadcast::Sender<NodeEvent>,
+    /// The payload bytes of the events last sent, newest last, as many as the ring holds.
+    event_payloads: Mutex<std::collections::VecDeque<usize>>,
     sessions: Mutex<HashMap<DeviceId, Arc<Session>>>,
     links: Mutex<HashMap<DeviceId, LinkState>>,
     supervisors: Mutex<HashMap<DeviceId, Supervisor>>,
@@ -343,6 +348,15 @@ fn history_copy(n: &Notification) -> Notification {
     }
 }
 
+/// The bytes `event` carries beyond its own size, for the ones that can carry a lot.
+fn payload_bytes(event: &NodeEvent) -> usize {
+    match event {
+        NodeEvent::PcAudioFrame { pcm, .. } => pcm.len(),
+        NodeEvent::CameraCaptureReceived { data, .. } => data.len(),
+        _ => 0,
+    }
+}
+
 /// The notification history's order: newest first, then by key.
 fn history_order(a: &Notification, b: &Notification) -> std::cmp::Ordering {
     b.when.cmp(&a.when).then_with(|| a.key.cmp(&b.key))
@@ -350,6 +364,21 @@ fn history_order(a: &Notification, b: &Notification) -> std::cmp::Ordering {
 
 impl Shared {
     pub fn emit(&self, event: NodeEvent) {
+        let bytes = payload_bytes(&event);
+        // Sent under the lock, so the sizes stay in the ring's order.
+        let mut payloads = lock(&self.event_payloads);
+        if matches!(event, NodeEvent::PcAudioFrame { .. }) {
+            // An event stays in the ring until every subscriber has seen it: one that
+            // lags mustn't keep sound piling up there, so past the budget sound is let go.
+            let held: usize = payloads.iter().rev().take(self.events.len()).sum();
+            if held.saturating_add(bytes) > EVENT_PAYLOAD_BUDGET {
+                return;
+            }
+        }
+        if payloads.len() == EVENT_CAPACITY {
+            payloads.pop_front();
+        }
+        payloads.push_back(bytes);
         // No subscribers is fine; events are a UI convenience.
         let _ = self.events.send(event);
     }
@@ -1995,6 +2024,7 @@ impl Node {
             pairing: PairingState::default(),
             cancel: CancellationToken::new(),
             events,
+            event_payloads: Mutex::new(std::collections::VecDeque::with_capacity(EVENT_CAPACITY)),
             sessions: Mutex::new(HashMap::new()),
             links: Mutex::new(HashMap::new()),
             supervisors: Mutex::new(HashMap::new()),
