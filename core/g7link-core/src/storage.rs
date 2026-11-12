@@ -1109,9 +1109,7 @@ impl FolderStorage {
             let Ok(name) = item.file_name().into_string() else {
                 continue;
             };
-            if !is_valid_storage_name(&name)
-                || name.starts_with(".g7link")
-                || name.ends_with(".g7link-part")
+            if !is_valid_storage_name(&name) || name.starts_with(".g7link") || name.ends_with(".g7link-part")
             {
                 continue;
             }
