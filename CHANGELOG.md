@@ -4,6 +4,45 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.10 (2026-11-12)
+
+Faster and more truthful everywhere: mirroring, calls, copying, the trackpad
+and Bluetooth, plus a new Home built for a busy phone.
+
+### Changed
+
+- **Home, redesigned.** The actions sit in a fixed bar that never scrolls
+  away; notifications are grouped by app, with the app's real icon, and
+  scroll on their own; the phone's controls stay on the right.
+- **Badges that mean something.** Messages and Calls count only what arrived
+  since you last opened them, and clear when you do.
+- **Messages has app tabs** (All, SMS, then each chat app) and shows each
+  conversation's app icon.
+- **The mirror window is the phone's screen and nothing else.** Its controls
+  appear on hover. Mirroring converts colors on the GPU for a steadier 60 fps,
+  and app windows lay out exactly as on the phone.
+- **Real icons.** Both apps draw G7 Linux's glyphs, each matching what its
+  row does, and an icon stays on the first line of a wrapped label.
+- **Notifications on the PC** read as sender, then message, with the phone
+  app's icon.
+
+### Fixed
+
+- Mirroring no longer turns up the phone's volume.
+- Answer and Decline react at once, and clicking a phone notification no
+  longer leaves a busy pointer.
+- Copy shows "Copied" right away and never freezes the window.
+- The phone's trackpad scrolls smoothly with two fingers, glides after a
+  flick, and no longer right-clicks after a short scroll.
+- The phone's trackpad, keys and buttons never wait behind slow PC replies.
+- Replies are offered only to SMS senders that can receive them.
+- Bluetooth call audio connects with one targeted request, shows
+  "Connecting…", and says "On PC" only when the call is really there.
+- Elevated starts over Wireless debugging, without a cable.
+- A dead link is noticed within about 10 s while the app is open.
+- Sharing the PC's screen with the phone recovers after a bad patch.
+- The app opens maximized under the top bar, not over it.
+
 ## 0.1.9 (2026-11-11)
 
 Both apps are redesigned in G7 Linux's own look. There were no 0.1.7 or 0.1.8
