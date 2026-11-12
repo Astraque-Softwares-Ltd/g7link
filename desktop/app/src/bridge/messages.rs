@@ -7,7 +7,7 @@ use std::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
-use crate::{i18n::tr, messages, state::Changes};
+use crate::{messages, state::Changes};
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -232,8 +232,8 @@ impl qobject::Messages {
         messages::reload();
     }
 
+    /// The button that asked says "Copied" itself.
     pub fn copy(&self, text: &QString) {
-        crate::bridge::app::show_message(tr!("Copy", "Copied"));
         crate::copy::copy_text(String::from(text));
     }
 

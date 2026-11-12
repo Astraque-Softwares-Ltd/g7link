@@ -230,8 +230,8 @@ impl qobject::PhoneCall {
         }
     }
 
+    /// The button that asked says "Copied" itself.
     pub fn copy(&self, text: &QString) {
-        crate::bridge::app::show_message(tr!("Copy", "Copied"));
         crate::copy::copy_text(String::from(text));
     }
 

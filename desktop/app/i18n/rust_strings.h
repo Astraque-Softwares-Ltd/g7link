@@ -181,7 +181,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("ContinuityCamera", "Pasted into %1"), // desktop/app/src/continuity_camera.rs
     QT_TRANSLATE_NOOP("ContinuityCamera", "Scan a document on %1…"), // desktop/app/src/continuity_camera.rs
     QT_TRANSLATE_NOOP("ContinuityCamera", "Take a photo on %1…"), // desktop/app/src/continuity_camera.rs
-    QT_TRANSLATE_NOOP("Copy", "Copied"), // desktop/app/src/bridge/calls.rs
+    QT_TRANSLATE_NOOP("Copy", "Copied"), // desktop/app/src/copy.rs
     QT_TRANSLATE_NOOP("Copy", "Copying…"), // desktop/app/src/copy.rs
     QT_TRANSLATE_NOOP("Copy", "Couldn't copy"), // desktop/app/src/copy.rs
     QT_TRANSLATE_NOOP("CoreHost", "Dropped %1 queued item(s) for %2 (device unpaired)."), // desktop/app/src/core_host.rs
@@ -470,7 +470,6 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Timeline", "App window #%1"), // desktop/app/src/i18n.rs
     QT_TRANSLATE_NOOP("Timeline", "Clip (removed from clipboard history)"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "Copied image"), // desktop/app/src/bridge/timeline.rs
-    QT_TRANSLATE_NOOP("Timeline", "Copied link to clipboard."), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "From %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "In progress"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "No phone is paired yet."), // desktop/app/src/bridge/timeline.rs

@@ -1300,7 +1300,8 @@ pub fn copy_item(id: String) {
         return;
     }
     if let Some(existing) = gallery_state(|s| s.full_files.get(&id).filter(|p| p.exists()).cloned()) {
-        copy_file_to_clipboard(&existing, false, true);
+        // The Copy button says "Copied" itself; only a failure is told apart.
+        copy_file_to_clipboard(&existing, false, false);
         return;
     }
     let Some(device) = gallery_state(|s| {

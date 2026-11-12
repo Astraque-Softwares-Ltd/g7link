@@ -441,13 +441,15 @@ impl qobject::TimelineModel {
             TimelineKind::Link => {
                 let url = if row.entry.target.is_empty() { &row.entry.title } else { &row.entry.target };
                 match crate::sys::clipboard::write(url) {
-                    Ok(()) => show_message(tr!("Timeline", "Copied link to clipboard.")),
+                    // The row's Copy says "Copied" itself.
+                    Ok(()) => {}
                     Err(e) => show_message(e),
                 }
             }
             TimelineKind::Photo | TimelineKind::File => {
                 let say = ImageCopy::new(tr!("Timeline", "The photo couldn't be copied to the clipboard."))
-                    .when_missing(tr!("Timeline", "That photo was moved or deleted."));
+                    .when_missing(tr!("Timeline", "That photo was moved or deleted."))
+                    .quiet();
                 crate::copy::copy_image_file(row.primary_path.clone().into(), say, |_| {});
             }
             _ => {}
