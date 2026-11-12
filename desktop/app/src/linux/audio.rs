@@ -145,6 +145,36 @@ pub(crate) fn parse_wpctl_status_sinks(status_out: &str) -> Vec<AudioOutputDevic
     out
 }
 
+/// Resolves a numeric PipeWire sink node ID for `wpctl set-default` from `target`
+/// (which may already be numeric, a display name in `wpctl status`, or a node name
+/// in `wpctl status --name`).
+pub(crate) fn resolve_wpctl_sink_node_id(
+    status_out: &str,
+    status_name_out: Option<&str>,
+    target: &str,
+) -> Option<String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Some(trimmed.to_owned());
+    }
+    for sink in parse_wpctl_status_sinks(status_out) {
+        if sink.id == trimmed || sink.name.eq_ignore_ascii_case(trimmed) {
+            return Some(sink.id);
+        }
+    }
+    if let Some(name_out) = status_name_out {
+        for sink in parse_wpctl_status_sinks(name_out) {
+            if sink.id == trimmed || sink.name.eq_ignore_ascii_case(trimmed) {
+                return Some(sink.id);
+            }
+        }
+    }
+    None
+}
+
 /// Returns `true` when a `pactl subscribe` event line indicates a sink, source,
 /// or server state/device change (ignoring per-stream `sink-input` / `source-output` noise).
 pub(crate) fn parse_pactl_subscribe_line(line: &str) -> bool {
@@ -304,6 +334,37 @@ pub fn output_devices() -> Vec<AudioOutputDevice> {
     Vec::new()
 }
 
+/// Switches the system default output sink to `id`.
+pub fn set_default_output_device(id: &str) -> Result<(), String> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') || trimmed.chars().any(char::is_control) {
+        return Err("output device id is invalid".to_string());
+    }
+
+    let status_out = super::run_cmd_timeout("wpctl", &["status"], CMD_TIMEOUT)
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let status_name_out = super::run_cmd_timeout("wpctl", &["status", "--name"], CMD_TIMEOUT)
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+
+    if let Some(node_id) = resolve_wpctl_sink_node_id(&status_out, status_name_out.as_deref(), trimmed)
+        && super::run_cmd_timeout("wpctl", &["set-default", &node_id], CMD_TIMEOUT)
+            .is_some_and(|o| o.status.success())
+    {
+        return Ok(());
+    }
+
+    if super::run_cmd_timeout("pactl", &["set-default-sink", trimmed], CMD_TIMEOUT)
+        .is_some_and(|o| o.status.success())
+    {
+        return Ok(());
+    }
+
+    Err(format!("audio backend could not set default output device '{trimmed}'"))
+}
+
 /// Subscribes to PipeWire/PulseAudio sink/source/server events and invokes
 /// `changed` after coalescing rapid event bursts over 150 ms.
 pub fn watch(changed: fn()) {
@@ -398,7 +459,7 @@ Sink #52
     }
 
     #[test]
-    fn parse_wpctl_status_sinks_parses_pipewire_tree() {
+    fn parse_wpctl_status_sinks_parses_pipewire_tree_and_resolves_node_id() {
         let status = "\
 PipeWire 'pipewire-0' [1.0.5, user@host, cookie:1234]
  └─ Clients:
@@ -415,6 +476,13 @@ Audio
  ├─ Sources:
  │  *   47. Built-in Audio Analog Stereo        [vol: 1.00]
 ";
+        let status_name = "\
+Audio
+ ├─ Sinks:
+ │      46. alsa_output.pci-0000_00_1f.3.analog-stereo [vol: 0.45]
+ │  *   58. bluez_output.AA_BB_CC_DD_EE_FF.1    [vol: 0.80 MUTED]
+ ├─ Sources:
+";
         let devices = parse_wpctl_status_sinks(status);
         assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].id, "58");
@@ -423,6 +491,22 @@ Audio
         assert_eq!(devices[1].id, "46");
         assert_eq!(devices[1].name, "Built-in Audio Analog Stereo");
         assert!(!devices[1].is_default);
+
+        assert_eq!(resolve_wpctl_sink_node_id(status, Some(status_name), "58").as_deref(), Some("58"));
+        assert_eq!(
+            resolve_wpctl_sink_node_id(status, Some(status_name), "Built-in Audio Analog Stereo").as_deref(),
+            Some("46")
+        );
+        assert_eq!(
+            resolve_wpctl_sink_node_id(
+                status,
+                Some(status_name),
+                "alsa_output.pci-0000_00_1f.3.analog-stereo"
+            )
+            .as_deref(),
+            Some("46")
+        );
+        assert!(resolve_wpctl_sink_node_id(status, Some(status_name), "nonexistent").is_none());
     }
 
     #[test]

@@ -101,20 +101,25 @@ Errors:
 
 ### 2.4 `pc.audio.set`
 
-Sets the PC's master speaker volume (`0..=100`) and/or mute state through
-PipeWire (`wpctl`) or PulseAudio (`pactl`), then pushes the updated `deck.state`.
+Sets the PC's master speaker volume (`0..=100`), mute state, and/or default
+audio output through PipeWire (`wpctl`) or PulseAudio (`pactl`), then pushes
+the updated `deck.state`.
 
 ```
 PcAudioSet = {
   volume?: uint,            // 0..=100
   muted?:  bool,
+  output?: text,            // an `id` from DeckState.output_devices: make it the default output
 }
 ```
 
-At least one of `volume` or `muted` must be present.
+At least one of `volume`, `muted`, or `output` must be present. `output` follows
+the `AudioOutputDevice.id` rules (1..=256 UTF-8 bytes, no control characters).
+The PC sets it with `wpctl set-default` or `pactl set-default-sink`. A PC that
+doesn't know `output` sees an empty request and answers `BAD_MESSAGE`.
 
 Errors:
-- `BAD_MESSAGE` when both `volume` and `muted` are omitted or `volume > 100`.
+- `BAD_MESSAGE` when `volume`, `muted`, and `output` are all omitted, `volume > 100`, or `output` is invalid.
 - `UNSUPPORTED` when the PC does not offer `pc.audio` or `deck.actions`.
 - `DENIED` when `remote_input` is off for the phone.
 - `INTERNAL` when the audio endpoint update fails on the PC.

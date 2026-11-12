@@ -405,7 +405,7 @@
     <string name="pc_audio_output">Çıkış: %1$s</string>
     <string name="pc_audio_outputs_title">%1$s üzerindeki ses çıkışları</string>
     <string name="pc_audio_default_badge">Varsayılan</string>
-    <string name="pc_audio_outputs_hint">%1$s üzerindeki etkin oynatma cihazları.</string>
+    <string name="pc_audio_outputs_hint">%1$s sesini orada çalmak için birine dokunun.</string>
     <string name="pc_audio_use_phone_speaker">Telefonu hoparlör olarak kullan</string>
     <string name="pc_audio_use_phone_mic">Telefonu mikrofon olarak kullan</string>
 

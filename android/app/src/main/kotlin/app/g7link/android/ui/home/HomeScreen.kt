@@ -1317,6 +1317,10 @@ internal fun PcSoundRows(
         PcAudioOutputsDialog(
             pcName = pcName,
             devices = hardwareOutputs,
+            onPick = { output ->
+                (context.applicationContext as? G7LinkApplication)?.core?.setPcAudioOutput(pcId, output)
+                showOutputs = false
+            },
             onDismiss = { showOutputs = false },
         )
     }
@@ -1350,6 +1354,7 @@ private fun openDeveloperOptions(context: android.content.Context) {
 internal fun PcAudioOutputsDialog(
     pcName: String,
     devices: List<AudioOutputDevice>,
+    onPick: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -1368,6 +1373,7 @@ internal fun PcAudioOutputsDialog(
                 )
                 devices.forEach { out ->
                     Surface(
+                        onClick = { if (!out.isDefault) onPick(out.id) },
                         shape = MaterialTheme.shapes.medium,
                         color = if (out.isDefault) {
                             MaterialTheme.colorScheme.secondaryContainer

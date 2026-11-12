@@ -2483,6 +2483,36 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
+    /** Makes [output], one of the PC's audio outputs, its default (`pc.audio.set { output }`). */
+    fun setPcAudioOutput(id: String, output: String) {
+        // Shown at once; the PC's next state confirms it or puts it back.
+        _state.update { s ->
+            val current = s.device(id)?.deckState ?: return@update s
+            s.reduce(
+                Event.DeckState(
+                    id = id,
+                    state = current.copy(
+                        outputDevices = current.outputDevices.map {
+                            if (it.id == PHONE_SPEAKER_OUTPUT) it else it.copy(isDefault = it.id == output)
+                        },
+                    ),
+                ),
+            )
+        }
+        enqueueRemoteOp { node ->
+            try {
+                node.setPcAudioOutput(id, output)
+            } catch (e: G7LinkException) {
+                if (e is G7LinkException.Denied) {
+                    val name = _state.value.nameOf(id).orEmpty()
+                    _messages.tryEmit(context.getString(R.string.remote_denied_title, name))
+                } else if (e !is G7LinkException.Offline) {
+                    _messages.tryEmit(describe(e))
+                }
+            }
+        }
+    }
+
     // ---- Phone storage (file manager on PC) ----
 
     /** Turns phone storage access in the PC's file manager on or off for `pcId` (off by default). */
