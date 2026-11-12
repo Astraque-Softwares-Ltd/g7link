@@ -52,8 +52,13 @@ internal class NotificationReader(private val context: Context) {
         val content = content(n) ?: return null
         val silent = isSilent(sbn, ranking) ||
             (update && (n.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0 || live != null))
-        val whenMs = if (live?.chronometer == true && n.`when` > 0L) n.`when` else sbn.postTime
         val conversation = extractConversation(sbn, n, content.title)
+        // A chat re-posted when another one gets a message keeps its own time.
+        val whenMs = if (live?.chronometer == true && n.`when` > 0L) {
+            n.`when`
+        } else {
+            conversationTime(conversation?.messages?.map { it.time }.orEmpty(), sbn.postTime)
+        }
         return Mirrored(
             key = sbn.key,
             app = sbn.packageName,

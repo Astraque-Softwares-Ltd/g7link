@@ -32,6 +32,9 @@ class NotificationListener : NotificationListenerService() {
     /** Keys already sent, so an update that shouldn't alert again doesn't. */
     private val sent = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
+    /** What each sent notification showed ([shownFingerprint]), so a re-post with nothing new isn't sent. */
+    private val shown = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     override fun onListenerConnected() {
         instance = this
         if (isPcActive()) applyHostHints(true)
@@ -40,8 +43,10 @@ class NotificationListener : NotificationListenerService() {
             val ranking = runCatching { currentRanking }.getOrNull()
             limiter.clear()
             sent.clear()
+            shown.clear()
             val items = snapshot.mapNotNull { reader.read(it, ranking, update = false) }
             sent.addAll(items.map { it.key })
+            items.forEach { shown[it.key] = shownFingerprint(it) }
             core.notificationAccessChanged(true, items)
         }
     }
@@ -51,6 +56,7 @@ class NotificationListener : NotificationListenerService() {
         work {
             limiter.clear()
             sent.clear()
+            shown.clear()
             core.notificationAccessChanged(false, emptyList())
         }
     }
@@ -63,10 +69,16 @@ class NotificationListener : NotificationListenerService() {
                 // Something we mirrored may have turned into something we don't
                 // (e.g. it became ongoing); take it away on the PC.
                 limiter.cancel(key)
+                shown.remove(key)
                 if (sent.remove(key)) core.notificationRemoved(key)
                 return@work
             }
+            val print = shownFingerprint(notification)
+            // A re-post with nothing new (a chat app updating its others) isn't sent;
+            // a live one (a timer, a download) always is.
+            if (key in sent && notification.live == null && shown[key] == print) return@work
             sent.add(key)
+            shown[key] = print
             limiter.onPosted(notification)
         }
     }
@@ -75,6 +87,7 @@ class NotificationListener : NotificationListenerService() {
         val key = sbn.key
         work {
             limiter.cancel(key)
+            shown.remove(key)
             if (sent.remove(key)) core.notificationRemoved(key)
         }
     }
@@ -113,6 +126,7 @@ class NotificationListener : NotificationListenerService() {
                 activeNotifications.orEmpty().mapNotNull { reader.read(it, ranking, update = true) }
             }.getOrDefault(emptyList())
             sent.addAll(items.map { it.key })
+            items.forEach { shown[it.key] = shownFingerprint(it) }
             core.notificationsRefreshed(items)
         }
     }

@@ -547,9 +547,22 @@ fn live_toast_progress(n: &Notification) -> Option<toast::Progress> {
     Some(toast::Progress { status, value, label })
 }
 
+/// Whether a post pops up on the PC. A quiet update of one already shown
+/// changes only the feed: WhatsApp re-posts its other chats each time a
+/// message arrives, Android keeps those quiet, and GNOME would show every
+/// replaced notification again. A live one (a timer, a download) updates its
+/// pop-up in place.
+fn pops_up(silent: bool, live: bool, already_shown: bool) -> bool {
+    live || !(silent && already_shown)
+}
+
 fn show(device: DeviceId, n: &Notification) {
     // Cleared here already: the same post sent again doesn't pop up again.
     if core_host::host().hub.read(|s| s.is_cleared(device, n)) {
+        return;
+    }
+    let already_shown = toasted(|t| t.get(&device).is_some_and(|keys| keys.contains(&n.key)));
+    if !pops_up(n.silent, n.live.is_some(), already_shown) {
         return;
     }
     let otp = notification_otp(n);
@@ -815,6 +828,19 @@ mod tests {
     use g7link_core::NotificationLive;
 
     use super::*;
+
+    #[test]
+    fn a_quiet_update_of_a_shown_notification_does_not_pop_up_again() {
+        // WhatsApp re-posts an older chat, quietly, when another one gets a message.
+        assert!(!pops_up(true, false, true));
+        // A new message that alerts on the phone pops up, shown before or not.
+        assert!(pops_up(false, false, true));
+        assert!(pops_up(false, false, false));
+        // Quiet but never shown here: it still goes to the list as before.
+        assert!(pops_up(true, false, false));
+        // A live one updates its pop-up in place.
+        assert!(pops_up(true, true, true));
+    }
 
     #[test]
     fn phones_are_told_only_when_the_hold_changes() {
