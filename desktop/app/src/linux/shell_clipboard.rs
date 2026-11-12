@@ -118,7 +118,8 @@ fn follow_shell(changed: fn(Clip)) {
 /// Asks the extension for its signals as this connection, which keeps them on
 /// while it lasts. Never stopped: that could silence other apps.
 fn listen(conn: &zbus::blocking::Connection) {
-    if let Err(error) = conn.call_method(Some(SHELL), PATH, Some(INTERFACE), "ListenToClipboardChanges", &()) {
+    if let Err(error) = conn.call_method(Some(SHELL), PATH, Some(INTERFACE), "ListenToClipboardChanges", &())
+    {
         tracing::debug!(%error, "the shell didn't take the clipboard listener");
     }
 }
@@ -146,7 +147,10 @@ fn watched_signals() -> Vec<zbus::MatchRule<'static>> {
 enum Signal {
     /// GNOME Shell started again: its extension no longer knows who listens.
     Restarted,
-    Copied { content: Vec<u8>, mime: String },
+    Copied {
+        content: Vec<u8>,
+        mime: String,
+    },
 }
 
 fn shell_signal(message: &zbus::Message) -> Option<Signal> {
