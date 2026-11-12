@@ -194,14 +194,6 @@ Item {
                             text: qsTr("Code changes in %1:%2")
                                   .arg(Math.floor(panel.secondsLeft / 60)).arg(("0" + panel.secondsLeft % 60).slice(-2))
                         }
-                        // This PC's code: the phone shows it too before pairing.
-                        Txt {
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                            visible: !panel.showApp && panel.state_ === "hosting" && Pairing.linkCode.length === 6
-                            weight: 500
-                            text: qsTr("Code: %1").arg(Pairing.linkCode.slice(0, 3) + " " + Pairing.linkCode.slice(3))
-                        }
                         Row {
                             visible: panel.showApp
                             anchors.horizontalCenter: parent.horizontalCenter

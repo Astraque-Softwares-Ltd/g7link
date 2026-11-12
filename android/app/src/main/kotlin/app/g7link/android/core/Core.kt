@@ -2231,13 +2231,25 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     // ---- Pairing ----
 
     /**
-     * Pairs with a link that arrived before the core finished starting (the
-     * app was launched by opening the link).
+     * Pairs with a link another app opened (a browser, a chat, the system camera), once the
+     * core has started (opening the link may have launched the app). Anyone can send such a
+     * link, with a secret of their own, so its secret isn't trusted: both devices show a fresh
+     * 6-digit code to compare, as in nearby pairing, and it arrives as a pairing event.
      */
-    fun joinWhenReady(link: String) {
-        scope.launch {
-            startJob?.join()
-            joinWithLink(link)
+    fun joinFromOtherApp(link: String) = command {
+        _state.update { it.copy(pairing = PairingState.Joining) }
+        try {
+            it.pairingJoinLink(link)
+        } catch (e: G7LinkException) {
+            val failure = when (e) {
+                is G7LinkException.InvalidPairingLink -> PairingFailure.Other("not a G7 Link code")
+                is G7LinkException.Denied -> PairingFailure.Rejected
+                else -> PairingFailure.Unreachable
+            }
+            // Past the code, the core reports how it ended itself.
+            _state.update { s ->
+                if (s.pairing == PairingState.Joining) s.copy(pairing = PairingState.Failed(failure)) else s
+            }
         }
     }
 

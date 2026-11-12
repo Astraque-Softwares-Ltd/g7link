@@ -1076,6 +1076,117 @@ async fn too_many_failed_nearby_attempts_end_pairing_mode() {
     assert!(!pc.node.is_pairing(), "pairing mode ends after 5 failed nearby attempts");
 }
 
+/// A pairing link another app opened isn't trusted for its secret: both devices
+/// show a fresh code, and pairing waits for both users.
+#[tokio::test(flavor = "multi_thread")]
+async fn link_from_another_app_compares_a_code_on_both_devices() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    // Only the link tells the phone where the PC is.
+    let link = pc.node.pairing_start_qr().await.unwrap().to_uri();
+    let initiator = phone.node.clone();
+    let task = tokio::spawn(async move { initiator.pairing_join_link(&link).await });
+
+    let phone_code = wait_for(&mut phone, "the phone's code", |e| match e {
+        NodeEvent::Pairing(PairingEvent::SasCode { peer, code }) if *peer == pc_id => Some(code.clone()),
+        _ => None,
+    })
+    .await;
+    let pc_code = wait_for(&mut pc, "the PC's code", |e| match e {
+        NodeEvent::Pairing(PairingEvent::SasCode { peer, code }) if *peer == phone_id => Some(code.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(phone_code, pc_code, "both screens show the same code");
+
+    // The phone's yes alone pairs nothing.
+    phone.node.pairing_confirm(true).unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!task.is_finished(), "pairing waits for the PC's user too");
+    assert!(pc.node.paired_devices().unwrap().is_empty());
+    assert!(phone.node.paired_devices().unwrap().is_empty());
+
+    pc.node.pairing_confirm(true).unwrap();
+    with_timeout("link pairing", task).await.unwrap().expect("pairing succeeds");
+    wait_online(&mut phone, pc_id).await;
+    assert_eq!(pc.node.paired_devices().unwrap()[0].id, phone_id);
+    assert_eq!(phone.node.paired_devices().unwrap()[0].id, pc_id);
+}
+
+/// A link swapped for one to another device in pairing mode, under the PC's
+/// name: the user's PC never shows a code, so the user says no.
+#[tokio::test(flavor = "multi_thread")]
+async fn substituted_link_from_another_app_shows_no_code_on_the_real_pc() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    let mut other = device("Desktop", DeviceKind::Desktop).await;
+    pc.node.pairing_start_qr().await.unwrap();
+    let other_id = other.node.device_id();
+    let link = other.node.pairing_start_qr().await.unwrap().to_uri();
+    let initiator = phone.node.clone();
+    let task = tokio::spawn(async move { initiator.pairing_join_link(&link).await });
+
+    let shown_to = wait_for(&mut phone, "the phone's code", |e| match e {
+        NodeEvent::Pairing(PairingEvent::SasCode { peer, .. }) => Some(*peer),
+        _ => None,
+    })
+    .await;
+    assert_eq!(shown_to, other_id, "the code is compared with the device the link names");
+    sas_code(&mut other).await;
+    while let Ok(event) = pc.events.try_recv() {
+        assert!(!matches!(event, NodeEvent::Pairing(PairingEvent::SasCode { .. })), "{event:?}");
+    }
+
+    phone.node.pairing_confirm(false).unwrap();
+    let result = with_timeout("link pairing", task).await.unwrap();
+    assert!(matches!(result, Err(Error::Declined)), "got {result:?}");
+    assert!(phone.node.paired_devices().unwrap().is_empty());
+    assert!(other.node.paired_devices().unwrap().is_empty());
+    assert!(pc.node.paired_devices().unwrap().is_empty());
+}
+
+/// A link read by the app's own scanner still pairs on its secret alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn scanned_link_pairs_without_a_code() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    let link = pc.node.pairing_start_qr().await.unwrap().to_uri();
+    with_timeout("join", phone.node.pairing_join(&link)).await.expect("pairing succeeds");
+    assert_eq!(phone.node.paired_devices().unwrap().len(), 1);
+    for dev in [&mut pc, &mut phone] {
+        while let Ok(event) = dev.events.try_recv() {
+            assert!(!matches!(event, NodeEvent::Pairing(PairingEvent::SasCode { .. })), "{event:?}");
+        }
+    }
+}
+
+/// With nobody to compare a code on the other end, a link from another app
+/// fails; it never falls back to the link's secret.
+#[tokio::test(flavor = "multi_thread")]
+async fn link_from_another_app_fails_without_a_code_check() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    let link = pc.node.pairing_start_qr().await.unwrap().to_uri();
+    // The PC left its pairing screen: it takes neither a code nor the secret.
+    pc.node.pairing_cancel();
+
+    let result = with_timeout("link pairing", phone.node.pairing_join_link(&link)).await;
+    assert!(result.is_err(), "pairing without the PC's code check must fail");
+    wait_for(&mut phone, "pairing failure", |e| match e {
+        NodeEvent::Pairing(PairingEvent::Failed(_)) => Some(()),
+        _ => None,
+    })
+    .await;
+    for dev in [&mut pc, &mut phone] {
+        while let Ok(event) = dev.events.try_recv() {
+            assert!(!matches!(event, NodeEvent::Pairing(PairingEvent::SasCode { .. })), "{event:?}");
+        }
+    }
+    assert!(pc.node.paired_devices().unwrap().is_empty());
+    assert!(phone.node.paired_devices().unwrap().is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn unpairing_is_mirrored_on_the_other_device() {
     let mut pc = device("Desktop", DeviceKind::Desktop).await;

@@ -96,7 +96,7 @@ fun PairingScreen(
     onDone: () -> Unit,
 ) {
     var showing by rememberSaveable { mutableStateOf(false) }
-    // A scanned code, until the user compares the PC's code and pairs.
+    // A scanned code, until the user says to pair with it.
     var scanned by rememberSaveable { mutableStateOf<String?>(null) }
     var declined by rememberSaveable { mutableStateOf<String?>(null) }
     val pairing = state.pairing
@@ -252,18 +252,6 @@ private fun ShowCode(actions: PairingActions) {
             } else {
                 QrCode(current)
             }
-        }
-        // The device that scans it shows the same code before pairing.
-        val code = androidx.compose.runtime.remember(current) {
-            current?.let { runCatching { app.g7link.core.pairingLinkCode(it) }.getOrNull() }
-        }
-        if (code != null) {
-            Spacer(Modifier.height(16.dp))
-            Text(
-                stringResource(R.string.pair_link_own_code, "${code.take(3)} ${code.drop(3)}"),
-                style = MaterialTheme.typography.titleMedium,
-                fontFamily = LocalAppFonts.current.mono,
-            )
         }
     }
 }

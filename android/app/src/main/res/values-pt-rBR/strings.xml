@@ -1318,6 +1318,5 @@
     <string name="pair_link_title_other_app">Parear com este dispositivo?</string>
     <string name="pair_link_from_other_app">Este link de pareamento veio de outro app. Só continue se você o abriu pelo G7 Link no seu PC. Um dispositivo pareado pode receber as notificações e mensagens deste celular.</string>
     <string name="pair_link_named">Nome no link: %1$s</string>
-    <string name="pair_link_check_code">Confira se o PC mostra:</string>
-    <string name="pair_link_own_code">Código: %1$s</string>
+    <string name="pair_link_next_compare">Em seguida, este celular e o seu PC mostram um código de 6 dígitos. Só pareie se os dois códigos forem iguais.</string>
 </resources>

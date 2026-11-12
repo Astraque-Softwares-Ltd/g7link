@@ -10,7 +10,7 @@ use std::{
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QHash, QHashPair_QString_QVariant, QList, QString, QVariant};
-use g7link_core::{DeviceId, PairingFailure, PairingUri, pairing_link_code};
+use g7link_core::{DeviceId, PairingFailure};
 
 use crate::{
     core_host, qr,
@@ -42,9 +42,6 @@ pub mod qobject {
         #[qproperty(i32, qr_size)]
         /// When the QR code expires (ms since the epoch); it refreshes itself.
         #[qproperty(f64, expires_at)]
-        /// This PC's 6-digit code, shown under the QR code: the phone shows
-        /// it too before pairing, so a link from elsewhere is caught.
-        #[qproperty(QString, link_code)]
         /// The 6-digit code to compare, and the device it's shared with.
         #[qproperty(QString, code)]
         #[qproperty(QString, peer_name)]
@@ -84,7 +81,6 @@ pub struct PairingRust {
     qr_path: QString,
     qr_size: i32,
     expires_at: f64,
-    link_code: QString,
     code: QString,
     peer_name: QString,
     failure: QString,
@@ -186,9 +182,6 @@ impl qobject::Pairing {
                         }
                         Err(e) => tracing::error!(error = %e, "can't encode the pairing link"),
                     }
-                    let link = PairingUri::parse(uri).ok();
-                    let code = link.map(|link| pairing_link_code(&link.id)).unwrap_or_default();
-                    self.as_mut().set_link_code(QString::from(&code));
                     self.as_mut().rust_mut().shown_uri = uri.clone();
                 }
                 let ms = expires_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as f64;

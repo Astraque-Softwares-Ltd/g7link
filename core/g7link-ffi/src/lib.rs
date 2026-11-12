@@ -1272,13 +1272,6 @@ pub fn mirror_config(width: u32, height: u32, session: u32) -> Vec<u8> {
     core::MirrorConfig { codec: "h264".into(), width, height, session }.to_cbor()
 }
 
-/// The 6-digit code of the device a pairing link (`g7link://pair?…`) names,
-/// which that device shows beside its QR code; None for anything else.
-#[uniffi::export]
-pub fn pairing_link_code(link: String) -> Option<String> {
-    core::PairingUri::parse(&link).ok().map(|uri| core::pairing_link_code(&uri.id))
-}
-
 /// The bytes of a config packet for a stream of `codec` (`"h264"`, `"h265"`, or `"av1"`).
 #[uniffi::export]
 pub fn mirror_config_codec(codec: String, width: u32, height: u32, session: u32) -> Vec<u8> {
@@ -3630,6 +3623,14 @@ impl G7LinkNode {
     pub async fn pairing_join(&self, link: String) -> Result<()> {
         let node = self.node.clone();
         self.run(async move { Ok(node.pairing_join(&link).await?) }).await
+    }
+
+    /// Pairs with the device a pairing link names when another app opened
+    /// the link: both devices show a fresh code to compare, which arrives as
+    /// `Event::PairingCode`.
+    pub async fn pairing_join_link(&self, link: String) -> Result<()> {
+        let node = self.node.clone();
+        self.run(async move { Ok(node.pairing_join_link(&link).await?) }).await
     }
 
     /// Starts nearby pairing with a discovered device in pairing mode; the

@@ -2263,6 +2263,18 @@ impl Node {
         pairing::join_qr(&self.shared, &uri).await
     }
 
+    /// Pairs with the device a pairing link names when the link came from
+    /// another app: both devices show a fresh 6-digit code to compare, as in
+    /// nearby pairing; the link's secret isn't used. The code arrives as
+    /// [`PairingEvent::SasCode`]; answer with [`Node::pairing_confirm`].
+    pub async fn pairing_join_link(&self, uri: &str) -> Result<()> {
+        let uri = PairingUri::parse(uri)?;
+        if uri.id == self.shared.id {
+            return Err(Error::Protocol("cannot pair a device with itself".into()));
+        }
+        pairing::join_link(&self.shared, &uri).await
+    }
+
     /// Starts nearby pairing with a discovered device. The other device must
     /// be in pairing mode (showing its pairing screen). The 6-digit code
     /// arrives as [`PairingEvent::SasCode`] on both devices.

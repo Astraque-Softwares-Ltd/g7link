@@ -1318,6 +1318,5 @@
     <string name="pair_link_title_other_app">Bu cihazla eşleştirilsin mi?</string>
     <string name="pair_link_from_other_app">Bu eşleştirme bağlantısı başka bir uygulamadan geldi. Yalnızca bilgisayarınızdaki G7 Link\'ten açtıysanız devam edin. Eşleştirilmiş bir cihaz bu telefonun bildirimlerini ve mesajlarını alabilir.</string>
     <string name="pair_link_named">Bağlantıdaki ad: %1$s</string>
-    <string name="pair_link_check_code">Bilgisayarda şunun göründüğünü kontrol edin:</string>
-    <string name="pair_link_own_code">Kod: %1$s</string>
+    <string name="pair_link_next_compare">Ardından bu telefon ve bilgisayarınız 6 haneli bir kod gösterir. Yalnızca iki kod aynıysa eşleştirin.</string>
 </resources>

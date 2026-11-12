@@ -206,7 +206,7 @@ class MainActivity : ComponentActivity() {
                             onConfirm = {
                                 clearPending()
                                 if (PairingLinks(this@MainActivity).consume(link)) {
-                                    core.joinWhenReady(link)
+                                    core.joinFromOtherApp(link)
                                 }
                             },
                             onDismiss = clearPending,

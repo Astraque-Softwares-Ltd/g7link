@@ -1254,6 +1254,5 @@
 <string name="pair_link_title_other_app">Ghép nối với thiết bị này?</string>
 <string name="pair_link_from_other_app">Liên kết ghép nối này đến từ một ứng dụng khác. Chỉ tiếp tục nếu bạn đã mở nó từ G7 Link trên PC của mình. Thiết bị đã ghép nối có thể nhận thông báo và tin nhắn của điện thoại này.</string>
 <string name="pair_link_named">Tên trong liên kết: %1$s</string>
-<string name="pair_link_check_code">Kiểm tra PC có hiển thị:</string>
-<string name="pair_link_own_code">Mã: %1$s</string>
+<string name="pair_link_next_compare">Tiếp theo, điện thoại này và PC của bạn đều hiển thị một mã 6 chữ số. Chỉ ghép nối nếu hai mã giống nhau.</string>
 </resources>

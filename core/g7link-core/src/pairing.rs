@@ -5,7 +5,9 @@
 //! - **QR**: the host (PC) shows a pairing link with a one-time secret; the
 //!   joiner (phone) proves knowledge of it.
 //! - **Nearby**: numeric comparison. Both screens show a 6-digit code derived
-//!   from both identities and committed nonces; both users confirm.
+//!   from both identities and committed nonces; both users confirm. A pairing
+//!   link that came from another app runs this flow too, with the device the
+//!   link names: whoever sent the link knows its secret.
 //!
 //! Both flows end the same way, so a pairing is never stored on only one
 //! side in normal operation: the host sends the last protocol message, the
@@ -287,6 +289,17 @@ pub(crate) async fn join_qr(shared: &Arc<Shared>, uri: &PairingUri) -> Result<()
     }
     .await;
     settle_initiator(shared, &conn, uri.id, result).await
+}
+
+/// Joins the host a pairing link names when the link came from another app
+/// rather than this app's own scanner. Anyone can send such a link, with a
+/// secret of their own, so it proves nothing: this runs the nearby numeric
+/// comparison with that device instead, at the addresses the link gives. A
+/// substituted link pairs only if the user confirms a code their own PC never
+/// shows. It never falls back to the link's secret.
+pub(crate) async fn join_link(shared: &Arc<Shared>, uri: &PairingUri) -> Result<()> {
+    shared.remember_addrs(&uri.id, &uri.addrs);
+    run_nearby(shared, uri.id, true).await
 }
 
 /// Starts the nearby (numeric comparison) flow with a device in pairing

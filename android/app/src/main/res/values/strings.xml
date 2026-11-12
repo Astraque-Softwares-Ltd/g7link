@@ -1321,6 +1321,5 @@
     <string name="pair_link_title_other_app">Pair with this device?</string>
     <string name="pair_link_from_other_app">This pairing link came from another app. Only continue if you opened it from G7 Link on your PC. A paired device can receive this phone\'s notifications and messages.</string>
     <string name="pair_link_named">Name in the link: %1$s</string>
-    <string name="pair_link_check_code">Check the PC shows:</string>
-    <string name="pair_link_own_code">Code: %1$s</string>
+    <string name="pair_link_next_compare">Next, this phone and your PC each show a 6-digit code. Pair only if the two codes match.</string>
 </resources>

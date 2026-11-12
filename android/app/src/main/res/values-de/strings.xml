@@ -1318,6 +1318,5 @@
     <string name="pair_link_title_other_app">Mit diesem Gerät koppeln?</string>
     <string name="pair_link_from_other_app">Dieser Kopplungslink kam aus einer anderen App. Fahre nur fort, wenn du ihn in G7 Link auf deinem PC geöffnet hast. Ein gekoppeltes Gerät kann deine Benachrichtigungen und Nachrichten empfangen.</string>
     <string name="pair_link_named">Name im Link: %1$s</string>
-    <string name="pair_link_check_code">Prüfe, ob der PC das anzeigt:</string>
-    <string name="pair_link_own_code">Code: %1$s</string>
+    <string name="pair_link_next_compare">Als Nächstes zeigen dieses Telefon und dein PC je einen 6-stelligen Code. Koppel nur, wenn beide Codes gleich sind.</string>
 </resources>

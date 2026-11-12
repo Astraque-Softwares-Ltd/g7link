@@ -136,7 +136,7 @@ pub use g7link_protocol::{
             HEVC as WEBCAM_HEVC, STREAM as WEBCAM_STREAM, VIRTUAL as WEBCAM_VIRTUAL,
         },
     },
-    pairing::{PairingUri, link_code as pairing_link_code},
+    pairing::PairingUri,
 };
 pub use handoff::{
     HandoffKind, HandoffLink, address_to_geo_uri, extract_handoff_link, format_video_timestamp,

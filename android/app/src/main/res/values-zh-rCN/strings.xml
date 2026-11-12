@@ -1185,6 +1185,5 @@
     <string name="pair_link_title_other_app">要与此设备配对吗？</string>
     <string name="pair_link_from_other_app">此配对链接来自其他应用。仅当它是您从电脑上的 G7 Link 打开的时才继续。已配对的设备可以接收此手机的通知和消息。</string>
     <string name="pair_link_named">链接中的名称：%1$s</string>
-    <string name="pair_link_check_code">请确认电脑上显示：</string>
-    <string name="pair_link_own_code">代码：%1$s</string>
+    <string name="pair_link_next_compare">接下来，此手机和您的电脑会各显示一个 6 位配对码。仅当两个配对码相同时才配对。</string>
 </resources>
