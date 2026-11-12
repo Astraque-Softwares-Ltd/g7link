@@ -54,11 +54,12 @@ Item {
 
     // ---- Footer and Actions (Ctrl B) ----
     readonly property bool chatOpen: !!openThread || composing
+    // A sender that takes no replies (a name, a short code) can't be called either.
     readonly property bool canCallThread: !!openThread && !openThread.isChat && !openThread.group
-        && openThread.addresses.length > 0 && PhoneCall.canDial
+        && openThread.addresses.length > 0 && openThread.canReply && !openThread.shortCode && PhoneCall.canDial
     readonly property string footerLabel: unreadCount > 0 ? qsTr("Messages · %1 unread").arg(unreadCount) : qsTr("Messages")
     readonly property int unreadCount: threads.reduce((sum, t) => sum + (t.unread > 0 ? t.unread : 0), 0)
-    readonly property var primaryAction: chatOpen
+    readonly property var primaryAction: chatOpen && !composer.inputDisabled
         ? ({ label: qsTr("Send"), keys: "Enter", run: () => composer.send() })
         : ({ label: qsTr("New message"), keys: "Ctrl N", run: () => page.startNew() })
     readonly property var screenActions: {
@@ -77,9 +78,11 @@ Item {
               run: () => { if (Messages.pasteClipboardImage()) composer.focusText() } },
             { label: qsTr("Remove attachment"), icon: Icons.close, enabled: Messages.hasAttachment,
               run: () => Messages.clearAttachment() },
-            { label: page.openThread ? qsTr("Call %1").arg(page.openThread.title) : qsTr("Call"), icon: Icons.call,
-              tint: Theme.tintTeal, enabled: page.canCallThread && !PhoneCall.dialing,
-              run: () => { if (page.openThread) PhoneCall.dial(page.openThread.addresses) } },
+            ...(page.canCallThread ? [
+                { label: qsTr("Call %1").arg(page.openThread.title), icon: Icons.call,
+                  tint: Theme.tintTeal, enabled: !PhoneCall.dialing,
+                  run: () => PhoneCall.dial(page.openThread.addresses) },
+            ] : []),
             { label: qsTr("Remove conversation from PC"), icon: Icons.trash, tint: Theme.tintRed,
               enabled: !!page.openThread && !!page.openThread.isChat,
               run: () => { if (page.openThread) Messages.deleteChatThread(page.openThread.id) } },
@@ -535,8 +538,7 @@ Item {
                 visible: !page.composing
                 spacing: 2
                 IconButton {
-                    visible: !!page.openThread && !page.openThread.isChat && !page.openThread.group
-                        && page.openThread.addresses.length > 0 && PhoneCall.canDial
+                    visible: page.canCallThread
                     enabled: !PhoneCall.dialing
                     iconPath: Icons.call
                     iconColor: Theme.tintTeal
@@ -840,12 +842,31 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            height: composer.height + 24
+            height: composer.inputDisabled ? noReply.implicitHeight + 28 : composer.height + 24
 
             Rectangle {
                 width: parent.width
                 height: 1
                 color: Theme.line
+            }
+
+            // Nothing to type into where nothing can be sent: say why instead.
+            Txt {
+                id: noReply
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                visible: composer.inputDisabled
+                muted: true
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignHCenter
+                text: composer.chatReplyDisabled
+                    ? qsTr("Replies work while the notification is on your phone")
+                    : composer.smsReplyDisabled
+                        ? qsTr("%1 doesn't accept replies").arg(page.openThread.title)
+                        : qsTr("Group texts can't be sent from the PC yet")
             }
 
             // Long texts: how many SMS they take.
@@ -874,6 +895,7 @@ Item {
 
             Rectangle {
                 id: composer
+                visible: !inputDisabled
                 readonly property bool isChat: Messages.currentIsChat && !page.composing
                 readonly property bool groupSms: !isChat && !!page.openThread && page.openThread.group
                 readonly property bool chatReplyDisabled: isChat && !Messages.currentCanReply
@@ -988,24 +1010,19 @@ Item {
                             visible: input.text.length === 0
                             muted: true
                             width: input.width
-                            text: composer.chatReplyDisabled
-                                ? qsTr("Replies work while the notification is on your phone")
-                                : composer.isChat
-                                    ? qsTr("Reply in %1").arg(Messages.currentAppName)
-                                    : composer.smsReplyDisabled
-                                        ? qsTr("%1 doesn't accept replies").arg(page.openThread.title)
-                                        : composer.groupSms
-                                            ? qsTr("Group texts can't be sent from the PC yet")
-                                            : Messages.hasAttachment
-                                                ? qsTr("Caption (optional)")
-                                                : page.openThread ? qsTr("Text %1").arg(page.openThread.title)
-                                                : qsTr("Text message")
+                            text: composer.isChat
+                                ? qsTr("Reply in %1").arg(Messages.currentAppName)
+                                : Messages.hasAttachment
+                                    ? qsTr("Caption (optional)")
+                                    : page.openThread ? qsTr("Text %1").arg(page.openThread.title)
+                                    : qsTr("Text message")
                         }
                     }
                 }
             }
             Button {
                 id: sendButton
+                visible: !composer.inputDisabled
                 anchors.right: parent.right
                 anchors.rightMargin: 16
                 anchors.bottom: composer.bottom
