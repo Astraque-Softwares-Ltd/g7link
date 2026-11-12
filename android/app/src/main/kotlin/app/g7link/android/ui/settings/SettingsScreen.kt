@@ -76,6 +76,7 @@ import app.g7link.android.elevated.Elevated
 import app.g7link.android.elevated.ElevatedMethod
 import app.g7link.android.elevated.PairingNotification
 import app.g7link.android.elevated.ShizukuElevated
+import app.g7link.android.elevated.TrustedNetworks
 import app.g7link.android.mirror.InputService
 import app.g7link.android.notifications.NotificationListener
 import app.g7link.android.photos.RecentPhotos
@@ -1033,6 +1034,7 @@ private fun ElevatedAccess() {
             Elevated.Reason.ShizukuRoot -> R.string.elevated_shizuku_root
             else -> R.string.elevated_failed
         }
+        is Elevated.State.Paused -> R.string.elevated_paused
         Elevated.State.Running -> when {
             Elevated.rootActive -> R.string.elevated_method_root
             Elevated.shizukuActive -> R.string.elevated_method_shizuku
@@ -1069,6 +1071,11 @@ private fun ElevatedAccess() {
                     }
                 },
             )
+            is Elevated.State.Paused -> G7RowAction(
+                label = stringResource(R.string.elevated_trust_network),
+                onClick = { Elevated.trustCurrentNetwork() },
+                accent = true,
+            )
             Elevated.State.Running -> G7RowAction(
                 label = stringResource(R.string.elevated_turn_off),
                 onClick = { scope.launch { Elevated.forget() } },
@@ -1076,6 +1083,7 @@ private fun ElevatedAccess() {
             Elevated.State.Starting -> CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
         }
     }
+    if (state != Elevated.State.NotSetUp && Elevated.pairedWithWirelessDebugging()) TrustedWifiNetworks(state)
     if (state == Elevated.State.Waiting || state is Elevated.State.Failed) {
         if (viaShizuku && shizukuInstalled) {
             G7Row(
@@ -1150,6 +1158,57 @@ private fun ElevatedAccess() {
                 TextButton(onClick = { steps = false }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
+    }
+}
+
+/**
+ * The Wi-Fi networks G7 Link turns Wireless debugging on in for Elevated:
+ * the one the phone is on, to trust, and the trusted ones, to remove.
+ */
+@Composable
+private fun TrustedWifiNetworks(state: Elevated.State) {
+    val context = LocalContext.current
+    val tints = g7Tints()
+    val trusted by remember { TrustedNetworks.trusted(context).let { TrustedNetworks.list } }
+        .collectAsStateWithLifecycle()
+    // Elevated's state follows the network, so the phone's network is read again with it.
+    val current = remember(state, trusted) { TrustedNetworks.current(context)?.takeIf { it.identifiable } }
+    Column(Modifier.padding(start = 36.dp)) {
+        G7SectionLabel(stringResource(R.string.elevated_trusted_networks))
+        if (current != null && trusted.none { it.matches(current) }) {
+            G7Row(
+                label = stringResource(R.string.elevated_network, current.address),
+                sublabel = stringResource(R.string.elevated_this_network),
+                icon = G7Icons.wifi,
+                tint = tints.muted,
+            ) {
+                G7RowAction(
+                    label = stringResource(R.string.elevated_trust_network),
+                    onClick = { Elevated.trustCurrentNetwork() },
+                )
+            }
+        }
+        trusted.forEach { network ->
+            G7Row(
+                label = stringResource(R.string.elevated_network, network.address),
+                sublabel = if (current != null && network.matches(current)) stringResource(R.string.elevated_this_network) else null,
+                icon = G7Icons.wifi,
+                tint = tints.teal,
+            ) {
+                G7RowAction(
+                    label = stringResource(R.string.elevated_remove_network),
+                    onClick = { Elevated.untrust(network) },
+                )
+            }
+        }
+        if (trusted.isEmpty() && current == null) {
+            Text(
+                stringResource(R.string.elevated_no_trusted_networks),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
     }
 }
 

@@ -1286,4 +1286,13 @@
     <string name="pc_shot_unreadable">Couldn\'t open the screenshot.</string>
     <string name="pc_shot_crop_desc">Screenshot of %1$s. Drag the corners or edges to crop.</string>
     <string name="pc_shot_share_title">Share screenshot</string>
+    <string name="elevated_paused">Paused on this Wi-Fi network. Trust it to use Elevated here.</string>
+    <string name="elevated_trust_network">Trust this network</string>
+    <string name="elevated_trusted_networks">Trusted Wi-Fi networks</string>
+    <string name="elevated_network">Wi-Fi at %1$s</string>
+    <string name="elevated_this_network">This network</string>
+    <string name="elevated_remove_network">Remove</string>
+    <string name="elevated_no_trusted_networks">None yet. G7 Link turns Wireless debugging on only on trusted networks.</string>
+    <string name="elevated_paused_title">Elevated is paused</string>
+    <string name="elevated_paused_notice">Elevated is paused on the Wi-Fi network at %1$s. Trust it to keep using Elevated here.</string>
 </resources>

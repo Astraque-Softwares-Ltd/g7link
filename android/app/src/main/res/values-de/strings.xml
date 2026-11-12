@@ -1283,4 +1283,13 @@
     <string name="pc_shot_unreadable">Das Bildschirmfoto konnte nicht geöffnet werden.</string>
     <string name="pc_shot_crop_desc">Bildschirmfoto von %1$s. Ziehe an den Ecken oder Kanten, um es zuzuschneiden.</string>
     <string name="pc_shot_share_title">Bildschirmfoto teilen</string>
+    <string name="elevated_paused">In diesem WLAN pausiert. Vertraue ihm, um Erweitert hier zu nutzen.</string>
+    <string name="elevated_trust_network">Diesem Netzwerk vertrauen</string>
+    <string name="elevated_trusted_networks">Vertrauenswürdige WLANs</string>
+    <string name="elevated_network">WLAN bei %1$s</string>
+    <string name="elevated_this_network">Dieses Netzwerk</string>
+    <string name="elevated_remove_network">Entfernen</string>
+    <string name="elevated_no_trusted_networks">Noch keine. G7 Link schaltet Kabelloses Debugging nur in vertrauenswürdigen Netzwerken ein.</string>
+    <string name="elevated_paused_title">Erweitert ist pausiert</string>
+    <string name="elevated_paused_notice">Erweitert ist im WLAN bei %1$s pausiert. Vertraue ihm, um Erweitert hier weiter zu nutzen.</string>
 </resources>

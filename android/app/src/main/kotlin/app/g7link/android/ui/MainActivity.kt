@@ -112,6 +112,7 @@ class MainActivity : ComponentActivity() {
     private var requestedWebcamAutoStart by mutableStateOf(false)
     private var requestedWebcamHeight by mutableStateOf<Int?>(null)
     private var requestedWebcamCamera by mutableStateOf<String?>(null)
+    private var requestedElevatedSettings by mutableStateOf(false)
 
     private val permissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -143,6 +144,7 @@ class MainActivity : ComponentActivity() {
             handleDeckIntent(intent)
             handleRecordIntent(intent)
             handleWebcamIntent(intent)
+            handleElevatedIntent(intent)
         }
 
         setContent {
@@ -186,6 +188,8 @@ class MainActivity : ComponentActivity() {
                             requestedWebcamCamera = null
                         },
                         onActiveRemoteChanged = { activeRemotePcId = it },
+                        requestedElevatedSettings = requestedElevatedSettings,
+                        onElevatedSettingsConsumed = { requestedElevatedSettings = false },
                     )
                     pendingPairingLink?.let { link ->
                         val pcName = remember(link) {
@@ -259,6 +263,7 @@ class MainActivity : ComponentActivity() {
         handleDeckIntent(intent)
         handleRecordIntent(intent)
         handleWebcamIntent(intent)
+        handleElevatedIntent(intent)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -338,8 +343,14 @@ class MainActivity : ComponentActivity() {
         pendingPairingLink = link
     }
 
-    private companion object {
-        const val STATE_PENDING_PAIRING_LINK = "pending_pairing_link"
+    private fun handleElevatedIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_ELEVATED, false) == true) requestedElevatedSettings = true
+    }
+
+    companion object {
+        /** Opens Settings at Elevated (from the notification saying it's paused on a network). */
+        const val EXTRA_OPEN_ELEVATED = "open_elevated"
+        private const val STATE_PENDING_PAIRING_LINK = "pending_pairing_link"
     }
 }
 
@@ -377,6 +388,8 @@ private fun App(
     requestedWebcamCamera: String?,
     onWebcamConsumed: () -> Unit,
     onActiveRemoteChanged: (String?) -> Unit,
+    requestedElevatedSettings: Boolean,
+    onElevatedSettingsConsumed: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(Tab.Home) }
     var pairing by rememberSaveable { mutableStateOf(false) }
@@ -458,6 +471,13 @@ private fun App(
         }
     }
 
+    LaunchedEffect(requestedElevatedSettings) {
+        if (!requestedElevatedSettings) return@LaunchedEffect
+        pairing = false
+        pendingHighlightTarget = GuideHighlightTarget.SETTINGS_CONTROL
+        tab = Tab.Settings
+        onElevatedSettingsConsumed()
+    }
     LaunchedEffect(requestedRemotePc, state.devices) {
         val req = requestedRemotePc ?: return@LaunchedEffect
         val target = if (req == "first") state.devices.firstOrNull()?.id else state.device(req)?.id

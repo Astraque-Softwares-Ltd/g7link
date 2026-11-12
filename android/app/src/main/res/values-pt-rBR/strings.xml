@@ -1283,4 +1283,13 @@
     <string name="pc_shot_unreadable">Não foi possível abrir a captura de tela.</string>
     <string name="pc_shot_crop_desc">Captura de tela de %1$s. Arraste os cantos ou as bordas para recortar.</string>
     <string name="pc_shot_share_title">Compartilhar captura de tela</string>
+    <string name="elevated_paused">Pausado nesta rede Wi-Fi. Confie nela para usar o Elevated aqui.</string>
+    <string name="elevated_trust_network">Confiar nesta rede</string>
+    <string name="elevated_trusted_networks">Redes Wi-Fi confiáveis</string>
+    <string name="elevated_network">Wi-Fi em %1$s</string>
+    <string name="elevated_this_network">Esta rede</string>
+    <string name="elevated_remove_network">Remover</string>
+    <string name="elevated_no_trusted_networks">Nenhuma ainda. O G7 Link só ativa a depuração por Wi-Fi em redes confiáveis.</string>
+    <string name="elevated_paused_title">O Elevated está pausado</string>
+    <string name="elevated_paused_notice">O Elevated está pausado na rede Wi-Fi em %1$s. Confie nela para continuar usando o Elevated aqui.</string>
 </resources>

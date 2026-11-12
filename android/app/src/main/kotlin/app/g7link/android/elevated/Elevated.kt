@@ -54,7 +54,8 @@ import java.security.SecureRandom
  *
  * Wireless debugging turns itself off on a reboot or a new Wi-Fi network;
  * after the first pairing G7 Link may turn it back on itself
- * (WRITE_SECURE_SETTINGS, which it grants itself through the shell).
+ * (WRITE_SECURE_SETTINGS, which it grants itself through the shell), but
+ * only on a Wi-Fi network the user trusts ([TrustedNetworks]).
  */
 object Elevated {
     sealed interface State {
@@ -66,6 +67,8 @@ object Elevated {
         data object Running : State
         /** Pairing or starting failed. */
         data class Failed(val reason: Reason) : State
+        /** Set up with Wireless debugging, on a Wi-Fi network the user doesn't trust with it. */
+        data class Paused(val network: WifiNetwork) : State
     }
 
     enum class Reason { WrongCode, NoPairingDialog, NotPaired, RootDenied, ShizukuNotRunning, ShizukuDenied, ShizukuRoot, Other }
@@ -83,6 +86,10 @@ object Elevated {
     private const val COMPILED_VERSION = "compiled_version"
     /** How long after the helper starts the compile waits, so Android has recorded which code starting up uses. */
     private const val COMPILE_AFTER_MS = 2 * 60_000L
+    /** G7 Link turned Wireless debugging on (not the user), so it may turn it off again. */
+    private const val TURNED_ON = "turned_on_wireless_debugging"
+    /** The notification saying Elevated is paused on a network was shown (once). */
+    private const val PAUSED_NOTICE = "paused_notice_shown"
 
     private val _state = MutableStateFlow<State>(State.NotSetUp)
     val state: StateFlow<State> = _state.asStateFlow()
@@ -233,17 +240,52 @@ object Elevated {
      */
     @Volatile private var held = false
 
-    /** The network changed: try now, and keep trying from a short delay. */
+    /** The network changed: try now, and keep trying from a short delay (or pause on one not trusted). */
     fun onNetworkChanged() {
         if (held) return
         retryAttempt = 0
-        scope.launch { start() }
+        scope.launch { if (running) pauseIfUntrusted() else start() }
+    }
+
+    /** Whether the user set Elevated up by pairing Wireless debugging (trusted networks apply). */
+    fun pairedWithWirelessDebugging(): Boolean = paired()
+
+    /** Trusts the Wi-Fi network the phone is on, and starts there. */
+    fun trustCurrentNetwork() {
+        val network = TrustedNetworks.current(context)?.takeIf { it.identifiable } ?: return
+        TrustedNetworks.trust(context, network)
+        NetworkPausedNotification.dismiss(context)
+        onNetworkChanged()
+    }
+
+    /** Stops trusting [network]; Elevated pauses if the phone is on it. */
+    fun untrust(network: WifiNetwork) {
+        TrustedNetworks.remove(context, network)
+        scope.launch { pauseIfUntrusted() }
+    }
+
+    /**
+     * Stops a helper started through this phone's Wireless debugging when the
+     * phone is on a Wi-Fi network the user doesn't trust, and turns Wireless
+     * debugging off if G7 Link turned it on. Root, Shizuku and a PC's adb
+     * don't go through it, and carry on.
+     */
+    private suspend fun pauseIfUntrusted() = lock.withLock {
+        if (shell == null) return@withLock
+        val network = TrustedNetworks.current(context)?.takeIf { it.identifiable } ?: return@withLock
+        if (TrustedNetworks.isTrusted(context, network)) return@withLock
+        Log.i(TAG, "paused: this Wi-Fi network isn't trusted")
+        stopLocked()
+        turnOffWirelessDebugging()
+        _state.value = State.Paused(network)
     }
 
     private fun watchWirelessDebugging() {
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
                 val on = runCatching { Settings.Global.getInt(context.contentResolver, ADB_WIFI, 0) == 1 }.getOrDefault(false)
+                // Off, by anyone: whoever turns it on next owns it.
+                if (!on) prefs().edit { putBoolean(TURNED_ON, false) }
                 if (on && !running) onNetworkChanged()
             }
         }
@@ -333,6 +375,8 @@ object Elevated {
                 return@withContext false
             }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(PAIRED, true) }
+            // Paired here, with Wireless debugging the user just turned on: this network is theirs.
+            TrustedNetworks.current(context)?.takeIf { it.identifiable }?.let { TrustedNetworks.trust(context, it) }
         }
         start()
     }
@@ -435,6 +479,23 @@ object Elevated {
                 if (startOverUsbLocked()) return@withLock true
                 // Through Shizuku, the state says why it didn't start, or that it waits for Shizuku.
                 if (!usesShizuku()) _state.value = State.NotSetUp
+                return@withLock false
+            }
+            // Wireless debugging only on a Wi-Fi network the user trusts.
+            val network = TrustedNetworks.current(context)
+            if (network == null || !network.identifiable) {
+                // Off Wi-Fi, or its router isn't known yet: a cable still works.
+                if (startOverUsbLocked()) return@withLock true
+                _state.value = State.Waiting
+                return@withLock false
+            }
+            if (!TrustedNetworks.isTrusted(context, network)) {
+                turnOffWirelessDebugging()
+                if (startOverUsbLocked()) return@withLock true
+                _state.value = State.Paused(network)
+                if (!prefs().getBoolean(PAUSED_NOTICE, false) && NetworkPausedNotification.show(context, network)) {
+                    prefs().edit { putBoolean(PAUSED_NOTICE, true) }
+                }
                 return@withLock false
             }
             turnOnWirelessDebugging()
@@ -568,15 +629,32 @@ object Elevated {
         process.inputStream.bufferedReader().readText().takeIf { process.exitValue() == 0 }
     }.getOrNull()
 
-    /** Wireless debugging back on, when G7 Link may (granted at the first start). */
+    /**
+     * Wireless debugging back on, when G7 Link may (granted at the first start).
+     * It stays on while the helper runs: the helper is a shell of adbd's, which
+     * ends it when Wireless debugging goes off.
+     */
     private fun turnOnWirelessDebugging() {
         if (context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
         runCatching {
             if (Settings.Global.getInt(context.contentResolver, ADB_WIFI, 0) != 1) {
                 Settings.Global.putInt(context.contentResolver, ADB_WIFI, 1)
+                prefs().edit { putBoolean(TURNED_ON, true) }
                 Thread.sleep(1500) // adbd announces itself.
             }
         }.onFailure { Log.i(TAG, "can't turn on wireless debugging", it) }
+    }
+
+    /** Wireless debugging off again, if G7 Link turned it on (one the user turned on stays on). */
+    private fun turnOffWirelessDebugging() {
+        if (!prefs().getBoolean(TURNED_ON, false)) return
+        if (context.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
+        runCatching {
+            if (Settings.Global.getInt(context.contentResolver, ADB_WIFI, 0) == 1) {
+                Settings.Global.putInt(context.contentResolver, ADB_WIFI, 0)
+            }
+            prefs().edit { putBoolean(TURNED_ON, false) }
+        }.onFailure { Log.i(TAG, "can't turn off wireless debugging", it) }
     }
 
     /** What the shell grants G7 Link once, before the helper starts (however it starts). */

@@ -1283,4 +1283,13 @@
     <string name="pc_shot_unreadable">Ekran görüntüsü açılamadı.</string>
     <string name="pc_shot_crop_desc">%1$s ekran görüntüsü. Kırpmak için köşeleri veya kenarları sürükleyin.</string>
     <string name="pc_shot_share_title">Ekran görüntüsünü paylaş</string>
+    <string name="elevated_paused">Bu Wi-Fi ağında duraklatıldı. Yükseltilmiş modu burada kullanmak için bu ağa güvenin.</string>
+    <string name="elevated_trust_network">Bu ağa güven</string>
+    <string name="elevated_trusted_networks">Güvenilen Wi-Fi ağları</string>
+    <string name="elevated_network">%1$s adresindeki Wi-Fi</string>
+    <string name="elevated_this_network">Bu ağ</string>
+    <string name="elevated_remove_network">Kaldır</string>
+    <string name="elevated_no_trusted_networks">Henüz yok. G7 Link, Kablosuz hata ayıklamayı yalnızca güvenilen ağlarda açar.</string>
+    <string name="elevated_paused_title">Yükseltilmiş mod duraklatıldı</string>
+    <string name="elevated_paused_notice">Yükseltilmiş mod, %1$s adresindeki Wi-Fi ağında duraklatıldı. Burada kullanmaya devam etmek için bu ağa güvenin.</string>
 </resources>

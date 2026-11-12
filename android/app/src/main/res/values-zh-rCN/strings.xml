@@ -1150,4 +1150,13 @@
     <string name="pc_shot_unreadable">无法打开截图。</string>
     <string name="pc_shot_crop_desc">%1$s 的截图。拖动角或边进行裁剪。</string>
     <string name="pc_shot_share_title">分享截图</string>
+    <string name="elevated_paused">已在此 Wi-Fi 网络上暂停。信任此网络即可在这里使用高级权限。</string>
+    <string name="elevated_trust_network">信任此网络</string>
+    <string name="elevated_trusted_networks">受信任的 Wi-Fi 网络</string>
+    <string name="elevated_network">%1$s 的 Wi-Fi</string>
+    <string name="elevated_this_network">当前网络</string>
+    <string name="elevated_remove_network">移除</string>
+    <string name="elevated_no_trusted_networks">暂无。G7 Link 只会在受信任的网络上开启无线调试。</string>
+    <string name="elevated_paused_title">高级权限已暂停</string>
+    <string name="elevated_paused_notice">高级权限已在 %1$s 的 Wi-Fi 网络上暂停。信任此网络即可继续在这里使用。</string>
 </resources>
