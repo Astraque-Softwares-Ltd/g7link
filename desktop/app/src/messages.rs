@@ -382,13 +382,9 @@ fn view_of(s: &State) -> View {
 
     let (has_attachment, attachment_preview, attachment_name, attachment_size, attachment_error) =
         match &s.staged_attachment {
-            Some(att) => (
-                true,
-                att.preview_url.clone(),
-                att.name.clone(),
-                att.size_text.clone(),
-                att.error.clone(),
-            ),
+            Some(att) => {
+                (true, att.preview_url.clone(), att.name.clone(), att.size_text.clone(), att.error.clone())
+            }
             None => (false, String::new(), String::new(), String::new(), String::new()),
         };
 
