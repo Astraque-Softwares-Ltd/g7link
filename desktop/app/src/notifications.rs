@@ -226,12 +226,64 @@ struct Picture {
     bytes: Vec<u8>,
 }
 
-/// The picture file each notification shows once it's written, so a picture
-/// written after its notification changed again isn't shown.
-static WANTED_PICTURES: Mutex<Option<HashMap<NotificationKey, PathBuf>>> = Mutex::new(None);
+/// At most this many pictures wait for the files thread: a burst of posts
+/// can't keep more of them in memory than this.
+const MAX_WAITING_PICTURES: usize = 200;
 
-fn wanted_pictures<T>(f: impl FnOnce(&mut HashMap<NotificationKey, PathBuf>) -> T) -> T {
-    f(WANTED_PICTURES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new))
+/// The picture file a notification shows once it's written, and the picture
+/// itself until the files thread takes it to write.
+struct Wanted {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+}
+
+/// The picture each notification shows once it's written, so a picture
+/// written after its notification changed again isn't shown, and whether a
+/// job to write those waiting is on the files thread already.
+#[derive(Default)]
+struct Pictures {
+    wanted: HashMap<NotificationKey, Wanted>,
+    queued: bool,
+}
+
+impl Pictures {
+    /// Keeps `picture` to write, in place of one its notification had waiting;
+    /// `false`, keeping nothing, when too many others wait.
+    fn want(&mut self, picture: Picture) -> bool {
+        let replaces = self.wanted.get(&picture.key).is_some_and(|w| w.bytes.is_some());
+        if !replaces && self.waiting() >= MAX_WAITING_PICTURES {
+            return false;
+        }
+        self.wanted.insert(picture.key, Wanted { path: picture.path, bytes: Some(picture.bytes) });
+        true
+    }
+
+    fn waiting(&self) -> usize {
+        self.wanted.values().filter(|w| w.bytes.is_some()).count()
+    }
+
+    /// The waiting pictures, taken to write now.
+    fn take(&mut self) -> Vec<Picture> {
+        self.queued = false;
+        self.wanted
+            .iter_mut()
+            .filter_map(|(key, w)| {
+                let bytes = w.bytes.take()?;
+                Some(Picture { key: key.clone(), path: w.path.clone(), bytes })
+            })
+            .collect()
+    }
+
+    /// Whether `key` still shows the picture at `path` once it's written.
+    fn shows(&self, key: &NotificationKey, path: &std::path::Path) -> bool {
+        self.wanted.get(key).is_some_and(|w| w.path.as_path() == path)
+    }
+}
+
+static WANTED_PICTURES: Mutex<Option<Pictures>> = Mutex::new(None);
+
+fn wanted_pictures<T>(f: impl FnOnce(&mut Pictures) -> T) -> T {
+    f(WANTED_PICTURES.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Pictures::default))
 }
 
 /// An event's notifications without a picture (`None`, for the hub), and
@@ -291,13 +343,17 @@ fn write_thumb(picture: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-/// Writes pictures on the files thread; each shows on its notification once
-/// it's there.
-fn write_pictures(pictures: Vec<Picture>) {
+/// Writes the waiting pictures on the files thread; each shows on its
+/// notification once it's there.
+fn write_pictures() {
     static WRITTEN_SINCE_CAP: AtomicU32 = AtomicU32::new(0);
     let dir = images_dir();
     let mut written = 0;
-    for Picture { key, path, bytes } in pictures {
+    for Picture { key, path, bytes } in wanted_pictures(Pictures::take) {
+        // A newer post replaced it, or took its picture away, while it waited.
+        if !wanted_pictures(|pictures| pictures.shows(&key, &path)) {
+            continue;
+        }
         let saved = std::fs::create_dir_all(&dir).and_then(|()| {
             if path.exists() {
                 return Ok(());
@@ -310,11 +366,11 @@ fn write_pictures(pictures: Vec<Picture>) {
         } else {
             write_thumb(&path, &bytes);
         }
-        wanted_pictures(|wanted| {
-            if wanted.get(&key) != Some(&path) {
+        wanted_pictures(|pictures| {
+            if !pictures.shows(&key, &path) {
                 return;
             }
-            wanted.remove(&key);
+            pictures.wanted.remove(&key);
             if saved.is_ok() {
                 core_host::host().hub.update(|s| s.set_notification_image(key, path));
             }
@@ -491,18 +547,22 @@ fn on_files_thread(job: impl FnOnce() + Send + 'static) {
 /// on the files thread, and show once they're there.
 pub fn apply(event: &NodeEvent) {
     let (icons, new_icons) = icons_of(event);
-    let (without_pictures, pictures) = pictures_of(event);
+    let (mut without_pictures, pictures) = pictures_of(event);
     // Under the lock the written pictures are shown with, so an older one
     // can't land after this.
-    wanted_pictures(|wanted| {
+    let write_waiting = wanted_pictures(|wanted| {
         if let NodeEvent::DeviceRemoved(id) = event {
-            wanted.retain(|(device, _), _| device != id);
+            wanted.wanted.retain(|(device, _), _| device != id);
         }
         for (key, _) in &without_pictures {
-            wanted.remove(key);
+            wanted.wanted.remove(key);
         }
-        for picture in &pictures {
-            wanted.insert(picture.key.clone(), picture.path.clone());
+        for picture in pictures {
+            let key = picture.key.clone();
+            if !wanted.want(picture) {
+                wanted.wanted.remove(&key);
+                without_pictures.push((key, None));
+            }
         }
         core_host::host().hub.update(|s| {
             let mut changes = Changes::NONE;
@@ -512,11 +572,18 @@ pub fn apply(event: &NodeEvent) {
             changes |= s.apply_with_images(event, without_pictures);
             changes
         });
+        // One job writes all that wait: a later post's picture replaces an
+        // earlier one still waiting rather than queueing behind it.
+        let write = !wanted.queued && wanted.waiting() > 0;
+        wanted.queued |= write;
+        write
     });
-    if !new_icons.is_empty() || !pictures.is_empty() {
+    if !new_icons.is_empty() || write_waiting {
         on_files_thread(move || {
             write_icons(new_icons);
-            write_pictures(pictures);
+            if write_waiting {
+                write_pictures();
+            }
         });
     }
 }
@@ -533,9 +600,25 @@ pub fn update_toasts(event: &NodeEvent) {
             | NodeEvent::DeviceRemoved(_)
     );
     if for_toasts {
-        let event = event.clone();
+        let event = for_toast(event);
         on_files_thread(move || toasts_after(&event));
     }
+}
+
+/// `event` as its toasts need it: they show icons and pictures from the files
+/// those were written to, so the job doesn't keep the notifications' own.
+fn for_toast(event: &NodeEvent) -> NodeEvent {
+    fn strip(n: &mut Notification) {
+        n.icon = None;
+        n.image = None;
+    }
+    let mut event = event.clone();
+    match &mut event {
+        NodeEvent::NotificationPosted { notification, .. } => strip(notification),
+        NodeEvent::NotificationsReset { items, .. } => items.iter_mut().for_each(strip),
+        _ => {}
+    }
+    event
 }
 
 fn toasts_after(event: &NodeEvent) {
@@ -918,6 +1001,43 @@ mod tests {
         assert_eq!(over_cap(files(), 3, 15), [PathBuf::from("b.jpg"), PathBuf::from("a.jpg")]);
         assert_eq!(over_cap(files(), 0, 30).len(), 3);
         assert!(over_cap(Vec::new(), 0, 0).is_empty());
+    }
+
+    #[test]
+    fn a_newer_picture_takes_a_waiting_ones_place_and_too_many_wait_for_none() {
+        let picture = |key: &str, name: &str| Picture {
+            key: (DeviceId([1; 32]), key.to_owned()),
+            path: PathBuf::from(name),
+            bytes: vec![1; 4],
+        };
+        let mut pictures = Pictures::default();
+        assert!(pictures.want(picture("a", "old.jpg")));
+        assert!(pictures.want(picture("a", "new.jpg")));
+        let taken = pictures.take();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].path, PathBuf::from("new.jpg"));
+        assert!(pictures.shows(&taken[0].key, &taken[0].path));
+        assert!(!pictures.shows(&taken[0].key, std::path::Path::new("old.jpg")));
+        assert!(pictures.take().is_empty());
+
+        for i in 0..MAX_WAITING_PICTURES {
+            assert!(pictures.want(picture(&format!("k{i}"), "p.jpg")));
+        }
+        assert!(!pictures.want(picture("one more", "p.jpg")));
+        // A newer picture for one already waiting still takes its place.
+        assert!(pictures.want(picture("k0", "q.jpg")));
+        assert_eq!(pictures.waiting(), MAX_WAITING_PICTURES);
+    }
+
+    #[test]
+    fn a_toast_job_keeps_no_icon_or_picture() {
+        let mut posted = make_note(Some("Ana"), Some("Look"));
+        posted.icon = Some(vec![1; 64]);
+        posted.image = Some(vec![2; 64]);
+        let event = NodeEvent::NotificationPosted { device: DeviceId([1; 32]), notification: posted };
+        let NodeEvent::NotificationPosted { notification, .. } = for_toast(&event) else { unreachable!() };
+        assert!(notification.icon.is_none() && notification.image.is_none());
+        assert_eq!(notification.text.as_deref(), Some("Look"));
     }
 
     #[test]
