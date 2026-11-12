@@ -2047,7 +2047,6 @@ impl qobject::AppController {
         self.as_mut().rust_mut().shelf_preparing.again = false;
         self.as_mut().set_shelf_open(false);
         self.as_mut().set_shelf_items(QString::default());
-        discard_clip_drag_file(clip_drag_file(Option::take));
     }
 
     pub fn refresh_shelf(self: Pin<&mut Self>) {
@@ -2129,19 +2128,31 @@ impl qobject::AppController {
                 return super::native::ffi::start_external_drag(&thumb.to_string_lossy(), &t);
             }
         }
-        if kind_str == "clip" && !s.is_empty() && t.is_empty() {
-            // Written already while the Shelf prepared its items.
-            let prepared = clip_drag_file(|file| {
-                let file = file.as_mut().filter(|f| f.id == s && f.path.exists())?;
-                file.dragged = true;
-                Some(file.path.clone())
-            });
-            let path = prepared.or_else(|| {
-                let (_, bytes) = core_host::node()?.clipboard_history_image(&s)?;
-                write_clip_drag_file(&bytes)
-            });
-            if let Some(path) = path {
-                return super::native::ffi::start_external_drag(&path.to_string_lossy(), "");
+        if kind_str == "clip"
+            && !s.is_empty()
+            && t.is_empty()
+            && let Some(node) = core_host::node()
+            && let Some((_, bytes)) = node.clipboard_history_image(&s)
+        {
+            // A file per drag: the app it's dropped on may read it later, after
+            // another drag. Ones from more than an hour ago go.
+            let cache = core_host::host().data_dir.join("cache");
+            let _ = std::fs::create_dir_all(&cache);
+            for old in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
+                let stale = old
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().unwrap_or_default() > std::time::Duration::from_secs(3600));
+                if stale && old.file_name().to_string_lossy().starts_with("shelf-clip") {
+                    let _ = std::fs::remove_file(old.path());
+                }
+            }
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            let tmp = cache.join(format!("shelf-clip-{nanos}.png"));
+            if std::fs::write(&tmp, &bytes).is_ok() {
+                return super::native::ffi::start_external_drag(&tmp.to_string_lossy(), "");
             }
         }
         super::native::ffi::start_external_drag("", &t)
@@ -2829,65 +2840,6 @@ fn unix_ms(ts: i64) -> i64 {
     if ts < 10_000_000_000 { ts.saturating_mul(1000) } else { ts }
 }
 
-/// The current clip's picture written out to drag, while the Shelf is open:
-/// a drag then starts at once, without reading the clip on the GUI thread.
-#[derive(Debug)]
-struct ClipDragFile {
-    id: String,
-    path: std::path::PathBuf,
-    /// A drag used it: the app it was dropped on may read it later.
-    dragged: bool,
-}
-
-static CLIP_DRAG_FILE: Mutex<Option<ClipDragFile>> = Mutex::new(None);
-
-fn clip_drag_file<T>(f: impl FnOnce(&mut Option<ClipDragFile>) -> T) -> T {
-    f(&mut CLIP_DRAG_FILE.lock().unwrap_or_else(|e| e.into_inner()))
-}
-
-/// Writes a clip's picture to a new file to drag, and removes ones from more
-/// than an hour ago. A file per picture: the app it's dropped on may read it
-/// later, after another drag.
-fn write_clip_drag_file(bytes: &[u8]) -> Option<std::path::PathBuf> {
-    let cache = core_host::host().data_dir.join("cache");
-    let _ = std::fs::create_dir_all(&cache);
-    for old in std::fs::read_dir(&cache).into_iter().flatten().flatten() {
-        let stale = old
-            .metadata()
-            .and_then(|m| m.modified())
-            .is_ok_and(|t| t.elapsed().unwrap_or_default() > std::time::Duration::from_secs(3600));
-        if stale && old.file_name().to_string_lossy().starts_with("shelf-clip") {
-            let _ = std::fs::remove_file(old.path());
-        }
-    }
-    let since_epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
-    let nanos = since_epoch.map_or(0, |d| d.as_nanos());
-    let path = cache.join(format!("shelf-clip-{nanos}.png"));
-    std::fs::write(&path, bytes).is_ok().then_some(path)
-}
-
-/// Writes clip `id`'s picture out to drag, unless it's written already.
-fn prepare_clip_drag(node: &g7link_core::Node, id: &str) {
-    if clip_drag_file(|file| file.as_ref().is_some_and(|f| f.id == id && f.path.exists())) {
-        return;
-    }
-    let bytes = node.clipboard_history_image(id).map(|(_, bytes)| bytes);
-    let Some(path) = bytes.and_then(|bytes| write_clip_drag_file(&bytes)) else { return };
-    let file = ClipDragFile { id: id.to_owned(), path, dragged: false };
-    discard_clip_drag_file(clip_drag_file(|prepared| prepared.replace(file)));
-    // Closed while this was written.
-    if !is_shelf_open() {
-        discard_clip_drag_file(clip_drag_file(Option::take));
-    }
-}
-
-/// Removes a clip's drag file that no drag used.
-fn discard_clip_drag_file(file: Option<ClipDragFile>) {
-    if let Some(file) = file.filter(|f| !f.dragged) {
-        let _ = std::fs::remove_file(file.path);
-    }
-}
-
 fn compute_shelf_items_json(current_device_idx: i32) -> String {
     use g7link_core::{ClipboardItemKind, Direction, TimelineKind, TimelineQuery, TransferState};
 
@@ -3037,9 +2989,6 @@ fn compute_shelf_items_json(current_device_idx: i32) -> String {
         let (kind, image_data_url) = match entry.kind {
             ClipboardItemKind::Text => ("text", String::new()),
             ClipboardItemKind::Image => {
-                if let Some(n) = &node {
-                    prepare_clip_drag(n, &entry.id);
-                }
                 ("image", crate::clipboard::thumb_for_clip(&entry.id).unwrap_or_default())
             }
         };
