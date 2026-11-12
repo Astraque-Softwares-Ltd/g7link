@@ -28,6 +28,12 @@ import app.g7link.android.R
 import app.g7link.android.ui.MainActivity
 import app.g7link.core.MediaAction
 import app.g7link.core.MediaPlayer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 /**
  * What plays on a paired PC, in Android's own media controls (the
@@ -39,10 +45,11 @@ import app.g7link.core.MediaPlayer
  * the PC's: Android then sends the phone's volume buttons to it (unless
  * the phone plays something itself), and [setPcAudio] passes them on.
  *
- * Everything runs on the main thread.
+ * Applies snapshots in arrival order and decodes artwork off the main thread.
  */
 class PcMedia(
     context: Context,
+    scope: CoroutineScope,
     private val onSeedColorChanged: () -> Unit = {},
     private val setPcAudio: (pc: String, volume: Int?, muted: Boolean?) -> Unit = { _, _, _ -> },
     private val send: (pc: String, player: String, action: MediaAction, position: ULong?) -> Unit,
@@ -60,7 +67,7 @@ class PcMedia(
 
     @androidx.compose.runtime.Immutable
     data class Summary(
-        val pcId: String,
+        val playerId: String,
         val title: String,
         val subtitle: String,
         val playing: Boolean,
@@ -71,10 +78,10 @@ class PcMedia(
     var activeSeedColor: UInt? = null
         private set
 
-    private val _playing = kotlinx.coroutines.flow.MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    private val _playing = MutableStateFlow<Map<String, Boolean>>(emptyMap())
 
     /** Whether each PC player plays, by "pc/player" (for Play on phone's controls). */
-    val playing: kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>> = _playing
+    val playing: StateFlow<Map<String, Boolean>> = _playing
 
     /**
      * Where a PC player is in what it plays: [positionMs] as of [atElapsedMs]
@@ -92,20 +99,24 @@ class PcMedia(
             (positionMs + if (playing) (elapsedMs - atElapsedMs).coerceAtLeast(0) else 0).coerceIn(0, durationMs)
     }
 
-    private val _timelines = kotlinx.coroutines.flow.MutableStateFlow<Map<String, Timeline>>(emptyMap())
+    private val _timelines = MutableStateFlow<Map<String, Timeline>>(emptyMap())
 
     /** Each PC player's [Timeline] that has one, by "pc/player" (Play on phone's seek bar). */
-    val timelines: kotlinx.coroutines.flow.StateFlow<Map<String, Timeline>> = _timelines
+    val timelines: StateFlow<Map<String, Timeline>> = _timelines
 
-    private val _summaryFlow = kotlinx.coroutines.flow.MutableStateFlow<Summary?>(null)
-    val summaryFlow: kotlinx.coroutines.flow.StateFlow<Summary?> = _summaryFlow
+    private val _summaries = MutableStateFlow<Map<String, Summary>>(emptyMap())
+    val summaries: StateFlow<Map<String, Summary>> = _summaries
 
-    @Volatile
-    var currentSummary: Summary? = null
-        private set(value) {
-            field = value
-            _summaryFlow.value = value
+    private data class Snapshot(val pc: String, val name: String, val players: List<MediaPlayer>)
+    private val updates = Channel<Snapshot>(Channel.UNLIMITED)
+
+    init {
+        // The Rust listener delivers snapshots and disconnects in order. Keep
+        // that order even when an earlier snapshot takes longer to decode.
+        scope.launch(Dispatchers.Default) {
+            for (update in updates) applyUpdate(update.pc, update.name, update.players)
         }
+    }
 
     private var session: MediaSession? = null
     private var shown: Pair<String, MediaPlayer>? = null
@@ -120,13 +131,13 @@ class PcMedia(
     data class PcLevel(val volume: Int, val muted: Boolean)
     private val stalePauseTimeout = Runnable { hide() }
 
-    /** The summary as the PC last described it, before any play or pause pressed here. */
-    private var rendered: Summary? = null
+    /** Each PC's summary as the PC last described it, before any play or pause pressed here. */
+    private var rendered: Map<String, Summary> = emptyMap()
 
     /** Puts back what the PC said when it never answered a play or pause. */
     private val undoPressedPlaying = Runnable {
-        if (currentSummary != rendered) {
-            currentSummary = rendered
+        if (_summaries.value != rendered) {
+            _summaries.value = rendered
             app.g7link.android.widget.PcWidgetProvider.refreshAll(context)
         }
     }
@@ -141,7 +152,10 @@ class PcMedia(
 
     /** A PC's players changed (empty: nothing plays there, or it's offline). */
     fun update(pc: String, pcName: String, list: List<MediaPlayer>) {
-        // Decode incoming artwork bitmaps on the caller/background thread before posting to main.
+        updates.trySend(Snapshot(pc, pcName, list))
+    }
+
+    private fun applyUpdate(pc: String, pcName: String, list: List<MediaPlayer>) {
         val decoded = list.mapNotNull { player ->
             val key = player.artKey ?: return@mapNotNull null
             val bytes = player.art ?: return@mapNotNull null
@@ -198,27 +212,7 @@ class PcMedia(
         send(pc, player.id, action, position)
     }
 
-    private fun render() {
-        main.removeCallbacks(stalePauseTimeout)
-        main.removeCallbacks(undoPressedPlaying)
-        val first = players.entries.firstNotNullOfOrNull { (pc, list) ->
-            (list.firstOrNull { it.playing } ?: list.firstOrNull())?.let { pc to it }
-        }
-        if (first == null) return hide()
-        val (pc, player) = first
-        shown = first
-        val session = session ?: MediaSession(context, "G7 Link PC media").also {
-            it.setCallback(callback, main)
-            it.setSessionActivity(openApp())
-            session = it
-        }
-        val artEntry = player.artKey?.let { art["$pc/$it"] }
-        val picture = artEntry?.first
-        val nextSeed = artEntry?.second
-        if (activeSeedColor != nextSeed) {
-            activeSeedColor = nextSeed
-            onSeedColorChanged()
-        }
+    private fun summary(pc: String, player: MediaPlayer): Summary {
         val pcName = names[pc].orEmpty().ifBlank { context.getString(R.string.your_pc) }
         val cleanApp = sanitizeAppName(player.app)
         val cleanTitle = player.title?.trim()?.takeIf { it.isNotEmpty() } ?: cleanApp.ifEmpty { pcName }
@@ -238,20 +232,44 @@ class PcMedia(
         }
         val subtitleLine = listOfNotNull(cleanArtist, where).distinct().joinToString(" · ")
 
-        val prev = rendered
-        val nextSummary = Summary(
-            pcId = pc,
+        return Summary(
+            playerId = player.id,
             title = cleanTitle,
             subtitle = subtitleLine,
             playing = player.playing,
-            artwork = picture,
+            artwork = player.artKey?.let { art["$pc/$it"]?.first },
         )
-        rendered = nextSummary
-        currentSummary = nextSummary
-        val widgetSummaryChanged = prev?.pcId != nextSummary.pcId ||
-            prev.title != nextSummary.title ||
-            prev.subtitle != nextSummary.subtitle ||
-            prev.playing != nextSummary.playing
+    }
+
+    private fun render() {
+        main.removeCallbacks(stalePauseTimeout)
+        main.removeCallbacks(undoPressedPlaying)
+        val preferred = players.mapValues { (_, list) -> list.firstOrNull { it.playing } ?: list.first() }
+        val nextSummaries = preferred.mapValues { (pc, player) -> summary(pc, player) }
+        rendered = nextSummaries
+        if (_summaries.value != nextSummaries) {
+            _summaries.value = nextSummaries
+            app.g7link.android.widget.PcWidgetProvider.refreshAll(context)
+        }
+
+        val first = preferred.entries.firstOrNull { it.value.playing } ?: preferred.entries.firstOrNull()
+        if (first == null) return hide()
+        val (pc, player) = first
+        shown = pc to player
+        val session = session ?: MediaSession(context, "G7 Link PC media").also {
+            it.setCallback(callback, main)
+            it.setSessionActivity(openApp())
+            session = it
+        }
+        val nextSeed = player.artKey?.let { art["$pc/$it"]?.second }
+        if (activeSeedColor != nextSeed) {
+            activeSeedColor = nextSeed
+            onSeedColorChanged()
+        }
+        val summary = nextSummaries.getValue(pc)
+        val cleanTitle = summary.title
+        val subtitleLine = summary.subtitle
+        val picture = summary.artwork
 
         session.setMetadata(
             MediaMetadata.Builder()
@@ -287,9 +305,6 @@ class PcMedia(
         post(notification(session, player, cleanTitle, subtitleLine, picture))
         if (!player.playing) {
             main.postDelayed(stalePauseTimeout, 600_000L)
-        }
-        if (widgetSummaryChanged) {
-            app.g7link.android.widget.PcWidgetProvider.refreshAll(context)
         }
     }
 
@@ -359,9 +374,6 @@ class PcMedia(
         main.removeCallbacks(undoPressedPlaying)
         shown = null
         remote = null
-        val hadSummary = currentSummary != null
-        rendered = null
-        currentSummary = null
         if (activeSeedColor != null) {
             activeSeedColor = null
             onSeedColorChanged()
@@ -372,9 +384,6 @@ class PcMedia(
         }
         session = null
         context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_TAG, NOTIFICATION_ID)
-        if (hadSummary) {
-            app.g7link.android.widget.PcWidgetProvider.refreshAll(context)
-        }
     }
 
     private fun notification(
@@ -443,21 +452,28 @@ class PcMedia(
         }
     }
 
-    /**
-     * A button in the app, notification or widget. Play and pause show at once;
-     * the PC's next update confirms it, or it goes back after [PRESSED_PLAYING_MS].
-     */
+    /** A button in the notification or widget: the PC playing there. */
     internal fun pressed(action: MediaAction) = main.post {
-        if (shown == null) return@post
-        command(action)
-        val summary = currentSummary ?: return@post
+        val (pc, _) = shown ?: return@post
+        press(pc, action)
+    }
+
+    /**
+     * A button in the app for [pc]'s player. Play and pause show at once; the
+     * PC's next update confirms it, or it goes back after [PRESSED_PLAYING_MS].
+     */
+    fun pressed(pc: String, action: MediaAction) = main.post { press(pc, action) }
+
+    private fun press(pc: String, action: MediaAction) {
+        val summary = _summaries.value[pc] ?: return
+        send(pc, summary.playerId, action, null)
         val playing = when (action) {
             MediaAction.PLAY -> true
             MediaAction.PAUSE -> false
-            else -> return@post
+            else -> return
         }
-        if (summary.playing == playing) return@post
-        currentSummary = summary.copy(playing = playing)
+        if (summary.playing == playing) return
+        _summaries.value = _summaries.value + (pc to summary.copy(playing = playing))
         main.removeCallbacks(undoPressedPlaying)
         main.postDelayed(undoPressedPlaying, PRESSED_PLAYING_MS)
         app.g7link.android.widget.PcWidgetProvider.refreshAll(context)

@@ -36,6 +36,7 @@ pub mod palette;
 mod photos;
 pub mod play_on_phone;
 pub mod remote;
+mod ring;
 mod session;
 mod sms;
 pub mod storage;

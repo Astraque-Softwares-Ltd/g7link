@@ -376,9 +376,8 @@ Item {
             return page.featureUsable(feature(id), home.online, queueable === true, addonOk === true)
         }
 
-        property bool ringing: false
-        // The phone stops ringing by itself after a minute (Ringer.MAX_RING_MS).
-        Timer { id: ringTimeout; interval: 60000; onTriggered: home.ringing = false }
+        // Ringing until it stops on the phone, wherever it's stopped.
+        readonly property bool ringing: AppController.ringingDevices.includes(home.deviceId)
 
         readonly property bool callHere: PhoneCall.active && PhoneCall.device === home.deviceId
         readonly property bool ringingHere: callHere && PhoneCall.ringing
@@ -397,9 +396,7 @@ Item {
 
         function mirror() { Mirror.start(home.deviceId) }
         function findPhone() {
-            home.ringing = !home.ringing
-            if (home.ringing) ringTimeout.restart()
-            AppController.ring(home.deviceId, home.ringing)
+            AppController.ring(home.deviceId, !home.ringing)
         }
         function toggleWebcam() {
             if (home.webcamHere)

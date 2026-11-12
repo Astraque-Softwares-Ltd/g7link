@@ -366,8 +366,10 @@ private fun RemoteToolbar(
 ) {
     val tints = g7Tints()
     val pcMedia = core.pcMedia
-    val summary by pcMedia.summaryFlow.collectAsStateWithLifecycle()
-    val playing = summary?.takeIf { it.pcId == device.id }?.playing ?: (device.deckState?.playing == true)
+    val summaries by pcMedia.summaries.collectAsStateWithLifecycle()
+    val summary = summaries[device.id]
+    val playing = summary?.playing ?: (device.deckState?.playing == true)
+    val scope = rememberCoroutineScope()
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -393,7 +395,12 @@ private fun RemoteToolbar(
             icon = if (playing) G7Icons.pause else G7Icons.play,
             contentDescription = stringResource(if (playing) R.string.media_pause else R.string.media_play),
             onClick = {
-                pcMedia.pressed(if (playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY)
+                if (summary != null) {
+                    val action = if (playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY
+                    pcMedia.pressed(device.id, action)
+                } else {
+                    scope.launch { core.deckPress(device.id, "media_play_pause") }
+                }
             },
             tint = tints.pink,
             enabled = device.online,

@@ -161,6 +161,9 @@ class MainActivity : ComponentActivity() {
                     ConnectionService.stop(this@MainActivity)
                 }
             }
+            LaunchedEffect(state.ringingPeer) {
+                if (state.ringingPeer != null) startActivity(RingActivity.intent(this@MainActivity))
+            }
             G7LinkTheme(
                 appearance = appearance,
                 mediaSeedColor = state.activeMediaColor,

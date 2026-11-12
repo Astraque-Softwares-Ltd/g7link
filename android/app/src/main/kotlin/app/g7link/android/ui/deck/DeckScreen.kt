@@ -337,8 +337,8 @@ fun DeckScreen(
 /** A raised row with what plays on the PC, and play or pause. Nothing while nothing plays. */
 @Composable
 private fun DeckNowPlaying(pcId: String, core: Core) {
-    val summary by core.pcMedia.summaryFlow.collectAsStateWithLifecycle()
-    val media = summary?.takeIf { it.pcId == pcId } ?: return
+    val summaries by core.pcMedia.summaries.collectAsStateWithLifecycle()
+    val media = summaries[pcId] ?: return
     val tints = g7Tints()
     Row(
         modifier = Modifier
@@ -373,6 +373,7 @@ private fun DeckNowPlaying(pcId: String, core: Core) {
             contentDescription = stringResource(if (media.playing) R.string.media_pause else R.string.media_play),
             onClick = {
                 core.pcMedia.pressed(
+                    pcId,
                     if (media.playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY,
                 )
             },

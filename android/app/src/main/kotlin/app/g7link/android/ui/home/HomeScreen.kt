@@ -302,7 +302,7 @@ fun HomeScreen(
         val id = currentPcId
         if (id != null && tree != null) onSendFolder(id, tree)
     }
-    var ringing by remember(pc?.id) { mutableStateOf(false) }
+    val ringing = pc != null && pc.id in state.ringingDevices
 
     // Storage is optional and has its own row in Settings, so it doesn't count here.
     val accessItems = rememberAccessItems(state, onAccessChanged).filter { it.id != "storage" }
@@ -706,10 +706,7 @@ fun HomeScreen(
                         icon = G7Icons.bell,
                         tint = tints.blue,
                         enabled = online,
-                        onClick = {
-                            ringing = !ringing
-                            onRing(pc.id, ringing)
-                        },
+                        onClick = { onRing(pc.id, !ringing) },
                     )
                     if (pc.has("device.pc_actions")) {
                         val inFlight = powering[pc.id]
@@ -824,7 +821,12 @@ fun HomeScreen(
 
         // Another phone or tablet paired with this one.
         items(peers, key = { it.id }, contentType = { "peer" }) { device ->
-            PeerRows(device = device, onRing = onRing, onSendFiles = onSendFiles)
+            PeerRows(
+                device = device,
+                ringing = device.id in state.ringingDevices,
+                onRing = onRing,
+                onSendFiles = onSendFiles,
+            )
         }
 
         val showClipRow = state.clipboardHistoryEnabled && state.clipboardHistory.isNotEmpty()
@@ -1095,6 +1097,7 @@ private fun NoticeRow(
 @Composable
 private fun PeerRows(
     device: Device,
+    ringing: Boolean,
     onRing: (String, Boolean) -> Unit,
     onSendFiles: (String, List<Uri>) -> Unit,
 ) {
@@ -1103,7 +1106,6 @@ private fun PeerRows(
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) onSendFiles(device.id, uris)
     }
-    var ringing by remember(device.id) { mutableStateOf(false) }
     val kind = stringResource(
         if (device.kind == app.g7link.core.DeviceKind.TABLET) R.string.peer_kind_tablet else R.string.peer_kind_phone,
     )
@@ -1135,10 +1137,7 @@ private fun PeerRows(
             icon = G7Icons.ring,
             tint = tints.blue,
             enabled = device.online && device.has("pair.ring"),
-            onClick = {
-                ringing = !ringing
-                onRing(device.id, ringing)
-            },
+            onClick = { onRing(device.id, !ringing) },
         )
     }
 }
@@ -1202,13 +1201,12 @@ internal fun PcSoundRows(
     val pcMedia = remember(context) {
         (context.applicationContext as? G7LinkApplication)?.core?.pcMedia
     }
-    val rawSummary = if (pcMedia != null) {
-        val summary by pcMedia.summaryFlow.collectAsStateWithLifecycle()
-        summary
+    val mediaSummary = if (pcMedia != null) {
+        val summaries by pcMedia.summaries.collectAsStateWithLifecycle()
+        summaries[pcId]
     } else {
         null
     }
-    val mediaSummary = rawSummary?.takeIf { it.pcId == pcId }
     var draggingVolume by remember { mutableStateOf<Float?>(null) }
     var lastSentVolume by remember { mutableStateOf(deckState.volume.toInt()) }
     if (draggingVolume == null) {
@@ -1235,13 +1233,14 @@ internal fun PcSoundRows(
             G7IconButton(
                 icon = G7Icons.previous,
                 contentDescription = stringResource(R.string.media_previous),
-                onClick = { pcMedia?.pressed(app.g7link.core.MediaAction.PREVIOUS) },
+                onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.PREVIOUS) },
             )
             G7IconButton(
                 icon = if (mediaSummary.playing) G7Icons.pause else G7Icons.play,
                 contentDescription = stringResource(if (mediaSummary.playing) R.string.media_pause else R.string.media_play),
                 onClick = {
                     pcMedia?.pressed(
+                        pcId,
                         if (mediaSummary.playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY,
                     )
                 },
@@ -1249,7 +1248,7 @@ internal fun PcSoundRows(
             G7IconButton(
                 icon = G7Icons.next,
                 contentDescription = stringResource(R.string.media_next),
-                onClick = { pcMedia?.pressed(app.g7link.core.MediaAction.NEXT) },
+                onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.NEXT) },
             )
         }
     }

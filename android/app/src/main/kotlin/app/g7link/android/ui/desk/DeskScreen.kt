@@ -135,8 +135,8 @@ fun DeskScreen(
     val shiftY = (cos(minutePhase) * 6.0).roundToInt()
 
     val deckState = device.deckState
-    val pcMediaSummary by core.pcMedia.summaryFlow.collectAsStateWithLifecycle()
-    val activeSummary = pcMediaSummary?.takeIf { it.pcId == device.id } ?: pcMediaSummary
+    val summaries by core.pcMedia.summaries.collectAsStateWithLifecycle()
+    val activeSummary = summaries[device.id]
     val artBitmap = remember(activeSummary?.artwork) { activeSummary?.artwork?.asImageBitmap() }
 
     var draggingVolume by remember { mutableStateOf<Float?>(null) }
@@ -249,7 +249,7 @@ fun DeskScreen(
                         background = raised,
                         onClick = {
                             if (activeSummary != null) {
-                                core.pcMedia.pressed(MediaAction.PREVIOUS)
+                                core.pcMedia.pressed(device.id, MediaAction.PREVIOUS)
                             } else {
                                 scope.launch { core.deckPress(device.id, "media_previous") }
                             }
@@ -262,7 +262,7 @@ fun DeskScreen(
                         background = raised,
                         onClick = {
                             if (activeSummary != null) {
-                                core.pcMedia.pressed(if (isPlaying) MediaAction.PAUSE else MediaAction.PLAY)
+                                core.pcMedia.pressed(device.id, if (isPlaying) MediaAction.PAUSE else MediaAction.PLAY)
                             } else {
                                 scope.launch { core.deckPress(device.id, "media_play_pause") }
                             }
@@ -275,7 +275,7 @@ fun DeskScreen(
                         background = raised,
                         onClick = {
                             if (activeSummary != null) {
-                                core.pcMedia.pressed(MediaAction.NEXT)
+                                core.pcMedia.pressed(device.id, MediaAction.NEXT)
                             } else {
                                 scope.launch { core.deckPress(device.id, "media_next") }
                             }
