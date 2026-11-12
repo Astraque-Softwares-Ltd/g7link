@@ -136,6 +136,8 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen, Media }
@@ -177,6 +179,27 @@ fun RemoteScreen(
     val touchpadOnly = landscape && touchpadOnlyChosen && mode == RemoteMode.Touchpad &&
         device.online && access == Core.RemoteAccess.Allowed
     val isFullScreen = (mode == RemoteMode.Screen && screenFullScreen) || touchpadOnly
+
+    // A text box got the focus on the PC: the keyboard opens, as it would for one
+    // on the phone, and closes again when the PC's focus leaves text, if it
+    // opened by itself. One the user opened or closed stays as they left it.
+    val pcTyping by remember(core, device.id) {
+        core.state.map { device.id in it.pcTextFocus }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = false)
+    var keyboardOpenedForPc by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(pcTyping) {
+        if (pcTyping) {
+            if (!showKeyboard && mode == RemoteMode.Touchpad && !touchpadOnly) {
+                showKeyboard = true
+                keyboardOpenedForPc = true
+            }
+        } else if (keyboardOpenedForPc) {
+            // Focus moving from one box to the next isn't leaving text.
+            delay(1_500)
+            showKeyboard = false
+            keyboardOpenedForPc = false
+        }
+    }
     DisposableEffect(view, touchpadOnly) {
         val window = (context as? Activity)?.window
         val bars = window?.let { WindowCompat.getInsetsController(it, view) }
@@ -283,7 +306,10 @@ fun RemoteScreen(
                     touchpadOnly = touchpadOnly,
                     onTouchpadOnly = { touchpadOnlyChosen = it },
                     showKeyboard = showKeyboard,
-                    onShowKeyboard = { showKeyboard = it },
+                    onShowKeyboard = {
+                        showKeyboard = it
+                        keyboardOpenedForPc = false
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
                 RemoteMode.AirMouse -> AirMouseView(
@@ -340,6 +366,7 @@ fun RemoteScreen(
                 core = core,
                 keyboardOn = showKeyboard && mode == RemoteMode.Touchpad,
                 onKeyboard = {
+                    keyboardOpenedForPc = false
                     if (mode != RemoteMode.Touchpad) {
                         mode = RemoteMode.Touchpad
                         showKeyboard = true

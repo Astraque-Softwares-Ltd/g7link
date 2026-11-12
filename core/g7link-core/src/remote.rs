@@ -13,7 +13,7 @@ pub use g7link_protocol::messages::{
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
-    messages::{StreamHeader, remote, types},
+    messages::{RemoteTextFocus, StreamHeader, remote, types},
     read_frame, write_frame,
 };
 use iroh::endpoint::{RecvStream, SendStream};
@@ -160,6 +160,15 @@ pub(crate) async fn check(shared: &Arc<Shared>, session: &Arc<Session>) -> Resul
     Ok(())
 }
 
+/// Tells a phone whether what has the focus on this PC takes text
+/// (`remote.text_focus`). Only phones that may control this PC hear it.
+pub(crate) async fn text_focus(shared: &Shared, session: &Session, editable: bool) -> Result<()> {
+    if !shared.toggle_on(&session.peer, TOGGLE) {
+        return Ok(());
+    }
+    session.send(Envelope::new(types::REMOTE_TEXT_FOCUS, &RemoteTextFocus { editable })?).await
+}
+
 /// Sends a remote input event to `peer` (a PC).
 ///
 /// Discrete actions travel on the control stream. If `input` is
@@ -266,6 +275,14 @@ async fn send_datagram(shared: &Arc<Shared>, session: &Arc<Session>, event: &Rem
 
 /// Handles incoming `remote.*` requests on the control stream.
 pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+    // A PC's text focus (one way, no reply): heard only where input isn't injected.
+    if env.t == types::REMOTE_TEXT_FOCUS {
+        if !shared.we_offer(INPUT_INJECT) {
+            let RemoteTextFocus { editable } = env.body()?;
+            shared.emit(NodeEvent::PcTextFocus { device: session.peer, editable });
+        }
+        return Ok(true);
+    }
     let reply = match env.t.as_str() {
         types::REMOTE_CHECK => match check_allowed_with(shared, &session.peer, true) {
             Ok(()) => Envelope::empty(types::OK),

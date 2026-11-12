@@ -88,3 +88,19 @@ pub fn on_event(event: &NodeEvent) {
         _ => {}
     }
 }
+
+/// What has the focus on this PC takes text, or no longer does. Connected
+/// phones that may control this PC hear it, so their keyboard can open.
+pub fn text_focus_changed(editable: bool) {
+    let (Some(host), Some(node)) = (core_host::try_host(), core_host::node()) else { return };
+    let phones: Vec<DeviceId> = host.hub.read(|s| {
+        s.devices.iter().filter(|d| matches!(d.link, LinkState::Online { .. })).map(|d| d.id).collect()
+    });
+    core_host::spawn(async move {
+        for phone in phones {
+            if let Err(error) = node.remote_text_focus(phone, editable).await {
+                tracing::debug!(%error, "couldn't tell a phone about the text focus");
+            }
+        }
+    });
+}

@@ -617,6 +617,11 @@ pub enum Event {
         id: String,
         on: bool,
     },
+    /// What has the focus on PC `id` takes text, or no longer does.
+    PcTextFocus {
+        id: String,
+        editable: bool,
+    },
     Discovered {
         device: DiscoveredDevice,
     },
@@ -2446,6 +2451,9 @@ impl Event {
             }
             NodeEvent::Ring { device, on } => Event::Ring { id: device.to_string(), on },
             NodeEvent::RemoteRing { device, on } => Event::RemoteRing { id: device.to_string(), on },
+            NodeEvent::PcTextFocus { device, editable } => {
+                Event::PcTextFocus { id: device.to_string(), editable }
+            }
             NodeEvent::Discovered(device) => Event::Discovered { device: device.into() },
             NodeEvent::DiscoveryExpired(id) => Event::DiscoveryExpired { id: id.to_string() },
             NodeEvent::Pairing(PairingEvent::SasCode { peer, code }) => {

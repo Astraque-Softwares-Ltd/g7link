@@ -85,6 +85,7 @@ pub mod types {
     pub const MIRROR_NOTICE: &str = "mirror.notice";
     pub const REMOTE_CHECK: &str = "remote.check";
     pub const REMOTE_INPUT: &str = "remote.input";
+    pub const REMOTE_TEXT_FOCUS: &str = "remote.text_focus";
     pub const PHONE_TOGGLES: &str = "phone.toggles";
     pub const PHONE_TOGGLE_SET: &str = "phone.toggle.set";
     pub const DECK_LAYOUT: &str = "deck.layout";
@@ -3437,6 +3438,13 @@ pub mod remote_keys {
     }
 }
 
+/// Body of `remote.text_focus` (PC → phone): whether what has the keyboard
+/// focus on the PC takes text, so the phone can open its keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTextFocus {
+    pub editable: bool,
+}
+
 /// An input event sent from a phone to a PC (`docs/protocol/remote.md`).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -6263,6 +6271,16 @@ mod tests {
         let env = crate::Envelope::new(types::AUDIO_PCM, &frame).unwrap();
         let decoded: AudioPcmFrame = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn text_focus_says_whether_the_pc_takes_text() {
+        for editable in [true, false] {
+            let focus = RemoteTextFocus { editable };
+            let env = crate::Envelope::new(types::REMOTE_TEXT_FOCUS, &focus).unwrap();
+            let decoded: RemoteTextFocus = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+            assert_eq!(decoded, focus);
+        }
     }
 
     #[test]

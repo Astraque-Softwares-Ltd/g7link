@@ -183,6 +183,8 @@ data class CoreState(
     /** ID of the device making this phone ring, or null. */
     val ringingPeer: String? = null,
     val ringingDevices: Set<String> = emptySet(),
+    /** PCs where what has the focus takes text: the remote's keyboard opens for them. */
+    val pcTextFocus: Set<String> = emptySet(),
     /** Whether the user let G7 Link read notifications (to mirror them). */
     val notificationAccess: Boolean = false,
     /** Whether Android lets G7 Link reach the local network (Android 17). */
@@ -326,6 +328,7 @@ data class CoreState(
             sendQueue = sendQueue.filterNot { it.peerId == event.id },
             ringingPeer = ringingPeer?.takeUnless { it == event.id },
             ringingDevices = ringingDevices - event.id,
+            pcTextFocus = pcTextFocus - event.id,
             storageRequestedFrom = if (storageRequestedFrom == event.id) null else storageRequestedFrom,
             webcamRequest = if (webcamRequest?.pcId == event.id) null else webcamRequest,
             micRequestFrom = if (micRequestFrom == event.id) null else micRequestFrom,
@@ -357,6 +360,7 @@ data class CoreState(
                         updated.copy(
                             devices = if (onlineChanged) updated.devices.sortedWith(deviceOrder) else updated.devices,
                             keyboardFromPc = if (newLink is Link.Offline) updated.keyboardFromPc - event.id else updated.keyboardFromPc,
+                            pcTextFocus = if (newLink is Link.Offline) updated.pcTextFocus - event.id else updated.pcTextFocus,
                             // A PC that went away can't take the microphone it asked for.
                             micRequestFrom = updated.micRequestFrom.takeUnless { newLink is Link.Offline && it == event.id },
                         )
@@ -386,6 +390,7 @@ data class CoreState(
         is Event.DeckState -> update(event.id) { it.copy(deckState = event.state) }
         is Event.Ring -> copy(ringingPeer = if (event.on) event.id else ringingPeer?.takeUnless { it == event.id })
         is Event.RemoteRing -> copy(ringingDevices = if (event.on) ringingDevices + event.id else ringingDevices - event.id)
+        is Event.PcTextFocus -> copy(pcTextFocus = if (event.editable) pcTextFocus + event.id else pcTextFocus - event.id)
         is Event.Discovered -> copy(discovered = discovered.filterNot { it.id == event.device.id } + event.device)
         is Event.DiscoveryExpired -> copy(discovered = discovered.filterNot { it.id == event.id })
         is Event.PairingCode -> copy(pairing = PairingState.Comparing(event.peer, event.code))

@@ -183,6 +183,12 @@ pub enum NodeEvent {
         session: u32,
         on: bool,
     },
+    /// What has the keyboard focus on a PC takes text, or no longer does
+    /// (`remote.text_focus`): the phone can open its keyboard.
+    PcTextFocus {
+        device: DeviceId,
+        editable: bool,
+    },
     /// A phone says something about a mirroring shown here (`mirror.notice`),
     /// by code (`mirror::NOTICE_*`).
     MirrorNotice {

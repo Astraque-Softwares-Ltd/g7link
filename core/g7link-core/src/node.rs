@@ -3076,6 +3076,13 @@ impl Node {
         crate::mirror::input(&self.shared, &session, mirroring, input).await
     }
 
+    /// Tells a phone whether what has the focus on this PC takes text
+    /// (`remote.text_focus`), when it may control this PC.
+    pub async fn remote_text_focus(&self, peer: DeviceId, editable: bool) -> Result<()> {
+        let session = self.connected(&peer)?;
+        crate::remote::text_focus(&self.shared, &session, editable).await
+    }
+
     /// Tells a PC something about its mirroring, by `code` (`mirror.notice`):
     /// say, that this phone refuses its taps.
     pub async fn mirror_notice(&self, peer: DeviceId, mirroring: u32, code: &str) -> Result<()> {

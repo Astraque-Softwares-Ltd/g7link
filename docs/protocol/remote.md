@@ -71,6 +71,19 @@ not offer `input.inject`, `DENIED` when `remote_input` is off for the sender
 or rate-limited, `BAD_MESSAGE` when values are out of bounds or name an
 unknown key.
 
+### 2.3 Text focus (PC → phone)
+
+```
+t = "remote.text_focus"  b = { editable: bool }
+```
+
+A PC that offers `input.inject` tells each connected phone with `remote_input`
+on whether what has the keyboard focus takes text, each time that changes. It
+has no reply. The phone may open its keyboard while its remote is showing,
+and close it again if it opened it by itself. A Linux PC reads the focus from
+the accessibility bus (AT-SPI), so apps that don't publish accessibility
+aren't seen.
+
 ## 3. Input payloads
 
 ```

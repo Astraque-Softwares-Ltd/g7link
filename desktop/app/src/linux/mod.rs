@@ -30,6 +30,7 @@ pub mod single_instance;
 pub mod smtc;
 pub mod sound;
 pub mod storage;
+pub mod text_focus;
 pub mod toast;
 pub mod tray;
 pub mod vcam;

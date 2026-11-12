@@ -1178,6 +1178,35 @@ async fn a_phone_stopped_and_started_again_in_the_same_process_reconnects() {
     }
 }
 
+/// A PC tells a phone that may control it when a text box gets the focus,
+/// and tells no phone that may not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pc_says_when_a_text_box_has_the_focus() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &["input.inject"]).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    // Remote input is off for the phone: nothing goes.
+    with_timeout("focus while off", pc.node.remote_text_focus(phone_id, true)).await.unwrap();
+    pc.node.set_device_toggle(phone_id, "remote_input", true).unwrap();
+    with_timeout("focus", pc.node.remote_text_focus(phone_id, true)).await.unwrap();
+    let first = wait_for(&mut phone, "text focus", |e| match e {
+        NodeEvent::PcTextFocus { device, editable } => Some((*device, *editable)),
+        _ => None,
+    })
+    .await;
+    // The first the phone hears is the one sent while remote input was on.
+    assert_eq!(first, (pc_id, true));
+    with_timeout("blur", pc.node.remote_text_focus(phone_id, false)).await.unwrap();
+    let second = wait_for(&mut phone, "text blur", |e| match e {
+        NodeEvent::PcTextFocus { device, editable } => Some((*device, *editable)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(second, (pc_id, false));
+}
+
 /// A phone that refuses the PC's taps (Xiaomi without USB debugging (Security
 /// settings)) says so, and the PC hears which window it's about.
 #[tokio::test(flavor = "multi_thread")]

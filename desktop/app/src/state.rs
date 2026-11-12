@@ -579,6 +579,8 @@ impl AppState {
             | NodeEvent::SmsChanged { .. }
             | NodeEvent::Mirroring { .. }
             | NodeEvent::MirrorNotice { .. }
+            // Heard on phones only.
+            | NodeEvent::PcTextFocus { .. }
             | NodeEvent::WakeInfoChanged { .. }
             | NodeEvent::DeckLayout { .. }
             | NodeEvent::DeckState { .. }
