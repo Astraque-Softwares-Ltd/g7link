@@ -14,8 +14,10 @@ Window {
 
     // GNOME on Wayland lets no app keep its own window on top. The "PiP on top"
     // extension does it for windows titled like this, for those who have it.
-    title: Qt.platform.pluginName.startsWith("wayland") ? qsTr("G7 Island") + " - PiP" : qsTr("G7 Island")
+    title: onWayland ? qsTr("G7 Island") + " - PiP" : qsTr("G7 Island")
+    // Clicks pass through while it's waiting with nothing to show (see keptForMinutes).
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+        | (hasActivity ? 0 : Qt.WindowTransparentForInput)
     color: "transparent"
 
     readonly property int availW: Screen.desktopAvailableWidth > 0 ? Screen.desktopAvailableWidth : 1920
@@ -222,9 +224,35 @@ Window {
     }
 
     readonly property bool hasActivity: mode !== "idle"
-    visible: Preferences.g7Island && hasActivity
+    readonly property bool onWayland: Qt.platform.pluginName.startsWith("wayland")
+    // Wayland lets the Island be dragged, but a window that hides comes back
+    // wherever the compositor puts it. So after activity it stays, empty and
+    // letting clicks through, for a while: a song paused and played again keeps
+    // its spot. Then it hides, out of the window switcher.
+    property bool keptForMinutes: false
+    onHasActivityChanged: {
+        if (hasActivity) {
+            keepTimer.stop()
+            // Coming back while kept: the window is already up, so drop in here.
+            if (keptForMinutes && visible && !Theme.reduceMotion)
+                dropInAnim.restart()
+            keptForMinutes = onWayland
+        } else if (keptForMinutes) {
+            keepTimer.restart()
+        }
+    }
+    Timer {
+        id: keepTimer
+        interval: 10 * 60 * 1000
+        onTriggered: islandWin.keptForMinutes = false
+    }
+    visible: Preferences.g7Island && (hasActivity || keptForMinutes)
 
     onVisibleChanged: {
+        if (!visible) {
+            keepTimer.stop()
+            keptForMinutes = false
+        }
         if (visible) {
             Qt.callLater(() => AppController.styleShelfWindow())
             if (!Theme.reduceMotion)
@@ -341,6 +369,7 @@ Window {
     Item {
         id: root
         anchors.fill: parent
+        visible: islandWin.hasActivity
 
         // Hidden repeaters inside Item scope so QtQuick instantiates delegates cleanly
         Repeater {
