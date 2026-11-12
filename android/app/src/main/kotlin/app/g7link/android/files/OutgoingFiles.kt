@@ -30,10 +30,25 @@ internal object OutgoingFiles {
 
     internal fun isAllowedShareUri(scheme: String?, authority: String?, appPackage: String): Boolean {
         if (!scheme.equals("content", ignoreCase = true)) return false
-        val cleanAuth = authority?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
+        val cleanAuth = providerAuthority(authority) ?: return false
         if (cleanAuth in BLOCKED_AUTHORITIES) return false
         if (cleanAuth == "${appPackage.lowercase()}.shizuku") return false
         return true
+    }
+
+    /**
+     * The provider an authority reaches, as Android resolves it: a `userId@`
+     * prefix (added to URIs shared across profiles) only picks the user, so
+     * `0@mms` opens the same provider as `mms`. Null when it names no
+     * provider, including a prefix that isn't a user ID.
+     */
+    internal fun providerAuthority(authority: String?): String? {
+        val clean = authority?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        val at = clean.lastIndexOf('@')
+        if (at < 0) return clean
+        val user = clean.substring(0, at)
+        if (user.isEmpty() || user.any { it !in '0'..'9' } || user.toIntOrNull() == null) return null
+        return clean.substring(at + 1).takeIf { it.isNotEmpty() }
     }
 
     internal fun isAppPrivatePath(
