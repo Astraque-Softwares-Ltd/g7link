@@ -2152,21 +2152,46 @@ private val SEND_KEY_EDGE = 4.dp
 /** How long the Paste chip stays for something copied on the PC. */
 private const val PASTE_CHIP_MS = 30_000L
 
-/** Something just copied on the PC: one tap pastes it there. */
+/**
+ * Something just copied on the PC: one tap pastes it there. A quiet line above
+ * the keys, as tall as they are, so the touchpad keeps its room.
+ */
 @Composable
 private fun PasteChip(clip: PcClipNotice, onPaste: () -> Unit) {
-    G7Row(
-        label = stringResource(R.string.remote_key_paste),
-        sublabel = when (clip.kind) {
-            PcClipKind.TEXT -> clip.preview
-            PcClipKind.IMAGE -> stringResource(R.string.clipboard_history_image)
-            PcClipKind.PRIVATE -> stringResource(R.string.remote_paste_hidden)
-        },
-        icon = G7Icons.clipboard,
-        tint = g7Tints().teal,
-        active = true,
-        onClick = onPaste,
-    )
+    val scheme = MaterialTheme.colorScheme
+    val paste = stringResource(R.string.remote_key_paste)
+    val preview = when (clip.kind) {
+        PcClipKind.TEXT -> clip.preview.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
+        PcClipKind.IMAGE -> stringResource(R.string.clipboard_history_image)
+        PcClipKind.PRIVATE -> stringResource(R.string.remote_paste_hidden)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(MOUSE_KEY_HEIGHT)
+            .clip(RoundedCornerShape(10.dp))
+            .background(scheme.surfaceContainer)
+            .clickable(role = Role.Button, onClickLabel = paste, onClick = onPaste)
+            .padding(start = 12.dp, end = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            imageVector = G7Icons.clipboard,
+            contentDescription = null,
+            tint = g7Tints().teal,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            preview,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = scheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(paste, style = MaterialTheme.typography.labelLarge, color = scheme.primary)
+    }
 }
 
 @Composable
