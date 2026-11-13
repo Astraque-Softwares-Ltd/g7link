@@ -802,17 +802,9 @@ private fun TouchpadSurface(
             modifier = Modifier.fillMaxSize().then(padInput),
         ) {
             TouchMark(point = { touchPoint }, color = primaryColor)
+            // The pill and the lit Scroll key say it; no sentence across the pad.
             if (scrollLocked) {
                 ScrollLockPill(Modifier.align(Alignment.TopStart).padding(10.dp))
-                Text(
-                    stringResource(R.string.remote_scroll_mode_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = primaryColor,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(horizontal = 24.dp, vertical = 14.dp),
-                )
             }
             AnimatedVisibility(
                 visible = legendVisible && roomForLegend,
@@ -860,12 +852,14 @@ private fun TouchMark(point: () -> Offset?, color: Color) {
     }
 }
 
-/** On the touchpad while Middle has it scrolling. */
+/** On the touchpad while Middle has it scrolling. Read aloud, it says how scroll mode works. */
 @Composable
 private fun ScrollLockPill(modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
+    val howItWorks = stringResource(R.string.remote_scroll_mode_hint)
     Row(
         modifier = modifier
+            .semantics(mergeDescendants = true) { contentDescription = howItWorks }
             .clip(CircleShape)
             .background(scheme.primary.copy(alpha = 0.16f))
             .border(1.dp, scheme.primary.copy(alpha = 0.5f), CircleShape)
