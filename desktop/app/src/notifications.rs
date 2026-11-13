@@ -182,7 +182,8 @@ pub fn copy_otp(code: &str) {
 /// Puts a code on the clipboard privately, to be wiped after
 /// [`OTP_CLIPBOARD_LIFETIME`] unless something else was copied since.
 fn put_otp_on_clipboard(code: &str) -> bool {
-    if crate::sys::clipboard::write_private(code).is_err() {
+    if let Err(reason) = crate::sys::clipboard::write_code(code) {
+        tracing::warn!(reason, "can't put a one-time code on the clipboard");
         return false;
     }
     let code = code.to_owned();
@@ -209,18 +210,20 @@ pub fn maybe_auto_copy_otp(code: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    let now = Instant::now();
+    let mut last = LAST_AUTO_OTP.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((prev, when)) = last.as_ref()
+        && prev == trimmed
+        && when.elapsed() < Duration::from_secs(10)
     {
-        let mut last = LAST_AUTO_OTP.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((prev, when)) = last.as_ref()
-            && prev == trimmed
-            && now.duration_since(*when) < Duration::from_secs(10)
-        {
-            return true;
-        }
-        *last = Some((trimmed.to_owned(), now));
+        return true;
     }
-    put_otp_on_clipboard(trimmed)
+    // Remembered only once it's there: a code that couldn't be copied isn't
+    // claimed copied when its notification comes a moment later.
+    let copied = put_otp_on_clipboard(trimmed);
+    if copied {
+        *last = Some((trimmed.to_owned(), Instant::now()));
+    }
+    copied
 }
 
 /// Pictures from notifications, kept for a couple of days (history lasts one).

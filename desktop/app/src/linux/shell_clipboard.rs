@@ -26,6 +26,9 @@ const RECHECK: Duration = Duration::from_secs(30);
 const MAX_BYTES: usize = 10 * 1024 * 1024;
 
 static AVAILABLE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+/// When the extension last turned down its private write: before 1.5 it has
+/// none. Asked again after [`RECHECK`], as it may have been updated.
+static NO_PRIVATE_WRITE: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn session() -> Option<zbus::blocking::Connection> {
     zbus::blocking::connection::Builder::session().ok()?.method_timeout(CALL_TIMEOUT).build().ok()
@@ -47,11 +50,17 @@ pub fn available() -> bool {
     known
 }
 
-fn call<B: serde::Serialize + zbus::zvariant::DynamicType + Sync>(method: &str, body: &B) -> bool {
-    let sent = super::non_tokio(|| {
+fn send<B: serde::Serialize + zbus::zvariant::DynamicType + Sync>(
+    method: &str,
+    body: &B,
+) -> Option<zbus::Result<()>> {
+    super::non_tokio(|| {
         session().map(|conn| conn.call_method(Some(SHELL), PATH, Some(INTERFACE), method, body).map(|_| ()))
-    });
-    match sent {
+    })
+}
+
+fn call<B: serde::Serialize + zbus::zvariant::DynamicType + Sync>(method: &str, body: &B) -> bool {
+    match send(method, body) {
         Some(Ok(())) => true,
         Some(Err(error)) => {
             tracing::info!(%error, method, "the shell couldn't set the clipboard");
@@ -66,6 +75,36 @@ fn call<B: serde::Serialize + zbus::zvariant::DynamicType + Sync>(method: &str, 
 /// refused, so the caller can try another way.
 pub fn write_text(text: &str) -> bool {
     text.len() <= MAX_BYTES && available() && call("SetContent", &(text,))
+}
+
+/// Puts private `text` on the clipboard: listeners, the launcher's clipboard
+/// history among them, learn only that something private was copied. False
+/// when the extension isn't there or has no private write.
+pub fn write_private_text(text: &str) -> bool {
+    if text.len() > MAX_BYTES || !available() {
+        return false;
+    }
+    if NO_PRIVATE_WRITE.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|at| at.elapsed() < RECHECK) {
+        return false;
+    }
+    match send("SetPrivateContent", &(text,)) {
+        Some(Ok(())) => true,
+        Some(Err(zbus::Error::MethodError(..))) => {
+            *NO_PRIVATE_WRITE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            false
+        }
+        Some(Err(error)) => {
+            tracing::info!(%error, "the shell couldn't set the clipboard");
+            *AVAILABLE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            false
+        }
+        None => false,
+    }
+}
+
+/// Empties the clipboard.
+pub fn clear() -> bool {
+    write_private_text("") || (available() && call("SetContent", &("",)))
 }
 
 /// Puts a PNG image on the clipboard.

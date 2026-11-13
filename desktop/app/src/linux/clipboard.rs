@@ -83,6 +83,21 @@ static LAST_CLIP: Mutex<Clip> = Mutex::new(Clip::Empty);
 /// `read()` treats it as `Clip::Private`.
 static LAST_PRIVATE_TEXT: Mutex<Option<String>> = Mutex::new(None);
 
+/// Private text G7 Link put on GNOME's clipboard through the shell, until
+/// anything else is copied: GNOME gives no way to read the clipboard back, so
+/// this is how a wipe knows the text is still there.
+static SHELL_PRIVATE: Mutex<Option<String>> = Mutex::new(None);
+
+/// What a write is for. A one-time code may take a way that isn't private
+/// when there's no other: it's wiped soon after, and not reaching the
+/// clipboard at all would leave the user pasting something else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Plain,
+    Private,
+    Code,
+}
+
 /// In-memory file-list fallback for headless environments.
 static LAST_FILES: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 
@@ -224,6 +239,14 @@ fn on_data_control_change() {
 }
 
 fn on_shell_copy(clip: Clip) {
+    {
+        let mut written = SHELL_PRIVATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(text) = written.as_deref()
+            && !is_own_private_echo(text, &clip)
+        {
+            *written = None;
+        }
+    }
     if let Some(on_copy) = ON_COPY.get() {
         let _ = report_if_changed(clip, on_copy);
     }
@@ -303,13 +326,23 @@ fn watcher_loop() {
     }
 }
 
+fn just_wrote_private() -> bool {
+    OWN_PRIVATE_AT.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|at| at.elapsed() < OWN_PRIVATE_ECHO)
+}
+
+/// Whether the shell telling of `clip` is only G7 Link's own write of the
+/// private `text` coming back: the text itself, or a private copy at once.
+fn is_own_private_echo(text: &str, clip: &Clip) -> bool {
+    match clip {
+        Clip::Text { text: now, .. } => now == text,
+        Clip::Private => just_wrote_private(),
+        _ => false,
+    }
+}
+
 /// Something private is on the clipboard: told unless G7 Link just put it there.
 fn private_copied() {
-    let ours = OWN_PRIVATE_AT
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some_and(|at| at.elapsed() < OWN_PRIVATE_ECHO);
-    if !ours && let Some(on_private) = ON_PRIVATE.get() {
+    if !just_wrote_private() && let Some(on_private) = ON_PRIVATE.get() {
         on_private();
     }
 }
@@ -642,6 +675,13 @@ fn read_from_os(check_privacy: bool) -> Option<Clip> {
 
 /// Empties the clipboard if `text` is still what's on it.
 pub fn clear_private(text: &str) {
+    if !cfg!(test) && is_gnome_wayland() && !super::data_control::active() {
+        let ours = SHELL_PRIVATE.lock().unwrap_or_else(|e| e.into_inner()).take_if(|t| t.as_str() == text);
+        if ours.is_some() && !super::shell_clipboard::clear() {
+            tracing::warn!("can't clear a private text from GNOME's clipboard");
+        }
+        return;
+    }
     if read_private_text().is_some_and(|now| now == text)
         && let Err(reason) = write_private("")
     {
@@ -703,18 +743,27 @@ pub fn read_image_png() -> Option<Vec<u8>> {
 }
 
 pub fn write(text: &str) -> Result<(), String> {
-    write_text(text, None, None, false)
+    write_text(text, None, None, Kind::Plain)
 }
 
 pub fn write_rich(text: &str, html: Option<&str>, rtf: Option<&str>) -> Result<(), String> {
-    write_text(text, html, rtf, false)
+    write_text(text, html, rtf, Kind::Plain)
 }
 
 pub fn write_private(text: &str) -> Result<(), String> {
-    write_text(text, None, None, true)
+    write_text(text, None, None, Kind::Private)
 }
 
-fn write_text(text: &str, html: Option<&str>, rtf: Option<&str>, private: bool) -> Result<(), String> {
+/// Puts a one-time code on the clipboard, privately where the desktop allows
+/// it. On GNOME without the G7 Linux extension's private write, the code
+/// takes its ordinary one, which clipboard histories see. An error when
+/// nothing could reach the clipboard.
+pub fn write_code(text: &str) -> Result<(), String> {
+    write_text(text, None, None, Kind::Code)
+}
+
+fn write_text(text: &str, html: Option<&str>, rtf: Option<&str>, kind: Kind) -> Result<(), String> {
+    let private = kind != Kind::Plain;
     let mut html_owned = html.filter(|s| !s.trim().is_empty()).map(str::to_owned);
     let mut rtf_owned = rtf.filter(|s| !s.trim().is_empty()).map(str::to_owned);
 
@@ -770,11 +819,29 @@ fn write_text(text: &str, html: Option<&str>, rtf: Option<&str>, private: bool) 
     }
 
     // GNOME's Wayland: through the shell, which reaches the clipboard whatever
-    // has the focus. Never for a private text: it can't carry the privacy hint,
-    // so a clipboard history would keep it.
-    if !cfg!(test) && !private && is_gnome_wayland() && super::shell_clipboard::write_text(text) {
-        *MAYBE_STALE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        return Ok(());
+    // has the focus. A private text only with the extension's private write,
+    // which tells clipboard histories that something private was copied and
+    // nothing more; the ordinary one would have them keep it.
+    if !cfg!(test) && is_gnome_wayland() {
+        let written = match kind {
+            Kind::Plain => super::shell_clipboard::write_text(text),
+            Kind::Private => super::shell_clipboard::write_private_text(text),
+            Kind::Code => {
+                super::shell_clipboard::write_private_text(text) || super::shell_clipboard::write_text(text)
+            }
+        };
+        if written {
+            *MAYBE_STALE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            if private {
+                *SHELL_PRIVATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_owned());
+            }
+            return Ok(());
+        }
+        // Without focus a write through Qt goes nowhere: a code isn't claimed
+        // copied when it can't be.
+        if kind == Kind::Code {
+            return Err("GNOME's clipboard needs the G7 Linux extension".into());
+        }
     }
 
     if !cfg!(test) && wayland_helpers() {
@@ -1106,6 +1173,22 @@ mod tests {
     use super::*;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn only_a_private_write_coming_back_keeps_it_wipeable() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let text = |t: &str| Clip::Text { text: t.into(), html: None, rtf: None };
+        assert!(is_own_private_echo("482913", &text("482913")));
+        assert!(!is_own_private_echo("482913", &text("something else")));
+        assert!(!is_own_private_echo("482913", &Clip::Image(Image::Png(vec![1]))));
+
+        *OWN_PRIVATE_AT.lock().unwrap() = Some(Instant::now());
+        assert!(is_own_private_echo("482913", &Clip::Private));
+        // A password manager's copy a while later is the user's, not ours.
+        *OWN_PRIVATE_AT.lock().unwrap() = Instant::now().checked_sub(OWN_PRIVATE_ECHO * 2);
+        assert!(!is_own_private_echo("482913", &Clip::Private));
+        *OWN_PRIVATE_AT.lock().unwrap() = None;
+    }
 
     #[test]
     fn cf_html_falls_back_to_markers_when_offsets_invalid() {
