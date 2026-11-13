@@ -30,10 +30,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorProducer
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -203,3 +211,46 @@ fun G7Chevron(open: Boolean, modifier: Modifier = Modifier) {
         modifier = modifier.size(18.dp).graphicsLayer { rotationZ = turn },
     )
 }
+
+/**
+ * How far a state such as selected or highlighted has come on, from 0 to 1, on the quick timing.
+ * Read it while drawing (in a draw lambda, `graphicsLayer` or a [ColorProducer]) so its frames
+ * neither lay out nor recompose anything.
+ */
+@Composable
+fun g7StateFraction(on: Boolean, label: String = "G7State"): State<Float> =
+    animateFloatAsState(
+        targetValue = if (on) 1f else 0f,
+        animationSpec = when {
+            LocalReducedMotion.current -> snap()
+            on -> G7Motion.move(G7Motion.QUICK_IN)
+            else -> G7Motion.move(G7Motion.QUICK_OUT)
+        },
+        label = label,
+    )
+
+/**
+ * A [fill] and an [edge] in [shape], faded in by [shown] (see [g7StateFraction]) over [under], which
+ * fades out. Place it after a clip to the same shape: the edge is stroked on the outline and the
+ * clip keeps its inner half.
+ */
+fun Modifier.g7Plate(
+    shown: State<Float>,
+    fill: Color,
+    edge: Color?,
+    shape: Shape,
+    under: Color = Color.Transparent,
+    edgeWidth: Dp = 1.dp,
+): Modifier =
+    drawWithCache {
+        val outline = shape.createOutline(size, layoutDirection, this)
+        val stroke = Stroke(width = edgeWidth.toPx() * 2f)
+        onDrawBehind {
+            val f = shown.value
+            if (f < 1f && under.alpha > 0f) drawOutline(outline, under.copy(alpha = under.alpha * (1f - f)))
+            if (f > 0f) {
+                drawOutline(outline, fill.copy(alpha = fill.alpha * f))
+                if (edge != null) drawOutline(outline, edge.copy(alpha = edge.alpha * f), style = stroke)
+            }
+        }
+    }

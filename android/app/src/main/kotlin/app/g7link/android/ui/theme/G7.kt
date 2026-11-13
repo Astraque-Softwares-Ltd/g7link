@@ -81,6 +81,17 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.g7link.android.R
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.launch
 
 /**
  * G7's "Quiet Tool" colors (docs/design-language.md in G7 Linux): charcoal grounds,
@@ -747,6 +758,9 @@ fun G7SectionLabel(text: String, modifier: Modifier = Modifier) {
  * when it highlights. [active] is a mode or session that's on (drawn in the
  * accent); [busy] is an action under way (a spinner, and no second tap).
  */
+/** How far a disabled control fades. */
+private const val DISABLED_ALPHA = 0.45f
+
 @Composable
 fun G7Row(
     label: String,
@@ -765,18 +779,16 @@ fun G7Row(
 ) {
     val scheme = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(10.dp)
+    val activeShown = g7StateFraction(active)
+    val highlightShown = g7StateFraction(highlighted && !active)
+    val enabledShown = g7StateFraction(enabled)
     Row(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .clip(shape)
-            .then(
-                when {
-                    active -> Modifier.background(scheme.primary.copy(alpha = 0.14f)).border(1.dp, scheme.primary, shape)
-                    highlighted -> Modifier.background(scheme.surfaceContainerHigh)
-                    else -> Modifier
-                },
-            )
+            .g7Plate(highlightShown, scheme.surfaceContainerHigh, edge = null, shape)
+            .g7Plate(activeShown, scheme.primary.copy(alpha = 0.14f), scheme.primary, shape)
             .then(
                 if (onClick != null) {
                     Modifier.clickable(enabled = enabled && !busy, role = role, onClick = onClick)
@@ -786,7 +798,7 @@ fun G7Row(
             )
             .semantics { if (active) selected = true }
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
+            .graphicsLayer { alpha = DISABLED_ALPHA + (1f - DISABLED_ALPHA) * enabledShown.value },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -800,10 +812,12 @@ fun G7Row(
                 )
             }
             Column(Modifier.weight(1f)) {
-                Text(
+                val labelIdle = scheme.onSurface
+                val labelActive = scheme.primary
+                BasicText(
                     label,
                     style = MaterialTheme.typography.bodyLarge,
-                    color = if (active) scheme.primary else scheme.onSurface,
+                    color = { lerp(labelIdle, labelActive, activeShown.value) },
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -950,22 +964,31 @@ fun G7RaisedButton(
 ) {
     val scheme = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(10.dp)
+    val selectedShown = g7StateFraction(selected)
+    val enabledShown = g7StateFraction(enabled)
+    val labelIdle = scheme.onSurfaceVariant
+    val labelSelected = scheme.primary
     Box(
         modifier = modifier
             .heightIn(min = 48.dp)
             .clip(shape)
-            .background(if (selected) scheme.primary.copy(alpha = 0.18f) else scheme.surfaceContainer)
-            .then(if (selected) Modifier.border(1.dp, scheme.primary, shape) else Modifier)
+            .g7Plate(
+                selectedShown,
+                scheme.primary.copy(alpha = 0.18f),
+                scheme.primary,
+                shape,
+                under = scheme.surfaceContainer,
+            )
             .combinedClickable(enabled = enabled, role = Role.Button, onLongClick = onLongClick, onClick = onClick)
             .semantics { this.selected = selected }
             .padding(horizontal = 8.dp, vertical = 12.dp)
-            .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
+            .graphicsLayer { alpha = DISABLED_ALPHA + (1f - DISABLED_ALPHA) * enabledShown.value },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        BasicText(
             label,
             style = MaterialTheme.typography.labelLarge,
-            color = if (selected) scheme.primary else scheme.onSurfaceVariant,
+            color = { lerp(labelIdle, labelSelected, selectedShown.value) },
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -987,17 +1010,19 @@ fun G7IconButton(
     val scheme = MaterialTheme.colorScheme
     val description = contentDescription
     val shape = RoundedCornerShape(10.dp)
+    val selectedShown = g7StateFraction(selected)
+    val enabledShown = g7StateFraction(enabled)
     Box(
         modifier = modifier
             .heightIn(min = 48.dp)
             .clip(shape)
-            .then(
-                when {
-                    // A mode that's on: the accent, so it reads at a glance.
-                    selected -> Modifier.background(scheme.primary.copy(alpha = 0.18f)).border(1.dp, scheme.primary, shape)
-                    filled -> Modifier.background(scheme.surfaceContainer)
-                    else -> Modifier
-                },
+            // A mode that's on: the accent, so it reads at a glance.
+            .g7Plate(
+                selectedShown,
+                scheme.primary.copy(alpha = 0.18f),
+                scheme.primary,
+                shape,
+                under = if (filled) scheme.surfaceContainer else Color.Transparent,
             )
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics {
@@ -1005,14 +1030,21 @@ fun G7IconButton(
                 this.selected = selected
             }
             .padding(12.dp)
-            .then(if (enabled) Modifier else Modifier.alpha(0.45f)),
+            .graphicsLayer { alpha = DISABLED_ALPHA + (1f - DISABLED_ALPHA) * enabledShown.value },
         contentAlignment = Alignment.Center,
     ) {
+        // The accent icon fades in over the plain one, so the change is drawn, not recomposed.
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = if (selected) scheme.primary else if (tint == Color.Unspecified) scheme.onSurface else tint,
-            modifier = Modifier.size(22.dp),
+            tint = if (tint == Color.Unspecified) scheme.onSurface else tint,
+            modifier = Modifier.size(22.dp).graphicsLayer { alpha = 1f - selectedShown.value },
+        )
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = scheme.primary,
+            modifier = Modifier.size(22.dp).graphicsLayer { alpha = selectedShown.value },
         )
     }
 }
@@ -1365,22 +1397,75 @@ fun <T> G7Tabs(
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
+    val reducedMotion = LocalReducedMotion.current
+    val selectedIndex = options.indexOfFirst { it.first == selected }
+    // Where each tab sits (left, width), written as they're placed: the indicator slides between them.
+    val spans = remember(options.size) { FloatArray(options.size * 2) }
+    var placed by remember { mutableIntStateOf(0) }
+    val indicatorLeft = remember { Animatable(0f) }
+    val indicatorWidth = remember { Animatable(0f) }
+    LaunchedEffect(selectedIndex, placed) {
+        if (selectedIndex < 0 || placed == 0) return@LaunchedEffect
+        val left = spans[selectedIndex * 2]
+        val width = spans[selectedIndex * 2 + 1]
+        if (reducedMotion || indicatorWidth.value == 0f) {
+            indicatorLeft.snapTo(left)
+            indicatorWidth.snapTo(width)
+        } else {
+            launch { indicatorLeft.animateTo(left, G7Motion.follow()) }
+            indicatorWidth.animateTo(width, G7Motion.follow())
+        }
+    }
+    val fill = scheme.primary.copy(alpha = 0.18f)
+    val edge = scheme.primary
     Row(
-        modifier = modifier.horizontalScroll(rememberScrollState()),
+        modifier = modifier
+            .horizontalScroll(rememberScrollState())
+            .drawWithCache {
+                val radius = 8.dp.toPx()
+                val edgeWidth = 1.dp.toPx()
+                val stroke = Stroke(width = edgeWidth)
+                onDrawBehind {
+                    val width = indicatorWidth.value
+                    if (selectedIndex >= 0 && width > 0f) {
+                        val left = indicatorLeft.value
+                        drawRoundRect(fill, Offset(left, 0f), Size(width, size.height), CornerRadius(radius))
+                        val inset = edgeWidth / 2f
+                        drawRoundRect(
+                            edge,
+                            Offset(left + inset, inset),
+                            Size(width - edgeWidth, size.height - edgeWidth),
+                            CornerRadius(radius - inset),
+                            style = stroke,
+                        )
+                    }
+                }
+            },
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        options.forEach { (value, label) ->
+        val labelIdle = scheme.onSurfaceVariant
+        val labelSelected = scheme.primary
+        options.forEachIndexed { index, (value, label) ->
             val isSelected = value == selected
-            val shape = RoundedCornerShape(8.dp)
-            Text(
+            val selectedShown = g7StateFraction(isSelected)
+            BasicText(
                 label,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (isSelected) scheme.primary else scheme.onSurfaceVariant,
+                color = { lerp(labelIdle, labelSelected, selectedShown.value) },
                 maxLines = 1,
                 modifier = Modifier
-                    .clip(shape)
-                    .background(if (isSelected) scheme.primary.copy(alpha = 0.18f) else Color.Transparent)
-                    .then(if (isSelected) Modifier.border(1.dp, scheme.primary, shape) else Modifier)
+                    .onPlaced { coordinates ->
+                        val left = coordinates.positionInParent().x
+                        val width = coordinates.size.width.toFloat()
+                        if (index * 2 + 1 < spans.size &&
+                            (spans[index * 2] != left || spans[index * 2 + 1] != width)
+                        ) {
+                            spans[index * 2] = left
+                            spans[index * 2 + 1] = width
+                            placed++
+                        }
+                    }
+                    .clip(RoundedCornerShape(8.dp))
                     .clickable(role = Role.Tab) { onSelect(value) }
                     .semantics { this.selected = isSelected; role = Role.Tab }
                     .padding(horizontal = 12.dp, vertical = 8.dp),

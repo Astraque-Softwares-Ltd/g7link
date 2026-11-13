@@ -77,6 +77,8 @@ import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.G7LinkTheme
 import app.g7link.android.ui.theme.g7Page
 import app.g7link.android.ui.theme.g7Crossfade
+import app.g7link.android.ui.theme.g7StateFraction
+import androidx.compose.ui.graphics.graphicsLayer
 import app.g7link.android.ui.walkthrough.WelcomeScreen
 import app.g7link.android.ui.walkthrough.WalkthroughStep
 import app.g7link.android.ui.walkthrough.resolveStartupWalkthrough
@@ -987,16 +989,28 @@ private fun G7BottomBar(selectedTab: Tab, onSelectTab: (Tab) -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(3.dp),
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = if (selected) scheme.primary else scheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
+                // The tab's colors change as it's drawn, not recomposed.
+                val selectedShown = g7StateFraction(selected)
+                Box {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = scheme.onSurfaceVariant,
+                        modifier = Modifier.size(22.dp).graphicsLayer { alpha = 1f - selectedShown.value },
+                    )
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = scheme.primary,
+                        modifier = Modifier.size(22.dp).graphicsLayer { alpha = selectedShown.value },
+                    )
+                }
+                val labelIdle = scheme.onSurfaceVariant
+                val labelSelected = scheme.onSurface
+                androidx.compose.foundation.text.BasicText(
                     stringResource(label),
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (selected) scheme.onSurface else scheme.onSurfaceVariant,
+                    color = { androidx.compose.ui.graphics.lerp(labelIdle, labelSelected, selectedShown.value) },
                     maxLines = 1,
                 )
             }
