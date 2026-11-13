@@ -1801,10 +1801,9 @@ impl qobject::AppController {
                 core_host::host().hub.update(|s| s.set_toggles(device, latest));
                 show_message(message);
                 let _ = qt.queue(move |mut object| {
-                    object.as_mut().phone_toggle_failed(
-                        QString::from(&device.to_string()),
-                        QString::from(&failed_id),
-                    );
+                    object
+                        .as_mut()
+                        .phone_toggle_failed(QString::from(&device.to_string()), QString::from(&failed_id));
                 });
             }
         });
