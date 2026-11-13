@@ -392,13 +392,16 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Mirror", "This PC can't decode the phone's video."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "This phone's app doesn't share its screen yet. Update G7 Link on the phone."), // desktop/app/src/mirror.rs
     QT_TRANSLATE_NOOP("Mirror", "Wait for the screen to appear first."), // desktop/app/src/mirror.rs
+    QT_TRANSLATE_NOOP("Notifications", "Code %1 copied"), // desktop/app/src/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Code copied"), // desktop/app/src/notifications.rs
+    QT_TRANSLATE_NOOP("Notifications", "Copy again"), // desktop/app/src/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Copy code"), // desktop/app/src/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Dismissed %1 from %2"), // desktop/app/src/bridge/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Dismissed %1 notifications"), // desktop/app/src/bridge/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Dismissed from %1"), // desktop/app/src/bridge/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Notification dismissed"), // desktop/app/src/bridge/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Open"), // desktop/app/src/linux/toast.rs
+    QT_TRANSLATE_NOOP("Notifications", "Press Ctrl+V to paste · %1"), // desktop/app/src/notifications.rs
     QT_TRANSLATE_NOOP("Notifications", "Reply"), // desktop/app/src/linux/toast.rs
     QT_TRANSLATE_NOOP("Notifications", "That notification is gone from the phone."), // desktop/app/src/notifications.rs
     QT_TRANSLATE_NOOP("Obs", "OBS isn't reachable on port %1. Turn on its WebSocket server."), // desktop/app/src/obs.rs

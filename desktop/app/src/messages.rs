@@ -1463,7 +1463,7 @@ pub fn on_event(event: &NodeEvent) {
                         && now_ms().saturating_sub(top.date) < 60_000
                         && let Some(code) = one_time_code(&top.snippet)
                     {
-                        crate::notifications::maybe_auto_copy_otp(&code);
+                        let _ = crate::notifications::maybe_auto_copy_otp(&code);
                     }
                 });
             }

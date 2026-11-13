@@ -28,7 +28,11 @@ use crate::{
 pub const ACTION_COPY_OTP: &str = "copy_otp";
 
 /// Whether incoming one-time codes are copied to the PC clipboard automatically.
-static AUTO_COPY_OTP: AtomicBool = AtomicBool::new(false);
+static AUTO_COPY_OTP: AtomicBool = AtomicBool::new(true);
+/// How long a copied one-time code stays on the clipboard before it's wiped.
+const OTP_CLIPBOARD_LIFETIME: Duration = Duration::from_secs(120);
+/// The pending wipe of the latest copied code: a newer copy replaces it.
+static OTP_CLEAR: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 
 /// Whether phone Do Not Disturb quiets phone notification pop-ups on the PC.
 static SYNC_DND: AtomicBool = AtomicBool::new(false);
@@ -170,23 +174,40 @@ pub fn notification_otp(n: &Notification) -> Option<String> {
 /// logs the code.
 pub fn copy_otp(code: &str) {
     let trimmed = code.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    if crate::sys::clipboard::write_private(trimmed).is_ok() {
+    if !trimmed.is_empty() && put_otp_on_clipboard(trimmed) {
         crate::bridge::app::show_message(tr!("Notifications", "Code copied"));
     }
 }
 
+/// Puts a code on the clipboard privately, to be wiped after
+/// [`OTP_CLIPBOARD_LIFETIME`] unless something else was copied since.
+fn put_otp_on_clipboard(code: &str) -> bool {
+    if crate::sys::clipboard::write_private(code).is_err() {
+        return false;
+    }
+    let code = code.to_owned();
+    let clear = core_host::host().runtime.spawn(async move {
+        tokio::time::sleep(OTP_CLIPBOARD_LIFETIME).await;
+        let _ = tokio::task::spawn_blocking(move || crate::sys::clipboard::clear_private(&code)).await;
+    });
+    // The clipboard holds only the newest code, so an older one's wipe has nothing left to do.
+    let replaced = OTP_CLEAR.lock().unwrap_or_else(|e| e.into_inner()).replace(clear.abort_handle());
+    if let Some(replaced) = replaced {
+        replaced.abort();
+    }
+    true
+}
+
 /// Automatically copies `code` when the "Copy codes automatically" setting is
-/// enabled, deduplicating identical codes within 10 seconds.
-pub fn maybe_auto_copy_otp(code: &str) {
+/// enabled, deduplicating identical codes within 10 seconds. Whether the code
+/// is on the clipboard now, copied by this call or by one moments before.
+pub fn maybe_auto_copy_otp(code: &str) -> bool {
     if !AUTO_COPY_OTP.load(Ordering::Relaxed) {
-        return;
+        return false;
     }
     let trimmed = code.trim();
     if trimmed.is_empty() {
-        return;
+        return false;
     }
     let now = Instant::now();
     {
@@ -195,11 +216,11 @@ pub fn maybe_auto_copy_otp(code: &str) {
             && prev == trimmed
             && now.duration_since(*when) < Duration::from_secs(10)
         {
-            return;
+            return true;
         }
         *last = Some((trimmed.to_owned(), now));
     }
-    copy_otp(trimmed);
+    put_otp_on_clipboard(trimmed)
 }
 
 /// Pictures from notifications, kept for a couple of days (history lasts one).
@@ -706,10 +727,10 @@ fn show(device: DeviceId, n: &Notification) {
         return;
     }
     let otp = notification_otp(n);
-    if let Some(code) = &otp {
-        otp_codes(|c| c.insert((device, n.key.clone()), code.clone()));
-        maybe_auto_copy_otp(code);
-    }
+    let copied = otp.as_deref().is_some_and(|code| {
+        otp_codes(|c| c.insert((device, n.key.clone()), code.to_owned()));
+        maybe_auto_copy_otp(code)
+    });
     let (several_phones, device_name, icon, rule, image, phone_dnd) = core_host::host().hub.read(|s| {
         let dnd = s.toggles.get(&device).is_some_and(|t| t.dnd);
         (
@@ -741,20 +762,28 @@ fn show(device: DeviceId, n: &Notification) {
         live_toasts(|l| l.remove(&id));
     }
     let mut actions: Vec<(String, String)> = Vec::new();
-    if otp.is_some() {
+    if copied {
+        actions.push((ACTION_COPY_OTP.to_owned(), tr!("Notifications", "Copy again")));
+    } else if otp.is_some() {
         actions.push((ACTION_COPY_OTP.to_owned(), tr!("Notifications", "Copy code")));
     }
     actions.extend(n.actions.iter().filter(|a| !a.reply).map(|a| (a.id.clone(), a.title.clone())));
     let reply = n.actions.iter().find(|a| a.reply);
+    let phone = device_name.filter(|_| several_phones);
+    let from = toast_title(n.title.as_deref(), &n.app_name, phone.as_deref());
+    // A copied code is what matters: the toast says it's ready to paste, and from whom.
+    let (title, body) = match otp.as_deref().filter(|_| copied) {
+        Some(code) => (
+            tr!("Notifications", "Code %1 copied", code),
+            tr!("Notifications", "Press Ctrl+V to paste · %1", from),
+        ),
+        None => (from, n.text.clone().unwrap_or_default()),
+    };
     let toast = Toast {
         device: device.to_string(),
         key: n.key.clone(),
-        title: toast_title(
-            n.title.as_deref(),
-            &n.app_name,
-            device_name.filter(|_| several_phones).as_deref(),
-        ),
-        body: n.text.clone().unwrap_or_default(),
+        title,
+        body,
         attribution: n.app_name.clone(),
         icon,
         // A square slot: the square version when it's made, so it isn't squeezed.

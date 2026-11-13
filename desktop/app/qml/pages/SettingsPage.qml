@@ -1115,7 +1115,7 @@ Item {
                             width: parent.width
                             iconPath: Icons.lock
                             title: qsTr("Copy one-time codes")
-                            description: qsTr("From texts")
+                            description: qsTr("From texts, wiped after 2 minutes")
                             Toggle {
                                 label: qsTr("Copy one-time codes")
                                 checked: Preferences.autoCopyOtp

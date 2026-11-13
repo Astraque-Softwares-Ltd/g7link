@@ -468,7 +468,7 @@ pub struct Settings {
     /// Suggest context chips (Open, Open in Maps, Call, Track, Email) for copied text.
     #[serde(alias = "suggest_clipboard_actions")]
     pub suggest_clipboard_actions: bool,
-    /// Copy one-time codes from phone notifications and SMS automatically.
+    /// Copy one-time codes from phone notifications and SMS automatically (on by default).
     #[serde(alias = "auto_copy_otp", alias = "smart_otp_auto_copy")]
     pub auto_copy_otp: bool,
     /// Pause PC media playback while a phone call is ringing or active.
@@ -698,7 +698,7 @@ impl Default for Settings {
             auto_clipboard: true,
             clipboard_history: true,
             suggest_clipboard_actions: true,
-            auto_copy_otp: false,
+            auto_copy_otp: true,
             pause_media_on_call: true,
             auto_call_audio: false,
             mute_while_watched: true,

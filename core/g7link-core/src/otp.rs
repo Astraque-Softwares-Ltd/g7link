@@ -736,6 +736,15 @@ mod tests {
             ("Payment of $1200 to Acct 9988: enter passcode 445566 to authorize.", "445566"),
             ("If you did not request login code 674829, call +1 800-555-0199.", "674829"),
             ("Call 555-0100 if you didn't request verification code 314159.", "314159"),
+            // A bank's date with a written month next to the code
+            (
+                "Dear customer, Your One Time Password (OTP) for transaction on Co-Operative Bank, Kenya \
+                 online banking at 02-Nov-2026 21:29 PM is 58214. This OTP is valid up to 02-Nov-2026 \
+                 21:32 PM.",
+                "58214",
+            ),
+            ("Your OTP valid till 02-Nov-2026: 58214", "58214"),
+            ("OTP for 14 Nov 2026 login: 7731", "7731"),
             // Common languages (Spanish, French, German, Portuguese, Italian, Russian, Hindi, Chinese, Japanese, Korean, Arabic)
             ("Tu código de verificación es 583920. No lo compartas.", "583920"),
             ("Votre code de vérification est 918273.", "918273"),
