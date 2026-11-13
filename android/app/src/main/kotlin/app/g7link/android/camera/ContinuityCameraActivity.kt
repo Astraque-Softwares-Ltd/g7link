@@ -62,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -459,21 +460,19 @@ private fun ContinuityCameraScreen(
                 )
                 if (mode == "scan") {
                     val primaryColor = MaterialTheme.colorScheme.primary
+                    // One path and stroke, redrawn as the outline follows the page.
+                    val path = remember { Path() }
+                    val stroke = rememberOutlineStroke()
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val q = liveQuad.ordered()
-                        val p1 = Offset(q.topLeft.x * size.width, q.topLeft.y * size.height)
-                        val p2 = Offset(q.topRight.x * size.width, q.topRight.y * size.height)
-                        val p3 = Offset(q.bottomRight.x * size.width, q.bottomRight.y * size.height)
-                        val p4 = Offset(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
-                        val path = Path().apply {
-                            moveTo(p1.x, p1.y)
-                            lineTo(p2.x, p2.y)
-                            lineTo(p3.x, p3.y)
-                            lineTo(p4.x, p4.y)
-                            close()
-                        }
+                        path.reset()
+                        path.moveTo(q.topLeft.x * size.width, q.topLeft.y * size.height)
+                        path.lineTo(q.topRight.x * size.width, q.topRight.y * size.height)
+                        path.lineTo(q.bottomRight.x * size.width, q.bottomRight.y * size.height)
+                        path.lineTo(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
+                        path.close()
                         drawPath(path, color = primaryColor.copy(alpha = 0.18f))
-                        drawPath(path, color = primaryColor, style = Stroke(width = 3.dp.toPx()))
+                        drawPath(path, color = primaryColor, style = stroke)
                     }
                 }
             } else {
@@ -775,6 +774,11 @@ private fun QuadCornerEditorOverlay(
 
     var activeCorner by remember { mutableStateOf(-1) }
     var currentQuad by remember(quad) { mutableStateOf(quad) }
+    // One path and stroke, redrawn as a corner is dragged.
+    val path = remember { Path() }
+    val stroke = rememberOutlineStroke()
+    val handle = with(LocalDensity.current) { 12.dp.toPx() }
+    val handleInner = with(LocalDensity.current) { 6.dp.toPx() }
 
     Canvas(
         modifier = Modifier
@@ -827,21 +831,31 @@ private fun QuadCornerEditorOverlay(
         val p3 = toScreen(currentQuad.bottomRight)
         val p4 = toScreen(currentQuad.bottomLeft)
 
-        val path = Path().apply {
-            moveTo(p1.x, p1.y)
-            lineTo(p2.x, p2.y)
-            lineTo(p3.x, p3.y)
-            lineTo(p4.x, p4.y)
-            close()
-        }
+        path.reset()
+        path.moveTo(p1.x, p1.y)
+        path.lineTo(p2.x, p2.y)
+        path.lineTo(p3.x, p3.y)
+        path.lineTo(p4.x, p4.y)
+        path.close()
         drawPath(path, color = primaryColor.copy(alpha = 0.20f))
-        drawPath(path, color = primaryColor, style = Stroke(width = 3.dp.toPx()))
+        drawPath(path, color = primaryColor, style = stroke)
 
-        for (pt in listOf(p1, p2, p3, p4)) {
-            drawCircle(color = primaryColor, radius = 12.dp.toPx(), center = pt)
-            drawCircle(color = surfaceColor, radius = 6.dp.toPx(), center = pt)
-        }
+        drawCircle(color = primaryColor, radius = handle, center = p1)
+        drawCircle(color = surfaceColor, radius = handleInner, center = p1)
+        drawCircle(color = primaryColor, radius = handle, center = p2)
+        drawCircle(color = surfaceColor, radius = handleInner, center = p2)
+        drawCircle(color = primaryColor, radius = handle, center = p3)
+        drawCircle(color = surfaceColor, radius = handleInner, center = p3)
+        drawCircle(color = primaryColor, radius = handle, center = p4)
+        drawCircle(color = surfaceColor, radius = handleInner, center = p4)
     }
+}
+
+/** The page outline's stroke, made once per density. */
+@Composable
+private fun rememberOutlineStroke(): Stroke {
+    val width = with(LocalDensity.current) { 3.dp.toPx() }
+    return remember(width) { Stroke(width = width) }
 }
 
 private fun extractUprightLuma(image: ImageProxy): Triple<ByteArray, Int, Int>? = runCatching {

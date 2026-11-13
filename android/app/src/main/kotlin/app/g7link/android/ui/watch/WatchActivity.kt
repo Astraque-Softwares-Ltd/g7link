@@ -29,6 +29,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -196,9 +197,12 @@ private fun WatchScreen(
         }
     }
     val timeline = timelines["$pcId/$player"]
-    // Read with `now`, so they're read again every tick.
-    val durationMs = if (local != null) now.let { local.durationMs() } else timeline?.durationMs ?: 0
-    val positionMs = if (local != null) now.let { local.positionMs() } else timeline?.positionAt(now) ?: 0
+    // Read with `now`, so they're read again every tick. Only the seek bar reads where it
+    // is, so only it is composed again each tick; the length rarely changes.
+    val durationMs by remember(local, timeline) {
+        derivedStateOf { if (local != null) now.let { local.durationMs() } else timeline?.durationMs ?: 0L }
+    }
+    val positionMs: () -> Long = { if (local != null) now.let { local.positionMs() } else timeline?.positionAt(now) ?: 0L }
     val canSeek = durationMs > 0 && (local != null || timeline?.canSeek == true)
     val seekTo: (Long) -> Unit = { target ->
         val at = target.coerceIn(0, durationMs)
@@ -252,7 +256,7 @@ private fun WatchScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent)))
+                        .background(TOP_SHADE)
                         .padding(horizontal = 20.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -292,7 +296,7 @@ private fun WatchScreen(
                 ) {
                     if (canSeek) {
                         SkipButton(R.drawable.ic_fast_rewind, stringResource(R.string.watch_back_10)) {
-                            seekTo(positionMs - SKIP_MS)
+                            seekTo(positionMs() - SKIP_MS)
                         }
                     }
                     val label = stringResource(if (isPlaying) R.string.media_pause else R.string.media_play)
@@ -319,7 +323,7 @@ private fun WatchScreen(
                     }
                     if (canSeek) {
                         SkipButton(R.drawable.ic_fast_forward, stringResource(R.string.watch_forward_10)) {
-                            seekTo(positionMs + SKIP_MS)
+                            seekTo(positionMs() + SKIP_MS)
                         }
                     }
                 }
@@ -335,6 +339,10 @@ private fun WatchScreen(
         }
     }
 }
+
+/** Shades over the picture so the controls read on it, made once. */
+private val TOP_SHADE = Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent))
+private val BOTTOM_SHADE = Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f)))
 
 @Composable
 private fun SkipButton(icon: Int, label: String, onClick: () -> Unit) {
@@ -352,16 +360,16 @@ private fun SkipButton(icon: Int, label: String, onClick: () -> Unit) {
 
 /** Where it is and how long it is, with a bar to go anywhere in it. */
 @Composable
-private fun SeekBar(positionMs: Long, durationMs: Long, onDrag: () -> Unit, onSeek: (Long) -> Unit) {
+private fun SeekBar(positionMs: () -> Long, durationMs: Long, onDrag: () -> Unit, onSeek: (Long) -> Unit) {
     // While a finger drags, the bar follows it rather than the player.
     var dragging by remember { mutableStateOf(false) }
     var dragged by remember { mutableFloatStateOf(0f) }
-    val shown = if (dragging) dragged else positionMs.toFloat()
+    val shown = if (dragging) dragged else positionMs().toFloat()
     val seekLabel = stringResource(R.string.watch_seek)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f))))
+            .background(BOTTOM_SHADE)
             .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
