@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.theme
 
 import androidx.compose.animation.AnimatedContentTransitionScope
