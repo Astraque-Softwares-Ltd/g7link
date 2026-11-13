@@ -4,6 +4,47 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.12 (2026-11-13)
+
+A touchpad you can feel, a look before the clipboard goes, and a long pass
+over security and memory, especially on shared Wi-Fi.
+
+### Added
+
+- **The touchpad vibrates** as you click, drag and scroll, following the
+  phone's touch-vibration setting. Settings has a switch to turn it off.
+- **Raised keys on the Touchpad tab,** with a help button that shows the
+  gestures and fades away, instead of a line of tips.
+- **See the clipboard before sending it.** Home's Clipboard shows what is on
+  the phone's clipboard first. The tile, notification and widget still send
+  at once.
+
+### Changed
+
+- **Pairing with a link** shows a code on both screens to compare.
+- **Text and links shared from other apps** always ask which PC first.
+- **The PC asks before opening a link** from a phone.
+- **Phones can't type on a locked PC,** and PCs can't control a locked
+  phone; the phone says when a PC controls it.
+- **Elevated starts only on trusted Wi-Fi networks.**
+- **The phone's name is on the network only while pairing,** and USB
+  pairing works only while the pairing screen is open.
+- **Copy says "Copied" on its button only,** without a second message.
+- A phone's link in the timeline says "Sent from".
+- The Screen tab's buttons show their whole names, with room above the
+  keyboard.
+
+### Fixed
+
+- mDNS no longer busy-loops after it restarts, and closes the sockets of
+  networks the PC has left.
+- Much less memory for notification pictures, copied pictures, recordings'
+  sound, screen sharing and the timeline.
+- Received files are saved under names claimed exclusively, without
+  text-direction tricks, and synced files stay inside the sync folder.
+- Many limits on what other devices on the network and paired devices can
+  ask for, and the G7 Link data folder is private to the user.
+
 ## 0.1.11 (2026-11-12)
 
 Screenshots and recordings of the PC from the phone, a Paste chip, your own
