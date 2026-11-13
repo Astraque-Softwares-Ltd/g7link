@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
@@ -22,6 +23,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.using
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyItemScope
@@ -253,4 +255,16 @@ fun Modifier.g7Plate(
                 if (edge != null) drawOutline(outline, edge.copy(alpha = edge.alpha * f), style = stroke)
             }
         }
+    }
+
+/**
+ * One small piece of content swapping for another, or for nothing (a status banner): it fades
+ * across while the room it takes grows or shrinks to the new size.
+ */
+fun <S> AnimatedContentTransitionScope<S>.g7Swap(reducedMotion: Boolean): ContentTransform =
+    if (reducedMotion) {
+        (EnterTransition.None togetherWith ExitTransition.None) using null
+    } else {
+        (fadeIn(G7Motion.enter(G7Motion.SMALL_IN)) togetherWith fadeOut(G7Motion.exit(G7Motion.SMALL_OUT))) using
+            SizeTransform { _, _ -> G7Motion.move(G7Motion.SMALL_IN) }
     }

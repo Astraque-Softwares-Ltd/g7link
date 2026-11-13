@@ -160,8 +160,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import app.g7link.android.ui.theme.g7Swap
+import androidx.compose.animation.shrinkVertically
 
 enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen, Media }
+
+private enum class RemoteBanner { Offline, Denied, Unsupported }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -277,6 +281,7 @@ fun RemoteScreen(
     // Felt only for input that reaches the PC, and only when the user wants it (Settings › Remote).
     val haptic = rememberTrackpadHaptics(live = haptics && device.online && access == Core.RemoteAccess.Allowed)
 
+    val reducedMotion = LocalReducedMotion.current
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -298,25 +303,36 @@ fun RemoteScreen(
             )
 
             // Status banner when offline, denied, or unsupported
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp)) {
-                when {
-                    !device.online || access == Core.RemoteAccess.Offline -> OfflineWakeBanner(
+            val banner = when {
+                !device.online || access == Core.RemoteAccess.Offline -> RemoteBanner.Offline
+                access == Core.RemoteAccess.Denied -> RemoteBanner.Denied
+                access == Core.RemoteAccess.Unsupported -> RemoteBanner.Unsupported
+                else -> null
+            }
+            AnimatedContent(
+                targetState = banner,
+                transitionSpec = { g7Swap(reducedMotion) },
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                label = "RemoteBanner",
+            ) { shown ->
+                when (shown) {
+                    RemoteBanner.Offline -> OfflineWakeBanner(
                         device = device,
                         onWake = { core.wake(device.id) },
                     )
-                    access == Core.RemoteAccess.Denied -> StatusBanner(
+                    RemoteBanner.Denied -> StatusBanner(
                         title = stringResource(R.string.remote_denied_title, device.name),
                         text = stringResource(R.string.remote_denied_text, device.name),
                     )
-                    access == Core.RemoteAccess.Unsupported -> StatusBanner(
+                    RemoteBanner.Unsupported -> StatusBanner(
                         title = null,
                         text = stringResource(R.string.remote_unsupported_text, device.name),
                     )
+                    null -> Unit
                 }
             }
         }
 
-        val reducedMotion = LocalReducedMotion.current
         AnimatedContent(
             targetState = mode,
             transitionSpec = { g7Page(forward = targetState.ordinal >= initialState.ordinal, reducedMotion) },
@@ -382,7 +398,16 @@ fun RemoteScreen(
                     )
                     // The touchpad under the screen: watch the PC and move its pointer together.
                     // While typing, the room goes to the screen and the field.
-                    if (!screenFullScreen && !WindowInsets.isImeVisible) {
+                    // It comes back as the keyboard goes down, and goes at once as it opens.
+                    AnimatedVisibility(
+                        visible = !screenFullScreen && !WindowInsets.isImeVisible,
+                        enter = if (reducedMotion) {
+                            EnterTransition.None
+                        } else {
+                            expandVertically(G7Motion.enter(G7Motion.LARGE_IN)) + g7Appear(G7Motion.LARGE_IN)
+                        },
+                        exit = ExitTransition.None,
+                    ) {
                         TouchpadSurface(
                             pcId = device.id,
                             core = core,
@@ -1045,60 +1070,82 @@ private fun TouchpadView(
                 )
             }
 
-            if (pasteChip != null) {
-                PasteChip(
-                    clip = pasteChip,
-                    onPaste = {
-                        core.remoteKey(pcId, "paste", emptyList(), onStatus)
-                        onPasted()
+            // The last clip offered, so the line can fade out with its words still on it.
+            val lastClip = remember { arrayOfNulls<PcClipNotice>(1) }
+            if (pasteChip != null) lastClip[0] = pasteChip
+            // The mouse buttons, with the Paste line above them in their own column: the
+            // line brings its gap in and out with it.
+            Column {
+                AnimatedVisibility(
+                    visible = pasteChip != null,
+                    enter = if (reducedMotion) {
+                        EnterTransition.None
+                    } else {
+                        expandVertically(G7Motion.enter(G7Motion.SMALL_IN)) + g7Appear()
                     },
-                )
-            }
-
-            // The mouse buttons, and in landscape the switch to the touchpad alone
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                G7Keycap(
-                    label = stringResource(R.string.remote_left_click),
-                    onClick = {
-                        haptics(TrackpadHaptic.Click)
-                        core.remoteButton(pcId, "left", "click", onStatus)
+                    exit = if (reducedMotion) {
+                        ExitTransition.None
+                    } else {
+                        shrinkVertically(G7Motion.exit(G7Motion.SMALL_OUT)) + g7Disappear()
                     },
-                    modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
-                )
-                G7Keycap(
-                    label = stringResource(if (scrollLocked) R.string.remote_scroll_mode else R.string.remote_middle_click),
-                    onClick = {
-                        haptics(if (scrollLocked) TrackpadHaptic.ScrollLockOff else TrackpadHaptic.ScrollLockOn)
-                        scrollLocked = !scrollLocked
-                    },
-                    onLongClick = {
-                        haptics(TrackpadHaptic.LongPress)
-                        core.remoteButton(pcId, "middle", "click", onStatus)
-                    },
-                    selected = scrollLocked,
-                    modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
-                )
-                G7Keycap(
-                    label = stringResource(R.string.remote_right_click),
-                    onClick = {
-                        haptics(TrackpadHaptic.Click)
-                        core.remoteButton(pcId, "right", "click", onStatus)
-                    },
-                    modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
-                )
-                if (canBeTouchpadOnly) {
+                ) {
+                    lastClip[0]?.let { clip ->
+                        Box(Modifier.padding(bottom = if (touchpadOnly) 6.dp else 10.dp)) {
+                            PasteChip(
+                                clip = clip,
+                                onPaste = {
+                                    core.remoteKey(pcId, "paste", emptyList(), onStatus)
+                                    onPasted()
+                                },
+                            )
+                        }
+                    }
+                }
+                // The mouse buttons, and in landscape the switch to the touchpad alone
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     G7Keycap(
-                        label = stringResource(if (touchpadOnly) R.string.remote_more_controls else R.string.remote_touchpad_only),
+                        label = stringResource(R.string.remote_left_click),
                         onClick = {
-                            haptics(TrackpadHaptic.Key)
-                            if (!touchpadOnly) onShowKeyboard(false)
-                            onTouchpadOnly(!touchpadOnly)
+                            haptics(TrackpadHaptic.Click)
+                            core.remoteButton(pcId, "left", "click", onStatus)
                         },
-                        modifier = Modifier.weight(1.2f).animatedHeight(mouseKeyHeight),
+                        modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
                     )
+                    G7Keycap(
+                        label = stringResource(if (scrollLocked) R.string.remote_scroll_mode else R.string.remote_middle_click),
+                        onClick = {
+                            haptics(if (scrollLocked) TrackpadHaptic.ScrollLockOff else TrackpadHaptic.ScrollLockOn)
+                            scrollLocked = !scrollLocked
+                        },
+                        onLongClick = {
+                            haptics(TrackpadHaptic.LongPress)
+                            core.remoteButton(pcId, "middle", "click", onStatus)
+                        },
+                        selected = scrollLocked,
+                        modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
+                    )
+                    G7Keycap(
+                        label = stringResource(R.string.remote_right_click),
+                        onClick = {
+                            haptics(TrackpadHaptic.Click)
+                            core.remoteButton(pcId, "right", "click", onStatus)
+                        },
+                        modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
+                    )
+                    if (canBeTouchpadOnly) {
+                        G7Keycap(
+                            label = stringResource(if (touchpadOnly) R.string.remote_more_controls else R.string.remote_touchpad_only),
+                            onClick = {
+                                haptics(TrackpadHaptic.Key)
+                                if (!touchpadOnly) onShowKeyboard(false)
+                                onTouchpadOnly(!touchpadOnly)
+                            },
+                            modifier = Modifier.weight(1.2f).animatedHeight(mouseKeyHeight),
+                        )
+                    }
                 }
             }
 
