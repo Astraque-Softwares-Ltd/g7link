@@ -44,12 +44,18 @@ over security and memory, especially on shared Wi-Fi.
 - A phone's link in the timeline says "Sent from".
 - The Screen tab's buttons show their whole names, with room above the
   keyboard.
+- **Paste on the Touchpad tab is one quiet line** above the mouse keys, so
+  the touchpad keeps its room.
 
 ### Fixed
 
 - mDNS no longer busy-loops after it restarts, and closes the sockets of
   networks the PC has left.
 - A phone or app window opens in front of the main window, not behind it.
+- The conversation list stays where it was when you open a conversation.
+- On GNOME, a copied code really reaches the clipboard. With the G7 Linux
+  extension 1.5 it stays out of clipboard histories; with older ones, G7
+  Linux's history sees it until it's wiped.
 - The phone says where to turn on "Your PC in your pocket" when the PC's
   files aren't shared.
 - Much less memory for notification pictures, copied pictures, recordings'
