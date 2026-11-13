@@ -10,15 +10,6 @@ import android.util.LruCache
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -82,7 +73,6 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.ContentScale
@@ -182,6 +172,11 @@ import app.g7link.android.ui.theme.G7SwitchRow
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.walkthrough.AccessRows
 import app.g7link.android.ui.walkthrough.rememberAccessItems
+import app.g7link.android.ui.theme.g7Expand
+import app.g7link.android.ui.theme.g7Collapse
+import app.g7link.android.ui.theme.g7Item
+import app.g7link.android.ui.theme.g7ItemMotion
+import app.g7link.android.ui.theme.G7Chevron
 
 /**
  * Home: the paired PC's name and connection, then rows to send to it, control
@@ -308,6 +303,7 @@ fun HomeScreen(
     val missingAccess = accessItems.filterNot { it.granted }
     val missingCount = missingAccess.size + if (state.elevated) 0 else 1
 
+    val reducedMotion = LocalReducedMotion.current
     LaunchedEffect(highlightTarget) {
         val target = highlightTarget ?: return@LaunchedEffect
         pulsingTarget = target
@@ -332,7 +328,8 @@ fun HomeScreen(
             else -> "home_header"
         }
         val visibleMatch = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == targetKey }
-        runCatching { listState.animateScrollToItem(visibleMatch?.index ?: 0) }
+        val index = visibleMatch?.index ?: 0
+        runCatching { if (reducedMotion) listState.scrollToItem(index) else listState.animateScrollToItem(index) }
         delay(2200)
         if (pulsingTarget == target) pulsingTarget = null
     }
@@ -347,7 +344,7 @@ fun HomeScreen(
             bottom = 16.dp,
         ),
     ) {
-        item(key = "home_header", contentType = "header") {
+        g7Item(key = "home_header", contentType = "header") {
             HomeHeader(
                 pc = pc,
                 pcs = pcs,
@@ -359,7 +356,7 @@ fun HomeScreen(
             )
         }
         if (pc != null && !pc.online && pc.wakeState == WakeState.Waking) {
-            item(key = "waking", contentType = "notice") {
+            g7Item(key = "waking", contentType = "notice") {
                 if (LocalReducedMotion.current) {
                     LinearProgressIndicator(progress = { 0.5f }, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
                 } else {
@@ -368,7 +365,7 @@ fun HomeScreen(
             }
         }
         if (showWhatsNewGuideBanner) {
-            item(key = "whats_new_guide_banner", contentType = "notice") {
+            g7Item(key = "whats_new_guide_banner", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.home_whats_new_guide),
                     icon = G7Icons.guide,
@@ -383,7 +380,7 @@ fun HomeScreen(
             }
         }
         state.ringingFrom?.let { from ->
-            item(key = "ringing_banner", contentType = "notice") {
+            g7Item(key = "ringing_banner", contentType = "notice") {
                 NoticeRow(
                     title = if (from.isEmpty()) {
                         stringResource(R.string.ringing_title_unknown)
@@ -398,7 +395,7 @@ fun HomeScreen(
             }
         }
         if (mirrorSession.active) {
-            item(key = "mirror_active_banner", contentType = "notice") {
+            g7Item(key = "mirror_active_banner", contentType = "notice") {
                 val pcName = mirrorSession.pcId?.let { state.nameOf(it) } ?: stringResource(R.string.your_pc)
                 val controlReady = state.inputAccess || state.elevated
                 NoticeRow(
@@ -427,7 +424,7 @@ fun HomeScreen(
             }
         }
         if (webcamSession.active) {
-            item(key = "webcam_active_banner", contentType = "notice") {
+            g7Item(key = "webcam_active_banner", contentType = "notice") {
                 val pcName = webcamSession.pcId?.let { state.nameOf(it) } ?: stringResource(R.string.your_pc)
                 val cameraLabel = stringResource(
                     if (webcamSession.camera == "front") R.string.webcam_camera_front else R.string.webcam_camera_back,
@@ -450,7 +447,7 @@ fun HomeScreen(
             }
         }
         if (recorderSession.active) {
-            item(key = "recorder_active_banner", contentType = "notice") {
+            g7Item(key = "recorder_active_banner", contentType = "notice") {
                 val pcName = recorderSession.pcId?.let { state.nameOf(it) } ?: stringResource(R.string.your_pc)
                 NoticeRow(
                     title = stringResource(
@@ -472,7 +469,7 @@ fun HomeScreen(
             }
         }
         micStreamingTo?.let { pcId ->
-            item(key = "mic_active_banner", contentType = "notice") {
+            g7Item(key = "mic_active_banner", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.mic_notification_title, state.nameOf(pcId) ?: stringResource(R.string.your_pc)),
                     icon = G7Icons.mic,
@@ -483,7 +480,7 @@ fun HomeScreen(
             }
         }
         state.keyboardFromPc.forEach { pcId ->
-            item(key = "keyboard_$pcId", contentType = "notice") {
+            g7Item(key = "keyboard_$pcId", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.keyboard_from_pc_banner, state.nameOf(pcId) ?: stringResource(R.string.your_pc)),
                     icon = G7Icons.keyboard,
@@ -494,7 +491,7 @@ fun HomeScreen(
             }
         }
         state.webcamRequest?.let { req ->
-            item(key = "webcam_request", contentType = "notice") {
+            g7Item(key = "webcam_request", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.webcam_request_title, state.nameOf(req.pcId) ?: stringResource(R.string.your_pc)),
                     icon = G7Icons.camera,
@@ -507,7 +504,7 @@ fun HomeScreen(
             }
         }
         state.micRequestFrom?.takeIf { it != micStreamingTo }?.let { pcId ->
-            item(key = "mic_request", contentType = "notice") {
+            g7Item(key = "mic_request", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.mic_request_title, state.nameOf(pcId) ?: stringResource(R.string.your_pc)),
                     icon = G7Icons.mic,
@@ -521,7 +518,7 @@ fun HomeScreen(
             }
         }
         state.storageRequestedFrom?.let { pcId ->
-            item(key = "storage_request", contentType = "notice") {
+            g7Item(key = "storage_request", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.storage_request_title, state.nameOf(pcId) ?: stringResource(R.string.your_pc)),
                     icon = G7Icons.folder,
@@ -540,9 +537,9 @@ fun HomeScreen(
                 )
             }
         }
-        item(key = "update_card", contentType = "update") { UpdateCard(updater) }
+        g7Item(key = "update_card", contentType = "update") { UpdateCard(updater) }
         if (!backgroundServiceEnabled) {
-            item(key = "background_connection_off", contentType = "notice") {
+            g7Item(key = "background_connection_off", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.home_background_off_title),
                     icon = G7Icons.bolt,
@@ -553,7 +550,7 @@ fun HomeScreen(
             }
         }
         if (!state.localNetwork) {
-            item(key = "local_network_setup", contentType = "notice") {
+            g7Item(key = "local_network_setup", contentType = "notice") {
                 val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
                     onAccessChanged()
                     if (!granted) openAppDetailsSettings(context)
@@ -568,7 +565,7 @@ fun HomeScreen(
             }
         }
         if (state.remoteInputRequested && !state.inputAccess && !state.elevated) {
-            item(key = "remote_input_requested", contentType = "notice") {
+            g7Item(key = "remote_input_requested", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.remote_input_requested_title),
                     icon = G7Icons.pointer,
@@ -579,7 +576,7 @@ fun HomeScreen(
             }
         }
         if (pc != null && !pc.online && pc.wakeState == WakeState.TimedOut) {
-            item(key = "wake_timeout", contentType = "notice") {
+            g7Item(key = "wake_timeout", contentType = "notice") {
                 NoticeRow(
                     title = stringResource(R.string.wake_timeout_title, pc.name),
                     text = stringResource(R.string.wake_timeout_text, pc.name),
@@ -592,7 +589,7 @@ fun HomeScreen(
         }
 
         if (pc == null) {
-            item(key = "no_paired_pc_card", contentType = "group") {
+            g7Item(key = "no_paired_pc_card", contentType = "group") {
                 Column(Modifier.padding(top = 8.dp)) {
                     G7Row(
                         label = stringResource(R.string.action_pair_with_pc),
@@ -612,7 +609,7 @@ fun HomeScreen(
             }
         } else {
             val online = pc.online
-            item(key = "pc_send", contentType = "group") {
+            g7Item(key = "pc_send", contentType = "group") {
                 val pulsing = pulsingTarget == GuideHighlightTarget.HOME_PC_CARD
                 Column {
                     G7SectionLabel(stringResource(R.string.home_send_to, pc.name))
@@ -648,7 +645,7 @@ fun HomeScreen(
                     )
                 }
             }
-            item(key = "pc_control", contentType = "group") {
+            g7Item(key = "pc_control", contentType = "group") {
                 Column {
                     G7SectionLabel(stringResource(R.string.home_control, pc.name))
                     if (!online && !pc.reconnect) {
@@ -736,7 +733,7 @@ fun HomeScreen(
                     }
                 }
             }
-            item(key = "pc_phone", contentType = "group") {
+            g7Item(key = "pc_phone", contentType = "group") {
                 val micOn = micStreamingTo == pc.id
                 Column {
                     G7SectionLabel(stringResource(R.string.home_this_phone))
@@ -777,7 +774,7 @@ fun HomeScreen(
         }
 
         if (state.devices.isNotEmpty() && missingCount > 0) {
-            item(key = "permissions_setup_card", contentType = "group") {
+            g7Item(key = "permissions_setup_card", contentType = "group") {
                 Column {
                     G7Row(
                         label = stringResource(R.string.home_access),
@@ -787,32 +784,29 @@ fun HomeScreen(
                         highlighted = pulsingTarget == GuideHighlightTarget.HOME_SETUP_PERMISSIONS,
                         onClick = { accessOpen = !accessOpen },
                     ) {
-                        Icon(
-                            imageVector = G7Icons.chevronDown,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = if (accessOpen) 180f else 0f },
-                        )
+                        G7Chevron(accessOpen)
                     }
-                    if (accessOpen) {
-                        AccessRows(missingAccess)
-                        if (!state.elevated) {
-                            G7Row(
-                                label = stringResource(R.string.home_background_clipboard_title),
-                                icon = G7Icons.bolt,
-                                tint = tints.amber,
-                            ) {
-                                G7RowAction(
-                                    label = stringResource(R.string.elevated_set_up),
-                                    onClick = {
-                                        scope.launch {
-                                            app.g7link.android.elevated.PairingNotification.show(context)
-                                            if (!app.g7link.android.elevated.Elevated.start()) {
-                                                openDeveloperOptions(context)
+                    AnimatedVisibility(visible = accessOpen, enter = g7Expand(), exit = g7Collapse()) {
+                        Column {
+                            AccessRows(missingAccess)
+                            if (!state.elevated) {
+                                G7Row(
+                                    label = stringResource(R.string.home_background_clipboard_title),
+                                    icon = G7Icons.bolt,
+                                    tint = tints.amber,
+                                ) {
+                                    G7RowAction(
+                                        label = stringResource(R.string.elevated_set_up),
+                                        onClick = {
+                                            scope.launch {
+                                                app.g7link.android.elevated.PairingNotification.show(context)
+                                                if (!app.g7link.android.elevated.Elevated.start()) {
+                                                    openDeveloperOptions(context)
+                                                }
                                             }
-                                        }
-                                    },
-                                )
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -822,18 +816,20 @@ fun HomeScreen(
 
         // Another phone or tablet paired with this one.
         items(peers, key = { it.id }, contentType = { "peer" }) { device ->
-            PeerRows(
-                device = device,
-                ringing = device.id in state.ringingDevices,
-                onRing = onRing,
-                onSendFiles = onSendFiles,
-            )
+            Box(g7ItemMotion()) {
+                PeerRows(
+                    device = device,
+                    ringing = device.id in state.ringingDevices,
+                    onRing = onRing,
+                    onSendFiles = onSendFiles,
+                )
+            }
         }
 
         val showClipRow = state.clipboardHistoryEnabled && state.clipboardHistory.isNotEmpty()
         val showTimelineRow = state.timeline.isNotEmpty()
         if (showClipRow || showTimelineRow || state.sendQueue.isNotEmpty() || state.transfers.isNotEmpty() || state.localsendEnabled) {
-            item(key = "activity", contentType = "group") {
+            g7Item(key = "activity", contentType = "group") {
                 Column {
                     G7SectionLabel(stringResource(R.string.home_activity))
                     if (showClipRow) {
@@ -860,7 +856,7 @@ fun HomeScreen(
             }
         }
         if (state.sendQueue.isNotEmpty()) {
-            item(key = "send_queue", contentType = "send_queue") {
+            g7Item(key = "send_queue", contentType = "send_queue") {
                 SendQueueCard(
                     state = state,
                     onCancel = onCancelQueueItem,
@@ -871,7 +867,7 @@ fun HomeScreen(
             }
         }
         if (state.transfers.isNotEmpty()) {
-            item(key = "transfers_card", contentType = "transfers") {
+            g7Item(key = "transfers_card", contentType = "transfers") {
                 TransfersCard(
                     state = state,
                     onAccept = onAcceptTransfer,
@@ -882,7 +878,7 @@ fun HomeScreen(
             }
         }
         if (state.localsendEnabled) {
-            item(key = "localsend_card", contentType = "localsend") {
+            g7Item(key = "localsend_card", contentType = "localsend") {
                 LocalSendCard(
                     peers = state.localsendPeers,
                     onRefresh = onRefreshLocalSend,

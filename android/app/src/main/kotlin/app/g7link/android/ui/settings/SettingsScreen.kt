@@ -54,7 +54,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -101,6 +100,11 @@ import app.g7link.android.update.AppUpdater
 import app.g7link.android.update.CheckForUpdates
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import app.g7link.android.ui.theme.g7Expand
+import app.g7link.android.ui.theme.g7Collapse
+import app.g7link.android.ui.theme.G7Chevron
+import app.g7link.android.ui.theme.LocalReducedMotion
+import androidx.compose.animation.AnimatedVisibility
 
 /** Where each group sits in the list, for jumping to it from the Guide. */
 private object Items {
@@ -168,12 +172,15 @@ fun SettingsScreen(
         cacheWindow = androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow(aheadFraction = 1f, behindFraction = 1f),
     )
 
+    val reducedMotion = LocalReducedMotion.current
     LaunchedEffect(jumpToControl) {
         if (jumpToControl == 0) return@LaunchedEffect
         powerOpen = true
         pulsing = "control"
         delay(60)
-        runCatching { listState.animateScrollToItem(Items.ACCESS) }
+        runCatching {
+            if (reducedMotion) listState.scrollToItem(Items.ACCESS) else listState.animateScrollToItem(Items.ACCESS)
+        }
         delay(2200)
         if (pulsing == "control") pulsing = null
     }
@@ -196,7 +203,7 @@ fun SettingsScreen(
         if (key == "control") powerOpen = true
         pulsing = key
         delay(60)
-        runCatching { listState.animateScrollToItem(index) }
+        runCatching { if (reducedMotion) listState.scrollToItem(index) else listState.animateScrollToItem(index) }
         delay(2200)
         if (pulsing == key) pulsing = null
     }
@@ -227,8 +234,8 @@ fun SettingsScreen(
                         note = stringResource(if (device.online) R.string.connected else R.string.not_connected),
                         highlighted = pulsing == "devices",
                         onClick = { openDeviceId = if (open) null else device.id },
-                    ) { Chevron(open) }
-                    if (open) {
+                    ) { G7Chevron(open) }
+                    AnimatedVisibility(visible = open, enter = g7Expand(), exit = g7Collapse()) {
                         Column(Modifier.padding(start = 36.dp)) {
                             G7SwitchRow(
                                 label = stringResource(R.string.storage_pc_toggle),
@@ -293,8 +300,8 @@ fun SettingsScreen(
                     ),
                     highlighted = pulsing == "control",
                     onClick = { powerOpen = !powerOpen },
-                ) { Chevron(powerOpen) }
-                if (powerOpen) {
+                ) { G7Chevron(powerOpen) }
+                AnimatedVisibility(visible = powerOpen, enter = g7Expand(), exit = g7Collapse()) {
                     Column(Modifier.padding(start = 36.dp)) {
                         ControlAccess(state.inputAccess)
                         ElevatedAccess()
@@ -806,16 +813,6 @@ private fun openDeveloperOptionsSettings(context: Context) {
             context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
-}
-
-@Composable
-private fun Chevron(open: Boolean) {
-    Icon(
-        imageVector = G7Icons.chevronDown,
-        contentDescription = null,
-        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = if (open) 180f else 0f },
-    )
 }
 
 @Composable

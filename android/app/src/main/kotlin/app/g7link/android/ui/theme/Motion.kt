@@ -8,6 +8,8 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -20,8 +22,17 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyItemScope
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -152,3 +163,43 @@ fun g7Collapse(): ExitTransition =
     } else {
         shrinkVertically(G7Motion.exit<IntSize>(G7Motion.LARGE_OUT)) + fadeOut(G7Motion.exit(G7Motion.LARGE_OUT))
     }
+
+/**
+ * A row of a list that changes now and then (Home's notices and cards): it fades in and out, and
+ * the rows around it slide over. Placement moves its layer, so neighbours aren't laid out again.
+ */
+@Composable
+fun LazyItemScope.g7ItemMotion(): Modifier =
+    if (LocalReducedMotion.current) {
+        Modifier
+    } else {
+        Modifier.animateItem(
+            fadeInSpec = G7Motion.enter(G7Motion.SMALL_IN),
+            placementSpec = G7Motion.move(G7Motion.SMALL_IN),
+            fadeOutSpec = G7Motion.exit(G7Motion.SMALL_OUT),
+        )
+    }
+
+/** [LazyListScope.item] with [g7ItemMotion]. */
+fun LazyListScope.g7Item(key: Any, contentType: Any? = null, content: @Composable LazyItemScope.() -> Unit) {
+    item(key = key, contentType = contentType) {
+        val itemScope = this
+        Box(itemScope.g7ItemMotion()) { itemScope.content() }
+    }
+}
+
+/** A chevron that turns over as its section opens or closes. */
+@Composable
+fun G7Chevron(open: Boolean, modifier: Modifier = Modifier) {
+    val turn by animateFloatAsState(
+        targetValue = if (open) 180f else 0f,
+        animationSpec = if (LocalReducedMotion.current) snap() else G7Motion.move(G7Motion.SMALL_IN),
+        label = "ChevronTurn",
+    )
+    Icon(
+        imageVector = G7Icons.chevronDown,
+        contentDescription = null,
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.size(18.dp).graphicsLayer { rotationZ = turn },
+    )
+}
