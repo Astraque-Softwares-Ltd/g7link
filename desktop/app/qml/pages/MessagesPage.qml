@@ -391,6 +391,29 @@ Item {
             spacing: 2
             boundsBehavior: Flickable.StopAtBounds
             model: page.shownThreads
+            // Every change replaces the whole list (opening a conversation marks it
+            // read), which puts a list view back at the top: stay on the conversation
+            // that was at the top of the view, unless the reader was at the very top.
+            property string keptId: ""
+            property real keptOffset: 0
+            function notePlace() {
+                const index = contentY - originY > 1 ? indexAt(width / 2, contentY + spacing + 1) : -1
+                const row = index >= 0 ? itemAtIndex(index) : null
+                keptId = row ? page.shownThreads[index].id : ""
+                keptOffset = row ? contentY - row.y : 0
+            }
+            onModelChanged: {
+                const index = keptId ? page.shownThreads.findIndex(t => t.id === keptId) : -1
+                if (index < 0)
+                    return
+                forceLayout()
+                positionViewAtIndex(index, ListView.Beginning)
+                const row = itemAtIndex(index)
+                if (row)
+                    contentY = row.y + keptOffset
+            }
+            onMovementEnded: notePlace()
+            onFlickEnded: notePlace()
             delegate: ThreadRow {
                 required property var modelData
                 width: threadList.width
