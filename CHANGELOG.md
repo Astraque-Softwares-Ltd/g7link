@@ -6,8 +6,8 @@ change things that need a step from you, and its notes say so.
 
 ## 0.1.12 (2026-11-13)
 
-A touchpad you can feel, a look before the clipboard goes, and a long pass
-over security and memory, especially on shared Wi-Fi.
+A touchpad you can feel, motion in both apps, a look before the clipboard
+goes, and a long pass over security and memory, especially on shared Wi-Fi.
 
 ### Added
 
@@ -32,6 +32,10 @@ over security and memory, especially on shared Wi-Fi.
 
 ### Changed
 
+- **Motion in both apps.** Pages, menus, sheets, banners and notifications
+  move with one shared set of timings, and keys come back smoothly when the
+  phone's keyboard goes down. Both apps follow the system's reduced-motion
+  setting, and nothing animates while it can't be seen.
 - **Pairing with a link** shows a code on both screens to compare.
 - **Text and links shared from other apps** always ask which PC first.
 - **The PC asks before opening a link** from a phone.
@@ -46,6 +50,8 @@ over security and memory, especially on shared Wi-Fi.
   keyboard.
 - **Paste on the Touchpad tab is one quiet line** above the mouse keys, so
   the touchpad keeps its room.
+- **Scroll mode shows a small pill** on the touchpad instead of a sentence
+  across it.
 
 ### Fixed
 
@@ -53,6 +59,7 @@ over security and memory, especially on shared Wi-Fi.
   networks the PC has left.
 - A phone or app window opens in front of the main window, not behind it.
 - The conversation list stays where it was when you open a conversation.
+- G7 Island no longer redraws every frame while music plays.
 - On GNOME, a copied code really reaches the clipboard. With the G7 Linux
   extension 1.5 it stays out of clipboard histories; with older ones, G7
   Linux's history sees it until it's wiped.
