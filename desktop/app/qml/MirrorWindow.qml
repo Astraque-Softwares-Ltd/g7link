@@ -172,6 +172,20 @@ Window {
         requestActivate()
     }
 
+    // A new window comes in front of the one it was opened from: GNOME puts
+    // a window that only shows itself behind it. Asked once it's on screen
+    // (its first frame), when the desktop has a window to bring forward.
+    property bool broughtForward: false
+    Connections {
+        target: win
+        enabled: !win.broughtForward
+        function onFrameSwapped() {
+            win.broughtForward = true
+            win.raise()
+            win.requestActivate()
+        }
+    }
+
     onActiveChanged: if (win.active) Mirror.syncClipboardOnFocus(win.mirrorKey)
 
     onFrameChanged: {

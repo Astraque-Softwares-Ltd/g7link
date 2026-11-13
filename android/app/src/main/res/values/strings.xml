@@ -674,7 +674,7 @@
     <string name="pc_files_downloading">Downloading %1$s…</string>
     <string name="pc_files_saved">Saved %1$s to Downloads</string>
     <string name="pc_files_failed">Couldn’t download %1$s</string>
-    <string name="pc_files_not_shared">Turn on “Your PC in your pocket” in G7 Link’s Settings on %1$s.</string>
+    <string name="pc_files_not_shared">On %1$s, open G7 Link’s Settings › Files and sync and turn on “Your PC in your pocket”.</string>
     <string name="pc_files_offline">%1$s isn’t connected.</string>
     <string name="pc_files_update">Update G7 Link on %1$s to browse its files.</string>
     <string name="pc_files_not_found">This folder isn’t on %1$s anymore.</string>
@@ -932,7 +932,7 @@
     <string name="guide_pc_files_needs">Online paired PC with storage sharing enabled</string>
     <string name="guide_pc_files_need_1">Online paired PC that shares its folders (Your PC in your pocket).</string>
     <string name="guide_pc_files_phone_1">On Home, tap Browse PC files on your paired PC card and tap any file to download.</string>
-    <string name="guide_pc_files_pc_1">Turn on Your PC in your pocket in G7 Link’s Settings on your PC.</string>
+    <string name="guide_pc_files_pc_1">On your PC, open G7 Link’s Settings › Files and sync and turn on Your PC in your pocket.</string>
     <string name="guide_pc_files_opt_1">Browse PC files sheet: Navigate PC folders and download files into Downloads.</string>
     <string name="guide_pc_files_privacy">Downloaded files save locally in your phone Downloads folder.</string>
     <string name="guide_pc_files_limits">Requires the paired PC to be online.</string>
