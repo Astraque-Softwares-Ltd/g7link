@@ -21,7 +21,6 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -66,7 +65,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.Canvas
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -104,6 +102,13 @@ import app.g7link.core.DeckTile
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import app.g7link.android.ui.theme.G7Motion
+import app.g7link.android.ui.theme.g7StateFraction
+import app.g7link.android.ui.theme.g7Plate
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.clip
 
 @Composable
 fun DeckScreen(
@@ -585,20 +590,20 @@ private fun DeckTileButton(
 
     val tileTint = deckTint(iconName, g7Tints())
     val workingTint = tileTint.copy(alpha = 0.14f)
+    // States fade in and out as they're drawn: nothing is laid out or composed again for them.
+    val workingShown = g7StateFraction(progress == DeckTileProgress.Working)
+    val doneShown = g7StateFraction(progress == DeckTileProgress.Done)
+    val highlightShown = g7StateFraction(highlighted)
     val progressOverlay = Modifier.drawWithContent {
         drawContent()
-        if (progress == DeckTileProgress.Working) drawRect(workingTint)
+        val f = workingShown.value
+        if (f > 0f) drawRect(workingTint.copy(alpha = workingTint.alpha * f))
     }
+    val shape = RoundedCornerShape(12.dp)
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        // A tile that's on (playing, muted) is drawn in its own tint, edge and all.
-        color = if (highlighted) {
-            tileTint.copy(alpha = if (enabled) 0.18f else 0.10f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (enabled) 1f else 0.55f)
-        },
+        shape = shape,
+        color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        border = if (highlighted) BorderStroke(2.dp, tileTint) else null,
         modifier = Modifier
             .fillMaxWidth()
             .height(tileHeight)
@@ -606,6 +611,16 @@ private fun DeckTileButton(
                 scaleX = scale
                 scaleY = scale
             }
+            .clip(shape)
+            // A tile that's on (playing, muted) is drawn in its own tint, edge and all.
+            .g7Plate(
+                highlightShown,
+                fill = tileTint.copy(alpha = if (enabled) 0.18f else 0.10f),
+                edge = tileTint,
+                shape = shape,
+                under = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (enabled) 1f else 0.55f),
+                edgeWidth = 2.dp,
+            )
             .semantics(mergeDescendants = true) {
                 role = Role.Button
                 contentDescription = a11yDescription
@@ -637,10 +652,22 @@ private fun DeckTileButton(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            if (progress == DeckTileProgress.Done) {
-                DeckCheck(tint = tileTint, modifier = Modifier.size(24.dp))
-            } else {
-                DeckIcon(name = iconName, tint = tileTint, modifier = Modifier.size(24.dp))
+            // The check fades in over the icon once the PC ran the tile, and back out.
+            Box(Modifier.size(24.dp)) {
+                DeckIcon(
+                    name = iconName,
+                    tint = tileTint,
+                    modifier = Modifier.size(24.dp).graphicsLayer { alpha = 1f - doneShown.value },
+                )
+                DeckCheck(
+                    tint = tileTint,
+                    modifier = Modifier.size(24.dp).graphicsLayer {
+                        alpha = doneShown.value
+                        val grow = G7Motion.POP_SCALE + (1f - G7Motion.POP_SCALE) * doneShown.value
+                        scaleX = grow
+                        scaleY = grow
+                    },
+                )
             }
             Spacer(Modifier.height(8.dp))
             Text(
@@ -652,10 +679,11 @@ private fun DeckTileButton(
                 overflow = TextOverflow.Ellipsis,
             )
             if (badge != null) {
-                Text(
+                val badgeIdle = MaterialTheme.colorScheme.onSurfaceVariant
+                BasicText(
                     text = badge,
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (highlighted) tileTint else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = { lerp(badgeIdle, tileTint, highlightShown.value) },
                     maxLines = 1,
                 )
             }
@@ -672,18 +700,17 @@ private const val TILE_DONE_MS = 900L
 /** A check mark in place of a tile's icon, once the PC ran it. */
 @Composable
 private fun DeckCheck(tint: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        val path = Path().apply {
-            moveTo(size.width * 0.2f, size.height * 0.52f)
-            lineTo(size.width * 0.42f, size.height * 0.74f)
-            lineTo(size.width * 0.8f, size.height * 0.3f)
-        }
-        drawPath(
-            path,
-            color = tint,
-            style = Stroke(width = size.minDimension * 0.11f, cap = StrokeCap.Round, join = StrokeJoin.Round),
-        )
-    }
+    Spacer(
+        modifier.drawWithCache {
+            val path = Path().apply {
+                moveTo(size.width * 0.2f, size.height * 0.52f)
+                lineTo(size.width * 0.42f, size.height * 0.74f)
+                lineTo(size.width * 0.8f, size.height * 0.3f)
+            }
+            val stroke = Stroke(width = size.minDimension * 0.11f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            onDrawBehind { drawPath(path, color = tint, style = stroke) }
+        },
+    )
 }
 
 /** A tile's icon: G7 Linux's glyph for the tile's icon name, in the tile's tint. */

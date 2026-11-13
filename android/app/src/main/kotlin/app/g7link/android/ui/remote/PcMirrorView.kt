@@ -132,6 +132,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import app.g7link.android.ui.theme.g7Appear
 
 /**
  * Fitted video rectangle inside a container of `(containerWidth, containerHeight)`,
@@ -1097,12 +1098,17 @@ fun PcMirrorView(
                     )
                 }
 
-                if (!hasRenderedFrame) {
+                // It fades away as the first picture comes in.
+                AnimatedVisibility(
+                    visible = !hasRenderedFrame,
+                    enter = g7Appear(),
+                    exit = g7Disappear(),
+                    modifier = Modifier.align(Alignment.Center),
+                ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier
-                            .align(Alignment.Center)
                             .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(16.dp))
                             .padding(horizontal = 20.dp, vertical = 16.dp),
                     ) {
