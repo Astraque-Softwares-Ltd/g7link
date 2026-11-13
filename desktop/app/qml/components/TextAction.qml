@@ -32,12 +32,28 @@ FocusScope {
         }
     }
 
+    StateFill {
+        anchors.fill: parent
+        radius: Theme.radiusSm
+        color: Theme.raised
+        on: !action.selected && mouse.containsMouse
+    }
+    StateFill {
+        anchors.fill: parent
+        radius: Theme.radiusSm
+        color: Theme.activeFill
+        border.width: action.selected ? 1 : 0
+        border.color: Theme.accent
+        on: action.selected
+    }
+    // The focus ring shows at once.
     Rectangle {
         anchors.fill: parent
         radius: Theme.radiusSm
-        color: action.selected ? Theme.activeFill : (mouse.containsMouse ? Theme.raised : "transparent")
-        border.width: Theme.focusVisible(action) ? 2 : (action.selected ? 1 : 0)
-        border.color: Theme.focusVisible(action) ? Theme.focusRing : Theme.accent
+        color: "transparent"
+        visible: Theme.focusVisible(action)
+        border.width: 2
+        border.color: Theme.focusRing
     }
     Row {
         id: content

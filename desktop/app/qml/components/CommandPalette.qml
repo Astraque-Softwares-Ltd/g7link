@@ -77,18 +77,20 @@ Item {
         NumberAnimation {
             target: commandPalette
             property: "opacity"
-            from: 0.45
+            from: 0
             to: 1.0
-            duration: Theme.fadeFast
-            easing.type: Easing.OutCubic
+            duration: Theme.smallIn
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.easeEnter
         }
         NumberAnimation {
             target: card
             property: "scale"
-            from: 0.97
+            from: Theme.popScale
             to: 1.0
-            duration: Theme.fadeFast
-            easing.type: Easing.OutCubic
+            duration: Theme.smallIn
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.easeEnter
         }
     }
 

@@ -43,11 +43,25 @@ FocusScope {
         }
     }
 
+    StateFill {
+        anchors.fill: parent
+        radius: Theme.rowRadius
+        color: Theme.raised
+        on: !row.selected && row.interactive && mouse.containsMouse
+    }
+    StateFill {
+        anchors.fill: parent
+        radius: Theme.rowRadius
+        color: Theme.activeFill
+        on: row.selected
+    }
+    // The focus ring shows at once.
     Rectangle {
         anchors.fill: parent
         radius: Theme.rowRadius
-        color: row.selected ? Theme.activeFill : (row.interactive && mouse.containsMouse ? Theme.raised : "transparent")
-        border.width: Theme.focusVisible(row) ? 2 : 0
+        color: "transparent"
+        visible: Theme.focusVisible(row)
+        border.width: 2
         border.color: Theme.focusRing
     }
     MouseArea {

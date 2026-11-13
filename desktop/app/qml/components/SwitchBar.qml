@@ -18,10 +18,11 @@ Item {
     implicitWidth: 280
     height: Theme.rowHeight
 
-    Rectangle {
+    StateFill {
         anchors.fill: parent
         radius: Theme.rowRadius
-        color: rowMouse.containsMouse && bar.enabled ? Theme.raised : "transparent"
+        color: Theme.raised
+        on: rowMouse.containsMouse && bar.enabled
     }
     MouseArea {
         id: rowMouse

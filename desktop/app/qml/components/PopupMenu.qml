@@ -51,7 +51,18 @@ Item {
     }
 
     anchors.fill: parent
-    visible: opened
+    // It grows from where it opened and fades in, and fades away when it closes;
+    // only an open menu takes clicks.
+    visible: opacity > 0
+    enabled: opened
+    opacity: opened ? 1 : 0
+    Behavior on opacity {
+        NumberAnimation {
+            duration: menu.opened ? Theme.smallIn : Theme.smallOut
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: menu.opened ? Theme.easeEnter : Theme.easeExit
+        }
+    }
     z: 140
     onShownChanged: current = Math.min(current, Math.max(0, shown.length - 1))
 
@@ -73,6 +84,16 @@ Item {
         color: Theme.surface
         border.width: 1
         border.color: Theme.line
+        transformOrigin: menu.upward ? (menu.alignRight ? Item.BottomRight : Item.BottomLeft)
+                                     : (menu.alignRight ? Item.TopRight : Item.TopLeft)
+        scale: menu.opened ? 1 : Theme.popScale
+        Behavior on scale {
+            NumberAnimation {
+                duration: menu.opened ? Theme.smallIn : Theme.smallOut
+                easing.type: Easing.BezierSpline
+                easing.bezierCurve: menu.opened ? Theme.easeEnter : Theme.easeExit
+            }
+        }
 
         MouseArea {
             anchors.fill: parent

@@ -88,6 +88,16 @@ Item {
 
     implicitHeight: Theme.rowHeight + (details.visible ? details.implicitHeight + 6 : 0)
     height: implicitHeight
+    // Opening and closing grow and shrink the row, clipped only while it moves.
+    clip: heightMotion.running
+    Behavior on height {
+        NumberAnimation {
+            id: heightMotion
+            duration: item.open ? Theme.largeIn : Theme.largeOut
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.easeMove
+        }
+    }
     activeFocusOnTab: !item.replying
     Accessible.role: Accessible.Button
     Accessible.name: [item.appName, item.title, item.text].filter(s => s.length > 0).join(", ")
@@ -180,9 +190,24 @@ Item {
         width: parent.width - x
         height: Theme.rowHeight
         radius: Theme.rowRadius
-        color: item.open ? Theme.selection : (hover.containsMouse ? Theme.raised : "transparent")
+        color: "transparent"
         border.width: Theme.focusVisible(item) ? 2 : 0
         border.color: Theme.focusRing
+        // Under the focus ring, which shows at once.
+        StateFill {
+            z: -1
+            anchors.fill: parent
+            radius: parent.radius
+            color: Theme.raised
+            on: !item.open && hover.containsMouse
+        }
+        StateFill {
+            z: -1
+            anchors.fill: parent
+            radius: parent.radius
+            color: Theme.selection
+            on: item.open
+        }
     }
     MouseArea {
         id: hover
@@ -300,6 +325,7 @@ Item {
             iconPath: Icons.more
             label: qsTr("Options for %1").arg(item.appName)
             opacity: hover.containsMouse || activeFocus || item.open ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.quickIn } }
             onClicked: item.optionsRequested()
         }
         IconButton {
@@ -313,6 +339,7 @@ Item {
                    ? qsTr("Dismiss %1 notifications from %2").arg(item.groupCount).arg(item.appName)
                    : qsTr("Dismiss")
             opacity: hover.containsMouse || activeFocus || item.open ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.quickIn } }
             onClicked: item.dismissIt()
         }
         Txt {

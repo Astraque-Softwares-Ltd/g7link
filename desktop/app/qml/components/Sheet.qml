@@ -38,7 +38,14 @@ Item {
         anchors.fill: parent
         color: Theme.scrim
         opacity: sheet.opened ? 1 : 0
-        Behavior on opacity { NumberAnimation { id: fade; duration: Theme.fadeNormal } }
+        Behavior on opacity {
+            NumberAnimation {
+                id: fade
+                duration: sheet.opened ? Theme.largeIn : Theme.largeOut
+                easing.type: Easing.BezierSpline
+                easing.bezierCurve: sheet.opened ? Theme.easeEnter : Theme.easeExit
+            }
+        }
         // Only taps outside the card: a tap on the card (or a button in it)
         // reaches this handler too.
         TapHandler {
@@ -60,9 +67,21 @@ Item {
         border.width: 1
         border.color: Theme.outlineVariant
         opacity: sheet.opened ? 1 : 0
-        scale: sheet.opened || Theme.reduceMotion ? 1 : 0.95
-        Behavior on opacity { NumberAnimation { duration: Theme.fadeNormal; easing.type: Easing.OutCubic } }
-        Behavior on scale { enabled: !Theme.reduceMotion; SpringAnimation { spring: Theme.springStandard; damping: Theme.dampingStandard } }
+        scale: sheet.opened ? 1 : Theme.popScale
+        Behavior on opacity {
+            NumberAnimation {
+                duration: sheet.opened ? Theme.largeIn : Theme.largeOut
+                easing.type: Easing.BezierSpline
+                easing.bezierCurve: sheet.opened ? Theme.easeEnter : Theme.easeExit
+            }
+        }
+        Behavior on scale {
+            NumberAnimation {
+                duration: sheet.opened ? Theme.largeIn : Theme.largeOut
+                easing.type: Easing.BezierSpline
+                easing.bezierCurve: sheet.opened ? Theme.easeEnter : Theme.easeExit
+            }
+        }
         clip: true
 
         Flickable {

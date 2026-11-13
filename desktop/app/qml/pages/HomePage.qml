@@ -972,6 +972,37 @@ Item {
                 clip: true
                 spacing: 2
                 boundsBehavior: Flickable.StopAtBounds
+                // Notifications fade in as they arrive and out as they go, and the rest
+                // slide over to make room or close the gap.
+                add: Transition {
+                    NumberAnimation {
+                        property: "opacity"
+                        from: 0
+                        to: 1
+                        duration: Theme.smallIn
+                        easing.type: Easing.BezierSpline
+                        easing.bezierCurve: Theme.easeEnter
+                    }
+                }
+                remove: Transition {
+                    NumberAnimation {
+                        property: "opacity"
+                        to: 0
+                        duration: Theme.smallOut
+                        easing.type: Easing.BezierSpline
+                        easing.bezierCurve: Theme.easeExit
+                    }
+                }
+                displaced: Transition {
+                    NumberAnimation {
+                        property: "y"
+                        duration: Theme.smallIn
+                        easing.type: Easing.BezierSpline
+                        easing.bezierCurve: Theme.easeMove
+                    }
+                    // A row moved while it was still fading in ends up fully shown.
+                    NumberAnimation { property: "opacity"; to: 1; duration: Theme.smallIn }
+                }
                 model: NotificationList
                 // An app's row; under an opened one, its latest notifications
                 // and what more can be done with them.

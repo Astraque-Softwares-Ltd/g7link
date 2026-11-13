@@ -671,20 +671,32 @@ NativeWindow {
                 anchors.fill: parent
                 active: !window.welcome && AppController.status === "ready"
                 source: active ? window.pageUrl(window.page) : ""
+                // A new page fades in as it rises into place; under reduced motion it only fades.
+                transform: Translate { id: pageRise }
                 onLoaded: {
                     window.wirePage(item)
-                    if (!Theme.reduceMotion) {
-                        pageLoader.opacity = 0.4
-                        pageFade.restart()
-                    }
+                    pageLoader.opacity = 0
+                    pageRise.y = Theme.rise
+                    pageEnter.restart()
                 }
-                NumberAnimation {
-                    id: pageFade
-                    target: pageLoader
-                    property: "opacity"
-                    to: 1.0
-                    duration: Theme.fadeFast
-                    easing.type: Easing.OutCubic
+                ParallelAnimation {
+                    id: pageEnter
+                    NumberAnimation {
+                        target: pageLoader
+                        property: "opacity"
+                        to: 1.0
+                        duration: Theme.pageFade
+                        easing.type: Easing.BezierSpline
+                        easing.bezierCurve: Theme.easeEnter
+                    }
+                    NumberAnimation {
+                        target: pageRise
+                        property: "y"
+                        to: 0
+                        duration: Theme.largeIn
+                        easing.type: Easing.BezierSpline
+                        easing.bezierCurve: Theme.easeEnter
+                    }
                 }
             }
         }
@@ -1172,11 +1184,36 @@ NativeWindow {
         }
     }
 
+    // The palette stays loaded while it fades away after closing.
+    property bool paletteShown: false
+    Connections {
+        target: AppController
+        function onCommandPaletteOpenChanged() {
+            if (AppController.commandPaletteOpen) {
+                paletteExit.stop()
+                commandPaletteLoader.opacity = 1
+                window.paletteShown = true
+            } else if (window.paletteShown) {
+                paletteExit.restart()
+            }
+        }
+    }
     Loader {
         id: commandPaletteLoader
         anchors.fill: parent
-        active: AppController.commandPaletteOpen
+        active: window.paletteShown
+        enabled: AppController.commandPaletteOpen
         source: active ? "qrc:/qt/qml/app/g7link/qml/components/CommandPalette.qml" : ""
+    }
+    NumberAnimation {
+        id: paletteExit
+        target: commandPaletteLoader
+        property: "opacity"
+        to: 0
+        duration: Theme.smallOut
+        easing.type: Easing.BezierSpline
+        easing.bezierCurve: Theme.easeExit
+        onFinished: window.paletteShown = false
     }
 
     Toast {

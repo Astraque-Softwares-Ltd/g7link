@@ -31,10 +31,26 @@ Rectangle {
     visible: opacity > 0
     anchors.horizontalCenter: parent.horizontalCenter
     anchors.bottom: parent.bottom
-    anchors.bottomMargin: shown || Theme.reduceMotion ? Theme.footerHeight + 12 : Theme.footerHeight - 8
-    Behavior on anchors.bottomMargin { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.fadeNormal; easing.type: Easing.OutCubic } }
+    anchors.bottomMargin: Theme.footerHeight + 12
+    // It rises into place as it fades in: a translation, which lays nothing out again.
+    transform: Translate {
+        y: toast.shown ? 0 : Theme.rise
+        Behavior on y {
+            NumberAnimation {
+                duration: toast.shown ? Theme.smallIn : Theme.smallOut
+                easing.type: Easing.BezierSpline
+                easing.bezierCurve: toast.shown ? Theme.easeEnter : Theme.easeExit
+            }
+        }
+    }
     opacity: shown ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: Theme.fadeFast } }
+    Behavior on opacity {
+        NumberAnimation {
+            duration: toast.shown ? Theme.smallIn : Theme.smallOut
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: toast.shown ? Theme.easeEnter : Theme.easeExit
+        }
+    }
     z: 200
 
     readonly property bool hasAction: actionText.length > 0
