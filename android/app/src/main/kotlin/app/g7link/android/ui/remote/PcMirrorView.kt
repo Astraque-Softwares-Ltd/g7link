@@ -20,10 +20,7 @@ import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -118,6 +115,8 @@ import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.LocalReducedMotion
+import app.g7link.android.ui.theme.G7Motion
+import app.g7link.android.ui.theme.g7Disappear
 import app.g7link.core.MirrorInputEvent
 import app.g7link.core.TouchPhase
 import kotlin.math.abs
@@ -1201,8 +1200,8 @@ fun PcMirrorView(
             if (isFullScreen && watch == null && !useRails) {
                 androidx.compose.animation.AnimatedVisibility(
                     visible = overlayVisible,
-                    enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(180)),
-                    exit = if (reducedMotion) ExitTransition.None else fadeOut(tween(220)),
+                    enter = if (reducedMotion) EnterTransition.None else fadeIn(G7Motion.enter(G7Motion.SMALL_IN)),
+                    exit = g7Disappear(),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(horizontal = 16.dp, vertical = 12.dp),

@@ -14,11 +14,6 @@ import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.g7Tints
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -65,6 +60,7 @@ import app.g7link.android.core.PairingState
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.LocalG7Look
 import app.g7link.android.ui.theme.LocalReducedMotion
+import app.g7link.android.ui.theme.g7Crossfade
 import app.g7link.core.DiscoveredDevice
 import app.g7link.core.PairingFailure
 import kotlinx.coroutines.delay
@@ -149,13 +145,7 @@ fun PairingScreen(
 
         AnimatedContent(
             targetState = pairing to showing,
-            transitionSpec = {
-                if (reducedMotion) {
-                    EnterTransition.None togetherWith ExitTransition.None
-                } else {
-                    fadeIn() togetherWith fadeOut()
-                }
-            },
+            transitionSpec = { g7Crossfade(reducedMotion) },
             modifier = Modifier.weight(1f).fillMaxWidth(),
             label = "pairing",
         ) { (current, showCode) ->

@@ -9,10 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -60,6 +57,8 @@ import app.g7link.android.ui.Preferences
 import app.g7link.android.ui.remote.PcMirrorView
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.G7LinkTheme
+import app.g7link.android.ui.theme.G7Motion
+import app.g7link.android.ui.theme.g7Disappear
 import app.g7link.core.MediaAction
 import app.g7link.core.WatchFileOffer
 import kotlinx.coroutines.delay
@@ -244,8 +243,8 @@ private fun WatchScreen(
         }
         AnimatedVisibility(
             visible = controls,
-            enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(180)),
-            exit = if (reducedMotion) ExitTransition.None else fadeOut(tween(220)),
+            enter = if (reducedMotion) EnterTransition.None else fadeIn(G7Motion.enter(G7Motion.SMALL_IN)),
+            exit = g7Disappear(),
             modifier = Modifier.fillMaxSize(),
         ) {
             Column(Modifier.fillMaxSize()) {

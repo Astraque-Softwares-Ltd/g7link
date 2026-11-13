@@ -28,7 +28,49 @@ QtObject {
         }
       },
       "motion": {
-        "description": "Springs everywhere; durations are only for fades. Respect reduced-motion: replace movement with 120 ms fades.",
+        "description": "Shared with the G7 Linux launcher; see docs/design/motion.md. Things leave faster than they arrive. Under reduced motion nothing moves or scales; page changes keep a quick crossfade.",
+        "distance": {
+          "pageSlide": 0.1,
+          "popScale": 0.96,
+          "rise": 8
+        },
+        "duration": {
+          "large": {
+            "enter": 260,
+            "exit": 180,
+            "use": "pages, tabs, sheets, expand and collapse"
+          },
+          "quick": {
+            "enter": 120,
+            "exit": 90,
+            "use": "hover, press, color and selection changes, tooltips"
+          },
+          "small": {
+            "enter": 200,
+            "exit": 140,
+            "use": "chips, banners, toasts, menus, popovers, list rows"
+          }
+        },
+        "easing": {
+          "enter": [
+            0.05,
+            0.7,
+            0.1,
+            1
+          ],
+          "exit": [
+            0.3,
+            0,
+            0.8,
+            0.15
+          ],
+          "move": [
+            0.2,
+            0,
+            0,
+            1
+          ]
+        },
         "fade": {
           "fast": 120,
           "normal": 200

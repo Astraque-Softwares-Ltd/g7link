@@ -25,18 +25,10 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -156,6 +148,10 @@ import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.G7Well
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.g7Tints
+import app.g7link.android.ui.theme.G7Motion
+import app.g7link.android.ui.theme.g7Page
+import app.g7link.android.ui.theme.g7Appear
+import app.g7link.android.ui.theme.g7Disappear
 import app.g7link.core.PcClipKind
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -323,17 +319,7 @@ fun RemoteScreen(
         val reducedMotion = LocalReducedMotion.current
         AnimatedContent(
             targetState = mode,
-            transitionSpec = {
-                if (reducedMotion) {
-                    EnterTransition.None togetherWith ExitTransition.None
-                } else {
-                    val forward = targetState.ordinal >= initialState.ordinal
-                    (slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { if (forward) it / 8 else -it / 8 } +
-                        fadeIn(tween(200))) togetherWith
-                        (slideOutHorizontally(tween(180, easing = FastOutSlowInEasing)) { if (forward) -it / 10 else it / 10 } +
-                            fadeOut(tween(150)))
-                }
-            },
+            transitionSpec = { g7Page(forward = targetState.ordinal >= initialState.ordinal, reducedMotion) },
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
@@ -418,9 +404,7 @@ fun RemoteScreen(
                 enter = if (reducedMotion) {
                     EnterTransition.None
                 } else {
-                    expandVertically(tween(KEYS_RETURN_MS, easing = LinearOutSlowInEasing)) +
-                        slideInVertically(tween(KEYS_RETURN_MS, easing = LinearOutSlowInEasing)) { it / 3 } +
-                        fadeIn(tween(KEYS_RETURN_MS))
+                    expandVertically(G7Motion.enter(G7Motion.LARGE_IN)) + g7Appear(G7Motion.LARGE_IN)
                 },
                 exit = ExitTransition.None,
             ) {
@@ -603,9 +587,6 @@ private fun QuickKey(
 
 /** The quick-action keys on the Touchpad tab. */
 private val QUICK_KEY_HEIGHT = 56.dp
-
-/** The keys coming back as the keyboard closes: about as long as it takes to go down. */
-private const val KEYS_RETURN_MS = 260
 
 /** The PC's sound: what plays, with its controls, the volume and where it plays. */
 @Composable
@@ -810,8 +791,8 @@ private fun TouchpadSurface(
             }
             AnimatedVisibility(
                 visible = legendVisible && roomForLegend,
-                enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(GESTURE_LEGEND_FADE_MS)),
-                exit = if (reducedMotion) ExitTransition.None else fadeOut(tween(GESTURE_LEGEND_FADE_MS)),
+                enter = if (reducedMotion) EnterTransition.None else fadeIn(G7Motion.enter(G7Motion.SMALL_IN)),
+                exit = g7Disappear(),
                 modifier = Modifier.align(Alignment.Center).padding(8.dp),
             ) {
                 GestureLegend(compact = compactLegend)
@@ -967,7 +948,6 @@ private fun GestureGlyph(gesture: PadGesture, tint: Color, modifier: Modifier = 
 
 /** How long the gesture legend stays, and how long it takes to fade. */
 private const val GESTURE_LEGEND_MS = 4_000L
-private const val GESTURE_LEGEND_FADE_MS = 200
 
 /** Pad heights that fit the gesture legend at all, and with room to spare. */
 private val ROOM_FOR_GESTURE_LEGEND = 160.dp
@@ -1034,7 +1014,7 @@ private fun TouchpadView(
             } else {
                 MOUSE_KEY_HEIGHT
             },
-            animationSpec = if (reducedMotion) snap() else tween(KEYS_RETURN_MS, easing = LinearOutSlowInEasing),
+            animationSpec = if (reducedMotion) snap() else G7Motion.enter(G7Motion.LARGE_IN),
             label = "MouseKeyHeight",
         )
         Column(
@@ -1049,7 +1029,7 @@ private fun TouchpadView(
             // it gives way to typing, it fades back in as the keyboard goes down.
             AnimatedVisibility(
                 visible = !imeVisible || padWhileTyping,
-                enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(KEYS_RETURN_MS)),
+                enter = if (reducedMotion) EnterTransition.None else fadeIn(G7Motion.enter(G7Motion.LARGE_IN)),
                 exit = ExitTransition.None,
                 modifier = Modifier.weight(1f).heightIn(min = PAD_WHILE_TYPING).fillMaxWidth(),
             ) {

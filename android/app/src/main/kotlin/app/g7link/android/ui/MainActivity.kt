@@ -12,17 +12,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Box
@@ -86,6 +75,8 @@ import app.g7link.android.ui.settings.SettingsScreen
 import app.g7link.android.ui.theme.Appearance
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.G7LinkTheme
+import app.g7link.android.ui.theme.g7Page
+import app.g7link.android.ui.theme.g7Crossfade
 import app.g7link.android.ui.walkthrough.WelcomeScreen
 import app.g7link.android.ui.walkthrough.WalkthroughStep
 import app.g7link.android.ui.walkthrough.resolveStartupWalkthrough
@@ -566,40 +557,11 @@ private fun App(
     AnimatedContent(
         targetState = currentRoute,
         transitionSpec = {
-            if (reducedMotion || initialState is ScreenRoute.Starting) {
-                EnterTransition.None togetherWith ExitTransition.None
-            } else {
-                val enteringSubScreen = targetState !is ScreenRoute.Main && initialState is ScreenRoute.Main
-                val returningToMain = targetState is ScreenRoute.Main && initialState !is ScreenRoute.Main
-                val spatialSpring = androidx.compose.animation.core.spring<androidx.compose.ui.unit.IntOffset>(
-                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                    stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
-                )
-                val scaleSpring = androidx.compose.animation.core.spring<Float>(
-                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                    stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
-                )
-                when {
-                    enteringSubScreen -> (
-                        fadeIn(tween(210, easing = FastOutSlowInEasing)) +
-                            slideInHorizontally(animationSpec = spatialSpring) { (it * 0.08f).toInt() } +
-                            scaleIn(initialScale = 0.95f, animationSpec = scaleSpring)
-                        ) togetherWith (
-                        fadeOut(tween(150)) +
-                            slideOutHorizontally(animationSpec = spatialSpring) { -(it * 0.04f).toInt() } +
-                            scaleOut(targetScale = 0.97f, animationSpec = scaleSpring)
-                        )
-                    returningToMain -> (
-                        fadeIn(tween(200, easing = FastOutSlowInEasing)) +
-                            slideInHorizontally(animationSpec = spatialSpring) { -(it * 0.04f).toInt() } +
-                            scaleIn(initialScale = 0.97f, animationSpec = scaleSpring)
-                        ) togetherWith (
-                        fadeOut(tween(150)) +
-                            slideOutHorizontally(animationSpec = spatialSpring) { (it * 0.08f).toInt() } +
-                            scaleOut(targetScale = 0.95f, animationSpec = scaleSpring)
-                        )
-                    else -> fadeIn(tween(200)) togetherWith fadeOut(tween(150))
-                }
+            val instant = reducedMotion || initialState is ScreenRoute.Starting
+            when {
+                targetState !is ScreenRoute.Main && initialState is ScreenRoute.Main -> g7Page(forward = true, instant)
+                targetState is ScreenRoute.Main && initialState !is ScreenRoute.Main -> g7Page(forward = false, instant)
+                else -> g7Crossfade(instant)
             }
         },
         label = "screen_route",
@@ -762,26 +724,11 @@ private fun App(
                     val startWithoutAsking by app.g7link.android.service.PcAutoStart.pcs(context).collectAsStateWithLifecycle()
                     val saveableStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
 
-                    // Tabs slide toward the side of the tab you picked, on a soft spring.
+                    // Tabs slide in from the side of the tab you picked.
                     AnimatedContent(
                         targetState = tab,
                         transitionSpec = {
-                            if (reducedMotion) {
-                                EnterTransition.None togetherWith ExitTransition.None
-                            } else {
-                                val forward = targetState.ordinal > initialState.ordinal
-                                val slide = androidx.compose.animation.core.spring<androidx.compose.ui.unit.IntOffset>(
-                                    dampingRatio = 0.82f,
-                                    stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
-                                )
-                                (
-                                    slideInHorizontally(slide) { w -> if (forward) w / 6 else -w / 6 } +
-                                        fadeIn(tween(220, easing = FastOutSlowInEasing))
-                                    ) togetherWith (
-                                    slideOutHorizontally(slide) { w -> if (forward) -w / 10 else w / 10 } +
-                                        fadeOut(tween(120))
-                                    )
-                            }
+                            g7Page(forward = targetState.ordinal > initialState.ordinal, reducedMotion)
                         },
                         modifier = Modifier
                             .fillMaxSize()

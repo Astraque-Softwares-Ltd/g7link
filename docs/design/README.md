@@ -5,6 +5,7 @@ Contents:
 | Path | What it is |
 |---|---|
 | `tokens.json` | Single source of truth for the G7 theme's colors, type, shapes and layout, with spacing and motion. The desktop's `Tokens.qml` is generated from it (`cargo xtask tokens`) |
+| `motion.md` | The motion language shared with the G7 Linux launcher: durations, curves, what moves and what stays instant |
 | `themes/index.html` | Theme overview: Home screens, color roles, typography, components |
 | `mockups/index.html` | Core flows: pairing, phone setup, Choose your power, notifications, messages, mirroring and app windows, Deck, Power settings |
 | `assets/` | Shared preview stylesheet and helpers used by the mockups |
