@@ -2805,7 +2805,7 @@ Item {
                            : Theme.surfaceContentVariant
                     Behavior on width {
                         enabled: !Theme.reduceMotion && !dragArea.pressed
-                        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                        NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
                     }
                 }
             }
@@ -2821,7 +2821,7 @@ Item {
                 scale: dragArea.pressed ? 1.15 : 1.0
                 Behavior on scale {
                     enabled: !Theme.reduceMotion
-                    NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                    NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
                 }
             }
 

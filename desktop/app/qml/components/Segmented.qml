@@ -66,7 +66,7 @@ Rectangle {
                 scale: segMouse.pressed && !Theme.reduceMotion ? Theme.pressScale : 1.0
                 Behavior on scale {
                     enabled: !Theme.reduceMotion
-                    NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                    NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
                 }
                 Accessible.role: Accessible.PageTab
                 Accessible.name: modelData.label

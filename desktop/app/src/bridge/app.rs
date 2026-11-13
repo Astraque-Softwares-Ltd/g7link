@@ -59,6 +59,8 @@ pub mod qobject {
         #[qproperty(QStringList, ringing_devices)]
         #[qproperty(bool, system_dark)]
         #[qproperty(bool, reduce_motion)]
+        /// KDE's animation speed: durations are multiplied by it (1 is normal).
+        #[qproperty(f64, motion_factor)]
         /// Battery saver is on: decorative animation rests.
         #[qproperty(bool, power_saver)]
         /// G7 Linux's current light and dark themes, for "Match G7 Linux", as
@@ -461,6 +463,7 @@ pub struct AppControllerRust {
     ringing_devices: QStringList,
     system_dark: bool,
     reduce_motion: bool,
+    motion_factor: f64,
     power_saver: bool,
     launcher_theme: QString,
     toasts_enabled: bool,
@@ -1384,6 +1387,7 @@ impl qobject::AppController {
     fn refresh_appearance(mut self: Pin<&mut Self>) {
         self.as_mut().set_system_dark(sys::system_dark());
         self.as_mut().set_reduce_motion(sys::reduce_motion());
+        self.as_mut().set_motion_factor(sys::animation_factor());
         // Power saver too.
         self.refresh_toasts_enabled();
     }

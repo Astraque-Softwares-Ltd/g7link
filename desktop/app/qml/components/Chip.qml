@@ -19,7 +19,7 @@ Rectangle {
     border.width: selected ? 1 : 0
     border.color: Theme.accent
     scale: chip.interactive && mouse.pressed && !Theme.reduceMotion ? Theme.pressScale : 1.0
-    Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+    Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove } }
 
     activeFocusOnTab: interactive && visible && enabled
     Accessible.role: interactive ? Accessible.Button : Accessible.StaticText

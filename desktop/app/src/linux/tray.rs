@@ -1226,11 +1226,16 @@ fn spawn_wayland_global_shortcuts_listener(stop: Arc<AtomicBool>, handler: Arc<S
 }
 
 /// Returns true when an `org.freedesktop.portal.Settings.SettingChanged`
-/// signal (`namespace`, `key`) affects desktop appearance (`"color-scheme"`,
-/// `"contrast"`, or `"accent-color"`).
+/// signal (`namespace`, `key`) affects desktop appearance: the color scheme,
+/// contrast or accent, or how much things animate (reduced motion, GNOME's
+/// animations switch, KDE's animation speed).
 pub fn is_portal_appearance_setting(namespace: &str, key: &str) -> bool {
-    namespace.trim() == "org.freedesktop.appearance"
-        && matches!(key.trim(), "color-scheme" | "contrast" | "accent-color")
+    matches!(
+        (namespace.trim(), key.trim()),
+        ("org.freedesktop.appearance", "color-scheme" | "contrast" | "accent-color" | "reduced-motion")
+            | ("org.gnome.desktop.interface", "enable-animations")
+            | ("org.kde.kdeglobals.KDE", "AnimationDurationFactor")
+    )
 }
 
 type TrayEventHandler = Box<dyn Fn(TrayEvent) + Send + Sync>;
@@ -1493,6 +1498,16 @@ impl Drop for Tray {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_settings_count_as_appearance() {
+        assert!(is_portal_appearance_setting("org.freedesktop.appearance", "color-scheme"));
+        assert!(is_portal_appearance_setting("org.freedesktop.appearance", "reduced-motion"));
+        assert!(is_portal_appearance_setting("org.gnome.desktop.interface", "enable-animations"));
+        assert!(is_portal_appearance_setting("org.kde.kdeglobals.KDE", "AnimationDurationFactor"));
+        assert!(!is_portal_appearance_setting("org.gnome.desktop.interface", "color-scheme"));
+        assert!(!is_portal_appearance_setting("org.freedesktop.appearance", "enable-animations"));
+    }
 
     #[test]
     fn parse_hotkey_recognizes_modifiers_and_keys() {

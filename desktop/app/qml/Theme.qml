@@ -234,8 +234,28 @@ QtObject {
     readonly property real dampingStandard: 0.32
     readonly property real springSnappy: 5.6
     readonly property real dampingSnappy: 0.34
-    readonly property int fadeFast: Tokens.data.motion.fade.fast
-    readonly property int fadeNormal: Tokens.data.motion.fade.normal
+    // Durations and curves from the shared motion spec (docs/design/motion.md), already
+    // scaled by KDE's animation speed. Under reduced motion they're 0, so nothing moves;
+    // only `pageFade` keeps a short crossfade where an instant swap would lose your place.
+    readonly property real motionFactor: reduceMotion ? 0 : Math.max(0, AppController.motionFactor)
+    function motionMs(ms) { return Math.round(ms * motionFactor) }
+    readonly property int quickIn: motionMs(Tokens.data.motion.duration.quick.enter)
+    readonly property int quickOut: motionMs(Tokens.data.motion.duration.quick.exit)
+    readonly property int smallIn: motionMs(Tokens.data.motion.duration.small.enter)
+    readonly property int smallOut: motionMs(Tokens.data.motion.duration.small.exit)
+    readonly property int largeIn: motionMs(Tokens.data.motion.duration.large.enter)
+    readonly property int largeOut: motionMs(Tokens.data.motion.duration.large.exit)
+    readonly property int pageFade: reduceMotion ? Tokens.data.motion.duration.quick.enter : largeIn
+    // For `easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeEnter`.
+    readonly property var easeEnter: Tokens.data.motion.easing.enter.concat([1, 1])
+    readonly property var easeExit: Tokens.data.motion.easing.exit.concat([1, 1])
+    readonly property var easeMove: Tokens.data.motion.easing.move.concat([1, 1])
+    // How far things rise as they enter, and the scale popovers and sheets grow from.
+    readonly property real rise: reduceMotion ? 0 : Tokens.data.motion.distance.rise
+    readonly property real popScale: reduceMotion ? 1 : Tokens.data.motion.distance.popScale
+    // Older names for the quick and small fades.
+    readonly property int fadeFast: quickIn
+    readonly property int fadeNormal: smallIn
     readonly property real hoverLift: reduceMotion ? 0 : Tokens.data.motion.hoverLift
     readonly property real pressScale: reduceMotion ? 1 : Tokens.data.motion.pressScale
 }

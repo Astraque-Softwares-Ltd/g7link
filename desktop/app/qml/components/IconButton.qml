@@ -62,7 +62,7 @@ FocusScope {
         border.width: button.checked ? 1 : 0
         border.color: Theme.accent
         scale: mouse.pressed ? Theme.pressScale : 1
-        Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+        Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove } }
 
         Rectangle {
             anchors.fill: parent

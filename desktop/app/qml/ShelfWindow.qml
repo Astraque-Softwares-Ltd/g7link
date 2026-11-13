@@ -248,8 +248,9 @@ Window {
             property: "x"
             from: 24
             to: 0
-            duration: Theme.reduceMotion ? 0 : 180
-            easing.type: Easing.OutCubic
+            duration: Theme.smallIn
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: Theme.easeEnter
         }
 
         Rectangle {

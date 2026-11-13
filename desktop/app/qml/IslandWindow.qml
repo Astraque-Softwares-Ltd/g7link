@@ -101,11 +101,9 @@ Window {
     // QSG_RENDER_LOOP=basic advances QML's animation clock only while a window
     // renders; with the main window closed (App.qml) the Island is alone, so
     // its clock freezes. A wall-clock timer repaints each frame to re-advance
-    // it, but only while something is really moving: the looping equalizer or
-    // a transition. A still pill is left alone.
-    readonly property bool animating:
-        (mode === "media" && mediaPlaying && !expanded && !Theme.reduceMotion)
-        || transitionSettle.running
+    // it, but only while a transition runs. A still pill, music playing or not,
+    // is left alone: its position updates repaint it as they come.
+    readonly property bool animating: transitionSettle.running
 
     // Holds `animating` true through the drop-in and expand/collapse Behaviors,
     // which would otherwise snap while the clock is frozen.
@@ -115,6 +113,8 @@ Window {
         repeat: false
     }
     onExpandedChanged: if (!Theme.reduceMotion) transitionSettle.restart()
+    // The pill's width follows its mode.
+    onModeChanged: if (!Theme.reduceMotion) transitionSettle.restart()
 
     Timer {
         running: islandWin.visible && islandWin.animating
@@ -259,8 +259,10 @@ Window {
         if (hasActivity) {
             keepTimer.stop()
             // Coming back while kept: the window is already up, so drop in here.
-            if (keptForMinutes && visible && !Theme.reduceMotion)
+            if (keptForMinutes && visible && !Theme.reduceMotion) {
                 dropInAnim.restart()
+                transitionSettle.restart()
+            }
             keptForMinutes = onWayland
         } else if (keptForMinutes) {
             keepTimer.restart()
@@ -496,7 +498,7 @@ Window {
 
             Behavior on width {
                 enabled: !Theme.reduceMotion
-                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+                NumberAnimation { duration: Theme.smallIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
             }
 
             HoverHandler {
@@ -611,7 +613,7 @@ Window {
                         radius: parent.radius
                         color: islandWin.transferJustFinished ? islandWin.transferEndColor : Theme.tintAmber
                         width: parent.width * (islandWin.transferJustFinished ? 1.0 : Math.max(0.04, islandWin.activeTransferProgress))
-                        Behavior on width { enabled: !Theme.reduceMotion; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                        Behavior on width { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.smallIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove } }
                     }
                 }
                 Txt {

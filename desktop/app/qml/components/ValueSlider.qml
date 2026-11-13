@@ -66,7 +66,7 @@ FocusScope {
             color: Theme.accent
             Behavior on width {
                 enabled: !Theme.reduceMotion && !drag.pressed
-                NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
             }
         }
     }
@@ -82,7 +82,7 @@ FocusScope {
         scale: drag.pressed ? 1.15 : 1.0
         Behavior on scale {
             enabled: !Theme.reduceMotion
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+            NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
         }
     }
 

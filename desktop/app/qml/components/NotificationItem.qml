@@ -378,7 +378,7 @@ Item {
                     color: Theme.accent
                     Behavior on width {
                         enabled: !Theme.reduceMotion
-                        NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+                        NumberAnimation { duration: Theme.smallIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove }
                     }
                 }
             }

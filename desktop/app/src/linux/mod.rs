@@ -449,6 +449,10 @@ pub fn reduce_motion() -> bool {
     if read_portal_appearance_u32("reduced-motion") == Some(1) {
         return true;
     }
+    // KDE's animation speed set to instant.
+    if animation_factor() <= 0.0 {
+        return true;
+    }
     if let Ok(output) =
         Command::new("gsettings").args(["get", "org.gnome.desktop.interface", "enable-animations"]).output()
         && output.status.success()
@@ -459,6 +463,34 @@ pub fn reduce_motion() -> bool {
         }
     }
     false
+}
+
+/// KDE's animation speed, which stretches or shortens every animation: 1 is normal, more is slower and
+/// 0 is instant. 1 where the desktop doesn't set it.
+pub fn animation_factor() -> f64 {
+    let kdeglobals = dirs::config_dir().and_then(|c| fs::read_to_string(c.join("kdeglobals")).ok());
+    parse_animation_factor(kdeglobals.as_deref())
+}
+
+/// `AnimationDurationFactor` in kdeglobals' `[KDE]` group, kept between 0 and 4; 1 when it's missing or
+/// isn't a number.
+pub(crate) fn parse_animation_factor(kdeglobals: Option<&str>) -> f64 {
+    let Some(text) = kdeglobals else { return 1.0 };
+    let mut in_kde = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_kde = line == "[KDE]";
+        } else if in_kde
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == "AnimationDurationFactor"
+            && let Ok(factor) = value.trim().parse::<f64>()
+            && factor.is_finite()
+        {
+            return factor.clamp(0.0, 4.0);
+        }
+    }
+    1.0
 }
 
 /// Returns the usable desktop work area `(x, y, width, height)` in physical pixels.
@@ -531,6 +563,21 @@ pub fn free_space(path: &std::path::Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_factor_reads_kdes_group_only() {
+        let reads = |text: Option<&str>, want: f64| (parse_animation_factor(text) - want).abs() < 1e-9;
+        assert!(reads(None, 1.0));
+        assert!(reads(Some("[KDE]\nAnimationDurationFactor=0.5\n"), 0.5));
+        assert!(reads(Some("[KDE]\nAnimationDurationFactor=0\n"), 0.0));
+        assert!(reads(Some("[KDE]\nAnimationDurationFactor=100\n"), 4.0));
+        assert!(reads(Some("[KDE]\nAnimationDurationFactor=fast\n"), 1.0));
+        assert!(reads(Some("[KDE]\nAnimationDurationFactor=NaN\n"), 1.0));
+        assert!(reads(Some("[KDE]\n AnimationDurationFactor = 2\n"), 2.0));
+        // The same key in another group isn't the animation speed.
+        assert!(reads(Some("[General]\nAnimationDurationFactor=2\n"), 1.0));
+        assert!(reads(Some("[General]\nx=1\n\n[KDE]\nAnimationDurationFactor=2\n"), 2.0));
+    }
 
     #[test]
     fn reads_os_info_without_panicking() {

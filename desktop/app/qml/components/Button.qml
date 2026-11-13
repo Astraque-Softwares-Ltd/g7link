@@ -44,7 +44,7 @@ FocusScope {
         color: button.background
         Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
         scale: mouse.pressed && button.interactive ? Theme.pressScale : 1
-        Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+        Behavior on scale { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove } }
 
         // Hover & Press state layer.
         Rectangle {

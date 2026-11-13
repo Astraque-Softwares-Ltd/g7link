@@ -43,7 +43,7 @@ FocusScope {
             x: toggle.checked ? parent.width - width - 3 : 3
             color: toggle.checked ? Theme.accentContent : Theme.surfaceContentVariant
             // Quick and settled, never springy: a switch must feel immediate.
-            Behavior on x { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.reduceMotion ? 0 : 140; easing.type: Easing.OutCubic } }
+            Behavior on x { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.quickIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove } }
             Behavior on color { enabled: !Theme.reduceMotion; ColorAnimation { duration: Theme.fadeFast } }
         }
     }

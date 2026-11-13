@@ -127,7 +127,7 @@ Item {
                 Accessible.role: Accessible.ProgressBar
                 Accessible.name: item.title
                 Accessible.description: percent.text
-                Behavior on height { enabled: item.motion; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                Behavior on height { enabled: item.motion; NumberAnimation { duration: Theme.smallIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove } }
                 Rectangle {
                     width: item.shown <= 0 ? 0 : Math.max(parent.height, parent.width * item.shown)
                     height: parent.height

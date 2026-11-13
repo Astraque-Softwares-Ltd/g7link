@@ -677,16 +677,18 @@ Item {
                     property: "opacity"
                     from: 0.45
                     to: 1.0
-                    duration: 120
-                    easing.type: Easing.OutCubic
+                    duration: Theme.pageFade
+                    easing.type: Easing.BezierSpline
+                    easing.bezierCurve: Theme.easeEnter
                 }
                 NumberAnimation {
                     target: sectionTranslate
                     property: "y"
-                    from: 5
+                    from: Theme.rise
                     to: 0
-                    duration: 135
-                    easing.type: Easing.OutCubic
+                    duration: Theme.largeIn
+                    easing.type: Easing.BezierSpline
+                    easing.bezierCurve: Theme.easeEnter
                 }
             }
 
@@ -2634,7 +2636,7 @@ Item {
                                         radius: parent.radius
                                         width: parent.width * Math.max(0, Math.min(1, AppController.updateProgress))
                                         color: Theme.accent
-                                        Behavior on width { enabled: !Theme.reduceMotion; NumberAnimation { duration: 180 } }
+                                        Behavior on width { enabled: !Theme.reduceMotion; NumberAnimation { duration: Theme.smallIn; easing.type: Easing.BezierSpline; easing.bezierCurve: Theme.easeMove } }
                                     }
                                 }
                                 Spinner {
