@@ -18,6 +18,10 @@ over security and memory, especially on shared Wi-Fi.
 - **See the clipboard before sending it.** Home's Clipboard shows what is on
   the phone's clipboard first. The tile, notification and widget still send
   at once.
+- **Codes from texts are copied for you.** When a text brings a one-time
+  code, it is on the PC's clipboard at once and a notification says Ctrl+V
+  pastes it, in a browser or anywhere else. The clipboard is wiped after 2
+  minutes, and Settings can turn this off.
 
 ### Changed
 
@@ -38,6 +42,9 @@ over security and memory, especially on shared Wi-Fi.
 
 - mDNS no longer busy-loops after it restarts, and closes the sockets of
   networks the PC has left.
+- A phone or app window opens in front of the main window, not behind it.
+- The phone says where to turn on "Your PC in your pocket" when the PC's
+  files aren't shared.
 - Much less memory for notification pictures, copied pictures, recordings'
   sound, screen sharing and the timeline.
 - Received files are saved under names claimed exclusively, without
