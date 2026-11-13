@@ -26,10 +26,15 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
@@ -402,25 +407,39 @@ fun RemoteScreen(
             }
         }
 
-        if (!isFullScreen && !WindowInsets.isImeVisible) {
-            RemoteToolbar(
-                device = device,
-                core = core,
-                screen = mode == RemoteMode.Screen,
-                keyboardOn = showKeyboard && mode == RemoteMode.Touchpad,
-                onKeyboard = {
-                    keyboardOpenedForPc = false
-                    if (mode != RemoteMode.Touchpad) {
-                        mode = RemoteMode.Touchpad
-                        showKeyboard = true
-                    } else {
-                        showKeyboard = !showKeyboard
-                    }
+        if (!isFullScreen) {
+            // As the keyboard goes down the keys rise into the room it leaves. They go
+            // at once when it opens, as they'd only push the typing field up.
+            AnimatedVisibility(
+                visible = !WindowInsets.isImeVisible,
+                enter = if (reducedMotion) {
+                    EnterTransition.None
+                } else {
+                    expandVertically(tween(KEYS_RETURN_MS, easing = LinearOutSlowInEasing)) +
+                        slideInVertically(tween(KEYS_RETURN_MS, easing = LinearOutSlowInEasing)) { it / 3 } +
+                        fadeIn(tween(KEYS_RETURN_MS))
                 },
-                onVolume = { mode = RemoteMode.Media },
-                keycaps = mode == RemoteMode.Touchpad,
-                haptics = haptic,
-            )
+                exit = ExitTransition.None,
+            ) {
+                RemoteToolbar(
+                    device = device,
+                    core = core,
+                    screen = mode == RemoteMode.Screen,
+                    keyboardOn = showKeyboard && mode == RemoteMode.Touchpad,
+                    onKeyboard = {
+                        keyboardOpenedForPc = false
+                        if (mode != RemoteMode.Touchpad) {
+                            mode = RemoteMode.Touchpad
+                            showKeyboard = true
+                        } else {
+                            showKeyboard = !showKeyboard
+                        }
+                    },
+                    onVolume = { mode = RemoteMode.Media },
+                    keycaps = mode == RemoteMode.Touchpad,
+                    haptics = haptic,
+                )
+            }
         }
     }
 }
@@ -581,6 +600,9 @@ private fun QuickKey(
 
 /** The quick-action keys on the Touchpad tab. */
 private val QUICK_KEY_HEIGHT = 56.dp
+
+/** The keys coming back as the keyboard closes: about as long as it takes to go down. */
+private const val KEYS_RETURN_MS = 260
 
 /** The PC's sound: what plays, with its controls, the volume and where it plays. */
 @Composable
@@ -978,6 +1000,7 @@ private fun TouchpadView(
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
+    val reducedMotion = LocalReducedMotion.current
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) core.pasteImageOnPc(pcId, uri, onStatus)
     }
@@ -1001,11 +1024,15 @@ private fun TouchpadView(
         // field, so the pointer can move without closing the keyboard (#52).
         val padWhileTyping = maxHeight >= ROOM_FOR_PAD_WHILE_TYPING
         // Tall keys under the pad when there's room; the usual height while typing or tight.
-        val mouseKeyHeight = if (!imeVisible && !touchpadOnly && maxHeight >= ROOM_FOR_TALL_MOUSE_KEYS) {
-            TALL_MOUSE_KEY_HEIGHT
-        } else {
-            MOUSE_KEY_HEIGHT
-        }
+        val mouseKeyHeight by animateDpAsState(
+            targetValue = if (!imeVisible && !touchpadOnly && maxHeight >= ROOM_FOR_TALL_MOUSE_KEYS) {
+                TALL_MOUSE_KEY_HEIGHT
+            } else {
+                MOUSE_KEY_HEIGHT
+            },
+            animationSpec = if (reducedMotion) snap() else tween(KEYS_RETURN_MS, easing = LinearOutSlowInEasing),
+            label = "MouseKeyHeight",
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1014,14 +1041,20 @@ private fun TouchpadView(
                 .then(if (imeVisible) Modifier.padding(bottom = 10.dp) else Modifier),
             verticalArrangement = Arrangement.spacedBy(if (touchpadOnly) 6.dp else 10.dp),
         ) {
-            // The touchpad takes whatever room the keys and the keyboard leave.
-            if (!imeVisible || padWhileTyping) {
+            // The touchpad takes whatever room the keys and the keyboard leave. Where
+            // it gives way to typing, it fades back in as the keyboard goes down.
+            AnimatedVisibility(
+                visible = !imeVisible || padWhileTyping,
+                enter = if (reducedMotion) EnterTransition.None else fadeIn(tween(KEYS_RETURN_MS)),
+                exit = ExitTransition.None,
+                modifier = Modifier.weight(1f).heightIn(min = PAD_WHILE_TYPING).fillMaxWidth(),
+            ) {
                 TouchpadSurface(
                     pcId = pcId,
                     core = core,
                     sensitivity = sensitivity,
                     onStatus = onStatus,
-                    modifier = Modifier.weight(1f).heightIn(min = PAD_WHILE_TYPING).fillMaxWidth(),
+                    modifier = Modifier.fillMaxSize(),
                     scrollLocked = scrollLocked,
                     keycapLook = true,
                     haptics = haptics,
