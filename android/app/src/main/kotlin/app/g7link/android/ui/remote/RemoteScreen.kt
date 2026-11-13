@@ -81,6 +81,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -110,6 +111,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -125,6 +127,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -1024,7 +1027,8 @@ private fun TouchpadView(
         // field, so the pointer can move without closing the keyboard (#52).
         val padWhileTyping = maxHeight >= ROOM_FOR_PAD_WHILE_TYPING
         // Tall keys under the pad when there's room; the usual height while typing or tight.
-        val mouseKeyHeight by animateDpAsState(
+        // Read where the keys are measured, so its frames relayout the row and recompose nothing.
+        val mouseKeyHeight = animateDpAsState(
             targetValue = if (!imeVisible && !touchpadOnly && maxHeight >= ROOM_FOR_TALL_MOUSE_KEYS) {
                 TALL_MOUSE_KEY_HEIGHT
             } else {
@@ -1082,7 +1086,7 @@ private fun TouchpadView(
                         haptics(TrackpadHaptic.Click)
                         core.remoteButton(pcId, "left", "click", onStatus)
                     },
-                    modifier = Modifier.weight(1f).height(mouseKeyHeight),
+                    modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
                 )
                 G7Keycap(
                     label = stringResource(if (scrollLocked) R.string.remote_scroll_mode else R.string.remote_middle_click),
@@ -1095,7 +1099,7 @@ private fun TouchpadView(
                         core.remoteButton(pcId, "middle", "click", onStatus)
                     },
                     selected = scrollLocked,
-                    modifier = Modifier.weight(1f).height(mouseKeyHeight),
+                    modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
                 )
                 G7Keycap(
                     label = stringResource(R.string.remote_right_click),
@@ -1103,7 +1107,7 @@ private fun TouchpadView(
                         haptics(TrackpadHaptic.Click)
                         core.remoteButton(pcId, "right", "click", onStatus)
                     },
-                    modifier = Modifier.weight(1f).height(mouseKeyHeight),
+                    modifier = Modifier.weight(1f).animatedHeight(mouseKeyHeight),
                 )
                 if (canBeTouchpadOnly) {
                     G7Keycap(
@@ -1113,7 +1117,7 @@ private fun TouchpadView(
                             if (!touchpadOnly) onShowKeyboard(false)
                             onTouchpadOnly(!touchpadOnly)
                         },
-                        modifier = Modifier.weight(1.2f).height(mouseKeyHeight),
+                        modifier = Modifier.weight(1.2f).animatedHeight(mouseKeyHeight),
                     )
                 }
             }
@@ -1194,6 +1198,13 @@ private fun TouchpadView(
 
 /** The touchpad strip while the keyboard is open. */
 private val PAD_WHILE_TYPING = 96.dp
+
+/** [height] as an exact height, read while measuring rather than composing. */
+private fun Modifier.animatedHeight(height: State<Dp>): Modifier = layout { measurable, constraints ->
+    val px = height.value.roundToPx().coerceIn(constraints.minHeight, constraints.maxHeight)
+    val placeable = measurable.measure(constraints.copy(minHeight = px, maxHeight = px))
+    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+}
 
 /**
  * Height above the keyboard that fits the strip, the buttons, the field and a row

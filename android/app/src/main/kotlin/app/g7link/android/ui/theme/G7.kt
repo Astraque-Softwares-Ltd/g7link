@@ -45,12 +45,10 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.dropShadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -61,7 +59,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.shadow.Shadow
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.LocalDensity
@@ -74,6 +74,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
@@ -1241,43 +1242,68 @@ fun G7Well(
     val shade = Color.Black.copy(alpha = if (dark) 0.42f else 0.09f)
     val rim = if (dark) Color.White.copy(alpha = 0.035f) else Color.Black.copy(alpha = 0.05f)
     val dot = if (dark) Color.White.copy(alpha = 0.055f) else Color.Black.copy(alpha = 0.06f)
+    val density = LocalDensity.current
+    // Built once: the touchpad's well changes size on every frame while the keyboard moves.
+    val look = remember(density, shade, dot) { WellLook(density, shade, dot) }
     Box(
         modifier = modifier
             .clip(shape)
             .background(ground)
             .drawWithCache {
-                val shadeHeight = 16.dp.toPx()
-                val shadeBrush = Brush.verticalGradient(
-                    colors = listOf(shade, Color.Transparent),
-                    startY = 0f,
-                    endY = shadeHeight,
-                )
                 val wellOutline = shape.createOutline(size, layoutDirection, this)
-                // Strokes are centred on the edge and the clip keeps their inner half.
-                val rimStroke = Stroke(width = 2.dp.toPx())
-                val outlineStroke = Stroke(width = 3.dp.toPx())
-                val step = 18.dp.toPx()
-                val dotWidth = 1.dp.toPx()
-                val columns = if (dots && step > 0f) (size.width / step).toInt().coerceAtLeast(0) else 0
-                val rows = if (dots && step > 0f) (size.height / step).toInt().coerceAtLeast(0) else 0
-                val left = (size.width - (columns - 1) * step) / 2f
-                val top = (size.height - (rows - 1) * step) / 2f
-                val points = buildList(columns * rows) {
-                    for (row in 0 until rows) {
-                        for (column in 0 until columns) add(Offset(left + column * step, top + row * step))
-                    }
-                }
+                val dotCount = if (dots) look.layDots(size) else 0
                 onDrawBehind {
-                    drawRect(shadeBrush, size = Size(size.width, shadeHeight))
-                    if (points.isNotEmpty()) {
-                        drawPoints(points, PointMode.Points, dot, strokeWidth = dotWidth, cap = StrokeCap.Round)
+                    drawRect(look.shadeBrush, size = Size(size.width, look.shadeHeight))
+                    if (dotCount > 0) {
+                        drawContext.canvas.nativeCanvas.drawPoints(look.dots, 0, dotCount * 2, look.dotPaint)
                     }
-                    drawOutline(wellOutline, rim, style = rimStroke)
-                    if (outline != null) drawOutline(wellOutline, outline, style = outlineStroke)
+                    drawOutline(wellOutline, rim, style = look.rimStroke)
+                    if (outline != null) drawOutline(wellOutline, outline, style = look.outlineStroke)
                 }
             },
         content = content,
     )
+}
+
+/** What [G7Well] draws with, so a well that resizes every frame allocates nothing for it. */
+private class WellLook(density: Density, shade: Color, dot: Color) {
+    val shadeHeight = with(density) { 16.dp.toPx() }
+    val shadeBrush = Brush.verticalGradient(listOf(shade, Color.Transparent), startY = 0f, endY = shadeHeight)
+
+    // Strokes are centred on the edge and the clip keeps their inner half.
+    val rimStroke = Stroke(width = with(density) { 2.dp.toPx() })
+    val outlineStroke = Stroke(width = with(density) { 3.dp.toPx() })
+    val dotPaint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        color = dot.toArgb()
+        strokeWidth = with(density) { 1.dp.toPx() }
+        strokeCap = android.graphics.Paint.Cap.ROUND
+    }
+    private val step = with(density) { 18.dp.toPx() }
+
+    /** Dot centres as x, y pairs; it only grows, so shrinking and growing back is free. */
+    var dots = FloatArray(0)
+        private set
+
+    /** Lays a grid centred in [size] into [dots] and returns how many dots it holds. */
+    fun layDots(size: Size): Int {
+        if (step <= 0f) return 0
+        val columns = (size.width / step).toInt().coerceAtLeast(0)
+        val rows = (size.height / step).toInt().coerceAtLeast(0)
+        val count = columns * rows
+        if (count == 0) return 0
+        if (dots.size < count * 2) dots = FloatArray(count * 2)
+        val left = (size.width - (columns - 1) * step) / 2f
+        val top = (size.height - (rows - 1) * step) / 2f
+        var i = 0
+        for (row in 0 until rows) {
+            for (column in 0 until columns) {
+                dots[i++] = left + column * step
+                dots[i++] = top + row * step
+            }
+        }
+        return count
+    }
 }
 
 /** A sub-screen's header: Back, the title, and a muted note after it. */
