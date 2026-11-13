@@ -1389,9 +1389,11 @@ Item {
                     visible: home.online && state !== null
                     property bool expanded: false
                     property bool confirmWifiOff: false
+                    // What was asked, for a phone that doesn't say whether its hotspot is on.
                     property bool hotspotActive: false
+                    readonly property bool hotspotOn: state !== null && typeof state.hotspot === "boolean"
+                        ? state.hotspot : hotspotActive
                     property var hoveredLockedFeature: null
-                    // The phone doesn't report its hotspot, so this is only ever what was asked.
                     Connections {
                         target: AppController
                         function onPhoneToggleFailed(device, id) {
@@ -1497,11 +1499,11 @@ Item {
                             width: toggleGrid.cell
                             iconPath: Icons.hotspot
                             label: qsTr("Hotspot")
-                            active: phoneControls.hotspotActive
+                            active: phoneControls.hotspotOn
                             feature: home.feature("toggles.wifi")
                             onLockedClicked: phoneControls.showLock(feature)
                             onClicked: {
-                                phoneControls.hotspotActive = !phoneControls.hotspotActive
+                                phoneControls.hotspotActive = !phoneControls.hotspotOn
                                 AppController.setPhoneToggle(home.deviceId, "hotspot", String(phoneControls.hotspotActive))
                             }
                         }

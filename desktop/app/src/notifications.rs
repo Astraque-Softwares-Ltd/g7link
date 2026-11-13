@@ -858,6 +858,15 @@ pub fn on_toast(event: ToastEvent) {
             return crate::photos::on_toast(key, Some(action));
         }
         ToastEvent::Dismissed { device, .. } if device == crate::photos::TOAST_GROUP => return,
+        // The hotspot offer: use it, or not for a while.
+        ToastEvent::Opened { device, .. } | ToastEvent::Action { device, .. }
+            if device == crate::hotspot::TOAST_GROUP =>
+        {
+            return crate::hotspot::on_toast(false);
+        }
+        ToastEvent::Dismissed { device, .. } if device == crate::hotspot::TOAST_GROUP => {
+            return crate::hotspot::on_toast(true);
+        }
         // Calls: answer, decline or silence; dismissing only hides it.
         ToastEvent::Action { device, key, action } if device == crate::calls::TOAST_GROUP => {
             return crate::calls::on_toast(key, action);

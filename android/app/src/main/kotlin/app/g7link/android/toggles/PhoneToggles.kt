@@ -44,6 +44,8 @@ class PhoneToggles(
 
     private val torchCameraId: String? by lazy { findTorchCamera() }
     @Volatile private var torchOn: Boolean = false
+    /** The hotspot as its last broadcast said; null before one is seen. */
+    @Volatile private var hotspotOn: Boolean? = null
     private var started = false
     private var lastSent: CorePhoneToggles? = null
 
@@ -61,6 +63,13 @@ class PhoneToggles(
 
     private val settingsObserver = object : ContentObserver(mainHandler) {
         override fun onChange(selfChange: Boolean) {
+            schedulePush()
+        }
+    }
+
+    private val hotspotReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            noteHotspot(intent)
             schedulePush()
         }
     }
@@ -103,6 +112,13 @@ class PhoneToggles(
             addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        // On its own, so the sticky state it hands back is the hotspot's.
+        ContextCompat.registerReceiver(
+            context,
+            hotspotReceiver,
+            IntentFilter(WIFI_AP_STATE_CHANGED_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )?.let(::noteHotspot)
         pushNow()
     }
 
@@ -116,6 +132,7 @@ class PhoneToggles(
         }
         runCatching { context.contentResolver.unregisterContentObserver(settingsObserver) }
         runCatching { context.unregisterReceiver(receiver) }
+        runCatching { context.unregisterReceiver(hotspotReceiver) }
     }
 
     /** What `toggles.*` capabilities this phone currently offers. */
@@ -141,6 +158,7 @@ class PhoneToggles(
         brightness = readBrightness().toUByte(),
         wifi = readWifi(),
         bluetooth = readBluetooth(),
+        hotspot = readHotspot(),
     )
 
     /** Forces an immediate snapshot push to `g7link-core`. */
@@ -325,6 +343,13 @@ class PhoneToggles(
 
     private fun readWifi(): Boolean = runCatching { wifi?.isWifiEnabled == true }.getOrDefault(false)
 
+    private fun noteHotspot(intent: Intent) {
+        hotspotApState(intent.getIntExtra(EXTRA_WIFI_AP_STATE, -1))?.let { hotspotOn = it }
+    }
+
+    private fun readHotspot(): Boolean? = hotspotOn
+        ?: runCatching { wifi?.javaClass?.getMethod("isWifiApEnabled")?.invoke(wifi) as? Boolean }.getOrNull()
+
     private fun readBluetooth(): Boolean =
         runCatching { bluetooth?.adapter?.isEnabled }.getOrNull()
             ?: runCatching {
@@ -354,6 +379,18 @@ class PhoneToggles(
         private const val DEBOUNCE_MS = 120L
         private const val FOLLOW_UP_MS = 450L
         private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
+        private const val WIFI_AP_STATE_CHANGED_ACTION = "android.net.wifi.WIFI_AP_STATE_CHANGED"
+        private const val EXTRA_WIFI_AP_STATE = "wifi_state"
+
+        /**
+         * Whether a hotspot state from [WIFI_AP_STATE_CHANGED_ACTION] means on
+         * (enabled) or off (disabled, failed); null while it's changing.
+         */
+        fun hotspotApState(state: Int): Boolean? = when (state) {
+            13 -> true
+            11, 14 -> false
+            else -> null
+        }
 
         fun hasDndAccess(context: Context): Boolean =
             context.getSystemService(NotificationManager::class.java)?.isNotificationPolicyAccessGranted == true

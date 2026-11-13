@@ -574,6 +574,7 @@ fn main() -> ExitCode {
     notification_store::start(data_dir.clone());
     std::thread::spawn(notifications::prune_images);
     watch_network();
+    hotspot::start();
     sys::text_focus::watch(remote::text_focus_changed);
     start_toasts();
     // The Share sheet and notification buttons, after an update (#84).

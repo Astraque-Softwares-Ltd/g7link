@@ -343,8 +343,20 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Guide", "What it does\nSyncs media playback between your phone and PC, switches your PC's audio output and microphone (PipeWire or PulseAudio), and turns your phone into a customizable grid of shortcut tiles, macros, and volume sliders.\n\nWhere to find it\n- Left navigation rail › Deck.\n\nWhat it needs\n- Paired phone over any active connection."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Guide", "What it does\nTriggers your phone camera from your PC to snap a photo or scan a document, then copies the result to your clipboard and pastes it into the window you were using. Where your desktop doesn't let G7 Link see that window, press Ctrl+V yourself.\n\nWhere to find it\n- Global shortcuts Ctrl+Alt+C (Take photo with phone) and Ctrl+Alt+D (Scan document with phone). Your desktop may ask you to confirm them once.\n- Home › Continuity Camera.\n\nWhat it needs\n- Camera permission on your phone."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Hotspot", "%1's hotspot didn't show up. Check that it's on, then pick %2 in the Wi-Fi menu."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "%1's hotspot didn't show up. Pick it in the Wi-Fi menu."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "%1's hotspot didn't turn on. Turn it on from the phone, and this PC joins it."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Back on %1 · %2 used on the hotspot"), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Back on %1."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Back on %1. %2's hotspot is off · %3 used"), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Back on %1. %2's hotspot is off."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Connected to %1's hotspot."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Couldn't join %1's hotspot. Pick %2 in the Wi-Fi menu."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "G7 Link isn't ready yet."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "No internet"), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Pick %1 in the Wi-Fi menu once. This PC joins %2's hotspot by itself after that."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Use %1's hotspot?"), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Use hotspot"), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "your phone"), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Links", "%1 sent a link"), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "%1: tap the notification on your phone to continue watching."), // desktop/app/src/links.rs
     QT_TRANSLATE_NOOP("Links", "%1: tap the notification on your phone to open in Maps."), // desktop/app/src/links.rs

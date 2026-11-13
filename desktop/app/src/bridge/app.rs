@@ -1778,6 +1778,7 @@ impl qobject::AppController {
                 ("flashlight", PhoneToggleValue::Bool(on)) => next.flashlight = Some(*on),
                 ("wifi", PhoneToggleValue::Bool(on)) => next.wifi = *on,
                 ("bluetooth", PhoneToggleValue::Bool(on)) => next.bluetooth = *on,
+                ("hotspot", PhoneToggleValue::Bool(on)) if next.hotspot.is_some() => next.hotspot = Some(*on),
                 ("volume", PhoneToggleValue::Level(v)) => next.volume = *v,
                 ("brightness", PhoneToggleValue::Level(v)) => next.brightness = *v,
                 ("ringer", PhoneToggleValue::Mode(m)) => next.ringer.clone_from(m),
@@ -1789,21 +1790,22 @@ impl qobject::AppController {
         let qt = self.qt_thread();
         let failed_id = id.clone();
         core_host::spawn(async move {
-            match node.set_phone_toggle(device, id, val).await {
-                // The phone's hotspot is on: join it, when a network is set for it.
-                Ok(()) if hotspot_on => crate::hotspot::hotspot_turned_on(device),
-                Ok(()) => {}
-                Err(e) => {
-                    let latest = node.phone_toggles(device);
-                    core_host::host().hub.update(|s| s.set_toggles(device, latest));
-                    show_message(describe(&e));
-                    let _ = qt.queue(move |mut object| {
-                        object.as_mut().phone_toggle_failed(
-                            QString::from(&device.to_string()),
-                            QString::from(&failed_id),
-                        );
-                    });
-                }
+            // Turning the hotspot on also joins it, learning its network the first time.
+            let done = if hotspot_on {
+                crate::hotspot::turn_on(device).await
+            } else {
+                node.set_phone_toggle(device, id, val).await.map_err(|e| describe(&e))
+            };
+            if let Err(message) = done {
+                let latest = node.phone_toggles(device);
+                core_host::host().hub.update(|s| s.set_toggles(device, latest));
+                show_message(message);
+                let _ = qt.queue(move |mut object| {
+                    object.as_mut().phone_toggle_failed(
+                        QString::from(&device.to_string()),
+                        QString::from(&failed_id),
+                    );
+                });
             }
         });
     }

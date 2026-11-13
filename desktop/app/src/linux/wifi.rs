@@ -141,9 +141,99 @@ pub fn connect(profile: &str) -> Result<(), String> {
     }
 }
 
+/// How much of the internet the PC reaches, as NetworkManager last checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Connectivity {
+    Full,
+    /// Online, but behind a sign-in page.
+    Portal,
+    /// A network without the internet.
+    Limited,
+    None,
+    /// NetworkManager isn't there, or doesn't check.
+    Unknown,
+}
+
+fn parse_connectivity(stdout: &str) -> Connectivity {
+    match stdout.trim() {
+        "full" => Connectivity::Full,
+        "portal" => Connectivity::Portal,
+        "limited" => Connectivity::Limited,
+        "none" => Connectivity::None,
+        _ => Connectivity::Unknown,
+    }
+}
+
+/// The PC's connectivity, without asking NetworkManager to check again.
+pub fn connectivity() -> Connectivity {
+    match Command::new("nmcli").args(["-t", "-f", "CONNECTIVITY", "general"]).output() {
+        Ok(out) if out.status.success() => parse_connectivity(&String::from_utf8_lossy(&out.stdout)),
+        _ => Connectivity::Unknown,
+    }
+}
+
+/// The Wi-Fi networks in range, from NetworkManager's last scan unless `rescan`.
+pub fn in_range(rescan: bool) -> Vec<InRange> {
+    let mode = if rescan { "yes" } else { "no" };
+    let args = ["-t", "-f", "ACTIVE,SSID", "device", "wifi", "list", "--rescan", mode];
+    let Ok(out) = Command::new("nmcli").args(args).output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_in_range(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The Wi-Fi network the PC is on, if any.
+pub fn active_network() -> Option<String> {
+    in_range(false).into_iter().find(|n| n.connected).map(|n| n.profile)
+}
+
+fn parse_wifi_device(stdout: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        // Format from `nmcli -t -f DEVICE,TYPE,STATE device`: wlp2s0:wifi:connected
+        let mut fields = line.splitn(3, ':');
+        let (device, kind, state) = (fields.next()?, fields.next()?, fields.next()?);
+        let safe = |c: char| c.is_ascii_alphanumeric() || "-_.".contains(c);
+        let plain = !device.is_empty() && device.chars().all(safe) && device != "." && device != "..";
+        (kind == "wifi" && state == "connected" && plain).then(|| device.to_owned())
+    })
+}
+
+/// Bytes the connected Wi-Fi interface has received and sent since it came up.
+pub fn wifi_bytes() -> Option<u64> {
+    let out = Command::new("nmcli").args(["-t", "-f", "DEVICE,TYPE,STATE", "device"]).output().ok()?;
+    let device = parse_wifi_device(&String::from_utf8_lossy(&out.stdout))?;
+    let read = |what: &str| -> Option<u64> {
+        let path = format!("/sys/class/net/{device}/statistics/{what}");
+        std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    };
+    Some(read("rx_bytes")?.saturating_add(read("tx_bytes")?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_connectivity_and_the_connected_wifi_device() {
+        assert_eq!(parse_connectivity("full\n"), Connectivity::Full);
+        assert_eq!(parse_connectivity("limited"), Connectivity::Limited);
+        assert_eq!(parse_connectivity("none"), Connectivity::None);
+        assert_eq!(parse_connectivity("portal"), Connectivity::Portal);
+        assert_eq!(parse_connectivity(""), Connectivity::Unknown);
+
+        let devices = concat!(
+            "lo:loopback:connected (externally)\n",
+            "p2p-dev-wlp2s0:wifi-p2p:disconnected\n",
+            "wlp2s0:wifi:connected\n",
+        );
+        assert_eq!(parse_wifi_device(devices).as_deref(), Some("wlp2s0"));
+        assert_eq!(parse_wifi_device("wlp2s0:wifi:disconnected\n"), None);
+        // A name that could leave the statistics folder is never used.
+        assert_eq!(parse_wifi_device("../x:wifi:connected\n"), None);
+    }
 
     #[test]
     fn parses_and_tidies_saved_wifi_profiles() {

@@ -23,6 +23,12 @@ over security and memory, especially on shared Wi-Fi.
   pastes it, in a browser or anywhere else. The clipboard is wiped after 2
   minutes. This comes on with the update, even where it was off before;
   Settings › General can turn it off again.
+- **Instant Hotspot offers itself.** When the PC's internet goes, a
+  notification offers a linked phone's hotspot (with Elevated): one click
+  turns it on and joins it, finding its network the first time. Back in
+  range of a known Wi-Fi network, the PC moves back and turns off the hotspot
+  it turned on, with how much data it used. Home's Hotspot button shows
+  whether the hotspot is really on.
 
 ### Changed
 

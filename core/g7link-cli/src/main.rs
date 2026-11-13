@@ -1403,6 +1403,7 @@ fn sample_toggles() -> g7link_core::PhoneToggles {
         brightness: 70,
         wifi: true,
         bluetooth: true,
+        hotspot: Some(false),
     })
     .clone()
 }
