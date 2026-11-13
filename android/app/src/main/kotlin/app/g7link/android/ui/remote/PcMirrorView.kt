@@ -1098,8 +1098,9 @@ fun PcMirrorView(
                     )
                 }
 
-                // It fades away as the first picture comes in.
-                AnimatedVisibility(
+                // It fades away as the first picture comes in. (In a box inside a column:
+                // named in full, or the column's own AnimatedVisibility is picked.)
+                androidx.compose.animation.AnimatedVisibility(
                     visible = !hasRenderedFrame,
                     enter = g7Appear(),
                     exit = g7Disappear(),
