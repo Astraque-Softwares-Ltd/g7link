@@ -21,7 +21,8 @@ over security and memory, especially on shared Wi-Fi.
 - **Codes from texts are copied for you.** When a text brings a one-time
   code, it is on the PC's clipboard at once and a notification says Ctrl+V
   pastes it, in a browser or anywhere else. The clipboard is wiped after 2
-  minutes, and Settings can turn this off.
+  minutes. This comes on with the update, even where it was off before;
+  Settings › General can turn it off again.
 
 ### Changed
 

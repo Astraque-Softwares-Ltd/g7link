@@ -469,7 +469,9 @@ pub struct Settings {
     #[serde(alias = "suggest_clipboard_actions")]
     pub suggest_clipboard_actions: bool,
     /// Copy one-time codes from phone notifications and SMS automatically (on by default).
-    #[serde(alias = "auto_copy_otp", alias = "smart_otp_auto_copy")]
+    /// Saved under a new name: earlier versions kept it off by default and saved that
+    /// under `autoCopyOtp`, so an old file's value is left behind and it comes on once.
+    #[serde(rename = "copyOneTimeCodes", default = "default_true")]
     pub auto_copy_otp: bool,
     /// Pause PC media playback while a phone call is ringing or active.
     #[serde(alias = "pause_media_on_call", alias = "auto_pause_media")]
@@ -1058,6 +1060,14 @@ mod tests {
     }
 
     #[test]
+    fn copying_codes_turned_off_after_the_update_stays_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let off = Settings { auto_copy_otp: false, ..Settings::default() };
+        off.save(dir.path()).unwrap();
+        assert!(!Settings::load(dir.path()).auto_copy_otp);
+    }
+
+    #[test]
     fn missing_fields_take_defaults_and_corrupt_files_are_set_aside() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(FILE_NAME), r#"{ "theme": "dracula" }"#).unwrap();
@@ -1211,6 +1221,7 @@ mod tests {
         fs::write(dir.path().join(FILE_NAME), snap_ebe0012).unwrap();
         let s = Settings::load(dir.path());
         assert_eq!(s.theme, Theme::Quiet);
+        assert!(s.auto_copy_otp, "codes are copied after an update, whatever the old default saved");
         assert_eq!(s.timeline_retention_days, 365);
         assert_eq!(s.continuity_photo_hotkey, "Ctrl+Shift+C");
         assert_eq!(s.continuity_scan_hotkey, "Ctrl+Shift+D");
