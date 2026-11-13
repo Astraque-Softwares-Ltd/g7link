@@ -342,7 +342,9 @@ fn is_own_private_echo(text: &str, clip: &Clip) -> bool {
 
 /// Something private is on the clipboard: told unless G7 Link just put it there.
 fn private_copied() {
-    if !just_wrote_private() && let Some(on_private) = ON_PRIVATE.get() {
+    if !just_wrote_private()
+        && let Some(on_private) = ON_PRIVATE.get()
+    {
         on_private();
     }
 }

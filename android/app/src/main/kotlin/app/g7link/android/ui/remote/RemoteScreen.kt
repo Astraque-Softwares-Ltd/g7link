@@ -2161,7 +2161,7 @@ private fun PasteChip(clip: PcClipNotice, onPaste: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val paste = stringResource(R.string.remote_key_paste)
     val preview = when (clip.kind) {
-        PcClipKind.TEXT -> clip.preview.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
+        PcClipKind.TEXT -> clip.preview.orEmpty().lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
         PcClipKind.IMAGE -> stringResource(R.string.clipboard_history_image)
         PcClipKind.PRIVATE -> stringResource(R.string.remote_paste_hidden)
     }
