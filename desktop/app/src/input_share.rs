@@ -33,8 +33,15 @@ pub fn enter_remote_with_setting(peer: DeviceId, follow_clipboard: bool) -> bool
         is_new
     };
     if changed && follow_clipboard {
+        // Reading the clipboard waits on the window's thread, and this runs as
+        // the phone's first move arrives: the moves after it must not wait too.
         if core_host::node().is_some() {
-            crate::mirror::sync_clipboard_for_device(peer);
+            let spawned = std::thread::Builder::new()
+                .name("flow-clipboard".into())
+                .spawn(move || crate::mirror::sync_clipboard_for_device(peer));
+            if let Err(e) = spawned {
+                tracing::warn!(error = %e, "can't send the clipboard to the phone taking control");
+            }
         }
         true
     } else {
