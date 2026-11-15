@@ -62,6 +62,11 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
 - A phone or app window opens in front of the main window, not behind it.
 - The conversation list stays where it was when you open a conversation.
 - G7 Island no longer redraws every frame while music plays.
+- The phone's touchpad moves the cursor at once, instead of now and then
+  seconds later when control moved to the phone.
+- Enter on the phone's keyboard loads a link in the same browser tab, instead
+  of opening a new window; elsewhere it's still a new line.
+- The virtual webcam no longer keeps a CPU core busy while nobody uses it.
 - On GNOME, a copied code really reaches the clipboard. With the G7 Linux
   extension 1.5 it stays out of clipboard histories; with older ones, G7
   Linux's history sees it until it's wiped.

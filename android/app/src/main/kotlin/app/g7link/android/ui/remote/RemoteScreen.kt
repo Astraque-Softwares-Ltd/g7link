@@ -1166,7 +1166,8 @@ private fun TouchpadView(
             )
 
             // Typing as in a chat app: what's typed appears on the PC as it's typed,
-            // the phone's Enter is a new line, and the round button sends or dictates.
+            // the phone's Enter is a new line (or loads a link), and the round
+            // button sends or dictates.
             TypingComposer(
                 pcId = pcId,
                 pcName = pcName,
@@ -1182,6 +1183,16 @@ private fun TouchpadView(
                         // A shortcut (Ctrl+C...), not text: it stays out of the field.
                         core.remoteKey(pcId, diff.added.lowercase(), activeMods.toList(), onStatus)
                         activeMods.clear()
+                        return@TypingComposer
+                    }
+                    // Enter after a link, or with nothing typed here, loads it: a plain
+                    // Enter, as Shift+Enter opens a browser's address in a new window.
+                    if (diff.backspaces == 0 && diff.added == "\n" && next.text == typed.text + "\n" &&
+                        enterGoesAsIs(typed.text)
+                    ) {
+                        core.remoteKey(pcId, "enter", activeMods.toList(), onStatus)
+                        activeMods.clear()
+                        typed = TextFieldValue("")
                         return@TypingComposer
                     }
                     repeat(diff.backspaces) { i ->

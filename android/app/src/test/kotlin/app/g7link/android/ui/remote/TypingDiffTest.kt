@@ -51,4 +51,19 @@ class TypingDiffTest {
     fun noChangeSendsNothing() {
         assertEquals(TypingDiff(0, ""), typingDiff("same", "same"))
     }
+
+    @Test
+    fun enterLoadsALinkInsteadOfBreakingTheLine() {
+        // Nothing typed here: a link pasted on the PC loads in the same tab.
+        assertEquals(true, enterGoesAsIs(""))
+        assertEquals(true, enterGoesAsIs("https://g7.astraque.io/download"))
+        assertEquals(true, enterGoesAsIs("www.example.com"))
+        assertEquals(true, enterGoesAsIs("github.com/owner/repo "))
+        assertEquals(true, enterGoesAsIs("localhost.test:8080/app?x=1"))
+        // Words, a sentence with a link in it, or a second line are text: a new line.
+        assertEquals(false, enterGoesAsIs("hello"))
+        assertEquals(false, enterGoesAsIs("see example.com"))
+        assertEquals(false, enterGoesAsIs("example.com\nmore"))
+        assertEquals(false, enterGoesAsIs("v1.2"))
+    }
 }

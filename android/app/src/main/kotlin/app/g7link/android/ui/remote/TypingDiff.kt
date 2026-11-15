@@ -22,3 +22,18 @@ internal fun typingDiff(old: String, new: String): TypingDiff {
         added = new.substring(same),
     )
 }
+
+/**
+ * Whether the phone's Enter, pressed with [field] in the typing field, reaches
+ * the PC as a plain Enter instead of Shift+Enter (a new line): when there's no
+ * line of text to break, because nothing was typed here (a link pasted on the
+ * PC, say), or the field holds a single link. A browser's address bar opens a
+ * new window on Shift+Enter.
+ */
+internal fun enterGoesAsIs(field: String): Boolean {
+    val text = field.trim()
+    return text.isEmpty() || LINK.matches(text)
+}
+
+/** A web address on its own: with a scheme, starting with `www.`, or a bare domain and path. */
+private val LINK = Regex("""(?i)(https?://\S+|www\.\S+|[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(:\d+)?([/?#]\S*)?)""")
