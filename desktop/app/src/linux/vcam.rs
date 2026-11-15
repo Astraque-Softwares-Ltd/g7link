@@ -344,6 +344,11 @@ fn configure_v4l2_yuyv(fd: i32, width: u32, height: u32) -> bool {
 fn v4l2_worker_loop(stop: &AtomicBool) {
     const OUT_W: u32 = 1280;
     const OUT_H: u32 = 720;
+    // While the phone isn't streaming, the "Start the webcam" card is drawn
+    // once, redrawn now and then for a new phone name, and sent a few times a
+    // second: drawing it 30 times a second kept a core busy with nobody watching.
+    const IDLE_FRAME_EVERY: Duration = Duration::from_millis(100);
+    const IDLE_REDRAW_EVERY: Duration = Duration::from_secs(2);
 
     let mut mapping: Option<SharedFrameMapping> = None;
     let mut v4l2_file: Option<fs::File> = None;
@@ -351,6 +356,7 @@ fn v4l2_worker_loop(stop: &AtomicBool) {
     let mut bgrx = Vec::new();
     let mut yuyv = Vec::new();
     let mut last_ts: Option<(bool, u64)> = None;
+    let mut idle_drawn_at: Option<std::time::Instant> = None;
 
     while !stop.load(Ordering::Acquire) {
         if mapping.is_none() {
@@ -385,7 +391,24 @@ fn v4l2_worker_loop(stop: &AtomicBool) {
             continue;
         }
 
+        // Still idle, and the card was drawn moments ago: send it again as it is.
+        if last_ts == Some((false, 0))
+            && configured_dims == Some((OUT_W, OUT_H))
+            && map.live_timestamp().is_none()
+            && idle_drawn_at.is_some_and(|at| at.elapsed() < IDLE_REDRAW_EVERY)
+        {
+            if dev.write_all(&yuyv).is_err() {
+                v4l2_file = None;
+                configured_dims = None;
+                thread::sleep(Duration::from_millis(50));
+            } else {
+                thread::sleep(IDLE_FRAME_EVERY);
+            }
+            continue;
+        }
+
         let state = map.read_bgrx(OUT_W, OUT_H, &mut bgrx);
+        idle_drawn_at = (!state.0).then(std::time::Instant::now);
         if state.0 && last_ts == Some(state) {
             thread::sleep(Duration::from_millis(8));
             continue;
@@ -403,7 +426,7 @@ fn v4l2_worker_loop(stop: &AtomicBool) {
             configured_dims = None;
             thread::sleep(Duration::from_millis(50));
         } else if !state.0 {
-            thread::sleep(Duration::from_millis(33));
+            thread::sleep(IDLE_FRAME_EVERY);
         }
     }
 }
