@@ -13,15 +13,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * The font bundled with the app (`assets/fonts` in the repository, packaged as
- * assets under `fonts/`): G7 sets everything in Geist Mono, as it does on the desktop.
+ * The fonts bundled with the app (`assets/fonts` in the repository, packaged as
+ * assets under `fonts/`), as on the desktop: Figtree for text, and Geist Mono
+ * for what's read character by character, such as codes and timers.
  */
 @Immutable
 class AppFonts(assets: AssetManager) {
-    val mono = FontFamily(
+    val sans = variable(assets, "fonts/Figtree.ttf")
+    val mono = variable(assets, "fonts/GeistMono-Variable.ttf")
+
+    private fun variable(assets: AssetManager, path: String) = FontFamily(
         listOf(400, 500, 600).map { weight ->
             Font(
-                "fonts/GeistMono-Variable.ttf",
+                path,
                 assets,
                 FontWeight(weight),
                 variationSettings = FontVariation.Settings(FontVariation.weight(weight)),
@@ -33,11 +37,10 @@ class AppFonts(assets: AssetManager) {
 val LocalAppFonts = staticCompositionLocalOf<AppFonts> { error("G7LinkTheme provides the fonts") }
 
 /**
- * G7's type scale, smaller than Material's: a mono face reads large, and rows
- * are 15 sp with 12 sp labels.
+ * G7's type scale, smaller than Material's: rows are 15 sp with 12 sp labels.
  */
 internal fun typography(fonts: AppFonts): Typography {
-    val family = fonts.mono
+    val family = fonts.sans
     fun style(size: Int, weight: Int, lineHeight: Float = 1.35f, tracking: Float = 0f) = TextStyle(
         fontFamily = family,
         fontWeight = FontWeight(weight),

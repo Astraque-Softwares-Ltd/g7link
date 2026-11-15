@@ -43,5 +43,5 @@ They predate the decision below and still show the earlier themes.
 - Graphite's art-site effects (smudge physics, gritty lettering, scroll sound) are *not* used in
   the app; only its visual language is.
 - Every theme shares the same components and layout; themes only change colors.
-- Fonts are bundled (SIL OFL): Geist Mono, as G7 sets everything. No fonts from the web at
-  runtime.
+- Fonts are bundled (SIL OFL): Figtree for text, and Geist Mono for what's read character by
+  character (codes, keys, commands, timers). No fonts from the web at runtime.

@@ -32,6 +32,8 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
 
 ### Changed
 
+- **Figtree for text.** Both apps set their text in Figtree, a calmer and
+  more readable face. Geist Mono stays for codes, keys, commands and timers.
 - **Motion in both apps.** Pages, menus, sheets, banners and notifications
   move with one shared set of timings, and keys come back smoothly when the
   phone's keyboard goes down. Both apps follow the system's reduced-motion

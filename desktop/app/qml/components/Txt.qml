@@ -15,8 +15,8 @@ Text {
     // Pixel size; set this (not font.pixelSize) to resize, so the role's
     // tracking scales with it.
     property real size: Math.round(spec.size)
-    // Set this (not font.weight) to change the weight: Geist Mono is a
-    // variable font, and its weight axis is set to match, so in-between weights such
+    // Set this (not font.weight) to change the weight: both fonts are
+    // variable, and the weight axis is set to match, so in-between weights such
     // as 650 render exactly instead of snapping to a named style.
     property int weight: spec.weight
 

@@ -20,5 +20,6 @@ Rectangle {
         text: cap.keys
         role: "caption"
         muted: true
+        font.family: Theme.fontMono
     }
 }

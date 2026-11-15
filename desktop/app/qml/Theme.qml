@@ -195,8 +195,9 @@ QtObject {
     readonly property int radiusFull: shape.full
 
     // ---- Type ----
-    // Bundled with the app (assets/fonts).
-    readonly property string fontUi: "Geist Mono"
+    // Bundled with the app (assets/fonts): Figtree for text, Geist Mono for
+    // what's read character by character (codes, keys, commands).
+    readonly property string fontUi: "Figtree"
     readonly property string fontMono: "Geist Mono"
     readonly property var typography: Tokens.data.themes.quiet.typography
 

@@ -116,13 +116,13 @@ QtObject {
       },
       "themes": {
         "quiet": {
-          "description": "G7's Quiet Tool language (docs/design-language.md in g7linux). Charcoal and paper grounds, neutral selection, lavender only for focus, the primary button and the mark, Geist Mono everywhere, bare glyphs in their own tints, rows instead of cards. Colors are fixed.",
+          "description": "G7's Quiet Tool language (docs/design-language.md in g7linux). Charcoal and paper grounds, neutral selection, lavender only for focus, the primary button and the mark, Figtree for text and Geist Mono for codes and keys, bare glyphs in their own tints, rows instead of cards. Colors are fixed.",
           "dynamicColor": false,
           "fonts": {
-            "display": "Geist Mono",
-            "label": "Geist Mono",
+            "display": "Figtree",
+            "label": "Figtree",
             "mono": "Geist Mono",
-            "ui": "Geist Mono"
+            "ui": "Figtree"
           },
           "label": {
             "case": "none",

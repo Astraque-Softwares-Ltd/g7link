@@ -153,10 +153,10 @@ abstract class UniffiBindgen : DefaultTask() {
 
 // ---- Fonts ----
 //
-// The app's font in `assets/fonts` (Geist Mono, with its license) is packaged
-// as an app asset under `fonts/`.
+// The app's fonts in `assets/fonts` (Figtree and Geist Mono, with their
+// licenses) are packaged as app assets under `fonts/`.
 
-/** Copies the bundled font and its license into `<outputDir>/fonts`. */
+/** Copies the bundled fonts and their licenses into `<outputDir>/fonts`. */
 abstract class BundleFonts : DefaultTask() {
     @get:Inject abstract val fs: FileSystemOperations
     @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val fonts: DirectoryProperty
@@ -165,7 +165,9 @@ abstract class BundleFonts : DefaultTask() {
     @TaskAction
     fun copy() {
         fs.sync {
-            from(fonts) { include("GeistMono-Variable.ttf", "OFL-GeistMono.txt") }
+            from(fonts) {
+                include("Figtree.ttf", "OFL-Figtree.txt", "GeistMono-Variable.ttf", "OFL-GeistMono.txt")
+            }
             into(outputDir.dir("fonts"))
         }
     }
