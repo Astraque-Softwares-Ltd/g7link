@@ -36,6 +36,18 @@ use crate::{
 const GRANT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the helper may take to say it's listening.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
+/// After looking for a phone's Wireless debugging port in vain, how long
+/// before looking again (the phone asks every few seconds).
+const FIND_AGAIN_AFTER: Duration = Duration::from_secs(120);
+
+/// When this PC last looked for each phone's Wireless debugging port in vain.
+static FIND_FAILED: std::sync::Mutex<Option<std::collections::HashMap<DeviceId, std::time::Instant>>> =
+    std::sync::Mutex::new(None);
+
+/// Whether to look for `peer`'s port at `now`, given when it last failed.
+fn may_find(failed: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    failed.is_none_or(|at| now.saturating_duration_since(at) >= FIND_AGAIN_AFTER)
+}
 
 /// The phone's side: asks `session`'s PC to start this phone's helper and
 /// returns the port it listens on.
@@ -102,12 +114,37 @@ async fn start_helper(
         Some((serial, adb_addr, port)) => (serial, adb_addr, Some(port)),
         // No cable: its Wireless debugging, if it's on and has paired this PC.
         None => {
-            let (Some(adb_addr), Some(port)) = (shared.adb_server, request.adb_port) else {
+            let Some(adb_addr) = shared.adb_server else {
                 let why = "this phone isn't connected to this PC over USB";
                 return Err((ErrorCode::Unsupported, why.into()));
             };
             let from: Vec<IpAddr> = session.remote_ip_addrs().iter().map(SocketAddr::ip).collect();
-            let found = crate::adb_wifi::route(adb_addr, &from, port, &request.apk).await;
+            let found = match request.adb_port {
+                Some(port) => crate::adb_wifi::route(adb_addr, &from, port, &request.apk).await,
+                // The phone couldn't say its port: this PC looks for it, now and then.
+                None => {
+                    let now = std::time::Instant::now();
+                    let failed = FIND_FAILED
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get_or_insert_default()
+                        .get(&peer)
+                        .copied();
+                    if !may_find(failed, now) {
+                        let why = "this phone isn't connected to this PC over USB, and its Wireless debugging wasn't found a moment ago";
+                        return Err((ErrorCode::Unsupported, why.into()));
+                    }
+                    let found = crate::adb_wifi::find(adb_addr, &from, &request.apk).await;
+                    let mut failed = FIND_FAILED.lock().unwrap_or_else(|e| e.into_inner());
+                    let failed = failed.get_or_insert_default();
+                    if found.is_ok() {
+                        failed.remove(&peer);
+                    } else {
+                        failed.insert(peer, now);
+                    }
+                    found
+                }
+            };
             let serial = found.map_err(|why| (ErrorCode::Unsupported, format!("no USB cable, and {why}")))?;
             (serial, adb_addr, None)
         }
@@ -193,6 +230,14 @@ pub(crate) fn stop_all(shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phone_whose_port_wasnt_found_is_looked_for_again_after_a_while() {
+        let now = std::time::Instant::now();
+        assert!(may_find(None, now));
+        assert!(!may_find(Some(now), now + Duration::from_secs(30)));
+        assert!(may_find(Some(now), now + FIND_AGAIN_AFTER));
+    }
 
     #[test]
     fn the_helper_command_and_its_answer() {

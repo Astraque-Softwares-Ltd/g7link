@@ -9,6 +9,11 @@
 //! the phone says the port in its request, and adb is told to connect to it
 //! at the address the phone is connected from.
 //!
+//! A phone that can't find its own port (Android 17 hides it from apps that
+//! aren't paired with it) asks without one. Then this PC uses an adb
+//! connection it already has to the phone's address, or else tries the phone's
+//! open ports in Android's range for its Wireless debugging ([`find`]).
+//!
 //! Which phone answered is checked before anything runs on it: the request
 //! names the app's installed APK, whose path Android makes up at random for
 //! each install, so only the phone that asked has that file.
@@ -32,6 +37,16 @@ const CHECK_AGAIN: Duration = Duration::from_millis(400);
 const MAX_ADDRESSES: usize = 3;
 /// What the phone prints when it has the APK.
 const HERE: &str = "g7link-apk-here";
+/// The ports Android gives Wireless debugging (Linux's ephemeral range).
+const PORTS: std::ops::RangeInclusive<u16> = 32768..=60999;
+/// LocalSend's ports, which the app itself listens on.
+const NOT_ADB: std::ops::RangeInclusive<u16> = 53317..=53322;
+/// How long a port may take to accept a connection.
+const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
+/// Ports tried at once.
+const PROBES_AT_ONCE: usize = 256;
+/// Open ports offered to adb, at most.
+const MAX_CANDIDATES: usize = 6;
 
 /// The adb serial of the phone that asked, reached over its Wireless
 /// debugging. `peer` is where the phone's connection comes from, `port` what
@@ -65,6 +80,67 @@ pub(crate) async fn route(
         }
     }
     Err(format!("adb couldn't use the phone's Wireless debugging: {why}"))
+}
+
+/// The adb serial of the phone that asked without naming its Wireless
+/// debugging port: a connection adb already has to the phone's address, or
+/// else one of the phone's open ports in Android's range that adb can use.
+/// Either way the phone is checked to be the one with `apk`.
+pub(crate) async fn find(server: SocketAddr, peer: &[IpAddr], apk: &str) -> Result<String, String> {
+    let addresses = addresses(peer);
+    if addresses.is_empty() {
+        return Err("the phone isn't on this PC's network".into());
+    }
+    g7link_adb::ensure_server(server).await.map_err(|e| format!("adb isn't running on this PC: {e}"))?;
+    let devices = g7link_adb::list_devices(server).await.unwrap_or_default();
+    for device in devices.iter().filter(|d| d.is_online() && at_any(&d.serial, &addresses)) {
+        if has_apk_soon(server, &device.serial, apk).await {
+            return Ok(device.serial.clone());
+        }
+    }
+    let mut why = "Wireless debugging didn't answer on any of its ports".to_owned();
+    for ip in addresses.iter().filter(|ip| ip.is_ipv4()) {
+        for port in open_ports(*ip).await.into_iter().take(MAX_CANDIDATES) {
+            match route(server, &[*ip], port, apk).await {
+                Ok(serial) => return Ok(serial),
+                Err(e) => why = e,
+            }
+        }
+    }
+    Err(why)
+}
+
+/// Whether adb's `serial` is a network device at one of `addresses`.
+fn at_any(serial: &str, addresses: &[IpAddr]) -> bool {
+    let Some((host, _)) = serial.rsplit_once(':') else { return false };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.parse::<IpAddr>().is_ok_and(|ip| addresses.contains(&ip.to_canonical()))
+}
+
+/// The ports in Android's range for Wireless debugging that accept a
+/// connection at `ip`, lowest first.
+async fn open_ports(ip: IpAddr) -> Vec<u16> {
+    let ports: Vec<u16> = PORTS.filter(|p| !NOT_ADB.contains(p)).collect();
+    let mut open = Vec::new();
+    for chunk in ports.chunks(PROBES_AT_ONCE) {
+        let mut probes = tokio::task::JoinSet::new();
+        for &port in chunk {
+            probes.spawn(async move {
+                let connect = tokio::net::TcpStream::connect(SocketAddr::new(ip, port));
+                matches!(tokio::time::timeout(PROBE_TIMEOUT, connect).await, Ok(Ok(_))).then_some(port)
+            });
+        }
+        while let Some(done) = probes.join_next().await {
+            if let Ok(Some(port)) = done {
+                open.push(port);
+            }
+        }
+        if open.len() >= MAX_CANDIDATES {
+            break;
+        }
+    }
+    open.sort_unstable();
+    open
 }
 
 /// The phone's addresses adb is told to try: IPv4 first (adb's own choice
@@ -170,6 +246,28 @@ mod tests {
         assert!(stranger.contains("isn't this phone"), "{stranger}");
         // A phone adb can't run anything on yet can't say either way.
         assert_eq!(has_apk(server, "192.168.1.41:40000", APK).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_phone_that_names_no_port_is_found_by_its_open_ports() {
+        // A listener stands in for the phone's Wireless debugging, at a port in Android's range.
+        let phone = (32800..33800)
+            .find_map(|port| std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).ok())
+            .expect("a free port in range");
+        let port = phone.local_addr().unwrap().port();
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert!(open_ports(loopback).await.contains(&port));
+        drop(phone);
+    }
+
+    #[tokio::test]
+    async fn a_connection_adb_already_has_to_the_phone_is_used() {
+        let server = adb_reaching("192.168.1.40:37123").await;
+        assert!(at_any("192.168.1.40:37123", &[PHONE]));
+        assert!(!at_any("192.168.1.41:37123", &[PHONE]));
+        assert!(!at_any("adb-ABC._adb-tls-connect._tcp", &[PHONE]));
+        // Nothing listed and nothing open at 192.168.1.40 here: it says so.
+        assert!(find(server, &[], APK).await.is_err());
     }
 
     #[test]
