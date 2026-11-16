@@ -1061,7 +1061,45 @@ object InputServer {
             motion.recycle()
         }
 
+        /**
+         * Starts or stops the Wi-Fi hotspot through the tethering service, which
+         * the shell user may use (TETHER_PRIVILEGED): what Settings does. False
+         * when it isn't there or refuses. By reflection: it's a system API.
+         */
+        private fun tetherOverBinder(enable: Boolean): Boolean = runCatching {
+            val manager = ShellContext.get().getSystemService("tethering") ?: return false
+            val managerClass = manager.javaClass
+            if (!enable) {
+                managerClass.getMethod("stopTethering", Int::class.javaPrimitiveType).invoke(manager, TETHERING_WIFI)
+                return true
+            }
+            val builderClass = Class.forName("android.net.TetheringManager\$TetheringRequest\$Builder")
+            val builder = builderClass.getConstructor(Int::class.javaPrimitiveType).newInstance(TETHERING_WIFI)
+            for (setter in listOf("setShouldShowEntitlementUi" to false, "setExemptFromEntitlementCheck" to true)) {
+                runCatching {
+                    builderClass.getMethod(setter.first, Boolean::class.javaPrimitiveType).invoke(builder, setter.second)
+                }
+            }
+            val request = builderClass.getMethod("build").invoke(builder)
+            val callbackType = Class.forName("android.net.TetheringManager\$StartTetheringCallback")
+            val result = java.util.concurrent.LinkedBlockingQueue<Boolean>(1)
+            val callback = java.lang.reflect.Proxy.newProxyInstance(callbackType.classLoader, arrayOf(callbackType)) { _, method, _ ->
+                when (method.name) {
+                    "onTetheringStarted" -> result.offer(true)
+                    "onTetheringFailed" -> result.offer(false)
+                }
+                null
+            }
+            val start = managerClass.methods.first { it.name == "startTethering" && it.parameterTypes.size == 3 }
+            start.invoke(manager, request, java.util.concurrent.Executor { it.run() }, callback)
+            result.poll(TETHER_WAIT_S, java.util.concurrent.TimeUnit.SECONDS) == true
+        }.getOrElse {
+            System.err.println("G7Link: the tethering service refused the hotspot: $it")
+            false
+        }
+
         private fun setHotspot(enable: Boolean) {
+            if (tetherOverBinder(enable)) return
             val candidates = if (enable) {
                 listOf(
                     arrayOf("cmd", "connectivity", "start-tethering", "wifi"),
@@ -1114,6 +1152,10 @@ object InputServer {
 
         private companion object {
             const val BRIGHTNESS_PREFIX = "settings put system screen_brightness "
+            /** `TetheringManager.TETHERING_WIFI`. */
+            const val TETHERING_WIFI = 0
+            /** How long the tethering service has to say the hotspot started. */
+            const val TETHER_WAIT_S = 10L
 
             val GAMEPAD_BUTTON_KEYCODES = listOf(
                 0 to KeyEvent.KEYCODE_BUTTON_A,

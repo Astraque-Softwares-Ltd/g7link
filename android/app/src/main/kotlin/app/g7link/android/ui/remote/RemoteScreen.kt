@@ -203,7 +203,7 @@ fun RemoteScreen(
     var touchpadOnlyChosen by rememberSaveable { mutableStateOf(true) }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val touchpadOnly = landscape && touchpadOnlyChosen && mode == RemoteMode.Touchpad &&
-        device.online && access == Core.RemoteAccess.Allowed
+        device.inputReachable && access == Core.RemoteAccess.Allowed
     val isFullScreen = (mode == RemoteMode.Screen && screenFullScreen) || touchpadOnly
 
     // A text box got the focus on the PC: the keyboard opens, as it would for one
@@ -265,13 +265,13 @@ fun RemoteScreen(
 
     // Check access on entry and poll while denied so the prompt banner clears
     // as soon as the user clicks Allow on the PC.
-    LaunchedEffect(device.id, device.online) {
-        if (!device.online) {
+    LaunchedEffect(device.id, device.inputReachable) {
+        if (!device.inputReachable) {
             access = Core.RemoteAccess.Offline
             return@LaunchedEffect
         }
         access = core.remoteCheck(device.id)
-        while (access == Core.RemoteAccess.Denied && device.online) {
+        while (access == Core.RemoteAccess.Denied && device.inputReachable) {
             delay(1_500)
             access = core.remoteCheck(device.id)
         }
@@ -279,7 +279,7 @@ fun RemoteScreen(
 
     val onStatus: (Core.RemoteAccess) -> Unit = { next -> access = next }
     // Felt only for input that reaches the PC, and only when the user wants it (Settings › Remote).
-    val haptic = rememberTrackpadHaptics(live = haptics && device.online && access == Core.RemoteAccess.Allowed)
+    val haptic = rememberTrackpadHaptics(live = haptics && device.inputReachable && access == Core.RemoteAccess.Allowed)
 
     val reducedMotion = LocalReducedMotion.current
     Column(
@@ -288,7 +288,13 @@ fun RemoteScreen(
             .then(if (isFullScreen) Modifier else Modifier.systemBarsPadding()),
     ) {
         if (!isFullScreen) {
-            G7Header(title = device.name, onBack = onBack, note = linkText(device.link))
+            // With no network, the touchpad and keyboard go over Bluetooth.
+            val note = if (!device.online && device.bleLinked) {
+                stringResource(R.string.bt_media_pc_hint)
+            } else {
+                linkText(device.link)
+            }
+            G7Header(title = device.name, onBack = onBack, note = note)
             G7Tabs(
                 options = listOf(
                     RemoteMode.Touchpad to stringResource(R.string.remote_mode_touchpad),
@@ -304,7 +310,7 @@ fun RemoteScreen(
 
             // Status banner when offline, denied, or unsupported
             val banner = when {
-                !device.online || access == Core.RemoteAccess.Offline -> RemoteBanner.Offline
+                !device.inputReachable || access == Core.RemoteAccess.Offline -> RemoteBanner.Offline
                 access == Core.RemoteAccess.Denied -> RemoteBanner.Denied
                 access == Core.RemoteAccess.Unsupported -> RemoteBanner.Unsupported
                 else -> null
@@ -488,7 +494,7 @@ private fun RemoteToolbar(
             onClick = onKeyboard,
             tint = tints.pink,
             selected = keyboardOn,
-            enabled = device.online,
+            enabled = device.inputReachable,
             keycap = keycaps,
             haptics = haptics,
             modifier = Modifier.weight(1f),

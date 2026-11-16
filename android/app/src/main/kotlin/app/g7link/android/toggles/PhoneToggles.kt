@@ -70,6 +70,7 @@ class PhoneToggles(
     private val hotspotReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             noteHotspot(intent)
+            if (hotspotOn == true) HotspotAsk.dismiss(context)
             schedulePush()
         }
     }
@@ -203,7 +204,10 @@ class PhoneToggles(
                 }
                 "hotspot" -> {
                     val on = (value as? PhoneToggleValue.Bool)?.on ?: return false
-                    Elevated.runCommand(if (on) "hotspot on" else "hotspot off")
+                    val done = Elevated.runCommand(if (on) "hotspot on" else "hotspot off")
+                    // Without Elevated, the user is asked; the PC sees it come on.
+                    if (on && !done) HotspotAsk.show(context)
+                    done
                 }
                 "pc_active" -> {
                     val on = (value as? PhoneToggleValue.Bool)?.on ?: return false

@@ -388,6 +388,12 @@
 <string name="mic_pc_toggle">Dùng điện thoại này làm micrô</string>
 <string name="bt_media_pc_toggle">Phát âm thanh điện thoại trên %1$s</string>
 <string name="bt_media_pc_hint">Qua Bluetooth</string>
+<string name="ble_link_pc_toggle">Dùng Bluetooth khi không có mạng</string>
+<string name="ble_link_pc_hint">PC có thể đổ chuông điện thoại này, bật điểm phát sóng và gửi đoạn văn bản ngắn đã sao chép qua Bluetooth. Hãy bật cả trên PC.</string>
+<string name="channel_hotspot_requests">Yêu cầu điểm phát sóng</string>
+<string name="hotspot_ask_title">PC của bạn không có Internet</string>
+<string name="hotspot_ask_text">Bật điểm phát sóng của điện thoại này và PC sẽ kết nối vào đó.</string>
+<string name="hotspot_ask_open">Bật điểm phát sóng</string>
 <string name="start_without_asking_toggle">Bật máy ảnh và micrô mà không cần hỏi</string>
 <string name="start_without_asking_hint">Khi PC này yêu cầu, chúng sẽ bật ngay mà không cần chạm trên điện thoại. Cần quyền Elevated. Nếu không có, điện thoại sẽ hỏi như thường lệ.</string>
 <string name="recorder_notification_recording">Đang ghi âm cho %1$s</string>
@@ -636,6 +642,7 @@
 <!-- Companion Device Manager proximity wake -->
 <string name="companion_wake_title">Đánh thức khi PC ở gần (Companion Device)</string>
 <string name="companion_wake_associate">Liên kết</string>
+<string name="companion_wake_not_found">Không tìm thấy PC của bạn qua Bluetooth. Hãy đưa điện thoại lại gần PC khi đang bật Bluetooth rồi thử lại.</string>
 <!-- Flick to Send sheet -->
 <!-- PC notifications & Browse PC files -->
 <string name="channel_pc_notifications">Thông báo PC</string>

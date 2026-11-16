@@ -396,6 +396,10 @@
     <string name="bt_media_pc_hint">Over Bluetooth</string>
     <string name="ble_link_pc_toggle">Bluetooth when there\'s no network</string>
     <string name="ble_link_pc_hint">The PC can ring this phone, turn on its hotspot and send small copied text over Bluetooth. Turn it on on the PC too.</string>
+    <string name="channel_hotspot_requests">Hotspot requests</string>
+    <string name="hotspot_ask_title">Your PC has no internet</string>
+    <string name="hotspot_ask_text">Turn on this phone\'s hotspot and the PC joins it.</string>
+    <string name="hotspot_ask_open">Turn on hotspot</string>
     <string name="start_without_asking_toggle">Start the camera and microphone without asking</string>
     <string name="start_without_asking_hint">When this PC asks, they turn on right away, with no tap on the phone. Needs Elevated. Without it, the phone asks as usual.</string>
     <string name="recorder_notification_recording">Recording for %1$s</string>

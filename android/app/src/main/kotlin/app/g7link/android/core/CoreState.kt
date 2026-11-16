@@ -160,12 +160,17 @@ data class Device(
     val btMedia: Boolean = false,
     /** Whether this phone and this PC may use Bluetooth when they share no network (off by default). */
     val bleLink: Boolean = false,
+    /** A Bluetooth link with this PC is up (there's no shared network). */
+    val bleLinked: Boolean = false,
 ) {
     /** A paired phone or tablet rather than a PC. */
     val isAndroid: Boolean
         get() = kind == app.g7link.core.DeviceKind.PHONE || kind == app.g7link.core.DeviceKind.TABLET
 
     val online: Boolean get() = link is Link.Online
+
+    /** The touchpad and keyboard reach this PC: over the network, or the Bluetooth link. */
+    val inputReachable: Boolean get() = online || bleLinked
 
     /** Whether a feature works with this device now (the capability matrix). */
     fun has(feature: String): Boolean =
@@ -447,7 +452,8 @@ data class CoreState(
         is Event.QueueDroppedOnUnpair,
         -> this
         // The beacon scan and the Bluetooth link follow these (Core); nothing shows.
-        is Event.BleKeysChanged, is Event.BleOutbound, is Event.BleLinkChanged -> this
+        is Event.BleKeysChanged, is Event.BleOutbound -> this
+        is Event.BleLinkChanged -> update(event.id) { it.copy(bleLinked = event.up) }
         is Event.Transfer -> copy(
             transfers = withTransfer(event.transfer),
             sendQueue = withTransferQueueProgress(event.transfer),
@@ -537,7 +543,6 @@ data class CoreState(
 internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.BleKeysChanged,
     is Event.BleOutbound,
-    is Event.BleLinkChanged,
     is Event.UpdateHint,
     is Event.NotificationsReset,
     is Event.NotificationPosted,
