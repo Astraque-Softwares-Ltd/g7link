@@ -328,4 +328,7 @@ pub enum NodeEvent {
         peer_name: String,
         dropped_count: u32,
     },
+    /// The Bluetooth beacon keys this device shares with paired devices
+    /// changed ([`Node::ble_beacon_keys`](crate::Node::ble_beacon_keys)).
+    BleKeysChanged,
 }

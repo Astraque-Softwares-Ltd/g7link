@@ -659,6 +659,7 @@
     <!-- Companion Device Manager proximity wake -->
     <string name="companion_wake_title">Wake when PC is nearby (Companion Device)</string>
     <string name="companion_wake_associate">Associate</string>
+    <string name="companion_wake_not_found">Couldn\'t find your PC over Bluetooth. Bring the phone near it with Bluetooth on, and try again.</string>
 
     <!-- Flick to Send sheet -->
 

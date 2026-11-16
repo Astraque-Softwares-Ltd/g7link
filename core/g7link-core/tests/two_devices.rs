@@ -847,6 +847,39 @@ async fn qr_pairing_connects_both_devices() {
     assert_eq!(phone_peers[0].info.name, "Desktop");
 }
 
+/// The Bluetooth beacon keys `dev` has, once it has `count`.
+async fn beacon_keys(dev: &TestDevice, count: usize) -> Vec<(g7link_core::DeviceId, [u8; 32])> {
+    with_timeout("beacon keys", async {
+        loop {
+            let keys = dev.node.ble_beacon_keys();
+            if keys.len() == count {
+                return keys;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_and_a_pc_share_a_beacon_key_until_unpaired() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    let mut other_pc = device("Laptop", DeviceKind::Desktop).await;
+    pair_qr(&mut pc, &mut phone).await;
+    pair_qr(&mut pc, &mut other_pc).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    let on_pc = beacon_keys(&pc, 1).await;
+    assert_eq!(on_pc[0].0, phone_id, "a PC shares one with phones only");
+    assert_eq!(beacon_keys(&phone, 1).await, vec![(pc_id, on_pc[0].1)]);
+    assert!(other_pc.node.ble_beacon_keys().is_empty());
+
+    with_timeout("unpair", pc.node.unpair(phone_id)).await.unwrap();
+    beacon_keys(&pc, 0).await;
+    beacon_keys(&phone, 0).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn update_hints_reach_peers_now_and_on_connect() {
     let mut pc = device("Desktop", DeviceKind::Desktop).await;

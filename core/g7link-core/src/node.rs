@@ -1431,6 +1431,7 @@ impl Shared {
         }
         if existed {
             self.emit(NodeEvent::DeviceRemoved(*peer));
+            self.emit(NodeEvent::BleKeysChanged);
         }
         Ok(())
     }
@@ -1568,6 +1569,7 @@ impl Shared {
             }
             shared.send_media_state(&s).await;
             shared.send_bt_media_state(&s).await;
+            shared.send_ble_key(&s).await;
             shared.send_held_notifications(&s).await;
             shared.send_notification_snapshot(&s).await;
             shared.send_call_state(&s).await;
@@ -2550,6 +2552,17 @@ impl Node {
 
     /// The per-device toggles (see [`features::DEVICE_TOGGLES`]) with their
     /// current values.
+    /// The key of the Bluetooth beacon this device shares with each paired
+    /// device that has one (docs/protocol/bluetooth.md).
+    pub fn ble_beacon_keys(&self) -> Vec<(DeviceId, [u8; 32])> {
+        self.shared.ble_beacon_keys()
+    }
+
+    /// Whether paired `peer` offered `capability` when it last connected.
+    pub fn peer_offers(&self, peer: DeviceId, capability: &str) -> bool {
+        self.shared.store.get_peer(&peer).ok().flatten().is_some_and(|p| p.caps.contains(capability))
+    }
+
     pub fn device_toggles(&self, peer: DeviceId) -> Result<Vec<(&'static str, bool)>> {
         if !self.shared.store.is_paired(&peer)? {
             return Err(Error::NotPaired);

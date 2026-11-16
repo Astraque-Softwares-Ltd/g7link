@@ -11,6 +11,7 @@ use std::{
 
 use g7link_protocol::{
     DeviceId,
+    ble::LINK_SECRET_LEN,
     messages::{DeviceInfo, DeviceKind, Notification, PcWakeInfo, PowerLevel, ScreenShape},
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -602,6 +603,9 @@ const MIGRATIONS: &[&str] = &[
     // v9: when a toggle both devices keep the same (`bt_media`) was last changed,
     // in Unix ms, so the later change wins when they reconnect.
     "ALTER TABLE peer_toggles ADD COLUMN changed_ms INTEGER;",
+    // v10: the secret a phone and a PC share for Bluetooth (its beacon and its
+    // channel), sealed; it goes with the device.
+    "ALTER TABLE peers ADD COLUMN link_secret BLOB;",
 ];
 
 /// A paired device as stored on disk.
@@ -1096,6 +1100,34 @@ impl Store {
             cleanup_staged_payload(self.data_dir.as_deref(), id, Some(payload));
         }
         Ok((existed, dropped))
+    }
+
+    /// The Bluetooth link secret shared with `id`, when there is one this
+    /// device can still read.
+    pub(crate) fn link_secret(&self, id: &DeviceId) -> Result<Option<[u8; LINK_SECRET_LEN]>> {
+        let sealed: Option<Vec<u8>> = self.with(|c| {
+            c.query_row("SELECT link_secret FROM peers WHERE id = ?1", [id.as_bytes().as_slice()], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map(Option::flatten)
+        })?;
+        Ok(sealed.and_then(|sealed| self.queue_seal.open(&sealed)).and_then(|plain| plain.try_into().ok()))
+    }
+
+    /// Keeps `secret` as the Bluetooth link secret shared with `id`. Returns
+    /// whether it changed: false when it was kept already or `id` isn't paired.
+    pub(crate) fn set_link_secret(&self, id: &DeviceId, secret: &[u8; LINK_SECRET_LEN]) -> Result<bool> {
+        if self.link_secret(id)?.as_ref() == Some(secret) {
+            return Ok(false);
+        }
+        let sealed = self.queue_seal.seal(secret)?;
+        self.with(|c| {
+            Ok(c.execute(
+                "UPDATE peers SET link_secret = ?2 WHERE id = ?1",
+                params![id.as_bytes().as_slice(), sealed],
+            )? > 0)
+        })
     }
 
     pub fn get_peer(&self, id: &DeviceId) -> Result<Option<PeerRecord>> {
@@ -4404,6 +4436,31 @@ mod tests {
                 rows.collect()
             })
             .unwrap()
+    }
+
+    #[test]
+    fn a_link_secret_is_sealed_kept_with_its_device_and_goes_with_it() {
+        let store = Store::in_memory().unwrap();
+        store.seal_queue_with(Arc::new(Flip)).unwrap();
+        let peer = DeviceId([7; 32]);
+        let secret = [0x11u8; LINK_SECRET_LEN];
+        assert!(!store.set_link_secret(&peer, &secret).unwrap(), "not paired");
+        store.upsert_peer(&peer, &info("Phone"), 1).unwrap();
+        assert_eq!(store.link_secret(&peer).unwrap(), None);
+        assert!(store.set_link_secret(&peer, &secret).unwrap());
+        assert!(!store.set_link_secret(&peer, &secret).unwrap(), "unchanged");
+        assert_eq!(store.link_secret(&peer).unwrap(), Some(secret));
+
+        let raw: Vec<u8> =
+            store.with(|c| c.query_row("SELECT link_secret FROM peers", [], |r| r.get(0))).unwrap();
+        assert!(!raw.windows(LINK_SECRET_LEN).any(|w| w == secret), "kept in the clear");
+
+        // Updating the device keeps it; unpairing drops it.
+        store.upsert_peer(&peer, &info("Phone renamed"), 1).unwrap();
+        assert_eq!(store.link_secret(&peer).unwrap(), Some(secret));
+        store.remove_peer_with_queue(&peer).unwrap();
+        store.upsert_peer(&peer, &info("Phone"), 2).unwrap();
+        assert_eq!(store.link_secret(&peer).unwrap(), None);
     }
 
     #[test]

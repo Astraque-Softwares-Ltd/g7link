@@ -127,6 +127,7 @@ pub mod types {
     pub const WAKE_RELAY: &str = "wake.relay";
     pub const AUDIO_PCM: &str = "audio.pcm";
     pub const AUDIO_BT_MEDIA: &str = "audio.bt_media";
+    pub const BLE_KEY: &str = "ble.key";
 }
 
 /// What kind of device this is.
@@ -1369,6 +1370,42 @@ pub struct AudioBtMedia {
     /// (older versions): it counts as changed when it arrives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed_ms: Option<u64>,
+}
+
+/// The secret a PC shares with a paired phone for Bluetooth (`ble.key`,
+/// docs/protocol/bluetooth.md): the phone recognises the PC's beacon by it.
+/// Sent by the PC on every session, so a phone that lost it gets it again.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BleKey {
+    #[serde(with = "serde_bytes")]
+    pub secret: Vec<u8>,
+    /// The PC's Bluetooth address, `AA:BB:CC:DD:EE:FF`, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bt_addr: Option<String>,
+}
+
+impl std::fmt::Debug for BleKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BleKey").field("bt_addr", &self.bt_addr).finish_non_exhaustive()
+    }
+}
+
+impl BleKey {
+    /// The secret, when it's the right size.
+    pub fn secret(&self) -> Option<[u8; crate::ble::LINK_SECRET_LEN]> {
+        self.secret.as_slice().try_into().ok()
+    }
+
+    /// The address, when it's well formed.
+    pub fn bt_addr(&self) -> Option<&str> {
+        self.bt_addr.as_deref().filter(|a| is_bt_addr(a))
+    }
+}
+
+/// Whether `addr` is a Bluetooth address: six hex pairs joined by colons.
+pub fn is_bt_addr(addr: &str) -> bool {
+    addr.len() == 17
+        && addr.bytes().enumerate().all(|(i, b)| if i % 3 == 2 { b == b':' } else { b.is_ascii_hexdigit() })
 }
 
 // ---- Screen mirroring (docs/protocol/mirror.md) ----
@@ -4671,6 +4708,27 @@ impl StorageChanged {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_ble_key_round_trips_and_never_shows_its_secret() {
+        use super::{BleKey, is_bt_addr};
+        let key = BleKey { secret: vec![0xAB; 32], bt_addr: Some("AA:BB:CC:DD:EE:0F".into()) };
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&key, &mut bytes).unwrap();
+        let back: BleKey = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(back, key);
+        assert_eq!(back.secret(), Some([0xAB; 32]));
+        assert_eq!(back.bt_addr(), Some("AA:BB:CC:DD:EE:0F"));
+        let shown = format!("{key:?}");
+        assert!(!shown.contains("171") && !shown.to_lowercase().contains("ab, ab"), "{shown}");
+
+        let short = BleKey { secret: vec![1; 31], bt_addr: Some("not an address".into()) };
+        assert_eq!(short.secret(), None);
+        assert_eq!(short.bt_addr(), None);
+        assert!(!is_bt_addr("AA:BB:CC:DD:EE:F"));
+        assert!(!is_bt_addr("AA-BB-CC-DD-EE-FF"));
+        assert!(!is_bt_addr("GG:BB:CC:DD:EE:FF"));
+    }
+
     #[test]
     fn update_hints_take_known_channels_and_plain_versions_only() {
         let hint = |channel: &str, version: &str| {

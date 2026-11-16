@@ -27,6 +27,8 @@ class StartupReceiver : BroadcastReceiver() {
             else -> return
         }
         val app = context.applicationContext as G7LinkApplication
+        // Android drops the paired PCs' beacon scan on a restart or an update.
+        app.g7link.android.companion.PcBeaconScan.sync(context)
         if (!Preferences.isBackgroundServiceEnabled(context)) {
             if (updated) app.updater.onUpdated()
             return

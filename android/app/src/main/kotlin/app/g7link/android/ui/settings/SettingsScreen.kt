@@ -2,11 +2,13 @@
 package app.g7link.android.ui.settings
 
 import app.g7link.android.ui.theme.G7Slider
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -66,6 +68,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
 import app.g7link.android.calls.PhoneCalls
 import app.g7link.android.clipboard.PhoneClipboard
+import app.g7link.android.companion.PcBeaconScan
 import app.g7link.android.companion.PcCompanion
 import app.g7link.android.contacts.PhoneContacts
 import app.g7link.android.core.BackgroundAccess
@@ -908,7 +911,11 @@ private fun BackgroundBatteryAccess(unrestricted: Boolean, highlighted: Boolean)
     )
 }
 
-/** Companion Device Manager association for waking when a PC BLE beacon is nearby. */
+/**
+ * Wake when PC is nearby: the Nearby devices permission for the scan that finds
+ * paired PCs' beacons (Android 12 and later), and the Companion Device
+ * association that lets G7 Link start its connection from the background.
+ */
 @Composable
 private fun CompanionWakeAccess(
     associated: Boolean,
@@ -916,6 +923,10 @@ private fun CompanionWakeAccess(
     onAccessChanged: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val scans = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    var scanAllowed by remember { mutableStateOf(!scans || PcBeaconScan.canScan(context)) }
+    val notFound = stringResource(R.string.companion_wake_not_found)
     val chooserLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult(),
     ) { result ->
@@ -925,29 +936,47 @@ private fun CompanionWakeAccess(
         onAccessChanged()
     }
     val primaryPc = devices.firstOrNull { it.online } ?: devices.firstOrNull()
-    val triggerAssociate = {
+    val associate: () -> Unit = {
         val activity = context.findActivity()
-        if (activity != null) {
-            PcCompanion.requestAssociation(
-                activity = activity,
-                pcName = primaryPc?.name ?: "PC",
-                pcDeviceId = primaryPc?.id,
-                onResult = { onAccessChanged() },
-                onLauncherFallback = { sender ->
-                    runCatching {
-                        chooserLauncher.launch(IntentSenderRequest.Builder(sender).build())
-                    }
-                },
-            )
+        val pc = primaryPc
+        if (activity != null && pc != null) {
+            scope.launch {
+                // Android 12 and later: the chooser shows the PC whose beacon this phone just saw.
+                val address = if (scans) PcCompanion.findPc(context, pc.id) else null
+                if (scans && address == null) {
+                    Toast.makeText(context, notFound, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                PcCompanion.requestAssociation(
+                    activity = activity,
+                    pcName = pc.name,
+                    pcDeviceId = pc.id,
+                    address = address,
+                    onResult = { onAccessChanged() },
+                    onLauncherFallback = { sender ->
+                        runCatching {
+                            chooserLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                        }
+                    },
+                )
+            }
         }
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        scanAllowed = granted
+        onAccessChanged()
+        if (granted && !associated) associate()
+    }
+    val start = {
+        if (!scanAllowed) permissionLauncher.launch(Manifest.permission.BLUETOOTH_SCAN) else associate()
     }
     AccessRow(
         label = stringResource(R.string.companion_wake_title),
         icon = G7Icons.monitor,
         tint = g7Tints().blue,
-        granted = associated,
-        onAllow = { triggerAssociate() },
-        onManage = { triggerAssociate() },
+        granted = associated && scanAllowed,
+        onAllow = start,
+        onManage = start,
         allowLabel = stringResource(R.string.companion_wake_associate),
     )
 }

@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Bluetooth through BlueZ over D-Bus. Broadcasts the PC's proximity beacon
-//! (company `0xFFFF`, `NCTR\x01` + 8-byte device ID prefix) so
-//! phones set to "Wake when PC is nearby" find it, and, when walk-away
-//! automation is on, watches the signal strength of paired phones. Never
-//! spawns `bluetoothctl` or starts a scan of its own.
+//! Bluetooth through BlueZ over D-Bus: the PC's rotating beacon
+//! (docs/protocol/bluetooth.md), so paired phones set to "Wake when PC is
+//! nearby" find it. Each paired phone recognises its own six-byte tag, made
+//! from the secret the two share and the time: nothing in the beacon stays
+//! the same from one 15-minute window to the next, and with no phone to
+//! broadcast for there is no beacon. While a paired phone's app still looks
+//! for the old beacon (it doesn't announce `ble.beacon2`), that one is
+//! broadcast too. Never spawns `bluetoothctl` or starts a scan of its own.
 //!
 //! The beacon follows BlueZ as it reports changes: it is broadcast as soon as
 //! BlueZ starts (also when that is after G7 Link), again after `bluetoothd`
@@ -18,19 +21,26 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use g7link_core::DeviceId;
+use g7link_core::{
+    DeviceId, NodeEvent,
+    ble::{self, BEACON_SLOTS, TAG_LEN, TagKind},
+};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
-pub const COMPANY_ID: u16 = 0xFFFF;
+pub const COMPANY_ID: u16 = ble::COMPANY_ID;
+/// The old beacon's first bytes, followed by 8 bytes of the device ID.
 pub const MAGIC: &[u8; 5] = b"NCTR\x01";
-pub const NEAR_RSSI_DBM: i16 = -72;
-pub const WALK_AWAY_RSSI_DBM: i16 = -85;
-pub const G7LINK_BLE_UUID: &str = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
+/// What a phone whose app recognises the rotating beacon announces.
+pub const BEACON2: &str = "ble.beacon2";
 
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
-/// How often the beacon is checked when walk-away is off, in case a change in
-/// BlueZ went unreported.
+/// How often the beacon is checked, in case a change in BlueZ went
+/// unreported, and for its next window.
 const BEACON_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+/// With more phones than fit in one beacon, each set is broadcast this long in turn.
+const TURN_SECS: u64 = 20;
+/// The beacon changes up to this long after a window starts, a different
+/// time on each run, so PCs don't change in step.
+const MAX_ROTATE_DELAY_SECS: u64 = 60;
 /// The beacon's advertising interval: phones see it within a fraction of a
 /// second, where the controller's default is about 1.28 s.
 const MIN_INTERVAL_MS: u32 = 100;
@@ -47,6 +57,8 @@ const ADVERTISEMENT_PATH: &str = "/app/g7link/beacon";
 /// The same beacon at the controller's default interval, for a BlueZ or a
 /// controller that refuses the faster one.
 const DEFAULT_INTERVAL_PATH: &str = "/app/g7link/beacon_default_interval";
+/// The old beacon, for phones whose app doesn't know the new one yet.
+const LEGACY_PATH: &str = "/app/g7link/beacon_legacy";
 /// Where the signal watcher is told to stop.
 const WATCHER_INTERFACE: &str = "app.g7link.BeaconWatcher";
 
@@ -54,91 +66,76 @@ static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
 
 type ManagedObjects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PairedPhone {
-    pub prefix: [u8; 8],
-    pub name: String,
-    pub model: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct BluezDeviceCandidate {
-    pub address: Option<String>,
-    pub name: Option<String>,
-    pub alias: Option<String>,
-    pub uuids: Vec<String>,
-    pub mfg_payload: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Default)]
-pub struct RssiTracker {
-    peers: HashMap<[u8; 8], PeerRssiState>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct PeerRssiState {
-    samples: [i16; 4],
-    count: usize,
-    idx: usize,
-    armed_near: bool,
-}
-
-impl RssiTracker {
-    pub fn record(&mut self, prefix: [u8; 8], rssi: i16) -> bool {
-        let state = self.peers.entry(prefix).or_default();
-        state.samples[state.idx] = rssi;
-        state.idx = (state.idx + 1) % state.samples.len();
-        state.count = (state.count + 1).min(state.samples.len());
-        if state.count < state.samples.len() {
-            return false;
-        }
-        let sum: i32 = state.samples.iter().map(|&v| i32::from(v)).sum();
-        let avg = (sum / (state.samples.len() as i32)) as i16;
-        if avg >= NEAR_RSSI_DBM {
-            state.armed_near = true;
-            false
-        } else if state.armed_near && avg <= WALK_AWAY_RSSI_DBM {
-            state.armed_near = false;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-pub fn build_manufacturer_payload(device_id: &DeviceId) -> [u8; 13] {
+/// The old beacon: [`MAGIC`] and the first 8 bytes of the device ID.
+pub fn legacy_payload(device_id: &DeviceId) -> [u8; 13] {
     let mut out = [0u8; 13];
     out[0..5].copy_from_slice(MAGIC);
     out[5..13].copy_from_slice(&device_id.as_bytes()[0..8]);
     out
 }
 
-/// Validates the `NCTR\x01` magic header and extracts the peer device ID prefix.
-/// Accepts either the 13-byte payload (5-byte magic + 8-byte prefix) or a 12-byte
-/// payload (5-byte magic + 7-byte prefix, zero-padded in the 8th byte).
-pub fn parse_manufacturer_payload(bytes: &[u8]) -> Option<[u8; 8]> {
-    if bytes.len() < 12 || &bytes[0..5] != MAGIC {
-        return None;
-    }
-    let mut prefix = [0u8; 8];
-    if bytes.len() >= 13 {
-        prefix.copy_from_slice(&bytes[5..13]);
-    } else {
-        prefix[0..7].copy_from_slice(&bytes[5..12]);
-    }
-    Some(prefix)
+/// Who the beacon is for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BeaconPhones {
+    /// The beacon key of each paired phone this PC shares a secret with.
+    keys: Vec<[u8; 32]>,
+    /// Some paired phone's app looks for the old beacon.
+    legacy: bool,
+}
+
+/// The paired phones the beacon is for, as the core knows them.
+fn paired_phones() -> BeaconPhones {
+    let Some(node) = crate::core_host::node() else { return BeaconPhones::default() };
+    let keys = node.ble_beacon_keys().into_iter().map(|(_, key)| key).collect();
+    let phones: Vec<DeviceId> = node
+        .paired_devices()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| {
+            matches!(d.info.kind, g7link_core::DeviceKind::Phone | g7link_core::DeviceKind::Tablet)
+                || d.info.os == "android"
+        })
+        .map(|d| d.id)
+        .collect();
+    let legacy = phones.iter().any(|&id| !node.peer_offers(id, BEACON2));
+    BeaconPhones { keys, legacy }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 pub fn start(device_id: DeviceId) {
     let env = Env {
         connect: Arc::new(zbus::blocking::connection::Builder::system),
-        walk_away: walk_away_lock_enabled,
+        phones: Arc::new(paired_phones),
+        now: unix_now,
     };
     start_in(&WORKER, env, device_id);
 }
 
 pub fn stop() {
     stop_in(&WORKER);
+}
+
+/// Who the beacon is for may have changed: it's looked at again now.
+pub fn phones_changed() {
+    if let Some(worker) = WORKER.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        worker.wake.set(|w| w.resync = true);
+    }
+}
+
+/// Follows the core's events that change who the beacon is for.
+pub fn on_event(event: &NodeEvent) {
+    if matches!(
+        event,
+        NodeEvent::BleKeysChanged
+            | NodeEvent::Capabilities(_)
+            | NodeEvent::DeviceAdded(_)
+            | NodeEvent::DeviceRemoved(_)
+    ) {
+        phones_changed();
+    }
 }
 
 fn start_in(slot: &Mutex<Option<Worker>>, env: Env, device_id: DeviceId) {
@@ -153,139 +150,6 @@ fn stop_in(slot: &Mutex<Option<Worker>>) {
     if let Some(worker) = worker {
         worker.stop();
     }
-}
-
-fn walk_away_lock_enabled() -> bool {
-    let rules = crate::settings::automation_rules();
-    !crate::automations::matching_rules(&rules, crate::automations::TRIGGER_PHONE_WALKED_AWAY).is_empty()
-}
-
-fn paired_phones_from_hub() -> Vec<PairedPhone> {
-    crate::core_host::host().hub.read(|s| {
-        s.devices
-            .iter()
-            .map(|d| {
-                let mut prefix = [0u8; 8];
-                prefix.copy_from_slice(&d.id.as_bytes()[0..8]);
-                PairedPhone { prefix, name: d.info.name.clone(), model: d.info.model.clone() }
-            })
-            .collect()
-    })
-}
-
-fn fallback_peer_prefix(id_str: &str) -> [u8; 8] {
-    let mut out = [0u8; 8];
-    let bytes = id_str.as_bytes();
-    let start = bytes.len().saturating_sub(8);
-    for (dst, &src) in out.iter_mut().zip(&bytes[start..]) {
-        *dst = src;
-    }
-    out
-}
-
-fn names_match(candidate: &str, phone_name: &str) -> bool {
-    let c = candidate.trim();
-    let p = phone_name.trim();
-    !c.is_empty() && !p.is_empty() && c.eq_ignore_ascii_case(p)
-}
-
-/// Matches a BlueZ device candidate ONLY if:
-/// 1. It carries a valid `NCTR\x01` manufacturer payload (not our own prefix), OR
-/// 2. It advertises the G7 Link BLE service UUID (`f81d4fae-7dec-11d0-a765-00a0c91e6bf6`), OR
-/// 3. Its `Name` or `Alias` matches a paired phone in `hub`.
-///
-/// Arbitrary Bluetooth peripherals (headphones, mice, keyboards, etc.) never match.
-pub fn match_g7link_device(
-    candidate: &BluezDeviceCandidate,
-    own_prefix: &[u8; 8],
-    paired_phones: &[PairedPhone],
-) -> Option<[u8; 8]> {
-    if let Some(mfg_bytes) = &candidate.mfg_payload
-        && let Some(prefix) = parse_manufacturer_payload(mfg_bytes)
-    {
-        if &prefix == own_prefix {
-            return None;
-        }
-        if paired_phones.is_empty() || paired_phones.iter().any(|p| p.prefix == prefix) {
-            return Some(prefix);
-        }
-    }
-
-    let find_matching_phone = || -> Option<&PairedPhone> {
-        paired_phones.iter().find(|phone| {
-            candidate.name.as_deref().is_some_and(|n| {
-                names_match(n, &phone.name) || phone.model.as_deref().is_some_and(|m| names_match(n, m))
-            }) || candidate.alias.as_deref().is_some_and(|a| {
-                names_match(a, &phone.name) || phone.model.as_deref().is_some_and(|m| names_match(a, m))
-            })
-        })
-    };
-
-    if candidate.uuids.iter().any(|u| u.eq_ignore_ascii_case(G7LINK_BLE_UUID)) {
-        if let Some(phone) = find_matching_phone() {
-            return Some(phone.prefix);
-        }
-        if let Some(first) = paired_phones.first() {
-            return Some(first.prefix);
-        }
-        if let Some(addr) = &candidate.address {
-            let prefix = fallback_peer_prefix(addr);
-            if &prefix != own_prefix {
-                return Some(prefix);
-            }
-        }
-        return None;
-    }
-
-    find_matching_phone().map(|p| p.prefix)
-}
-
-fn extract_string(val: &OwnedValue) -> Option<String> {
-    <&str>::try_from(val).ok().map(str::to_owned)
-}
-
-fn extract_i16(val: &OwnedValue) -> Option<i16> {
-    if let Ok(v) = i16::try_from(val) {
-        return Some(v);
-    }
-    if let Ok(v) = i32::try_from(val) {
-        return i16::try_from(v).ok();
-    }
-    None
-}
-
-fn extract_string_list(val: &OwnedValue) -> Vec<String> {
-    if let Ok(list) = Vec::<String>::try_from(val.clone()) {
-        return list;
-    }
-    let Value::Array(arr) = &**val else {
-        return Vec::new();
-    };
-    arr.iter().filter_map(|item| <&str>::try_from(item).ok().map(str::to_owned)).collect()
-}
-
-fn extract_mfg_ffff(val: &OwnedValue) -> Option<Vec<u8>> {
-    let Value::Dict(dict) = &**val else {
-        return None;
-    };
-    for (k, v) in dict.iter() {
-        let key_matches = u16::try_from(k).is_ok_and(|id| id == COMPANY_ID);
-        if !key_matches {
-            continue;
-        }
-        let inner = match v {
-            Value::Value(inner) => inner.as_ref(),
-            other => other,
-        };
-        if let Value::Array(bytes_arr) = inner {
-            let mut out = Vec::with_capacity(bytes_arr.len());
-            for item in bytes_arr.iter() {
-                out.push(u8::try_from(item).ok()?);
-            }
-            return Some(out);
-        }
-    }
-    None
 }
 
 /// What the worker is woken for.
@@ -334,11 +198,12 @@ impl Wake {
     }
 }
 
-/// The beacon as BlueZ reads it: a non-connectable broadcast that carries only
-/// the manufacturer data.
+/// The rotating beacon as BlueZ reads it: a non-connectable broadcast that
+/// carries only the manufacturer data. BlueZ reads it when it's registered,
+/// so a new payload means registering it again.
 #[derive(Clone)]
 struct Advertisement {
-    payload: [u8; 13],
+    payload: Arc<Mutex<Vec<u8>>>,
     released: Arc<AtomicBool>,
     wake: Arc<Wake>,
 }
@@ -351,8 +216,8 @@ impl Advertisement {
     }
 
     fn data(&self) -> HashMap<u16, OwnedValue> {
-        let bytes =
-            OwnedValue::try_from(Value::from(self.payload.to_vec())).expect("byte arrays hold no fds");
+        let payload = self.payload.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let bytes = OwnedValue::try_from(Value::from(payload)).expect("byte arrays hold no fds");
         HashMap::from([(COMPANY_ID, bytes)])
     }
 }
@@ -407,35 +272,121 @@ impl DefaultIntervalAdvertisement {
     }
 }
 
-/// Keeps the beacon registered with the first powered adapter that can
-/// advertise, following adapters as they are turned off and on.
+/// The old beacon, at the controller's default interval.
+struct LegacyAdvertisement(Advertisement);
+
+#[zbus::interface(name = "org.bluez.LEAdvertisement1")]
+impl LegacyAdvertisement {
+    fn release(&self) {
+        self.0.on_release();
+    }
+
+    #[zbus(property, name = "Type")]
+    fn kind(&self) -> String {
+        "broadcast".to_owned()
+    }
+
+    #[zbus(property)]
+    fn manufacturer_data(&self) -> HashMap<u16, OwnedValue> {
+        self.0.data()
+    }
+}
+
+/// What the rotating beacon holds while it's registered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Shown {
+    epoch: u64,
+    /// Which set of phones, when they don't all fit.
+    turn: u64,
+    keys: Vec<[u8; 32]>,
+}
+
+/// What the rotating beacon should hold at `now` for `phones`; `None` when
+/// there's no one to broadcast for.
+fn wanted(phones: &BeaconPhones, now: u64, delay: u64) -> Option<Shown> {
+    if phones.keys.is_empty() {
+        return None;
+    }
+    let epoch = ble::epoch_at(now.saturating_sub(delay));
+    let turns = u64::try_from(phones.keys.len().div_ceil(BEACON_SLOTS)).unwrap_or(1);
+    let turn = (now / TURN_SECS) % turns;
+    let first = usize::try_from(turn).unwrap_or(0) * BEACON_SLOTS;
+    let keys = phones.keys.iter().skip(first).take(BEACON_SLOTS).copied().collect();
+    Some(Shown { epoch, turn, keys })
+}
+
+/// `0..n` in random order.
+fn shuffled(n: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        order.swap(i, rand::random_range(0..=i));
+    }
+    order
+}
+
+/// The manufacturer data for `shown`: a tag per phone and random bytes for
+/// the rest, in random order.
+fn beacon_payload(shown: &Shown) -> Vec<u8> {
+    let tags: Vec<[u8; TAG_LEN]> =
+        shown.keys.iter().map(|key| ble::tag(key, TagKind::Presence, shown.epoch)).collect();
+    let filler: [u8; BEACON_SLOTS * TAG_LEN] = rand::random();
+    ble::payload(&tags, BEACON_SLOTS, &filler, &shuffled(BEACON_SLOTS))
+}
+
+/// Keeps the beacons registered with the first powered adapter that can
+/// advertise, following adapters as they are turned off and on, and the
+/// rotating one's payload as windows pass and phones come and go.
 struct Beacon {
     adapter: Option<OwnedObjectPath>,
+    payload: Arc<Mutex<Vec<u8>>>,
     released: Arc<AtomicBool>,
+    legacy_released: Arc<AtomicBool>,
+    /// What the rotating beacon holds, while it's registered.
+    shown: Option<Shown>,
+    /// The old beacon is registered.
+    legacy: bool,
     /// BlueZ refused the faster interval, so the beacon goes without it.
     default_interval: bool,
+    /// How long after a window starts the beacon changes, on this run.
+    delay: u64,
     last_error: Option<String>,
 }
 
 impl Beacon {
-    /// Connects with the beacon served. It has to be served from the builder:
-    /// adding it to a connection afterwards needs a tokio runtime.
+    /// Connects with the beacons served. They have to be served from the
+    /// builder: adding them to a connection afterwards needs a tokio runtime.
     fn serve(
         builder: zbus::blocking::connection::Builder<'_>,
         device_id: &DeviceId,
         wake: Arc<Wake>,
     ) -> zbus::Result<(zbus::blocking::Connection, Self)> {
         let released = Arc::new(AtomicBool::new(false));
-        let advertisement = Advertisement {
-            payload: build_manufacturer_payload(device_id),
-            released: released.clone(),
+        let legacy_released = Arc::new(AtomicBool::new(false));
+        let payload = Arc::new(Mutex::new(Vec::new()));
+        let advertisement =
+            Advertisement { payload: payload.clone(), released: released.clone(), wake: wake.clone() };
+        let legacy = Advertisement {
+            payload: Arc::new(Mutex::new(legacy_payload(device_id).to_vec())),
+            released: legacy_released.clone(),
             wake,
         };
         let conn = builder
             .serve_at(ADVERTISEMENT_PATH, FastAdvertisement(advertisement.clone()))?
             .serve_at(DEFAULT_INTERVAL_PATH, DefaultIntervalAdvertisement(advertisement))?
+            .serve_at(LEGACY_PATH, LegacyAdvertisement(legacy))?
             .build()?;
-        Ok((conn, Self { adapter: None, released, default_interval: false, last_error: None }))
+        let beacon = Self {
+            adapter: None,
+            payload,
+            released,
+            legacy_released,
+            shown: None,
+            legacy: false,
+            default_interval: false,
+            delay: rand::random_range(0..=MAX_ROTATE_DELAY_SECS),
+            last_error: None,
+        };
+        Ok((conn, beacon))
     }
 
     fn path(&self) -> &'static str {
@@ -445,42 +396,78 @@ impl Beacon {
     /// BlueZ went away, and its registrations with it.
     fn forget(&mut self) {
         self.adapter = None;
+        self.shown = None;
+        self.legacy = false;
     }
 
-    fn sync(&mut self, conn: &zbus::blocking::Connection, objects: &ManagedObjects) {
+    /// Says a failure once, however often it's tried again.
+    fn failed(&mut self, error: &zbus::Error) {
+        let error = error.to_string();
+        if self.last_error.as_ref() != Some(&error) {
+            tracing::warn!(%error, "this PC can't broadcast its Bluetooth beacon");
+            self.last_error = Some(error);
+        }
+    }
+
+    fn sync(
+        &mut self,
+        conn: &zbus::blocking::Connection,
+        objects: &ManagedObjects,
+        phones: &BeaconPhones,
+        now: u64,
+    ) {
         if self.released.swap(false, Ordering::SeqCst) {
-            self.adapter = None;
+            self.shown = None;
         }
-        let wanted = advertising_adapter(objects);
-        if self.adapter.is_some() && self.adapter == wanted {
-            return;
+        if self.legacy_released.swap(false, Ordering::SeqCst) {
+            self.legacy = false;
         }
-        if let Some(previous) = self.adapter.take() {
-            unregister(conn, &previous, self.path());
+        let adapter = advertising_adapter(objects);
+        if self.adapter != adapter {
+            if let Some(previous) = self.adapter.take() {
+                self.unregister_all(conn, &previous);
+            }
+            self.adapter = adapter;
         }
-        let Some(adapter) = wanted else {
+        let Some(adapter) = self.adapter.clone() else {
             return;
         };
-        match self.register(conn, &adapter) {
-            Ok(()) => {
-                self.adapter = Some(adapter);
-                self.last_error = None;
+
+        let wanted = wanted(phones, now, self.delay);
+        if wanted != self.shown {
+            if self.shown.take().is_some() {
+                unregister(conn, &adapter, self.path());
             }
-            Err(e) => {
-                // Tried again on every check, so say it once.
-                let error = e.to_string();
-                if self.last_error.as_ref() != Some(&error) {
-                    tracing::warn!(%error, "this PC can't broadcast its Bluetooth beacon");
-                    self.last_error = Some(error);
+            if let Some(wanted) = wanted {
+                *self.payload.lock().unwrap_or_else(|e| e.into_inner()) = beacon_payload(&wanted);
+                match self.register(conn, &adapter) {
+                    Ok(()) => {
+                        self.shown = Some(wanted);
+                        self.last_error = None;
+                    }
+                    Err(error) => self.failed(&error),
                 }
             }
+        }
+
+        if phones.legacy && !self.legacy {
+            match register_advertisement(conn, &adapter, LEGACY_PATH) {
+                Ok(()) => {
+                    self.legacy = true;
+                    tracing::info!("broadcasting the old Bluetooth beacon for a phone that needs it");
+                }
+                Err(error) => self.failed(&error),
+            }
+        } else if !phones.legacy && self.legacy {
+            unregister(conn, &adapter, LEGACY_PATH);
+            self.legacy = false;
         }
     }
 
     fn register(&mut self, conn: &zbus::blocking::Connection, adapter: &OwnedObjectPath) -> zbus::Result<()> {
         if !self.default_interval {
             let Err(error) = register_advertisement(conn, adapter, ADVERTISEMENT_PATH) else {
-                tracing::info!(
+                tracing::debug!(
                     adapter = adapter.as_str(),
                     "broadcasting the Bluetooth beacon every 100-200 ms"
                 );
@@ -498,17 +485,22 @@ impl Beacon {
             );
             return Ok(());
         }
-        register_advertisement(conn, adapter, DEFAULT_INTERVAL_PATH)?;
-        tracing::info!(
-            adapter = adapter.as_str(),
-            "broadcasting the Bluetooth beacon at the controller's default interval"
-        );
-        Ok(())
+        register_advertisement(conn, adapter, DEFAULT_INTERVAL_PATH)
+    }
+
+    fn unregister_all(&mut self, conn: &zbus::blocking::Connection, adapter: &OwnedObjectPath) {
+        if self.shown.take().is_some() {
+            unregister(conn, adapter, self.path());
+        }
+        if self.legacy {
+            unregister(conn, adapter, LEGACY_PATH);
+            self.legacy = false;
+        }
     }
 
     fn stop(&mut self, conn: &zbus::blocking::Connection) {
         if let Some(adapter) = self.adapter.take() {
-            unregister(conn, &adapter, self.path());
+            self.unregister_all(conn, &adapter);
         }
     }
 }
@@ -565,41 +557,15 @@ fn managed_objects(conn: &zbus::blocking::Connection) -> Option<ManagedObjects> 
     reply.body().deserialize::<ManagedObjects>().ok()
 }
 
-fn poll_bluez_devices(objects: &ManagedObjects, own_prefix: &[u8; 8], tracker: &mut RssiTracker) {
-    let paired_phones = paired_phones_from_hub();
-    if paired_phones.is_empty() {
-        return;
-    }
-
-    for ifaces in objects.values() {
-        let Some(props) = ifaces.get("org.bluez.Device1") else {
-            continue;
-        };
-        let Some(rssi) = props.get("RSSI").and_then(extract_i16) else {
-            continue;
-        };
-        let candidate = BluezDeviceCandidate {
-            address: props.get("Address").and_then(extract_string),
-            name: props.get("Name").and_then(extract_string),
-            alias: props.get("Alias").and_then(extract_string),
-            uuids: props.get("UUIDs").map(extract_string_list).unwrap_or_default(),
-            mfg_payload: props.get("ManufacturerData").and_then(extract_mfg_ffff),
-        };
-        if let Some(prefix) = match_g7link_device(&candidate, own_prefix, &paired_phones)
-            && tracker.record(prefix, rssi)
-        {
-            tracing::info!("BLE walk-away threshold reached for paired phone; firing trigger");
-            crate::automations::fire_trigger(crate::automations::TRIGGER_PHONE_WALKED_AWAY);
-        }
-    }
-}
-
 /// Where the worker connects (the system bus, or a test's own) and what it reads.
 type Connect = Arc<dyn Fn() -> zbus::Result<zbus::blocking::connection::Builder<'static>> + Send + Sync>;
 
 struct Env {
     connect: Connect,
-    walk_away: fn() -> bool,
+    /// Who the beacon is for.
+    phones: Arc<dyn Fn() -> BeaconPhones + Send + Sync>,
+    /// Unix seconds.
+    now: fn() -> u64,
 }
 
 struct Worker {
@@ -624,23 +590,20 @@ impl Worker {
     }
 }
 
-/// Connects with the beacon served, or without it when it can't be (walk-away
-/// still works), trying again until it connects or is stopped.
+/// Connects with the beacons served, trying again until it connects or is
+/// stopped.
 fn connect(
     env: &Env,
     device_id: &DeviceId,
     wake: &Arc<Wake>,
-) -> Option<(zbus::blocking::Connection, Option<Beacon>)> {
-    let builder = || (env.connect)().map(|b| b.method_timeout(DBUS_TIMEOUT));
+) -> Option<(zbus::blocking::Connection, Beacon)> {
     loop {
-        match builder().and_then(|b| Beacon::serve(b, device_id, wake.clone())) {
-            Ok((conn, beacon)) => return Some((conn, Some(beacon))),
-            Err(e) => {
-                tracing::debug!(error = %e, "BLE beacon: can't serve it on the system D-Bus");
-                if let Ok(conn) = builder().and_then(|b| b.build()) {
-                    return Some((conn, None));
-                }
-            }
+        match (env.connect)()
+            .map(|b| b.method_timeout(DBUS_TIMEOUT))
+            .and_then(|b| Beacon::serve(b, device_id, wake.clone()))
+        {
+            Ok(served) => return Some(served),
+            Err(e) => tracing::debug!(error = %e, "BLE beacon: can't serve it on the system D-Bus"),
         }
         if wake.wait(BEACON_CHECK_INTERVAL).stopped {
             return None;
@@ -653,39 +616,23 @@ fn run_worker(env: &Env, device_id: &DeviceId, wake: &Arc<Wake>) {
         return;
     };
     let watcher = Watcher::spawn(env, wake.clone());
-
-    let mut own_prefix = [0u8; 8];
-    own_prefix.copy_from_slice(&device_id.as_bytes()[0..8]);
-    let mut tracker = RssiTracker::default();
     let mut woken = Wakeup::default();
 
     loop {
         // BlueZ is called only while it runs: a call would start it.
         let bluez_running = super::dbus_name_has_owner(&conn, BLUEZ);
-        if let Some(beacon) = beacon.as_mut()
-            && (woken.bluez_changed || !bluez_running)
-        {
+        if woken.bluez_changed || !bluez_running {
             beacon.forget();
         }
-        let walk_away = (env.walk_away)();
         if bluez_running && let Some(objects) = managed_objects(&conn) {
-            if let Some(beacon) = beacon.as_mut() {
-                beacon.sync(&conn, &objects);
-            }
-            if walk_away {
-                poll_bluez_devices(&objects, &own_prefix, &mut tracker);
-            }
+            beacon.sync(&conn, &objects, &(env.phones)(), (env.now)());
         }
-
-        let interval = if walk_away { POLL_INTERVAL } else { BEACON_CHECK_INTERVAL };
-        woken = wake.wait(interval);
+        woken = wake.wait(BEACON_CHECK_INTERVAL);
         if woken.stopped {
             break;
         }
     }
-    if let Some(beacon) = beacon.as_mut()
-        && super::dbus_name_has_owner(&conn, BLUEZ)
-    {
+    if super::dbus_name_has_owner(&conn, BLUEZ) {
         beacon.stop(&conn);
     }
     if let Some(watcher) = watcher {
@@ -855,120 +802,93 @@ fn bluez_change(message: &zbus::Message) -> Option<Change> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn builds_13_byte_manufacturer_payload_with_magic_and_id_prefix() {
-        let mut raw = [0u8; 32];
-        for (i, b) in raw.iter_mut().enumerate() {
-            *b = (i as u8).wrapping_mul(7).wrapping_add(3);
+    const AT: u64 = 1_710_000_000;
+
+    fn at() -> u64 {
+        AT
+    }
+
+    fn extract_string(val: &OwnedValue) -> Option<String> {
+        <&str>::try_from(val).ok().map(str::to_owned)
+    }
+
+    fn extract_mfg_ffff(val: &OwnedValue) -> Option<Vec<u8>> {
+        let Value::Dict(dict) = &**val else {
+            return None;
+        };
+        for (k, v) in dict.iter() {
+            if u16::try_from(k).is_ok_and(|id| id == COMPANY_ID) {
+                let inner = match v {
+                    Value::Value(inner) => inner.as_ref(),
+                    other => other,
+                };
+                if let Value::Array(bytes) = inner {
+                    return bytes.iter().map(|b| u8::try_from(b).ok()).collect();
+                }
+            }
         }
-        let id = DeviceId(raw);
-        let payload = build_manufacturer_payload(&id);
-        assert_eq!(payload.len(), 13);
+        None
+    }
+
+    fn key(n: u8) -> [u8; 32] {
+        ble::beacon_key(&[n; 32])
+    }
+
+    fn for_phones(keys: &[[u8; 32]]) -> BeaconPhones {
+        BeaconPhones { keys: keys.to_vec(), legacy: false }
+    }
+
+    #[test]
+    fn the_old_beacon_is_the_magic_and_the_id_prefix() {
+        let id = DeviceId(std::array::from_fn(|i| (i as u8).wrapping_mul(7).wrapping_add(3)));
+        let payload = legacy_payload(&id);
         assert_eq!(&payload[0..5], b"NCTR\x01");
-        assert_eq!(&payload[5..13], &raw[0..8]);
-        assert_eq!(COMPANY_ID, 0xFFFF);
+        assert_eq!(&payload[5..13], &id.as_bytes()[0..8]);
     }
 
     #[test]
-    fn manufacturer_payload_roundtrips_through_parser() {
-        let mut raw = [0u8; 32];
-        for (i, b) in raw.iter_mut().enumerate() {
-            *b = (i as u8).wrapping_add(0x10);
+    fn a_beacon_holds_each_phones_tag_and_nothing_stable() {
+        let keys = [key(1), key(2)];
+        let shown = wanted(&for_phones(&keys), AT, 0).unwrap();
+        let (a, b) = (beacon_payload(&shown), beacon_payload(&shown));
+        assert_eq!(a.len(), 2 + BEACON_SLOTS * TAG_LEN);
+        for key in &keys {
+            assert_eq!(ble::match_payload(&a, key, ble::epoch_at(AT)), Some(TagKind::Presence));
         }
-        let id = DeviceId(raw);
-        let payload = build_manufacturer_payload(&id);
-        let parsed = parse_manufacturer_payload(&payload).expect("valid payload should parse");
-        assert_eq!(&parsed[..], &raw[0..8]);
-
-        // Also supports 12-byte payloads (5-byte magic + 7-byte prefix).
-        let parsed_12 = parse_manufacturer_payload(&payload[0..12]).expect("12-byte payload should parse");
-        assert_eq!(&parsed_12[0..7], &raw[0..7]);
-        assert_eq!(parsed_12[7], 0);
+        assert_eq!(ble::match_payload(&a, &key(3), ble::epoch_at(AT)), None);
+        assert_ne!(a, b, "the filler and the order are new each time");
+        assert!(wanted(&for_phones(&[]), AT, 0).is_none(), "no phones, no beacon");
     }
 
     #[test]
-    fn parser_rejects_short_or_wrong_magic_payloads() {
-        assert_eq!(parse_manufacturer_payload(b""), None);
-        assert_eq!(parse_manufacturer_payload(b"NCTR\x01short"), None);
-        assert_eq!(parse_manufacturer_payload(b"NCTR\x0212345678"), None);
-        assert_eq!(parse_manufacturer_payload(b"XXXX\x0112345678"), None);
+    fn the_beacon_changes_with_the_window_a_little_late() {
+        let phones = for_phones(&[key(1)]);
+        let window = ble::epoch_at(AT) * ble::EPOCH_SECS;
+        let delay = 30;
+        let before = wanted(&phones, window + delay - 1, delay).unwrap();
+        let after = wanted(&phones, window + delay, delay).unwrap();
+        assert_eq!(before.epoch + 1, after.epoch);
     }
 
     #[test]
-    fn rssi_tracker_fires_walk_away_only_after_armed_near() {
-        let mut tracker = RssiTracker::default();
-        let peer = [1, 2, 3, 4, 5, 6, 7, 8];
-        for _ in 0..4 {
-            assert!(!tracker.record(peer, -90));
-        }
-        for _ in 0..4 {
-            assert!(!tracker.record(peer, -65));
-        }
-        assert!(!tracker.record(peer, -88));
-        assert!(!tracker.record(peer, -90));
-        assert!(!tracker.record(peer, -92));
-        assert!(tracker.record(peer, -90));
-        assert!(!tracker.record(peer, -92));
+    fn phones_that_dont_fit_take_turns() {
+        let keys: Vec<[u8; 32]> = (1..=6).map(key).collect();
+        let phones = for_phones(&keys);
+        let first = wanted(&phones, 0, 0).unwrap();
+        let second = wanted(&phones, TURN_SECS, 0).unwrap();
+        let third = wanted(&phones, 2 * TURN_SECS, 0).unwrap();
+        assert_eq!(first.keys, keys[..4]);
+        assert_eq!(second.keys, keys[4..]);
+        assert_eq!(third.keys, first.keys);
     }
 
     #[test]
-    fn rssi_tracker_arms_at_near_threshold_and_fires_once_on_walk_away() {
-        let mut tracker = RssiTracker::default();
-        let peer = [9, 8, 7, 6, 5, 4, 3, 2];
-        // Exactly at NEAR_RSSI_DBM (-72) for 4 samples arms the tracker.
-        for _ in 0..4 {
-            assert!(!tracker.record(peer, NEAR_RSSI_DBM));
+    fn shuffled_is_a_permutation() {
+        for _ in 0..50 {
+            let mut order = shuffled(BEACON_SLOTS);
+            order.sort_unstable();
+            assert_eq!(order, (0..BEACON_SLOTS).collect::<Vec<_>>());
         }
-        // Dropping to WALK_AWAY_RSSI_DBM (-85) across 4 samples triggers once.
-        assert!(!tracker.record(peer, WALK_AWAY_RSSI_DBM));
-        assert!(!tracker.record(peer, WALK_AWAY_RSSI_DBM));
-        assert!(!tracker.record(peer, WALK_AWAY_RSSI_DBM));
-        assert!(tracker.record(peer, WALK_AWAY_RSSI_DBM));
-        // Subsequent distant samples do not re-trigger without re-arming near.
-        for _ in 0..4 {
-            assert!(!tracker.record(peer, -95));
-        }
-    }
-
-    #[test]
-    fn matches_only_paired_phones_or_g7link_uuid_and_ignores_peripherals() {
-        let own_prefix = [0xAA; 8];
-        let phone_prefix = [1, 2, 3, 4, 5, 6, 7, 8];
-        let paired = vec![PairedPhone {
-            prefix: phone_prefix,
-            name: "Pixel 9 Pro".into(),
-            model: Some("Pixel 9 Pro".into()),
-        }];
-
-        // Arbitrary Bluetooth headphones / mice must NEVER match.
-        let headphones = BluezDeviceCandidate {
-            address: Some("11:22:33:44:55:66".into()),
-            name: Some("Sony WH-1000XM5".into()),
-            alias: Some("Sony WH-1000XM5".into()),
-            uuids: vec!["0000110b-0000-1000-8000-00805f9b34fb".into()],
-            mfg_payload: None,
-        };
-        assert_eq!(match_g7link_device(&headphones, &own_prefix, &paired), None);
-
-        // Paired phone matched by Name/Alias.
-        let by_name = BluezDeviceCandidate {
-            address: Some("AA:BB:CC:DD:EE:FF".into()),
-            name: Some("pixel 9 pro".into()),
-            alias: None,
-            uuids: Vec::new(),
-            mfg_payload: None,
-        };
-        assert_eq!(match_g7link_device(&by_name, &own_prefix, &paired), Some(phone_prefix));
-
-        // Device advertising the G7 Link BLE service UUID matches.
-        let by_uuid = BluezDeviceCandidate {
-            address: Some("AA:BB:CC:DD:EE:FF".into()),
-            name: Some("Android".into()),
-            alias: None,
-            uuids: vec![G7LINK_BLE_UUID.to_uppercase()],
-            mfg_payload: None,
-        };
-        assert_eq!(match_g7link_device(&by_uuid, &own_prefix, &paired), Some(phone_prefix));
     }
 
     fn adapter(path: &str, powered: bool, can_advertise: bool) -> ManagedObjects {
@@ -1024,23 +944,39 @@ mod tests {
         }
     }
 
+    /// What the fake advertising manager was asked.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Call {
+        Register { path: String, kind: String, data: Option<Vec<u8>>, interval: Option<(u32, u32)> },
+        Unregister(String),
+    }
+
+    impl Call {
+        fn registered(&self) -> Option<(&str, &[u8])> {
+            match self {
+                Call::Register { path, data: Some(data), .. } => Some((path, data)),
+                _ => None,
+            }
+        }
+    }
+
     /// Stands in for BlueZ's advertising manager: reads each beacon back the
     /// way BlueZ does and records what it was asked.
     #[derive(Clone, Default)]
     struct FakeManager {
-        calls: Arc<Mutex<Vec<String>>>,
+        calls: Arc<Mutex<Vec<Call>>>,
         /// Refuses a beacon with an advertising interval, as an older BlueZ may.
         reject_intervals: bool,
     }
 
     impl FakeManager {
-        fn take(&self) -> Vec<String> {
+        fn take(&self) -> Vec<Call> {
             std::mem::take(&mut *self.calls.lock().unwrap())
         }
 
         /// The calls so far, once `done` holds for them or five seconds have
         /// passed: well before the worker's 15-second check.
-        fn wait_for(&self, done: impl Fn(&[String]) -> bool) -> Vec<String> {
+        fn wait_for(&self, done: impl Fn(&[Call]) -> bool) -> Vec<Call> {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let calls = self.calls.lock().unwrap().clone();
@@ -1078,13 +1014,13 @@ mod tests {
             if self.reject_intervals && interval.is_some() {
                 return Err(zbus::fdo::Error::InvalidArgs("Failed to parse advertisement".into()));
             }
-            let call = format!("register {} {kind} {data:?} {interval:?}", path.as_str());
+            let call = Call::Register { path: path.as_str().to_owned(), kind, data, interval };
             self.calls.lock().unwrap().push(call);
             Ok(())
         }
 
         fn unregister_advertisement(&self, path: OwnedObjectPath) {
-            self.calls.lock().unwrap().push(format!("unregister {}", path.as_str()));
+            self.calls.lock().unwrap().push(Call::Unregister(path.as_str().to_owned()));
         }
     }
 
@@ -1114,20 +1050,32 @@ mod tests {
             .unwrap()
     }
 
-    fn test_env(bus: &TestBus) -> Env {
+    fn test_env(bus: &TestBus, phones: BeaconPhones) -> Env {
         let address = bus.address.clone();
         Env {
             connect: Arc::new(move || zbus::blocking::connection::Builder::address(address.as_str())),
-            walk_away: || false,
+            phones: Arc::new(move || phones.clone()),
+            now: at,
         }
     }
 
-    fn registered(path: &str, id: &DeviceId, interval: Option<(u32, u32)>) -> String {
-        format!("register {path} broadcast {:?} {interval:?}", Some(build_manufacturer_payload(id).to_vec()))
+    fn served(bus: &TestBus, id: &DeviceId) -> (zbus::blocking::Connection, Beacon) {
+        let (conn, mut beacon) = Beacon::serve(bus.connect(), id, Arc::default()).unwrap();
+        beacon.delay = 0;
+        (conn, beacon)
     }
 
-    fn registrations(calls: &[String]) -> usize {
-        calls.iter().filter(|c| c.starts_with("register ")).count()
+    /// The one call in `calls`, a registration of `path` that `key` recognises in the window at `now`.
+    fn registered_for(calls: &[Call], path: &str, key: &[u8; 32], now: u64) -> Vec<u8> {
+        let [call] = calls else { panic!("one call expected: {calls:?}") };
+        let (at, data) = call.registered().unwrap_or_else(|| panic!("a registration expected: {call:?}"));
+        assert_eq!(at, path);
+        assert_eq!(ble::match_payload(data, key, ble::epoch_at(now)), Some(TagKind::Presence));
+        data.to_vec()
+    }
+
+    fn registrations(calls: &[Call]) -> usize {
+        calls.iter().filter(|c| matches!(c, Call::Register { .. })).count()
     }
 
     #[test]
@@ -1139,14 +1087,19 @@ mod tests {
         let manager = FakeManager::default();
         let bluez = fake_bluez(&bus, &manager);
         let id = DeviceId([0x5A; 32]);
-        let (conn, mut beacon) = Beacon::serve(bus.connect(), &id, Arc::default()).unwrap();
-        let register = registered(ADVERTISEMENT_PATH, &id, Some((MIN_INTERVAL_MS, MAX_INTERVAL_MS)));
-        let unregister = format!("unregister {ADVERTISEMENT_PATH}");
+        let (conn, mut beacon) = served(&bus, &id);
+        let phones = for_phones(&[key(1)]);
+        let unregister = Call::Unregister(ADVERTISEMENT_PATH.into());
         let (on, off) = (adapter("/org/bluez/hci0", true, true), adapter("/org/bluez/hci0", false, true));
 
-        beacon.sync(&conn, &on);
-        beacon.sync(&conn, &on);
-        assert_eq!(manager.take(), std::slice::from_ref(&register));
+        beacon.sync(&conn, &on, &phones, AT);
+        beacon.sync(&conn, &on, &phones, AT + 1);
+        let calls = manager.take();
+        registered_for(&calls, ADVERTISEMENT_PATH, &key(1), AT);
+        assert!(matches!(
+            &calls[0],
+            Call::Register { kind, interval: Some((MIN_INTERVAL_MS, MAX_INTERVAL_MS)), .. } if kind == "broadcast"
+        ));
 
         // BlueZ dropped it, so it goes back.
         bluez
@@ -1158,18 +1111,87 @@ mod tests {
                 &(),
             )
             .unwrap();
-        beacon.sync(&conn, &on);
-        assert_eq!(manager.take(), std::slice::from_ref(&register));
+        beacon.sync(&conn, &on, &phones, AT);
+        registered_for(&manager.take(), ADVERTISEMENT_PATH, &key(1), AT);
 
         // Bluetooth turned off, then on again.
-        beacon.sync(&conn, &off);
-        beacon.sync(&conn, &off);
+        beacon.sync(&conn, &off, &phones, AT);
+        beacon.sync(&conn, &off, &phones, AT);
         assert_eq!(manager.take(), std::slice::from_ref(&unregister));
-        beacon.sync(&conn, &on);
-        assert_eq!(manager.take(), [register]);
+        beacon.sync(&conn, &on, &phones, AT);
+        registered_for(&manager.take(), ADVERTISEMENT_PATH, &key(1), AT);
 
         beacon.stop(&conn);
         assert_eq!(manager.take(), [unregister]);
+    }
+
+    #[test]
+    fn beacon_changes_with_each_window_and_goes_with_the_last_phone() {
+        let Some(bus) = TestBus::start() else {
+            eprintln!("skipped: dbus-daemon isn't installed");
+            return;
+        };
+        let manager = FakeManager::default();
+        let _bluez = fake_bluez(&bus, &manager);
+        let (conn, mut beacon) = served(&bus, &DeviceId([0x4D; 32]));
+        let on = adapter("/org/bluez/hci0", true, true);
+        let phones = for_phones(&[key(1)]);
+
+        beacon.sync(&conn, &on, &phones, AT);
+        let first = registered_for(&manager.take(), ADVERTISEMENT_PATH, &key(1), AT);
+
+        let next = AT + ble::EPOCH_SECS;
+        beacon.sync(&conn, &on, &phones, next);
+        let calls = manager.take();
+        assert_eq!(calls[0], Call::Unregister(ADVERTISEMENT_PATH.into()));
+        let second = registered_for(&calls[1..], ADVERTISEMENT_PATH, &key(1), next);
+        assert_ne!(first[2..], second[2..]);
+
+        // A phone paired: it's in the beacon from now on.
+        let two = for_phones(&[key(1), key(2)]);
+        beacon.sync(&conn, &on, &two, next);
+        let calls = manager.take();
+        let data = registered_for(&calls[1..], ADVERTISEMENT_PATH, &key(2), next);
+        assert_eq!(ble::match_payload(&data, &key(1), ble::epoch_at(next)), Some(TagKind::Presence));
+
+        // The last phone unpaired: no beacon at all.
+        beacon.sync(&conn, &on, &for_phones(&[]), next);
+        assert_eq!(manager.take(), [Call::Unregister(ADVERTISEMENT_PATH.into())]);
+        beacon.sync(&conn, &on, &for_phones(&[]), next + ble::EPOCH_SECS);
+        assert_eq!(manager.take(), []);
+    }
+
+    #[test]
+    fn the_old_beacon_goes_out_only_while_a_phone_needs_it() {
+        let Some(bus) = TestBus::start() else {
+            eprintln!("skipped: dbus-daemon isn't installed");
+            return;
+        };
+        let manager = FakeManager::default();
+        let _bluez = fake_bluez(&bus, &manager);
+        let id = DeviceId([0x2E; 32]);
+        let (conn, mut beacon) = served(&bus, &id);
+        let on = adapter("/org/bluez/hci0", true, true);
+
+        let old_app = BeaconPhones { keys: Vec::new(), legacy: true };
+        beacon.sync(&conn, &on, &old_app, AT);
+        beacon.sync(&conn, &on, &old_app, AT);
+        let legacy = Call::Register {
+            path: LEGACY_PATH.into(),
+            kind: "broadcast".into(),
+            data: Some(legacy_payload(&id).to_vec()),
+            interval: None,
+        };
+        assert_eq!(manager.take(), [legacy]);
+
+        beacon.sync(&conn, &on, &for_phones(&[key(1)]), AT);
+        let calls = manager.take();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        registered_for(&calls[..1], ADVERTISEMENT_PATH, &key(1), AT);
+        assert_eq!(calls[1], Call::Unregister(LEGACY_PATH.into()));
+
+        beacon.stop(&conn);
+        assert_eq!(manager.take(), [Call::Unregister(ADVERTISEMENT_PATH.into())]);
     }
 
     #[test]
@@ -1180,23 +1202,22 @@ mod tests {
         };
         let manager = FakeManager { reject_intervals: true, ..FakeManager::default() };
         let _bluez = fake_bluez(&bus, &manager);
-        let id = DeviceId([0x6B; 32]);
-        let (conn, mut beacon) = Beacon::serve(bus.connect(), &id, Arc::default()).unwrap();
+        let (conn, mut beacon) = served(&bus, &DeviceId([0x6B; 32]));
         let on = adapter("/org/bluez/hci0", true, true);
+        let phones = for_phones(&[key(1)]);
 
-        beacon.sync(&conn, &on);
-        assert_eq!(manager.take(), [registered(DEFAULT_INTERVAL_PATH, &id, None)]);
+        beacon.sync(&conn, &on, &phones, AT);
+        registered_for(&manager.take(), DEFAULT_INTERVAL_PATH, &key(1), AT);
 
         // Bluetooth turned off and on: straight to the beacon BlueZ took.
-        beacon.sync(&conn, &adapter("/org/bluez/hci0", false, true));
-        beacon.sync(&conn, &on);
-        assert_eq!(
-            manager.take(),
-            [format!("unregister {DEFAULT_INTERVAL_PATH}"), registered(DEFAULT_INTERVAL_PATH, &id, None)]
-        );
+        beacon.sync(&conn, &adapter("/org/bluez/hci0", false, true), &phones, AT);
+        beacon.sync(&conn, &on, &phones, AT);
+        let calls = manager.take();
+        assert_eq!(calls[0], Call::Unregister(DEFAULT_INTERVAL_PATH.into()));
+        registered_for(&calls[1..], DEFAULT_INTERVAL_PATH, &key(1), AT);
 
         beacon.stop(&conn);
-        assert_eq!(manager.take(), [format!("unregister {DEFAULT_INTERVAL_PATH}")]);
+        assert_eq!(manager.take(), [Call::Unregister(DEFAULT_INTERVAL_PATH.into())]);
     }
 
     #[test]
@@ -1208,15 +1229,17 @@ mod tests {
         let id = DeviceId([0x3C; 32]);
         let manager = FakeManager::default();
         let slot = Mutex::new(None);
-        start_in(&slot, test_env(&bus), id);
+        start_in(&slot, test_env(&bus, for_phones(&[key(1)])), id);
 
         // BlueZ isn't running yet: the worker waits for it.
         thread::sleep(Duration::from_millis(300));
         assert!(slot.lock().unwrap().as_ref().is_some_and(|w: &Worker| !w.thread.is_finished()));
 
         let first = fake_bluez(&bus, &manager);
-        let register = registered(ADVERTISEMENT_PATH, &id, Some((MIN_INTERVAL_MS, MAX_INTERVAL_MS)));
-        assert_eq!(manager.wait_for(|calls| registrations(calls) >= 1), std::slice::from_ref(&register));
+        let calls = manager.wait_for(|calls| registrations(calls) >= 1);
+        let (path, data) = calls[0].registered().unwrap();
+        assert_eq!(path, ADVERTISEMENT_PATH);
+        assert!(ble::match_payload(data, &key(1), ble::epoch_at(AT)).is_some());
 
         // bluetoothd restarts: the same adapter path, and a BlueZ that holds
         // no beacon.
@@ -1237,8 +1260,8 @@ mod tests {
         };
         let id = DeviceId([0x24; 32]);
         let slot = Mutex::new(None);
-        start_in(&slot, test_env(&bus), id);
-        start_in(&slot, test_env(&bus), id);
+        start_in(&slot, test_env(&bus, BeaconPhones::default()), id);
+        start_in(&slot, test_env(&bus, BeaconPhones::default()), id);
         stop_in(&slot);
         stop_in(&slot);
         assert!(slot.lock().unwrap().is_none());
@@ -1250,7 +1273,7 @@ mod tests {
 
     #[test]
     fn stop_ends_a_worker_that_has_no_bus() {
-        let env = Env { connect: Arc::new(no_bus), walk_away: || false };
+        let env = Env { connect: Arc::new(no_bus), phones: Arc::new(BeaconPhones::default), now: at };
         let slot = Mutex::new(None);
         start_in(&slot, env, DeviceId([0x11; 32]));
         let started = Instant::now();

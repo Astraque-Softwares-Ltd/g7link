@@ -412,8 +412,13 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- What the background scan for paired PCs' rotating Bluetooth beacons found. -->
+        <receiver
+            android:name=".companion.PcBeaconReceiver"
+            android:exported="false" />
+
         <!-- Companion Device Manager service: woken by Android when a paired PC's
-             BLE proximity beacon appears nearby. -->
+             old BLE beacon appears nearby. -->
         <service
             android:name=".companion.PcCompanionService"
             android:exported="true"

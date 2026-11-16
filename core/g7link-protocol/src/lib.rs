@@ -5,6 +5,7 @@
 //! types, the CBOR envelope, length-prefixed framing and the pairing
 //! primitives. It is specified in `docs/protocol/v0.md`.
 
+pub mod ble;
 mod envelope;
 mod error;
 mod frame;

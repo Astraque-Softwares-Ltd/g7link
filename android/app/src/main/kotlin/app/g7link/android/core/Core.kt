@@ -336,6 +336,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     private val accent = AccentMonitor(this.context) { seed ->
         node?.let { scope.launch { runCatching { it.updateAccent(seed) } } }
     }
+    /** Starts the paired PCs' beacon scan again when Bluetooth comes back on. */
+    private var beaconAdapterWatch: AutoCloseable? = null
     private val network = NetworkMonitor(this.context) {
         // Network callbacks come in bursts; tell the core once they settle.
         networkChange?.cancel()
@@ -599,6 +601,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 )
             }
             started.updatePower(powerLevel(), capabilities(NotificationListener.hasAccess(context)))
+            syncBeaconKeys(started)
             // Elevated, when set up and wireless debugging is on.
             currentRunScope.launch { Elevated.start() }
             currentRunScope.launch(Dispatchers.Main) {
@@ -607,6 +610,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 battery.start()
                 accent.start()
                 network.start()
+                beaconAdapterWatch?.close()
+                beaconAdapterWatch = app.g7link.android.companion.PcBeaconScan.followAdapter(context)
                 if (NotificationListener.hasAccess(context)) phoneMedia.start()
                 if (PhoneCalls.canFollow(context) || PhoneCalls.canReadLog(context)) calls.start()
                 if (PhoneContacts.canRead(context)) contacts.start()
@@ -684,6 +689,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 runCatching { Elevated.stop() }
 
                 withContext(Dispatchers.Main) {
+                    beaconAdapterWatch?.close()
+                    beaconAdapterWatch = null
                     battery.stop()
                     accent.stop()
                     network.stop()
@@ -771,6 +778,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     if (companionAssociated) {
                         PcCompanion.startObservingPresence(context)
                     }
+                    // The Nearby devices permission may have just been given or taken.
+                    app.g7link.android.companion.PcBeaconScan.sync(context)
                     val photoAccess = RecentPhotos.hasAccess(context)
                     val photoPartialAccess = RecentPhotos.hasPartialAccess(context)
                     val callAccess = PhoneCalls.hasAll(context)
@@ -977,7 +986,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     lastPcMirrorKeyframe = null
                 }
                 val noDevicesRemaining = _state.value.devices.isEmpty()
-                PcCompanion.disassociateForRemovedPc(context, removedName, noDevicesRemaining)
+                PcCompanion.disassociateForRemovedPc(context, event.id, removedName, noDevicesRemaining)
                 if (noDevicesRemaining) ConnectionService.stop(context)
             }
             is Event.Paired -> ConnectionService.start(context)
@@ -989,6 +998,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             is Event.TimelineChanged -> scope.launch(Dispatchers.IO) { refreshTimeline() }
             is Event.LocalSendChanged -> scope.launch(Dispatchers.IO) { syncLocalSendState() }
             is Event.QueueChanged -> refreshSendQueue()
+            is Event.BleKeysChanged -> node?.let { current -> scope.launch(Dispatchers.IO) { syncBeaconKeys(current) } }
             is Event.QueueDroppedOnUnpair -> {
                 if (event.droppedCount > 0u) {
                     val name = event.deviceName.ifBlank { context.getString(R.string.your_pc) }
@@ -2162,9 +2172,21 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
+    /**
+     * Keeps the paired PCs' beacon keys where the background scan's receiver
+     * finds them, and the scan running while there's a PC to look for.
+     */
+    private fun syncBeaconKeys(node: G7LinkNode) {
+        val keys = runCatching { node.bleBeaconKeys() }.getOrNull() ?: return
+        app.g7link.android.companion.BeaconKeys.replace(context, keys.associate { it.id to it.key })
+        app.g7link.android.companion.PcBeaconScan.sync(context)
+    }
+
     /** What this phone offers PCs (docs/protocol/capabilities.md). */
     private fun capabilities(notificationAccess: Boolean): List<String> =
         CLIPBOARD_CAPABILITIES +
+            // Recognises a paired PC's rotating Bluetooth beacon.
+            (if (app.g7link.android.companion.PcBeaconScan.canScan(context)) listOf("ble.beacon2") else emptyList()) +
             // Play on phone: shows a PC's playback, streamed from the PC.
             listOf("media.watch") +
             // Shows a paired phone's or tablet's notifications.

@@ -627,6 +627,20 @@ pub struct DeviceToggle {
     pub enabled: bool,
 }
 
+/// The key a paired PC's Bluetooth beacon is recognised by.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct BleBeaconKey {
+    /// The PC's device id.
+    pub id: String,
+    pub key: Vec<u8>,
+}
+
+impl std::fmt::Debug for BleBeaconKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BleBeaconKey").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
 /// Everything the UI needs to know about, as it happens.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum Event {
@@ -867,6 +881,9 @@ pub enum Event {
         device_name: String,
         dropped_count: u32,
     },
+    /// The Bluetooth beacon keys shared with paired PCs changed: read them
+    /// again with `Node::ble_beacon_keys`.
+    BleKeysChanged,
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -2652,6 +2669,7 @@ impl Event {
             NodeEvent::PcAudioFrame { device, sample_rate, channels, pcm } => {
                 Event::PcAudioFrame { device: device.to_string(), sample_rate, channels, pcm }
             }
+            NodeEvent::BleKeysChanged => Event::BleKeysChanged,
         })
     }
 }
@@ -3718,6 +3736,15 @@ impl G7LinkNode {
 
     pub fn capabilities(&self, id: String) -> Result<Vec<Feature>> {
         Ok(features(&self.node.capabilities(parse_id(&id)?)?))
+    }
+
+    /// The key of each paired PC's Bluetooth beacon (docs/protocol/bluetooth.md).
+    pub fn ble_beacon_keys(&self) -> Vec<BleBeaconKey> {
+        self.node
+            .ble_beacon_keys()
+            .into_iter()
+            .map(|(id, key)| BleBeaconKey { id: id.to_string(), key: key.to_vec() })
+            .collect()
     }
 
     pub fn device_toggles(&self, id: String) -> Result<Vec<DeviceToggle>> {

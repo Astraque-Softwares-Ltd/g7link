@@ -738,6 +738,10 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             Ok(body) => shared.bt_media_from_peer(peer, body)?,
             Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed audio.bt_media"),
         },
+        types::BLE_KEY => match env.body::<BleKey>() {
+            Ok(body) => shared.ble_key_from_peer(peer, body)?,
+            Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed ble.key"),
+        },
         other => {
             if env.id.is_some() {
                 let reply = Envelope::error(ErrorCode::Unsupported, format!("unknown message type {other}"));

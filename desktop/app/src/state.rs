@@ -600,7 +600,9 @@ impl AppState {
             | NodeEvent::CameraCaptureRequested { .. }
             | NodeEvent::CameraCaptureCancelled { .. }
             // The updater acts on it (update_relay); nothing shows.
-            | NodeEvent::UpdateHint { .. } => Changes::NONE,
+            | NodeEvent::UpdateHint { .. }
+            // The Bluetooth beacon follows it (sys::ble_beacon); nothing shows.
+            | NodeEvent::BleKeysChanged => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,
             NodeEvent::ClipboardHistoryChanged => Changes::CLIPBOARD | Changes::TIMELINE,
             NodeEvent::TimelineChanged => Changes::TIMELINE,

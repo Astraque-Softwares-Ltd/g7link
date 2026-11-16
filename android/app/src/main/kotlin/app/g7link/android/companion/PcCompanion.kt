@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.companion
 
+import android.annotation.SuppressLint
 import android.app.Activity
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.companion.AssociationInfo
 import android.companion.AssociationRequest
 import android.companion.BluetoothLeDeviceFilter
@@ -12,15 +17,23 @@ import android.content.Context
 import android.content.IntentSender
 import android.os.Build
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Companion Device Manager (CDM) integration for waking G7 Link when a
- * paired PC's BLE proximity beacon (`NCTR\x01` + 8-byte device ID prefix) is
- * nearby, and granting OS-level background execution / foreground-service start
- * exemptions while associated.
+ * Companion Device Manager (CDM) association with a paired PC: Android lets an
+ * associated app run and start its connection from the background. Phones
+ * that scan for the PC's rotating beacon ([PcBeaconScan]) find it themselves;
+ * older ones are woken by CDM seeing the PC's old beacon (`NCTR\x01` + 8-byte
+ * device ID prefix).
  */
 object PcCompanion {
     const val MANUFACTURER_ID: Int = 0xFFFF
+
+    /** Association ID to the device ID of the PC it was made for. */
+    private const val ASSOCIATIONS = "companion_associations"
 
     val BEACON_MAGIC: ByteArray = byteArrayOf(
         'N'.code.toByte(),
@@ -121,14 +134,28 @@ object PcCompanion {
         }
     }
 
-    /** Removes CompanionDeviceManager associations for a removed PC (or all when no PCs remain paired). */
-    fun disassociateForRemovedPc(context: Context, pcName: String?, noDevicesRemaining: Boolean) {
+    private fun associations(context: Context) =
+        context.getSharedPreferences(ASSOCIATIONS, Context.MODE_PRIVATE)
+
+    /**
+     * Removes the CompanionDeviceManager associations made for a removed PC
+     * [pcId] (or all when no PCs remain paired). One made before associations
+     * were remembered by PC is found by [pcName].
+     */
+    fun disassociateForRemovedPc(context: Context, pcId: String?, pcName: String?, noDevicesRemaining: Boolean) {
         runCatching {
             val cdm = context.getSystemService(CompanionDeviceManager::class.java) ?: return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val remembered = associations(context)
                 for (info in cdm.myAssociations) {
-                    val matchesName = !pcName.isNullOrBlank() && info.displayName?.toString() == pcName
-                    if (noDevicesRemaining || matchesName) {
+                    val madeFor = remembered.getString(info.id.toString(), null)
+                    val matches = if (madeFor != null) {
+                        madeFor == pcId
+                    } else {
+                        !pcName.isNullOrBlank() && info.displayName?.toString() == pcName
+                    }
+                    if (noDevicesRemaining || matches) {
+                        remembered.edit().remove(info.id.toString()).apply()
                         val addr = info.deviceMacAddress?.toString()
                         if (!addr.isNullOrBlank()) {
                             @Suppress("DEPRECATION")
@@ -149,10 +176,60 @@ object PcCompanion {
         }
     }
 
+    /**
+     * The Bluetooth address [pcId]'s rotating beacon comes from right now, from
+     * a short scan, or null when it isn't seen within [timeoutMs] (or this phone
+     * can't scan, or has no key for it yet).
+     */
+    @SuppressLint("MissingPermission") // canScan checks BLUETOOTH_SCAN.
+    suspend fun findPc(context: Context, pcId: String, timeoutMs: Long = 10_000): String? {
+        if (!PcBeaconScan.canScan(context)) return null
+        val key = BeaconKeys.all(context)[pcId] ?: return null
+        val scanner = context.getSystemService(BluetoothManager::class.java)?.adapter
+            ?.let { runCatching { it.bluetoothLeScanner }.getOrNull() } ?: return null
+        return withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { cont ->
+                val done = AtomicBoolean(false)
+                fun finish(address: String?, callback: ScanCallback) {
+                    if (!done.compareAndSet(false, true)) return
+                    runCatching { scanner.stopScan(callback) }
+                    cont.resume(address)
+                }
+                val callback = object : ScanCallback() {
+                    override fun onScanResult(callbackType: Int, result: ScanResult) {
+                        val data = result.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID) ?: return
+                        val now = System.currentTimeMillis() / 1000
+                        if (BeaconMatcher.match(data, mapOf(pcId to key), now) != null) {
+                            finish(result.device.address, this)
+                        }
+                    }
+
+                    override fun onScanFailed(errorCode: Int) = finish(null, this)
+                }
+                val filter = ScanFilter.Builder()
+                    .setManufacturerData(MANUFACTURER_ID, BeaconMatcher.HEADER, byteArrayOf(-1, -1))
+                    .build()
+                val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+                cont.invokeOnCancellation {
+                    if (done.compareAndSet(false, true)) runCatching { scanner.stopScan(callback) }
+                }
+                runCatching { scanner.startScan(listOf(filter), settings, callback) }
+                    .onFailure { finish(null, callback) }
+            }
+        }
+    }
+
+    /**
+     * Asks Android to associate G7 Link with the PC [pcDeviceId]: the chooser
+     * shows the device at [address] when it was found ([findPc]), or else the
+     * one broadcasting that PC's old beacon. Without a valid device ID nothing
+     * is asked, so the chooser can't offer someone else's PC.
+     */
     fun requestAssociation(
         activity: Activity,
         pcName: String,
-        pcDeviceId: String? = null,
+        pcDeviceId: String?,
+        address: String?,
         onResult: (Boolean) -> Unit = {},
         onLauncherFallback: (IntentSender) -> Unit,
     ) {
@@ -162,16 +239,23 @@ object PcCompanion {
                 return
             }
             val payload = buildBeaconPayload(pcDeviceId)
-            val mask = buildBeaconMask(payload.size == 13)
-            val scanFilter = ScanFilter.Builder()
-                .setManufacturerData(MANUFACTURER_ID, payload, mask)
-                .build()
+            if (pcDeviceId == null || (address == null && payload.size != 13)) {
+                onResult(false)
+                return
+            }
+            val scanFilter = if (address != null) {
+                ScanFilter.Builder().setDeviceAddress(address).build()
+            } else {
+                ScanFilter.Builder()
+                    .setManufacturerData(MANUFACTURER_ID, payload, buildBeaconMask(true))
+                    .build()
+            }
             val leFilter = BluetoothLeDeviceFilter.Builder()
                 .setScanFilter(scanFilter)
                 .build()
             val requestBuilder = AssociationRequest.Builder()
                 .addDeviceFilter(leFilter)
-                .setSingleDevice(false)
+                .setSingleDevice(true)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && pcName.isNotBlank()) {
                 runCatching { requestBuilder.setDisplayName(pcName) }
             }
@@ -187,6 +271,9 @@ object PcCompanion {
                         }
 
                         override fun onAssociationCreated(associationInfo: AssociationInfo) {
+                            associations(activity).edit()
+                                .putString(associationInfo.id.toString(), pcDeviceId)
+                                .apply()
                             startObservingPresence(activity)
                             onResult(true)
                         }

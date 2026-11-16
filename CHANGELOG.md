@@ -32,6 +32,13 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
 
 ### Changed
 
+- **The PC's Bluetooth beacon no longer gives it away.** It used to broadcast
+  part of the PC's ID all the time, so anyone scanning could recognise and
+  follow the PC. Now it changes every 15 minutes, only your paired phones can
+  recognise it, and with no phone paired the PC broadcasts nothing. On the
+  phone, "Wake when PC is nearby" asks for the Nearby devices permission, and
+  keeps working after the PC restarts, which it often didn't. The old beacon
+  still goes out while a paired phone has an older G7 Link, so update both.
 - **Figtree for text.** Both apps set their text in Figtree, a calmer and
   more readable face. Geist Mono stays for codes, keys, commands and timers.
 - **Motion in both apps.** Pages, menus, sheets, banners and notifications
@@ -70,6 +77,16 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
 - On GNOME, a copied code really reaches the clipboard. With the G7 Linux
   extension 1.5 it stays out of clipboard histories; with older ones, G7
   Linux's history sees it until it's wiped.
+- Call audio only goes to your phone. The PC takes a Bluetooth device for
+  your phone only when it has exactly the phone's name, never one whose name
+  just contains it (someone else's "Pixel 8 Pro" for your "Pixel 8"), and
+  remembers it only once you connect call audio to it. "Not this device" on
+  the Calls page makes it forget a wrong one. Headsets and speakers are never
+  taken for a phone.
+- A call that ends while its audio is connecting no longer leaves the PC on
+  call audio saying the phone "is still using its own audio".
+- The PC's Bluetooth and hotspot settings files are written safely, and a
+  damaged one is kept aside instead of being replaced.
 - The phone says where to turn on "Your PC in your pocket" when the PC's
   files aren't shared.
 - Much less memory for notification pictures, copied pictures, recordings'

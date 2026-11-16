@@ -6,14 +6,12 @@ import android.companion.CompanionDeviceService
 import android.companion.DevicePresenceEvent
 import android.os.Build
 import androidx.annotation.RequiresApi
-import app.g7link.android.G7LinkApplication
-import app.g7link.android.service.ConnectionService
 
 /**
- * Bound by Android's CompanionDeviceManager when an associated PC's BLE
- * proximity beacon (`NCTR\x01` + 8-byte device ID prefix) appears nearby.
- * Wakes the foreground [ConnectionService] and triggers an immediate LAN/BLE
- * reconnect in [app.g7link.android.core.Core].
+ * Bound by Android's CompanionDeviceManager when an associated PC's old BLE
+ * beacon (`NCTR\x01` + 8-byte device ID prefix) appears nearby: wakes the app
+ * ([PcWake]). The rotating beacon is found by [PcBeaconScan] instead; the
+ * association still lets the app start its connection from the background.
  */
 @RequiresApi(Build.VERSION_CODES.S)
 class PcCompanionService : CompanionDeviceService() {
@@ -43,17 +41,6 @@ class PcCompanionService : CompanionDeviceService() {
     }
 
     private fun wakeAndReconnect() {
-        val appContext = applicationContext ?: return
-        if (!app.g7link.android.ui.Preferences.isBackgroundServiceEnabled(appContext)) {
-            return
-        }
-        val core = (appContext as? G7LinkApplication)?.core
-        val state = core?.state?.value
-        if (state != null && state.status is app.g7link.android.core.CoreStatus.Ready && state.devices.isEmpty()) {
-            PcCompanion.disassociateForRemovedPc(appContext, pcName = null, noDevicesRemaining = true)
-            return
-        }
-        ConnectionService.start(appContext)
-        core?.reconnectNow()
+        PcWake.wake(applicationContext ?: return, pcId = null)
     }
 }

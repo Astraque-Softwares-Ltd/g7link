@@ -8,6 +8,7 @@
 
 mod actions;
 mod adb_wifi;
+mod ble_link;
 mod calls;
 pub mod clip_kind;
 mod clipboard;
@@ -72,6 +73,7 @@ pub use events::{
     ConnectionPath, DiscoveredDevice, LinkState, NodeEvent, PairedDevice, PairingEvent, PairingFailure,
 };
 pub use features::{CapabilityMatrix, FeatureState};
+pub use g7link_protocol::ble;
 pub use g7link_protocol::messages::clip::{
     IMAGE_TYPES as CLIP_IMAGE_TYPES, MAX_IMAGE_BYTES as CLIP_MAX_IMAGE_BYTES,
 };
