@@ -23,12 +23,22 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   pastes it, in a browser or anywhere else. The clipboard is wiped after 2
   minutes. This comes on with the update, even where it was off before;
   Settings › General can turn it off again.
+- **Bluetooth when there's no network.** Turn it on for a phone and a PC on
+  both (the phone's Settings, and the device's settings on the PC). When they
+  share no network, the PC can ring the phone and ask for its hotspot, short
+  copied text goes both ways, codes from the phone's notifications are copied
+  on the PC, and the Touchpad tab and its keyboard keep working. The link is
+  encrypted with keys only that pair has, and the PC can be connected to only
+  for a few seconds when it needs to be. Android 12 and later.
 - **Instant Hotspot offers itself.** When the PC's internet goes, a
   notification offers a linked phone's hotspot (with Elevated): one click
   turns it on and joins it, finding its network the first time. Back in
   range of a known Wi-Fi network, the PC moves back and turns off the hotspot
   it turned on, with how much data it used. Home's Hotspot button shows
   whether the hotspot is really on.
+  With Elevated, the phone turns its hotspot on through Android's tethering
+  service, which Android 17 needs; without it, the phone asks you with a
+  notification.
 
 ### Changed
 

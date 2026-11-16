@@ -354,6 +354,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Hotspot", "G7 Link isn't ready yet."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "No internet"), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Pick %1 in the Wi-Fi menu once. This PC joins %2's hotspot by itself after that."), // desktop/app/src/hotspot.rs
+    QT_TRANSLATE_NOOP("Hotspot", "Turn on %1's hotspot: the phone is asking on its screen."), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Use %1's hotspot?"), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "Use hotspot"), // desktop/app/src/hotspot.rs
     QT_TRANSLATE_NOOP("Hotspot", "your phone"), // desktop/app/src/hotspot.rs
