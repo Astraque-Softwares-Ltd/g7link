@@ -74,6 +74,7 @@
     <string name="local_network_title">Conectar con tu PC en esta red</string>
     <string name="channel_elevated">Configuración de depuración inalámbrica</string>
     <string name="elevated_waiting">Esperando la depuración inalámbrica. Actívala en Opciones de desarrollador.</string>
+    <string name="elevated_waiting_unreachable">La depuración inalámbrica está activada, pero G7 Link aún no la alcanza. Sigue intentándolo, y un PC conectado también puede iniciarla.</string>
     <string name="elevated_starting">Iniciando…</string>
     <string name="elevated_failed">No se pudo iniciar. Comprueba que la depuración inalámbrica esté activada e inténtalo de nuevo.</string>
     <string name="elevated_not_paired">El teléfono ha olvidado el emparejamiento de G7 Link. Configúralo de nuevo.</string>

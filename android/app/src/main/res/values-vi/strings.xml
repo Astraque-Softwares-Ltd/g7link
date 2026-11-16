@@ -75,6 +75,7 @@
 <string name="local_network_title">Truy cập PC của bạn trên mạng này</string>
 <string name="channel_elevated">Thiết lập gỡ lỗi không dây</string>
 <string name="elevated_waiting">Đang chờ Gỡ lỗi không dây. Hãy bật nó trong Tùy chọn nhà phát triển.</string>
+<string name="elevated_waiting_unreachable">Gỡ lỗi không dây đang bật, nhưng G7 Link chưa kết nối được. Ứng dụng vẫn tiếp tục thử, và PC đã kết nối cũng có thể khởi động.</string>
 <string name="elevated_starting">Đang khởi động…</string>
 <string name="elevated_failed">Không thể khởi động. Hãy kiểm tra Gỡ lỗi không dây đã bật chưa, rồi thử lại.</string>
 <string name="elevated_not_paired">Điện thoại đã quên ghép nối của G7 Link. Hãy thiết lập lại.</string>

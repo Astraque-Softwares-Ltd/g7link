@@ -72,6 +72,7 @@
     <string name="local_network_title">在此网络上访问你的电脑</string>
     <string name="channel_elevated">无线调试设置</string>
     <string name="elevated_waiting">正在等待无线调试，请在开发者选项中开启。</string>
+    <string name="elevated_waiting_unreachable">无线调试已开启，但 G7 Link 暂时连接不上。它会继续尝试，已连接的电脑也可以启动它。</string>
     <string name="elevated_starting">正在启动…</string>
     <string name="elevated_failed">无法启动，请确认无线调试已开启，然后重试。</string>
     <string name="elevated_not_paired">手机已忘记G7 Link的配对信息，请重新设置。</string>

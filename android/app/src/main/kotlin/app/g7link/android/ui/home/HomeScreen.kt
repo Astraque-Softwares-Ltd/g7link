@@ -790,22 +790,37 @@ fun HomeScreen(
                         Column {
                             AccessRows(missingAccess)
                             if (!state.elevated) {
+                                val elevated by app.g7link.android.elevated.Elevated.state.collectAsStateWithLifecycle()
                                 G7Row(
                                     label = stringResource(R.string.home_background_clipboard_title),
                                     icon = G7Icons.bolt,
                                     tint = tints.amber,
                                 ) {
-                                    G7RowAction(
-                                        label = stringResource(R.string.elevated_set_up),
-                                        onClick = {
-                                            scope.launch {
-                                                app.g7link.android.elevated.PairingNotification.show(context)
-                                                if (!app.g7link.android.elevated.Elevated.start()) {
-                                                    openDeveloperOptions(context)
+                                    // What it needs now: trusting this network, another try, or setting up.
+                                    when (val e = elevated) {
+                                        is app.g7link.android.elevated.Elevated.State.Paused -> G7RowAction(
+                                            label = stringResource(R.string.elevated_trust_network),
+                                            onClick = { app.g7link.android.elevated.Elevated.trustCurrentNetwork() },
+                                        )
+                                        app.g7link.android.elevated.Elevated.State.Waiting,
+                                        app.g7link.android.elevated.Elevated.State.Starting,
+                                        -> G7RowAction(
+                                            label = stringResource(R.string.elevated_try_again),
+                                            enabled = e != app.g7link.android.elevated.Elevated.State.Starting,
+                                            onClick = { scope.launch { app.g7link.android.elevated.Elevated.start() } },
+                                        )
+                                        else -> G7RowAction(
+                                            label = stringResource(R.string.elevated_set_up),
+                                            onClick = {
+                                                scope.launch {
+                                                    app.g7link.android.elevated.PairingNotification.show(context)
+                                                    if (!app.g7link.android.elevated.Elevated.start()) {
+                                                        openDeveloperOptions(context)
+                                                    }
                                                 }
-                                            }
-                                        },
-                                    )
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }

@@ -247,6 +247,10 @@ object Elevated {
         scope.launch { if (running) pauseIfUntrusted() else start() }
     }
 
+    /** Whether Wireless debugging is on in Developer options. */
+    fun wirelessDebuggingOn(): Boolean =
+        runCatching { Settings.Global.getInt(context.contentResolver, ADB_WIFI, 0) == 1 }.getOrDefault(false)
+
     /** Whether the user set Elevated up by pairing Wireless debugging (trusted networks apply). */
     fun pairedWithWirelessDebugging(): Boolean = paired()
 
@@ -462,6 +466,7 @@ object Elevated {
         // Paused for a banking app: debugging stays off until it's over
         // (BankingPause starts Elevated again then).
         if (BankingPause.isPaused(context)) {
+            Log.i(TAG, "not starting: paused for a banking app")
             if (!running) _state.value = State.Waiting
             return@withContext false
         }
@@ -477,6 +482,7 @@ object Elevated {
             if (!paired()) {
                 // No wireless debugging set up: a PC this phone is plugged into can start it.
                 if (startOverUsbLocked()) return@withLock true
+                Log.i(TAG, "not starting: not paired with this phone's Wireless debugging, and no PC started it")
                 // Through Shizuku, the state says why it didn't start, or that it waits for Shizuku.
                 if (!usesShizuku()) _state.value = State.NotSetUp
                 return@withLock false
@@ -486,12 +492,14 @@ object Elevated {
             if (network == null || !network.identifiable) {
                 // Off Wi-Fi, or its router isn't known yet: a cable still works.
                 if (startOverUsbLocked()) return@withLock true
+                Log.i(TAG, "not starting: not on a Wi-Fi network with a known router")
                 _state.value = State.Waiting
                 return@withLock false
             }
             if (!TrustedNetworks.isTrusted(context, network)) {
                 turnOffWirelessDebugging()
                 if (startOverUsbLocked()) return@withLock true
+                Log.i(TAG, "not starting: this Wi-Fi network isn't trusted")
                 _state.value = State.Paused(network)
                 if (!prefs().getBoolean(PAUSED_NOTICE, false) && NetworkPausedNotification.show(context, network)) {
                     prefs().edit { putBoolean(PAUSED_NOTICE, true) }
@@ -506,6 +514,7 @@ object Elevated {
             val connected = try {
                 if (LoopbackAdb.preferred()) connectOverLoopback(adb) else connectFoundOrLoopback(adb)
             } catch (e: AdbPairingRequiredException) {
+                Log.w(TAG, "not starting: this phone's Wireless debugging no longer knows G7 Link")
                 // adbd forgot us (the user revoked the authorizations).
                 context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(PAIRED, false) }
                 _state.value = State.Failed(Reason.NotPaired)
@@ -517,6 +526,7 @@ object Elevated {
             if (!connected) {
                 discardConnection()
                 if (startOverUsbLocked()) return@withLock true
+                Log.i(TAG, "not starting: couldn't reach this phone's Wireless debugging, and no PC started it")
                 _state.value = State.Waiting
                 return@withLock false
             }

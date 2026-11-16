@@ -1205,7 +1205,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         for (pc in _state.value.devices.filter { it.online }) {
             val port = runCatching {
                 node.elevatedUsbStart(pc.id, apk, token, grants, adbPort?.toUShort())
-            }.getOrNull()
+            }.onFailure { Log.i(TAG, "a PC couldn't start Elevated: ${it.message}") }.getOrNull()
             if (port != null) return port.toInt()
         }
         return null

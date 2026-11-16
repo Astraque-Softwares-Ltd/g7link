@@ -78,6 +78,7 @@
     <string name="local_network_title">Acessar o PC nesta rede</string>
     <string name="channel_elevated">Configuração da depuração por Wi-Fi</string>
     <string name="elevated_waiting">Aguardando a depuração por Wi-Fi. Ative nas Opções do desenvolvedor.</string>
+    <string name="elevated_waiting_unreachable">A depuração por Wi-Fi está ativada, mas o G7 Link ainda não consegue alcançá-la. Ele continua tentando, e um PC conectado também pode iniciá-la.</string>
     <string name="elevated_starting">Iniciando…</string>
     <string name="elevated_failed">Não foi possível iniciar. Confira se a depuração por Wi-Fi está ativada e tente de novo.</string>
     <string name="elevated_not_paired">O celular esqueceu o pareamento do G7 Link. Configure de novo.</string>

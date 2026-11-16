@@ -78,6 +78,7 @@
     <string name="local_network_title">Reach your PC on this network</string>
     <string name="channel_elevated">Wireless debugging setup</string>
     <string name="elevated_waiting">Waiting for Wireless debugging. Turn it on in Developer options.</string>
+    <string name="elevated_waiting_unreachable">Wireless debugging is on, but G7 Link can\'t reach it yet. It keeps trying, and a connected PC can start it too.</string>
     <string name="elevated_starting">Starting…</string>
     <string name="elevated_failed">Couldn\'t start it. Check that Wireless debugging is on, then try again.</string>
     <string name="elevated_not_paired">The phone forgot G7 Link\'s pairing. Set it up again.</string>

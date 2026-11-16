@@ -78,6 +78,7 @@
     <string name="local_network_title">Bu ağda bilgisayarınıza ulaşın</string>
     <string name="channel_elevated">Kablosuz hata ayıklama kurulumu</string>
     <string name="elevated_waiting">Kablosuz hata ayıklama bekleniyor. Geliştirici seçenekleri\'nden açın.</string>
+    <string name="elevated_waiting_unreachable">Kablosuz hata ayıklama açık, ama G7 Link ona henüz ulaşamıyor. Denemeye devam ediyor; bağlı bir bilgisayar da başlatabilir.</string>
     <string name="elevated_starting">Başlatılıyor…</string>
     <string name="elevated_failed">Başlatılamadı. Kablosuz hata ayıklamanın açık olduğunu kontrol edip tekrar deneyin.</string>
     <string name="elevated_not_paired">Telefon G7 Link\'in eşleştirmesini unuttu. Yeniden kurun.</string>

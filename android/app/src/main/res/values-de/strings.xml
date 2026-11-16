@@ -78,6 +78,7 @@
     <string name="local_network_title">Deinen PC in diesem Netzwerk erreichen</string>
     <string name="channel_elevated">Einrichtung für Kabelloses Debugging</string>
     <string name="elevated_waiting">Warte auf Kabelloses Debugging. Aktiviere es in den Entwickleroptionen.</string>
+    <string name="elevated_waiting_unreachable">Kabelloses Debugging ist an, aber G7 Link erreicht es noch nicht. Es versucht es weiter, und ein verbundener PC kann es auch starten.</string>
     <string name="elevated_starting">Wird gestartet…</string>
     <string name="elevated_failed">Start fehlgeschlagen. Prüfe, ob Kabelloses Debugging aktiviert ist, und versuche es erneut.</string>
     <string name="elevated_not_paired">Das Gerät hat die Kopplung mit G7 Link vergessen. Richte sie erneut ein.</string>

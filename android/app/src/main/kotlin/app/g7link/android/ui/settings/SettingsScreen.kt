@@ -446,7 +446,14 @@ fun SettingsScreen(
                     if (state.elevated) {
                         AllowedText()
                     } else {
-                        G7RowAction(label = stringResource(R.string.elevated_set_up), onClick = { jumpToControl++ })
+                        // Named for what Elevated's row needs now; that row does it.
+                        val elevated by Elevated.state.collectAsStateWithLifecycle()
+                        val label = when (elevated) {
+                            is Elevated.State.Paused -> R.string.elevated_trust_network
+                            Elevated.State.Waiting, Elevated.State.Starting -> R.string.elevated_try_again
+                            else -> R.string.elevated_set_up
+                        }
+                        G7RowAction(label = stringResource(label), onClick = { jumpToControl++ })
                     }
                 }
                 G7SwitchRow(
@@ -1091,8 +1098,12 @@ private fun ElevatedAccess() {
         }
     }
     val status = when (state) {
-        Elevated.State.Waiting ->
-            if (Elevated.usesShizuku()) R.string.elevated_shizuku_waiting else R.string.elevated_waiting
+        Elevated.State.Waiting -> when {
+            Elevated.usesShizuku() -> R.string.elevated_shizuku_waiting
+            // On already: G7 Link just can't reach it yet.
+            Elevated.wirelessDebuggingOn() -> R.string.elevated_waiting_unreachable
+            else -> R.string.elevated_waiting
+        }
         Elevated.State.Starting -> R.string.elevated_starting
         is Elevated.State.Failed -> when ((state as Elevated.State.Failed).reason) {
             Elevated.Reason.NotPaired -> R.string.elevated_not_paired
