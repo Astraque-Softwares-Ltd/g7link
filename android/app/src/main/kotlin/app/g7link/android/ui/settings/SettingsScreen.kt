@@ -68,6 +68,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
 import app.g7link.android.calls.PhoneCalls
 import app.g7link.android.clipboard.PhoneClipboard
+import app.g7link.android.ble.PcBleLink
 import app.g7link.android.companion.PcBeaconScan
 import app.g7link.android.companion.PcCompanion
 import app.g7link.android.contacts.PhoneContacts
@@ -132,6 +133,7 @@ fun SettingsScreen(
     onSetStorageEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onSetMicEnabled: (pcId: String, enabled: Boolean) -> Unit = { _, _ -> },
     onSetBtMedia: (pcId: String, on: Boolean) -> Unit = { _, _ -> },
+    onSetBleLink: (pcId: String, on: Boolean) -> Unit = { _, _ -> },
     startWithoutAsking: Set<String> = emptySet(),
     onSetStartWithoutAsking: (pcId: String, on: Boolean) -> Unit = { _, _ -> },
     onAddSafFolder: (Uri) -> Unit = {},
@@ -226,6 +228,16 @@ fun SettingsScreen(
 
         item(key = "devices", contentType = "group") {
             val context = LocalContext.current
+            // The PC whose Bluetooth switch waits for the Nearby devices permission.
+            var bleLinkFor by remember { mutableStateOf<String?>(null) }
+            val bleLinkPermission = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions(),
+            ) { granted ->
+                val pc = bleLinkFor
+                bleLinkFor = null
+                if (pc != null && granted.values.all { it }) onSetBleLink(pc, true)
+                onAccessChanged()
+            }
             Column {
                 G7SectionLabel(stringResource(R.string.settings_devices))
                 state.devices.forEach { device ->
@@ -262,6 +274,26 @@ fun SettingsScreen(
                                     checked = device.btMedia,
                                     onCheckedChange = { on -> onSetBtMedia(device.id, on) },
                                 )
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                    G7SwitchRow(
+                                        label = stringResource(R.string.ble_link_pc_toggle),
+                                        sublabel = stringResource(R.string.ble_link_pc_hint),
+                                        checked = device.bleLink,
+                                        onCheckedChange = { on ->
+                                            if (on && !PcBleLink.canConnect(context)) {
+                                                bleLinkFor = device.id
+                                                bleLinkPermission.launch(
+                                                    arrayOf(
+                                                        Manifest.permission.BLUETOOTH_CONNECT,
+                                                        Manifest.permission.BLUETOOTH_SCAN,
+                                                    ),
+                                                )
+                                            } else {
+                                                onSetBleLink(device.id, on)
+                                            }
+                                        },
+                                    )
+                                }
                                 G7SwitchRow(
                                     label = stringResource(R.string.start_without_asking_toggle),
                                     sublabel = stringResource(R.string.start_without_asking_hint),

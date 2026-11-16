@@ -65,6 +65,9 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
+    <!-- Connecting to a paired PC over Bluetooth when there's no shared network
+         (turned on per PC in Settings, which asks for it). -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Installing its own updates from GitHub releases (the user allows it once). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Updates of G7 Link itself without a prompt (Android 12+), when turned on in Settings. -->

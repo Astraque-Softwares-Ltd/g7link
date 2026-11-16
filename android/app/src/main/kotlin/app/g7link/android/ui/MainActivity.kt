@@ -914,6 +914,7 @@ private fun App(
                                     onSetStorageEnabled = core::setStorageEnabled,
                                     onSetMicEnabled = core::setMicEnabled,
                                     onSetBtMedia = core::setBtMedia,
+                                    onSetBleLink = core::setBleLink,
                                     startWithoutAsking = startWithoutAsking,
                                     onSetStartWithoutAsking = { pc, on -> app.g7link.android.service.PcAutoStart.set(context, pc, on) },
                                     onAddSafFolder = core::addSafFolder,

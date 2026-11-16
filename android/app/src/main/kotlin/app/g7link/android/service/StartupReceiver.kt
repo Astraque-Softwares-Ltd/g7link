@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import app.g7link.android.G7LinkApplication
+import app.g7link.android.companion.PcBeaconScan
 import app.g7link.android.core.CoreStatus
 import app.g7link.android.ui.Preferences
 import kotlinx.coroutines.CoroutineScope
@@ -28,7 +29,7 @@ class StartupReceiver : BroadcastReceiver() {
         }
         val app = context.applicationContext as G7LinkApplication
         // Android drops the paired PCs' beacon scan on a restart or an update.
-        app.g7link.android.companion.PcBeaconScan.sync(context)
+        PcBeaconScan.sync(context)
         if (!Preferences.isBackgroundServiceEnabled(context)) {
             if (updated) app.updater.onUpdated()
             return

@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import app.g7link.android.G7LinkApplication
 
 /**
  * Gets what [PcBeaconScan] found, even with the app closed: a beacon whose tag
@@ -31,15 +32,19 @@ class PcBeaconReceiver : BroadcastReceiver() {
         val now = System.currentTimeMillis() / 1000
         val found = results.asSequence()
             .take(MAX_RESULTS)
-            .mapNotNull { it.scanRecord?.getManufacturerSpecificData(BeaconMatcher.COMPANY_ID) }
-            .mapNotNull { BeaconMatcher.match(it, keys, now) }
-            .distinctBy { it.pcId }
+            .mapNotNull { result ->
+                val data = result.scanRecord?.getManufacturerSpecificData(BeaconMatcher.COMPANY_ID)
+                data?.let { BeaconMatcher.match(it, keys, now) }?.let { it to result.device.address }
+            }
+            .distinctBy { (match, _) -> match.pcId }
             .toList()
-        for (match in found) {
-            // Connecting over Bluetooth comes with the Bluetooth link; until
-            // then, any tag means the PC is here.
-            PcWake.wake(context, match.pcId)
-        }
+        for ((match, _) in found) PcWake.wake(context, match.pcId)
+        // A PC that has something for this phone and no shared network can be
+        // connected to over Bluetooth for a little while. One at a time.
+        val (connect, address) = found.firstOrNull { (match, _) -> match.kind == BeaconMatcher.Kind.CONNECT } ?: return
+        val application = context.applicationContext as? G7LinkApplication ?: return
+        val pending = goAsync()
+        application.core.connectOverBluetooth(connect.pcId, address) { pending.finish() }
     }
 
     companion object {

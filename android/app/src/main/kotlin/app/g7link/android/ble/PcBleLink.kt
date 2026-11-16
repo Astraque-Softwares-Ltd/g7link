@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package app.g7link.android.ble
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import androidx.core.content.ContextCompat
+import app.g7link.core.BleEndpoint
+import app.g7link.core.G7LinkNode
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * The phone's side of the Bluetooth channel with a paired PC
+ * (docs/protocol/bluetooth.md): connects to the PC's GATT service when its
+ * beacon asks, and carries the core's [BleEndpoint] over it. Values written to
+ * RX and notified on TX are fragments the endpoint makes and puts together.
+ * One link per PC; any failure closes it.
+ */
+object PcBleLink {
+    private const val TAG = "PcBleLink"
+    private val SERVICE: UUID = UUID.fromString("bcac09a4-522f-43c6-9533-b30bd7428154")
+    private val RX: UUID = UUID.fromString("7f2964e4-c2df-4b2e-8425-68d2be4c85ab")
+    private val TX: UUID = UUID.fromString("ea1df14d-6860-4376-a3b0-64fdcb79d7f2")
+    private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    private const val WANTED_MTU = 517
+    private const val CONNECT_WITHIN_MS = 10_000L
+    private const val HANDSHAKE_WITHIN_MS = 10_000L
+
+    /** A failed attempt with a PC is tried again at most this often. */
+    private const val RETRY_GAP_MS = 15_000L
+
+    private val links = ConcurrentHashMap<String, Link>()
+    private val lastAttempt = ConcurrentHashMap<String, Long>()
+    private val timeouts = Handler(Looper.getMainLooper())
+
+    /** Whether this phone may connect to a PC over Bluetooth now (Android 12 and later). */
+    fun canConnect(context: Context): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            listOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN).all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+            }
+
+    /** Whether a link with [pcId] is being made or is up. */
+    fun active(pcId: String): Boolean = links.containsKey(pcId)
+
+    /** Connects to the PC [pcId] at [address], unless a link with it is under way. */
+    @SuppressLint("MissingPermission") // The caller checks BLUETOOTH_CONNECT.
+    fun connect(context: Context, node: G7LinkNode, pcId: String, address: String) {
+        if (links.containsKey(pcId)) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        val last = lastAttempt[pcId]
+        if (last != null && now - last in 0L until RETRY_GAP_MS) return
+        lastAttempt[pcId] = now
+        val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return
+        val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull() ?: return
+        val endpoint = runCatching { node.bleConnect(pcId) }.getOrElse {
+            Log.i(TAG, "won't connect over Bluetooth: ${it.message}")
+            return
+        }
+        val link = Link(pcId, endpoint)
+        if (links.putIfAbsent(pcId, link) != null) {
+            runCatching { endpoint.end() }
+            runCatching { endpoint.close() }
+            return
+        }
+        link.open(context, device)
+    }
+
+    /** The core has something for the link [endpointId]. */
+    fun outbound(endpointId: ULong) {
+        links.values.firstOrNull { it.id == endpointId }?.pump()
+    }
+
+    /** Ends every link (the core is stopping). */
+    fun closeAll() {
+        links.values.toList().forEach { it.teardown("closing") }
+    }
+
+    private class Link(val pcId: String, val endpoint: BleEndpoint) {
+        val id: ULong = endpoint.id()
+        private var gatt: BluetoothGatt? = null
+        private var rx: BluetoothGattCharacteristic? = null
+        private var writing = false
+        @Volatile private var closed = false
+        private val queue = GattQueue { why -> teardown(why) }
+
+        @SuppressLint("MissingPermission")
+        fun open(context: Context, device: BluetoothDevice) {
+            timeouts.postDelayed(
+                { if (!closed && runCatching { endpoint.peer() }.getOrNull() == null) teardown("not linked in time") },
+                CONNECT_WITHIN_MS + HANDSHAKE_WITHIN_MS,
+            )
+            gatt = runCatching { device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE) }
+                .getOrNull()
+            if (gatt == null) teardown("couldn't connect")
+        }
+
+        /** Writes the endpoint's next fragment, one at a time. */
+        @SuppressLint("MissingPermission")
+        @Synchronized
+        fun pump() {
+            if (closed || writing) return
+            val g = gatt ?: return
+            val characteristic = rx ?: return
+            val fragment = runCatching { endpoint.nextOutbound() }.getOrNull() ?: return
+            writing = true
+            queue.add("write") {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    g.writeCharacteristic(characteristic, fragment, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
+                        android.bluetooth.BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    @Suppress("DEPRECATION")
+                    characteristic.value = fragment
+                    @Suppress("DEPRECATION")
+                    g.writeCharacteristic(characteristic)
+                }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        fun teardown(why: String) {
+            synchronized(this) {
+                if (closed) return
+                closed = true
+            }
+            Log.i(TAG, "Bluetooth link with a PC ended: $why")
+            links.remove(pcId, this)
+            runCatching { endpoint.end() }
+            runCatching { endpoint.close() }
+            gatt?.let { g ->
+                runCatching { g.disconnect() }
+                runCatching { g.close() }
+            }
+            gatt = null
+        }
+
+        private val callback = object : BluetoothGattCallback() {
+            @SuppressLint("MissingPermission")
+            override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+                if (newState != BluetoothProfile.STATE_CONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
+                    teardown("disconnected ($status)")
+                    return
+                }
+                queue.add("mtu") { g.requestMtu(WANTED_MTU) }
+            }
+
+            @SuppressLint("MissingPermission")
+            override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS) runCatching { endpoint.setMtu(mtu.toUShort()) }
+                queue.complete(true)
+                queue.add("services") { g.discoverServices() }
+            }
+
+            @SuppressLint("MissingPermission")
+            override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+                val service = g.getService(SERVICE)
+                val rxChar = service?.getCharacteristic(RX)
+                val txChar = service?.getCharacteristic(TX)
+                val cccd = txChar?.getDescriptor(CCCD)
+                if (status != BluetoothGatt.GATT_SUCCESS || rxChar == null || txChar == null || cccd == null) {
+                    queue.fail("no G7 Link service")
+                    return
+                }
+                queue.complete(true)
+                if (!g.setCharacteristicNotification(txChar, true)) {
+                    queue.fail("notifications refused")
+                    return
+                }
+                queue.add("subscribe") {
+                    val enable = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        g.writeDescriptor(cccd, enable) == android.bluetooth.BluetoothStatusCodes.SUCCESS
+                    } else {
+                        @Suppress("DEPRECATION")
+                        cccd.value = enable
+                        @Suppress("DEPRECATION")
+                        g.writeDescriptor(cccd)
+                    }
+                }
+                rx = rxChar
+            }
+
+            override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+                queue.complete(status == BluetoothGatt.GATT_SUCCESS)
+                // Subscribed: the handshake's first message goes now.
+                pump()
+            }
+
+            override fun onCharacteristicWrite(
+                g: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                status: Int,
+            ) {
+                synchronized(this@Link) { writing = false }
+                queue.complete(status == BluetoothGatt.GATT_SUCCESS)
+                pump()
+            }
+
+            override fun onCharacteristicChanged(
+                g: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray,
+            ) {
+                received(characteristic, value)
+            }
+
+            @Deprecated("Deprecated in API 33")
+            @Suppress("DEPRECATION")
+            override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) received(characteristic, characteristic.value ?: return)
+            }
+        }
+
+        private fun received(characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            if (characteristic.uuid != TX || closed) return
+            runCatching { endpoint.receive(value) }.onFailure {
+                teardown("refused: ${it.message}")
+                return
+            }
+            pump()
+        }
+    }
+}

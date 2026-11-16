@@ -158,6 +158,8 @@ data class Device(
     val micEnabled: Boolean = true,
     /** Whether this phone may play its media on this PC over Bluetooth (off by default; the PC keeps the same). */
     val btMedia: Boolean = false,
+    /** Whether this phone and this PC may use Bluetooth when they share no network (off by default). */
+    val bleLink: Boolean = false,
 ) {
     /** A paired phone or tablet rather than a PC. */
     val isAndroid: Boolean
@@ -182,6 +184,7 @@ const val PHONE_SPEAKER_OUTPUT = "g7link:phone_speaker"
 
 /** The device toggle that lets this phone play its media on a PC over Bluetooth. */
 const val BT_MEDIA_TOGGLE = "bt_media"
+const val BLE_LINK_TOGGLE = "ble_link"
 
 private val deviceOrder: Comparator<Device> =
     compareByDescending<Device> { it.online }.thenBy { it.pairedAt }
@@ -294,6 +297,7 @@ data class CoreState(
         storageAllowed: Set<String> = emptySet(),
         micOff: Set<String> = emptySet(),
         btMediaOn: Set<String> = emptySet(),
+        bleLinkOn: Set<String> = emptySet(),
     ): CoreState {
         val prevById = devices.associateBy { it.id }
         return copy(
@@ -305,6 +309,7 @@ data class CoreState(
                     storageEnabled = if (p.id in storageAllowed) true else prev?.storageEnabled ?: false,
                     micEnabled = p.id !in micOff,
                     btMedia = p.id in btMediaOn,
+                    bleLink = p.id in bleLinkOn,
                 )
             }.sortedWith(deviceOrder),
         )
@@ -319,6 +324,8 @@ data class CoreState(
         )
 
     fun withBtMedia(id: String, on: Boolean): CoreState = update(id) { it.copy(btMedia = on) }
+
+    fun withBleLink(id: String, on: Boolean): CoreState = update(id) { it.copy(bleLink = on) }
 
     fun withStorageEnabled(id: String, enabled: Boolean): CoreState =
         update(id) { it.copy(storageEnabled = enabled) }.copy(
@@ -439,6 +446,8 @@ data class CoreState(
         is Event.QueueChanged,
         is Event.QueueDroppedOnUnpair,
         -> this
+        // The beacon scan and the Bluetooth link follow these (Core); nothing shows.
+        is Event.BleKeysChanged, is Event.BleOutbound, is Event.BleLinkChanged -> this
         is Event.Transfer -> copy(
             transfers = withTransfer(event.transfer),
             sendQueue = withTransferQueueProgress(event.transfer),
@@ -526,6 +535,9 @@ data class CoreState(
 }
 
 internal fun Event.affectsCoreState(): Boolean = when (this) {
+    is Event.BleKeysChanged,
+    is Event.BleOutbound,
+    is Event.BleLinkChanged,
     is Event.UpdateHint,
     is Event.NotificationsReset,
     is Event.NotificationPosted,

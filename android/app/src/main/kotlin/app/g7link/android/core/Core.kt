@@ -91,11 +91,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The app's single connection to `g7link-core`. Owns the node, folds
@@ -499,7 +501,13 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             updateLocalSendMulticast(lsEnabled)
             pruneOldTempCaches()
             _state.update {
-                it.withDevices(devices, pcToggles.storageAllowed, pcToggles.micOff, pcToggles.btMediaOn).copy(
+                it.withDevices(
+                    devices,
+                    pcToggles.storageAllowed,
+                    pcToggles.micOff,
+                    pcToggles.btMediaOn,
+                    pcToggles.bleLinkOn,
+                ).copy(
                     sendQueue = initialQueue,
                     clipboardHistoryEnabled = clipHistEnabled,
                     clipboardHistory = clipHist,
@@ -688,6 +696,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 _state.value.devices.forEach { pcMedia.update(it.id, "", emptyList()) }
                 runCatching { Elevated.stop() }
 
+                app.g7link.android.ble.PcBleLink.closeAll()
                 withContext(Dispatchers.Main) {
                     beaconAdapterWatch?.close()
                     beaconAdapterWatch = null
@@ -825,6 +834,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                                         storageEnabled = d.id in pcToggles.storageAllowed,
                                         micEnabled = d.id !in pcToggles.micOff,
                                         btMedia = d.id in pcToggles.btMediaOn,
+                                        bleLink = d.id in pcToggles.bleLinkOn,
                                     )
                                 }
                             } else {
@@ -999,6 +1009,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             is Event.LocalSendChanged -> scope.launch(Dispatchers.IO) { syncLocalSendState() }
             is Event.QueueChanged -> refreshSendQueue()
             is Event.BleKeysChanged -> node?.let { current -> scope.launch(Dispatchers.IO) { syncBeaconKeys(current) } }
+            is Event.BleOutbound -> app.g7link.android.ble.PcBleLink.outbound(event.endpoint)
             is Event.QueueDroppedOnUnpair -> {
                 if (event.droppedCount > 0u) {
                     val name = event.deviceName.ifBlank { context.getString(R.string.your_pc) }
@@ -1302,19 +1313,26 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
      * Which PCs may browse this phone's storage, which may not ask for its microphone, and which
      * it may play its media on over Bluetooth.
      */
-    private class PerPcToggles(val storageAllowed: Set<String>, val micOff: Set<String>, val btMediaOn: Set<String>)
+    private class PerPcToggles(
+        val storageAllowed: Set<String>,
+        val micOff: Set<String>,
+        val btMediaOn: Set<String>,
+        val bleLinkOn: Set<String>,
+    )
 
     private fun perPcToggles(node: G7LinkNode, ids: List<String>): PerPcToggles {
         val storage = mutableSetOf<String>()
         val micOff = mutableSetOf<String>()
         val btMediaOn = mutableSetOf<String>()
+        val bleLinkOn = mutableSetOf<String>()
         for (id in ids) {
             val toggles = runCatching { node.deviceToggles(id) }.getOrNull() ?: continue
             if (toggles.any { it.name == PhoneStorage.TOGGLE_NAME && it.enabled }) storage += id
             if (toggles.any { it.name == app.g7link.android.mic.MicService.TOGGLE_NAME && !it.enabled }) micOff += id
             if (toggles.any { it.name == BT_MEDIA_TOGGLE && it.enabled }) btMediaOn += id
+            if (toggles.any { it.name == BLE_LINK_TOGGLE && it.enabled }) bleLinkOn += id
         }
-        return PerPcToggles(storage, micOff, btMediaOn)
+        return PerPcToggles(storage, micOff, btMediaOn, bleLinkOn)
     }
 
     fun clearWebcamRequest(pcId: String? = null) {
@@ -2187,6 +2205,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         CLIPBOARD_CAPABILITIES +
             // Recognises a paired PC's rotating Bluetooth beacon.
             (if (app.g7link.android.companion.PcBeaconScan.canScan(context)) listOf("ble.beacon2") else emptyList()) +
+            // Opens a Bluetooth link to a PC when there's no shared network.
+            (if (app.g7link.android.ble.PcBleLink.canConnect(context)) listOf("ble.link") else emptyList()) +
             // Play on phone: shows a PC's playback, streamed from the PC.
             listOf("media.watch") +
             // Shows a paired phone's or tablet's notifications.
@@ -2237,6 +2257,41 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         scope.launch {
             node?.networkChanged()
             if (!Elevated.running) Elevated.start()
+        }
+    }
+
+    /**
+     * The PC [pcId], whose beacon asked for it from [address], gets a Bluetooth
+     * link once the core is up, if the user lets this phone use Bluetooth with
+     * it. [done] runs when that's settled.
+     */
+    fun connectOverBluetooth(pcId: String, address: String, done: () -> Unit) {
+        start()
+        scope.launch {
+            try {
+                withTimeoutOrNull(BLE_START_WAIT_MS) { state.first { it.status is CoreStatus.Ready } }
+                val current = node ?: return@launch
+                if (!app.g7link.android.ble.PcBleLink.canConnect(context)) return@launch
+                app.g7link.android.ble.PcBleLink.connect(context, current, pcId, address)
+            } finally {
+                done()
+            }
+        }
+    }
+
+    /**
+     * Lets this phone and [pcId] use Bluetooth when they share no network: ring,
+     * the hotspot and small copied text (off by default). Turning it on needs
+     * the Nearby devices permission, asked for by the switch.
+     */
+    fun setBleLink(pcId: String, on: Boolean) {
+        _state.update { it.withBleLink(pcId, on) }
+        scope.launch(Dispatchers.IO) {
+            startJob?.join()
+            val currentNode = node ?: return@launch
+            runCatching { currentNode.setDeviceToggle(pcId, BLE_LINK_TOGGLE, on) }
+                .onFailure { Log.w(TAG, "can't change the Bluetooth link toggle", it) }
+            currentNode.updatePower(powerLevel(), capabilities(_state.value.notificationAccess))
         }
     }
 
@@ -2925,6 +2980,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         const val MAX_SCROLL_DELTA = 200f
         /** The largest image a PC takes on its clipboard (`clip::MAX_IMAGE_BYTES`). */
         const val MAX_CLIPBOARD_PNG_BYTES = 32 * 1024 * 1024
+        /** How long a Bluetooth connect waits for the core to start. */
+        const val BLE_START_WAIT_MS = 10_000L
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */
