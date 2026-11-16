@@ -50,7 +50,7 @@ pub fn set_auto_call_audio(on: bool) {
 /// Keeps each paired phone's media on the phone (its headphones or speaker)
 /// unless its `bt_media` toggle lets it play on this PC over Bluetooth.
 pub fn keep_phone_media_on_phone() {
-    bt_hfp::keep_phone_media_on_phone(paired_bt_phones, bt_phones::found);
+    bt_hfp::keep_phone_media_on_phone(paired_bt_phones);
 }
 
 /// The paired phones as Bluetooth knows them, with whether each may not play
@@ -77,7 +77,8 @@ fn bt_phone(phones: &[bt_hfp::BtPhone], device: DeviceId) -> Option<&bt_hfp::BtP
     phones.iter().find(|p| p.id == id)
 }
 
-/// Records the address `status` found `phone`'s device at, when none was yet.
+/// Records the address `status` found `phone`'s device at, when none was yet:
+/// only after the user connected call audio to it.
 fn note_bt_address(phone: Option<&bt_hfp::BtPhone>, status: &bt_hfp::HfpStatus) {
     if let (Some(phone), Some(address)) = (phone, &status.address)
         && phone.address.is_none()
@@ -101,7 +102,7 @@ fn note_call_ongoing(device: DeviceId) {
         crate::sys::media_sessions::pause_for_call();
     }
     if started && AUTO_CALL_AUDIO.load(Ordering::Relaxed) && !hfp_ready(device) {
-        connect_pc_audio(Some(device));
+        connect_pc_audio(Some(device), Asked::ByCall);
     }
 }
 
@@ -400,6 +401,7 @@ pub fn on_event(event: &NodeEvent) {
             note_call_ended(*device, CallGone::Removed);
             forget_pending(*device);
             forget_page_data(*device);
+            bt_phones::forget(&device.to_string());
         }
         // A call can arrive before what the phone can do with it: once the
         // PC may end it, its notification shows.
@@ -1387,18 +1389,46 @@ pub fn dial_from_palette(device: DeviceId, number: &str) {
     dial(device, number.to_owned());
 }
 
-static HFP_CACHE: Mutex<Option<(Option<DeviceId>, bt_hfp::HfpStatus)>> = Mutex::new(None);
+/// The call audio status last read, for the phone it's about. `read` orders
+/// what was read: a probe that started before a newer result landed never
+/// replaces it.
+#[derive(Debug, Clone)]
+struct HfpRead {
+    read: u64,
+    device: Option<DeviceId>,
+    status: bt_hfp::HfpStatus,
+}
+
+static HFP_CACHE: Mutex<Option<HfpRead>> = Mutex::new(None);
+static HFP_READS: AtomicU64 = AtomicU64::new(0);
+
+/// A number later than every one handed out before.
+fn next_hfp_read() -> u64 {
+    HFP_READS.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+/// Keeps `new` unless what's kept was read later.
+fn keep_hfp(slot: &mut Option<HfpRead>, new: HfpRead) -> bool {
+    if slot.as_ref().is_some_and(|kept| kept.read > new.read) {
+        return false;
+    }
+    *slot = Some(new);
+    true
+}
+
+fn store_hfp(read: u64, device: Option<DeviceId>, status: bt_hfp::HfpStatus) {
+    let mut guard = HFP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    keep_hfp(&mut guard, HfpRead { read, device, status });
+}
 
 fn refresh_hfp_cache(device: Option<DeviceId>) -> bt_hfp::HfpStatus {
+    let read = next_hfp_read();
     let target = device.or_else(|| page_state(|s| s.device));
     let phones = paired_bt_phones();
     let phone = target.and_then(|d| bt_phone(&phones, d));
     let in_call = target.is_some_and(|d| ongoing_calls(|c| c.contains(&d)));
     let status = bt_hfp::probe_status(phone, &phones, in_call);
-    note_bt_address(phone, &status);
-    if let Ok(mut guard) = HFP_CACHE.lock() {
-        *guard = Some((target, status.clone()));
-    }
+    store_hfp(read, target, status.clone());
     status
 }
 
@@ -1420,7 +1450,7 @@ static HFP_CHANGES: AtomicU64 = AtomicU64::new(0);
 
 /// The phone whose call audio status is shown.
 fn hfp_shown_device() -> Option<DeviceId> {
-    HFP_CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|(d, _)| *d))
+    HFP_CACHE.lock().ok().and_then(|g| g.as_ref().and_then(|r| r.device))
 }
 
 /// BlueZ said something changed: reads the status again once it settles.
@@ -1449,7 +1479,7 @@ fn hfp_ready(device: DeviceId) -> bool {
     HFP_CACHE
         .lock()
         .ok()
-        .is_some_and(|g| g.as_ref().is_some_and(|(d, s)| *d == Some(device) && s.call_audio_ready))
+        .is_some_and(|g| g.as_ref().is_some_and(|r| r.device == Some(device) && r.status.call_audio_ready))
 }
 
 /// Returns the current Bluetooth HFP / PC audio status for `device`.
@@ -1458,13 +1488,13 @@ pub fn hfp_status(device: Option<DeviceId>) -> bt_hfp::HfpStatus {
     WATCH.call_once(|| bt_hfp::watch(bluetooth_changed));
     let target = device.or_else(|| page_state(|s| s.device));
     if let Ok(mut guard) = HFP_CACHE.lock() {
-        if let Some((cached_dev, status)) = guard.as_ref()
-            && *cached_dev == target
+        if let Some(read) = guard.as_ref()
+            && read.device == target
         {
-            return status.clone();
+            return read.status.clone();
         }
         let placeholder = bt_hfp::HfpStatus::default();
-        *guard = Some((target, placeholder.clone()));
+        keep_hfp(&mut guard, HfpRead { read: next_hfp_read(), device: target, status: placeholder.clone() });
         drop(guard);
         refresh_hfp_cache_async(target);
         return placeholder;
@@ -1488,9 +1518,33 @@ pub fn hfp_connecting() -> bool {
     HFP_CONNECTING.load(Ordering::Acquire)
 }
 
+/// Who asked for call audio on this PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    /// The user, with "Connect PC audio": the device it connects to is recorded
+    /// as the phone's.
+    ByUser,
+    /// A call starting, with automatic call audio on.
+    ByCall,
+}
+
+/// What a finished connect leaves behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// As connected, or as the failure says.
+    AsIs,
+    /// The call it was for ended while it connected: the card goes back and
+    /// nothing is said.
+    CallGone,
+}
+
+fn connect_outcome(in_call_at_start: bool, in_call_now: bool) -> Outcome {
+    if in_call_at_start && !in_call_now { Outcome::CallGone } else { Outcome::AsIs }
+}
+
 /// Opens a Bluetooth connection to route call audio through this PC, unless
 /// one is already being made.
-pub fn connect_pc_audio(device: Option<DeviceId>) {
+pub fn connect_pc_audio(device: Option<DeviceId>, asked: Asked) {
     if HFP_CONNECTING.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -1502,16 +1556,26 @@ pub fn connect_pc_audio(device: Option<DeviceId>) {
         let phones = paired_bt_phones();
         let phone = target.and_then(|d| bt_phone(&phones, d));
         let result = bt_hfp::connect_audio(phone, &phones, in_call);
-        if let Ok(status) = &result {
-            note_bt_address(phone, status);
-        }
         let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         tracing::info!(ms, ok = result.is_ok(), "hfp connect");
+        let in_call_now = target.is_some_and(|d| ongoing_calls(|c| c.contains(&d)));
+        if connect_outcome(in_call, in_call_now) == Outcome::CallGone {
+            if let Ok(status) = &result
+                && let Some(mac) = &status.address
+            {
+                bt_hfp::disconnect_audio_of(mac);
+            }
+            refresh_hfp_cache(target);
+            drop(connecting);
+            page_changed();
+            return;
+        }
         match result {
             Ok(status) => {
-                if let Ok(mut guard) = HFP_CACHE.lock() {
-                    *guard = Some((target, status));
+                if asked == Asked::ByUser {
+                    note_bt_address(phone, &status);
                 }
+                store_hfp(next_hfp_read(), target, status);
                 drop(connecting);
                 page_changed();
             }
@@ -1526,6 +1590,24 @@ pub fn connect_pc_audio(device: Option<DeviceId>) {
     if spawned.is_ok() {
         page_changed();
     }
+}
+
+/// The Bluetooth device call audio was found on for `device` isn't that phone:
+/// it's never used for it again, and its card goes back if this app switched it.
+pub fn not_this_bt_device(device: Option<DeviceId>) {
+    let target = device.or_else(|| page_state(|s| s.device));
+    let Some(target) = target else { return };
+    let address = HFP_CACHE
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().filter(|r| r.device == Some(target)).and_then(|r| r.status.address.clone()));
+    let Some(address) = address else { return };
+    let _ = std::thread::Builder::new().name("hfp-not-this".into()).spawn(move || {
+        bt_phones::not_this(&target.to_string(), &address);
+        bt_hfp::disconnect_audio_of(&address);
+        refresh_hfp_cache(Some(target));
+        page_changed();
+    });
 }
 
 /// Opens the desktop's Bluetooth settings.
@@ -1765,5 +1847,24 @@ mod tests {
         assert!(!releases_call_audio(CallGone::Ended, true));
         assert!(!releases_call_audio(CallGone::LinkLost, false));
         assert!(!releases_call_audio(CallGone::Removed, false));
+    }
+
+    #[test]
+    fn a_connect_outliving_its_call_is_undone_quietly() {
+        assert_eq!(connect_outcome(true, false), Outcome::CallGone);
+        assert_eq!(connect_outcome(true, true), Outcome::AsIs);
+        assert_eq!(connect_outcome(false, false), Outcome::AsIs);
+        assert_eq!(connect_outcome(false, true), Outcome::AsIs);
+    }
+
+    #[test]
+    fn an_older_call_audio_read_never_replaces_a_newer_one() {
+        let status = |detail: &str| bt_hfp::HfpStatus { detail: detail.into(), ..Default::default() };
+        let mut slot = None;
+        assert!(keep_hfp(&mut slot, HfpRead { read: 2, device: None, status: status("connected") }));
+        assert!(!keep_hfp(&mut slot, HfpRead { read: 1, device: None, status: status("media only") }));
+        assert_eq!(slot.as_ref().map(|r| r.status.detail.as_str()), Some("connected"));
+        assert!(keep_hfp(&mut slot, HfpRead { read: 3, device: None, status: status("off") }));
+        assert_eq!(slot.as_ref().map(|r| r.status.detail.as_str()), Some("off"));
     }
 }

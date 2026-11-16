@@ -73,6 +73,8 @@ pub mod qobject {
         #[qproperty(bool, hfp_connecting, cxx_name = "hfpConnecting")]
         /// Human-readable Bluetooth HFP status or pairing guidance.
         #[qproperty(QString, hfp_detail, cxx_name = "hfpDetail")]
+        /// A Bluetooth device was taken to be this phone, so "Not this device" applies.
+        #[qproperty(bool, hfp_found, cxx_name = "hfpFound")]
         type PhoneCall = super::PhoneCallRust;
     }
 
@@ -134,6 +136,10 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "openBluetoothSettings"]
         fn open_bluetooth_settings(self: Pin<&mut PhoneCall>);
+        /// The Bluetooth device taken to be this phone isn't it.
+        #[qinvokable]
+        #[cxx_name = "notThisDevice"]
+        fn not_this_device(self: Pin<&mut PhoneCall>);
     }
 }
 
@@ -166,6 +172,7 @@ pub struct PhoneCallRust {
     hfp_connected: bool,
     hfp_connecting: bool,
     hfp_detail: QString,
+    hfp_found: bool,
     /// The call's ID on the phone, for its commands.
     call: Option<(DeviceId, String)>,
     /// What the Calls page last showed, to skip updates that changed nothing.
@@ -237,8 +244,12 @@ impl qobject::PhoneCall {
 
     pub fn connect_pc_audio(self: Pin<&mut Self>) {
         let device = super::parse_device(&self.rust().device);
-        calls::connect_pc_audio(device);
+        calls::connect_pc_audio(device, calls::Asked::ByUser);
         self.refresh_state();
+    }
+
+    pub fn not_this_device(self: Pin<&mut Self>) {
+        calls::not_this_bt_device(super::parse_device(&self.rust().device));
     }
 
     pub fn open_bluetooth_settings(self: Pin<&mut Self>) {
@@ -286,6 +297,7 @@ impl qobject::PhoneCall {
         self.as_mut().set_hfp_connected(hfp.call_audio_ready);
         self.as_mut().set_hfp_connecting(calls::hfp_connecting());
         self.as_mut().set_hfp_detail(QString::from(&hfp.detail));
+        self.as_mut().set_hfp_found(hfp.address.is_some());
 
         let view = calls::view();
         let last = self.as_mut().rust_mut().last_view.take();

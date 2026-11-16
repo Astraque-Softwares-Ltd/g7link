@@ -22,6 +22,7 @@ use std::{
 use g7link_core::{DeviceId, FeatureState, LinkState, PhoneToggleValue};
 
 use crate::{
+    atomic_file,
     bridge::app::show_message,
     core_host,
     state::Changes,
@@ -46,18 +47,15 @@ fn file() -> PathBuf {
 }
 
 fn load(path: &Path) -> HashMap<DeviceId, String> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
-        .map(|m| m.into_iter().filter_map(|(k, v)| Some((k.parse().ok()?, v))).collect())
-        .unwrap_or_default()
+    atomic_file::read_json::<HashMap<String, String>>(path)
+        .into_iter()
+        .filter_map(|(k, v)| Some((k.parse().ok()?, v)))
+        .collect()
 }
 
 fn save(path: &Path, networks: &HashMap<DeviceId, String>) -> std::io::Result<()> {
     let plain: HashMap<String, &String> = networks.iter().map(|(k, v)| (k.to_string(), v)).collect();
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&plain).map_err(std::io::Error::other)?)?;
-    std::fs::rename(&tmp, path)
+    atomic_file::write_json(path, &plain)
 }
 
 fn with_networks<T>(f: impl FnOnce(&mut HashMap<DeviceId, String>) -> T) -> T {

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Which system Bluetooth device each paired phone is, for call audio and for
 //! keeping its media on the phone. A phone's device is found by name only until
-//! its address is recorded here, and only by the name it had when first seen
-//! here or its nickname: a name the phone reports later never points either at
-//! another device.
+//! its address is recorded here, and only by the exact name it had when first
+//! seen here or its nickname: a name the phone reports later never points
+//! either at another device. An address is recorded only once the user
+//! connected call audio to it, and a device the user said isn't the phone is
+//! never matched again.
 
 use std::{
     collections::HashMap,
@@ -14,7 +16,7 @@ use std::{
 use g7link_core::DeviceId;
 use serde::{Deserialize, Serialize};
 
-use crate::{core_host, settings, sys::bt_hfp::BtPhone};
+use crate::{atomic_file, core_host, settings, sys::bt_hfp::BtPhone};
 
 /// A paired phone as it is now.
 #[derive(Debug, Clone)]
@@ -37,7 +39,13 @@ struct Recorded {
     /// Its device's Bluetooth address, once found.
     #[serde(skip_serializing_if = "Option::is_none")]
     address: Option<String>,
+    /// Devices the user said aren't this phone, by address.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    not: Vec<String>,
 }
+
+/// Devices kept as "not this phone", per phone; the oldest go first.
+const MAX_NOT: usize = 8;
 
 type RecordedMap = HashMap<String, Recorded>;
 
@@ -55,6 +63,17 @@ pub fn found(id: &str, address: &str) {
     with_recorded(|map| found_in(map, id, address));
 }
 
+/// The device at `address` isn't the phone with id `id`: it's never matched
+/// to it again.
+pub fn not_this(id: &str, address: &str) {
+    with_recorded(|map| not_in(map, id, address));
+}
+
+/// Forgets the phone with id `id`, once it's unpaired.
+pub fn forget(id: &str) {
+    with_recorded(|map| map.remove(id));
+}
+
 /// Runs `f` on what's kept, saving it when `f` changed it; `None` before the
 /// app has its data folder.
 fn with_recorded<T>(f: impl FnOnce(&mut RecordedMap) -> T) -> Option<T> {
@@ -70,16 +89,11 @@ fn with_recorded<T>(f: impl FnOnce(&mut RecordedMap) -> T) -> Option<T> {
 }
 
 fn load(path: &Path) -> RecordedMap {
-    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+    atomic_file::read_json(path)
 }
 
 fn save(path: &Path, map: &RecordedMap) {
-    let tmp = path.with_extension("json.tmp");
-    let saved = serde_json::to_vec(map)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| std::fs::write(&tmp, bytes))
-        .and_then(|()| std::fs::rename(&tmp, path));
-    if let Err(error) = saved {
+    if let Err(error) = atomic_file::write_json(path, map) {
         tracing::warn!(%error, "can't save which Bluetooth device each phone is");
     }
 }
@@ -107,6 +121,7 @@ fn phones_in(
             BtPhone {
                 label: phone.label.clone(),
                 address: recorded.address.clone(),
+                not: recorded.not.clone(),
                 names,
                 media_on_phone: phone.media_on_phone,
                 id,
@@ -125,7 +140,21 @@ fn found_in(map: &mut RecordedMap, id: &str, address: &str) {
         && recorded.address.is_none()
     {
         recorded.address = Some(address.to_owned());
+        recorded.not.retain(|a| !a.eq_ignore_ascii_case(address));
     }
+}
+
+/// Unrecords `address` for `id` and keeps it as a device that isn't `id`.
+fn not_in(map: &mut RecordedMap, id: &str, address: &str) {
+    let Some(recorded) = map.get_mut(id) else { return };
+    if recorded.address.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(address)) {
+        recorded.address = None;
+    }
+    if !recorded.not.iter().any(|a| a.eq_ignore_ascii_case(address)) {
+        recorded.not.push(address.to_owned());
+    }
+    let over = recorded.not.len().saturating_sub(MAX_NOT);
+    recorded.not.drain(..over);
 }
 
 #[cfg(test)]
@@ -164,5 +193,42 @@ mod tests {
         assert_eq!(phones[0].address.as_deref(), Some("AA:BB:CC:DD:EE:01"));
         assert_eq!(phones[1].address, None);
         assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn a_device_said_not_to_be_the_phone_is_unrecorded_and_kept_out() {
+        let id = DeviceId([1; 32]);
+        let mut map = RecordedMap::new();
+        phones_in(&mut map, &[paired(id, "Pixel 8")], |_| None);
+        found_in(&mut map, &id.to_string(), "AA:BB:CC:DD:EE:01");
+
+        not_in(&mut map, &id.to_string(), "aa:bb:cc:dd:ee:01");
+        let phones = phones_in(&mut map, &[paired(id, "Pixel 8")], |_| None);
+        assert_eq!(phones[0].address, None);
+        assert_eq!(phones[0].not, ["aa:bb:cc:dd:ee:01"]);
+
+        // Connecting to another device records that one.
+        found_in(&mut map, &id.to_string(), "AA:BB:CC:DD:EE:02");
+        let phones = phones_in(&mut map, &[paired(id, "Pixel 8")], |_| None);
+        assert_eq!(phones[0].address.as_deref(), Some("AA:BB:CC:DD:EE:02"));
+
+        for n in 0..20 {
+            not_in(&mut map, &id.to_string(), &format!("AA:BB:CC:DD:EF:{n:02}"));
+        }
+        let phones = phones_in(&mut map, &[paired(id, "Pixel 8")], |_| None);
+        assert_eq!(phones[0].not.len(), MAX_NOT);
+        assert_eq!(phones[0].not.last().map(String::as_str), Some("AA:BB:CC:DD:EF:19"));
+    }
+
+    #[test]
+    fn a_forgotten_phone_starts_over() {
+        let id = DeviceId([1; 32]);
+        let mut map = RecordedMap::new();
+        phones_in(&mut map, &[paired(id, "Pixel 8")], |_| None);
+        found_in(&mut map, &id.to_string(), "AA:BB:CC:DD:EE:01");
+        map.remove(&id.to_string());
+        let phones = phones_in(&mut map, &[paired(id, "Galaxy S24")], |_| None);
+        assert_eq!(phones[0].names, ["Galaxy S24"]);
+        assert_eq!(phones[0].address, None);
     }
 }

@@ -15,7 +15,6 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use crate::i18n::tr;
 
 const UUID_HFP_AG: &str = "0000111f-0000-1000-8000-00805f9b34fb";
-const UUID_HFP_HF: &str = "0000111e-0000-1000-8000-00805f9b34fb";
 const UUID_A2DP_SOURCE: &str = "0000110a-0000-1000-8000-00805f9b34fb";
 
 const BLUEZ: &str = "org.bluez";
@@ -56,8 +55,9 @@ pub(crate) struct BluezEndpoint {
 }
 
 /// A G7 Link phone as Bluetooth knows it. Its device is the one at `address`
-/// once that's recorded, and until then the one device its `names` match: never
-/// one picked by a name the phone reports later.
+/// once that's recorded, and until then the one device named exactly as one of
+/// its `names`: never one picked by a name the phone reports later, nor one the
+/// user said isn't it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BtPhone {
     /// Its device id in G7 Link.
@@ -68,6 +68,8 @@ pub struct BtPhone {
     pub address: Option<String>,
     /// The names its device may be paired under.
     pub names: Vec<String>,
+    /// Addresses of devices the user said aren't this phone.
+    pub not: Vec<String>,
     /// Its media stays on the phone rather than playing here.
     pub media_on_phone: bool,
 }
@@ -174,27 +176,17 @@ pub(crate) fn bluez_card_name_for_mac(mac: &str) -> String {
     format!("bluez_card.{underscored}")
 }
 
-/// Selects the paired Bluetooth `(mac, name)` endpoint whose name matches
-/// `phone_name` (case-insensitive substring match in either direction).
-/// Never falls back to an unrelated device (e.g. a Bluetooth mouse or headset).
-pub fn match_endpoint<'a>(
-    endpoints: &'a [(String, String)],
-    phone_name: Option<&str>,
-) -> Option<&'a (String, String)> {
-    if endpoints.is_empty() {
-        return None;
-    }
-    let needle = phone_name.map(str::trim).filter(|s| !s.is_empty())?;
-    let needle_lower = needle.to_ascii_lowercase();
-    endpoints.iter().find(|(_, name)| {
-        let hay = name.trim().to_ascii_lowercase();
-        !hay.is_empty() && (hay.contains(&needle_lower) || needle_lower.contains(&hay))
-    })
+/// Whether a Bluetooth device called `device_name` is named `phone_name`:
+/// the same name, ignoring case and surrounding spaces. "Pixel 8" is not
+/// "Pixel 8 Pro".
+pub(crate) fn same_name(device_name: &str, phone_name: &str) -> bool {
+    let (device, phone) = (device_name.trim(), phone_name.trim());
+    !phone.is_empty() && device.eq_ignore_ascii_case(phone)
 }
 
-/// `phone`'s endpoint: the one at its recorded address, or else the one its names
-/// match that no other of `phones` has recorded. When several match, the one
-/// named exactly so is taken, and none rather than a guess between several.
+/// `phone`'s endpoint: the one at its recorded address, or else the one device
+/// named exactly as one of its names that no other of `phones` has recorded
+/// and the user hasn't said isn't it. None rather than a guess between several.
 pub(crate) fn phone_endpoint<'a>(
     endpoints: &'a [BluezEndpoint],
     phone: &BtPhone,
@@ -203,53 +195,31 @@ pub(crate) fn phone_endpoint<'a>(
     if let Some(address) = &phone.address {
         return endpoints.iter().find(|e| e.mac.eq_ignore_ascii_case(address));
     }
-    let recorded = |e: &BluezEndpoint| {
+    let taken = |e: &BluezEndpoint| {
         let at = |p: &BtPhone| p.address.as_ref().is_some_and(|a| e.mac.eq_ignore_ascii_case(a));
         phones.iter().any(|p| p.id != phone.id && at(p))
+            || phone.not.iter().any(|a| e.mac.eq_ignore_ascii_case(a))
     };
     let matches: Vec<&BluezEndpoint> = endpoints
         .iter()
-        .filter(|&e| !recorded(e))
-        .filter(|e| {
-            let pair = [(e.mac.clone(), e.name.clone())];
-            phone.names.iter().any(|n| match_endpoint(&pair, Some(n)).is_some())
-        })
+        .filter(|&e| !taken(e))
+        .filter(|e| phone.names.iter().any(|n| same_name(&e.name, n)))
         .collect();
-    if let [only] = matches.as_slice() {
-        return Some(*only);
-    }
-    let exact: Vec<&BluezEndpoint> = matches
-        .into_iter()
-        .filter(|e| phone.names.iter().any(|n| e.name.trim().eq_ignore_ascii_case(n.trim())))
-        .collect();
-    match exact.as_slice() {
+    match matches.as_slice() {
         [only] => Some(*only),
         _ => None,
     }
 }
 
-/// The phones of `phones` with no address recorded whose device was found now,
-/// with its address. One found for two phones is recorded for neither.
-pub(crate) fn found_addresses(endpoints: &[BluezEndpoint], phones: &[BtPhone]) -> Vec<(String, String)> {
-    let found: Vec<(String, String)> = phones
-        .iter()
-        .filter(|p| p.address.is_none())
-        .filter_map(|p| Some((p.id.clone(), phone_endpoint(endpoints, p, phones)?.mac.clone())))
-        .collect();
-    found.iter().filter(|(_, mac)| found.iter().filter(|(_, m)| m == mac).count() == 1).cloned().collect()
-}
-
+/// Whether a paired device can be a phone: it offers a phone's side of calls
+/// (HFP audio gateway) or plays media out (A2DP source). Headsets, speakers,
+/// mice and devices whose services aren't known yet are not.
 pub(crate) fn is_phone_capable_bluez_device(paired: bool, uuids: &[String]) -> bool {
-    if !paired {
-        return false;
-    }
-    if uuids.is_empty() {
-        return true;
-    }
-    uuids.iter().any(|u| {
-        let lower = u.trim().to_ascii_lowercase();
-        lower == UUID_HFP_AG || lower == UUID_HFP_HF || lower == UUID_A2DP_SOURCE
-    })
+    paired
+        && uuids.iter().any(|u| {
+            let lower = u.trim().to_ascii_lowercase();
+            lower == UUID_HFP_AG || lower == UUID_A2DP_SOURCE
+        })
 }
 
 pub(crate) fn parse_bluez_managed_objects(objects: &ManagedObjectsMap) -> Vec<BluezEndpoint> {
@@ -616,6 +586,13 @@ pub fn holds_call_audio() -> bool {
     held(|slot| slot.is_some())
 }
 
+/// Puts the card of the device at `mac` back, if this app switched it.
+pub fn disconnect_audio_of(mac: &str) {
+    if held(|slot| slot.as_ref().is_some_and(|h| h.mac.eq_ignore_ascii_case(mac))) {
+        disconnect_audio();
+    }
+}
+
 /// Puts the phone's card back on the profile it had before call audio.
 pub fn disconnect_audio() {
     let Some(Held { mac, previous }) = held(Option::take) else {
@@ -634,11 +611,9 @@ const UUID_A2DP_SINK: &str = "0000110b-0000-1000-8000-00805f9b34fb";
 
 /// Lists the paired phones, to tell them from other Bluetooth devices.
 type ListPhones = fn() -> Vec<BtPhone>;
-/// Records the address a phone's device is found at.
-type RecordAddress = fn(&str, &str);
 
-/// The paired phones and what records where their devices are found.
-static PHONES: OnceLock<(ListPhones, RecordAddress)> = OnceLock::new();
+/// The paired phones.
+static PHONES: OnceLock<ListPhones> = OnceLock::new();
 
 /// Sends media back to the phones that may no longer play it here, after one
 /// of them stopped being allowed to.
@@ -657,10 +632,10 @@ pub fn recheck_phone_media() {
 /// over Bluetooth (for calls, or by the user) also opens a media link, and
 /// Android then plays everything here instead of on its headphones. For the
 /// `phones` whose media stays on the phone, that link is closed as it opens;
-/// calls and other devices aren't touched. `found` records the address a
-/// phone's device is found at. One thread for the app's lifetime.
-pub fn keep_phone_media_on_phone(phones: fn() -> Vec<BtPhone>, found: fn(&str, &str)) {
-    if PHONES.set((phones, found)).is_err() {
+/// calls and other devices aren't touched, and nothing is recorded. One thread
+/// for the app's lifetime.
+pub fn keep_phone_media_on_phone(phones: fn() -> Vec<BtPhone>) {
+    if PHONES.set(phones).is_err() {
         return;
     }
     let _ = std::thread::Builder::new().name("bt-media-guard".into()).spawn(|| {
@@ -757,16 +732,13 @@ pub(crate) fn phones_playing_here(
 
 /// Closes the media link of every phone in `PHONES` that keeps its media and plays here.
 fn drop_phone_media(conn: &zbus::blocking::Connection) {
-    let Some(&(phones, found)) = PHONES.get() else { return };
+    let Some(&phones) = PHONES.get() else { return };
     let phones = phones();
     if !phones.iter().any(|p| p.media_on_phone) {
         return;
     }
     let Some(objects) = managed_objects(conn) else { return };
     let endpoints = parse_bluez_managed_objects(&objects);
-    for (id, address) in found_addresses(&endpoints, &phones) {
-        found(&id, &address);
-    }
     for device in phones_playing_here(&media_links(&objects), &endpoints, &phones) {
         let path = device.as_str();
         let result = super::non_tokio(|| {
@@ -946,6 +918,7 @@ mod tests {
             label: names.first().copied().unwrap_or_default().into(),
             address: address.map(Into::into),
             names: names.iter().map(|&n| n.into()).collect(),
+            not: Vec::new(),
             media_on_phone: true,
         }
     }
@@ -1005,7 +978,6 @@ mod tests {
         let phones = [copycat.clone(), owner];
         assert!(phone_endpoint(&endpoints, &copycat, &phones).is_none());
         assert!(phones_playing_here(&links, &endpoints, &phones).is_empty());
-        assert!(found_addresses(&endpoints, &phones).is_empty());
     }
 
     #[test]
@@ -1018,37 +990,49 @@ mod tests {
         // "Pixel" is in all three: none of them.
         let vague = phone("a", &["Pixel"], None);
         assert!(phone_endpoint(&endpoints, &vague, std::slice::from_ref(&vague)).is_none());
-        // One is named exactly so.
+        // One is named exactly so, and only that one.
         let exact = phone("a", &["pixel 8"], None);
         let found = phone_endpoint(&endpoints, &exact, std::slice::from_ref(&exact)).unwrap();
         assert_eq!(found.mac, "AA:BB:CC:DD:EE:02");
-        assert_eq!(
-            found_addresses(&endpoints, std::slice::from_ref(&exact)),
-            vec![("a".to_owned(), "AA:BB:CC:DD:EE:02".to_owned())]
-        );
-        // Two phones finding the same device: it's recorded for neither.
-        let twin = phone("b", &["Pixel 8"], None);
-        assert!(found_addresses(&endpoints, &[exact, twin]).is_empty());
+    }
+
+    #[test]
+    fn a_phone_is_never_another_device_whose_name_contains_its_own() {
+        // Someone else's "Pixel 8 Pro" is paired; this phone, "Pixel 8", isn't.
+        let endpoints =
+            [endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01", "AA:BB:CC:DD:EE:01", "Pixel 8 Pro")];
+        let pixel = phone("a", &["Pixel 8"], None);
+        assert!(phone_endpoint(&endpoints, &pixel, std::slice::from_ref(&pixel)).is_none());
+        let pro = phone("a", &["Pixel 8 Pro Max"], None);
+        assert!(phone_endpoint(&endpoints, &pro, std::slice::from_ref(&pro)).is_none());
+        assert!(same_name(" pixel 8 PRO ", "Pixel 8 Pro"));
+        assert!(!same_name("Pixel 8 Pro", "Pixel 8"));
+        assert!(!same_name("", "  "));
+    }
+
+    #[test]
+    fn a_device_the_user_said_isnt_the_phone_is_never_matched() {
+        let endpoints = [endpoint("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01", "AA:BB:CC:DD:EE:01", "Pixel 8")];
+        let pixel = BtPhone { not: vec!["aa:bb:cc:dd:ee:01".into()], ..phone("a", &["Pixel 8"], None) };
+        assert!(phone_endpoint(&endpoints, &pixel, std::slice::from_ref(&pixel)).is_none());
+        let links = [MediaLink {
+            device: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01".into(),
+            uuid: UUID_A2DP_SINK.into(),
+        }];
+        assert!(phones_playing_here(&links, &endpoints, std::slice::from_ref(&pixel)).is_empty());
+    }
+
+    #[test]
+    fn only_a_device_that_offers_a_phones_services_can_be_a_phone() {
+        let uuids = |list: &[&str]| list.iter().map(|&u| u.to_owned()).collect::<Vec<_>>();
+        assert!(is_phone_capable_bluez_device(true, &uuids(&[UUID_HFP_AG])));
+        assert!(is_phone_capable_bluez_device(true, &uuids(&[UUID_A2DP_SOURCE.to_uppercase().as_str()])));
+        // A headset (the hands-free side), and a device whose services aren't known yet.
+        assert!(!is_phone_capable_bluez_device(true, &uuids(&["0000111e-0000-1000-8000-00805f9b34fb"])));
+        assert!(!is_phone_capable_bluez_device(true, &[]));
+        assert!(!is_phone_capable_bluez_device(false, &uuids(&[UUID_HFP_AG])));
     }
     use std::sync::Arc;
-
-    #[test]
-    fn match_endpoint_prefers_phone_name_case_insensitive() {
-        let list = vec![
-            ("id-1".to_string(), "Galaxy Buds".to_string()),
-            ("id-2".to_string(), "Pixel 9 Pro".to_string()),
-        ];
-        let matched = match_endpoint(&list, Some("pixel 9")).unwrap();
-        assert_eq!(matched.0, "id-2");
-    }
-
-    #[test]
-    fn match_endpoint_returns_none_when_unmatched_or_missing_name() {
-        let list = vec![("id-1".to_string(), "MX Master 3S".to_string())];
-        assert!(match_endpoint(&list, Some("Pixel 9 Pro")).is_none());
-        assert!(match_endpoint(&list, None).is_none());
-        assert!(match_endpoint(&list, Some("   ")).is_none());
-    }
 
     #[test]
     fn bluez_managed_objects_parser_filters_unpaired_and_non_audio_hid_devices() {
@@ -1349,6 +1333,11 @@ Sink #95
         #[zbus(property)]
         fn paired(&self) -> bool {
             true
+        }
+
+        #[zbus(property, name = "UUIDs")]
+        fn uuids(&self) -> Vec<String> {
+            vec![UUID_HFP_AG.into(), UUID_A2DP_SOURCE.into()]
         }
 
         #[zbus(property)]

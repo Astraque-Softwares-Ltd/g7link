@@ -849,17 +849,25 @@ Item {
                     elide: Text.ElideNone
                     text: PhoneCall.hfpDetail
                 }
-                TextAction {
+                Row {
                     x: Theme.rowPadding - 8
-                    visible: !PhoneCall.hfpConnected
-                    enabled: !PhoneCall.hfpConnecting
-                    text: PhoneCall.hfpConnecting ? qsTr("Connecting…")
-                        : PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Open Bluetooth settings")
-                    onClicked: {
-                        if (PhoneCall.hfpAvailable)
-                            PhoneCall.connectPcAudio()
-                        else
-                            PhoneCall.openBluetoothSettings()
+                    TextAction {
+                        visible: !PhoneCall.hfpConnected
+                        enabled: !PhoneCall.hfpConnecting
+                        text: PhoneCall.hfpConnecting ? qsTr("Connecting…")
+                            : PhoneCall.hfpAvailable ? qsTr("Connect PC audio") : qsTr("Open Bluetooth settings")
+                        onClicked: {
+                            if (PhoneCall.hfpAvailable)
+                                PhoneCall.connectPcAudio()
+                            else
+                                PhoneCall.openBluetoothSettings()
+                        }
+                    }
+                    // The Bluetooth device taken to be this phone is someone else's.
+                    TextAction {
+                        visible: PhoneCall.hfpFound && !PhoneCall.hfpConnecting
+                        text: qsTr("Not this device")
+                        onClicked: PhoneCall.notThisDevice()
                     }
                 }
             }

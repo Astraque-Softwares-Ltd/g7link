@@ -5,6 +5,7 @@
 //! Qt Quick draws the UI. Windows are created when opened and destroyed when
 //! closed; the app keeps running in the tray (docs/PLAN.md §5).
 
+mod atomic_file;
 mod automations;
 mod badges;
 mod battery;
