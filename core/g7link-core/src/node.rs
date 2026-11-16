@@ -3094,6 +3094,26 @@ impl Node {
                 Err(_) => {}
             }
         }
+        // It didn't go over the network, but a Bluetooth link is up: short
+        // plain text goes over that.
+        if !has_queue && text.len() <= crate::ble_link::MAX_CLIP_TEXT && self.shared.ble_link(&peer).is_some()
+        {
+            let env = Envelope::new(
+                types::CLIP_SET,
+                &ClipSet { text: text.clone(), html: None, rtf: None, sensitive: false },
+            )?;
+            let sent = self.shared.ble_request(peer, env, crate::ble_link::REQUEST_TIMEOUT).await;
+            if sent.and_then(|r| r.expect(types::OK).map_err(Into::into)).is_ok() {
+                let peer_name = self.shared.peer_name(&peer);
+                if let Some((clip_id, evicted)) =
+                    self.shared.clipboard_history.record_text_with_id(&text, &peer_name, false)
+                {
+                    self.shared.record_timeline_clip(peer, &peer_name, false, "text", clip_id, evicted);
+                    self.shared.emit(NodeEvent::ClipboardHistoryChanged);
+                }
+                return Ok(());
+            }
+        }
         let id = transfer::new_id();
         let payload = crate::QueuePayload::Clipboard { text, html, rtf };
         self.shared.store.enqueue_send_item(&id, &peer, &payload, None, crate::now_unix_ms())?;
@@ -3131,8 +3151,13 @@ impl Node {
         if !self.shared.toggle_on(&peer, crate::clipboard::TOGGLE) {
             return Err(Error::Denied);
         }
-        self.connected(&peer)?;
+        let short = text.len() <= crate::ble_link::MAX_CLIP_TEXT;
         let env = Envelope::new(types::CLIP_SET, &ClipSet { text, html: None, rtf: None, sensitive: true })?;
+        if self.shared.session(&peer).is_none() && short && self.shared.ble_link(&peer).is_some() {
+            self.shared.ble_request(peer, env, crate::ble_link::REQUEST_TIMEOUT).await?.expect(types::OK)?;
+            return Ok(());
+        }
+        self.connected(&peer)?;
         self.request(peer, env).await?.expect(types::OK)?;
         Ok(())
     }
@@ -3980,31 +4005,47 @@ impl Node {
     /// phone. If `remote_input` is off on the PC, returns [`Error::Denied`]
     /// and triggers the PC's one-time prompt the first time.
     pub async fn remote_check(&self, peer: DeviceId) -> Result<()> {
+        if self.shared.input_over_ble(&peer) {
+            return self.shared.ble_input_check(peer).await;
+        }
         let session = self.connected(&peer)?;
         crate::remote::check(&self.shared, &session).await
     }
 
-    /// Sends a remote input event to a paired PC.
+    /// Sends a remote input event to a paired PC: over the session, or over
+    /// the Bluetooth link when that's all there is.
     pub async fn remote_input(&self, peer: DeviceId, input: crate::RemoteInput) -> Result<()> {
+        if self.shared.input_over_ble(&peer) {
+            return self.shared.ble_input(peer, input).await;
+        }
         let session = self.connected(&peer)?;
         crate::remote::input(&self.shared, &session, input).await
     }
 
     /// Sends relative pointer motion `(dx, dy)` in a QUIC datagram (never on
-    /// the control stream).
+    /// the control stream), or over the Bluetooth link.
     pub async fn remote_move(&self, peer: DeviceId, dx: f32, dy: f32) -> Result<()> {
+        if self.shared.input_over_ble(&peer) {
+            return self.shared.ble_input(peer, crate::RemoteInput::Move { dx, dy }).await;
+        }
         let session = self.connected(&peer)?;
         crate::remote::move_pointer(&self.shared, &session, dx, dy).await
     }
 
-    /// Sends smooth scroll `(dx, dy)` in a QUIC datagram.
+    /// Sends smooth scroll `(dx, dy)` in a QUIC datagram, or over the Bluetooth link.
     pub async fn remote_scroll_fast(&self, peer: DeviceId, dx: f32, dy: f32) -> Result<()> {
+        if self.shared.input_over_ble(&peer) {
+            return self.shared.ble_input(peer, crate::RemoteInput::Scroll { dx, dy }).await;
+        }
         let session = self.connected(&peer)?;
         crate::remote::scroll_fast(&self.shared, &session, dx, dy).await
     }
 
     /// Sends a laser pointer update to a paired PC (`x`, `y` in `0.0..=1.0`).
     pub async fn remote_laser(&self, peer: DeviceId, on: bool, x: f32, y: f32) -> Result<()> {
+        if self.shared.input_over_ble(&peer) {
+            return self.shared.ble_input(peer, crate::RemoteInput::Laser { on, x, y }).await;
+        }
         let session = self.connected(&peer)?;
         crate::remote::laser(&self.shared, &session, on, x, y).await
     }
@@ -4187,6 +4228,13 @@ impl Node {
         id: String,
         value: crate::PhoneToggleValue,
     ) -> Result<()> {
+        // A phone the PC shares no network with may turn its hotspot on over Bluetooth.
+        if self.shared.session(&peer).is_none()
+            && id == g7link_protocol::messages::toggle_ids::HOTSPOT
+            && self.shared.ble_usable(&peer)
+        {
+            return crate::toggles::set_over_ble(&self.shared, peer, value).await;
+        }
         let session = self.connected(&peer)?;
         crate::toggles::set(&self.shared, &session, id, value).await
     }

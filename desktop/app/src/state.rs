@@ -606,7 +606,9 @@ impl AppState {
             | NodeEvent::BleKeysChanged
             | NodeEvent::BleOutbound { .. }
             | NodeEvent::BleWanted { .. }
-            | NodeEvent::BleLinkChanged { .. } => Changes::NONE,
+            | NodeEvent::BleLinkChanged { .. }
+            // Copied and toasted (notifications).
+            | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,
             NodeEvent::ClipboardHistoryChanged => Changes::CLIPBOARD | Changes::TIMELINE,
             NodeEvent::TimelineChanged => Changes::TIMELINE,

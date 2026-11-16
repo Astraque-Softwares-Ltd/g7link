@@ -927,7 +927,7 @@ async fn a_bluetooth_link_comes_up_and_carries_a_ring() {
     let on_phone = phone.node.ble_connect(pc_id).unwrap();
     let pump = wire(on_phone.clone(), on_pc.clone());
     with_timeout("link up", async {
-        while !(on_pc.is_up() && on_phone.is_up()) {
+        while !(pc.node.ble_linked(phone_id) && phone.node.ble_linked(pc_id)) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -949,6 +949,221 @@ async fn a_bluetooth_link_comes_up_and_carries_a_ring() {
     on_pc.close();
     assert!(!pc.node.ble_linked(phone_id) && !phone.node.ble_linked(pc_id));
     assert!(with_timeout("ping after close", phone.node.ble_ping(pc_id)).await.is_err());
+}
+
+/// Waits until `dev` has no session with `peer`.
+async fn wait_offline(dev: &mut TestDevice, peer: g7link_core::DeviceId) {
+    wait_for(dev, "peer offline", |e| match e {
+        NodeEvent::LinkChanged { device, link }
+            if *device == peer && !matches!(link, LinkState::Online { .. }) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn copied_text_and_codes_go_over_bluetooth_without_a_network() {
+    let (mut pc, mut phone) = ble_pair().await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    // No network between them: neither reconnects.
+    pc.node.set_reconnect(phone_id, false).unwrap();
+    phone.node.set_reconnect(pc_id, false).unwrap();
+    wait_offline(&mut pc, phone_id).await;
+    wait_offline(&mut phone, pc_id).await;
+
+    let on_pc = pc.node.ble_accept();
+    let on_phone = phone.node.ble_connect(pc_id).unwrap();
+    let pump = wire(on_phone.clone(), on_pc.clone());
+    with_timeout("link up", async {
+        while !(pc.node.ble_linked(phone_id) && phone.node.ble_linked(pc_id)) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    // Short text goes over the link, both ways; long text waits for the network.
+    with_timeout("clip to phone", pc.node.send_clipboard(phone_id, "over the air".into())).await.unwrap();
+    assert_eq!(*phone.platform.clipboard.lock().unwrap(), ["over the air"]);
+    with_timeout("clip to pc", phone.node.send_clipboard(pc_id, "and back".into())).await.unwrap();
+    assert_eq!(*pc.platform.clipboard.lock().unwrap(), ["and back"]);
+    with_timeout("long clip", pc.node.send_clipboard(phone_id, "x".repeat(2049))).await.unwrap();
+    assert_eq!(phone.platform.clipboard.lock().unwrap().len(), 1, "queued, not sent");
+
+    // A code in a notification reaches the PC; the notification doesn't.
+    let mut code = note("otp", "com.bank", "Bank", false);
+    code.text = Some("Your verification code is 493021".into());
+    phone.node.notification_posted(code).await;
+    let got = wait_for(&mut pc, "code", |e| match e {
+        NodeEvent::OneTimeCode { device, code, .. } if *device == phone_id => Some(code.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(got, "493021");
+
+    // With the clipboard off on the phone for the PC, nothing is written there.
+    phone.node.set_device_toggle(pc_id, "clipboard", false).unwrap();
+    assert!(with_timeout("refused clip", pc.node.send_clipboard(phone_id, "nope".into())).await.is_ok());
+    assert_eq!(*phone.platform.clipboard.lock().unwrap(), ["over the air"]);
+    pump.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pc_without_a_network_asks_for_the_hotspot_over_bluetooth() {
+    use g7link_core::{
+        PhoneToggleValue, PhoneToggles, TOGGLES_READ, TOGGLES_SHOW, TOGGLES_WIFI, ringer_modes, toggle_ids,
+    };
+
+    let (mut pc, mut phone) = ble_pair().await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.update_power(PowerLevel::NotApplicable, vec!["ble.link".into(), TOGGLES_SHOW.into()]).await;
+    phone
+        .node
+        .update_power(PowerLevel::Elevated, vec!["ble.link".into(), TOGGLES_READ.into(), TOGGLES_WIFI.into()])
+        .await;
+    wait_for(&mut pc, "toggles.wifi available", |e| match e {
+        NodeEvent::Capabilities(m)
+            if m.device == phone_id && m.state("toggles.wifi") == Some(FeatureState::Available) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    pc.node.set_reconnect(phone_id, false).unwrap();
+    phone.node.set_reconnect(pc_id, false).unwrap();
+    wait_offline(&mut pc, phone_id).await;
+    wait_offline(&mut phone, pc_id).await;
+
+    let on_pc = pc.node.ble_accept();
+    let on_phone = phone.node.ble_connect(pc_id).unwrap();
+    let pump = wire(on_phone.clone(), on_pc.clone());
+    with_timeout("link up", async {
+        while !(pc.node.ble_linked(phone_id) && phone.node.ble_linked(pc_id)) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    // The hotspot goes over Bluetooth; nothing else does.
+    with_timeout(
+        "hotspot",
+        pc.node.set_phone_toggle(phone_id, toggle_ids::HOTSPOT.into(), PhoneToggleValue::Bool(true)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *phone.platform.phone_toggles.lock().unwrap(),
+        [(toggle_ids::HOTSPOT.to_owned(), PhoneToggleValue::Bool(true))]
+    );
+    let wifi = pc.node.set_phone_toggle(phone_id, toggle_ids::WIFI.into(), PhoneToggleValue::Bool(false));
+    assert!(with_timeout("wifi", wifi).await.is_err());
+
+    // The phone's toggles reach the PC over the link, so it sees the hotspot come on.
+    let state = PhoneToggles {
+        dnd: false,
+        ringer: ringer_modes::RING.into(),
+        flashlight: None,
+        volume: 50,
+        brightness: 50,
+        wifi: false,
+        bluetooth: true,
+        hotspot: Some(true),
+    };
+    phone.node.toggles_changed(state).await.unwrap();
+    let got = wait_for(&mut pc, "toggles", |e| match e {
+        NodeEvent::PhoneToggles { device, toggles } if *device == phone_id => Some(toggles.hotspot),
+        _ => None,
+    })
+    .await;
+    assert_eq!(got, Some(true));
+    pump.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_touchpad_and_keyboard_work_over_bluetooth() {
+    use g7link_core::{INPUT_INJECT, RemoteInput};
+
+    let (mut pc, mut phone) = ble_pair().await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.update_power(PowerLevel::NotApplicable, vec!["ble.link".into(), INPUT_INJECT.into()]).await;
+    wait_for(&mut phone, "input.remote available", |e| match e {
+        NodeEvent::Capabilities(m)
+            if m.device == pc_id && m.state("input.remote") == Some(FeatureState::Available) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    pc.node.set_reconnect(phone_id, false).unwrap();
+    phone.node.set_reconnect(pc_id, false).unwrap();
+    wait_offline(&mut pc, phone_id).await;
+    wait_offline(&mut phone, pc_id).await;
+
+    let on_pc = pc.node.ble_accept();
+    let on_phone = phone.node.ble_connect(pc_id).unwrap();
+    // Not pumped yet: motion adds up while the link is busy.
+    let mut pump = None;
+    for (a, b) in [(&on_phone, &on_pc), (&on_pc, &on_phone)].into_iter().cycle().take(40) {
+        while let Some(value) = a.next_outbound() {
+            b.receive(&value).unwrap();
+        }
+        if pc.node.ble_linked(phone_id) && phone.node.ble_linked(pc_id) {
+            break;
+        }
+    }
+    assert!(pc.node.ble_linked(phone_id));
+
+    // Turned off on the PC: asked, refused, and nothing moves.
+    let check = phone.node.remote_check(pc_id);
+    pump.get_or_insert_with(|| wire(on_phone.clone(), on_pc.clone()));
+    assert!(matches!(with_timeout("check", check).await, Err(Error::Denied)));
+    pc.node.set_device_toggle(phone_id, "remote_input", true).unwrap();
+    with_timeout("check again", phone.node.remote_check(pc_id)).await.unwrap();
+
+    // Motion sent faster than the link takes it arrives added up, in order with keys.
+    if let Some(pump) = pump.take() {
+        pump.abort();
+    }
+    for _ in 0..10 {
+        phone.node.remote_move(pc_id, 3.0, -2.0).await.unwrap();
+    }
+    let pump = wire(on_phone.clone(), on_pc.clone());
+    let moved = with_timeout("moved", async {
+        loop {
+            let moved: (f32, f32) = pc
+                .platform
+                .remote_inputs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|i| match i {
+                    RemoteInput::Move { dx, dy } => Some((*dx, *dy)),
+                    _ => None,
+                })
+                .fold((0.0, 0.0), |(x, y), (dx, dy)| (x + dx, y + dy));
+            if moved == (30.0, -20.0) {
+                return moved;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(moved, (30.0, -20.0));
+    let moves = pc.platform.remote_inputs.lock().unwrap().len();
+    assert!(moves < 10, "added up into fewer moves: {moves}");
+
+    let key = RemoteInput::Key { key: "enter".into(), mods: Vec::new() };
+    with_timeout("key", phone.node.remote_input(pc_id, key.clone())).await.unwrap();
+    with_timeout("text", phone.node.remote_input(pc_id, RemoteInput::Text { text: "hi".into() }))
+        .await
+        .unwrap();
+    let inputs = pc.platform.remote_inputs.lock().unwrap().clone();
+    assert_eq!(inputs[inputs.len() - 2..], [key, RemoteInput::Text { text: "hi".into() }]);
+    pump.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]

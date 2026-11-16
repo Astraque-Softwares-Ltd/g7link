@@ -172,6 +172,8 @@ const QUIET_AFTER_DISMISS: Duration = Duration::from_secs(30 * 60);
 const LOOK_FOR_WIFI_EVERY: Duration = Duration::from_secs(60);
 /// How long the phone has to say its hotspot is on.
 const TURN_ON_WITHIN: Duration = Duration::from_secs(20);
+/// How long the user has to turn it on when the phone asked them to.
+const ASKED_WITHIN: Duration = Duration::from_secs(90);
 /// After asking the phone to turn its hotspot off, before joining Wi-Fi.
 const SETTLE: Duration = Duration::from_secs(3);
 
@@ -244,7 +246,11 @@ fn phone_to_offer() -> Option<DeviceId> {
                 let online = matches!(d.link, LinkState::Online { .. });
                 let control = s.matrices.get(&d.id).and_then(|m| m.state("toggles.wifi"));
                 let already_on = node.phone_toggles(d.id).and_then(|t| t.hotspot) == Some(true);
-                online && control == Some(FeatureState::Available) && !already_on
+                // A phone with no network can be asked over Bluetooth.
+                let over_bluetooth =
+                    !online && node.ble_usable(d.id) && node.peer_offers(d.id, "toggles.wifi");
+                let reachable = (online && control == Some(FeatureState::Available)) || over_bluetooth;
+                reachable && !already_on
             })
             .map(|d| d.id)
     })
@@ -266,6 +272,10 @@ fn tick(now: Instant) {
     }
 
     let offline = matches!(connectivity, Connectivity::None | Connectivity::Limited);
+    if offline && watch(|w| w.offline_since.is_none()) {
+        // Phones with no network can connect over Bluetooth by the time the offer shows.
+        crate::ble_link::internet_lost();
+    }
     let just_joined = on_hotspot.is_some() && watch(|w| w.joined.is_none());
     let bytes = if just_joined { wifi::wifi_bytes() } else { None };
     let offer = watch(|w| {
@@ -359,18 +369,25 @@ pub async fn turn_on(device: DeviceId) -> Result<(), String> {
     } else {
         Vec::new()
     };
-    node.set_phone_toggle(device, "hotspot".into(), PhoneToggleValue::Bool(true))
-        .await
-        .map_err(|e| crate::bridge::app::describe(&e))?;
-    watch(|w| w.turned_on = Some(device));
     let name = phone_name(device);
+    let asked = node.set_phone_toggle(device, "hotspot".into(), PhoneToggleValue::Bool(true)).await;
+    let mut within = TURN_ON_WITHIN;
+    if let Err(error) = asked {
+        // Over Bluetooth, a phone that can't turn it on itself asks on its screen.
+        if !node.ble_linked(device) {
+            return Err(crate::bridge::app::describe(&error));
+        }
+        show_message(tr!("Hotspot", "Turn on %1's hotspot: the phone is asking on its screen.", name));
+        within = ASKED_WITHIN;
+    }
+    watch(|w| w.turned_on = Some(device));
 
     // A phone that says what its hotspot does is waited for; one that doesn't is trusted.
     let started = Instant::now();
     loop {
         match node.phone_toggles(device).and_then(|t| t.hotspot) {
             Some(true) | None => break,
-            Some(false) if started.elapsed() >= TURN_ON_WITHIN => {
+            Some(false) if started.elapsed() >= within => {
                 watch(|w| w.turned_on = None);
                 show_message(tr!(
                     "Hotspot",

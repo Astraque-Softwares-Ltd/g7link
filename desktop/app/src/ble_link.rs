@@ -93,6 +93,20 @@ pub fn on_event(event: &NodeEvent) {
     }
 }
 
+/// The PC's internet went: phones that may use Bluetooth and aren't
+/// connected get a window, so the hotspot can be asked for.
+pub fn internet_lost() {
+    let Some(node) = core_host::node() else { return };
+    let offline: Vec<DeviceId> = node
+        .paired_devices()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|d| !matches!(d.link, LinkState::Online { .. }))
+        .map(|d| d.id)
+        .collect();
+    open_for(&node, &offline, UNSOLICITED_FOR, false);
+}
+
 /// At start: phones that may use Bluetooth and aren't connected get a window.
 pub fn started() {
     let Some(node) = core_host::node() else { return };

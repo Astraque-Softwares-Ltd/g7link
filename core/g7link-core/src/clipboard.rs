@@ -62,85 +62,89 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         Envelope::error(ErrorCode::Denied, "the clipboard is off for this device")
     } else {
         match env.body::<ClipSet>() {
-            Ok(clip) if clip.is_valid() => {
-                let platform = shared.platform.clone();
-                let text = clip.text;
-                let html = clip.html;
-                let rtf = clip.rtf;
-                let sensitive = clip.sensitive;
-                let clear_platform = platform.clone();
-                let written = {
-                    let text = text.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if sensitive {
-                            platform.set_clipboard_private(&text)
-                        } else {
-                            platform.set_clipboard_rich(&text, html.as_deref(), rtf.as_deref())
-                        }
-                    })
-                    .await
-                };
-                match written {
-                    // No history, Timeline or suggestion: nothing keeps a password.
-                    Ok(Ok(())) if sensitive => {
-                        *shared.last_clip_suggestion.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                        shared.emit(NodeEvent::ClipboardReceived { device: peer });
-                        let lifetime = shared.private_clip_lifetime;
-                        let cancel = shared.cancel.clone();
-                        let clear = tokio::spawn(async move {
-                            tokio::select! {
-                                _ = tokio::time::sleep(lifetime) => {}
-                                _ = cancel.cancelled() => {}
-                            }
-                            let _ = tokio::task::spawn_blocking(move || {
-                                clear_platform.clear_clipboard_private(&text);
-                            })
-                            .await;
-                        });
-                        // Only the latest is waited on: the platform leaves a newer value alone
-                        // anyway, so a replaced one isn't kept around until its time is up.
-                        let replaced = shared
-                            .private_clip_clear
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .replace(clear.abort_handle());
-                        if let Some(replaced) = replaced {
-                            replaced.abort();
-                        }
-                        Envelope::empty(types::OK)
-                    }
-                    Ok(Ok(())) => {
-                        let peer_name = shared.peer_name(&peer);
-                        if let Some((clip_id, evicted)) =
-                            shared.clipboard_history.record_text_with_id(&text, &peer_name, true)
-                        {
-                            shared.record_timeline_clip(peer, &peer_name, true, "text", clip_id, evicted);
-                            shared.emit(NodeEvent::ClipboardHistoryChanged);
-                        }
-                        let suggestion = crate::clip_kind::classify_clip(&text);
-                        if let Some(ref s) = suggestion {
-                            tracing::debug!(from = %peer.short(), kind = ?s.kind, "classified received clipboard text");
-                        }
-                        *shared.last_clip_suggestion.lock().unwrap_or_else(|e| e.into_inner()) =
-                            suggestion.map(|s| (peer, s));
-                        shared.emit(NodeEvent::ClipboardReceived { device: peer });
-                        Envelope::empty(types::OK)
-                    }
-                    Ok(Err(reason)) => {
-                        tracing::warn!(reason, "can't write the clipboard");
-                        Envelope::error(ErrorCode::Internal, "can't write the clipboard")
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "clipboard writer failed");
-                        Envelope::error(ErrorCode::Internal, "can't write the clipboard")
-                    }
-                }
-            }
+            Ok(clip) if clip.is_valid() => apply_set(shared, peer, clip).await,
             _ => Envelope::error(ErrorCode::BadMessage, "clipboard text is empty or too large"),
         }
     };
     session.send(reply.reply_to(env.id)).await?;
     Ok(true)
+}
+
+/// Writes `clip` from `peer` to this device's clipboard, as `clip.set` asks
+/// on a session or the Bluetooth link: the reply.
+pub(crate) async fn apply_set(shared: &Arc<Shared>, peer: DeviceId, clip: ClipSet) -> Envelope {
+    let platform = shared.platform.clone();
+    let text = clip.text;
+    let html = clip.html;
+    let rtf = clip.rtf;
+    let sensitive = clip.sensitive;
+    let clear_platform = platform.clone();
+    let written = {
+        let text = text.clone();
+        tokio::task::spawn_blocking(move || {
+            if sensitive {
+                platform.set_clipboard_private(&text)
+            } else {
+                platform.set_clipboard_rich(&text, html.as_deref(), rtf.as_deref())
+            }
+        })
+        .await
+    };
+    match written {
+        // No history, Timeline or suggestion: nothing keeps a password.
+        Ok(Ok(())) if sensitive => {
+            *shared.last_clip_suggestion.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            shared.emit(NodeEvent::ClipboardReceived { device: peer });
+            let lifetime = shared.private_clip_lifetime;
+            let cancel = shared.cancel.clone();
+            let clear = tokio::spawn(async move {
+                tokio::select! {
+                    _ = tokio::time::sleep(lifetime) => {}
+                    _ = cancel.cancelled() => {}
+                }
+                let _ = tokio::task::spawn_blocking(move || {
+                    clear_platform.clear_clipboard_private(&text);
+                })
+                .await;
+            });
+            // Only the latest is waited on: the platform leaves a newer value alone
+            // anyway, so a replaced one isn't kept around until its time is up.
+            let replaced = shared
+                .private_clip_clear
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .replace(clear.abort_handle());
+            if let Some(replaced) = replaced {
+                replaced.abort();
+            }
+            Envelope::empty(types::OK)
+        }
+        Ok(Ok(())) => {
+            let peer_name = shared.peer_name(&peer);
+            if let Some((clip_id, evicted)) =
+                shared.clipboard_history.record_text_with_id(&text, &peer_name, true)
+            {
+                shared.record_timeline_clip(peer, &peer_name, true, "text", clip_id, evicted);
+                shared.emit(NodeEvent::ClipboardHistoryChanged);
+            }
+            let suggestion = crate::clip_kind::classify_clip(&text);
+            if let Some(ref s) = suggestion {
+                tracing::debug!(from = %peer.short(), kind = ?s.kind, "classified received clipboard text");
+            }
+            *shared.last_clip_suggestion.lock().unwrap_or_else(|e| e.into_inner()) =
+                suggestion.map(|s| (peer, s));
+            shared.emit(NodeEvent::ClipboardReceived { device: peer });
+            Envelope::empty(types::OK)
+        }
+        Ok(Err(reason)) => {
+            tracing::warn!(reason, "can't write the clipboard");
+            Envelope::error(ErrorCode::Internal, "can't write the clipboard")
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "clipboard writer failed");
+            Envelope::error(ErrorCode::Internal, "can't write the clipboard")
+        }
+    }
 }
 
 /// Sends an image on its own stream and waits for the receiver's answer.

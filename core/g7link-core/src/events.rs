@@ -346,4 +346,11 @@ pub enum NodeEvent {
         device: DeviceId,
         up: bool,
     },
+    /// PC: a paired phone sent a one-time code from a notification over the
+    /// Bluetooth link (it shares no network with this PC).
+    OneTimeCode {
+        device: DeviceId,
+        code: String,
+        source: Option<String>,
+    },
 }

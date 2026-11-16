@@ -149,6 +149,19 @@ fn check_allowed(shared: &Shared, peer: &DeviceId) -> std::result::Result<(), (E
     check_allowed_with(shared, peer, false)
 }
 
+/// PC: `peer`'s `remote.check`, from a session or the Bluetooth link: the reply.
+pub(crate) fn run_check(shared: &Shared, peer: &DeviceId) -> Envelope {
+    match check_allowed_with(shared, peer, true) {
+        Ok(()) => Envelope::empty(types::OK),
+        Err((code, msg)) => Envelope::error(code, msg),
+    }
+}
+
+/// Phone: whether the PC `peer` takes input from phones.
+pub(crate) fn takes_input(shared: &Shared, peer: &DeviceId) -> bool {
+    peer_offers(shared, peer, INPUT_INJECT).unwrap_or(false)
+}
+
 /// Checks whether `peer` (a PC) currently accepts remote input from this phone.
 pub(crate) async fn check(shared: &Arc<Shared>, session: &Arc<Session>) -> Result<()> {
     if !peer_offers(shared, &session.peer, INPUT_INJECT)?
@@ -284,33 +297,10 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         return Ok(true);
     }
     let reply = match env.t.as_str() {
-        types::REMOTE_CHECK => match check_allowed_with(shared, &session.peer, true) {
-            Ok(()) => Envelope::empty(types::OK),
-            Err((code, msg)) => Envelope::error(code, msg),
-        },
-        types::REMOTE_INPUT => match check_allowed(shared, &session.peer) {
-            Err((code, msg)) => Envelope::error(code, msg),
-            Ok(()) => match env.body::<RemoteInput>() {
-                Ok(event) if event.is_control_allowed() && event.is_valid() => {
-                    let allowed = shared
-                        .remote
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .allow_control(session.peer, Instant::now());
-                    if !allowed {
-                        Envelope::error(ErrorCode::Denied, RATE_LIMITED)
-                    } else {
-                        let platform = shared.platform.clone();
-                        let peer = session.peer;
-                        match tokio::task::spawn_blocking(move || platform.remote_input(&peer, event)).await {
-                            Ok(Ok(())) => Envelope::empty(types::OK),
-                            Ok(Err(e)) => Envelope::error(ErrorCode::Internal, e),
-                            Err(_) => Envelope::error(ErrorCode::Internal, "input task failed"),
-                        }
-                    }
-                }
-                _ => Envelope::error(ErrorCode::BadMessage, "invalid remote input"),
-            },
+        types::REMOTE_CHECK => run_check(shared, &session.peer),
+        types::REMOTE_INPUT => match env.body::<RemoteInput>() {
+            Ok(event) => run_control(shared, session.peer, event).await,
+            Err(_) => Envelope::error(ErrorCode::BadMessage, "invalid remote input"),
         },
         _ => return Ok(false),
     };
@@ -318,20 +308,46 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     Ok(true)
 }
 
-/// Handles an incoming QUIC datagram from `peer`.
-pub(crate) fn handle_datagram(shared: &Arc<Shared>, peer: DeviceId, bytes: &[u8]) {
-    if check_allowed(shared, &peer).is_err() {
+/// Runs a discrete input event (a click, a key, text...) `peer` asked for, on a
+/// session or the Bluetooth link: the reply.
+pub(crate) async fn run_control(shared: &Arc<Shared>, peer: DeviceId, event: RemoteInput) -> Envelope {
+    if let Err((code, msg)) = check_allowed(shared, &peer) {
+        return Envelope::error(code, msg);
+    }
+    if !event.is_control_allowed() || !event.is_valid() {
+        return Envelope::error(ErrorCode::BadMessage, "invalid remote input");
+    }
+    let allowed = shared.remote.lock().unwrap_or_else(|e| e.into_inner()).allow_control(peer, Instant::now());
+    if !allowed {
+        return Envelope::error(ErrorCode::Denied, RATE_LIMITED);
+    }
+    let platform = shared.platform.clone();
+    match tokio::task::spawn_blocking(move || platform.remote_input(&peer, event)).await {
+        Ok(Ok(())) => Envelope::empty(types::OK),
+        Ok(Err(e)) => Envelope::error(ErrorCode::Internal, e),
+        Err(_) => Envelope::error(ErrorCode::Internal, "input task failed"),
+    }
+}
+
+/// Runs pointer motion, a scroll or the laser from `peer`, as a datagram is:
+/// dropped when not allowed or over the rate.
+pub(crate) fn run_motion(shared: &Arc<Shared>, peer: DeviceId, event: RemoteInput) {
+    if check_allowed(shared, &peer).is_err() || !event.is_datagram_allowed() || !event.is_valid() {
         return;
     }
+    let allowed =
+        shared.remote.lock().unwrap_or_else(|e| e.into_inner()).allow_datagram(peer, Instant::now());
+    if allowed {
+        let _ = shared.platform.remote_input(&peer, event);
+    }
+}
+
+/// Handles an incoming QUIC datagram from `peer`.
+pub(crate) fn handle_datagram(shared: &Arc<Shared>, peer: DeviceId, bytes: &[u8]) {
     let Ok(event) = RemoteInput::from_datagram(bytes) else {
         return;
     };
-    let allowed =
-        shared.remote.lock().unwrap_or_else(|e| e.into_inner()).allow_datagram(peer, Instant::now());
-    if !allowed {
-        return;
-    }
-    let _ = shared.platform.remote_input(&peer, event);
+    run_motion(shared, peer, event);
 }
 
 /// Handles a fallback `remote/motion` stream when QUIC datagrams aren't used.

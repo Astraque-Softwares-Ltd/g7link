@@ -2720,8 +2720,8 @@ impl Event {
             NodeEvent::BleKeysChanged => Event::BleKeysChanged,
             NodeEvent::BleOutbound { endpoint } => Event::BleOutbound { endpoint },
             NodeEvent::BleLinkChanged { device, up } => Event::BleLinkChanged { id: device.to_string(), up },
-            // Asked for by PCs only.
-            NodeEvent::BleWanted { .. } => return None,
+            // Asked for by PCs only, and codes go to PCs.
+            NodeEvent::BleWanted { .. } | NodeEvent::OneTimeCode { .. } => return None,
         })
     }
 }

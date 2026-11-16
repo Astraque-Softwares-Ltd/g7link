@@ -331,6 +331,7 @@ impl Shared {
                 let _ = session.send(env).await;
             }
         }
+        self.send_code_over_ble(&n);
     }
 
     pub(crate) async fn notification_removed(&self, key: String) {

@@ -103,6 +103,12 @@ impl Shared {
                 let _ = session.send(env.clone()).await;
             }
         }
+        // PCs reachable only over Bluetooth learn the hotspot came on.
+        for peer in self.ble_linked_peers() {
+            if self.session(&peer).is_none() && self.toggle_on(&peer, TOGGLE) {
+                let _ = self.ble_send(&peer, &env);
+            }
+        }
         Ok(())
     }
 
@@ -132,25 +138,42 @@ pub(crate) async fn set(
     id: String,
     value: PhoneToggleValue,
 ) -> Result<()> {
+    let env = set_request(shared, &session.peer, id, value)?;
+    session.request(env, REQUEST_TIMEOUT).await?.expect(types::OK)?;
+    Ok(())
+}
+
+/// Asks a paired phone reachable only over Bluetooth to turn its hotspot on
+/// or off, the one toggle the Bluetooth link carries.
+pub(crate) async fn set_over_ble(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    value: PhoneToggleValue,
+) -> Result<()> {
+    let env = set_request(shared, &peer, toggle_ids::HOTSPOT.to_owned(), value)?;
+    shared.ble_request(peer, env, REQUEST_TIMEOUT).await?.expect(types::OK)?;
+    Ok(())
+}
+
+/// The `phone.toggle.set` for `peer`, once it's allowed and the phone can.
+fn set_request(shared: &Shared, peer: &DeviceId, id: String, value: PhoneToggleValue) -> Result<Envelope> {
     let req = PhoneToggleSet { id, value };
     if !req.is_valid() {
         return Err(Error::Protocol("invalid phone toggle or value".into()));
     }
-    if req.id != toggle_ids::PC_ACTIVE && !shared.toggle_on(&session.peer, TOGGLE) {
+    if req.id != toggle_ids::PC_ACTIVE && !shared.toggle_on(peer, TOGGLE) {
         return Err(Error::Denied);
     }
     let Some(cap) = required_capability(&req.id) else {
         return Err(Error::Protocol("unknown toggle".into()));
     };
-    let peer_caps = shared.store.get_peer(&session.peer)?.map(|p| p.caps).unwrap_or_default();
+    let peer_caps = shared.store.get_peer(peer)?.map(|p| p.caps).unwrap_or_default();
     let silent_needs_dnd = req.id == toggle_ids::RINGER
         && matches!(&req.value, PhoneToggleValue::Mode(m) if m == ringer_modes::SILENT);
     if !peer_caps.contains(cap) || (silent_needs_dnd && !peer_caps.contains(TOGGLES_DND)) {
         return Err(Error::Unsupported);
     }
-    let env = Envelope::new(types::PHONE_TOGGLE_SET, &req)?;
-    session.request(env, REQUEST_TIMEOUT).await?.expect(types::OK)?;
-    Ok(())
+    Ok(Envelope::new(types::PHONE_TOGGLE_SET, &req)?)
 }
 
 /// Handles `phone.toggles` and `phone.toggle.set`.
@@ -158,13 +181,8 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     let peer = session.peer;
     match env.t.as_str() {
         types::PHONE_TOGGLES => {
-            if shared.toggle_on(&peer, TOGGLE) {
-                let state: PhoneToggles = env.body()?;
-                if let Some(toggles) = state.sanitized() {
-                    shared.toggles.set_peer(peer, toggles.clone());
-                    shared.emit(NodeEvent::PhoneToggles { device: peer, toggles });
-                }
-            }
+            let state: PhoneToggles = env.body()?;
+            apply_state(shared, peer, state);
         }
         types::PHONE_TOGGLE_SET => {
             let req: PhoneToggleSet = env.body()?;
@@ -176,7 +194,18 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     Ok(true)
 }
 
-async fn run_set(shared: &Arc<Shared>, peer: &DeviceId, req: PhoneToggleSet) -> Envelope {
+/// PC: a paired phone's toggles, from its session or its Bluetooth link.
+pub(crate) fn apply_state(shared: &Shared, peer: DeviceId, state: PhoneToggles) {
+    if shared.toggle_on(&peer, TOGGLE)
+        && let Some(toggles) = state.sanitized()
+    {
+        shared.toggles.set_peer(peer, toggles.clone());
+        shared.emit(NodeEvent::PhoneToggles { device: peer, toggles });
+    }
+}
+
+/// Phone: runs a PC's `phone.toggle.set`; the reply.
+pub(crate) async fn run_set(shared: &Arc<Shared>, peer: &DeviceId, req: PhoneToggleSet) -> Envelope {
     if !req.is_valid() {
         return Envelope::error(ErrorCode::BadMessage, "invalid toggle or value");
     }

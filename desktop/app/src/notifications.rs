@@ -627,6 +627,46 @@ pub fn update_toasts(event: &NodeEvent) {
         let event = for_toast(event);
         on_files_thread(move || toasts_after(&event));
     }
+    if let NodeEvent::OneTimeCode { device, code, source } = event {
+        let (device, code, source) = (*device, code.clone(), source.clone());
+        on_files_thread(move || code_over_bluetooth(device, &code, source.as_deref()));
+    }
+}
+
+/// The notification key a code sent over Bluetooth is toasted under.
+const BLE_CODE_KEY: &str = "ble.otp";
+
+/// A one-time code a phone sent over Bluetooth because it shares no network
+/// with this PC: copied as one from its notification would be, with the same
+/// toast (or a Copy button when copying codes is off).
+fn code_over_bluetooth(device: DeviceId, code: &str, source: Option<&str>) {
+    otp_codes(|c| c.insert((device, BLE_CODE_KEY.to_owned()), code.to_owned()));
+    let copied = maybe_auto_copy_otp(code);
+    let phone = core_host::host().hub.read(|s| s.name_of(&device)).unwrap_or_default();
+    let from = toast_title(source, &phone, None);
+    let (title, body, actions) = if copied {
+        (
+            tr!("Notifications", "Code %1 copied", code),
+            tr!("Notifications", "Press Ctrl+V to paste · %1", from),
+            Vec::new(),
+        )
+    } else {
+        (from, code.to_owned(), vec![(ACTION_COPY_OTP.to_owned(), tr!("Notifications", "Copy code"))])
+    };
+    toast::show(Toast {
+        device: device.to_string(),
+        key: BLE_CODE_KEY.to_owned(),
+        title,
+        body,
+        attribution: phone,
+        icon: None,
+        image: None,
+        actions,
+        reply: None,
+        silent: false,
+        progress: None,
+        call: false,
+    });
 }
 
 /// `event` as its toasts need it: they show icons and pictures from the files

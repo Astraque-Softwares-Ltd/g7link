@@ -118,5 +118,13 @@ also needing the receiver's `ble_link` toggle:
 |---|---|
 | `ping` / `pong` | both |
 | `device.ring` → `ok`, `device.ring_stopped` | PC → phone, phone → PC |
+| `clip.set` → `ok` (plain text, at most 2048 bytes, needs `clipboard`) | both |
+| `ble.otp { code, source? }` (needs `notifications`) | phone → PC |
+| `phone.toggle.set` → `ok` (`hotspot` only, needs `toggles`), `phone.toggles` | PC → phone, phone → PC |
+| `remote.check` → `ok`, `remote.input` (needs `remote_input`) | phone → PC |
 
-Anything else is answered `UNSUPPORTED`.
+Anything else is answered `UNSUPPORTED`. A `remote.input` without an `id` is
+pointer motion, a scroll or the laser: it has no reply, is held to the PC's
+datagram limit instead of the record limit, and the phone adds motion up
+while the link is busy rather than queueing it. Copied text that doesn't go
+over the link waits in the send queue for the network.

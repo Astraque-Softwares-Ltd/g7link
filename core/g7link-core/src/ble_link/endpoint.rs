@@ -16,6 +16,7 @@ use std::{
 use g7link_protocol::{
     DeviceId, Envelope,
     ble::{self, LinkError, MAX_HANDSHAKE_RECORD, MAX_RECORD, Reassembler},
+    messages::{RemoteInput, remote as remote_limits, types},
 };
 
 use super::crypto::{Cipher, CryptoError, Initiator, Responder};
@@ -52,6 +53,45 @@ struct Inner {
     tx_seq: u8,
     outbox: VecDeque<Vec<u8>>,
     incoming: TokenBucket,
+    /// Touchpad input not sent yet: added up while the radio is busy, and
+    /// sealed only when there's room, so it never queues up behind itself.
+    motion: Motion,
+}
+
+/// Pointer motion, scrolling and the laser waiting to go out.
+#[derive(Debug, Default)]
+struct Motion {
+    moved: Option<(f32, f32)>,
+    scrolled: Option<(f32, f32)>,
+    laser: Option<(f32, f32)>,
+}
+
+impl Motion {
+    fn add(&mut self, event: &RemoteInput) -> bool {
+        fn sum(slot: &mut Option<(f32, f32)>, dx: f32, dy: f32, max: f32) {
+            let (x, y) = slot.unwrap_or((0.0, 0.0));
+            *slot = Some(((x + dx).clamp(-max, max), (y + dy).clamp(-max, max)));
+        }
+        match *event {
+            RemoteInput::Move { dx, dy } => sum(&mut self.moved, dx, dy, remote_limits::MAX_MOVE_DELTA),
+            RemoteInput::Scroll { dx, dy } => {
+                sum(&mut self.scrolled, dx, dy, remote_limits::MAX_SCROLL_DELTA)
+            }
+            RemoteInput::Laser { on: true, x, y } => self.laser = Some((x, y)),
+            _ => return false,
+        }
+        true
+    }
+
+    fn take(&mut self) -> Option<RemoteInput> {
+        if let Some((dx, dy)) = self.moved.take() {
+            return Some(RemoteInput::Move { dx, dy });
+        }
+        if let Some((dx, dy)) = self.scrolled.take() {
+            return Some(RemoteInput::Scroll { dx, dy });
+        }
+        self.laser.take().map(|(x, y)| RemoteInput::Laser { on: true, x, y })
+    }
 }
 
 /// What a record that came in asks of the endpoint, done once its lock is let go.
@@ -86,6 +126,7 @@ impl BleEndpoint {
                 tx_seq: 0,
                 outbox: VecDeque::new(),
                 incoming: TokenBucket::new(RECORD_BURST, RECORDS_PER_SEC, Instant::now()),
+                motion: Motion::default(),
             }),
         }
     }
@@ -133,9 +174,41 @@ impl BleEndpoint {
         self.peer().is_some()
     }
 
-    /// The next value to write or notify, sized for the link; `None` when there's nothing.
+    /// The next value to write or notify, sized for the link; `None` when
+    /// there's nothing. Touchpad input waiting is sealed now, added up.
     pub fn next_outbound(&self) -> Option<Vec<u8>> {
-        self.lock().outbox.pop_front()
+        let mut inner = self.lock();
+        if inner.outbox.is_empty()
+            && let Some(event) = inner.motion.take()
+            && let Ok(env) = Envelope::new(types::REMOTE_INPUT, &event)
+            && let Phase::Up { cipher, .. } = &mut inner.phase
+        {
+            let record = cipher.seal(&env.to_cbor());
+            let mut seq = inner.tx_seq;
+            if let Ok(fragments) = ble::fragments(&record, inner.att_mtu, &mut seq) {
+                inner.tx_seq = seq;
+                inner.outbox.extend(fragments);
+            }
+        }
+        inner.outbox.pop_front()
+    }
+
+    /// Queues touchpad input (motion, a scroll, the laser) to go when the
+    /// link has room, added to what's waiting.
+    pub(crate) fn send_motion(&self, event: &RemoteInput) -> Result<()> {
+        let mut inner = self.lock();
+        if !matches!(inner.phase, Phase::Up { .. }) {
+            return Err(Error::Offline);
+        }
+        if !inner.motion.add(event) {
+            return Err(Error::Protocol("not touchpad input".into()));
+        }
+        if inner.outbox.is_empty()
+            && let Some(shared) = self.shared.upgrade()
+        {
+            shared.emit(NodeEvent::BleOutbound { endpoint: self.id });
+        }
+        Ok(())
     }
 
     /// Queues `record`'s fragments.
@@ -235,16 +308,17 @@ impl BleEndpoint {
             Phase::Up { peer, mut cipher } => {
                 let plain = cipher.open(&record).map_err(crypto)?;
                 inner.phase = Phase::Up { peer, cipher };
-                if !inner.incoming.take(Instant::now()) {
+                let env = Envelope::from_cbor(&plain).map_err(|e| Error::Protocol(e.to_string()))?;
+                // Touchpad input has its own limit, where it's run.
+                let motion = env.t == types::REMOTE_INPUT && env.id.is_none();
+                if !motion && !inner.incoming.take(Instant::now()) {
                     drop(inner);
-                    let env = Envelope::from_cbor(&plain).map_err(|e| Error::Protocol(e.to_string()))?;
                     if env.id.is_some() {
                         let busy = Envelope::error(g7link_protocol::ErrorCode::Busy, "too many messages");
                         self.send(&busy.reply_to(env.id))?;
                     }
                     return Ok(Then::Nothing);
                 }
-                let env = Envelope::from_cbor(&plain).map_err(|e| Error::Protocol(e.to_string()))?;
                 Ok(Then::Message(peer, env))
             }
             Phase::Closed => Err(Error::Offline),

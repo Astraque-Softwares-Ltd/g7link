@@ -23,7 +23,10 @@ use std::{
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
     ble::{self, LINK_SECRET_LEN},
-    messages::{BleKey, Ring, RingStopped, types},
+    messages::{
+        BleKey, BleOtp, ClipSet, Notification, PhoneToggleSet, PhoneToggles, RemoteInput, Ring, RingStopped,
+        toggle_ids, types,
+    },
 };
 use tokio::sync::{Notify, oneshot};
 
@@ -129,6 +132,11 @@ pub const BLE_LINK_CAPABILITY: &str = "ble.link";
 /// How long the PC waits for a phone to connect over Bluetooth when it has
 /// something for it.
 const LINK_WAIT: Duration = Duration::from_secs(20);
+/// How long a request over Bluetooth waits for its reply.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Copied text that goes over Bluetooth at most, in UTF-8 bytes; longer waits
+/// in the queue for the network.
+pub(crate) const MAX_CLIP_TEXT: usize = 2048;
 
 /// The Bluetooth links that are up, by the device at the other end, and the
 /// requests waiting on them.
@@ -158,6 +166,12 @@ fn allowed(t: &str) -> bool {
             | types::ERROR
             | types::DEVICE_RING
             | types::DEVICE_RING_STOPPED
+            | types::CLIP_SET
+            | types::BLE_OTP
+            | types::PHONE_TOGGLE_SET
+            | types::PHONE_TOGGLES
+            | types::REMOTE_CHECK
+            | types::REMOTE_INPUT
     )
 }
 
@@ -272,8 +286,125 @@ impl Shared {
                 self.clear_remote_ring(peer, Some(stopped.token));
                 Ok(None)
             }
+            types::CLIP_SET => {
+                if !self.toggle_on(&peer, crate::clipboard::TOGGLE) {
+                    return Err(Error::Denied);
+                }
+                let clip: ClipSet = env.body()?;
+                if !clip.is_valid() || clip.text.len() > MAX_CLIP_TEXT {
+                    return Err(Error::TooLarge);
+                }
+                // Plain text only over Bluetooth.
+                let clip = ClipSet { html: None, rtf: None, ..clip };
+                Ok(Some(crate::clipboard::apply_set(self, peer, clip).await))
+            }
+            // The phone's touchpad and keyboard: the PC's own checks and limits apply.
+            types::REMOTE_CHECK => Ok(Some(crate::remote::run_check(self, &peer))),
+            types::REMOTE_INPUT => {
+                let event: RemoteInput = env.body()?;
+                if env.id.is_none() {
+                    crate::remote::run_motion(self, peer, event);
+                    return Ok(None);
+                }
+                Ok(Some(crate::remote::run_control(self, peer, event).await))
+            }
+            types::PHONE_TOGGLE_SET => {
+                let req: PhoneToggleSet = env.body()?;
+                // Only the hotspot: what a PC with no network needs.
+                if req.id != toggle_ids::HOTSPOT {
+                    return Err(Error::Denied);
+                }
+                Ok(Some(crate::toggles::run_set(self, &peer, req).await))
+            }
+            types::PHONE_TOGGLES => {
+                let state: PhoneToggles = env.body()?;
+                crate::toggles::apply_state(self, peer, state);
+                Ok(None)
+            }
+            types::BLE_OTP => {
+                // A PC takes codes from a phone it shows notifications of.
+                if self.local_role() != Some(Role::Desktop) || !self.notifications_allowed(&peer) {
+                    return Err(Error::Denied);
+                }
+                let otp: BleOtp = env.body()?;
+                if !otp.is_valid() {
+                    return Err(Error::Protocol("malformed code".into()));
+                }
+                self.emit(NodeEvent::OneTimeCode { device: peer, code: otp.code, source: otp.source });
+                Ok(None)
+            }
             _ => Ok(None),
         }
+    }
+
+    /// Phone: sends the one-time code in `notification`, if it has one, to the
+    /// paired PCs reachable only over Bluetooth that show this phone's
+    /// notifications. The notification itself stays on the phone.
+    pub(crate) fn send_code_over_ble(&self, notification: &Notification) {
+        if self.local_role() != Some(Role::Phone) {
+            return;
+        }
+        let peers: Vec<DeviceId> = lock(&self.ble.links).keys().copied().collect();
+        let peers: Vec<DeviceId> = peers
+            .into_iter()
+            .filter(|peer| self.session(peer).is_none() && self.notifications_allowed(peer))
+            .collect();
+        if peers.is_empty() {
+            return;
+        }
+        let text: Vec<&str> =
+            [notification.title.as_deref(), notification.text.as_deref()].into_iter().flatten().collect();
+        let Some(code) = crate::otp::one_time_code(&text.join("\n")) else { return };
+        let source =
+            Some(notification.app_name.chars().take(32).collect::<String>()).filter(|s| !s.is_empty());
+        let otp = BleOtp { code, source };
+        let Ok(env) = Envelope::new(types::BLE_OTP, &otp) else { return };
+        if !otp.is_valid() {
+            return;
+        }
+        for peer in peers {
+            if let Err(error) = self.ble_send(&peer, &env) {
+                tracing::debug!(peer = %peer.short(), %error, "couldn't send a code over Bluetooth");
+            }
+        }
+    }
+
+    /// Phone: whether input for the PC `peer` goes over Bluetooth: there's no
+    /// session but a link is up.
+    pub(crate) fn input_over_ble(&self, peer: &DeviceId) -> bool {
+        self.session(peer).is_none() && self.ble_link(peer).is_some()
+    }
+
+    /// Phone: sends touchpad or keyboard input to the PC `peer` over the
+    /// Bluetooth link. Motion is added up and sent as the link has room;
+    /// anything else waits for the PC's answer.
+    pub(crate) async fn ble_input(&self, peer: DeviceId, event: RemoteInput) -> Result<()> {
+        if !event.is_valid() {
+            return Err(Error::Protocol("invalid remote input".into()));
+        }
+        if !crate::remote::takes_input(self, &peer) {
+            return Err(Error::Unsupported);
+        }
+        let link = self.ble_link(&peer).ok_or(Error::Offline)?;
+        if event.is_datagram_allowed() && !matches!(event, RemoteInput::Laser { on: false, .. }) {
+            return link.send_motion(&event);
+        }
+        let env = Envelope::new(types::REMOTE_INPUT, &event)?;
+        self.ble_request(peer, env, REQUEST_TIMEOUT).await?.expect(types::OK)?;
+        Ok(())
+    }
+
+    /// Phone: whether the PC `peer` takes input from this phone, asked over Bluetooth.
+    pub(crate) async fn ble_input_check(&self, peer: DeviceId) -> Result<()> {
+        self.ble_request(peer, Envelope::empty(types::REMOTE_CHECK), REQUEST_TIMEOUT)
+            .await?
+            .expect(types::OK)?;
+        Ok(())
+    }
+
+    /// The devices a Bluetooth link is up with.
+    pub(crate) fn ble_linked_peers(&self) -> Vec<DeviceId> {
+        lock(&self.ble.links).iter().filter(|(_, e)| !e.is_closed()).map(|(id, _)| *id).collect()
     }
 
     /// Sends `env` to `peer` on its Bluetooth link without waiting for a reply.

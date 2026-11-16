@@ -128,6 +128,7 @@ pub mod types {
     pub const AUDIO_PCM: &str = "audio.pcm";
     pub const AUDIO_BT_MEDIA: &str = "audio.bt_media";
     pub const BLE_KEY: &str = "ble.key";
+    pub const BLE_OTP: &str = "ble.otp";
 }
 
 /// What kind of device this is.
@@ -1399,6 +1400,32 @@ impl BleKey {
     /// The address, when it's well formed.
     pub fn bt_addr(&self) -> Option<&str> {
         self.bt_addr.as_deref().filter(|a| is_bt_addr(a))
+    }
+}
+
+/// A one-time code a phone saw in a notification, sent to a PC over the
+/// Bluetooth link (`ble.otp`) when they share no network; the notification
+/// itself isn't sent.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BleOtp {
+    pub code: String,
+    /// The app or sender it came from, for the PC's toast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl std::fmt::Debug for BleOtp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BleOtp").field("source", &self.source).finish_non_exhaustive()
+    }
+}
+
+impl BleOtp {
+    /// 4 to 12 letters, digits or dashes, from a source of at most 64 bytes.
+    pub fn is_valid(&self) -> bool {
+        (4..=12).contains(&self.code.len())
+            && self.code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && self.source.as_ref().is_none_or(|s| s.len() <= 64)
     }
 }
 
