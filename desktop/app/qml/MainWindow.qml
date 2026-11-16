@@ -844,19 +844,24 @@ NativeWindow {
         }
     }
 
+    // Menus stay below the window's own buttons.
+    readonly property real menuTopInset: captionButtons.visible ? captionButtons.height + 8 : 12
     PopupMenu {
         id: phoneMenu
         panelWidth: 280
+        topInset: window.menuTopInset
     }
     PopupMenu {
         id: g7Menu
         panelWidth: 260
         actions: window.g7MenuActions
+        topInset: window.menuTopInset
     }
     PopupMenu {
         id: actionsMenu
         filterable: true
         panelWidth: 340
+        topInset: window.menuTopInset
     }
     Shortcut {
         sequence: "Ctrl+B"

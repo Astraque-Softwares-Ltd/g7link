@@ -20,6 +20,9 @@ Item {
     property real anchorY: 0
     property bool upward: true
     property bool alignRight: false
+    // The panel stays this far below the window's top: clear of the window's
+    // own buttons when the window is short.
+    property real topInset: 12
     property int current: 0
     readonly property var shown: {
         const q = filter.text.trim().toLowerCase()
@@ -77,9 +80,10 @@ Item {
         id: panel
         objectName: "panel"
         width: Math.min(menu.panelWidth, menu.width - 24)
-        height: Math.min(content.implicitHeight + 12, menu.height - 24)
+        height: Math.min(content.implicitHeight + 12, menu.height - menu.topInset - 12)
         x: Math.max(12, Math.min(menu.width - width - 12, menu.alignRight ? menu.anchorX - width : menu.anchorX))
-        y: Math.max(12, Math.min(menu.height - height - 12, menu.upward ? menu.anchorY - height - 6 : menu.anchorY + 6))
+        y: Math.max(menu.topInset, Math.min(menu.height - height - 12,
+                                            menu.upward ? menu.anchorY - height - 6 : menu.anchorY + 6))
         radius: Theme.radiusXl
         color: Theme.surface
         border.width: 1
