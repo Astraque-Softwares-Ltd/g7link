@@ -12,7 +12,7 @@ use g7link_protocol::{
     messages::{Ring, RingStopped, types},
 };
 
-use crate::{NodeEvent, node::Shared, session::Session};
+use crate::{NodeEvent, node::Shared};
 
 const RING_DURATION: Duration = Duration::from_secs(60);
 
@@ -59,8 +59,14 @@ impl Shared {
         }
     }
 
-    pub(crate) async fn receive_ring(self: &Arc<Self>, session: &Arc<Session>, ring: Ring) {
-        let peer = session.peer;
+    /// `peer` asked this device to ring (or stop), on a session or a Bluetooth
+    /// link that holds while `alive` says so.
+    pub(crate) async fn receive_ring(
+        self: &Arc<Self>,
+        peer: DeviceId,
+        alive: impl Fn() -> bool + Send + 'static,
+        ring: Ring,
+    ) {
         if !ring.on {
             self.stop_local_ring_if(move |active| {
                 active.peer == peer && ring.token.is_none_or(|token| Some(token) == active.token)
@@ -69,11 +75,10 @@ impl Shared {
             return;
         }
         let shared = self.clone();
-        let session = session.clone();
         let next = Incoming { peer, token: ring.token, generation: rand::random() };
         let Ok(Some(previous)) = tokio::task::spawn_blocking(move || {
             let mut incoming = shared.rings.incoming.lock().unwrap_or_else(|e| e.into_inner());
-            if !session.is_alive() {
+            if !alive() {
                 return None;
             }
             let previous = incoming.replace(next);
@@ -122,12 +127,15 @@ impl Shared {
         }
     }
 
+    /// Tells the device that rang this one that it stopped: on the session, or
+    /// on the Bluetooth link when there's no session.
     async fn report_ring_stopped(&self, stopped: Incoming) {
-        if let Some(token) = stopped.token
-            && let Some(session) = self.session(&stopped.peer)
-            && let Ok(env) = Envelope::new(types::DEVICE_RING_STOPPED, &RingStopped { token })
-        {
+        let Some(token) = stopped.token else { return };
+        let Ok(env) = Envelope::new(types::DEVICE_RING_STOPPED, &RingStopped { token }) else { return };
+        if let Some(session) = self.session(&stopped.peer) {
             let _ = session.send(env).await;
+        } else if let Err(error) = self.ble_send(&stopped.peer, &env) {
+            tracing::debug!(peer = %stopped.peer.short(), %error, "couldn't say the ring stopped");
         }
     }
 }

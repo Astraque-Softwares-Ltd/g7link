@@ -880,6 +880,106 @@ async fn a_phone_and_a_pc_share_a_beacon_key_until_unpaired() {
     beacon_keys(&phone, 0).await;
 }
 
+/// Carries values between two Bluetooth link ends, as the platforms do, until
+/// the returned task is aborted.
+fn wire(a: Arc<g7link_core::BleEndpoint>, b: Arc<g7link_core::BleEndpoint>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let mut moved = false;
+            while let Some(value) = a.next_outbound() {
+                moved = true;
+                if b.receive(&value).is_err() {
+                    return;
+                }
+            }
+            while let Some(value) = b.next_outbound() {
+                moved = true;
+                if a.receive(&value).is_err() {
+                    return;
+                }
+            }
+            if !moved {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    })
+}
+
+/// A phone and a PC paired, both letting each other use Bluetooth, with the
+/// secret shared.
+async fn ble_pair() -> (TestDevice, TestDevice) {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &["ble.link"]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &["ble.link"]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    beacon_keys(&phone, 1).await;
+    pc.node.set_device_toggle(phone_id, "ble_link", true).unwrap();
+    phone.node.set_device_toggle(pc_id, "ble_link", true).unwrap();
+    (pc, phone)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bluetooth_link_comes_up_and_carries_a_ring() {
+    let (pc, phone) = ble_pair().await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    let on_pc = pc.node.ble_accept();
+    let on_phone = phone.node.ble_connect(pc_id).unwrap();
+    let pump = wire(on_phone.clone(), on_pc.clone());
+    with_timeout("link up", async {
+        while !(on_pc.is_up() && on_phone.is_up()) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(on_pc.peer(), Some(phone_id));
+    assert_eq!(on_phone.peer(), Some(pc_id));
+
+    with_timeout("ping", pc.node.ble_ping(phone_id)).await.expect("the phone answers over Bluetooth");
+    with_timeout("ping back", phone.node.ble_ping(pc_id)).await.expect("the PC answers over Bluetooth");
+
+    with_timeout("ring", pc.node.ble_ring(phone_id, true)).await.expect("the phone rings");
+    assert_eq!(*phone.platform.rings.lock().unwrap(), [true]);
+    with_timeout("stop", pc.node.ble_ring(phone_id, false)).await.expect("the phone stops");
+    assert_eq!(*phone.platform.rings.lock().unwrap(), [true, false]);
+
+    // A disconnect ends both ends; neither has a link after it.
+    pump.abort();
+    on_phone.close();
+    on_pc.close();
+    assert!(!pc.node.ble_linked(phone_id) && !phone.node.ble_linked(pc_id));
+    assert!(with_timeout("ping after close", phone.node.ble_ping(pc_id)).await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_that_hasnt_turned_bluetooth_on_isnt_linked() {
+    let (pc, phone) = ble_pair().await;
+    let pc_id = pc.node.device_id();
+    phone.node.set_device_toggle(pc_id, "ble_link", false).unwrap();
+    assert!(phone.node.ble_connect(pc_id).is_err());
+
+    // Turned off on the PC instead: the phone's handshake is refused.
+    phone.node.set_device_toggle(pc_id, "ble_link", true).unwrap();
+    pc.node.set_device_toggle(phone.node.device_id(), "ble_link", false).unwrap();
+    let on_pc = pc.node.ble_accept();
+    let on_phone = phone.node.ble_connect(pc_id).unwrap();
+    let mut refused = false;
+    while let Some(value) = on_phone.next_outbound() {
+        refused |= on_pc.receive(&value).is_err();
+    }
+    assert!(refused && !on_pc.is_up());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn garbage_before_the_handshake_ends_the_link() {
+    let (pc, _phone) = ble_pair().await;
+    let on_pc = pc.node.ble_accept();
+    // A first fragment announcing 300 bytes: more than a handshake message.
+    assert!(on_pc.receive(&[0x80, 0x01, 0x2C, 1, 2, 3]).is_err());
+    let on_pc = pc.node.ble_accept();
+    assert!(on_pc.receive(&[0x05]).is_err(), "out of sequence");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn update_hints_reach_peers_now_and_on_connect() {
     let mut pc = device("Desktop", DeviceKind::Desktop).await;

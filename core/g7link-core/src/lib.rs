@@ -53,6 +53,7 @@ pub mod usb;
 pub mod webcam;
 
 pub use actions::{PC_WAKE, PowerAction};
+pub use ble_link::{BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BleEndpoint};
 pub use calls::CallCommand;
 pub use clip_kind::{
     ClipKind, ClipSuggestion, classify_clip, maps_web_url, percent_encode, tracking_search_url,

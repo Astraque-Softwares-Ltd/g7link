@@ -331,4 +331,19 @@ pub enum NodeEvent {
     /// The Bluetooth beacon keys this device shares with paired devices
     /// changed ([`Node::ble_beacon_keys`](crate::Node::ble_beacon_keys)).
     BleKeysChanged,
+    /// The Bluetooth link end `endpoint` (its [`BleEndpoint::id`](crate::BleEndpoint::id))
+    /// has values to send: the platform sends what `next_outbound` gives it.
+    BleOutbound {
+        endpoint: u64,
+    },
+    /// PC: there's something for `device` and no link with it; the platform
+    /// lets the phone connect over Bluetooth for a while.
+    BleWanted {
+        device: DeviceId,
+    },
+    /// A Bluetooth link with `device` came up or went.
+    BleLinkChanged {
+        device: DeviceId,
+        up: bool,
+    },
 }

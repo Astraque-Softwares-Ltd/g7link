@@ -884,6 +884,15 @@ pub enum Event {
     /// The Bluetooth beacon keys shared with paired PCs changed: read them
     /// again with `Node::ble_beacon_keys`.
     BleKeysChanged,
+    /// The Bluetooth link end `endpoint` has values to write.
+    BleOutbound {
+        endpoint: u64,
+    },
+    /// A Bluetooth link with a PC came up or went.
+    BleLinkChanged {
+        id: String,
+        up: bool,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -1281,6 +1290,45 @@ impl MirrorStream {
     }
 
     /// Ends the stream (`close` frees the object, as for every object).
+    pub fn end(&self) {
+        self.0.close();
+    }
+}
+
+/// One end of a Bluetooth link with a paired PC (docs/protocol/bluetooth.md):
+/// give it each value notified on TX, write what `next_outbound` gives to RX
+/// in order, and end it on any error or disconnect.
+#[derive(Debug, uniffi::Object)]
+pub struct BleEndpoint(Arc<core::BleEndpoint>);
+
+#[uniffi::export]
+impl BleEndpoint {
+    /// What `Event::BleOutbound` names this end by.
+    pub fn id(&self) -> u64 {
+        self.0.id()
+    }
+
+    /// The link's ATT MTU, once negotiated.
+    pub fn set_mtu(&self, att_mtu: u16) {
+        self.0.set_mtu(att_mtu);
+    }
+
+    /// A value the PC notified. An error means the link is done.
+    pub fn receive(&self, value: Vec<u8>) -> Result<()> {
+        Ok(self.0.receive(&value)?)
+    }
+
+    /// The next value to write, or none.
+    pub fn next_outbound(&self) -> Option<Vec<u8>> {
+        self.0.next_outbound()
+    }
+
+    /// The PC's device ID, once it has proved who it is.
+    pub fn peer(&self) -> Option<String> {
+        self.0.peer().map(|p| p.to_string())
+    }
+
+    /// Ends the link (`close` frees the object, as for every object).
     pub fn end(&self) {
         self.0.close();
     }
@@ -2670,6 +2718,10 @@ impl Event {
                 Event::PcAudioFrame { device: device.to_string(), sample_rate, channels, pcm }
             }
             NodeEvent::BleKeysChanged => Event::BleKeysChanged,
+            NodeEvent::BleOutbound { endpoint } => Event::BleOutbound { endpoint },
+            NodeEvent::BleLinkChanged { device, up } => Event::BleLinkChanged { id: device.to_string(), up },
+            // Asked for by PCs only.
+            NodeEvent::BleWanted { .. } => return None,
         })
     }
 }
@@ -3736,6 +3788,12 @@ impl G7LinkNode {
 
     pub fn capabilities(&self, id: String) -> Result<Vec<Feature>> {
         Ok(features(&self.node.capabilities(parse_id(&id)?)?))
+    }
+
+    /// Starts a Bluetooth link with the PC `id`, whose beacon asked for one.
+    /// Refused unless both let the other use Bluetooth.
+    pub fn ble_connect(&self, id: String) -> Result<Arc<BleEndpoint>> {
+        Ok(Arc::new(BleEndpoint(self.node.ble_connect(parse_id(&id)?)?)))
     }
 
     /// The key of each paired PC's Bluetooth beacon (docs/protocol/bluetooth.md).

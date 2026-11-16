@@ -647,7 +647,8 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
         }
         types::DEVICE_RING => {
             let ring: Ring = env.body()?;
-            shared.receive_ring(session, ring).await;
+            let alive = Arc::downgrade(session);
+            shared.receive_ring(peer, move || alive.upgrade().is_some_and(|s| s.is_alive()), ring).await;
             session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
         }
         types::DEVICE_RING_STOPPED => {

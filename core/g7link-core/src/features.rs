@@ -345,6 +345,9 @@ pub const DEVICE_TOGGLES: &[(&str, bool)] = &[
     // A phone's media stays on the phone (its headphones) unless the user
     // lets it play on the PC over Bluetooth. Kept the same on both devices.
     ("bt_media", false),
+    // Ring, the hotspot and small clipboard text over Bluetooth when the two
+    // share no network (docs/protocol/bluetooth.md). Off until turned on.
+    ("ble_link", false),
     ("photos", true),
     ("recordings", true),
     ("toggles", true),

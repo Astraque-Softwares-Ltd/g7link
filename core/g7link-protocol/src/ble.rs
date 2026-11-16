@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Bluetooth LE: the PC's rotating beacon.
+//! Bluetooth LE: the PC's rotating beacon, and the framing of the channel a
+//! paired phone opens to the PC's GATT service.
 //!
 //! A PC broadcasts manufacturer data (company [`COMPANY_ID`]) made of
 //! [`HEADER`] and six-byte slots. Each slot is a tag only one paired phone can
@@ -119,6 +120,126 @@ pub fn match_payload(payload: &[u8], beacon_key: &[u8; 32], epoch: u64) -> Optio
     })
 }
 
+// ---- The Bluetooth channel: GATT service and framing ----
+
+/// The PC's GATT service the phone connects to.
+pub const SERVICE_UUID: &str = "bcac09a4-522f-43c6-9533-b30bd7428154";
+/// Phone to PC: written, with a response.
+pub const RX_UUID: &str = "7f2964e4-c2df-4b2e-8425-68d2be4c85ab";
+/// PC to phone: notified.
+pub const TX_UUID: &str = "ea1df14d-6860-4376-a3b0-64fdcb79d7f2";
+/// A record at most: a 4096-byte message and its 16-byte tag.
+pub const MAX_RECORD: usize = 4096 + 16;
+/// A record before the other device has proved who it is: a handshake message.
+pub const MAX_HANDSHAKE_RECORD: usize = 256;
+/// The smallest ATT MTU, whose values hold 20 bytes.
+pub const MIN_ATT_MTU: u16 = 23;
+/// The largest ATT MTU.
+pub const MAX_ATT_MTU: u16 = 517;
+
+const FIRST: u8 = 0x80;
+const LAST: u8 = 0x40;
+const SEQ: u8 = 0x3F;
+
+/// Why a Bluetooth link ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LinkError {
+    #[error("record too long")]
+    TooLong,
+    #[error("fragment out of order")]
+    OutOfOrder,
+    #[error("malformed fragment")]
+    Malformed,
+}
+
+/// The bytes one value carries over a link with `att_mtu`.
+fn value_len(att_mtu: u16) -> usize {
+    usize::from(att_mtu.clamp(MIN_ATT_MTU, MAX_ATT_MTU)) - 3
+}
+
+/// The fragments `record` goes in over a link with `att_mtu`, numbered on from
+/// `seq`, which is left at the next number. Each fragment is one value: a
+/// header byte (first, last, a 6-bit sequence number), then on the first the
+/// record's length (big endian, 2 bytes), then the record's bytes.
+pub fn fragments(record: &[u8], att_mtu: u16, seq: &mut u8) -> Result<Vec<Vec<u8>>, LinkError> {
+    let len = u16::try_from(record.len()).map_err(|_| LinkError::TooLong)?;
+    if record.len() > MAX_RECORD {
+        return Err(LinkError::TooLong);
+    }
+    let value = value_len(att_mtu);
+    let mut out = Vec::with_capacity(record.len() / (value - 1) + 1);
+    let mut rest = record;
+    let mut first = true;
+    loop {
+        let room = value - 1 - if first { 2 } else { 0 };
+        let (chunk, tail) = rest.split_at(rest.len().min(room));
+        let last = tail.is_empty();
+        let mut fragment = Vec::with_capacity(value);
+        fragment.push(if first { FIRST } else { 0 } | if last { LAST } else { 0 } | (*seq & SEQ));
+        *seq = seq.wrapping_add(1) & SEQ;
+        if first {
+            fragment.extend_from_slice(&len.to_be_bytes());
+        }
+        fragment.extend_from_slice(chunk);
+        out.push(fragment);
+        if last {
+            return Ok(out);
+        }
+        rest = tail;
+        first = false;
+    }
+}
+
+/// Puts records back together from their fragments, in order, refusing
+/// anything out of sequence or longer than allowed before it holds the bytes.
+#[derive(Debug, Default)]
+pub struct Reassembler {
+    next_seq: u8,
+    /// The record coming in: its announced length and what arrived of it.
+    open: Option<(usize, Vec<u8>)>,
+}
+
+impl Reassembler {
+    /// Takes the next fragment; a whole record once its last fragment is in.
+    /// Records longer than `limit` are refused. Any error ends the link.
+    pub fn push(&mut self, fragment: &[u8], limit: usize) -> Result<Option<Vec<u8>>, LinkError> {
+        let (&head, body) = fragment.split_first().ok_or(LinkError::Malformed)?;
+        if head & SEQ != self.next_seq {
+            return Err(LinkError::OutOfOrder);
+        }
+        self.next_seq = (self.next_seq + 1) & SEQ;
+        let body = if head & FIRST != 0 {
+            if self.open.is_some() {
+                return Err(LinkError::OutOfOrder);
+            }
+            let (len, rest) = body.split_first_chunk::<2>().ok_or(LinkError::Malformed)?;
+            let len = usize::from(u16::from_be_bytes(*len));
+            if len > limit.min(MAX_RECORD) {
+                return Err(LinkError::TooLong);
+            }
+            self.open = Some((len, Vec::with_capacity(len)));
+            rest
+        } else {
+            body
+        };
+        let Some((len, buf)) = self.open.as_mut() else {
+            return Err(LinkError::OutOfOrder);
+        };
+        if buf.len() + body.len() > *len {
+            return Err(LinkError::TooLong);
+        }
+        buf.extend_from_slice(body);
+        if head & LAST == 0 {
+            return Ok(None);
+        }
+        let (len, buf) = self.open.take().ok_or(LinkError::Malformed)?;
+        if buf.len() != len {
+            return Err(LinkError::Malformed);
+        }
+        Ok(Some(buf))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +317,52 @@ mod tests {
     fn a_bad_order_or_short_filler_never_panics() {
         let data = payload(&[], BEACON_SLOTS, &[], &[9, 9]);
         assert_eq!(data.len(), HEADER.len() + BEACON_SLOTS * TAG_LEN);
+    }
+
+    #[test]
+    fn records_come_back_whole_from_their_fragments() {
+        for mtu in [MIN_ATT_MTU, 100, MAX_ATT_MTU] {
+            for len in [0, 1, 17, 19, 20, 300, MAX_RECORD] {
+                let record: Vec<u8> = (0..len).map(|i| i as u8).collect();
+                let mut seq = 60;
+                let parts = fragments(&record, mtu, &mut seq).unwrap();
+                assert!(parts.iter().all(|p| p.len() <= usize::from(mtu) - 3), "fits the MTU");
+                let mut rx = Reassembler { next_seq: 60, open: None };
+                let mut out = None;
+                for (i, part) in parts.iter().enumerate() {
+                    let got = rx.push(part, MAX_RECORD).unwrap();
+                    assert_eq!(got.is_some(), i == parts.len() - 1);
+                    out = got.or(out);
+                }
+                assert_eq!(out.unwrap(), record);
+            }
+        }
+    }
+
+    #[test]
+    fn too_long_out_of_order_or_malformed_fragments_end_the_link() {
+        let mut seq = 0;
+        assert_eq!(fragments(&vec![0; MAX_RECORD + 1], MIN_ATT_MTU, &mut seq), Err(LinkError::TooLong));
+        // Announcing more than allowed is refused before anything is kept.
+        assert_eq!(Reassembler::default().push(&[FIRST, 0x01, 0x2C, 1], 256), Err(LinkError::TooLong));
+        assert_eq!(Reassembler::default().push(&[FIRST | 3, 0, 1, 1], 256), Err(LinkError::OutOfOrder));
+        assert_eq!(Reassembler::default().push(&[0], 256), Err(LinkError::OutOfOrder), "no record open");
+        assert_eq!(Reassembler::default().push(&[], 256), Err(LinkError::Malformed));
+        assert_eq!(Reassembler::default().push(&[FIRST | LAST, 0], 256), Err(LinkError::Malformed));
+        // More bytes than announced, and a first fragment inside a record.
+        assert_eq!(Reassembler::default().push(&[FIRST | LAST, 0, 1, 7, 7], 256), Err(LinkError::TooLong));
+        let mut rx = Reassembler::default();
+        assert_eq!(rx.push(&[FIRST, 0, 4, 1], 256), Ok(None));
+        assert_eq!(rx.push(&[FIRST | 1, 0, 1, 1], 256), Err(LinkError::OutOfOrder));
+        // Short of what was announced.
+        let mut rx = Reassembler::default();
+        assert_eq!(rx.push(&[FIRST, 0, 4, 1], 256), Ok(None));
+        assert_eq!(rx.push(&[LAST | 1, 2], 256), Err(LinkError::Malformed));
+        // A duplicate.
+        let mut seq = 0;
+        let parts = fragments(&[5; 40], MIN_ATT_MTU, &mut seq).unwrap();
+        let mut rx = Reassembler::default();
+        rx.push(&parts[0], 256).unwrap();
+        assert_eq!(rx.push(&parts[0], 256), Err(LinkError::OutOfOrder));
     }
 }

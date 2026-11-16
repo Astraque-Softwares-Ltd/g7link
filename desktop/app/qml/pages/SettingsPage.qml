@@ -500,7 +500,8 @@ Item {
         remote_input: qsTr("Control this PC"),
         commands: qsTr("Run Deck shell commands"),
         remote_files: qsTr("Browse PC folders"),
-        bt_media: qsTr("Phone media on this PC")
+        bt_media: qsTr("Phone media on this PC"),
+        ble_link: qsTr("Bluetooth when there's no network")
     })
     readonly property var toggleDetails: ({
         notifications: qsTr("Show on this PC"),
@@ -522,7 +523,8 @@ Item {
         remote_input: qsTr("Mouse, keyboard and Deck"),
         commands: qsTr("Only for a phone you trust"),
         remote_files: qsTr("Your PC's folders on the phone"),
-        bt_media: qsTr("Over Bluetooth. Off: it keeps playing on the phone's own speaker or headphones")
+        bt_media: qsTr("Over Bluetooth. Off: it keeps playing on the phone's own speaker or headphones"),
+        ble_link: qsTr("Ring it, turn on its hotspot and pass small copied text over Bluetooth. Turn it on on the phone too")
     })
     readonly property var toggleTints: ({
         notifications: Theme.tintBlue,
@@ -544,10 +546,11 @@ Item {
         remote_input: Theme.tintTeal,
         commands: Theme.tintGreen,
         remote_files: Theme.tintAmber,
-        bt_media: Theme.tintBlue
+        bt_media: Theme.tintBlue,
+        ble_link: Theme.tintBlue
     })
     // Higher-trust access: off until the user turns it on.
-    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage"]
+    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage", "ble_link"]
 
     readonly property var toggleIcons: ({
         notifications: Icons.bell,
@@ -569,7 +572,8 @@ Item {
         remote_input: Icons.mouse,
         commands: Icons.terminal,
         remote_files: Icons.folder,
-        bt_media: Icons.bluetooth
+        bt_media: Icons.bluetooth,
+        ble_link: Icons.bluetooth
     })
 
     FolderDialog {

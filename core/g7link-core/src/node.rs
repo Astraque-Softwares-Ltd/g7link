@@ -206,6 +206,8 @@ pub(crate) struct Shared {
     /// This device's media players (docs/protocol/media.md).
     pub players: crate::media::Players,
     pub(crate) rings: crate::ring::Rings,
+    /// Bluetooth links with paired devices, and requests waiting on them.
+    pub(crate) ble: crate::ble_link::BleLinks,
     /// This phone's call in progress (docs/protocol/calls.md).
     pub(crate) calls: crate::calls::Current,
     /// This phone's quick settings state (docs/protocol/toggles.md).
@@ -745,6 +747,11 @@ impl Shared {
 
     /// Whether a device toggle (see [`features::DEVICE_TOGGLES`]) is on for
     /// `peer`; unknown toggles are off.
+    /// Signs `message` with this device's key.
+    pub(crate) fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.secret.sign(message).to_bytes()
+    }
+
     pub fn toggle_on(&self, peer: &DeviceId, toggle: &str) -> bool {
         self.store
             .toggle(peer, toggle)
@@ -1429,6 +1436,7 @@ impl Shared {
                 self.emit(NodeEvent::QueueDroppedOnUnpair { peer: *peer, peer_name, dropped_count });
             }
         }
+        self.close_ble_link(peer);
         if existed {
             self.emit(NodeEvent::DeviceRemoved(*peer));
             self.emit(NodeEvent::BleKeysChanged);
@@ -2082,6 +2090,7 @@ impl Node {
             notification_history: Mutex::new(Vec::new()),
             players: Default::default(),
             rings: Default::default(),
+            ble: Default::default(),
             calls: Default::default(),
             toggles: Default::default(),
             wake_info: Default::default(),
@@ -2483,13 +2492,31 @@ impl Node {
         self.shared.forget_peer(&peer).await
     }
 
-    /// Asks a device to start or stop ringing.
+    /// Asks a device to start or stop ringing: over the session, or over the
+    /// Bluetooth link when there's no session and the two may use one.
     pub async fn ring(&self, peer: DeviceId, on: bool) -> Result<()> {
+        if self.shared.session(&peer).is_none() && self.shared.ble_usable(&peer) {
+            return self.ble_ring(peer, on).await;
+        }
         let session = self.connected(&peer)?;
         let _command = session.ring_command.lock().await;
         let token =
             if on { Some(self.shared.start_remote_ring(peer)) } else { self.shared.remote_ring_token(peer) };
         let reply = self.request(peer, Envelope::new(types::DEVICE_RING, &Ring { on, token })?).await;
+        let result = reply.and_then(|reply| Ok(reply.expect(types::OK)?));
+        if !on || result.is_err() {
+            self.shared.clear_remote_ring(peer, token);
+        }
+        result
+    }
+
+    /// Asks a device to start or stop ringing over the Bluetooth link, which
+    /// the PC asks the phone to open when there's none.
+    pub async fn ble_ring(&self, peer: DeviceId, on: bool) -> Result<()> {
+        let token =
+            if on { Some(self.shared.start_remote_ring(peer)) } else { self.shared.remote_ring_token(peer) };
+        let env = Envelope::new(types::DEVICE_RING, &Ring { on, token })?;
+        let reply = self.shared.ble_request(peer, env, Duration::from_secs(30)).await;
         let result = reply.and_then(|reply| Ok(reply.expect(types::OK)?));
         if !on || result.is_err() {
             self.shared.clear_remote_ring(peer, token);
@@ -2556,6 +2583,49 @@ impl Node {
     /// device that has one (docs/protocol/bluetooth.md).
     pub fn ble_beacon_keys(&self) -> Vec<(DeviceId, [u8; 32])> {
         self.shared.ble_beacon_keys()
+    }
+
+    /// PC: a new end for a phone to open a Bluetooth link to
+    /// (docs/protocol/bluetooth.md).
+    pub fn ble_accept(&self) -> Arc<crate::BleEndpoint> {
+        crate::BleEndpoint::accept(&self.shared)
+    }
+
+    /// Phone: starts a Bluetooth link with the PC `peer`. Refused unless both
+    /// let the other use Bluetooth and share a secret.
+    pub fn ble_connect(&self, peer: DeviceId) -> Result<Arc<crate::BleEndpoint>> {
+        if !self.shared.store.is_paired(&peer)? {
+            return Err(Error::NotPaired);
+        }
+        if !self.shared.ble_usable(&peer) {
+            return Err(Error::Denied);
+        }
+        let secret = self.shared.store.link_secret(&peer)?.ok_or(Error::Denied)?;
+        crate::BleEndpoint::connect(&self.shared, peer, secret)
+    }
+
+    /// Whether this device and `peer` may use a Bluetooth link with each other.
+    pub fn ble_usable(&self, peer: DeviceId) -> bool {
+        self.shared.ble_usable(&peer)
+    }
+
+    /// Whether a Bluetooth link with `peer` is up.
+    pub fn ble_linked(&self, peer: DeviceId) -> bool {
+        self.shared.ble_link(&peer).is_some()
+    }
+
+    /// Ends the Bluetooth link with `peer`, if there is one.
+    pub fn close_ble_link(&self, peer: DeviceId) {
+        self.shared.close_ble_link(&peer);
+    }
+
+    /// Checks the Bluetooth link with `peer` answers; how long it took.
+    pub async fn ble_ping(&self, peer: DeviceId) -> Result<Duration> {
+        let started = std::time::Instant::now();
+        let reply =
+            self.shared.ble_request(peer, Envelope::empty(types::PING), Duration::from_secs(10)).await?;
+        reply.expect(types::PONG)?;
+        Ok(started.elapsed())
     }
 
     /// Whether paired `peer` offered `capability` when it last connected.

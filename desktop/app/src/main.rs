@@ -9,6 +9,7 @@ mod atomic_file;
 mod automations;
 mod badges;
 mod battery;
+mod ble_link;
 mod bridge;
 mod bt_phones;
 mod calls;
@@ -566,6 +567,9 @@ fn main() -> ExitCode {
     core_host::spawn(async {
         if let Some(node) = core_host::wait_for_node().await {
             sys::ble_beacon::start(node.device_id());
+            // Once the beacon worker has looked at BlueZ.
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            ble_link::started();
         }
     });
     core_host::host().hub.update(|s| {

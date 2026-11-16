@@ -7,6 +7,7 @@ pub mod audio;
 pub mod audio_out;
 pub mod autostart;
 pub mod ble_beacon;
+mod ble_gatt;
 pub mod browser;
 pub mod bt_hfp;
 pub mod clipboard;

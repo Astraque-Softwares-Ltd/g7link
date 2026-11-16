@@ -8,6 +8,12 @@
 //! for the old beacon (it doesn't announce `ble.beacon2`), that one is
 //! broadcast too. Never spawns `bluetoothctl` or starts a scan of its own.
 //!
+//! For phones the user lets use Bluetooth, it also serves the PC's GATT
+//! service ([`super::ble_gatt`]). A connectable advertisement shows the PC's
+//! public address, so the PC can be connected to only in short windows opened
+//! for a reason ([`open_window`]): it then advertises a "connect" tag for the
+//! phones wanted instead of the beacon.
+//!
 //! The beacon follows BlueZ as it reports changes: it is broadcast as soon as
 //! BlueZ starts (also when that is after G7 Link), again after `bluetoothd`
 //! restarts, and when Bluetooth is turned back on or the PC resumes.
@@ -23,8 +29,10 @@ use std::time::{Duration, Instant};
 
 use g7link_core::{
     DeviceId, NodeEvent,
-    ble::{self, BEACON_SLOTS, TAG_LEN, TagKind},
+    ble::{self, BEACON_SLOTS, TAG_LEN, TagKind, WINDOW_SLOTS},
 };
+
+use super::ble_gatt::{self, LinkMsg, LinkSender};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
 pub const COMPANY_ID: u16 = ble::COMPANY_ID;
@@ -51,6 +59,7 @@ const WATCHER_TIMEOUT: Duration = Duration::from_secs(2);
 
 const BLUEZ: &str = "org.bluez";
 const ADAPTER: &str = "org.bluez.Adapter1";
+const DEVICE: &str = "org.bluez.Device1";
 const ADVERTISING_MANAGER: &str = "org.bluez.LEAdvertisingManager1";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const ADVERTISEMENT_PATH: &str = "/app/g7link/beacon";
@@ -59,10 +68,17 @@ const ADVERTISEMENT_PATH: &str = "/app/g7link/beacon";
 const DEFAULT_INTERVAL_PATH: &str = "/app/g7link/beacon_default_interval";
 /// The old beacon, for phones whose app doesn't know the new one yet.
 const LEGACY_PATH: &str = "/app/g7link/beacon_legacy";
+/// The advertisement a phone can connect to, during a window.
+const CONNECT_PATH: &str = "/app/g7link/connect";
+const GATT_MANAGER: &str = "org.bluez.GattManager1";
 /// Where the signal watcher is told to stop.
 const WATCHER_INTERFACE: &str = "app.g7link.BeaconWatcher";
 
 static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+/// The link thread of the running worker.
+static LINK: Mutex<Option<LinkSender>> = Mutex::new(None);
+/// An adapter here can serve the GATT service, so phones may use Bluetooth with this PC.
+static CAN_LINK: AtomicBool = AtomicBool::new(false);
 
 type ManagedObjects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
 
@@ -81,6 +97,8 @@ struct BeaconPhones {
     keys: Vec<[u8; 32]>,
     /// Some paired phone's app looks for the old beacon.
     legacy: bool,
+    /// Some paired phone may use Bluetooth with this PC: the GATT service is served.
+    linkable: bool,
 }
 
 /// The paired phones the beacon is for, as the core knows them.
@@ -98,7 +116,8 @@ fn paired_phones() -> BeaconPhones {
         .map(|d| d.id)
         .collect();
     let legacy = phones.iter().any(|&id| !node.peer_offers(id, BEACON2));
-    BeaconPhones { keys, legacy }
+    let linkable = phones.iter().any(|&id| node.ble_usable(id));
+    BeaconPhones { keys, legacy, linkable }
 }
 
 fn unix_now() -> u64 {
@@ -110,6 +129,7 @@ pub fn start(device_id: DeviceId) {
         connect: Arc::new(zbus::blocking::connection::Builder::system),
         phones: Arc::new(paired_phones),
         now: unix_now,
+        accept: Arc::new(|| crate::core_host::node().map(|node| node.ble_accept())),
     };
     start_in(&WORKER, env, device_id);
 }
@@ -125,16 +145,52 @@ pub fn phones_changed() {
     }
 }
 
-/// Follows the core's events that change who the beacon is for.
+/// Follows the core's events that change who the beacon is for, and hands
+/// the link thread what the core has to send.
 pub fn on_event(event: &NodeEvent) {
-    if matches!(
-        event,
+    match event {
         NodeEvent::BleKeysChanged
-            | NodeEvent::Capabilities(_)
-            | NodeEvent::DeviceAdded(_)
-            | NodeEvent::DeviceRemoved(_)
-    ) {
-        phones_changed();
+        | NodeEvent::Capabilities(_)
+        | NodeEvent::DeviceAdded(_)
+        | NodeEvent::DeviceRemoved(_)
+        | NodeEvent::DeviceToggleChanged { .. } => phones_changed(),
+        NodeEvent::BleOutbound { .. } => tell_link(LinkMsg::Outbound),
+        _ => {}
+    }
+}
+
+fn tell_link(message: LinkMsg) {
+    if let Some(link) = LINK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = link.try_send(message);
+    }
+}
+
+/// Whether an adapter here can serve the GATT service a phone connects to.
+pub fn can_link() -> bool {
+    CAN_LINK.load(Ordering::Relaxed)
+}
+
+/// Lets the phones whose beacon keys are `keys` connect over Bluetooth for
+/// `open`: the PC advertises their "connect" tags, and can be connected to,
+/// until the window closes or a link is up.
+pub fn open_window(keys: Vec<[u8; 32]>, open: Duration) {
+    if keys.is_empty() {
+        return;
+    }
+    if let Some(worker) = WORKER.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        *worker.wake.window.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Window { keys, until: Instant::now() + open });
+        worker.wake.set(|w| w.resync = true);
+    }
+}
+
+/// Ends the window early (a phone connected).
+pub fn close_window() {
+    if let Some(worker) = WORKER.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let closed = worker.wake.window.lock().unwrap_or_else(|e| e.into_inner()).take().is_some();
+        if closed {
+            worker.wake.set(|w| w.resync = true);
+        }
     }
 }
 
@@ -160,18 +216,28 @@ struct Wakeup {
     resync: bool,
     /// BlueZ started, stopped or restarted, so it holds no registration.
     bluez_changed: bool,
+    /// A device connected or disconnected.
+    devices: bool,
 }
 
 impl Wakeup {
     fn pending(&self) -> bool {
-        self.stopped || self.resync || self.bluez_changed
+        self.stopped || self.resync || self.bluez_changed || self.devices
     }
+}
+
+/// A time the PC can be connected to, and the phones it's for.
+#[derive(Debug, Clone)]
+struct Window {
+    keys: Vec<[u8; 32]>,
+    until: Instant,
 }
 
 #[derive(Debug, Default)]
 struct Wake {
     state: Mutex<Wakeup>,
     cv: Condvar,
+    window: Mutex<Option<Window>>,
 }
 
 impl Wake {
@@ -186,6 +252,15 @@ impl Wake {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).stopped
     }
 
+    /// The window, while it's open.
+    fn window(&self) -> Option<Window> {
+        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        if window.as_ref().is_some_and(|w| w.until <= Instant::now()) {
+            *window = None;
+        }
+        window.clone()
+    }
+
     /// Waits until woken or `timeout` passes, and takes what it was woken for.
     fn wait(&self, timeout: Duration) -> Wakeup {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -194,6 +269,7 @@ impl Wake {
         let woken = *state;
         state.resync = false;
         state.bluez_changed = false;
+        state.devices = false;
         woken
     }
 }
@@ -292,18 +368,62 @@ impl LegacyAdvertisement {
     }
 }
 
+/// The advertisement a phone can connect to, during a window: BlueZ adds the
+/// flags and makes it connectable.
+struct ConnectAdvertisement(Advertisement);
+
+#[zbus::interface(name = "org.bluez.LEAdvertisement1")]
+impl ConnectAdvertisement {
+    fn release(&self) {
+        self.0.on_release();
+    }
+
+    #[zbus(property, name = "Type")]
+    fn kind(&self) -> String {
+        "peripheral".to_owned()
+    }
+
+    #[zbus(property)]
+    fn manufacturer_data(&self) -> HashMap<u16, OwnedValue> {
+        self.0.data()
+    }
+
+    #[zbus(property)]
+    fn discoverable(&self) -> bool {
+        false
+    }
+
+    #[zbus(property)]
+    fn min_interval(&self) -> u32 {
+        MIN_INTERVAL_MS
+    }
+
+    #[zbus(property)]
+    fn max_interval(&self) -> u32 {
+        MAX_INTERVAL_MS
+    }
+}
+
 /// What the rotating beacon holds while it's registered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Shown {
+    /// Presence, or "connect" during a window.
+    kind: TagKind,
     epoch: u64,
     /// Which set of phones, when they don't all fit.
     turn: u64,
     keys: Vec<[u8; 32]>,
 }
 
-/// What the rotating beacon should hold at `now` for `phones`; `None` when
-/// there's no one to broadcast for.
-fn wanted(phones: &BeaconPhones, now: u64, delay: u64) -> Option<Shown> {
+/// What the rotating beacon should hold at `now` for `phones`, or for the
+/// window's phones while one is open; `None` when there's no one to
+/// broadcast for.
+fn wanted(phones: &BeaconPhones, window: Option<&Window>, now: u64, delay: u64) -> Option<Shown> {
+    if let Some(window) = window {
+        let epoch = ble::epoch_at(now);
+        let keys = window.keys.iter().take(WINDOW_SLOTS).copied().collect();
+        return Some(Shown { kind: TagKind::Connect, epoch, turn: 0, keys });
+    }
     if phones.keys.is_empty() {
         return None;
     }
@@ -312,7 +432,7 @@ fn wanted(phones: &BeaconPhones, now: u64, delay: u64) -> Option<Shown> {
     let turn = (now / TURN_SECS) % turns;
     let first = usize::try_from(turn).unwrap_or(0) * BEACON_SLOTS;
     let keys = phones.keys.iter().skip(first).take(BEACON_SLOTS).copied().collect();
-    Some(Shown { epoch, turn, keys })
+    Some(Shown { kind: TagKind::Presence, epoch, turn, keys })
 }
 
 /// `0..n` in random order.
@@ -328,9 +448,11 @@ fn shuffled(n: usize) -> Vec<usize> {
 /// the rest, in random order.
 fn beacon_payload(shown: &Shown) -> Vec<u8> {
     let tags: Vec<[u8; TAG_LEN]> =
-        shown.keys.iter().map(|key| ble::tag(key, TagKind::Presence, shown.epoch)).collect();
+        shown.keys.iter().map(|key| ble::tag(key, shown.kind, shown.epoch)).collect();
+    // A connectable advertisement has BlueZ's flags too: one slot fewer fits.
+    let slots = if shown.kind == TagKind::Connect { WINDOW_SLOTS } else { BEACON_SLOTS };
     let filler: [u8; BEACON_SLOTS * TAG_LEN] = rand::random();
-    ble::payload(&tags, BEACON_SLOTS, &filler, &shuffled(BEACON_SLOTS))
+    ble::payload(&tags, slots, &filler, &shuffled(slots))
 }
 
 /// Keeps the beacons registered with the first powered adapter that can
@@ -345,6 +467,8 @@ struct Beacon {
     shown: Option<Shown>,
     /// The old beacon is registered.
     legacy: bool,
+    /// The GATT service is registered with the adapter.
+    gatt: bool,
     /// BlueZ refused the faster interval, so the beacon goes without it.
     default_interval: bool,
     /// How long after a window starts the beacon changes, on this run.
@@ -359,6 +483,7 @@ impl Beacon {
         builder: zbus::blocking::connection::Builder<'_>,
         device_id: &DeviceId,
         wake: Arc<Wake>,
+        to_link: LinkSender,
     ) -> zbus::Result<(zbus::blocking::Connection, Self)> {
         let released = Arc::new(AtomicBool::new(false));
         let legacy_released = Arc::new(AtomicBool::new(false));
@@ -372,8 +497,13 @@ impl Beacon {
         };
         let conn = builder
             .serve_at(ADVERTISEMENT_PATH, FastAdvertisement(advertisement.clone()))?
-            .serve_at(DEFAULT_INTERVAL_PATH, DefaultIntervalAdvertisement(advertisement))?
+            .serve_at(DEFAULT_INTERVAL_PATH, DefaultIntervalAdvertisement(advertisement.clone()))?
             .serve_at(LEGACY_PATH, LegacyAdvertisement(legacy))?
+            .serve_at(CONNECT_PATH, ConnectAdvertisement(advertisement))?
+            .serve_at(ble_gatt::APP_PATH, zbus::fdo::ObjectManager)?
+            .serve_at(ble_gatt::SERVICE_PATH, ble_gatt::Service)?
+            .serve_at(ble_gatt::RX_PATH, ble_gatt::Rx { to_link })?
+            .serve_at(ble_gatt::TX_PATH, ble_gatt::Tx)?
             .build()?;
         let beacon = Self {
             adapter: None,
@@ -382,6 +512,7 @@ impl Beacon {
             legacy_released,
             shown: None,
             legacy: false,
+            gatt: false,
             default_interval: false,
             delay: rand::random_range(0..=MAX_ROTATE_DELAY_SECS),
             last_error: None,
@@ -389,8 +520,13 @@ impl Beacon {
         Ok((conn, beacon))
     }
 
-    fn path(&self) -> &'static str {
-        if self.default_interval { DEFAULT_INTERVAL_PATH } else { ADVERTISEMENT_PATH }
+    /// Where the advertisement for `kind` is served.
+    fn path(&self, kind: TagKind) -> &'static str {
+        match kind {
+            TagKind::Connect => CONNECT_PATH,
+            TagKind::Presence if self.default_interval => DEFAULT_INTERVAL_PATH,
+            TagKind::Presence => ADVERTISEMENT_PATH,
+        }
     }
 
     /// BlueZ went away, and its registrations with it.
@@ -398,6 +534,7 @@ impl Beacon {
         self.adapter = None;
         self.shown = None;
         self.legacy = false;
+        self.gatt = false;
     }
 
     /// Says a failure once, however often it's tried again.
@@ -414,6 +551,7 @@ impl Beacon {
         conn: &zbus::blocking::Connection,
         objects: &ManagedObjects,
         phones: &BeaconPhones,
+        window: Option<&Window>,
         now: u64,
     ) {
         if self.released.swap(false, Ordering::SeqCst) {
@@ -433,14 +571,35 @@ impl Beacon {
             return;
         };
 
-        let wanted = wanted(phones, now, self.delay);
+        let can_gatt = objects.get(&adapter).is_some_and(|ifaces| ifaces.contains_key(GATT_MANAGER));
+        if CAN_LINK.swap(can_gatt, Ordering::Relaxed) != can_gatt {
+            crate::core_host::refresh_capabilities();
+        }
+        let gatt_wanted = phones.linkable && can_gatt;
+        if gatt_wanted && !self.gatt {
+            match register_application(conn, &adapter) {
+                Ok(()) => self.gatt = true,
+                Err(error) => self.failed(&error),
+            }
+        } else if !gatt_wanted && self.gatt {
+            unregister_application(conn, &adapter);
+            self.gatt = false;
+        }
+        // A window needs the service to connect to.
+        let window = window.filter(|_| self.gatt);
+
+        let wanted = wanted(phones, window, now, self.delay);
         if wanted != self.shown {
-            if self.shown.take().is_some() {
-                unregister(conn, &adapter, self.path());
+            if let Some(shown) = self.shown.take() {
+                unregister(conn, &adapter, self.path(shown.kind));
             }
             if let Some(wanted) = wanted {
                 *self.payload.lock().unwrap_or_else(|e| e.into_inner()) = beacon_payload(&wanted);
-                match self.register(conn, &adapter) {
+                let registered = match wanted.kind {
+                    TagKind::Connect => register_advertisement(conn, &adapter, CONNECT_PATH),
+                    TagKind::Presence => self.register(conn, &adapter),
+                };
+                match registered {
                     Ok(()) => {
                         self.shown = Some(wanted);
                         self.last_error = None;
@@ -489,12 +648,16 @@ impl Beacon {
     }
 
     fn unregister_all(&mut self, conn: &zbus::blocking::Connection, adapter: &OwnedObjectPath) {
-        if self.shown.take().is_some() {
-            unregister(conn, adapter, self.path());
+        if let Some(shown) = self.shown.take() {
+            unregister(conn, adapter, self.path(shown.kind));
         }
         if self.legacy {
             unregister(conn, adapter, LEGACY_PATH);
             self.legacy = false;
+        }
+        if self.gatt {
+            unregister_application(conn, adapter);
+            self.gatt = false;
         }
     }
 
@@ -520,6 +683,20 @@ fn register_advertisement(
         &(path, options),
     )?;
     Ok(())
+}
+
+/// Asks BlueZ to serve the G7 Link GATT service, which it reads from
+/// [`ble_gatt::APP_PATH`]'s object manager.
+fn register_application(conn: &zbus::blocking::Connection, adapter: &OwnedObjectPath) -> zbus::Result<()> {
+    let options: HashMap<&str, Value<'_>> = HashMap::new();
+    let path = ObjectPath::from_static_str_unchecked(ble_gatt::APP_PATH);
+    conn.call_method(Some(BLUEZ), adapter, Some(GATT_MANAGER), "RegisterApplication", &(path, options))?;
+    Ok(())
+}
+
+fn unregister_application(conn: &zbus::blocking::Connection, adapter: &OwnedObjectPath) {
+    let path = ObjectPath::from_static_str_unchecked(ble_gatt::APP_PATH);
+    let _ = conn.call_method(Some(BLUEZ), adapter, Some(GATT_MANAGER), "UnregisterApplication", &(path,));
 }
 
 fn unregister(conn: &zbus::blocking::Connection, adapter: &OwnedObjectPath, path: &'static str) {
@@ -566,6 +743,8 @@ struct Env {
     phones: Arc<dyn Fn() -> BeaconPhones + Send + Sync>,
     /// Unix seconds.
     now: fn() -> u64,
+    /// A new end for a phone that starts a Bluetooth link.
+    accept: ble_gatt::Accept,
 }
 
 struct Worker {
@@ -592,17 +771,20 @@ impl Worker {
 
 /// Connects with the beacons served, trying again until it connects or is
 /// stopped.
+/// Connects with the beacons and the GATT service served, trying again until
+/// it connects or is stopped; also gives what the service's writes arrive on.
 fn connect(
     env: &Env,
     device_id: &DeviceId,
     wake: &Arc<Wake>,
-) -> Option<(zbus::blocking::Connection, Beacon)> {
+) -> Option<(zbus::blocking::Connection, Beacon, LinkSender, mpsc::Receiver<LinkMsg>)> {
     loop {
+        let (to_link, writes) = ble_gatt::channel();
         match (env.connect)()
             .map(|b| b.method_timeout(DBUS_TIMEOUT))
-            .and_then(|b| Beacon::serve(b, device_id, wake.clone()))
+            .and_then(|b| Beacon::serve(b, device_id, wake.clone(), to_link.clone()))
         {
-            Ok(served) => return Some(served),
+            Ok((conn, beacon)) => return Some((conn, beacon, to_link, writes)),
             Err(e) => tracing::debug!(error = %e, "BLE beacon: can't serve it on the system D-Bus"),
         }
         if wake.wait(BEACON_CHECK_INTERVAL).stopped {
@@ -612,9 +794,11 @@ fn connect(
 }
 
 fn run_worker(env: &Env, device_id: &DeviceId, wake: &Arc<Wake>) {
-    let Some((conn, mut beacon)) = connect(env, device_id, wake) else {
+    let Some((conn, mut beacon, to_link, writes)) = connect(env, device_id, wake) else {
         return;
     };
+    let links = ble_gatt::spawn_links(conn.clone(), writes, env.accept.clone());
+    *LINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(to_link.clone());
     let watcher = Watcher::spawn(env, wake.clone());
     let mut woken = Wakeup::default();
 
@@ -625,12 +809,21 @@ fn run_worker(env: &Env, device_id: &DeviceId, wake: &Arc<Wake>) {
             beacon.forget();
         }
         if bluez_running && let Some(objects) = managed_objects(&conn) {
-            beacon.sync(&conn, &objects, &(env.phones)(), (env.now)());
+            let window = wake.window();
+            beacon.sync(&conn, &objects, &(env.phones)(), window.as_ref(), (env.now)());
+        }
+        if woken.devices {
+            let _ = to_link.try_send(LinkMsg::DeviceChanged);
         }
         woken = wake.wait(BEACON_CHECK_INTERVAL);
         if woken.stopped {
             break;
         }
+    }
+    *LINK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    if let Some(links) = links {
+        let _ = to_link.send(LinkMsg::Stop);
+        let _ = links.join();
     }
     if super::dbus_name_has_owner(&conn, BLUEZ) {
         beacon.stop(&conn);
@@ -717,6 +910,7 @@ fn watch(conn: &zbus::blocking::Connection, wake: &Wake, ready: &mpsc::Sender<()
         match bluez_change(&message) {
             Some(Change::Bluez) => wake.set(|w| w.bluez_changed = true),
             Some(Change::Adapters) => wake.set(|w| w.resync = true),
+            Some(Change::Devices) => wake.set(|w| w.devices = true),
             None => {}
         }
     }
@@ -735,6 +929,11 @@ fn watched_signals() -> Vec<zbus::MatchRule<'static>> {
             .and_then(|b| b.interface("org.freedesktop.DBus.Properties"))
             .and_then(|b| b.member("PropertiesChanged"))
             .and_then(|b| b.arg(0, ADAPTER)),
+        signal()
+            .sender(BLUEZ)
+            .and_then(|b| b.interface("org.freedesktop.DBus.Properties"))
+            .and_then(|b| b.member("PropertiesChanged"))
+            .and_then(|b| b.arg(0, DEVICE)),
         signal()
             .sender(BLUEZ)
             .and_then(|b| b.interface(OBJECT_MANAGER))
@@ -759,6 +958,8 @@ enum Change {
     Bluez,
     /// An adapter came, went or was turned on or off, or the PC resumed.
     Adapters,
+    /// A device connected or disconnected.
+    Devices,
 }
 
 fn is_adapter_interface(name: &str) -> bool {
@@ -778,8 +979,12 @@ fn bluez_change(message: &zbus::Message) -> Option<Change> {
         ("org.freedesktop.DBus.Properties", "PropertiesChanged") => {
             let (interface, changed, invalidated): (String, HashMap<String, OwnedValue>, Vec<String>) =
                 body.deserialize().ok()?;
-            let powered = changed.contains_key("Powered") || invalidated.iter().any(|p| p == "Powered");
-            (interface == ADAPTER && powered).then_some(Change::Adapters)
+            let has = |name: &str| changed.contains_key(name) || invalidated.iter().any(|p| p == name);
+            match interface.as_str() {
+                ADAPTER if has("Powered") => Some(Change::Adapters),
+                DEVICE if has("Connected") => Some(Change::Devices),
+                _ => None,
+            }
         }
         (OBJECT_MANAGER, "InterfacesAdded") => {
             let (_, interfaces): (OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>) =
@@ -835,7 +1040,7 @@ mod tests {
     }
 
     fn for_phones(keys: &[[u8; 32]]) -> BeaconPhones {
-        BeaconPhones { keys: keys.to_vec(), legacy: false }
+        BeaconPhones { keys: keys.to_vec(), legacy: false, linkable: false }
     }
 
     #[test]
@@ -849,7 +1054,7 @@ mod tests {
     #[test]
     fn a_beacon_holds_each_phones_tag_and_nothing_stable() {
         let keys = [key(1), key(2)];
-        let shown = wanted(&for_phones(&keys), AT, 0).unwrap();
+        let shown = wanted(&for_phones(&keys), None, AT, 0).unwrap();
         let (a, b) = (beacon_payload(&shown), beacon_payload(&shown));
         assert_eq!(a.len(), 2 + BEACON_SLOTS * TAG_LEN);
         for key in &keys {
@@ -857,7 +1062,7 @@ mod tests {
         }
         assert_eq!(ble::match_payload(&a, &key(3), ble::epoch_at(AT)), None);
         assert_ne!(a, b, "the filler and the order are new each time");
-        assert!(wanted(&for_phones(&[]), AT, 0).is_none(), "no phones, no beacon");
+        assert!(wanted(&for_phones(&[]), None, AT, 0).is_none(), "no phones, no beacon");
     }
 
     #[test]
@@ -865,8 +1070,8 @@ mod tests {
         let phones = for_phones(&[key(1)]);
         let window = ble::epoch_at(AT) * ble::EPOCH_SECS;
         let delay = 30;
-        let before = wanted(&phones, window + delay - 1, delay).unwrap();
-        let after = wanted(&phones, window + delay, delay).unwrap();
+        let before = wanted(&phones, None, window + delay - 1, delay).unwrap();
+        let after = wanted(&phones, None, window + delay, delay).unwrap();
         assert_eq!(before.epoch + 1, after.epoch);
     }
 
@@ -874,9 +1079,9 @@ mod tests {
     fn phones_that_dont_fit_take_turns() {
         let keys: Vec<[u8; 32]> = (1..=6).map(key).collect();
         let phones = for_phones(&keys);
-        let first = wanted(&phones, 0, 0).unwrap();
-        let second = wanted(&phones, TURN_SECS, 0).unwrap();
-        let third = wanted(&phones, 2 * TURN_SECS, 0).unwrap();
+        let first = wanted(&phones, None, 0, 0).unwrap();
+        let second = wanted(&phones, None, TURN_SECS, 0).unwrap();
+        let third = wanted(&phones, None, 2 * TURN_SECS, 0).unwrap();
         assert_eq!(first.keys, keys[..4]);
         assert_eq!(second.keys, keys[4..]);
         assert_eq!(third.keys, first.keys);
@@ -900,6 +1105,15 @@ mod tests {
             ifaces.insert(ADVERTISING_MANAGER.to_owned(), HashMap::new());
         }
         HashMap::from([(OwnedObjectPath::try_from(path).unwrap(), ifaces)])
+    }
+
+    /// A powered adapter that can advertise and serve GATT services.
+    fn gatt_adapter() -> ManagedObjects {
+        let mut objects = adapter("/org/bluez/hci0", true, true);
+        for ifaces in objects.values_mut() {
+            ifaces.insert(GATT_MANAGER.to_owned(), HashMap::new());
+        }
+        objects
     }
 
     #[test]
@@ -947,8 +1161,16 @@ mod tests {
     /// What the fake advertising manager was asked.
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Call {
-        Register { path: String, kind: String, data: Option<Vec<u8>>, interval: Option<(u32, u32)> },
+        Register {
+            path: String,
+            kind: String,
+            data: Option<Vec<u8>>,
+            interval: Option<(u32, u32)>,
+        },
         Unregister(String),
+        /// A GATT application, with the UUIDs and flags of its characteristics.
+        RegisterApp(Vec<(String, Vec<String>)>),
+        UnregisterApp,
     }
 
     impl Call {
@@ -1024,6 +1246,53 @@ mod tests {
         }
     }
 
+    /// Stands in for BlueZ's GATT manager: reads the application's objects
+    /// the way BlueZ does.
+    #[derive(Clone)]
+    struct FakeGatt(FakeManager);
+
+    #[zbus::interface(name = "org.bluez.GattManager1")]
+    impl FakeGatt {
+        async fn register_application(
+            &self,
+            #[zbus(header)] header: zbus::message::Header<'_>,
+            #[zbus(connection)] conn: &zbus::Connection,
+            app: OwnedObjectPath,
+            _options: HashMap<String, OwnedValue>,
+        ) -> zbus::fdo::Result<()> {
+            let reply = conn
+                .call_method(
+                    header.sender().map(|s| s.as_str()),
+                    &app,
+                    Some(OBJECT_MANAGER),
+                    "GetManagedObjects",
+                    &(),
+                )
+                .await?;
+            let objects: ManagedObjects = reply.body().deserialize()?;
+            let mut characteristics: Vec<(String, Vec<String>)> = objects
+                .values()
+                .filter_map(|ifaces| ifaces.get("org.bluez.GattCharacteristic1"))
+                .map(|props| {
+                    let uuid = props.get("UUID").and_then(extract_string).unwrap_or_default();
+                    let flags = props
+                        .get("Flags")
+                        .and_then(|v| v.try_clone().ok())
+                        .and_then(|v| Vec::<String>::try_from(v).ok())
+                        .unwrap_or_default();
+                    (uuid, flags)
+                })
+                .collect();
+            characteristics.sort();
+            self.0.calls.lock().unwrap().push(Call::RegisterApp(characteristics));
+            Ok(())
+        }
+
+        fn unregister_application(&self, _app: OwnedObjectPath) {
+            self.0.calls.lock().unwrap().push(Call::UnregisterApp);
+        }
+    }
+
     /// A powered adapter, as BlueZ lists it.
     struct FakeAdapter;
 
@@ -1044,6 +1313,8 @@ mod tests {
             .unwrap()
             .serve_at("/org/bluez/hci0", manager.clone())
             .unwrap()
+            .serve_at("/org/bluez/hci0", FakeGatt(manager.clone()))
+            .unwrap()
             .serve_at("/org/bluez/hci0", FakeAdapter)
             .unwrap()
             .build()
@@ -1056,11 +1327,13 @@ mod tests {
             connect: Arc::new(move || zbus::blocking::connection::Builder::address(address.as_str())),
             phones: Arc::new(move || phones.clone()),
             now: at,
+            accept: Arc::new(|| None),
         }
     }
 
     fn served(bus: &TestBus, id: &DeviceId) -> (zbus::blocking::Connection, Beacon) {
-        let (conn, mut beacon) = Beacon::serve(bus.connect(), id, Arc::default()).unwrap();
+        let (to_link, _) = ble_gatt::channel();
+        let (conn, mut beacon) = Beacon::serve(bus.connect(), id, Arc::default(), to_link).unwrap();
         beacon.delay = 0;
         (conn, beacon)
     }
@@ -1092,8 +1365,8 @@ mod tests {
         let unregister = Call::Unregister(ADVERTISEMENT_PATH.into());
         let (on, off) = (adapter("/org/bluez/hci0", true, true), adapter("/org/bluez/hci0", false, true));
 
-        beacon.sync(&conn, &on, &phones, AT);
-        beacon.sync(&conn, &on, &phones, AT + 1);
+        beacon.sync(&conn, &on, &phones, None, AT);
+        beacon.sync(&conn, &on, &phones, None, AT + 1);
         let calls = manager.take();
         registered_for(&calls, ADVERTISEMENT_PATH, &key(1), AT);
         assert!(matches!(
@@ -1111,14 +1384,14 @@ mod tests {
                 &(),
             )
             .unwrap();
-        beacon.sync(&conn, &on, &phones, AT);
+        beacon.sync(&conn, &on, &phones, None, AT);
         registered_for(&manager.take(), ADVERTISEMENT_PATH, &key(1), AT);
 
         // Bluetooth turned off, then on again.
-        beacon.sync(&conn, &off, &phones, AT);
-        beacon.sync(&conn, &off, &phones, AT);
+        beacon.sync(&conn, &off, &phones, None, AT);
+        beacon.sync(&conn, &off, &phones, None, AT);
         assert_eq!(manager.take(), std::slice::from_ref(&unregister));
-        beacon.sync(&conn, &on, &phones, AT);
+        beacon.sync(&conn, &on, &phones, None, AT);
         registered_for(&manager.take(), ADVERTISEMENT_PATH, &key(1), AT);
 
         beacon.stop(&conn);
@@ -1137,11 +1410,11 @@ mod tests {
         let on = adapter("/org/bluez/hci0", true, true);
         let phones = for_phones(&[key(1)]);
 
-        beacon.sync(&conn, &on, &phones, AT);
+        beacon.sync(&conn, &on, &phones, None, AT);
         let first = registered_for(&manager.take(), ADVERTISEMENT_PATH, &key(1), AT);
 
         let next = AT + ble::EPOCH_SECS;
-        beacon.sync(&conn, &on, &phones, next);
+        beacon.sync(&conn, &on, &phones, None, next);
         let calls = manager.take();
         assert_eq!(calls[0], Call::Unregister(ADVERTISEMENT_PATH.into()));
         let second = registered_for(&calls[1..], ADVERTISEMENT_PATH, &key(1), next);
@@ -1149,15 +1422,15 @@ mod tests {
 
         // A phone paired: it's in the beacon from now on.
         let two = for_phones(&[key(1), key(2)]);
-        beacon.sync(&conn, &on, &two, next);
+        beacon.sync(&conn, &on, &two, None, next);
         let calls = manager.take();
         let data = registered_for(&calls[1..], ADVERTISEMENT_PATH, &key(2), next);
         assert_eq!(ble::match_payload(&data, &key(1), ble::epoch_at(next)), Some(TagKind::Presence));
 
         // The last phone unpaired: no beacon at all.
-        beacon.sync(&conn, &on, &for_phones(&[]), next);
+        beacon.sync(&conn, &on, &for_phones(&[]), None, next);
         assert_eq!(manager.take(), [Call::Unregister(ADVERTISEMENT_PATH.into())]);
-        beacon.sync(&conn, &on, &for_phones(&[]), next + ble::EPOCH_SECS);
+        beacon.sync(&conn, &on, &for_phones(&[]), None, next + ble::EPOCH_SECS);
         assert_eq!(manager.take(), []);
     }
 
@@ -1173,9 +1446,9 @@ mod tests {
         let (conn, mut beacon) = served(&bus, &id);
         let on = adapter("/org/bluez/hci0", true, true);
 
-        let old_app = BeaconPhones { keys: Vec::new(), legacy: true };
-        beacon.sync(&conn, &on, &old_app, AT);
-        beacon.sync(&conn, &on, &old_app, AT);
+        let old_app = BeaconPhones { keys: Vec::new(), legacy: true, linkable: false };
+        beacon.sync(&conn, &on, &old_app, None, AT);
+        beacon.sync(&conn, &on, &old_app, None, AT);
         let legacy = Call::Register {
             path: LEGACY_PATH.into(),
             kind: "broadcast".into(),
@@ -1184,7 +1457,7 @@ mod tests {
         };
         assert_eq!(manager.take(), [legacy]);
 
-        beacon.sync(&conn, &on, &for_phones(&[key(1)]), AT);
+        beacon.sync(&conn, &on, &for_phones(&[key(1)]), None, AT);
         let calls = manager.take();
         assert_eq!(calls.len(), 2, "{calls:?}");
         registered_for(&calls[..1], ADVERTISEMENT_PATH, &key(1), AT);
@@ -1192,6 +1465,69 @@ mod tests {
 
         beacon.stop(&conn);
         assert_eq!(manager.take(), [Call::Unregister(ADVERTISEMENT_PATH.into())]);
+    }
+
+    #[test]
+    fn a_window_serves_the_link_and_lets_the_phone_connect() {
+        let Some(bus) = TestBus::start() else {
+            eprintln!("skipped: dbus-daemon isn't installed");
+            return;
+        };
+        let manager = FakeManager::default();
+        let _bluez = fake_bluez(&bus, &manager);
+        let (conn, mut beacon) = served(&bus, &DeviceId([0x7E; 32]));
+        let on = gatt_adapter();
+        let phones = BeaconPhones { keys: vec![key(1)], legacy: false, linkable: true };
+
+        beacon.sync(&conn, &on, &phones, None, AT);
+        let calls = manager.take();
+        let service = vec![
+            (ble::RX_UUID.to_owned(), vec!["write".to_owned()]),
+            (ble::TX_UUID.to_owned(), vec!["notify".to_owned()]),
+        ];
+        let mut sorted = service.clone();
+        sorted.sort();
+        assert_eq!(calls[0], Call::RegisterApp(sorted));
+        registered_for(&calls[1..], ADVERTISEMENT_PATH, &key(1), AT);
+
+        // A window: the beacon gives way to a connectable advertisement with a connect tag.
+        let window = Window { keys: vec![key(1)], until: Instant::now() + Duration::from_secs(30) };
+        beacon.sync(&conn, &on, &phones, Some(&window), AT);
+        let calls = manager.take();
+        assert_eq!(calls[0], Call::Unregister(ADVERTISEMENT_PATH.into()));
+        let Call::Register { path, kind, data: Some(data), .. } = &calls[1] else { panic!("{calls:?}") };
+        assert_eq!((path.as_str(), kind.as_str()), (CONNECT_PATH, "peripheral"));
+        assert_eq!(data.len(), 2 + WINDOW_SLOTS * TAG_LEN);
+        assert_eq!(ble::match_payload(data, &key(1), ble::epoch_at(AT)), Some(TagKind::Connect));
+
+        // Closed: the beacon comes back. No phone may link any more: the service goes.
+        beacon.sync(&conn, &on, &phones, None, AT);
+        let calls = manager.take();
+        assert_eq!(calls[0], Call::Unregister(CONNECT_PATH.into()));
+        registered_for(&calls[1..], ADVERTISEMENT_PATH, &key(1), AT);
+        beacon.sync(&conn, &on, &for_phones(&[key(1)]), None, AT);
+        assert_eq!(manager.take(), [Call::UnregisterApp]);
+
+        // Without the service, a window opens nothing.
+        beacon.sync(&conn, &on, &for_phones(&[key(1)]), Some(&window), AT);
+        assert_eq!(manager.take(), []);
+    }
+
+    #[test]
+    fn writes_are_taken_only_from_the_start_and_from_a_device() {
+        let device = OwnedValue::from(ObjectPath::from_static_str_unchecked("/org/bluez/hci0/dev_AA"));
+        let ok = HashMap::from([
+            ("device".to_owned(), device.try_clone().unwrap()),
+            ("mtu".to_owned(), OwnedValue::from(185u16)),
+        ]);
+        let LinkMsg::Write { mtu, value, .. } = ble_gatt::parse_write(vec![1, 2], &ok).unwrap() else {
+            panic!()
+        };
+        assert_eq!((mtu, value), (Some(185), vec![1, 2]));
+        let offset =
+            HashMap::from([("device".to_owned(), device), ("offset".to_owned(), OwnedValue::from(5u16))]);
+        assert!(ble_gatt::parse_write(vec![1], &offset).is_err());
+        assert!(ble_gatt::parse_write(vec![1], &HashMap::new()).is_err());
     }
 
     #[test]
@@ -1206,12 +1542,12 @@ mod tests {
         let on = adapter("/org/bluez/hci0", true, true);
         let phones = for_phones(&[key(1)]);
 
-        beacon.sync(&conn, &on, &phones, AT);
+        beacon.sync(&conn, &on, &phones, None, AT);
         registered_for(&manager.take(), DEFAULT_INTERVAL_PATH, &key(1), AT);
 
         // Bluetooth turned off and on: straight to the beacon BlueZ took.
-        beacon.sync(&conn, &adapter("/org/bluez/hci0", false, true), &phones, AT);
-        beacon.sync(&conn, &on, &phones, AT);
+        beacon.sync(&conn, &adapter("/org/bluez/hci0", false, true), &phones, None, AT);
+        beacon.sync(&conn, &on, &phones, None, AT);
         let calls = manager.take();
         assert_eq!(calls[0], Call::Unregister(DEFAULT_INTERVAL_PATH.into()));
         registered_for(&calls[1..], DEFAULT_INTERVAL_PATH, &key(1), AT);
@@ -1273,7 +1609,12 @@ mod tests {
 
     #[test]
     fn stop_ends_a_worker_that_has_no_bus() {
-        let env = Env { connect: Arc::new(no_bus), phones: Arc::new(BeaconPhones::default), now: at };
+        let env = Env {
+            connect: Arc::new(no_bus),
+            phones: Arc::new(BeaconPhones::default),
+            now: at,
+            accept: Arc::new(|| None),
+        };
         let slot = Mutex::new(None);
         start_in(&slot, env, DeviceId([0x11; 32]));
         let started = Instant::now();

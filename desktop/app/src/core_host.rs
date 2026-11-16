@@ -177,6 +177,10 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     if crate::pc_mirror::is_capture_available() {
         caps.push(g7link_core::pc_capture::CAP.into());
     }
+    // A phone may open a Bluetooth link to this PC: its adapter serves GATT.
+    if crate::sys::ble_beacon::can_link() {
+        caps.push(g7link_core::BLE_LINK_CAPABILITY.into());
+    }
     let input_available = crate::sys::input::is_available();
     if remote_input_enabled && input_available {
         caps.push(g7link_core::MIRROR_INPUT.into());
@@ -354,6 +358,7 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
                 crate::continuity_camera::on_event(&event);
                 crate::calls::on_event(&event);
                 crate::sys::ble_beacon::on_event(&event);
+                crate::ble_link::on_event(&event);
                 crate::messages::on_event(&event);
                 crate::mirror::on_event(&event);
                 crate::pc_mirror::on_event(&event);
