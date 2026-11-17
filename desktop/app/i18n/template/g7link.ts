@@ -5555,7 +5555,7 @@ What it needs
     </message>
     <message>
         <location filename="../rust_strings.h" line="367"/>
-        <source>Recording from %1, saved in Downloads\G7Link</source>
+        <source>Recording from %1, saved in Downloads/G7Link</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5570,7 +5570,7 @@ What it needs
     </message>
     <message>
         <location filename="../rust_strings.h" line="370"/>
-        <source>Saved %1 to Downloads\G7Link.</source>
+        <source>Saved %1 to Downloads/G7Link.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -5585,7 +5585,7 @@ What it needs
     </message>
     <message>
         <location filename="../rust_strings.h" line="373"/>
-        <source>Screenshot from %1, saved in Downloads\G7Link</source>
+        <source>Screenshot from %1, saved in Downloads/G7Link</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6355,7 +6355,7 @@ What it needs
     <name>Photos</name>
     <message>
         <location filename="../rust_strings.h" line="418"/>
-        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads\G7Link.</source>
+        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads/G7Link.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -6435,7 +6435,7 @@ What it needs
     </message>
     <message>
         <location filename="../rust_strings.h" line="434"/>
-        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads\G7Link.</source>
+        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads/G7Link.</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -9638,7 +9638,7 @@ What it needs
     <name>Transfers</name>
     <message>
         <location filename="../rust_strings.h" line="500"/>
-        <source>Accept in G7 Link to save to Downloads\G7Link</source>
+        <source>Accept in G7 Link to save to Downloads/G7Link</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -9648,12 +9648,12 @@ What it needs
     </message>
     <message>
         <location filename="../rust_strings.h" line="502"/>
-        <source>From %1, opened from Downloads\G7Link</source>
+        <source>From %1, opened from Downloads/G7Link</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../rust_strings.h" line="503"/>
-        <source>From %1, saved in Downloads\G7Link</source>
+        <source>From %1, saved in Downloads/G7Link</source>
         <translation type="unfinished"></translation>
     </message>
     <message>

@@ -1814,39 +1814,44 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     }
 
     /**
-     * Pastes an image where the PC is typing: onto its clipboard, then Ctrl+V,
-     * as the phone's typing field does with text. Only to a PC that's online
-     * now, so nothing pastes later somewhere else.
+     * Pastes an image where PC [pcId] is typing: onto its clipboard (sized to
+     * paste, the right way up), then the paste key, once the PC says its
+     * clipboard has it. Only to a PC that's connected now, so nothing pastes
+     * later somewhere else. Returns whether it was pasted; says why not.
      */
-    fun pasteImageOnPc(pcId: String, uri: Uri, onStatus: ((RemoteAccess) -> Unit)? = null) {
-        scope.launch {
-            val pc = _state.value.device(pcId)
-            if (pc == null || !pc.online) {
-                _messages.tryEmit(context.getString(R.string.clip_no_pc))
-                return@launch
-            }
-            val image = when (val read = withContext(Dispatchers.IO) { PhoneClipboard.readImage(context, uri) }) {
-                is PhoneClipboard.ImageResult.Ready -> read.image
-                PhoneClipboard.ImageResult.TooLarge -> {
-                    _messages.tryEmit(context.getString(R.string.clip_image_too_large))
-                    return@launch
-                }
-                PhoneClipboard.ImageResult.Unreadable -> {
-                    _messages.tryEmit(context.getString(R.string.clip_image_unreadable))
-                    return@launch
-                }
-            }
-            val node = node ?: return@launch
-            try {
-                node.sendClipboardImage(pcId, image.mime, image.bytes)
-            } catch (e: G7LinkException) {
-                _messages.tryEmit(
-                    if (e is G7LinkException.Denied) context.getString(R.string.clip_off_for, pc.name) else describe(e),
-                )
-                return@launch
-            }
-            remoteKey(pcId, "v", listOf("ctrl"), onStatus)
+    suspend fun pasteImageOnPc(pcId: String, uri: Uri, onStatus: ((RemoteAccess) -> Unit)? = null): Boolean {
+        val pc = _state.value.device(pcId)
+        if (pc == null || !pc.online) {
+            _messages.tryEmit(context.getString(R.string.clip_no_pc))
+            return false
         }
+        val image = when (val read = withContext(Dispatchers.IO) { PhoneClipboard.readImageForPaste(context, uri) }) {
+            is PhoneClipboard.ImageResult.Ready -> read.image
+            PhoneClipboard.ImageResult.TooLarge -> {
+                _messages.tryEmit(context.getString(R.string.clip_image_too_large))
+                return false
+            }
+            PhoneClipboard.ImageResult.Unreadable -> {
+                _messages.tryEmit(context.getString(R.string.clip_image_unreadable))
+                return false
+            }
+        }
+        val node = node ?: return false
+        try {
+            node.pasteImage(pcId, image.mime, image.bytes)
+        } catch (e: G7LinkException) {
+            _messages.tryEmit(
+                when (e) {
+                    is G7LinkException.Denied -> context.getString(R.string.clip_off_for, pc.name)
+                    is G7LinkException.Internal -> context.getString(R.string.remote_image_not_pasted, pc.name)
+                    else -> describe(e)
+                },
+            )
+            return false
+        }
+        // The PC's paste key: Ctrl+Shift+V in a terminal.
+        remoteKey(pcId, "paste", emptyList(), onStatus)
+        return true
     }
 
     private suspend fun sendToPcs(
@@ -2577,20 +2582,117 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     }
 
     /** Presses, releases or clicks a mouse button (`"left"`, `"right"` or `"middle"`). */
-    fun remoteButton(id: String, button: String, action: String, onStatus: ((RemoteAccess) -> Unit)? = null) =
+    fun remoteButton(id: String, button: String, action: String, onStatus: ((RemoteAccess) -> Unit)? = null) {
+        if (action != "up") _pcCaretMoved.tryEmit(id)
         remoteCommand(onStatus) { it.remoteButton(id, button, action) }
+    }
 
-    /** Types Unicode text on a PC, splitting long strings into 256-byte chunks. */
-    fun remoteText(id: String, text: String, onStatus: ((RemoteAccess) -> Unit)? = null) =
+    /** Types Unicode text on a PC (dictation), splitting long strings into 256-byte chunks. */
+    fun remoteText(id: String, text: String, onStatus: ((RemoteAccess) -> Unit)? = null) {
+        _pcCaretMoved.tryEmit(id)
         remoteCommand(onStatus) { node ->
             for (chunk in app.g7link.android.ui.remote.UtteranceJoiner.chunkUtf8(text)) {
                 node.remoteText(id, chunk)
             }
         }
+    }
 
     /** Presses a named key or shortcut with optional modifiers on a PC. */
-    fun remoteKey(id: String, key: String, mods: List<String> = emptyList(), onStatus: ((RemoteAccess) -> Unit)? = null) =
+    fun remoteKey(id: String, key: String, mods: List<String> = emptyList(), onStatus: ((RemoteAccess) -> Unit)? = null) {
+        if (key !in KEYS_KEEPING_CARET) _pcCaretMoved.tryEmit(id)
         remoteCommand(onStatus) { it.remoteKey(id, key, mods) }
+    }
+
+    /**
+     * PCs whose caret or focus this phone just moved (a click, a key such as
+     * an arrow, Enter or a paste): the typing box starts afresh in a field it
+     * can't read.
+     */
+    val pcCaretMoved: SharedFlow<String> get() = _pcCaretMoved
+    private val _pcCaretMoved = MutableSharedFlow<String>(extraBufferCapacity = 8)
+
+    /** Whether PC [id] mirrors its focused text field and takes [remoteTyping] edits by range. */
+    fun remoteMirrorsText(id: String): Boolean = runCatching { node?.remoteMirrorsText(id) == true }.getOrDefault(false)
+
+    /**
+     * Tells PC [id] the typing box opened ([on]) or closed: while open, the PC
+     * sends its focused field ([CoreState.pcTextState]).
+     */
+    fun remoteTextWatch(id: String, on: Boolean) {
+        if (!on) _state.update { it.copy(pcTextState = it.pcTextState - id) }
+        enqueueRemoteOp { runCatching { it.remoteTextWatch(id, on) } }
+    }
+
+    /**
+     * Sends one change of the typing box to PC [id], in order with keys and
+     * clicks; [onDone] hears how it went, on the main thread. A PC that
+     * doesn't take edits gets the same as arrow keys, Backspaces and text.
+     */
+    internal fun remoteTyping(
+        id: String,
+        op: app.g7link.android.ui.remote.TypingOp,
+        onStatus: ((RemoteAccess) -> Unit)?,
+        onDone: (app.g7link.android.ui.remote.TypingResult) -> Unit,
+    ) {
+        val send: suspend (G7LinkNode) -> Unit = { started ->
+            val result = runTyping(started, id, op, onStatus)
+            withContext(Dispatchers.Main) { onDone(result) }
+        }
+        val queued = synchronized(opsLock) { isRunning && node != null && remoteOps.trySend(send).isSuccess }
+        if (!queued) onDone(app.g7link.android.ui.remote.TypingResult.Failed)
+    }
+
+    private suspend fun runTyping(
+        node: G7LinkNode,
+        id: String,
+        op: app.g7link.android.ui.remote.TypingOp,
+        onStatus: ((RemoteAccess) -> Unit)?,
+    ): app.g7link.android.ui.remote.TypingResult {
+        val focus = op.focus.toUInt()
+        val seq = op.seq.toUInt()
+        return try {
+            when (op) {
+                is app.g7link.android.ui.remote.TypingOp.Caret ->
+                    node.remoteCaret(id, focus, seq, op.caret.toUInt(), op.anchor.toUInt())
+                is app.g7link.android.ui.remote.TypingOp.Edit ->
+                    if (node.remoteMirrorsText(id)) {
+                        node.remoteEdit(
+                            id,
+                            focus,
+                            seq,
+                            op.rangeStart?.toUInt(),
+                            op.rangeEnd?.toUInt(),
+                            op.moves,
+                            op.backspaces.toUShort(),
+                            op.text,
+                        )
+                    } else {
+                        // An older PC: the same, a key at a time.
+                        val arrow = if (op.moves < 0) "left" else "right"
+                        repeat(kotlin.math.abs(op.moves)) { node.remoteKey(id, arrow, emptyList()) }
+                        repeat(op.backspaces) { node.remoteKey(id, "backspace", emptyList()) }
+                        op.text.split('\n').forEachIndexed { i, line ->
+                            if (i > 0) node.remoteKey(id, "enter", listOf("shift"))
+                            for (chunk in app.g7link.android.ui.remote.UtteranceJoiner.chunkUtf8(line)) {
+                                node.remoteText(id, chunk)
+                            }
+                        }
+                    }
+            }
+            onStatus?.invoke(RemoteAccess.Allowed)
+            app.g7link.android.ui.remote.TypingResult.Done
+        } catch (e: G7LinkException) {
+            when (e) {
+                is G7LinkException.Denied -> onStatus?.invoke(RemoteAccess.Denied)
+                is G7LinkException.Unsupported -> onStatus?.invoke(RemoteAccess.Unsupported)
+                is G7LinkException.Offline, is G7LinkException.Timeout, is G7LinkException.Network ->
+                    onStatus?.invoke(RemoteAccess.Offline)
+                else -> {}
+            }
+            val stale = e is G7LinkException.Internal && e.reason.endsWith("stale focus")
+            if (stale) app.g7link.android.ui.remote.TypingResult.StaleFocus else app.g7link.android.ui.remote.TypingResult.Failed
+        }
+    }
 
     /** Sends a presentation slide command (`"next"`, `"previous"`, `"start"`, `"stop"`, `"black"`). */
     fun remoteSlide(id: String, action: String, onStatus: ((RemoteAccess) -> Unit)? = null) =
@@ -2998,3 +3100,7 @@ data class PcFolder(
     val entries: List<RemoteStorageEntry>,
     @androidx.annotation.StringRes val problem: Int? = null,
 )
+
+/** Keys that leave the PC's caret where it is: the typing box keeps its draft. */
+private val KEYS_KEEPING_CARET =
+    setOf("volume_up", "volume_down", "volume_mute", "play_pause", "next_track", "prev_track")

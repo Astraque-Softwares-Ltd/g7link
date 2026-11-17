@@ -189,6 +189,18 @@ pub enum NodeEvent {
         device: DeviceId,
         editable: bool,
     },
+    /// The field that has the focus on a PC, for this phone's typing box
+    /// (`remote.text_state`), while the phone watches it.
+    PcTextState {
+        device: DeviceId,
+        state: g7link_protocol::messages::RemoteTextState,
+    },
+    /// A phone opened (`on`) or closed its typing box for this PC
+    /// (`remote.text_watch`): the PC sends it the focused field while open.
+    TextWatch {
+        device: DeviceId,
+        on: bool,
+    },
     /// A PC's clipboard got something new (`clip.changed`): the phone can offer
     /// to paste it. `preview` is the text's first line, when the PC sends this
     /// phone what it copies anyway.

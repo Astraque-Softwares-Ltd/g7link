@@ -11,7 +11,8 @@
 use std::{
     collections::HashMap,
     ffi::{CString, c_char, c_int, c_void},
-    sync::OnceLock,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 /// What the virtual keyboard presses for one character.
@@ -49,21 +50,44 @@ impl Keymap {
     }
 }
 
-/// The keymap for the desktop's current layout, compiled once. `None` when
-/// the layout can't be found or compiled: callers then must not type through
-/// uinput, since guessing a layout types the wrong characters.
-pub fn current() -> Option<&'static Keymap> {
-    static KEYMAP: OnceLock<Option<Keymap>> = OnceLock::new();
-    KEYMAP
-        .get_or_init(|| {
-            let layout = detect_layout()?;
-            let keymap = compile(&layout);
-            if keymap.is_none() {
-                tracing::warn!(layout = %layout.layout, "can't compile the keyboard layout");
-            }
-            keymap
-        })
-        .as_ref()
+/// How long a layout is trusted before the desktop's settings are read
+/// again, so switching layouts on the PC is followed.
+const RECHECK: Duration = Duration::from_secs(2);
+
+struct Cached {
+    checked: Instant,
+    layout: Option<Layout>,
+    keymap: Option<Arc<Keymap>>,
+}
+
+/// The keymap for the desktop's current layout, compiled again when the
+/// layout changes. `None` when the layout can't be found or compiled:
+/// callers then must not type through uinput, since guessing a layout types
+/// the wrong characters.
+pub fn current() -> Option<Arc<Keymap>> {
+    static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = cache.as_ref()
+        && cached.checked.elapsed() < RECHECK
+    {
+        return cached.keymap.clone();
+    }
+    let layout = detect_layout();
+    if let Some(cached) = cache.as_mut()
+        && cached.layout == layout
+    {
+        cached.checked = Instant::now();
+        return cached.keymap.clone();
+    }
+    let keymap = layout.as_ref().and_then(|layout| {
+        let keymap = compile(layout);
+        if keymap.is_none() {
+            tracing::warn!(layout = %layout.layout, "can't compile the keyboard layout");
+        }
+        keymap.map(Arc::new)
+    });
+    *cache = Some(Cached { checked: Instant::now(), layout, keymap: keymap.clone() });
+    keymap
 }
 
 const KEY_TAB: u16 = 15;
@@ -88,16 +112,20 @@ pub fn detect_layout() -> Option<Layout> {
     if let Some(layout) = from_env() {
         return Some(layout);
     }
-    if let Some(layout) = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.input-sources", "sources"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| parse_gnome_sources(&String::from_utf8_lossy(&o.stdout)))
-    {
-        return Some(layout);
+    // The source in use comes first in `mru-sources`; it's empty until the
+    // user has switched sources once.
+    for key in ["mru-sources", "sources"] {
+        if let Some(layout) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.input-sources", key])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| parse_gnome_sources(&String::from_utf8_lossy(&o.stdout)))
+        {
+            return Some(layout);
+        }
     }
     if let Some(layout) = dirs::config_dir()
         .and_then(|d| std::fs::read_to_string(d.join("kxkbrc")).ok())

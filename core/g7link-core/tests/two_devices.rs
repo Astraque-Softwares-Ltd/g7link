@@ -3995,6 +3995,93 @@ async fn remote_input_needs_toggle_and_delivers_motion_keys_and_slides() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_watching_phone_hears_the_pcs_text_field_and_edits_it() {
+    use g7link_core::{INPUT_INJECT, INPUT_TEXT_MIRROR, RemoteInput, RemoteTextState, TextFieldKind};
+
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    // A PC without the mirror: the phone can't watch.
+    pc.node.update_power(PowerLevel::NotApplicable, vec![INPUT_INJECT.into()]).await;
+    wait_for(&mut phone, "input.remote available", |e| match e {
+        NodeEvent::Capabilities(m)
+            if m.device == pc_id && m.state("input.remote") == Some(FeatureState::Available) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    assert!(!phone.node.remote_mirrors_text(&pc_id));
+    assert!(matches!(phone.node.remote_text_watch(pc_id, true).await, Err(Error::Unsupported)));
+
+    pc.node
+        .update_power(PowerLevel::NotApplicable, vec![INPUT_INJECT.into(), INPUT_TEXT_MIRROR.into()])
+        .await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !phone.node.remote_mirrors_text(&pc_id) {
+        assert!(tokio::time::Instant::now() < deadline, "the phone learns the PC mirrors text");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Remote input is off on the PC: the watch isn't heard.
+    phone.node.remote_text_watch(pc_id, true).await.unwrap();
+    pc.node.set_device_toggle(phone_id, "remote_input", true).unwrap();
+    phone.node.remote_text_watch(pc_id, true).await.unwrap();
+    wait_for(&mut pc, "the phone watches", |e| match e {
+        NodeEvent::TextWatch { device, on: true } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+
+    let state = RemoteTextState {
+        focus: 4,
+        field: 77,
+        epoch: 0,
+        rev: 1,
+        applied: 0,
+        kind: TextFieldKind::Mirror,
+        app: Some("Firefox".into()),
+        label: Some("Search".into()),
+        window: false,
+        multiline: false,
+        start: 0,
+        before: "hello".into(),
+        after: String::new(),
+        anchor: None,
+        more_before: false,
+        more_after: false,
+    };
+    pc.node.remote_text_state(phone_id, &state).await.unwrap();
+    let heard = wait_for(&mut phone, "the PC's field", |e| match e {
+        NodeEvent::PcTextState { device, state } if *device == pc_id => Some(state.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(heard, state);
+
+    let edit = RemoteInput::Edit {
+        focus: 4,
+        seq: 1,
+        range: Some((0, 5)),
+        moves: 0,
+        backspaces: 0,
+        text: "hi".into(),
+    };
+    phone.node.remote_input(pc_id, edit.clone()).await.unwrap();
+    assert!(pc.platform.remote_inputs.lock().unwrap().contains(&edit));
+
+    phone.node.remote_text_watch(pc_id, false).await.unwrap();
+    wait_for(&mut pc, "the phone stops watching", |e| match e {
+        NodeEvent::TextWatch { device, on: false } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn smooth_scroll_reaches_the_pc_in_fractions_of_a_click() {
     use g7link_core::{INPUT_INJECT, RemoteInput};
 

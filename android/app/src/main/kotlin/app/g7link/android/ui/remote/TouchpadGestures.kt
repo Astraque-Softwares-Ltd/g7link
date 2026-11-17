@@ -13,6 +13,7 @@ import app.g7link.android.core.Core
 import kotlin.math.hypot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Movement in reference-density pixels, so a swipe moves the pointer the same on every phone. */
@@ -44,8 +45,33 @@ internal suspend fun PointerInputScope.touchpadGestures(
     // the PC pointer and scrolls the same amount on every phone's screen.
     val toReference = TOUCHPAD_REFERENCE_DENSITY / density
     val tapTimeoutMs = 240L
-    val doubleTapWindowMs = 260L
-    var lastSingleTapTime = 0L
+    // Tap and drag, as on a laptop's touchpad: a tap presses the button and lets
+    // go a moment later, unless the finger comes back down, which keeps it held:
+    // moving drags from where it was tapped, another tap makes a double-click.
+    // (Clicking at once, then pressing again to drag, is a double-click and drag:
+    // it selects whole words and maximises a window by its title bar.)
+    var tapHeld = false
+    var keepHeld = false
+    var release: Job? = null
+    val releaseAfterTap: () -> Unit = {
+        keepHeld = false
+        release = flingScope.launch {
+            try {
+                delay(TAP_RELEASE_MS)
+            } finally {
+                if (tapHeld && !keepHeld) {
+                    tapHeld = false
+                    core.remoteButton(pcId, "left", "up", onStatus)
+                }
+            }
+        }
+    }
+    val letGo: () -> Unit = {
+        if (tapHeld) {
+            tapHeld = false
+            core.remoteButton(pcId, "left", "up", onStatus)
+        }
+    }
     var fling: Job? = null
     val detents = ScrollDetents()
     val scrolled: (ScrollClicks) -> Unit = { clicks ->
@@ -64,7 +90,13 @@ internal suspend fun PointerInputScope.touchpadGestures(
         var totalMoved = 0f
         val twoFinger = TwoFingerGesture(tapSlop * toReference)
         val scrolling = scrollLocked()
-        var isDragHold = !scrolling && (downTime - lastSingleTapTime) <= doubleTapWindowMs
+        // Back down within the moment after a tap: the button is still held.
+        if (tapHeld) {
+            keepHeld = true
+            release?.cancel()
+            if (scrolling) letGo()
+        }
+        var isDragHold = tapHeld
         var dragStarted = false
         val ballistics = TouchpadBallistics()
 
@@ -88,10 +120,10 @@ internal suspend fun PointerInputScope.touchpadGestures(
             if (pressedCount > maxPointers) {
                 maxPointers = pressedCount
                 if (dragStarted) {
-                    core.remoteButton(pcId, "left", "up", onStatus)
                     dragStarted = false
                     onDragging(false)
                 }
+                letGo()
                 isDragHold = false
             }
 
@@ -114,9 +146,9 @@ internal suspend fun PointerInputScope.touchpadGestures(
                 totalMoved += dist
 
                 if (isDragHold && !dragStarted && totalMoved > tapSlop * 0.6f) {
+                    // The button went down with the tap, where the finger was then.
                     dragStarted = true
                     onDragging(true)
-                    core.remoteButton(pcId, "left", "down", onStatus)
                     onHaptic(TrackpadHaptic.DragStart)
                 }
 
@@ -161,16 +193,23 @@ internal suspend fun PointerInputScope.touchpadGestures(
 
         onTouch(null)
         val elapsed = System.currentTimeMillis() - downTime
+        val tapped = elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f
         if (dragStarted) {
-            core.remoteButton(pcId, "left", "up", onStatus)
+            letGo()
             onDragging(false)
-            lastSingleTapTime = 0L
+        } else if (isDragHold && maxPointers == 1) {
+            // Back down without dragging: a second tap is a double-click; a
+            // press held still just lets go.
+            letGo()
+            if (tapped) {
+                core.remoteButton(pcId, "left", "click", onStatus)
+                onHaptic(TrackpadHaptic.Tap)
+                onTap()
+            }
         } else if (scrolling && maxPointers == 1 && twoFinger.isScroll) {
-            lastSingleTapTime = 0L
             fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
                 ?.let { flingScope.launchScrollFling(core, pcId, it, onStep = scrolled) }
         } else if (maxPointers >= 2) {
-            lastSingleTapTime = 0L
             if (twoFinger.isScroll) {
                 fling = ScrollFling.start(twoFinger.velocity(lastEventTime))
                     ?.let { flingScope.launchScrollFling(core, pcId, it, onStep = scrolled) }
@@ -180,16 +219,22 @@ internal suspend fun PointerInputScope.touchpadGestures(
                 core.remoteButton(pcId, "right", "click", onStatus)
                 onHaptic(TrackpadHaptic.Tap)
             }
-        } else if (elapsed <= tapTimeoutMs && totalMoved <= tapSlop * 1.5f) {
-            lastSingleTapTime = System.currentTimeMillis()
+        } else if (tapped && !scrolling) {
+            core.remoteButton(pcId, "left", "down", onStatus)
+            tapHeld = true
+            releaseAfterTap()
+            onHaptic(TrackpadHaptic.Tap)
+            onTap()
+        } else if (tapped) {
             core.remoteButton(pcId, "left", "click", onStatus)
             onHaptic(TrackpadHaptic.Tap)
             onTap()
-        } else {
-            lastSingleTapTime = 0L
         }
     }
 }
+
+/** How long a tap holds the button, waiting to see whether the finger comes back to drag. */
+internal const val TAP_RELEASE_MS = 200L
 
 /**
  * Glides a flicked scroll on after the fingers lift, one display frame at a

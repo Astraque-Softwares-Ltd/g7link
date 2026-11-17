@@ -338,6 +338,10 @@
     <string name="remote_more_controls">Mehr</string>
     <string name="remote_touchpad_only">Nur Touchpad</string>
     <string name="remote_type_placeholder">Auf %1$s tippen…</string>
+    <string name="remote_field_secret">Passwortfeld</string>
+    <string name="remote_field_none">Auf %1$s nimmt nichts Text an</string>
+    <string name="remote_image_not_pasted">%1$s konnte das Bild nicht übernehmen. Ist die GNOME-Erweiterung von G7 Linux an?</string>
+    <string name="remote_attachment_remove">%1$s entfernen</string>
     <string name="remote_paste_image">Bild auf %1$s einfügen</string>
     <string name="remote_dictate">Diktieren</string>
     <string name="remote_dictate_stop">Stopp</string>

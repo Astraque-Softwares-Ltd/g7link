@@ -585,7 +585,7 @@ pub struct Settings {
     #[serde(default = "default_true", alias = "clipboard_auto_copy_received_files")]
     pub clipboard_auto_copy_received_files: bool,
     /// Open a single photo or document shared from the phone as soon as it
-    /// arrives. Off by default: it's saved in Downloads\G7Link either way.
+    /// arrives. Off by default: it's saved in Downloads/G7Link either way.
     #[serde(default, alias = "open_shared_files")]
     pub open_shared_files: bool,
     /// Folder sync and photo backup wait while the phone is only reachable

@@ -84,6 +84,41 @@ and close it again if it opened it by itself. A Linux PC reads the focus from
 the accessibility bus (AT-SPI), so apps that don't publish accessibility
 aren't seen.
 
+### 2.4 The focused field (`input.text_mirror`)
+
+```
+t = "remote.text_watch"  b = { on: bool }                       (phone → PC)
+t = "remote.text_state"  b = TextState                          (PC → phone)
+
+TextState = { focus: u32, field?: u64, epoch?: u32, rev: u32, applied: u32,
+              kind: "mirror" | "opaque" | "secret" | "none",
+              app?: text, label?: text, window?: bool, multiline?: bool,
+              start?: u32, before?: text, after?: text, anchor?: u32,
+              more_before?: bool, more_after?: bool }
+```
+
+A PC that offers `input.text_mirror` keeps a phone's typing box and its
+focused field the same. The phone sends `text_watch` `on` while its box is
+open (and `false` when it closes); while it watches, and has `remote_input`,
+the PC sends a `text_state` each time the focused field, its text or its
+caret changes. Neither has a reply.
+
+- `focus` changes on every focus move; `field` is the same each time the
+  focus comes back to one field (0 when the PC can't tell), and means nothing
+  off the PC. `epoch` changes when someone used the PC's own keyboard or mouse
+  in a field whose text isn't shared, so what a phone typed there may not be
+  there any more.
+- `mirror`: the PC reads the field (AT-SPI). `before` and `after` are the text
+  around the caret (at most 4096 and 1024 UTF-8 bytes), `start` is where
+  `before` starts and `anchor` where a selection starts; offsets count Unicode
+  scalar values. `opaque`: the field takes text but its app doesn't share it,
+  or it's a terminal, or (`window`) the PC only knows the window that has the
+  focus. `secret`: a password field; nothing is read. `none`: nothing takes
+  text. `label` is the field's name, or the window's title; it and the text
+  are never logged.
+- `applied` is the last `edit` or `caret` `seq` from that phone that ran
+  before the state was read.
+
 ## 3. Input payloads
 
 ```
@@ -95,6 +130,9 @@ Input =
   | { type: "key",    key: text, mods?: [KeyMod] }
   | { type: "slide",  action: SlideAction }
   | { type: "laser",  on: bool, x?: float32, y?: float32 }
+  | { type: "edit",   focus: u32, seq: u32, range?: [u32, u32],
+      moves?: i32, backspaces?: u16, text?: text }
+  | { type: "caret",  focus: u32, seq: u32, caret: u32, anchor: u32 }
 
 Button       = "left" | "right" | "middle"
 ButtonAction = "down" | "up" | "click"
@@ -128,6 +166,18 @@ SlideAction  = "next" | "previous" | "start" | "stop" | "black"
     (`Ctrl+V`), `cut` (`Ctrl+X`), `undo` (`Ctrl+Z`), `select_all` (`Ctrl+A`),
     `task_view` (`Win+Tab`), `lock` (`Win+L`). A PC that knows a terminal
     has the focus pastes there with `Ctrl+Shift+V`.
+- **Edits (`edit`, `input.text_mirror`):** one change of the focused field,
+  run as one paced burst of keys so nothing overtakes anything. With `range`,
+  those characters of a mirrored field are selected and `text` typed over
+  them; without, the caret moves `moves` characters (negative: left, at most
+  512), `backspaces` characters before it are deleted (at most 512) and `text`
+  (at most 1024 bytes, `\n` and `\t` allowed) is typed. A new line is
+  Shift+Enter, except in terminals, password and one-line fields. Characters
+  the PC's keyboard layout lacks are typed by their code (Ctrl+Shift+U). The PC
+  answers `"stale focus"` when `focus` (other than 0) isn't its focus any
+  more, and an error when nothing was typed (the PC is locked, say).
+- **Caret (`caret`, `input.text_mirror`):** puts a mirrored field's caret at
+  `caret`, selecting from `anchor`.
 - **Presentation (`slide`):** `next` (next slide), `previous` (previous
   slide), `start` (`F5`), `stop` (`Escape`), `black` (`B`).
 - **Laser pointer (`laser`):** when `on` is `true`, `x` and `y` are finite

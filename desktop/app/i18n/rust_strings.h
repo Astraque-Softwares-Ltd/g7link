@@ -449,7 +449,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("PhotoBackup", "Update G7 Link on %1 to back up its photos."), // desktop/app/src/photo_backup.rs
     QT_TRANSLATE_NOOP("PhotoBackup", "Waiting for %1"), // desktop/app/src/bridge/photo_backup.rs
     QT_TRANSLATE_NOOP("PhotoBackup", "Waiting for Wi-Fi"), // desktop/app/src/bridge/photo_backup.rs
-    QT_TRANSLATE_NOOP("Photos", "%1 of %2 couldn't be moved to %3. They're in Downloads\\G7Link."), // desktop/app/src/photos.rs
+    QT_TRANSLATE_NOOP("Photos", "%1 of %2 couldn't be moved to %3. They're in Downloads/G7Link."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "Deleted %1 of %2."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "From %1"), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "New photo"), // desktop/app/src/photos.rs
@@ -463,7 +463,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Photos", "The phone isn't connected right now."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "The phone kept them. Deleting from the PC needs All files access on the phone (Android 11 or later)."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("Photos", "The photo couldn't be copied to the clipboard."), // desktop/app/src/photos.rs
-    QT_TRANSLATE_NOOP("Photos", "The photo couldn't be copied. It's in Downloads\\G7Link."), // desktop/app/src/photos.rs
+    QT_TRANSLATE_NOOP("Photos", "The photo couldn't be copied. It's in Downloads/G7Link."), // desktop/app/src/photos.rs
     QT_TRANSLATE_NOOP("PlayOnPhone", "Connect your phone to play on it."), // desktop/app/src/play_on_phone.rs
     QT_TRANSLATE_NOOP("PlayOnPhone", "Media is turned off for %1."), // desktop/app/src/play_on_phone.rs
     QT_TRANSLATE_NOOP("PlayOnPhone", "Opening in %1 on %2. Tap the notification there."), // desktop/app/src/play_on_phone.rs
@@ -510,10 +510,10 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Timeline", "Voice recording"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "With %1"), // desktop/app/src/bridge/timeline.rs
     QT_TRANSLATE_NOOP("Timeline", "device"), // desktop/app/src/bridge/timeline.rs
-    QT_TRANSLATE_NOOP("Transfers", "Accept in G7 Link to save to Downloads\\G7Link"), // desktop/app/src/transfers.rs
+    QT_TRANSLATE_NOOP("Transfers", "Accept in G7 Link to save to Downloads/G7Link"), // desktop/app/src/transfers.rs
     QT_TRANSLATE_NOOP("Transfers", "Files are turned off for that device."), // desktop/app/src/transfers.rs
-    QT_TRANSLATE_NOOP("Transfers", "From %1, opened from Downloads\\G7Link"), // desktop/app/src/transfers.rs
-    QT_TRANSLATE_NOOP("Transfers", "From %1, saved in Downloads\\G7Link"), // desktop/app/src/transfers.rs
+    QT_TRANSLATE_NOOP("Transfers", "From %1, opened from Downloads/G7Link"), // desktop/app/src/transfers.rs
+    QT_TRANSLATE_NOOP("Transfers", "From %1, saved in Downloads/G7Link"), // desktop/app/src/transfers.rs
     QT_TRANSLATE_NOOP("Transfers", "Nearby device"), // desktop/app/src/transfers.rs
     QT_TRANSLATE_NOOP("Transfers", "That's too many files to send at once."), // desktop/app/src/transfers.rs
     QT_TRANSLATE_NOOP("Transfers", "There's nothing to send in there."), // desktop/app/src/transfers.rs

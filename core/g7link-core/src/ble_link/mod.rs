@@ -17,7 +17,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use g7link_protocol::{
@@ -134,6 +134,10 @@ pub const BLE_LINK_CAPABILITY: &str = "ble.link";
 const LINK_WAIT: Duration = Duration::from_secs(20);
 /// How long a request over Bluetooth waits for its reply.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a key or click the PC turned away as too many keeps being
+/// resent, and how long between tries.
+const INPUT_RETRY_FOR: Duration = Duration::from_secs(3);
+const INPUT_RETRY_AFTER: Duration = Duration::from_millis(100);
 /// Copied text that goes over Bluetooth at most, in UTF-8 bytes; longer waits
 /// in the queue for the network.
 pub(crate) const MAX_CLIP_TEXT: usize = 2048;
@@ -389,9 +393,20 @@ impl Shared {
         if event.is_datagram_allowed() && !matches!(event, RemoteInput::Laser { on: false, .. }) {
             return link.send_motion(&event);
         }
-        let env = Envelope::new(types::REMOTE_INPUT, &event)?;
-        self.ble_request(peer, env, REQUEST_TIMEOUT).await?.expect(types::OK)?;
-        Ok(())
+        // A PC over its budget answers Busy: wait and try again, in order.
+        let give_up = Instant::now() + INPUT_RETRY_FOR;
+        loop {
+            let env = Envelope::new(types::REMOTE_INPUT, &event)?;
+            match self.ble_request(peer, env, REQUEST_TIMEOUT).await?.expect(types::OK) {
+                Err(g7link_protocol::ProtocolError::Remote {
+                    code: g7link_protocol::ErrorCode::Busy,
+                    ..
+                }) if Instant::now() < give_up => {
+                    tokio::time::sleep(INPUT_RETRY_AFTER).await;
+                }
+                done => return Ok(done?),
+            }
+        }
     }
 
     /// Phone: whether the PC `peer` takes input from this phone, asked over Bluetooth.

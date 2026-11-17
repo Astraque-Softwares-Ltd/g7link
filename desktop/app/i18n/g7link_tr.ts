@@ -5843,7 +5843,7 @@ Neler gerekir
     </message>
     <message>
         <location filename="rust_strings.h" line="367"/>
-        <source>Recording from %1, saved in Downloads\G7Link</source>
+        <source>Recording from %1, saved in Downloads/G7Link</source>
         <translation>%1 kaydı, İndirilenler\G7Link klasörüne kaydedildi</translation>
     </message>
     <message>
@@ -5858,7 +5858,7 @@ Neler gerekir
     </message>
     <message>
         <location filename="rust_strings.h" line="370"/>
-        <source>Saved %1 to Downloads\G7Link.</source>
+        <source>Saved %1 to Downloads/G7Link.</source>
         <translation>%1, İndirilenler\G7Link klasörüne kaydedildi.</translation>
     </message>
     <message>
@@ -5873,7 +5873,7 @@ Neler gerekir
     </message>
     <message>
         <location filename="rust_strings.h" line="373"/>
-        <source>Screenshot from %1, saved in Downloads\G7Link</source>
+        <source>Screenshot from %1, saved in Downloads/G7Link</source>
         <translation>%1 ekran görüntüsü, İndirilenler\G7Link klasörüne kaydedildi</translation>
     </message>
     <message>
@@ -6647,8 +6647,8 @@ Neler gerekir
     <name>Photos</name>
     <message>
         <location filename="rust_strings.h" line="418"/>
-        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads\G7Link.</source>
-        <translation>%2 öğeden %1 tanesi %3 konumuna taşınamadı. Downloads\G7Link klasöründeler.</translation>
+        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads/G7Link.</source>
+        <translation>%2 öğeden %1 tanesi %3 konumuna taşınamadı. Downloads/G7Link klasöründeler.</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="419"/>
@@ -6727,7 +6727,7 @@ Neler gerekir
     </message>
     <message>
         <location filename="rust_strings.h" line="434"/>
-        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads\G7Link.</source>
+        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads/G7Link.</source>
         <translation>Fotoğraf kopyalanamadı. İndirilenler\G7Link klasöründe.</translation>
     </message>
 </context>
@@ -9954,7 +9954,7 @@ Neler gerekir
     <name>Transfers</name>
     <message>
         <location filename="rust_strings.h" line="500"/>
-        <source>Accept in G7 Link to save to Downloads\G7Link</source>
+        <source>Accept in G7 Link to save to Downloads/G7Link</source>
         <translation>İndirilenler\G7Link klasörüne kaydetmek için G7 Link&apos;te kabul edin</translation>
     </message>
     <message>
@@ -9964,12 +9964,12 @@ Neler gerekir
     </message>
     <message>
         <location filename="rust_strings.h" line="502"/>
-        <source>From %1, opened from Downloads\G7Link</source>
+        <source>From %1, opened from Downloads/G7Link</source>
         <translation>Kaynak: %1, İndirilenler\G7Link klasöründen açıldı</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="503"/>
-        <source>From %1, saved in Downloads\G7Link</source>
+        <source>From %1, saved in Downloads/G7Link</source>
         <translation>Kaynak: %1, İndirilenler\G7Link klasörüne kaydedildi</translation>
     </message>
     <message>

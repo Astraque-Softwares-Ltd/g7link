@@ -5850,8 +5850,8 @@ Voraussetzungen
     </message>
     <message>
         <location filename="rust_strings.h" line="367"/>
-        <source>Recording from %1, saved in Downloads\G7Link</source>
-        <translation>Aufnahme von %1, gespeichert unter Downloads\G7Link</translation>
+        <source>Recording from %1, saved in Downloads/G7Link</source>
+        <translation>Aufnahme von %1, gespeichert unter Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="368"/>
@@ -5865,8 +5865,8 @@ Voraussetzungen
     </message>
     <message>
         <location filename="rust_strings.h" line="370"/>
-        <source>Saved %1 to Downloads\G7Link.</source>
-        <translation>%1 unter Downloads\G7Link gespeichert.</translation>
+        <source>Saved %1 to Downloads/G7Link.</source>
+        <translation>%1 unter Downloads/G7Link gespeichert.</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="371"/>
@@ -5880,8 +5880,8 @@ Voraussetzungen
     </message>
     <message>
         <location filename="rust_strings.h" line="373"/>
-        <source>Screenshot from %1, saved in Downloads\G7Link</source>
-        <translation>Screenshot von %1, gespeichert unter Downloads\G7Link</translation>
+        <source>Screenshot from %1, saved in Downloads/G7Link</source>
+        <translation>Screenshot von %1, gespeichert unter Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="374"/>
@@ -6655,8 +6655,8 @@ Voraussetzungen
     <name>Photos</name>
     <message>
         <location filename="rust_strings.h" line="418"/>
-        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads\G7Link.</source>
-        <translation>%1 von %2 konnten nicht nach %3 verschoben werden. Sie sind in Downloads\G7Link.</translation>
+        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads/G7Link.</source>
+        <translation>%1 von %2 konnten nicht nach %3 verschoben werden. Sie sind in Downloads/G7Link.</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="419"/>
@@ -6735,8 +6735,8 @@ Voraussetzungen
     </message>
     <message>
         <location filename="rust_strings.h" line="434"/>
-        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads\G7Link.</source>
-        <translation>Das Foto konnte nicht kopiert werden. Es liegt unter Downloads\G7Link.</translation>
+        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads/G7Link.</source>
+        <translation>Das Foto konnte nicht kopiert werden. Es liegt unter Downloads/G7Link.</translation>
     </message>
 </context>
 <context>
@@ -9966,8 +9966,8 @@ Voraussetzungen
     <name>Transfers</name>
     <message>
         <location filename="rust_strings.h" line="500"/>
-        <source>Accept in G7 Link to save to Downloads\G7Link</source>
-        <translation>In G7 Link annehmen, um unter Downloads\G7Link zu speichern</translation>
+        <source>Accept in G7 Link to save to Downloads/G7Link</source>
+        <translation>In G7 Link annehmen, um unter Downloads/G7Link zu speichern</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="501"/>
@@ -9976,13 +9976,13 @@ Voraussetzungen
     </message>
     <message>
         <location filename="rust_strings.h" line="502"/>
-        <source>From %1, opened from Downloads\G7Link</source>
-        <translation>Von %1, geöffnet aus Downloads\G7Link</translation>
+        <source>From %1, opened from Downloads/G7Link</source>
+        <translation>Von %1, geöffnet aus Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="503"/>
-        <source>From %1, saved in Downloads\G7Link</source>
-        <translation>Von %1, gespeichert unter Downloads\G7Link</translation>
+        <source>From %1, saved in Downloads/G7Link</source>
+        <translation>Von %1, gespeichert unter Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="504"/>

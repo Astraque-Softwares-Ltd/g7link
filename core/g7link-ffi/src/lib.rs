@@ -31,6 +31,93 @@ pub enum DeviceKind {
     Unknown,
 }
 
+/// What has the keyboard focus on a PC, for the phone's typing box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TextFieldKind {
+    /// A text field the PC reads: the typing box mirrors it.
+    Mirror,
+    /// Takes text, but its app doesn't share it.
+    Opaque,
+    /// A password field.
+    Secret,
+    /// Nothing that takes text.
+    None,
+}
+
+impl From<core::TextFieldKind> for TextFieldKind {
+    fn from(kind: core::TextFieldKind) -> Self {
+        match kind {
+            core::TextFieldKind::Mirror => TextFieldKind::Mirror,
+            core::TextFieldKind::Opaque => TextFieldKind::Opaque,
+            core::TextFieldKind::Secret => TextFieldKind::Secret,
+            core::TextFieldKind::None => TextFieldKind::None,
+        }
+    }
+}
+
+/// The field that has the focus on a PC (`remote.text_state`). Offsets count
+/// Unicode code points.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TextFieldState {
+    /// Changes each time the focus moves; `remote_edit` and `remote_caret` carry it.
+    pub focus: u32,
+    /// The same each time the focus comes back to this field; 0 when unknown.
+    pub field: u64,
+    /// Changes when the PC doubts what the phone typed into this field.
+    pub epoch: u32,
+    pub rev: u32,
+    /// The last edit `seq` from this phone that ran before the text was read.
+    pub applied: u32,
+    pub kind: TextFieldKind,
+    pub app: Option<String>,
+    pub label: Option<String>,
+    /// The PC knows only the window, not the field.
+    pub window: bool,
+    pub multiline: bool,
+    /// Where `before` starts in the field.
+    pub start: u32,
+    pub before: String,
+    pub after: String,
+    /// Where the selection starts, when there is one (the caret is its other end).
+    pub anchor: Option<u32>,
+    pub more_before: bool,
+    pub more_after: bool,
+}
+
+/// Never prints the field's text or label.
+impl std::fmt::Debug for TextFieldState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextFieldState")
+            .field("focus", &self.focus)
+            .field("field", &self.field)
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl From<core::RemoteTextState> for TextFieldState {
+    fn from(state: core::RemoteTextState) -> Self {
+        TextFieldState {
+            focus: state.focus,
+            field: state.field,
+            epoch: state.epoch,
+            rev: state.rev,
+            applied: state.applied,
+            kind: state.kind.into(),
+            app: state.app,
+            label: state.label,
+            window: state.window,
+            multiline: state.multiline,
+            start: state.start,
+            before: state.before,
+            after: state.after,
+            anchor: state.anchor,
+            more_before: state.more_before,
+            more_after: state.more_after,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct ScreenRect {
     pub x: f32,
@@ -686,6 +773,11 @@ pub enum Event {
     PcTextFocus {
         id: String,
         editable: bool,
+    },
+    /// The field that has the focus on PC `id`, while the typing box watches it.
+    PcTextState {
+        id: String,
+        state: TextFieldState,
     },
     /// PC `id`'s clipboard got something new: offer to paste it. `preview` is
     /// the text's first line, when that PC sends this phone what it copies.
@@ -2619,6 +2711,9 @@ impl Event {
             NodeEvent::PcTextFocus { device, editable } => {
                 Event::PcTextFocus { id: device.to_string(), editable }
             }
+            NodeEvent::PcTextState { device, state } => {
+                Event::PcTextState { id: device.to_string(), state: state.into() }
+            }
             NodeEvent::PcClip { device, kind, preview } => {
                 Event::PcClip { id: device.to_string(), kind: kind.into(), preview }
             }
@@ -2721,7 +2816,7 @@ impl Event {
             NodeEvent::BleOutbound { endpoint } => Event::BleOutbound { endpoint },
             NodeEvent::BleLinkChanged { device, up } => Event::BleLinkChanged { id: device.to_string(), up },
             // Asked for by PCs only, and codes go to PCs.
-            NodeEvent::BleWanted { .. } | NodeEvent::OneTimeCode { .. } => return None,
+            NodeEvent::BleWanted { .. } | NodeEvent::OneTimeCode { .. } | NodeEvent::TextWatch { .. } => return None,
         })
     }
 }
@@ -4013,6 +4108,14 @@ impl G7LinkNode {
 
     /// Puts an image (`image/png` or `image/jpeg`) on a paired PC's
     /// clipboard.
+    /// Puts an image on PC `id`'s clipboard now, to paste where it's typing:
+    /// never queued, and an error when its clipboard didn't take it.
+    pub async fn paste_image(&self, id: String, mime: String, bytes: Vec<u8>) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.paste_image(id, mime, bytes).await?) }).await
+    }
+
     pub async fn send_clipboard_image(&self, id: String, mime: String, bytes: Vec<u8>) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
@@ -4433,6 +4536,60 @@ impl G7LinkNode {
         let id = parse_id(&id)?;
         let node = self.node.clone();
         self.run(async move { Ok(node.remote_input(id, core::RemoteInput::Text { text }).await?) }).await
+    }
+
+    /// Whether PC `id` mirrors its focused text field and takes `remote_edit`.
+    pub fn remote_mirrors_text(&self, id: String) -> bool {
+        parse_id(&id).is_ok_and(|id| self.node.remote_mirrors_text(&id))
+    }
+
+    /// Tells PC `id` the typing box opened (`on`) or closed: while open, it
+    /// sends `Event::PcTextState`.
+    pub async fn remote_text_watch(&self, id: String, on: bool) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.remote_text_watch(id, on).await?) }).await
+    }
+
+    /// Changes the focused text on PC `id`: either replaces the characters
+    /// `range_start..range_end` of a mirrored field with `text`, or moves the
+    /// caret `moves` characters (negative: left), deletes `backspaces`
+    /// characters before it and types `text`. `focus` is the latest
+    /// `TextFieldState.focus` (0 when there's none); a PC whose focus moved
+    /// on refuses it with an `Internal` error ending in "stale focus".
+    #[allow(clippy::too_many_arguments)]
+    pub async fn remote_edit(
+        &self,
+        id: String,
+        focus: u32,
+        seq: u32,
+        range_start: Option<u32>,
+        range_end: Option<u32>,
+        moves: i32,
+        backspaces: u16,
+        text: String,
+    ) -> Result<()> {
+        let id = parse_id(&id)?;
+        let range = range_start.zip(range_end);
+        let node = self.node.clone();
+        let input = core::RemoteInput::Edit { focus, seq, range, moves, backspaces, text };
+        self.run(async move { Ok(node.remote_input(id, input).await?) }).await
+    }
+
+    /// Places the caret of PC `id`'s mirrored field at `caret`, selecting
+    /// from `anchor` (equal to `caret` for no selection).
+    pub async fn remote_caret(
+        &self,
+        id: String,
+        focus: u32,
+        seq: u32,
+        caret: u32,
+        anchor: u32,
+    ) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let input = core::RemoteInput::Caret { focus, seq, caret, anchor };
+        self.run(async move { Ok(node.remote_input(id, input).await?) }).await
     }
 
     /// Presses a named key or shortcut (`key`) with optional modifiers

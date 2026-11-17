@@ -367,6 +367,29 @@ rust::Vec<uint8_t> decode_image(rust::Slice<const uint8_t> bytes)
     return result;
 }
 
+bool app_window_active()
+{
+    return QGuiApplication::applicationState() == Qt::ApplicationActive;
+}
+
+rust::Vec<uint8_t> encode_png(rust::Slice<const uint8_t> bytes)
+{
+    rust::Vec<uint8_t> result;
+    if (bytes.empty())
+        return result;
+    QImage img;
+    if (!img.loadFromData(bytes.data(), static_cast<int>(bytes.size())))
+        return result;
+    QByteArray png;
+    QBuffer buffer(&png);
+    if (!buffer.open(QIODevice::WriteOnly) || !img.save(&buffer, "PNG"))
+        return result;
+    result.reserve(static_cast<size_t>(png.size()));
+    for (const char byte : png)
+        result.push_back(static_cast<uint8_t>(byte));
+    return result;
+}
+
 namespace {
 std::atomic<bool> &qtEventLoopRunning()
 {

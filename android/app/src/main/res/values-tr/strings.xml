@@ -338,6 +338,10 @@
     <string name="remote_more_controls">Daha fazla</string>
     <string name="remote_touchpad_only">Yalnızca dokunmatik yüzey</string>
     <string name="remote_type_placeholder">%1$s cihazına yazın…</string>
+    <string name="remote_field_secret">Parola alanı</string>
+    <string name="remote_field_none">%1$s cihazında yazı alan bir şey yok</string>
+    <string name="remote_image_not_pasted">%1$s resmi alamadı. G7 Linux\'un GNOME uzantısı açık mı?</string>
+    <string name="remote_attachment_remove">%1$s öğesini kaldır</string>
     <string name="remote_paste_image">%1$s üzerine görsel yapıştır</string>
     <string name="remote_dictate">Dikte et</string>
     <string name="remote_dictate_stop">Durdur</string>

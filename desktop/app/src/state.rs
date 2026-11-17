@@ -586,6 +586,9 @@ impl AppState {
             | NodeEvent::MirrorNotice { .. }
             // Heard on phones only.
             | NodeEvent::PcTextFocus { .. }
+            | NodeEvent::PcTextState { .. }
+            // `remote::on_event` follows these.
+            | NodeEvent::TextWatch { .. }
             | NodeEvent::PcClip { .. }
             | NodeEvent::PcCapturePrompt { .. }
             | NodeEvent::PcCaptureRecordEnded { .. }

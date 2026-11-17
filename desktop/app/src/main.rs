@@ -191,8 +191,7 @@ impl Platform for DesktopPlatform {
         peer: &g7link_core::DeviceId,
         input: g7link_core::RemoteInput,
     ) -> Result<(), String> {
-        remote::handle_input(peer, input);
-        Ok(())
+        remote::handle_input(peer, input)
     }
     fn deck_press(&self, peer: &g7link_core::DeviceId, tile: &str) -> Result<(), String> {
         deck::handle_press(peer, tile)
@@ -580,7 +579,7 @@ fn main() -> ExitCode {
     std::thread::spawn(notifications::prune_images);
     watch_network();
     hotspot::start();
-    sys::text_focus::watch(remote::text_focus_changed);
+    sys::text_focus::watch(remote::text_focus_changed, remote::text_state_changed);
     start_toasts();
     // The Share sheet and notification buttons, after an update (#84).
     clipboard::start();

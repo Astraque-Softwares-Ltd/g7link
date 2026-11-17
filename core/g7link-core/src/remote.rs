@@ -13,7 +13,7 @@ pub use g7link_protocol::messages::{
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
-    messages::{RemoteTextFocus, StreamHeader, remote, types},
+    messages::{RemoteTextFocus, RemoteTextState, RemoteTextWatch, StreamHeader, remote, types},
     read_frame, write_frame,
 };
 use iroh::endpoint::{RecvStream, SendStream};
@@ -23,6 +23,11 @@ use crate::{Error, NodeEvent, Result, node::Shared, session::Session};
 /// Capability ID announced by a desktop that can inject mouse, keyboard and
 /// presentation input (`docs/protocol/remote.md` §1).
 pub const INPUT_INJECT: &str = "input.inject";
+
+/// Capability ID announced by a desktop that takes `Edit` and `Caret` input
+/// and tells watching phones about its focused text field
+/// (`remote.text_watch`, `remote.text_state`).
+pub const INPUT_TEXT_MIRROR: &str = "input.text_mirror";
 
 /// Per-device toggle name on the PC (off by default).
 pub(crate) const TOGGLE: &str = "remote_input";
@@ -182,6 +187,32 @@ pub(crate) async fn text_focus(shared: &Shared, session: &Session, editable: boo
     session.send(Envelope::new(types::REMOTE_TEXT_FOCUS, &RemoteTextFocus { editable })?).await
 }
 
+/// Sends a phone the field that has the focus on this PC
+/// (`remote.text_state`). Only phones that may control this PC hear it.
+pub(crate) async fn text_state(shared: &Shared, session: &Session, state: &RemoteTextState) -> Result<()> {
+    if !shared.toggle_on(&session.peer, TOGGLE) {
+        return Ok(());
+    }
+    if !state.is_valid() {
+        return Err(Error::Protocol("invalid text state".into()));
+    }
+    session.send(Envelope::new(types::REMOTE_TEXT_STATE, state)?).await
+}
+
+/// Phone: tells the PC `peer` that its typing box opened (`on`) or closed
+/// (`remote.text_watch`), when that PC mirrors its text fields.
+pub(crate) async fn text_watch(shared: &Shared, session: &Session, on: bool) -> Result<()> {
+    if !peer_offers(shared, &session.peer, INPUT_TEXT_MIRROR)? {
+        return Err(Error::Unsupported);
+    }
+    session.send(Envelope::new(types::REMOTE_TEXT_WATCH, &RemoteTextWatch { on })?).await
+}
+
+/// Phone: whether the PC `peer` mirrors its text fields and takes `Edit`.
+pub(crate) fn mirrors_text(shared: &Shared, peer: &DeviceId) -> bool {
+    peer_offers(shared, peer, INPUT_TEXT_MIRROR).unwrap_or(false)
+}
+
 /// Sends a remote input event to `peer` (a PC).
 ///
 /// Discrete actions travel on the control stream. If `input` is
@@ -293,6 +324,27 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         if !shared.we_offer(INPUT_INJECT) {
             let RemoteTextFocus { editable } = env.body()?;
             shared.emit(NodeEvent::PcTextFocus { device: session.peer, editable });
+        }
+        return Ok(true);
+    }
+    // The PC's focused field (one way): heard only where input isn't injected.
+    if env.t == types::REMOTE_TEXT_STATE {
+        if !shared.we_offer(INPUT_INJECT) {
+            let state: RemoteTextState = env.body()?;
+            if state.is_valid() {
+                shared.emit(NodeEvent::PcTextState { device: session.peer, state });
+            }
+        }
+        return Ok(true);
+    }
+    // A phone's typing box opened or closed (one way): only phones that may
+    // control this PC are heard.
+    if env.t == types::REMOTE_TEXT_WATCH {
+        if shared.we_offer(INPUT_TEXT_MIRROR) {
+            let RemoteTextWatch { on } = env.body()?;
+            if !on || check_allowed(shared, &session.peer).is_ok() {
+                shared.emit(NodeEvent::TextWatch { device: session.peer, on });
+            }
         }
         return Ok(true);
     }

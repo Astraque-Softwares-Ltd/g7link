@@ -146,6 +146,8 @@ impl UinputDevice {
                 return None;
             }
         }
+        // What's written before the desktop has opened the new device is lost.
+        std::thread::sleep(DEVICE_SETTLE);
 
         Some(Self { fd })
     }
@@ -211,6 +213,15 @@ impl Drop for UinputDevice {
             }
         }
     }
+}
+
+/// How long the desktop takes to pick up a new virtual device.
+const DEVICE_SETTLE: Duration = Duration::from_millis(250);
+
+/// Creates the virtual input device ahead of the first key, off the
+/// caller's thread, so a phone about to type doesn't wait for it.
+pub fn prepare() {
+    let _ = std::thread::Builder::new().name("uinput-prepare".into()).spawn(|| with_uinput(|_| true));
 }
 
 fn with_uinput<F: FnOnce(&UinputDevice) -> bool>(f: F) -> bool {
@@ -1305,28 +1316,163 @@ fn session_locked_cached() -> bool {
     locked
 }
 
+/// Why typing from a phone didn't happen.
+pub const LOCKED: &str = "this PC is locked";
+
+/// A pause after each character typed through uinput, so the desktop reads
+/// every key before the next (a burst can overflow its buffer and lose
+/// keys), and a longer one after a character typed by its code, which the
+/// input method handles on its own.
+const KEY_PACE: Duration = Duration::from_millis(2);
+const UNICODE_PACE: Duration = Duration::from_millis(12);
+
+const KEY_BACKSPACE: u16 = 14;
+const KEY_TAB: u16 = 15;
+const KEY_ENTER: u16 = 28;
+const KEY_SPACE: u16 = 57;
+const KEY_LEFT: u16 = 105;
+const KEY_RIGHT: u16 = 106;
+
+/// One key the virtual keyboard presses while typing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Stroke {
+    Key {
+        code: u16,
+        mods: Vec<u16>,
+    },
+    /// A character the layout has no key for, typed by its code point.
+    Unicode(char),
+}
+
+/// What a new line is: Enter in a terminal; elsewhere Shift+Enter, a line
+/// break in chat boxes, where Enter alone sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewLine {
+    Enter,
+    ShiftEnter,
+}
+
+/// The keys that type `text` on `keymap`. With Caps Lock on, letters are
+/// pressed with Shift the other way round.
+fn text_strokes(
+    keymap: &super::keymap::Keymap,
+    text: &str,
+    caps_lock: bool,
+    new_line: NewLine,
+) -> Vec<Stroke> {
+    let shift = evdev_key_for_mod(KeyMod::Shift);
+    text.chars()
+        .filter(|&c| c != '\r')
+        .map(|ch| match ch {
+            '\n' => Stroke::Key {
+                code: KEY_ENTER,
+                mods: if new_line == NewLine::ShiftEnter { vec![shift] } else { Vec::new() },
+            },
+            '\t' => Stroke::Key { code: KEY_TAB, mods: Vec::new() },
+            _ => match keymap.press_for(ch) {
+                Some(mut press) => {
+                    if caps_lock && has_case(ch) {
+                        press.shift = !press.shift;
+                    }
+                    Stroke::Key { code: press.code, mods: press_mods(&press) }
+                }
+                None => Stroke::Unicode(ch),
+            },
+        })
+        .collect()
+}
+
+/// Whether Caps Lock changes what typing `ch` gives.
+fn has_case(ch: char) -> bool {
+    ch.is_alphabetic() && (ch.is_lowercase() || ch.is_uppercase())
+}
+
+/// Presses `strokes` one at a time, at a pace the desktop keeps up with.
+/// A character the layout lacks goes through the input method's
+/// Ctrl+Shift+U entry, which GTK, Qt, Firefox and Chromium all take.
+fn write_strokes(u: &UinputDevice, keymap: &super::keymap::Keymap, strokes: &[Stroke]) -> bool {
+    for stroke in strokes {
+        let (ok, pace) = match stroke {
+            Stroke::Key { code, mods } => (u.key_combo(*code, mods), KEY_PACE),
+            Stroke::Unicode(ch) => (unicode_entry(u, keymap, *ch), UNICODE_PACE),
+        };
+        if !ok {
+            return false;
+        }
+        std::thread::sleep(pace);
+    }
+    true
+}
+
+/// Types `ch` as Ctrl+Shift+U, its code point in hex, then Space.
+fn unicode_entry(u: &UinputDevice, keymap: &super::keymap::Keymap, ch: char) -> bool {
+    let Some(start) = keymap.press_for('u').filter(|p| !p.shift && !p.altgr) else { return false };
+    let hex = format!("{:x}", u32::from(ch));
+    let Some(digits) = hex.chars().map(|d| keymap.press_for(d)).collect::<Option<Vec<_>>>() else {
+        return false;
+    };
+    let entry = [evdev_key_for_mod(KeyMod::Ctrl), evdev_key_for_mod(KeyMod::Shift)];
+    if !u.key_combo(start.code, &entry) {
+        return false;
+    }
+    for digit in digits {
+        std::thread::sleep(KEY_PACE);
+        if !u.key_combo(digit.code, &press_mods(&digit)) {
+            return false;
+        }
+    }
+    std::thread::sleep(KEY_PACE);
+    u.key_combo(KEY_SPACE, &[])
+}
+
+/// Whether Caps Lock is on, from the keyboards' LEDs, which the desktop
+/// keeps in step.
+fn caps_lock_on() -> bool {
+    let Ok(leds) = std::fs::read_dir("/sys/class/leds") else { return false };
+    leds.flatten().filter(|led| led.file_name().to_string_lossy().ends_with("::capslock")).any(|led| {
+        std::fs::read_to_string(led.path().join("brightness")).is_ok_and(|level| level.trim() != "0")
+    })
+}
+
+/// Types `strokes` through uinput: `None` when there's no uinput device or
+/// no known layout (try another way), `Some(false)` when writing failed
+/// part-way (don't type it again another way).
+fn type_through_uinput(build: impl FnOnce(&super::keymap::Keymap, bool) -> Vec<Stroke>) -> Option<bool> {
+    let keymap = super::keymap::current()?;
+    let strokes = build(&keymap, caps_lock_on());
+    let mut tried = false;
+    let typed = with_uinput(|u| {
+        tried = true;
+        write_strokes(u, &keymap, &strokes)
+    });
+    tried.then_some(typed)
+}
+
 /// Types arbitrary Unicode text (filtering carriage returns `\r`) without
 /// exposing the text on any subprocess command line (`ps` / `/proc/<pid>/cmdline`).
 /// Nothing is typed while this PC is locked.
 pub fn type_text(text: &str) {
+    let _ = type_text_checked(text);
+}
+
+/// [`type_text`], saying whether the text was typed.
+pub fn type_text_checked(text: &str) -> bool {
     let cleaned: String = text.chars().filter(|&c| c != '\r').collect();
     if cleaned.is_empty() {
-        return;
+        return true;
     }
     if session_locked_cached() {
         tracing::debug!("not typing text from a phone: this PC is locked");
-        return;
+        return false;
     }
 
     // 1. `/dev/uinput`, pressing the keys that type each character on the
     //    user's layout. Without a known layout, skip it: a guessed layout
     //    types the wrong characters.
-    let presses: Option<Vec<super::keymap::KeyPress>> =
-        super::keymap::current().and_then(|km| cleaned.chars().map(|ch| km.press_for(ch)).collect());
-    if let Some(ref presses) = presses
-        && with_uinput(|u| presses.iter().all(|p| u.key_combo(p.code, &press_mods(p))))
+    if let Some(typed) =
+        type_through_uinput(|keymap, caps| text_strokes(keymap, &cleaned, caps, NewLine::Enter))
     {
-        return;
+        return typed;
     }
 
     // 2. On Wayland, try `org.freedesktop.portal.RemoteDesktop.NotifyKeyboardKeysym`.
@@ -1336,7 +1482,7 @@ pub fn type_text(text: &str) {
             p.keysym(ks, true) && p.keysym(ks, false)
         })
     }) {
-        return;
+        return true;
     }
 
     // 3. On X11, try in-process XTest key injection when all characters map to keycodes.
@@ -1396,20 +1542,18 @@ pub fn type_text(text: &str) {
         xtest_typed = true;
     });
     if xtest_typed {
-        return;
+        return true;
     }
 
     // 4. Pipe text over stdin (`wtype -` or `xdotool type --file -`) so it is never on argv.
     if has_wayland_display() && run_with_stdin("wtype", &["-"], cleaned.as_bytes()) {
-        return;
+        return true;
     }
-    if !run_with_stdin(
+    run_with_stdin(
         "xdotool",
         &["type", "--clearmodifiers", "--delay", "0", "--file", "-"],
         cleaned.as_bytes(),
-    ) {
-        let _ = run_with_stdin("wtype", &["-"], cleaned.as_bytes());
-    }
+    ) || run_with_stdin("wtype", &["-"], cleaned.as_bytes())
 }
 
 /// Resolves a protocol key or shortcut name into `(keysym, extra_mods)`.
@@ -1516,12 +1660,16 @@ fn mod_x11_keysym_name(m: KeyMod) -> &'static CStr {
 /// Presses a named key or shortcut with optional modifiers. While this PC is
 /// locked only media and volume keys go through.
 pub fn press_key(key: &str, mods: &[KeyMod]) {
+    let _ = press_key_checked(key, mods);
+}
+
+/// [`press_key`], saying whether the key was pressed.
+pub fn press_key_checked(key: &str, mods: &[KeyMod]) -> bool {
     if key.eq_ignore_ascii_case("lock") {
-        let _ = crate::links::power(PowerAction::Lock);
-        return;
+        return crate::links::power(PowerAction::Lock).is_ok();
     }
     let Some((sym, preset_mods)) = resolve_key(key) else {
-        return;
+        return false;
     };
     let mut all_mods: Vec<KeyMod> = Vec::with_capacity(4);
     for &m in preset_mods.iter().chain(mods.iter()) {
@@ -1531,13 +1679,13 @@ pub fn press_key(key: &str, mods: &[KeyMod]) {
     }
     if !allowed_while_locked(&sym, &all_mods) && session_locked_cached() {
         tracing::debug!("not pressing a key from a phone: this PC is locked");
-        return;
+        return false;
     }
 
     if let Some(evdev_code) = key_code_for_sym(&sym) {
         let mod_codes: Vec<u16> = all_mods.iter().map(|&m| evdev_key_for_mod(m)).collect();
         if with_uinput(|u| u.key_combo(evdev_code, &mod_codes)) {
-            return;
+            return true;
         }
         if with_wayland_portal(|p| {
             let mut ok = true;
@@ -1551,7 +1699,7 @@ pub fn press_key(key: &str, mods: &[KeyMod]) {
             }
             ok
         }) {
-            return;
+            return true;
         }
     }
 
@@ -1571,7 +1719,7 @@ pub fn press_key(key: &str, mods: &[KeyMod]) {
         wtype_args.push(sym.clone());
         let refs: Vec<&str> = wtype_args.iter().map(String::as_str).collect();
         if run_quiet("wtype", &refs) {
-            return;
+            return true;
         }
     }
     if let Ok(c_sym) = CString::new(sym.as_str()) {
@@ -1604,12 +1752,53 @@ pub fn press_key(key: &str, mods: &[KeyMod]) {
             injected = true;
         });
         if injected {
-            return;
+            return true;
         }
     }
-    if let Some(combo) = format_xdotool_combo(key, mods) {
-        let _ = run_quiet("xdotool", &["key", "--clearmodifiers", &combo]);
+    format_xdotool_combo(key, mods)
+        .is_some_and(|combo| run_quiet("xdotool", &["key", "--clearmodifiers", &combo]))
+}
+
+/// Edits the focused text from a phone (`RemoteInput::Edit` without a
+/// range): moves the caret `moves` characters (negative: left), deletes
+/// `backspaces` characters before it, then types `text`, all through one
+/// device so nothing overtakes anything else. A new line is Shift+Enter,
+/// except where Enter can't send early ([`super::text_focus::plain_enter`]).
+/// `Err` holds the reason for the phone.
+pub fn edit(moves: i32, backspaces: u16, text: &str) -> Result<(), &'static str> {
+    if session_locked_cached() {
+        return Err(LOCKED);
     }
+    let new_line = if super::text_focus::plain_enter() { NewLine::Enter } else { NewLine::ShiftEnter };
+    let typed = type_through_uinput(|keymap, caps| {
+        let arrow = if moves < 0 { KEY_LEFT } else { KEY_RIGHT };
+        let mut strokes =
+            Vec::with_capacity(moves.unsigned_abs() as usize + usize::from(backspaces) + text.len());
+        strokes.extend((0..moves.unsigned_abs()).map(|_| Stroke::Key { code: arrow, mods: Vec::new() }));
+        strokes.extend((0..backspaces).map(|_| Stroke::Key { code: KEY_BACKSPACE, mods: Vec::new() }));
+        strokes.extend(text_strokes(keymap, text, caps, new_line));
+        strokes
+    });
+    match typed {
+        Some(true) => return Ok(()),
+        Some(false) => return Err(g7link_core::remote_limits::NOT_INJECTED),
+        None => {}
+    }
+    // Without uinput: the same, a key at a time.
+    let arrow = if moves < 0 { "left" } else { "right" };
+    let steps = (0..moves.unsigned_abs()).map(|_| arrow).chain((0..backspaces).map(|_| "backspace"));
+    for key in steps {
+        if !press_key_checked(key, &[]) {
+            return Err(g7link_core::remote_limits::NOT_INJECTED);
+        }
+    }
+    let line_break: &[KeyMod] = if new_line == NewLine::Enter { &[] } else { &[KeyMod::Shift] };
+    for (i, line) in text.split('\n').enumerate() {
+        if (i > 0 && !press_key_checked("enter", line_break)) || !type_text_checked(line) {
+            return Err(g7link_core::remote_limits::NOT_INJECTED);
+        }
+    }
+    Ok(())
 }
 
 /// Executes a presentation slide action.
@@ -1718,6 +1907,12 @@ fn query_idle_ms() -> Option<u64> {
     None
 }
 
+/// How long since anyone (a phone's input included) used this PC's
+/// keyboard or mouse, when the desktop says.
+pub(crate) fn idle_ms() -> Option<u64> {
+    query_idle_ms()
+}
+
 /// Returns `true` when the user has moved the mouse or pressed a key on this PC
 /// within the last `max_idle_ms` milliseconds.
 pub fn is_user_active_within_ms(max_idle_ms: u32) -> bool {
@@ -1730,6 +1925,45 @@ pub fn is_user_active_within_ms(max_idle_ms: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typing_follows_the_layout_caps_lock_and_new_lines() {
+        let us = super::super::keymap::compile(&super::super::keymap::Layout {
+            layout: "us".into(),
+            ..Default::default()
+        })
+        .expect("libxkbcommon and xkeyboard-config are installed wherever Qt is");
+        let shift = evdev_key_for_mod(KeyMod::Shift);
+        let key = |code: u16, mods: Vec<u16>| Stroke::Key { code, mods };
+
+        assert_eq!(
+            text_strokes(&us, "aZ1", false, NewLine::ShiftEnter),
+            vec![key(30, vec![]), key(44, vec![shift]), key(2, vec![])]
+        );
+        // Caps Lock turns letters the other way; digits and symbols stay.
+        assert_eq!(
+            text_strokes(&us, "aZ1!", true, NewLine::ShiftEnter),
+            vec![key(30, vec![shift]), key(44, vec![]), key(2, vec![]), key(2, vec![shift])]
+        );
+        // A new line is Shift+Enter in a chat box, Enter in a terminal; a tab is Tab.
+        assert_eq!(text_strokes(&us, "\n", false, NewLine::ShiftEnter), vec![key(KEY_ENTER, vec![shift])]);
+        assert_eq!(
+            text_strokes(&us, "\r\n\t", false, NewLine::Enter),
+            vec![key(KEY_ENTER, vec![]), key(KEY_TAB, vec![])]
+        );
+        // What the layout lacks is typed by its code, in place, not dropped.
+        assert_eq!(
+            text_strokes(&us, "it’s 🐝", false, NewLine::Enter),
+            vec![
+                key(23, vec![]),
+                key(20, vec![]),
+                Stroke::Unicode('’'),
+                key(31, vec![]),
+                key(KEY_SPACE, vec![]),
+                Stroke::Unicode('🐝'),
+            ]
+        );
+    }
 
     #[test]
     fn resolves_named_keys_and_shortcuts() {

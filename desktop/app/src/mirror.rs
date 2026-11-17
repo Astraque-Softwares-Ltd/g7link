@@ -561,7 +561,7 @@ pub fn screenshot_clipboard(window: Window) {
     }
 }
 
-/// Saves the current mirror frame for `window` to `Downloads\G7Link` as a PNG file.
+/// Saves the current mirror frame for `window` to `Downloads/G7Link` as a PNG file.
 pub fn screenshot_file(window: Window) {
     let Some(bitmap) = latest_bitmap(&window) else {
         set_notice(window, "Wait for the screen to appear first");

@@ -25,6 +25,10 @@ object PhoneClipboard {
 
     /** The largest image sent (docs/protocol/clipboard.md). */
     private const val MAX_IMAGE_BYTES = 32L * 1024 * 1024
+    /** An image pasted on a PC: this many pixels on its longer side at most. */
+    const val PASTE_MAX_EDGE = 2048
+    /** A PNG at most this big pastes as it is. */
+    private const val PASTE_KEEP_PNG_BYTES = 4L * 1024 * 1024
 
     /** Where images from a PC are kept while they're on the clipboard. */
     private const val IMAGE_DIR = "clipboard"
@@ -219,6 +223,61 @@ object PhoneClipboard {
         }
     }.getOrElse {
         Log.w(TAG, "can't read the copied image", it)
+        ImageResult.Unreadable
+    }
+
+    /**
+     * Reads an image to paste where a PC is typing (blocking; call off the
+     * main thread): at most [maxEdge] pixels on its longer side, the right way
+     * up, as JPEG; a PNG already that small (a screenshot) goes as it is.
+     */
+    fun readImageForPaste(context: Context, uri: Uri, maxEdge: Int = PASTE_MAX_EDGE): ImageResult = runCatching {
+        if (!OutgoingFiles.isAllowedShareUri(uri.scheme, uri.authority, context.packageName)) {
+            return ImageResult.Unreadable
+        }
+        val first = openCheckedImage(context, uri) ?: return ImageResult.Unreadable
+        val size = first.statSize
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        ParcelFileDescriptor.AutoCloseInputStream(first).use { BitmapFactory.decodeStream(it, null, bounds) }
+        val width = bounds.outWidth
+        val height = bounds.outHeight
+        if (width <= 0 || height <= 0) return ImageResult.Unreadable
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: bounds.outMimeType
+        if (mime == "image/png" && maxOf(width, height) <= maxEdge && size in 0..PASTE_KEEP_PNG_BYTES) {
+            return readImage(context, uri)
+        }
+        val orientation = openCheckedImage(context, uri)?.let { pfd ->
+            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { input ->
+                runCatching {
+                    android.media.ExifInterface(input).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION,
+                        android.media.ExifInterface.ORIENTATION_NORMAL,
+                    )
+                }.getOrNull()
+            }
+        } ?: android.media.ExifInterface.ORIENTATION_NORMAL
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sampleSizeToCover(width, height, maxEdge, maxEdge).coerceAtLeast(1)
+        }
+        val decoded = openCheckedImage(context, uri)?.let { pfd ->
+            ParcelFileDescriptor.AutoCloseInputStream(pfd).use { BitmapFactory.decodeStream(it, null, options) }
+        } ?: return ImageResult.Unreadable
+        val scale = maxEdge.toFloat() / maxOf(decoded.width, decoded.height)
+        val matrix = android.graphics.Matrix().apply {
+            if (scale < 1f) postScale(scale, scale)
+            when (orientation) {
+                android.media.ExifInterface.ORIENTATION_ROTATE_90 -> postRotate(90f)
+                android.media.ExifInterface.ORIENTATION_ROTATE_180 -> postRotate(180f)
+                android.media.ExifInterface.ORIENTATION_ROTATE_270 -> postRotate(270f)
+            }
+        }
+        val upright = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+        if (upright !== decoded) decoded.recycle()
+        val jpeg = java.io.ByteArrayOutputStream().also { upright.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+        upright.recycle()
+        if (jpeg.size() > MAX_IMAGE_BYTES) ImageResult.TooLarge else ImageResult.Ready(ImageData("image/jpeg", jpeg.toByteArray()))
+    }.getOrElse {
+        Log.w(TAG, "can't read the image to paste", it)
         ImageResult.Unreadable
     }
 

@@ -15,6 +15,7 @@ import app.g7link.core.PairedDevice
 import app.g7link.core.PairingFailure
 import app.g7link.core.PcClipKind
 import app.g7link.core.PowerLevel
+import app.g7link.core.TextFieldState
 import app.g7link.core.TimelineEntry
 import app.g7link.core.Transfer
 
@@ -207,6 +208,8 @@ data class CoreState(
     val ringingDevices: Set<String> = emptySet(),
     /** PCs where what has the focus takes text: the remote's keyboard opens for them. */
     val pcTextFocus: Set<String> = emptySet(),
+    /** The field that has the focus on each PC whose typing box is open, by PC. */
+    val pcTextState: Map<String, TextFieldState> = emptyMap(),
     /** What each connected PC's clipboard last got, by PC: the remote offers to paste it. */
     val pcClip: Map<String, PcClipNotice> = emptyMap(),
     /** Whether the user let G7 Link read notifications (to mirror them). */
@@ -362,6 +365,7 @@ data class CoreState(
             ringingPeer = ringingPeer?.takeUnless { it == event.id },
             ringingDevices = ringingDevices - event.id,
             pcTextFocus = pcTextFocus - event.id,
+            pcTextState = pcTextState - event.id,
             pcClip = pcClip - event.id,
             storageRequestedFrom = if (storageRequestedFrom == event.id) null else storageRequestedFrom,
             webcamRequest = if (webcamRequest?.pcId == event.id) null else webcamRequest,
@@ -395,6 +399,7 @@ data class CoreState(
                             devices = if (onlineChanged) updated.devices.sortedWith(deviceOrder) else updated.devices,
                             keyboardFromPc = if (newLink is Link.Offline) updated.keyboardFromPc - event.id else updated.keyboardFromPc,
                             pcTextFocus = if (newLink is Link.Offline) updated.pcTextFocus - event.id else updated.pcTextFocus,
+                            pcTextState = if (newLink is Link.Offline) updated.pcTextState - event.id else updated.pcTextState,
                             pcClip = if (newLink is Link.Offline) updated.pcClip - event.id else updated.pcClip,
                             // A PC that went away can't take the microphone it asked for.
                             micRequestFrom = updated.micRequestFrom.takeUnless { newLink is Link.Offline && it == event.id },
@@ -428,6 +433,7 @@ data class CoreState(
         is Event.Ring -> copy(ringingPeer = if (event.on) event.id else ringingPeer?.takeUnless { it == event.id })
         is Event.RemoteRing -> copy(ringingDevices = if (event.on) ringingDevices + event.id else ringingDevices - event.id)
         is Event.PcTextFocus -> copy(pcTextFocus = if (event.editable) pcTextFocus + event.id else pcTextFocus - event.id)
+        is Event.PcTextState -> copy(pcTextState = pcTextState + (event.id to event.state))
         is Event.PcClip -> copy(
             pcClip = pcClip + (event.id to PcClipNotice(event.kind, event.preview, System.currentTimeMillis())),
         )

@@ -335,6 +335,10 @@
 <string name="remote_more_controls">Thêm</string>
 <string name="remote_touchpad_only">Chỉ Touchpad</string>
 <string name="remote_type_placeholder">Gõ trên %1$s…</string>
+<string name="remote_field_secret">Ô mật khẩu</string>
+<string name="remote_field_none">Không có gì nhận chữ trên %1$s</string>
+<string name="remote_image_not_pasted">%1$s không nhận được ảnh. Tiện ích GNOME của G7 Linux đã bật chưa?</string>
+<string name="remote_attachment_remove">Xóa %1$s</string>
 <string name="remote_paste_image">Dán ảnh vào %1$s</string>
 <string name="remote_dictate">Nhập giọng nói</string>
 <string name="remote_dictate_stop">Dừng</string>

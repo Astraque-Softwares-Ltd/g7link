@@ -23,6 +23,14 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   pastes it, in a browser or anywhere else. The clipboard is wiped after 2
   minutes. This comes on with the update, even where it was off before;
   Settings › General can turn it off again.
+- **The phone's typing box follows the laptop.** It shows the text of the
+  field you're typing into on the PC, where the app shares it (GTK, Qt,
+  Firefox, LibreOffice...), so deleting on the laptop deletes on the phone
+  too. A bubble over it names the app and field, and moving to another field
+  switches the box; what you typed into a field that doesn't share its text
+  comes back when you return to it.
+- **Pictures and files wait over the typing box** with a small preview each,
+  to take out with a tap or send with the message.
 - **Bluetooth when there's no network.** Turn it on for a phone and a PC on
   both (the phone's Settings, and the device's settings on the PC). When they
   share no network, the PC can ring the phone and ask for its hotspot, short
@@ -41,6 +49,16 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   notification.
 
 ### Changed
+
+- **Typing from the phone lands as typed.** Each change goes as one edit
+  where it happened, instead of deleting and retyping everything after it;
+  characters the laptop's layout lacks (’, é, emoji) are typed in place; keys
+  go at a pace the desktop keeps up with; Caps Lock and layout switches are
+  followed; and the first key after starting isn't lost.
+- **Tap then drag drags,** from where you tapped, instead of selecting by
+  word or maximising the window.
+- **Pictures paste where you're typing on the PC** again: shrunk to a size the
+  clipboard takes, and pasted only once the PC has them.
 
 - **The PC's Bluetooth beacon no longer gives it away.** It used to broadcast
   part of the PC's ID all the time, so anyone scanning could recognise and

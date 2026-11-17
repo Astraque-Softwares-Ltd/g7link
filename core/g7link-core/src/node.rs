@@ -3200,6 +3200,28 @@ impl Node {
         Ok(())
     }
 
+    /// Puts an image on a connected PC's clipboard now, to paste it where
+    /// that PC is typing: never queued for later, and an error when the PC's
+    /// clipboard didn't take it.
+    pub async fn paste_image(&self, peer: DeviceId, mime: String, bytes: Vec<u8>) -> Result<()> {
+        let image = g7link_protocol::messages::ClipImage { mime: mime.clone(), size: bytes.len() as u64 };
+        if image.size > g7link_protocol::messages::clip::MAX_IMAGE_BYTES {
+            return Err(Error::TooLarge);
+        }
+        if !image.is_valid() {
+            return Err(Error::Internal("not a PNG or JPEG image".into()));
+        }
+        if !self.shared.toggle_on(&peer, crate::clipboard::TOGGLE) {
+            return Err(Error::Denied);
+        }
+        let peer_rec = self.shared.store.get_peer(&peer)?.ok_or(Error::NotPaired)?;
+        if !peer_rec.caps.is_empty() && !peer_rec.caps.iter().any(|c| c == "clip.image") {
+            return Err(Error::Unsupported);
+        }
+        let session = self.connected(&peer)?;
+        crate::clipboard::send_image(&self.shared, &session, mime, bytes).await
+    }
+
     /// Whether the local clipboard history is enabled.
     pub fn clipboard_history_enabled(&self) -> bool {
         self.shared.clipboard_history.enabled()
@@ -3507,6 +3529,27 @@ impl Node {
     pub async fn remote_text_focus(&self, peer: DeviceId, editable: bool) -> Result<()> {
         let session = self.connected(&peer)?;
         crate::remote::text_focus(&self.shared, &session, editable).await
+    }
+
+    /// Sends a phone the field that has the focus on this PC
+    /// (`remote.text_state`), when it may control this PC.
+    pub async fn remote_text_state(&self, peer: DeviceId, state: &crate::RemoteTextState) -> Result<()> {
+        let session = self.connected(&peer)?;
+        crate::remote::text_state(&self.shared, &session, state).await
+    }
+
+    /// Phone: tells a PC its typing box opened (`on`) or closed
+    /// (`remote.text_watch`). `Error::Unsupported` when that PC doesn't
+    /// mirror its text fields.
+    pub async fn remote_text_watch(&self, peer: DeviceId, on: bool) -> Result<()> {
+        let session = self.connected(&peer)?;
+        crate::remote::text_watch(&self.shared, &session, on).await
+    }
+
+    /// Phone: whether the PC `peer` mirrors its text fields and takes
+    /// `RemoteInput::Edit` and `RemoteInput::Caret`.
+    pub fn remote_mirrors_text(&self, peer: &DeviceId) -> bool {
+        crate::remote::mirrors_text(&self.shared, peer)
     }
 
     /// Tells a PC something about its mirroring, by `code` (`mirror.notice`):

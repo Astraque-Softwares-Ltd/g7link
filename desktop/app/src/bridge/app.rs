@@ -2937,7 +2937,7 @@ fn compute_shelf_items_json(current_device_idx: i32) -> String {
         }
     }
 
-    // 3. Scan Downloads\G7Link for mirror screenshots ("Screenshot ...") and saved photos.
+    // 3. Scan Downloads/G7Link for mirror screenshots ("Screenshot ...") and saved photos.
     let dl_dir = core_host::downloads_dir();
     let mut dl_files: Vec<(i64, u64, std::path::PathBuf, String)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dl_dir) {

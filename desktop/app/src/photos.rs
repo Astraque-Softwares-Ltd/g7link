@@ -50,7 +50,7 @@ enum Intent {
     Copy { item_id: Option<String>, notify_ui: bool },
     /// Downloaded for the in-app viewer (moved into the gallery cache).
     View { device: DeviceId, item_id: String },
-    /// Saved from the gallery to `Downloads\G7Link` or a user-chosen folder.
+    /// Saved from the gallery to `Downloads/G7Link` or a user-chosen folder.
     GallerySave { ids: Vec<String>, folder: Option<PathBuf> },
 }
 
@@ -386,7 +386,7 @@ fn deliver(transfer_id: &str, intent: Intent, saved: &[PathBuf]) {
                 }
                 None => {
                     final_paths.extend(saved.iter().cloned());
-                    r"Downloads\G7Link".to_owned()
+                    "Downloads/G7Link".to_owned()
                 }
             };
             if let Some(node) = core_host::node() {
@@ -423,7 +423,7 @@ fn deliver(transfer_id: &str, intent: Intent, saved: &[PathBuf]) {
             match final_paths.as_slice() {
                 _ if not_moved > 0 => show_message(tr!(
                     "Photos",
-                    "%1 of %2 couldn't be moved to %3. They're in Downloads\\G7Link.",
+                    "%1 of %2 couldn't be moved to %3. They're in Downloads/G7Link.",
                     not_moved,
                     final_paths.len(),
                     dest_label
@@ -481,7 +481,7 @@ pub(crate) fn free_path(dir: &Path, name: &str) -> PathBuf {
 
 fn copy_file_to_clipboard(path: &Path, remove_after: bool, notify_ui: bool) {
     let failed = if remove_after {
-        tr!("Photos", "The photo couldn't be copied. It's in Downloads\\G7Link.")
+        tr!("Photos", "The photo couldn't be copied. It's in Downloads/G7Link.")
     } else {
         tr!("Photos", "The photo couldn't be copied to the clipboard.")
     };
@@ -1329,14 +1329,14 @@ pub fn copy_item(id: String) {
 }
 
 /// Sets the preferred destination folder for saving gallery items (`None`
-/// resets to `Downloads\G7Link`).
+/// resets to `Downloads/G7Link`).
 pub fn set_save_folder(folder: Option<PathBuf>) {
     gallery_state(|s| s.save_folder = folder);
     gallery_changed();
 }
 
 /// Downloads and saves `ids` to `folder` (or the remembered `save_folder`, or
-/// default `Downloads\G7Link`).
+/// default `Downloads/G7Link`).
 /// Moves photos and videos to the phone's trash.
 pub fn delete_items(ids: Vec<String>) {
     let asked = ids.len();

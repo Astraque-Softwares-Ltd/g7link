@@ -29,6 +29,10 @@ const MAX_OUTBOX: usize = 2048;
 /// Records from the other device: a burst of this many, then this many a second.
 const RECORD_BURST: f64 = 20.0;
 const RECORDS_PER_SEC: f64 = 2.0;
+/// Keys, clicks and edits from the phone, which typing sends several of a
+/// second: a budget of their own.
+const INPUT_BURST: f64 = 60.0;
+const INPUTS_PER_SEC: f64 = 25.0;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -53,6 +57,7 @@ struct Inner {
     tx_seq: u8,
     outbox: VecDeque<Vec<u8>>,
     incoming: TokenBucket,
+    input: TokenBucket,
     /// Touchpad input not sent yet: added up while the radio is busy, and
     /// sealed only when there's room, so it never queues up behind itself.
     motion: Motion,
@@ -126,6 +131,7 @@ impl BleEndpoint {
                 tx_seq: 0,
                 outbox: VecDeque::new(),
                 incoming: TokenBucket::new(RECORD_BURST, RECORDS_PER_SEC, Instant::now()),
+                input: TokenBucket::new(INPUT_BURST, INPUTS_PER_SEC, Instant::now()),
                 motion: Motion::default(),
             }),
         }
@@ -309,9 +315,12 @@ impl BleEndpoint {
                 let plain = cipher.open(&record).map_err(crypto)?;
                 inner.phase = Phase::Up { peer, cipher };
                 let env = Envelope::from_cbor(&plain).map_err(|e| Error::Protocol(e.to_string()))?;
-                // Touchpad input has its own limit, where it's run.
+                // Touchpad input has its own limit, where it's run; keys and
+                // clicks have theirs.
                 let motion = env.t == types::REMOTE_INPUT && env.id.is_none();
-                if !motion && !inner.incoming.take(Instant::now()) {
+                let input = env.t == types::REMOTE_INPUT && env.id.is_some();
+                let budget = if input { &mut inner.input } else { &mut inner.incoming };
+                if !motion && !budget.take(Instant::now()) {
                     drop(inner);
                     if env.id.is_some() {
                         let busy = Envelope::error(g7link_protocol::ErrorCode::Busy, "too many messages");

@@ -5847,8 +5847,8 @@ What it needs
     </message>
     <message>
         <location filename="rust_strings.h" line="367"/>
-        <source>Recording from %1, saved in Downloads\G7Link</source>
-        <translation>来自 %1 的录制，已保存到 Downloads\G7Link</translation>
+        <source>Recording from %1, saved in Downloads/G7Link</source>
+        <translation>来自 %1 的录制，已保存到 Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="368"/>
@@ -5862,8 +5862,8 @@ What it needs
     </message>
     <message>
         <location filename="rust_strings.h" line="370"/>
-        <source>Saved %1 to Downloads\G7Link.</source>
-        <translation>已将 %1 保存到 Downloads\G7Link。</translation>
+        <source>Saved %1 to Downloads/G7Link.</source>
+        <translation>已将 %1 保存到 Downloads/G7Link。</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="371"/>
@@ -5877,8 +5877,8 @@ What it needs
     </message>
     <message>
         <location filename="rust_strings.h" line="373"/>
-        <source>Screenshot from %1, saved in Downloads\G7Link</source>
-        <translation>来自 %1 的截图，已保存到 Downloads\G7Link</translation>
+        <source>Screenshot from %1, saved in Downloads/G7Link</source>
+        <translation>来自 %1 的截图，已保存到 Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="374"/>
@@ -6651,8 +6651,8 @@ What it needs
     <name>Photos</name>
     <message>
         <location filename="rust_strings.h" line="418"/>
-        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads\G7Link.</source>
-        <translation>%2 项中有 %1 项无法移动到 %3。它们在 Downloads\G7Link 中。</translation>
+        <source>%1 of %2 couldn&apos;t be moved to %3. They&apos;re in Downloads/G7Link.</source>
+        <translation>%2 项中有 %1 项无法移动到 %3。它们在 Downloads/G7Link 中。</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="419"/>
@@ -6731,8 +6731,8 @@ What it needs
     </message>
     <message>
         <location filename="rust_strings.h" line="434"/>
-        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads\G7Link.</source>
-        <translation>无法复制照片。它在 Downloads\G7Link 中。</translation>
+        <source>The photo couldn&apos;t be copied. It&apos;s in Downloads/G7Link.</source>
+        <translation>无法复制照片。它在 Downloads/G7Link 中。</translation>
     </message>
 </context>
 <context>
@@ -9962,8 +9962,8 @@ What it needs
     <name>Transfers</name>
     <message>
         <location filename="rust_strings.h" line="500"/>
-        <source>Accept in G7 Link to save to Downloads\G7Link</source>
-        <translation>在 G7 Link 中接受即可保存到 Downloads\G7Link</translation>
+        <source>Accept in G7 Link to save to Downloads/G7Link</source>
+        <translation>在 G7 Link 中接受即可保存到 Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="501"/>
@@ -9972,13 +9972,13 @@ What it needs
     </message>
     <message>
         <location filename="rust_strings.h" line="502"/>
-        <source>From %1, opened from Downloads\G7Link</source>
-        <translation>来自 %1，已从 Downloads\G7Link 打开</translation>
+        <source>From %1, opened from Downloads/G7Link</source>
+        <translation>来自 %1，已从 Downloads/G7Link 打开</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="503"/>
-        <source>From %1, saved in Downloads\G7Link</source>
-        <translation>来自 %1，已保存到 Downloads\G7Link</translation>
+        <source>From %1, saved in Downloads/G7Link</source>
+        <translation>来自 %1，已保存到 Downloads/G7Link</translation>
     </message>
     <message>
         <location filename="rust_strings.h" line="504"/>

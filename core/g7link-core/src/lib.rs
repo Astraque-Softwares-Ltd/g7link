@@ -78,6 +78,7 @@ pub use g7link_protocol::ble;
 pub use g7link_protocol::messages::clip::{
     IMAGE_TYPES as CLIP_IMAGE_TYPES, MAX_IMAGE_BYTES as CLIP_MAX_IMAGE_BYTES,
 };
+pub use g7link_protocol::messages::{RemoteTextState, TextFieldKind, remote as remote_limits};
 pub use g7link_protocol::{
     DeviceId, PacketKind,
     messages::{
@@ -159,7 +160,9 @@ pub use notifications::{NotificationError, SHOW as NOTIFY_SHOW};
 pub use palette::{RolePalette, ThemeScheme, extract_artwork_scheme_rgba};
 pub use pc_capture::{CapturePrompt, PcCaptureError, PcCaptureRecordEnded, PcCaptureResult};
 pub use play_on_phone::PlayOnPhone;
-pub use remote::{ButtonAction, INPUT_INJECT, KeyMod, MouseButton, RemoteInput, SlideAction, remote_keys};
+pub use remote::{
+    ButtonAction, INPUT_INJECT, INPUT_TEXT_MIRROR, KeyMod, MouseButton, RemoteInput, SlideAction, remote_keys,
+};
 pub use session::is_lan_ip;
 pub use storage::{FolderStorage, StorageError, StorageReadFile, TOGGLE as STORAGE_TOGGLE};
 pub use store::{

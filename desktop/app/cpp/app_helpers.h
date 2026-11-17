@@ -60,6 +60,8 @@ rust::String translate(rust::Str context, rust::Str text);
 
 // Decodes image bytes (PNG, JPEG, WebP, BMP, etc.) into width, height and ARGB32 bytes.
 rust::Vec<uint8_t> decode_image(rust::Slice<const uint8_t> bytes);
+rust::Vec<uint8_t> encode_png(rust::Slice<const uint8_t> bytes);
+bool app_window_active();
 
 // Linux QSystemTrayIcon + QMenu, screen geometry, activation token, and QClipboard.
 void linux_tray_setup(

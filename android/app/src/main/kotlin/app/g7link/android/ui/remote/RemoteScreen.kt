@@ -11,6 +11,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
@@ -29,6 +30,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -74,12 +76,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -114,9 +116,13 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -127,13 +133,13 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
-import app.g7link.android.core.PcCaptureState
-import app.g7link.android.ui.capture.recordLabel
-import app.g7link.android.ui.capture.screenshotLabel
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
+import app.g7link.android.core.PcCaptureState
 import app.g7link.android.core.PcClipNotice
 import app.g7link.android.core.WakeState
+import app.g7link.android.ui.capture.recordLabel
+import app.g7link.android.ui.capture.screenshotLabel
 import app.g7link.android.ui.home.PcSoundRows
 import app.g7link.android.ui.home.linkText
 import app.g7link.android.ui.theme.G7Header
@@ -142,26 +148,29 @@ import app.g7link.android.ui.theme.G7IconKeycap
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7Keycap
 import app.g7link.android.ui.theme.G7KeycapSurface
+import app.g7link.android.ui.theme.G7Motion
 import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.G7Well
 import app.g7link.android.ui.theme.LocalReducedMotion
-import app.g7link.android.ui.theme.g7Tints
-import app.g7link.android.ui.theme.G7Motion
-import app.g7link.android.ui.theme.g7Page
 import app.g7link.android.ui.theme.g7Appear
 import app.g7link.android.ui.theme.g7Disappear
+import app.g7link.android.ui.theme.g7Page
+import app.g7link.android.ui.theme.g7Swap
+import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.PcClipKind
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import app.g7link.android.ui.theme.g7Swap
-import androidx.compose.animation.shrinkVertically
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class RemoteMode { Touchpad, AirMouse, Presentation, Screen, Media }
 
@@ -998,9 +1007,71 @@ private fun TouchpadView(
     haptics: (TrackpadHaptic) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // What's been typed since the last Enter: a real field, so the keyboard
-    // keeps its page, autocorrects, and has something to delete.
+    // The typing box: a real field, so the keyboard keeps its page, autocorrects
+    // and has something to delete. It follows the PC's focused field: that
+    // field's text where the PC shares it, or what was typed here into it.
     var typed by remember { mutableStateOf(TextFieldValue("")) }
+    val typing = remember(pcId) { TypingSync(FieldDrafts.of(pcId)) }
+    val sendTyping = remember(pcId) { Channel<Unit>(Channel.CONFLATED) }
+    var pcField by remember(pcId) { mutableStateOf<PcField?>(null) }
+    val scope = rememberCoroutineScope()
+    DisposableEffect(typing) {
+        typing.onReplace = { box -> typed = TextFieldValue(box.text, TextRange(box.selStart, box.selEnd)) }
+        onDispose { typing.onReplace = null }
+    }
+    // While the box is open, the PC tells of its focused field.
+    DisposableEffect(pcId, showKeyboard) {
+        if (showKeyboard) core.remoteTextWatch(pcId, true)
+        onDispose {
+            if (showKeyboard) {
+                core.remoteTextWatch(pcId, false)
+                typing.close()
+                pcField = null
+            }
+        }
+    }
+    val pcState by remember(core, pcId) {
+        core.state.map { it.pcTextState[pcId] }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = null)
+    LaunchedEffect(typing, pcState) {
+        val state = pcState ?: return@LaunchedEffect
+        typing.onState(state.toPcField())
+        pcField = typing.current
+        sendTyping.trySend(Unit)
+    }
+    // One change at a time, each worked out from what the PC has.
+    LaunchedEffect(typing) {
+        for (wake in sendTyping) {
+            val op = typing.nextOp() ?: continue
+            core.remoteTyping(pcId, op, onStatus) { result ->
+                typing.onDone(op, result)
+                sendTyping.trySend(Unit)
+            }
+        }
+    }
+    // The PC's own changes come in once both sides are quiet.
+    LaunchedEffect(typing) {
+        while (true) {
+            delay(100)
+            if (typing.tick()) sendTyping.trySend(Unit)
+        }
+    }
+    // A click or key from here moved the PC's caret: a draft no longer matches.
+    LaunchedEffect(core, typing) {
+        core.pcCaretMoved.collect { id -> if (id == pcId) typing.onPcCaretMoved() }
+    }
+    /** Waits (briefly) until everything typed has reached the PC, then runs [then]. */
+    fun afterTyping(then: () -> Unit) {
+        scope.launch {
+            withTimeoutOrNull(2_000) {
+                while (!typing.synced) {
+                    sendTyping.trySend(Unit)
+                    delay(20)
+                }
+            }
+            then()
+        }
+    }
     val activeMods = remember { mutableStateListOf<String>() }
     // Middle locks the touchpad to scrolling, as a middle click starts autoscroll.
     var scrollLocked by rememberSaveable(pcId) { mutableStateOf(false) }
@@ -1009,11 +1080,23 @@ private fun TouchpadView(
     val keyboardController = LocalSoftwareKeyboardController.current
     val imeVisible = WindowInsets.isImeVisible
     val reducedMotion = LocalReducedMotion.current
-    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) core.pasteImageOnPc(pcId, uri, onStatus)
+    // Pictures and files picked wait over the box, to go with the next Send.
+    var attachments by rememberSaveable(pcId, stateSaver = Attachment.listSaver) {
+        mutableStateOf(emptyList<Attachment>())
     }
+    val appContext = LocalContext.current.applicationContext
+    val attach: (List<Uri>) -> Unit = { uris ->
+        scope.launch {
+            val picked = withContext(Dispatchers.IO) { uris.mapNotNull { Attachment.describe(appContext, it) } }
+            attachments = (attachments + picked.filter { new -> attachments.none { it.uri == new.uri } })
+                .take(Attachment.MAX)
+        }
+    }
+    val pickImage = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(Attachment.MAX),
+    ) { uris -> if (uris.isNotEmpty()) attach(uris) }
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) core.sendFiles(pcId, uris)
+        if (uris.isNotEmpty()) attach(uris)
     }
 
     LaunchedEffect(showKeyboard) {
@@ -1181,6 +1264,7 @@ private fun TouchpadView(
                 utteranceJoiner = utteranceJoiner,
                 onStatus = onStatus,
                 typed = typed,
+                field = pcField,
                 onTyped = { next ->
                     val diff = typingDiff(typed.text, next.text)
                     if (activeMods.isNotEmpty() && diff.backspaces == 0 && diff.added.length == 1 &&
@@ -1194,31 +1278,57 @@ private fun TouchpadView(
                     // Enter after a link, or with nothing typed here, loads it: a plain
                     // Enter, as Shift+Enter opens a browser's address in a new window.
                     if (diff.backspaces == 0 && diff.added == "\n" && next.text == typed.text + "\n" &&
-                        enterGoesAsIs(typed.text)
+                        typing.kind != FieldKind.Secret && enterGoesAsIs(typed.text)
                     ) {
-                        core.remoteKey(pcId, "enter", activeMods.toList(), onStatus)
+                        val mods = activeMods.toList()
                         activeMods.clear()
-                        typed = TextFieldValue("")
+                        afterTyping {
+                            core.remoteKey(pcId, "enter", mods, onStatus)
+                            typing.onSent()
+                        }
                         return@TypingComposer
                     }
-                    repeat(diff.backspaces) { i ->
-                        core.remoteKey(pcId, "backspace", if (i == 0) activeMods.toList() else emptyList(), onStatus)
-                    }
-                    // A new line is Shift+Enter on the PC: a line break in chats and
-                    // prompts, where Enter alone would send.
-                    diff.added.split('\n').forEachIndexed { i, line ->
-                        if (i > 0) core.remoteKey(pcId, "enter", listOf("shift"), onStatus)
-                        if (line.isNotEmpty()) core.remoteText(pcId, line, onStatus)
-                    }
-                    if (diff.backspaces > 0 || diff.added.isNotEmpty()) activeMods.clear()
-                    // The cursor and selection here are free to move: an edit anywhere
-                    // goes over as Backspaces from the end, then what follows it again.
+                    // Modifiers are for shortcuts and keys: typing lets go of them.
+                    if (next.text != typed.text) activeMods.clear()
+                    // What changed goes over as one edit where it changed (a new
+                    // line is Shift+Enter: a line break in chats and prompts).
                     typed = next
+                    typing.onLocal(
+                        BoxText(next.text, next.selection.start, next.selection.end, next.composition != null),
+                    )
+                    sendTyping.trySend(Unit)
                 },
+                attachments = attachments,
+                onRemoveAttachment = { gone -> attachments = attachments.filterNot { it.uri == gone.uri } },
                 onSend = {
-                    core.remoteKey(pcId, "enter", activeMods.toList(), onStatus)
+                    val mods = activeMods.toList()
                     activeMods.clear()
-                    typed = TextFieldValue("")
+                    val sending = attachments
+                    attachments = emptyList()
+                    // Pictures paste where the PC is typing, files go to it, then
+                    // Enter sends what's typed (with nothing typed, no Enter).
+                    afterTyping {
+                        scope.launch {
+                            val failed = mutableListOf<Attachment>()
+                            val files = mutableListOf<Uri>()
+                            for (item in sending) {
+                                val uri = Uri.parse(item.uri)
+                                if (!item.isImage) {
+                                    files += uri
+                                } else if (!core.pasteImageOnPc(pcId, uri, onStatus)) {
+                                    failed += item
+                                } else {
+                                    delay(PASTE_SETTLE_MS)
+                                }
+                            }
+                            if (files.isNotEmpty()) core.sendFiles(pcId, files)
+                            attachments = failed + attachments
+                            if (typed.text.isNotEmpty() && failed.isEmpty()) {
+                                core.remoteKey(pcId, "enter", mods, onStatus)
+                                typing.onSent()
+                            }
+                        }
+                    }
                 },
                 onBackspaceWhenEmpty = {
                     core.remoteKey(pcId, "backspace", activeMods.toList(), onStatus)
@@ -1233,6 +1343,9 @@ private fun TouchpadView(
         }
     }
 }
+
+/** A moment after a picture's paste key, for the app to take it before the next. */
+private const val PASTE_SETTLE_MS = 300L
 
 /** The touchpad strip while the keyboard is open. */
 private val PAD_WHILE_TYPING = 96.dp
@@ -1902,6 +2015,9 @@ private fun TypingComposer(
     utteranceJoiner: UtteranceJoiner,
     onStatus: (Core.RemoteAccess) -> Unit,
     typed: TextFieldValue,
+    field: PcField?,
+    attachments: List<Attachment>,
+    onRemoveAttachment: (Attachment) -> Unit,
     onTyped: (TextFieldValue) -> Unit,
     onSend: () -> Unit,
     onBackspaceWhenEmpty: () -> Unit,
@@ -1915,7 +2031,8 @@ private fun TypingComposer(
     val latest by rememberUpdatedState(dictation)
     val state = dictation.state
     val listening = state is DictateState.Listening
-    val sends = typed.text.isNotEmpty() && !listening
+    val sends = (typed.text.isNotEmpty() || attachments.isNotEmpty()) && !listening
+    val secret = field?.kind == FieldKind.Secret
     val currentSends by rememberUpdatedState(sends)
     val currentOnSend by rememberUpdatedState(onSend)
     // Held down to talk, and dragged far enough left to drop what's heard.
@@ -1927,6 +2044,10 @@ private fun TypingComposer(
     val pillShape = RoundedCornerShape(24.dp)
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        FieldBubble(field, pcName)
+        if (attachments.isNotEmpty()) {
+            AttachmentTray(attachments, onRemoveAttachment, Modifier.padding(bottom = 4.dp))
+        }
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (listening) {
                 // Like a voice note: the field gives way to what's heard.
@@ -1967,10 +2088,16 @@ private fun TypingComposer(
                             cursorBrush = SolidColor(scheme.primary),
                             maxLines = 5,
                             // Enter is a new line here, as in a chat app; the round button sends.
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Sentences,
-                                imeAction = ImeAction.Default,
-                            ),
+                            // A password goes through unseen, without suggestions.
+                            keyboardOptions = if (secret) {
+                                KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Default)
+                            } else {
+                                KeyboardOptions(
+                                    capitalization = KeyboardCapitalization.Sentences,
+                                    imeAction = ImeAction.Default,
+                                )
+                            },
+                            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
                             modifier = Modifier
                                 .weight(1f)
                                 .padding(vertical = 13.dp)

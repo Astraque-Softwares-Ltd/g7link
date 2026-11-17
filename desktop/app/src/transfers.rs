@@ -257,7 +257,7 @@ pub fn on_event(event: &NodeEvent) {
             device: TOAST_GROUP.into(),
             key: format!("req:{}", t.id),
             title: format!("{device} wants to send {}", title(t)),
-            body: tr!("Transfers", "Accept in G7 Link to save to Downloads\\G7Link"),
+            body: tr!("Transfers", "Accept in G7 Link to save to Downloads/G7Link"),
             attribution: "LocalSend".into(),
             icon: None,
             image: None,
@@ -299,9 +299,9 @@ pub fn on_event(event: &NodeEvent) {
         key: first.to_string_lossy().into_owned(),
         title,
         body: if auto_open {
-            tr!("Transfers", "From %1, opened from Downloads\\G7Link", device)
+            tr!("Transfers", "From %1, opened from Downloads/G7Link", device)
         } else {
-            tr!("Transfers", "From %1, saved in Downloads\\G7Link", device)
+            tr!("Transfers", "From %1, saved in Downloads/G7Link", device)
         },
         attribution: "G7 Link".into(),
         icon: None,

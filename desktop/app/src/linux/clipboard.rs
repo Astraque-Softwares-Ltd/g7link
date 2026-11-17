@@ -877,7 +877,15 @@ pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), String> {
     let png = if mime == "image/png" && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         bytes.to_vec()
     } else {
-        image::encode_png(&bitmap).map_err(|e| e.to_string())?
+        // Compressed through Qt where it can: this module's own encoder
+        // stores pixels as they are, and a photo then outgrows what GNOME
+        // Shell's clipboard takes.
+        let compressed = if cfg!(test) { Vec::new() } else { crate::bridge::native::ffi::encode_png(bytes) };
+        if compressed.is_empty() {
+            image::encode_png(&bitmap).map_err(|e| e.to_string())?
+        } else {
+            compressed
+        }
     };
 
     // Record fingerprint BEFORE updating the system clipboard.
@@ -901,12 +909,16 @@ pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), String> {
         return Ok(());
     }
 
-    if !cfg!(test)
-        && has_display_server()
-        && !crate::bridge::native::ffi::linux_clipboard_write_image_png(&png)
-    {
-        let _ = pipe_to_cmd("wl-copy", &["--type", "image/png"], &png)
-            .or_else(|_| pipe_to_cmd("xclip", &["-selection", "clipboard", "-t", "image/png"], &png));
+    if !cfg!(test) && has_display_server() {
+        let written = crate::bridge::native::ffi::linux_clipboard_write_image_png(&png)
+            || pipe_to_cmd("wl-copy", &["--type", "image/png"], &png).is_ok()
+            || pipe_to_cmd("xclip", &["-selection", "clipboard", "-t", "image/png"], &png).is_ok();
+        // On GNOME's Wayland, Qt reaches the clipboard only while a G7 Link
+        // window has the focus: without the Shell extension, a phone pasting
+        // there would paste what was on the clipboard before.
+        if !written || (is_gnome_wayland() && !crate::bridge::native::ffi::app_window_active()) {
+            return Err("the clipboard didn't take the image".into());
+        }
     }
     Ok(())
 }

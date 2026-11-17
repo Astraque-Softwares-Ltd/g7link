@@ -185,6 +185,7 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     if remote_input_enabled && input_available {
         caps.push(g7link_core::MIRROR_INPUT.into());
         caps.push(g7link_core::INPUT_INJECT.into());
+        caps.push(g7link_core::INPUT_TEXT_MIRROR.into());
     }
     if crate::sys::vcam::is_registered() {
         caps.push(g7link_core::WEBCAM_ADDON_VCAM.into());
@@ -402,7 +403,7 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
     }
 }
 
-/// Where files from phones go: `Downloads\G7Link`.
+/// Where files from phones go: `Downloads/G7Link`.
 pub fn downloads_dir() -> PathBuf {
     dirs::download_dir().unwrap_or_else(|| host().data_dir.join("received")).join("G7Link")
 }

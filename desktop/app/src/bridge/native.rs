@@ -76,6 +76,10 @@ pub mod ffi {
 
         /// Decodes image bytes into a byte vector: 4-byte width (LE), 4-byte height (LE), followed by ARGB32 bytes.
         fn decode_image(bytes: &[u8]) -> Vec<u8>;
+        /// Image bytes (PNG, JPEG...) as a compressed PNG; empty when they don't decode.
+        fn encode_png(bytes: &[u8]) -> Vec<u8>;
+        /// Whether one of this app's windows has the focus.
+        fn app_window_active() -> bool;
 
         #[allow(clippy::too_many_arguments)]
         fn linux_tray_setup(

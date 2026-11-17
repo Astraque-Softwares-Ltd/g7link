@@ -88,6 +88,8 @@ pub mod types {
     pub const REMOTE_CHECK: &str = "remote.check";
     pub const REMOTE_INPUT: &str = "remote.input";
     pub const REMOTE_TEXT_FOCUS: &str = "remote.text_focus";
+    pub const REMOTE_TEXT_WATCH: &str = "remote.text_watch";
+    pub const REMOTE_TEXT_STATE: &str = "remote.text_state";
     pub const PHONE_TOGGLES: &str = "phone.toggles";
     pub const PHONE_TOGGLE_SET: &str = "phone.toggle.set";
     pub const DECK_LAYOUT: &str = "deck.layout";
@@ -3517,6 +3519,23 @@ pub mod remote {
     pub const MAX_SCROLL_DELTA: f32 = 200.0;
     /// Most UTF-8 bytes in one `Text` event.
     pub const MAX_TEXT_BYTES: usize = 256;
+    /// Most UTF-8 bytes typed by one `Edit`.
+    pub const MAX_EDIT_TEXT_BYTES: usize = 1024;
+    /// Most characters one `Edit` deletes, or moves the caret by.
+    pub const MAX_EDIT_STEPS: u16 = 512;
+    /// Most characters one mirrored `Edit` replaces.
+    pub const MAX_EDIT_RANGE: u32 = 65_536;
+    /// Most UTF-8 bytes of a mirrored field sent before and after its caret.
+    pub const MAX_STATE_BEFORE: usize = 4096;
+    pub const MAX_STATE_AFTER: usize = 1024;
+    /// Most UTF-8 bytes of the app name, and of the field's label, in a text state.
+    pub const MAX_STATE_APP: usize = 64;
+    pub const MAX_STATE_LABEL: usize = 64;
+    /// What a PC answers an `Edit` or `Caret` meant for a field that no
+    /// longer has the focus.
+    pub const STALE_FOCUS: &str = "stale focus";
+    /// What a PC answers when it couldn't type or press what it was sent.
+    pub const NOT_INJECTED: &str = "input not delivered";
     /// Most modifiers on a key press.
     pub const MAX_MODS: usize = 4;
     /// Stream service and operation when falling back from datagrams.
@@ -3646,6 +3665,118 @@ pub struct RemoteTextFocus {
     pub editable: bool,
 }
 
+/// Body of `remote.text_watch` (phone → PC, one way): the phone's typing field
+/// is open (`on`) or closed. A PC sends `remote.text_state` only to phones
+/// that watch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTextWatch {
+    pub on: bool,
+}
+
+/// What has the keyboard focus on a PC, for a phone's typing field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextFieldKind {
+    /// A text field whose text and caret the PC can read: the phone mirrors it.
+    Mirror,
+    /// Takes text, but its app doesn't share it (or it's a terminal): the
+    /// phone keeps only what it typed since the last change on the PC.
+    Opaque,
+    /// A password field: nothing is read or sent.
+    Secret,
+    /// Nothing that takes text has the focus.
+    None,
+}
+
+/// Body of `remote.text_state` (PC → phone, one way): the field that has the
+/// focus on the PC, sent to phones that watch (`remote.text_watch`) when it
+/// changes. Character offsets count Unicode scalar values.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTextState {
+    /// Changes each time the focus moves to another object.
+    pub focus: u32,
+    /// Which field this is: the same each time the focus comes back to it,
+    /// 0 when the PC can't tell. Means nothing off the PC.
+    #[serde(default)]
+    pub field: u64,
+    /// Changes when the PC has reason to think a phone's own record of what
+    /// it typed into this field is wrong (someone typed or clicked on the PC).
+    #[serde(default)]
+    pub epoch: u32,
+    /// Counts states sent for one focus.
+    pub rev: u32,
+    /// The last `Edit` or `Caret` `seq` from this phone that ran before the
+    /// text was read (0 for none).
+    pub applied: u32,
+    pub kind: TextFieldKind,
+    /// The focused app's name, for the phone's label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// The field's own name ("Search"), or the window's title when `window`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The PC knows only the window that has the focus, not the field in it.
+    #[serde(default)]
+    pub window: bool,
+    /// The field takes more than one line.
+    #[serde(default)]
+    pub multiline: bool,
+    /// Only for [`TextFieldKind::Mirror`]: the offset of `before`'s first
+    /// character in the field, the text before and after the caret (cut to
+    /// [`remote::MAX_STATE_BEFORE`] and [`remote::MAX_STATE_AFTER`] bytes),
+    /// and where the selection starts when there is one (the caret is its
+    /// other end).
+    #[serde(default)]
+    pub start: u32,
+    #[serde(default)]
+    pub before: String,
+    #[serde(default)]
+    pub after: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<u32>,
+    /// The field has more text before `before` or after `after`.
+    #[serde(default)]
+    pub more_before: bool,
+    #[serde(default)]
+    pub more_after: bool,
+}
+
+/// Never prints the field's text (protocol v0 §11).
+impl std::fmt::Debug for RemoteTextState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteTextState")
+            .field("focus", &self.focus)
+            .field("field", &self.field)
+            .field("epoch", &self.epoch)
+            .field("rev", &self.rev)
+            .field("applied", &self.applied)
+            .field("kind", &self.kind)
+            .field("before_bytes", &self.before.len())
+            .field("after_bytes", &self.after.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl RemoteTextState {
+    /// The caret's offset in the field.
+    pub fn caret(&self) -> u32 {
+        let before = u32::try_from(self.before.chars().count()).unwrap_or(u32::MAX);
+        self.start.saturating_add(before)
+    }
+
+    pub fn is_valid(&self) -> bool {
+        let mirrored = self.kind == TextFieldKind::Mirror;
+        self.before.len() <= remote::MAX_STATE_BEFORE
+            && self.after.len() <= remote::MAX_STATE_AFTER
+            && self.app.as_ref().is_none_or(|app| app.len() <= remote::MAX_STATE_APP)
+            && self.label.as_ref().is_none_or(|label| label.len() <= remote::MAX_STATE_LABEL)
+            && (!self.window || matches!(self.kind, TextFieldKind::Opaque | TextFieldKind::None))
+            && (mirrored || (self.before.is_empty() && self.after.is_empty() && self.anchor.is_none()))
+            && !self.before.contains('\0')
+            && !self.after.contains('\0')
+    }
+}
+
 /// An input event sent from a phone to a PC (`docs/protocol/remote.md`).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -3676,6 +3807,36 @@ pub enum RemoteInput {
         #[serde(default)]
         y: f32,
     },
+    /// One change to the PC's focused text, to a PC that offers
+    /// `input.text_mirror`. Either `range` replaces those characters of a
+    /// mirrored field with `text`, or the caret moves `moves` characters
+    /// (negative: left), `backspaces` characters before it are deleted, and
+    /// `text` is typed. A new line in `text` is Shift+Enter, as in a chat box.
+    /// Turned away with [`remote::STALE_FOCUS`] when `focus` isn't the PC's
+    /// focus any more (0 matches any).
+    Edit {
+        focus: u32,
+        seq: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        range: Option<(u32, u32)>,
+        #[serde(default, skip_serializing_if = "is_zero_i32")]
+        moves: i32,
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        backspaces: u16,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        text: String,
+    },
+    /// Places the caret of a mirrored field at `caret`, selecting from
+    /// `anchor` (equal to `caret` for no selection).
+    Caret { focus: u32, seq: u32, caret: u32, anchor: u32 },
+}
+
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
 }
 
 /// Never prints typed text (protocol v0 §11).
@@ -3691,6 +3852,14 @@ impl std::fmt::Debug for RemoteInput {
             RemoteInput::Slide { action } => write!(f, "Slide({action:?})"),
             RemoteInput::Laser { on: false, .. } => f.write_str("Laser(off)"),
             RemoteInput::Laser { on: true, x, y } => write!(f, "Laser({x}, {y})"),
+            RemoteInput::Edit { focus, seq, range, moves, backspaces, text } => write!(
+                f,
+                "Edit(focus {focus}, seq {seq}, range {range:?}, moves {moves}, backspaces {backspaces}, {} bytes)",
+                text.len()
+            ),
+            RemoteInput::Caret { focus, seq, caret, anchor } => {
+                write!(f, "Caret(focus {focus}, seq {seq}, {anchor}..{caret})")
+            }
         }
     }
 }
@@ -3723,6 +3892,26 @@ impl RemoteInput {
                     && y.is_finite()
                     && (!*on || ((0.0..=1.0).contains(x) && (0.0..=1.0).contains(y)))
             }
+            RemoteInput::Edit { range, moves, backspaces, text, .. } => {
+                let steps = i32::from(remote::MAX_EDIT_STEPS);
+                let text_ok = text.len() <= remote::MAX_EDIT_TEXT_BYTES
+                    && !text.chars().any(|c| c.is_control() && c != '\n' && c != '\t');
+                let change_ok = match range {
+                    Some((start, end)) => {
+                        start <= end
+                            && end - start <= remote::MAX_EDIT_RANGE
+                            && *moves == 0
+                            && *backspaces == 0
+                    }
+                    None => {
+                        (-steps..=steps).contains(moves)
+                            && *backspaces <= remote::MAX_EDIT_STEPS
+                            && (*moves != 0 || *backspaces != 0 || !text.is_empty())
+                    }
+                };
+                text_ok && change_ok
+            }
+            RemoteInput::Caret { .. } => true,
         }
     }
 
@@ -6565,6 +6754,99 @@ mod tests {
         let env = crate::Envelope::new(types::AUDIO_PCM, &frame).unwrap();
         let decoded: AudioPcmFrame = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn edits_validate_and_round_trip() {
+        let relative = RemoteInput::Edit {
+            focus: 3,
+            seq: 9,
+            range: None,
+            moves: -2,
+            backspaces: 1,
+            text: "é\nb".into(),
+        };
+        assert!(relative.is_valid() && relative.is_control_allowed() && !relative.is_datagram_allowed());
+        assert!(!format!("{relative:?}").contains('é'));
+        let env = Envelope::new(types::REMOTE_INPUT, &relative).unwrap();
+        assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<RemoteInput>().unwrap(), relative);
+
+        let mirrored = RemoteInput::Edit {
+            focus: 3,
+            seq: 10,
+            range: Some((4, 7)),
+            moves: 0,
+            backspaces: 0,
+            text: String::new(),
+        };
+        assert!(mirrored.is_valid());
+        let env = Envelope::new(types::REMOTE_INPUT, &mirrored).unwrap();
+        assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<RemoteInput>().unwrap(), mirrored);
+
+        let edit = |range, moves, backspaces, text: &str| RemoteInput::Edit {
+            focus: 0,
+            seq: 1,
+            range,
+            moves,
+            backspaces,
+            text: text.into(),
+        };
+        assert!(!edit(None, 0, 0, "").is_valid(), "an edit changes something");
+        assert!(!edit(Some((5, 4)), 0, 0, "x").is_valid());
+        assert!(!edit(Some((0, 2)), 1, 0, "x").is_valid(), "a range doesn't move too");
+        assert!(!edit(None, 600, 0, "").is_valid());
+        assert!(!edit(None, 0, 513, "").is_valid());
+        assert!(!edit(None, 0, 0, "bell\u{7}").is_valid());
+        assert!(!edit(None, 0, 0, &"x".repeat(remote::MAX_EDIT_TEXT_BYTES + 1)).is_valid());
+        assert!(edit(None, 0, 0, "tab\tand\nline").is_valid());
+
+        let caret = RemoteInput::Caret { focus: 3, seq: 11, caret: 5, anchor: 2 };
+        let env = Envelope::new(types::REMOTE_INPUT, &caret).unwrap();
+        assert_eq!(env.body::<RemoteInput>().unwrap(), caret);
+    }
+
+    #[test]
+    fn text_state_round_trips_and_keeps_its_text_out_of_logs() {
+        let state = RemoteTextState {
+            focus: 2,
+            field: 0x1234_5678_9abc,
+            epoch: 1,
+            rev: 5,
+            applied: 9,
+            kind: TextFieldKind::Mirror,
+            app: Some("Firefox".into()),
+            label: Some("Secret plans".into()),
+            window: false,
+            multiline: true,
+            start: 10,
+            before: "hello wor".into(),
+            after: "ld".into(),
+            anchor: Some(12),
+            more_before: true,
+            more_after: false,
+        };
+        assert!(state.is_valid());
+        assert_eq!(state.caret(), 19);
+        assert!(!format!("{state:?}").contains("hello"));
+        assert!(!format!("{state:?}").contains("Secret"));
+        assert!(
+            !RemoteTextState { window: true, ..state.clone() }.is_valid(),
+            "a window has no text to mirror"
+        );
+        let env = Envelope::new(types::REMOTE_TEXT_STATE, &state).unwrap();
+        let back: RemoteTextState = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back, state);
+
+        let opaque = RemoteTextState { kind: TextFieldKind::Opaque, ..state.clone() };
+        assert!(!opaque.is_valid(), "only a mirrored field carries text");
+        let opaque = RemoteTextState { before: String::new(), after: String::new(), anchor: None, ..opaque };
+        assert!(opaque.is_valid());
+        let long = RemoteTextState { before: "x".repeat(remote::MAX_STATE_BEFORE + 1), ..state };
+        assert!(!long.is_valid());
+
+        let watch = RemoteTextWatch { on: true };
+        let env = Envelope::new(types::REMOTE_TEXT_WATCH, &watch).unwrap();
+        assert_eq!(env.body::<RemoteTextWatch>().unwrap(), watch);
     }
 
     #[test]
