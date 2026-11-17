@@ -42,7 +42,7 @@ Item {
         const id = selectedIds[0]
         return id.indexOf("video:") === 0
     }
-    readonly property bool canCopySelection: selectedCount === 1 && !singleSelectedIsVideo && !Photos.saving
+    readonly property bool canCopySelection: selectedCount === 1 && !singleSelectedIsVideo
 
     readonly property string currentAlbumName: {
         if (Photos.album.length === 0) return qsTr("All photos")
@@ -278,7 +278,7 @@ Item {
             const id = one.id
             if (!one.isVideo)
                 list.push({ label: qsTr("Copy"), detail: one.name, icon: Icons.copy, tint: Theme.tintLavender, keys: "Ctrl C",
-                            enabled: !Photos.saving, run: () => Photos.copyItem(id) })
+                            enabled: Photos.copying !== id, run: () => Photos.copyItem(id) })
             list.push({ label: one.isVideo ? qsTr("Play video") : qsTr("Open in Photos"), detail: one.name,
                         icon: one.isVideo ? Icons.play : Icons.openExternal, tint: Theme.tintBlue,
                         enabled: !Photos.saving, run: () => Photos.openItem(id) })
@@ -305,7 +305,7 @@ Item {
             if (page.selectedCount === 1) {
                 if (!page.singleSelectedIsVideo)
                     list.push({ label: qsTr("Copy"), icon: Icons.copy, tint: Theme.tintLavender, keys: "Ctrl C",
-                                enabled: !Photos.saving, run: () => Photos.copyItem(ids[0]) })
+                                enabled: Photos.copying !== ids[0], run: () => Photos.copyItem(ids[0]) })
                 list.push({ label: qsTr("Open in Photos"), icon: Icons.openExternal, tint: Theme.tintBlue,
                             enabled: !Photos.saving, run: () => Photos.openItem(ids[0]) })
             }
@@ -516,22 +516,11 @@ Item {
                 text: qsTr("Clear")
                 onClicked: page.clearSelection()
             }
-            Button {
-                id: copySelected
-                property bool copied: false
+            CopyButton {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !page.confirmDelete
-                variant: "outline"
-                size: "sm"
-                iconPath: copied ? Icons.check : ""
-                text: copied ? qsTr("Copied") : qsTr("Copy")
-                enabled: page.canCopySelection
-                onClicked: {
-                    Photos.copyItem(page.selectedIds[0])
-                    copied = true
-                    copiedSelectedTimer.restart()
-                }
-                Timer { id: copiedSelectedTimer; interval: 1600; onTriggered: copySelected.copied = false }
+                itemId: page.selectedCount === 1 ? page.selectedIds[0] : ""
+                enabled: page.canCopySelection && !copying
             }
             Button {
                 anchors.verticalCenter: parent.verticalCenter
@@ -694,6 +683,8 @@ Item {
                 height: grid.cellHeight
             }
 
+            TouchpadGlide { view: grid }
+
             footer: Item {
                 width: grid.width
                 height: Photos.loadingOlder ? 48 : 0
@@ -775,24 +766,11 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 8
 
-                Button {
-                    id: copyViewed
-                    property bool copied: false
+                CopyButton {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: page.viewedItem !== null && !page.viewedItem.isVideo
-                    variant: "outline"
-                    size: "sm"
-                    iconPath: copied ? Icons.check : ""
-                    text: copied ? qsTr("Copied") : qsTr("Copy")
-                    enabled: !Photos.saving
-                    onClicked: {
-                        if (!page.viewedItem)
-                            return
-                        Photos.copyItem(page.viewedItem.id)
-                        copied = true
-                        copiedViewedTimer.restart()
-                    }
-                    Timer { id: copiedViewedTimer; interval: 1600; onTriggered: copyViewed.copied = false }
+                    itemId: page.viewedItem !== null && !page.viewedItem.isVideo ? page.viewedItem.id : ""
+                    enabled: !copying
                 }
                 Button {
                     anchors.verticalCenter: parent.verticalCenter
@@ -933,6 +911,46 @@ Item {
                 label: qsTr("Next photo")
                 onClicked: page.stepViewer(1)
             }
+        }
+    }
+
+    // ---- Copy, for one photo ----
+    // Busy while the photo is on its way to the clipboard (its full size
+    // comes from the phone first), then "Copied" for a moment. A copy from
+    // Ctrl C or the Actions list shows here too.
+    component CopyButton: Button {
+        id: copyButton
+        required property string itemId
+        readonly property bool copying: itemId.length > 0 && Photos.copying === itemId
+        property bool waiting: false
+        property bool copied: false
+
+        variant: "outline"
+        size: "sm"
+        busy: copying
+        iconPath: copied ? Icons.check : ""
+        text: copied ? qsTr("Copied") : qsTr("Copy")
+        onClicked: Photos.copyItem(itemId)
+        onItemIdChanged: {
+            waiting = false
+            copied = false
+        }
+        onCopyingChanged: {
+            if (copying) {
+                waiting = true
+                copied = false
+            } else if (waiting) {
+                waiting = false
+                copied = Photos.copied === itemId
+                if (copied)
+                    copiedTimer.restart()
+            }
+        }
+
+        Timer {
+            id: copiedTimer
+            interval: 1600
+            onTriggered: copyButton.copied = false
         }
     }
 

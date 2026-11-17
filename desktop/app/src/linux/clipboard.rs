@@ -879,8 +879,18 @@ pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), String> {
     } else {
         // Compressed through Qt where it can: this module's own encoder
         // stores pixels as they are, and a photo then outgrows what GNOME
-        // Shell's clipboard takes.
-        let compressed = if cfg!(test) { Vec::new() } else { crate::bridge::native::ffi::encode_png(bytes) };
+        // Shell's clipboard takes. Quickly first; fully only when that's
+        // what gets it under the Shell's limit.
+        let compressed =
+            if cfg!(test) { Vec::new() } else { crate::bridge::native::ffi::encode_png(bytes, true) };
+        let limit = super::shell_clipboard::MAX_BYTES;
+        let near_limit = compressed.len() > limit && compressed.len() <= limit / 4 * 5;
+        let compressed = if near_limit && is_gnome_wayland() && !super::data_control::active() {
+            let full = crate::bridge::native::ffi::encode_png(bytes, false);
+            if full.is_empty() { compressed } else { full }
+        } else {
+            compressed
+        };
         if compressed.is_empty() {
             image::encode_png(&bitmap).map_err(|e| e.to_string())?
         } else {

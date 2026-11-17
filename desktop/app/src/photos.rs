@@ -46,8 +46,8 @@ enum Intent {
     ToastSave,
     /// Opened in its default app (an image viewer or video player).
     Open { item_id: Option<String> },
-    /// Put on the clipboard; not kept in Downloads.
-    Copy { item_id: Option<String>, notify_ui: bool },
+    /// Put on the clipboard from a notification; not kept in Downloads.
+    Copy { item_id: Option<String> },
     /// Downloaded for the in-app viewer (moved into the gallery cache).
     View { device: DeviceId, item_id: String },
     /// Saved from the gallery to `Downloads/G7Link` or a user-chosen folder.
@@ -217,7 +217,7 @@ pub fn on_toast(key: &str, action: Option<&str>) {
     let intent = match action {
         None => Intent::Open { item_id: Some(photo_id.to_owned()) },
         Some(ACTION_SAVE) => Intent::ToastSave,
-        Some(ACTION_COPY) => Intent::Copy { item_id: Some(photo_id.to_owned()), notify_ui: false },
+        Some(ACTION_COPY) => Intent::Copy { item_id: Some(photo_id.to_owned()) },
         Some(_) => return,
     };
     let Some(node) = core_host::node() else { return };
@@ -277,12 +277,15 @@ fn finished(t: &Transfer) {
         TransferState::Done { saved } => saved.clone(),
         TransferState::Failed(_) | TransferState::Cancelled => {
             let removed = state(|s| s.pending.remove(&t.id));
-            if removed.is_some() {
+            if let Some(intent) = removed {
                 gallery_state(|g| {
                     g.saving = false;
                     g.busy_item = None;
                 });
                 gallery_changed();
+                if let Intent::View { item_id, .. } = intent {
+                    full_failed(&item_id, None);
+                }
             }
             return;
         }
@@ -311,6 +314,9 @@ fn finished(t: &Transfer) {
 
 fn deliver(transfer_id: &str, intent: Intent, saved: &[PathBuf]) {
     let Some(first) = saved.first() else {
+        if let Intent::View { item_id, .. } = &intent {
+            full_failed(item_id, None);
+        }
         gallery_state(|g| {
             g.saving = false;
             g.busy_item = None;
@@ -333,7 +339,7 @@ fn deliver(transfer_id: &str, intent: Intent, saved: &[PathBuf]) {
             }
             crate::transfers::open(first);
         }
-        Intent::Copy { item_id: _, notify_ui } => {
+        Intent::Copy { item_id: _ } => {
             if let Some(node) = core_host::node() {
                 node.delete_timeline_by_ref(transfer_id);
             }
@@ -342,7 +348,7 @@ fn deliver(transfer_id: &str, intent: Intent, saved: &[PathBuf]) {
                 g.busy_item = None;
             });
             gallery_changed();
-            copy_file_to_clipboard(first, true, notify_ui);
+            copy_file_to_clipboard(first);
         }
         Intent::View { device, item_id } => {
             if let Some(node) = core_host::node() {
@@ -357,13 +363,18 @@ fn deliver(transfer_id: &str, intent: Intent, saved: &[PathBuf]) {
                 } else {
                     first.clone()
                 };
-            gallery_state(|g| {
-                g.full_files.insert(item_id.clone(), final_path);
+            let copy = gallery_state(|g| {
+                g.full_files.insert(item_id.clone(), final_path.clone());
+                g.fetching_full.remove(&item_id);
                 if g.busy_item.as_deref() == Some(item_id.as_str()) {
                     g.busy_item = None;
                 }
+                g.copying.as_deref() == Some(item_id.as_str())
             });
             gallery_changed();
+            if copy {
+                copy_to_clipboard(item_id, final_path);
+            }
         }
         Intent::GallerySave { ids, folder } => {
             let mut final_paths = Vec::with_capacity(saved.len());
@@ -479,17 +490,14 @@ pub(crate) fn free_path(dir: &Path, name: &str) -> PathBuf {
     }
 }
 
-fn copy_file_to_clipboard(path: &Path, remove_after: bool, notify_ui: bool) {
-    let failed = if remove_after {
-        tr!("Photos", "The photo couldn't be copied. It's in Downloads/G7Link.")
-    } else {
-        tr!("Photos", "The photo couldn't be copied to the clipboard.")
-    };
-    let say = ImageCopy::new(failed);
-    let say = if notify_ui { say } else { say.quiet() };
+/// Puts a photo a notification's Copy brought on the clipboard, then drops
+/// the file from Downloads; it stays there if the copy didn't work.
+fn copy_file_to_clipboard(path: &Path) {
+    let say =
+        ImageCopy::new(tr!("Photos", "The photo couldn't be copied. It's in Downloads/G7Link.")).quiet();
     let copied_file = path.to_path_buf();
     crate::copy::copy_image_file(path.to_path_buf(), say, move |copied| {
-        if copied && remove_after {
+        if copied {
             let _ = std::fs::remove_file(&copied_file);
         }
     });
@@ -524,6 +532,8 @@ pub struct View {
     pub loading_older: bool,
     pub saving: bool,
     pub busy_item: String,
+    pub copying: String,
+    pub copied: String,
     pub save_folder: String,
 }
 
@@ -543,6 +553,12 @@ struct GalleryState {
     fetching_thumbs: bool,
     saving: bool,
     busy_item: Option<String>,
+    /// Full photos asked of the phone and when, so one isn't fetched twice.
+    fetching_full: HashMap<String, Instant>,
+    /// The photo on its way to the clipboard.
+    copying: Option<String>,
+    /// The last photo that reached the clipboard, until another copy starts.
+    copied: Option<String>,
     save_folder: Option<PathBuf>,
     generation: u64,
 }
@@ -562,7 +578,10 @@ fn gallery_changed() {
 pub fn release_idle_resources() {
     let mut released = false;
     gallery_state(|g| {
-        if !g.saving && (g.device.is_some() || !g.items.is_empty() || !g.albums.is_empty()) {
+        if !g.saving
+            && g.copying.is_none()
+            && (g.device.is_some() || !g.items.is_empty() || !g.albums.is_empty())
+        {
             let save_folder = g.save_folder.take();
             let generation = g.generation.wrapping_add(1);
             *g = GalleryState { save_folder, generation, ..GalleryState::default() };
@@ -830,6 +849,8 @@ pub fn view() -> View {
             loading_older: s.loading_older,
             saving: s.saving,
             busy_item: s.busy_item.clone().unwrap_or_default(),
+            copying: s.copying.clone().unwrap_or_default(),
+            copied: s.copied.clone().unwrap_or_default(),
             save_folder,
         }
     })
@@ -1102,50 +1123,112 @@ fn save_thumb_batch(device: DeviceId, generation: u64, requested: &[String], thu
     });
 }
 
-/// Ensures the full-resolution image for `id` is downloaded for the in-app
-/// viewer (for still photos; videos are opened in the default player on click).
-pub fn ensure_full(id: String) {
-    if id.is_empty() || id.starts_with("video:") {
-        return;
+/// Where a full-resolution photo stands for the viewer, a copy or a drag.
+#[derive(Debug, PartialEq)]
+enum Full {
+    /// In the cache.
+    Here(PathBuf),
+    /// On its way; [`deliver`] takes it from there.
+    Coming,
+    /// To fetch from this phone now.
+    Fetch(DeviceId),
+    /// A video, or no phone.
+    Unavailable,
+}
+
+/// A full photo asked for longer ago than this is asked for again: its
+/// transfer may have failed before its answer came.
+const FULL_PATIENCE: Duration = Duration::from_secs(120);
+
+/// Finds the full photo `id` in the cache (`on_disk` looks for one kept from
+/// an earlier run), or takes on fetching it. One already on its way isn't
+/// fetched a second time: pressing a tile starts it, and Copy waits for it.
+fn claim_full(s: &mut GalleryState, id: &str, on_disk: impl FnOnce(DeviceId) -> Option<PathBuf>) -> Full {
+    if let Some(path) = s.full_files.get(id).filter(|p| p.exists()) {
+        return Full::Here(path.clone());
     }
-    let Some(device) = gallery_state(|s| {
-        if s.full_files.get(&id).is_some_and(|p| p.exists()) {
-            return None;
+    if id.starts_with("video:") || s.items.iter().any(|i| i.id == id && i.duration.is_some()) {
+        return Full::Unavailable;
+    }
+    let Some(device) = s.device else { return Full::Unavailable };
+    if let Some(path) = on_disk(device) {
+        s.full_files.insert(id.to_owned(), path.clone());
+        return Full::Here(path);
+    }
+    s.busy_item = Some(id.to_owned());
+    let now = Instant::now();
+    match s.fetching_full.insert(id.to_owned(), now) {
+        Some(asked) if now.duration_since(asked) < FULL_PATIENCE => {
+            s.fetching_full.insert(id.to_owned(), asked);
+            Full::Coming
         }
-        let is_video = s.items.iter().find(|i| i.id == id).is_some_and(|i| i.duration.is_some());
-        if is_video {
-            return None;
-        }
-        let dir = s.device.map(thumbs_dir)?;
-        for ext in ["jpg", "jpeg", "png", "webp", "heic"] {
-            let candidate = dir.join(format!("full-{:016x}.{ext}", fingerprint(&id)));
-            if candidate.exists() {
-                s.full_files.insert(id.clone(), candidate);
-                return None;
-            }
-        }
-        s.busy_item = Some(id.clone());
-        s.device
-    }) else {
-        gallery_changed();
+        _ => Full::Fetch(device),
+    }
+}
+
+/// The full photo `id` kept in the cache by an earlier run.
+fn full_on_disk(device: DeviceId, id: &str) -> Option<PathBuf> {
+    let dir = thumbs_dir(device);
+    ["jpg", "jpeg", "png", "webp", "heic"]
+        .into_iter()
+        .map(|ext| dir.join(format!("full-{:016x}.{ext}", fingerprint(id))))
+        .find(|candidate| candidate.exists())
+}
+
+/// Brings the full photo `id` from `device` into the cache.
+fn fetch_full(device: DeviceId, id: String) {
+    let Some(node) = core_host::node() else {
+        full_failed(&id, None);
         return;
     };
-    gallery_changed();
-    let Some(node) = core_host::node() else { return };
     core_host::spawn(async move {
         match node.fetch_photo(device, id.clone()).await {
             Ok(transfer) => asked(transfer, Intent::View { device, item_id: id }),
             Err(e) => {
-                tracing::debug!(error = %e, "can't fetch full photo for viewer");
-                gallery_state(|s| {
-                    if s.busy_item.as_deref() == Some(id.as_str()) {
-                        s.busy_item = None;
-                    }
-                });
-                gallery_changed();
+                tracing::debug!(error = %e, "can't fetch a full photo");
+                full_failed(&id, Some(&e));
             }
         }
     });
+}
+
+/// The full photo `id` didn't come: the viewer keeps the thumbnail, and a
+/// copy waiting for it says it didn't work.
+fn full_failed(id: &str, error: Option<&Error>) {
+    let was_copying = gallery_state(|s| {
+        s.fetching_full.remove(id);
+        if s.busy_item.as_deref() == Some(id) {
+            s.busy_item = None;
+        }
+        let copying = s.copying.as_deref() == Some(id);
+        if copying {
+            s.copying = None;
+        }
+        copying
+    });
+    gallery_changed();
+    if was_copying {
+        match error {
+            Some(e) => show_photo_error(e),
+            None => show_message(tr!("Photos", "The photo couldn't be copied to the clipboard.")),
+        }
+    }
+}
+
+/// Ensures the full-resolution image for `id` is downloaded for the in-app
+/// viewer (for still photos; videos are opened in the default player on click).
+pub fn ensure_full(id: String) {
+    if id.is_empty() {
+        return;
+    }
+    let claim = gallery_state(|s| claim_full(s, &id, |device| full_on_disk(device, &id)));
+    if claim == Full::Unavailable {
+        return;
+    }
+    gallery_changed();
+    if let Full::Fetch(device) = claim {
+        fetch_full(device, id);
+    }
 }
 
 /// Opens `id` in the default image viewer (or video player), downloading
@@ -1294,37 +1377,43 @@ pub fn open_latest_photo(device: DeviceId) {
     });
 }
 
-/// Copies one image `id` to the PC clipboard, downloading it first if needed.
+/// Copies one image `id` to the PC clipboard. The full photo comes into the
+/// cache first, unless it's there or on its way already, and stays there for
+/// the viewer and the next copy. `copying` and `copied` tell the Copy button.
 pub fn copy_item(id: String) {
     if id.is_empty() {
         return;
     }
-    if let Some(existing) = gallery_state(|s| s.full_files.get(&id).filter(|p| p.exists()).cloned()) {
-        // The Copy button says "Copied" itself; only a failure is told apart.
-        copy_file_to_clipboard(&existing, false, false);
-        return;
-    }
-    let Some(device) = gallery_state(|s| {
-        s.saving = true;
-        s.busy_item = Some(id.clone());
-        s.device
-    }) else {
-        return;
-    };
-    gallery_changed();
-    let Some(node) = core_host::node() else { return };
-    core_host::spawn(async move {
-        match node.fetch_photo(device, id.clone()).await {
-            Ok(transfer) => asked(transfer, Intent::Copy { item_id: Some(id), notify_ui: true }),
-            Err(e) => {
-                gallery_state(|s| {
-                    s.saving = false;
-                    s.busy_item = None;
-                });
-                gallery_changed();
-                show_photo_error(&e);
-            }
+    let claim = gallery_state(|s| {
+        let claim = claim_full(s, &id, |device| full_on_disk(device, &id));
+        if claim != Full::Unavailable {
+            s.copying = Some(id.clone());
+            s.copied = None;
         }
+        claim
+    });
+    gallery_changed();
+    match claim {
+        Full::Here(path) => copy_to_clipboard(id, path),
+        Full::Fetch(device) => fetch_full(device, id),
+        Full::Coming | Full::Unavailable => {}
+    }
+}
+
+/// Puts the cached full photo `id` on the clipboard. Only a failure is said
+/// here; the Copy button shows the rest.
+fn copy_to_clipboard(id: String, path: PathBuf) {
+    let say = ImageCopy::new(tr!("Photos", "The photo couldn't be copied to the clipboard.")).quiet();
+    crate::copy::copy_image_file(path, say, move |copied| {
+        gallery_state(|s| {
+            if s.copying.as_deref() == Some(id.as_str()) {
+                s.copying = None;
+                if copied {
+                    s.copied = Some(id);
+                }
+            }
+        });
+        gallery_changed();
     });
 }
 
@@ -1564,6 +1653,37 @@ mod tests {
         assert!(v.rows[1].is_video);
         assert_eq!(v.rows[1].duration, 14_500);
         gallery_state(|s| *s = GalleryState::default());
+    }
+
+    #[test]
+    fn a_full_photo_on_its_way_is_fetched_once() {
+        let device = DeviceId([7; 32]);
+        let mut s = GalleryState { device: Some(device), ..GalleryState::default() };
+        let nowhere = |_: DeviceId| None;
+
+        assert_eq!(claim_full(&mut s, "media:1", nowhere), Full::Fetch(device));
+        assert_eq!(s.busy_item.as_deref(), Some("media:1"));
+        // Copy after pressing the tile waits for the same transfer.
+        assert_eq!(claim_full(&mut s, "media:1", nowhere), Full::Coming);
+        assert_eq!(claim_full(&mut s, "media:2", nowhere), Full::Fetch(device));
+
+        // One asked for too long ago is asked for again.
+        s.fetching_full.insert("media:1".into(), Instant::now() - FULL_PATIENCE);
+        assert_eq!(claim_full(&mut s, "media:1", nowhere), Full::Fetch(device));
+        assert_eq!(claim_full(&mut s, "media:1", nowhere), Full::Coming);
+
+        let dir = tempfile::tempdir().unwrap();
+        let cached = dir.path().join("full.jpg");
+        std::fs::write(&cached, b"jpeg").unwrap();
+        s.full_files.insert("media:1".into(), cached.clone());
+        assert_eq!(claim_full(&mut s, "media:1", nowhere), Full::Here(cached.clone()));
+        // Kept by an earlier run.
+        assert_eq!(claim_full(&mut s, "media:3", |_| Some(cached.clone())), Full::Here(cached.clone()));
+        assert_eq!(s.full_files.get("media:3"), Some(&cached));
+
+        assert_eq!(claim_full(&mut s, "video:4", nowhere), Full::Unavailable);
+        s.device = None;
+        assert_eq!(claim_full(&mut s, "media:5", nowhere), Full::Unavailable);
     }
 
     #[test]

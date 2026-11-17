@@ -50,6 +50,7 @@ const QML: &[&str] = &[
     "qml/components/StatusDot.qml",
     "qml/components/Toast.qml",
     "qml/components/Toggle.qml",
+    "qml/components/TouchpadGlide.qml",
     "qml/components/TransferItem.qml",
     "qml/components/ValueSlider.qml",
     "qml/components/WindowPlacement.qml",

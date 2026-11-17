@@ -23,7 +23,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(2);
 /// on or off at any time.
 const RECHECK: Duration = Duration::from_secs(30);
 /// The largest clip the extension takes.
-const MAX_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_BYTES: usize = 10 * 1024 * 1024;
 
 static AVAILABLE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
 /// When the extension last turned down its private write: before 1.5 it has

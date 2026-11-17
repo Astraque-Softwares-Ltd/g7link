@@ -54,6 +54,10 @@ pub mod qobject {
         #[qproperty(bool, loading_older, cxx_name = "loadingOlder")]
         #[qproperty(bool, saving)]
         #[qproperty(QString, busy_item, cxx_name = "busyItem")]
+        /// The photo on its way to the clipboard ("" when none).
+        #[qproperty(QString, copying)]
+        /// The last photo that reached the clipboard, until another copy starts.
+        #[qproperty(QString, copied)]
         #[qproperty(QString, save_folder, cxx_name = "saveFolder")]
         #[qproperty(i32, revision)]
         type Photos = super::PhotosRust;
@@ -163,6 +167,8 @@ pub struct PhotosRust {
     loading_older: bool,
     saving: bool,
     busy_item: QString,
+    copying: QString,
+    copied: QString,
     save_folder: QString,
     revision: i32,
     rows: Vec<ItemRow>,
@@ -244,6 +250,8 @@ impl qobject::Photos {
         self.as_mut().set_loading_older(view.loading_older);
         self.as_mut().set_saving(view.saving);
         self.as_mut().set_busy_item(QString::from(&view.busy_item));
+        self.as_mut().set_copied(QString::from(&view.copied));
+        self.as_mut().set_copying(QString::from(&view.copying));
         self.as_mut().set_save_folder(QString::from(&view.save_folder));
 
         let root = QModelIndex::default();
