@@ -379,6 +379,8 @@ Item {
                     text: page.query.length > 0 ? qsTr("No matches")
                         : page.tab === "missed" ? qsTr("No missed calls") : qsTr("No recent calls")
                 }
+
+                TouchpadGlide { view: recentList }
             }
         }
 
@@ -450,6 +452,8 @@ Item {
                     muted: true
                     text: page.query.length > 0 ? qsTr("No matches") : qsTr("No contacts")
                 }
+
+                TouchpadGlide { view: contactList }
             }
         }
     }
@@ -872,6 +876,8 @@ Item {
                 }
             }
         }
+
+        TouchpadGlide { view: aside }
     }
 
     // ---- A call in the log ----

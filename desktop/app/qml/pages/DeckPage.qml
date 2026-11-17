@@ -519,6 +519,8 @@ Item {
                 muted: true
             }
         }
+
+        TouchpadGlide { view: tilesView }
     }
 
     // ---- Right column: sound ----
@@ -634,6 +636,8 @@ Item {
                 onMoved: (v) => PhoneMic.setLoudness(v)
             }
         }
+
+        TouchpadGlide { view: side }
     }
 
     // A radio choice: a lavender ring, filled when chosen.

@@ -341,6 +341,8 @@ Item {
                 width: grid.cellWidth
                 current: grid.activeFocus && grid.currentIndex === index
             }
+
+            TouchpadGlide { view: grid }
         }
     }
 

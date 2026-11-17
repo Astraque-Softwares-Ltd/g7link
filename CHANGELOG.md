@@ -59,9 +59,10 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   word or maximising the window.
 - **Pictures paste where you're typing on the PC** again: shrunk to a size the
   clipboard takes, and pasted only once the PC has them.
-- **Photos on the PC scroll with the touchpad** the way GNOME's own apps do:
-  a flick keeps the grid going and slows it down, instead of stopping the
-  moment your fingers lift.
+- **The PC app scrolls with the touchpad** the way GNOME's own apps do: a
+  flick keeps a list going and slows it down, instead of stopping the moment
+  your fingers lift. Every list and page that scrolls up and down does it,
+  from Photos and Messages to Settings and the sheets.
 - **Copying a photo on the PC is quicker and says how it's going.** Copy
   spins until the photo is on the clipboard, then says Copied; Save no longer
   spins at the same time. It uses the full photo that clicking the tile

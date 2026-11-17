@@ -820,6 +820,8 @@ Item {
                 }
             }
         }
+
+        TouchpadGlide { view: listView }
     }
     Rectangle {
         anchors.left: listView.right
@@ -922,6 +924,8 @@ Item {
                 }
             }
         }
+
+        TouchpadGlide { view: article }
     }
 
     // The handbook reader: a chapter at a time, with tabs for the others.
@@ -993,6 +997,7 @@ Item {
             Divider { Layout.fillWidth: true }
 
             Flickable {
+                id: docFlick
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.min(380, docBodyText.implicitHeight + 16)
                 contentWidth: width
@@ -1008,6 +1013,8 @@ Item {
                     muted: true
                     wrapMode: Text.WordWrap
                 }
+
+                TouchpadGlide { view: docFlick }
             }
 
             RowLayout {

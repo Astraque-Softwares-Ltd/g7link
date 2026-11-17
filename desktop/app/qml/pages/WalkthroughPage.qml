@@ -119,6 +119,7 @@ FocusScope {
     }
 
     Flickable {
+        id: walkthroughFlick
         anchors.fill: parent
         anchors.topMargin: Theme.headerHeight
         anchors.bottomMargin: Theme.footerHeight
@@ -197,6 +198,8 @@ FocusScope {
                 }
             }
         }
+
+        TouchpadGlide { view: walkthroughFlick }
     }
 
     // ---- Footer ----

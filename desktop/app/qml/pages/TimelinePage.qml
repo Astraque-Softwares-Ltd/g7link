@@ -603,6 +603,8 @@ Item {
                 onClicked: TimelineModel.loadMore()
             }
         }
+
+        TouchpadGlide { view: listView }
     }
 
     PopupMenu {

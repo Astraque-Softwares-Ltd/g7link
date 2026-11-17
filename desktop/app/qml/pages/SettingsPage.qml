@@ -648,6 +648,8 @@ Item {
                 }
             }
         }
+
+        TouchpadGlide { view: sectionList }
     }
     Rectangle {
         x: sectionList.width
@@ -2792,6 +2794,8 @@ Item {
                 }
             }
         }
+
+        TouchpadGlide { view: contentFlickable }
     }
 
     Connections {
@@ -3070,6 +3074,7 @@ Item {
             }
             // A PC can have saved dozens of networks: the list scrolls.
             ListView {
+                id: networkList
                 width: parent.width
                 height: Math.min(contentHeight, 320)
                 clip: true
@@ -3090,6 +3095,8 @@ Item {
                         hotspotSheet.close()
                     }
                 }
+
+                TouchpadGlide { view: networkList }
             }
             Row {
                 anchors.right: parent.right

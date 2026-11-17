@@ -200,6 +200,7 @@ Item {
 
     // ---- No phone yet ----
     Flickable {
+        id: noPhoneFlick
         anchors.fill: parent
         visible: DeviceList.count === 0
         contentHeight: noPhone.height + 32
@@ -259,6 +260,8 @@ Item {
                 visible: AppController.localsendEnabled && page.localsendPeers.length > 0
             }
         }
+
+        TouchpadGlide { view: noPhoneFlick }
     }
 
     // ---- The phone on screen ----
@@ -1115,6 +1118,8 @@ Item {
                         }
                     }
                 }
+
+                TouchpadGlide { view: feedList }
             }
 
             // Empty: say why, and what turns it on.
@@ -1932,6 +1937,8 @@ Item {
                     }
                 }
             }
+
+            TouchpadGlide { view: sideScroll }
         }
     }
 
@@ -2139,6 +2146,7 @@ Item {
                 }
             }
             Flickable {
+                id: historyFlick
                 width: parent.width
                 height: Math.min(historyColumn.height, page.height - 260)
                 contentHeight: historyColumn.height
@@ -2164,6 +2172,8 @@ Item {
                         }
                     }
                 }
+
+                TouchpadGlide { view: historyFlick }
             }
             Txt {
                 width: parent.width
@@ -2268,6 +2278,7 @@ Item {
                 }
             }
             Flickable {
+                id: clipboardFlick
                 width: parent.width
                 height: Math.min(clipboardColumn.height, page.height - 260)
                 contentHeight: clipboardColumn.height
@@ -2411,6 +2422,8 @@ Item {
                         }
                     }
                 }
+
+                TouchpadGlide { view: clipboardFlick }
             }
             Txt {
                 width: parent.width

@@ -59,6 +59,7 @@ Sheet {
         }
 
         Flickable {
+            id: checksFlick
             width: parent.width
             height: Math.min(checksColumn.height, 360)
             contentWidth: width
@@ -154,6 +155,8 @@ Sheet {
                     }
                 }
             }
+
+            TouchpadGlide { view: checksFlick }
         }
 
         Row {

@@ -425,6 +425,8 @@ Item {
                 muted: true
                 text: page.query.length > 0 ? qsTr("No matches") : qsTr("No conversations")
             }
+
+            TouchpadGlide { view: threadList }
         }
         Rectangle {
             anchors.right: parent.right
@@ -798,6 +800,8 @@ Item {
                 muted: true
                 text: Messages.currentIsChat ? qsTr("No mirrored messages yet") : qsTr("No messages")
             }
+
+            TouchpadGlide { view: messageList }
         }
 
         // The image or voice note about to go as MMS.
@@ -1041,6 +1045,8 @@ Item {
                                     : qsTr("Text message")
                         }
                     }
+
+                    TouchpadGlide { view: inputScroll }
                 }
             }
             Button {

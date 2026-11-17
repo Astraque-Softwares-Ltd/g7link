@@ -339,6 +339,8 @@ Item {
                     }
                 }
             }
+
+            TouchpadGlide { view: resultsList }
         }
 
         Txt {

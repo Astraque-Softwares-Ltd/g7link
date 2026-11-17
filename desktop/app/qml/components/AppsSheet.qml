@@ -303,6 +303,8 @@ Sheet {
                 HoverHandler { id: hover; cursorShape: Qt.PointingHandCursor }
                 TapHandler { id: tap; onTapped: sheet.launch(cell.modelData) }
             }
+
+            TouchpadGlide { view: grid }
         }
     }
 }

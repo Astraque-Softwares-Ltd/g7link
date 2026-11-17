@@ -85,6 +85,7 @@ Item {
         clip: true
 
         Flickable {
+            id: bodyFlick
             anchors.fill: parent
             anchors.margins: sheet.inset
             contentWidth: width
@@ -97,6 +98,8 @@ Item {
                 width: parent.width
                 height: childrenRect.height
             }
+
+            TouchpadGlide { view: bodyFlick }
         }
     }
 

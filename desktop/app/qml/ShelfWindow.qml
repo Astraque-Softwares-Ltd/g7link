@@ -1052,6 +1052,8 @@ Window {
                         }
                     }
                 }
+
+                TouchpadGlide { view: contentFlick }
             }
 
             // ---- The drop zone, which becomes the 3-second "Sending… Undo" bar ----

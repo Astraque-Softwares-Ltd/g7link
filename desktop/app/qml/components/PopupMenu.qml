@@ -167,6 +167,8 @@ Item {
                             color: Theme.accent
                         }
                     }
+
+                    TouchpadGlide { view: list }
                 }
                 Txt {
                     visible: menu.shown.length === 0
