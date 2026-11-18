@@ -13,7 +13,10 @@ pub use g7link_protocol::messages::{
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
-    messages::{RemoteTextFocus, RemoteTextState, RemoteTextWatch, StreamHeader, remote, types},
+    messages::{
+        RemoteAppIcon, RemoteAppIconData, RemoteTextFocus, RemoteTextState, RemoteTextWatch, StreamHeader,
+        is_icon_key, remote, types,
+    },
     read_frame, write_frame,
 };
 use iroh::endpoint::{RecvStream, SendStream};
@@ -28,6 +31,13 @@ pub const INPUT_INJECT: &str = "input.inject";
 /// and tells watching phones about its focused text field
 /// (`remote.text_watch`, `remote.text_state`).
 pub const INPUT_TEXT_MIRROR: &str = "input.text_mirror";
+
+/// Capability ID announced by a desktop that names the focused app's icon in
+/// its text states and serves it (`remote.app_icon`).
+pub const INPUT_APP_ICON: &str = "input.app_icon";
+
+/// Most app icons a PC keeps to serve.
+const KEPT_ICONS: usize = 32;
 
 /// Per-device toggle name on the PC (off by default).
 pub(crate) const TOGGLE: &str = "remote_input";
@@ -103,6 +113,8 @@ pub(crate) struct RemoteState {
     /// Peers that already triggered the one-time prompt while `remote_input`
     /// was off.
     prompted: HashSet<DeviceId>,
+    /// PC: app icons named in text states, by key, oldest first.
+    icons: Vec<(String, Arc<Vec<u8>>)>,
 }
 
 impl RemoteState {
@@ -118,6 +130,19 @@ impl RemoteState {
     /// Returns `true` the first time for that peer.
     pub fn mark_prompted(&mut self, peer: DeviceId) -> bool {
         self.prompted.insert(peer)
+    }
+
+    /// Keeps `png` to serve as `key`, dropping the oldest past [`KEPT_ICONS`].
+    pub fn keep_icon(&mut self, key: String, png: Vec<u8>) {
+        self.icons.retain(|(k, _)| *k != key);
+        self.icons.push((key, Arc::new(png)));
+        if self.icons.len() > KEPT_ICONS {
+            self.icons.remove(0);
+        }
+    }
+
+    pub fn icon(&self, key: &str) -> Option<Arc<Vec<u8>>> {
+        self.icons.iter().find(|(k, _)| k == key).map(|(_, png)| png.clone())
     }
 
     pub fn remove_peer(&mut self, peer: &DeviceId) {
@@ -211,6 +236,52 @@ pub(crate) async fn text_watch(shared: &Shared, session: &Session, on: bool) -> 
 /// Phone: whether the PC `peer` mirrors its text fields and takes `Edit`.
 pub(crate) fn mirrors_text(shared: &Shared, peer: &DeviceId) -> bool {
     peer_offers(shared, peer, INPUT_TEXT_MIRROR).unwrap_or(false)
+}
+
+/// PC: keeps an app icon to serve phones under `key` (named in text states).
+pub(crate) fn keep_app_icon(shared: &Shared, key: String, png: Vec<u8>) -> Result<()> {
+    let icon = RemoteAppIconData { png };
+    if !is_icon_key(&key) || !icon.is_valid() {
+        return Err(Error::Protocol("invalid app icon".into()));
+    }
+    shared.remote.lock().unwrap_or_else(|e| e.into_inner()).keep_icon(key, icon.png);
+    Ok(())
+}
+
+/// Phone: fetches the app icon `key` a text state from the PC named, as a PNG.
+pub(crate) async fn app_icon(shared: &Shared, session: &Session, key: String) -> Result<Vec<u8>> {
+    if !peer_offers(shared, &session.peer, INPUT_APP_ICON)? {
+        return Err(Error::Unsupported);
+    }
+    if !is_icon_key(&key) {
+        return Err(Error::Protocol("invalid app icon key".into()));
+    }
+    let reply =
+        session.request(Envelope::new(types::REMOTE_APP_ICON, &RemoteAppIcon { key })?, TIMEOUT).await?;
+    let icon: RemoteAppIconData = reply.expect_body(types::REMOTE_APP_ICON)?;
+    if !icon.is_valid() {
+        return Err(Error::Protocol("invalid app icon".into()));
+    }
+    Ok(icon.png)
+}
+
+/// PC: answers `remote.app_icon` for a phone that may control this PC.
+fn serve_app_icon(shared: &Shared, peer: &DeviceId, env: &Envelope) -> Envelope {
+    if !shared.we_offer(INPUT_APP_ICON) {
+        return Envelope::error(ErrorCode::Unsupported, "no app icons");
+    }
+    if let Err((code, msg)) = check_allowed(shared, peer) {
+        return Envelope::error(code, msg);
+    }
+    let Ok(RemoteAppIcon { key }) = env.body::<RemoteAppIcon>() else {
+        return Envelope::error(ErrorCode::BadMessage, "invalid app icon request");
+    };
+    let png = shared.remote.lock().unwrap_or_else(|e| e.into_inner()).icon(&key);
+    match png {
+        Some(png) => Envelope::new(types::REMOTE_APP_ICON, &RemoteAppIconData { png: png.to_vec() })
+            .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "app icon")),
+        None => Envelope::error(ErrorCode::NotFound, "no such app icon"),
+    }
 }
 
 /// Sends a remote input event to `peer` (a PC).
@@ -350,6 +421,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     }
     let reply = match env.t.as_str() {
         types::REMOTE_CHECK => run_check(shared, &session.peer),
+        types::REMOTE_APP_ICON => serve_app_icon(shared, &session.peer, env),
         types::REMOTE_INPUT => match env.body::<RemoteInput>() {
             Ok(event) => run_control(shared, session.peer, event).await,
             Err(_) => Envelope::error(ErrorCode::BadMessage, "invalid remote input"),

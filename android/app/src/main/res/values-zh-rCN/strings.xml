@@ -327,6 +327,8 @@
     <string name="remote_type_placeholder">在 %1$s 上输入…</string>
     <string name="remote_field_secret">密码框</string>
     <string name="remote_field_none">%1$s 上没有可输入文字的地方</string>
+    <string name="remote_field_may_differ">%1$s 上可能不同</string>
+    <string name="remote_field_start_afresh">重新开始</string>
     <string name="remote_image_not_pasted">%1$s 没能接收这张图片。G7 Linux 的 GNOME 扩展开着吗？</string>
     <string name="remote_attachment_remove">移除 %1$s</string>
     <string name="remote_paste_image">在 %1$s 上粘贴图片</string>

@@ -161,7 +161,8 @@ pub use palette::{RolePalette, ThemeScheme, extract_artwork_scheme_rgba};
 pub use pc_capture::{CapturePrompt, PcCaptureError, PcCaptureRecordEnded, PcCaptureResult};
 pub use play_on_phone::PlayOnPhone;
 pub use remote::{
-    ButtonAction, INPUT_INJECT, INPUT_TEXT_MIRROR, KeyMod, MouseButton, RemoteInput, SlideAction, remote_keys,
+    ButtonAction, INPUT_APP_ICON, INPUT_INJECT, INPUT_TEXT_MIRROR, KeyMod, MouseButton, RemoteInput,
+    SlideAction, remote_keys,
 };
 pub use session::is_lan_ip;
 pub use storage::{FolderStorage, StorageError, StorageReadFile, TOGGLE as STORAGE_TOGGLE};

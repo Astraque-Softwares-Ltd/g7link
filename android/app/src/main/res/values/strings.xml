@@ -342,6 +342,8 @@
     <string name="remote_type_placeholder">Type on %1$s…</string>
     <string name="remote_field_secret">Password field</string>
     <string name="remote_field_none">Nothing takes text on %1$s</string>
+    <string name="remote_field_may_differ">May differ on %1$s</string>
+    <string name="remote_field_start_afresh">Start afresh</string>
     <string name="remote_image_not_pasted">%1$s couldn\'t take the picture. Is G7 Linux\'s GNOME extension on?</string>
     <string name="remote_attachment_remove">Remove %1$s</string>
     <string name="remote_field_label" translatable="false">%1$s · %2$s</string>

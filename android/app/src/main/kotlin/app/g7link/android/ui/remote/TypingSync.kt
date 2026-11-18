@@ -33,6 +33,8 @@ internal data class PcField(
     val before: String,
     val after: String,
     val anchor: Int?,
+    /** The app's icon, to fetch from the PC by this key. */
+    val icon: String?,
 )
 
 /** One change for the PC's focused field, sent one at a time, in order. */
@@ -80,8 +82,9 @@ internal data class BoxText(
  * Keeps the phone's typing box and the PC's focused field the same.
  *
  * What the PC has is [shadow]: in a mirrored field, the text the PC sent
- * (around its caret); elsewhere, what this phone typed there since the PC
- * last had reason to doubt it. A change in the box goes out as one [TypingOp]
+ * (around its caret); elsewhere, what this phone typed there, never erased
+ * on its own: when the PC or a click from here gives reason to doubt it, it
+ * stays, [unverified]. A change in the box goes out as one [TypingOp]
  * at a time (changes made while one is on its way join the next), worked
  * out from the shadow by common prefix and suffix, so an edit in the middle
  * doesn't retype the rest. The PC's own changes come back as [PcField]s; one
@@ -106,6 +109,14 @@ internal class TypingSync(
         private set
 
     val kind: FieldKind get() = current?.kind ?: FieldKind.None
+
+    /**
+     * What's in the box may not be what the PC's field has: someone at the PC,
+     * or a click or key from here, may have changed a field whose text it
+     * doesn't share. Edits then go where the PC's caret is.
+     */
+    var unverified = false
+        private set
 
     /** Everything in the box has reached the PC (or can't, until it changes). */
     val synced: Boolean get() = inFlight == null && (box.text == shadow || blocked)
@@ -152,7 +163,8 @@ internal class TypingSync(
             val start = windowStart + shadow.codePointCount(0, prefix)
             op = TypingOp.Edit(focus, seq, start, start + removed.codePointCount(0, removed.length), 0, 0, added)
         } else {
-            val moves = graphemesBetween(shadow, shadowCaret, editEnd)
+            // Unverified, the PC's caret may be anywhere: keys go where it is, as a keyboard's would.
+            val moves = if (unverified) 0 else graphemesBetween(shadow, shadowCaret, editEnd)
             if (kotlin.math.abs(moves) > MAX_STEPS) {
                 // Too far back to reach with the arrow keys: start afresh here.
                 commit()
@@ -241,9 +253,11 @@ internal class TypingSync(
                 pendingAt = clock()
                 tick()
             }
-            FieldKind.Opaque, FieldKind.Secret, FieldKind.None ->
+            FieldKind.Opaque ->
+                // Someone at the PC typed or clicked: what was typed here may not all be there.
+                if (previous != null && state.epoch != previous.epoch) unverified = true
+            FieldKind.Secret, FieldKind.None ->
                 if (previous != null && state.epoch != previous.epoch) {
-                    // Someone at the PC typed or clicked: what was typed here may not be there.
                     drafts.remove(state.field)
                     commit()
                 }
@@ -266,19 +280,20 @@ internal class TypingSync(
         return true
     }
 
-    /** The phone moved the PC's caret or focus (a click, an arrow, a paste). */
+    /** The phone moved the PC's caret or focus (a click, an arrow, a paste): what's typed stays, unverified. */
     fun onPcCaretMoved() {
+        if (current != null && kind != FieldKind.Mirror) unverified = true
+    }
+
+    /** The user chose to start afresh: what was typed stays on the PC, and the box empties. */
+    fun startAfresh() {
         if (kind == FieldKind.Mirror) return
         current?.let { if (it.field != 0L) drafts.remove(it.field) }
         commit()
     }
 
     /** Send was pressed: the PC took what was typed. */
-    fun onSent() {
-        if (kind == FieldKind.Mirror) return
-        current?.let { if (it.field != 0L) drafts.remove(it.field) }
-        commit()
-    }
+    fun onSent() = startAfresh()
 
     /** The typing box closed, or the PC went away: keeps the draft, forgets the PC's text. */
     fun close() {
@@ -287,6 +302,7 @@ internal class TypingSync(
         focus = 0
         pending = null
         inFlight = null
+        unverified = false
         replace(BoxText(""), shadowToo = true)
     }
 
@@ -296,12 +312,15 @@ internal class TypingSync(
         current = state
         pending = null
         blocked = false
+        unverified = false
         when (state.kind) {
             FieldKind.Mirror -> adopt(state)
             FieldKind.Opaque -> {
+                // What was typed here comes back, unverified when the PC doubted it meanwhile.
                 val draft = if (state.field != 0L) drafts.take(state.field, state.epoch) else null
                 windowStart = 0
-                replace(BoxText(draft ?: ""), shadowToo = true)
+                unverified = draft?.unverified == true
+                replace(BoxText(draft?.text.orEmpty()), shadowToo = true)
             }
             FieldKind.Secret, FieldKind.None -> {
                 windowStart = 0
@@ -313,7 +332,7 @@ internal class TypingSync(
     private fun saveDraft() {
         val field = current ?: return
         if (field.kind == FieldKind.Opaque && field.field != 0L && box.text.isNotEmpty()) {
-            drafts.put(field.field, field.epoch, box.text)
+            drafts.put(field.field, field.epoch, box.text, unverified)
         }
     }
 
@@ -323,11 +342,13 @@ internal class TypingSync(
         val anchor = state.anchor?.let { utf16Index(text, it - state.start) } ?: caret
         windowStart = state.start
         pending = null
+        unverified = false
         replace(BoxText(text, anchor, caret), shadowToo = true)
     }
 
     /** What's in the box stays on the PC; the box starts empty. */
     private fun commit() {
+        unverified = false
         replace(BoxText(""), shadowToo = true)
     }
 
@@ -433,20 +454,24 @@ internal class TypingSync(
  * [MAX_CHARS] each, forgotten [TTL_MS] after leaving.
  */
 internal class FieldDrafts(private val clock: () -> Long = System::currentTimeMillis) {
-    private data class Draft(val epoch: Int, val text: String, val at: Long)
+    /** A field's draft: [unverified] when the PC may have changed the field since it was typed. */
+    data class Draft(val text: String, val unverified: Boolean)
 
-    private val drafts = LinkedHashMap<Long, Draft>()
+    private data class Kept(val epoch: Int, val draft: Draft, val at: Long)
 
-    fun put(field: Long, epoch: Int, text: String) {
+    private val drafts = LinkedHashMap<Long, Kept>()
+
+    fun put(field: Long, epoch: Int, text: String, unverified: Boolean = false) {
         drafts.remove(field)
-        drafts[field] = Draft(epoch, text.takeLast(MAX_CHARS), clock())
+        drafts[field] = Kept(epoch, Draft(text.takeLast(MAX_CHARS), unverified), clock())
         while (drafts.size > MAX_FIELDS) drafts.remove(drafts.keys.first())
     }
 
-    /** The draft for [field], when the PC hasn't doubted it since ([epoch]). */
-    fun take(field: Long, epoch: Int): String? {
-        val draft = drafts.remove(field) ?: return null
-        return draft.text.takeIf { draft.epoch == epoch && clock() - draft.at <= TTL_MS }
+    /** The draft for [field], unverified when the PC has doubted the field since ([epoch]). */
+    fun take(field: Long, epoch: Int): Draft? {
+        val kept = drafts.remove(field) ?: return null
+        if (clock() - kept.at > TTL_MS) return null
+        return if (kept.epoch == epoch) kept.draft else kept.draft.copy(unverified = true)
     }
 
     fun remove(field: Long) {

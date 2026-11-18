@@ -79,6 +79,10 @@ pub mod ffi {
         /// Image bytes (PNG, JPEG...) as a compressed PNG; empty when they don't
         /// decode. `fast` compresses less, in about half the time.
         fn encode_png(bytes: &[u8], fast: bool) -> Vec<u8>;
+        /// An app's icon (a theme name, or an absolute path) as a PNG of at
+        /// most `edge` pixels a side, drawn on the GUI thread; empty when
+        /// there's none or it couldn't be drawn. Any thread.
+        fn app_icon_png(icon: &str, edge: u32) -> Vec<u8>;
         /// Whether one of this app's windows has the focus.
         fn app_window_active() -> bool;
 

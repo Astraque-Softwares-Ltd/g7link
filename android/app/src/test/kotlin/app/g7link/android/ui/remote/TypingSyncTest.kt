@@ -2,6 +2,7 @@
 package app.g7link.android.ui.remote
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,7 +23,7 @@ class TypingSyncTest {
         epoch: Int = 0,
         start: Int = 0,
         anchor: Int? = null,
-    ) = PcField(focus, field, epoch, applied, kind, "App", null, false, false, start, before, after, anchor)
+    ) = PcField(focus, field, epoch, applied, kind, "App", null, false, false, start, before, after, anchor, null)
 
     /** Types [text] at the end of the box, the way a keyboard commits it. */
     private fun TypingSync.type(text: String) {
@@ -168,37 +169,154 @@ class TypingSyncTest {
     }
 
     @Test
-    fun aDraftTheLaptopCastDoubtOnIsDropped() {
+    fun aFieldTheLaptopCastDoubtOnKeepsItsTextUnverified() {
         val sync = sync()
         sync.onState(field(1, FieldKind.Opaque, field = 100))
         sync.type("typed here")
         sync.sendAndAck()
         sync.onState(field(1, FieldKind.Opaque, field = 100, epoch = 1))
-        assertEquals("", sync.box.text)
-        sync.type("x")
+        assertEquals("the box keeps what was typed", "typed here", sync.box.text)
+        assertTrue("but it may differ on the PC", sync.unverified)
+        sync.type("!")
+        sync.sendAndAck()
         sync.onState(field(2, FieldKind.None, field = 0))
         sync.onState(field(3, FieldKind.Opaque, field = 100, epoch = 2))
-        assertEquals("the draft was from before the doubt", "", sync.box.text)
+        assertEquals("the draft comes back", "typed here!", sync.box.text)
+        assertTrue("still unverified", sync.unverified)
     }
 
     @Test
-    fun passwordsAndClicksLeaveNoDraft() {
+    fun aClickKeepsTheBoxAndTheDraft() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Opaque, field = 200))
+        sync.type("draft")
+        sync.sendAndAck()
+        sync.onPcCaretMoved()
+        assertEquals("a click keeps the box", "draft", sync.box.text)
+        assertTrue("a click may have moved the PC's caret", sync.unverified)
+        // The click took the focus to another field.
+        sync.onState(field(2, FieldKind.Opaque, field = 300))
+        assertEquals("another field starts empty", "", sync.box.text)
+        assertFalse("and nothing to doubt", sync.unverified)
+        sync.onState(field(3, FieldKind.Opaque, field = 200))
+        assertEquals("back: the draft is there", "draft", sync.box.text)
+        assertTrue("as unverified as it was left", sync.unverified)
+    }
+
+    @Test
+    fun passwordsLeaveNoDraft() {
         val sync = sync()
         sync.onState(field(1, FieldKind.Secret, field = 100))
         sync.type("hunter2")
         sync.sendAndAck()
+        sync.onPcCaretMoved()
         sync.onState(field(2, FieldKind.Opaque, field = 200))
         sync.onState(field(3, FieldKind.Secret, field = 100))
         assertEquals("", sync.box.text)
+    }
 
+    @Test
+    fun goingBackAndForthRestoresEachField() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Opaque, field = 100))
+        sync.type("to chrome")
+        sync.sendAndAck()
+        sync.onState(field(2, FieldKind.Opaque, field = 200))
+        sync.type("to slack")
+        sync.sendAndAck()
+        sync.onState(field(3, FieldKind.Opaque, field = 100))
+        assertEquals("to chrome", sync.box.text)
+        assertFalse("nothing cast doubt on it", sync.unverified)
         sync.onState(field(4, FieldKind.Opaque, field = 200))
+        assertEquals("to slack", sync.box.text)
+        assertFalse(sync.unverified)
+    }
+
+    @Test
+    fun goingBackAndForthRestoresEachFieldTheLaptopDoubted() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Opaque, field = 100))
+        sync.type("to chrome")
+        sync.sendAndAck()
+        sync.onState(field(2, FieldKind.Opaque, field = 200))
+        sync.type("to slack")
+        sync.sendAndAck()
+        // Someone typed at the laptop, in this field and, meanwhile, in the first.
+        sync.onState(field(2, FieldKind.Opaque, field = 200, epoch = 1))
+        sync.onState(field(3, FieldKind.Opaque, field = 100, epoch = 1))
+        assertEquals("to chrome", sync.box.text)
+        assertTrue("its epoch changed while away", sync.unverified)
+        sync.onState(field(4, FieldKind.Opaque, field = 200, epoch = 1))
+        assertEquals("to slack", sync.box.text)
+        assertTrue("it was doubted before leaving", sync.unverified)
+    }
+
+    @Test
+    fun whileUnverifiedKeysGoWhereThePcsCaretIs() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Opaque, field = 100))
+        sync.type("teh cat sat")
+        sync.sendAndAck()
+        sync.onPcCaretMoved()
+        // The keyboard corrects "teh": no arrows, as the PC's caret may be anywhere.
+        sync.onLocal(BoxText("the cat sat", 3, 3))
+        assertEquals(TypingOp.Edit(1, 2, null, null, 0, 2, "he"), sync.sendAndAck())
+        sync.onLocal(BoxText("the cat sat!", 12, 12))
+        assertEquals(TypingOp.Edit(1, 3, null, null, 0, 0, "!"), sync.sendAndAck())
+    }
+
+    @Test
+    fun startingAfreshOrSendingClearsTheDoubt() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Opaque, field = 100))
+        sync.type("hello")
+        sync.sendAndAck()
+        sync.onPcCaretMoved()
+        sync.startAfresh()
+        assertEquals("the box empties", "", sync.box.text)
+        assertFalse("starting afresh", sync.unverified)
+        sync.type("again")
+        sync.sendAndAck()
+        sync.onState(field(1, FieldKind.Opaque, field = 100, epoch = 1))
+        assertTrue(sync.unverified)
+        sync.onSent()
+        assertEquals("sent", "", sync.box.text)
+        assertFalse("sending", sync.unverified)
+        sync.onState(field(2, FieldKind.None, field = 0))
+        sync.onState(field(3, FieldKind.Opaque, field = 100, epoch = 1))
+        assertEquals("nothing was kept", "", sync.box.text)
+    }
+
+    @Test
+    fun aMomentWithNothingFocusedKeepsTheDraft() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Opaque, field = 100))
+        sync.type("half a thought")
+        sync.sendAndAck()
+        sync.onState(field(2, FieldKind.None, field = 0))
+        assertEquals("nothing takes text", "", sync.box.text)
+        sync.onState(field(3, FieldKind.Opaque, field = 100))
+        assertEquals("half a thought", sync.box.text)
+        assertFalse(sync.unverified)
+    }
+
+    @Test
+    fun aMirroredFieldsTextAndSelectionComeAtOnce() {
+        val sync = sync()
+        var shown: BoxText? = null
+        sync.onReplace = { shown = it }
+        sync.onState(field(1, FieldKind.Opaque, field = 100))
         sync.type("draft")
         sync.sendAndAck()
         sync.onPcCaretMoved()
-        assertEquals("a click moved the PC's caret: start afresh", "", sync.box.text)
-        sync.onState(field(5, FieldKind.None, field = 0))
-        sync.onState(field(6, FieldKind.Opaque, field = 200))
-        assertEquals("", sync.box.text)
+        val mirrored = field(2, FieldKind.Mirror, before = "Dear Sam, ", after = "thanks", anchor = 5, field = 200)
+        sync.onState(mirrored)
+        assertEquals("selected from 5 to the caret", BoxText("Dear Sam, thanks", 5, 10), shown)
+        assertEquals(BoxText("Dear Sam, thanks", 5, 10), sync.box)
+        assertFalse("a mirrored field is never unverified", sync.unverified)
+        sync.onPcCaretMoved()
+        sync.onState(mirrored.copy(epoch = 1))
+        assertFalse("not even after a click or a doubt", sync.unverified)
     }
 
     @Test
@@ -215,11 +333,21 @@ class TypingSyncTest {
     fun draftsAreBoundedAndExpire() {
         repeat(FieldDrafts.MAX_FIELDS + 1) { drafts.put(it.toLong(), 0, "x$it") }
         assertNull("the oldest went", drafts.take(0, 0))
-        assertEquals("x1", drafts.take(1, 0))
+        assertEquals("x1", drafts.take(1, 0)?.text)
         drafts.put(50, 0, "y".repeat(FieldDrafts.MAX_CHARS + 5))
-        assertEquals(FieldDrafts.MAX_CHARS, drafts.take(50, 0)?.length)
+        assertEquals(FieldDrafts.MAX_CHARS, drafts.take(50, 0)?.text?.length)
         drafts.put(60, 0, "old")
         now += FieldDrafts.TTL_MS + 1
         assertNull(drafts.take(60, 0))
+    }
+
+    @Test
+    fun aDraftComesBackWhateverTheEpoch() {
+        drafts.put(1, 0, "same")
+        assertEquals(FieldDrafts.Draft("same", unverified = false), drafts.take(1, 0))
+        drafts.put(2, 0, "doubted since")
+        assertEquals("unverified", FieldDrafts.Draft("doubted since", unverified = true), drafts.take(2, 1))
+        drafts.put(3, 0, "left unverified", unverified = true)
+        assertEquals("still unverified", FieldDrafts.Draft("left unverified", unverified = true), drafts.take(3, 0))
     }
 }

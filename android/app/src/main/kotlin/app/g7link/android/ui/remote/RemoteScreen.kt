@@ -1014,7 +1014,13 @@ private fun TouchpadView(
     val typing = remember(pcId) { TypingSync(FieldDrafts.of(pcId)) }
     val sendTyping = remember(pcId) { Channel<Unit>(Channel.CONFLATED) }
     var pcField by remember(pcId) { mutableStateOf<PcField?>(null) }
+    var pcUnverified by remember(pcId) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    /** The bubble follows what [typing] knows of the PC's field. */
+    fun showField() {
+        pcField = typing.current
+        pcUnverified = typing.unverified
+    }
     DisposableEffect(typing) {
         typing.onReplace = { box -> typed = TextFieldValue(box.text, TextRange(box.selStart, box.selEnd)) }
         onDispose { typing.onReplace = null }
@@ -1026,7 +1032,7 @@ private fun TouchpadView(
             if (showKeyboard) {
                 core.remoteTextWatch(pcId, false)
                 typing.close()
-                pcField = null
+                showField()
             }
         }
     }
@@ -1036,7 +1042,7 @@ private fun TouchpadView(
     LaunchedEffect(typing, pcState) {
         val state = pcState ?: return@LaunchedEffect
         typing.onState(state.toPcField())
-        pcField = typing.current
+        showField()
         sendTyping.trySend(Unit)
     }
     // One change at a time, each worked out from what the PC has.
@@ -1056,9 +1062,14 @@ private fun TouchpadView(
             if (typing.tick()) sendTyping.trySend(Unit)
         }
     }
-    // A click or key from here moved the PC's caret: a draft no longer matches.
+    // A click or key from here moved the PC's caret: what's in the box may no longer match.
     LaunchedEffect(core, typing) {
-        core.pcCaretMoved.collect { id -> if (id == pcId) typing.onPcCaretMoved() }
+        core.pcCaretMoved.collect { id ->
+            if (id == pcId) {
+                typing.onPcCaretMoved()
+                showField()
+            }
+        }
     }
     /** Waits (briefly) until everything typed has reached the PC, then runs [then]. */
     fun afterTyping(then: () -> Unit) {
@@ -1265,6 +1276,11 @@ private fun TouchpadView(
                 onStatus = onStatus,
                 typed = typed,
                 field = pcField,
+                unverified = pcUnverified,
+                onStartAfresh = {
+                    typing.startAfresh()
+                    showField()
+                },
                 onTyped = { next ->
                     val diff = typingDiff(typed.text, next.text)
                     if (activeMods.isNotEmpty() && diff.backspaces == 0 && diff.added.length == 1 &&
@@ -1285,6 +1301,7 @@ private fun TouchpadView(
                         afterTyping {
                             core.remoteKey(pcId, "enter", mods, onStatus)
                             typing.onSent()
+                            showField()
                         }
                         return@TypingComposer
                     }
@@ -1326,6 +1343,7 @@ private fun TouchpadView(
                             if (typed.text.isNotEmpty() && failed.isEmpty()) {
                                 core.remoteKey(pcId, "enter", mods, onStatus)
                                 typing.onSent()
+                                showField()
                             }
                         }
                     }
@@ -2016,6 +2034,8 @@ private fun TypingComposer(
     onStatus: (Core.RemoteAccess) -> Unit,
     typed: TextFieldValue,
     field: PcField?,
+    unverified: Boolean,
+    onStartAfresh: () -> Unit,
     attachments: List<Attachment>,
     onRemoveAttachment: (Attachment) -> Unit,
     onTyped: (TextFieldValue) -> Unit,
@@ -2044,7 +2064,13 @@ private fun TypingComposer(
     val pillShape = RoundedCornerShape(24.dp)
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        FieldBubble(field, pcName)
+        FieldBubble(
+            field = field,
+            pcName = pcName,
+            unverified = unverified,
+            onStartAfresh = onStartAfresh,
+            loadIcon = { key -> core.pcAppIcon(pcId, key) },
+        )
         if (attachments.isNotEmpty()) {
             AttachmentTray(attachments, onRemoveAttachment, Modifier.padding(bottom = 4.dp))
         }

@@ -3,6 +3,7 @@
 
 #![allow(unsafe_code)]
 
+pub mod app_entry;
 pub mod audio;
 pub mod audio_out;
 pub mod autostart;
@@ -27,6 +28,7 @@ pub mod keymap;
 pub mod media_sessions;
 pub mod mp4;
 pub mod net;
+pub mod rich_text;
 pub mod share_target;
 pub mod shell;
 pub mod shell_clipboard;

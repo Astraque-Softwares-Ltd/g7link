@@ -59,6 +59,19 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   word or maximising the window.
 - **Pictures paste where you're typing on the PC** again: shrunk to a size the
   clipboard takes, and pasted only once the PC has them.
+- **The typing box keeps what you typed.** It no longer empties itself while
+  you pause, after a tap on the touchpad, or when you switch apps and come
+  back. Where the laptop can't read a field, what you typed stays, with a note
+  when it may differ there and a button to start afresh.
+- **Chrome and Electron apps share their text fields** (Claude, VS Code,
+  Slack, web pages) while you type from the phone, so the box shows what's
+  already in them, multi-paragraph prompts included. The PC asks each app once,
+  only when the phone types into it; Settings › General, "Show browser fields
+  on the phone", turns it off.
+- **The bubble over the typing box shows the app's icon,** with the field's
+  name only when it adds something ("Claude · Claude" is gone), and no longer
+  crowds the keys above it. It follows the window you're in, not another
+  app's focus.
 - **The PC app scrolls with the touchpad** the way GNOME's own apps do: a
   flick keeps a list going and slows it down, instead of stopping the moment
   your fingers lift. Every list and page that scrolls up and down does it,

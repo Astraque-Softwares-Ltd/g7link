@@ -82,6 +82,9 @@ pub struct TextFieldState {
     pub anchor: Option<u32>,
     pub more_before: bool,
     pub more_after: bool,
+    /// The focused app's icon, to fetch with `remote_app_icon` (cache by it:
+    /// a changed icon has another key).
+    pub icon: Option<String>,
 }
 
 /// Never prints the field's text or label.
@@ -114,6 +117,7 @@ impl From<core::RemoteTextState> for TextFieldState {
             anchor: state.anchor,
             more_before: state.more_before,
             more_after: state.more_after,
+            icon: state.icon,
         }
     }
 }
@@ -4541,6 +4545,14 @@ impl G7LinkNode {
     /// Whether PC `id` mirrors its focused text field and takes `remote_edit`.
     pub fn remote_mirrors_text(&self, id: String) -> bool {
         parse_id(&id).is_ok_and(|id| self.node.remote_mirrors_text(&id))
+    }
+
+    /// The app icon `key` that a `TextFieldState.icon` from PC `id` named, as
+    /// a PNG of at most 16 KiB (untrusted: decode it with bounds).
+    pub async fn remote_app_icon(&self, id: String, key: String) -> Result<Vec<u8>> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.remote_app_icon(id, key).await?) }).await
     }
 
     /// Tells PC `id` the typing box opened (`on`) or closed: while open, it

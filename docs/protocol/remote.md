@@ -94,7 +94,10 @@ TextState = { focus: u32, field?: u64, epoch?: u32, rev: u32, applied: u32,
               kind: "mirror" | "opaque" | "secret" | "none",
               app?: text, label?: text, window?: bool, multiline?: bool,
               start?: u32, before?: text, after?: text, anchor?: u32,
-              more_before?: bool, more_after?: bool }
+              more_before?: bool, more_after?: bool, icon?: text }
+
+t = "remote.app_icon"    b = { key: text }                       (phone → PC)
+  → t = "remote.app_icon"  b = { png: bytes }
 ```
 
 A PC that offers `input.text_mirror` keeps a phone's typing box and its
@@ -107,7 +110,9 @@ caret changes. Neither has a reply.
   focus comes back to one field (0 when the PC can't tell), and means nothing
   off the PC. `epoch` changes when someone used the PC's own keyboard or mouse
   in a field whose text isn't shared, so what a phone typed there may not be
-  there any more.
+  there any more. A phone keeps what it typed and marks it as possibly out of
+  date; it never empties its box for that alone. Input the PC is typing for a
+  phone, and for 400 ms after, never changes the epoch.
 - `mirror`: the PC reads the field (AT-SPI). `before` and `after` are the text
   around the caret (at most 4096 and 1024 UTF-8 bytes), `start` is where
   `before` starts and `anchor` where a selection starts; offsets count Unicode
@@ -118,6 +123,17 @@ caret changes. Neither has a reply.
   are never logged.
 - `applied` is the last `edit` or `caret` `seq` from that phone that ran
   before the state was read.
+- A rich field (a browser's contenteditable, whose text holds U+FFFC for
+  each paragraph) is `mirror` with its paragraphs as lines joined by `\n`;
+  offsets count in that text. A range across paragraphs may not be
+  selectable: the PC then moves there with the arrow keys.
+- When a field is found in a window that stood for it until then (`window`),
+  an `edit` carrying the window's `focus` still runs for 2 s.
+- `icon` (PCs that also offer `input.app_icon`): the focused app's icon, 16
+  lowercase hex characters. The phone fetches it with `remote.app_icon` and
+  caches it by that key; a changed icon has another key. The reply is a PNG of
+  at most 16 KiB (`NOT_FOUND` for a key the PC no longer has), only for a
+  phone that has `remote_input`. Without an icon, the phone shows `app`.
 
 ## 3. Input payloads
 

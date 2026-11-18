@@ -479,6 +479,10 @@ pub struct Settings {
     /// Connect a call's audio to this PC over Bluetooth when it rings.
     #[serde(default, alias = "auto_call_audio")]
     pub auto_call_audio: bool,
+    /// While a phone's typing box is open, ask Chrome and Electron apps to
+    /// publish their text fields, so the box shows what's in them.
+    #[serde(default = "default_true")]
+    pub read_browser_text: bool,
     /// The app's language: a locale name from `i18n::LANGUAGES`, or "" for
     /// the system's.
     pub language: String,
@@ -703,6 +707,7 @@ impl Default for Settings {
             auto_copy_otp: true,
             pause_media_on_call: true,
             auto_call_audio: false,
+            read_browser_text: true,
             mute_while_watched: true,
             language: String::new(),
             sync_dnd: false,
@@ -832,6 +837,7 @@ impl Settings {
             self.window_maximized,
         );
         crate::calls::set_auto_call_audio(self.auto_call_audio);
+        crate::sys::text_focus::set_wake_chromium(self.read_browser_text);
     }
 
     /// Loads the settings, falling back to defaults if the file is missing.
@@ -992,6 +998,7 @@ mod tests {
             auto_copy_otp: true,
             pause_media_on_call: false,
             auto_call_audio: true,
+            read_browser_text: false,
             mute_while_watched: false,
             language: "zh_CN".into(),
             sync_dnd: true,

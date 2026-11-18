@@ -9,11 +9,13 @@
 //!   field it is, and for a field whose app shares its text, the text around
 //!   the caret, so the phone's box mirrors it.
 //!
-//! Apps that don't publish accessibility (some Electron builds, kitty or
-//! Alacritty) aren't seen; for those the focused window, from G7 Linux's
-//! Shell extension, is what the phone is told.
+//! Apps that don't publish accessibility (kitty, Alacritty) aren't seen; for
+//! those the focused window, from G7 Linux's Shell extension, is what the
+//! phone is told. Chromium and Electron apps publish their windows but build
+//! the rest only when asked: while a phone watches, the app that has the
+//! focus is asked once ([`wake`]), unless the user turned that off.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -22,12 +24,18 @@ use g7link_core::{RemoteTextState, TextFieldKind, remote_limits};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::field_identity::{FieldTable, StableKey};
+use super::rich_text::{self, Flat, Link, Node};
 use super::shell_windows::{self, Window};
 
 const REGISTRY: &str = "org.a11y.atspi.Registry";
 const REGISTRY_PATH: &str = "/org/a11y/atspi/registry";
 const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
 const TEXT: &str = "org.a11y.atspi.Text";
+const HYPERTEXT: &str = "org.a11y.atspi.Hypertext";
+const HYPERLINK: &str = "org.a11y.atspi.Hyperlink";
+const APPLICATION: &str = "org.a11y.atspi.Application";
+const DOCUMENT: &str = "org.a11y.atspi.Document";
+const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const OBJECT_EVENTS: &str = "org.a11y.atspi.Event.Object";
 const FOCUS_EVENT: &str = "object:state-changed:focused";
@@ -35,14 +43,25 @@ const FOCUS_EVENT: &str = "object:state-changed:focused";
 const TEXT_EVENTS: [&str; 3] =
     ["object:text-changed", "object:text-caret-moved", "object:text-selection-changed"];
 const TEXT_MEMBERS: [&str; 3] = ["TextChanged", "TextCaretMoved", "TextSelectionChanged"];
-/// `ATSPI_STATE_EDITABLE` and `ATSPI_STATE_MULTI_LINE`.
+/// `ATSPI_STATE_*` used here.
+const STATE_ACTIVE: u32 = 1;
 const STATE_EDITABLE: u32 = 7;
+const STATE_FOCUSED: u32 = 12;
 const STATE_MULTI_LINE: u32 = 17;
+const STATE_SHOWING: u32 = 25;
 /// `ATSPI_ROLE_PASSWORD_TEXT`, `ATSPI_ROLE_TERMINAL` (VTE terminals such as
-/// GNOME Terminal and Ptyxis publish it) and `ATSPI_ROLE_PARAGRAPH`.
+/// GNOME Terminal and Ptyxis publish it), `ATSPI_ROLE_PARAGRAPH`,
+/// `ATSPI_ROLE_APPLICATION` and `ATSPI_ROLE_DOCUMENT_WEB`.
 const ROLE_PASSWORD_TEXT: u32 = 40;
 const ROLE_TERMINAL: u32 = 60;
 const ROLE_PARAGRAPH: u32 = 73;
+const ROLE_APPLICATION: u32 = 75;
+const ROLE_DOCUMENT_WEB: u32 = 95;
+/// Roles that start a line of their own in a rich field: list, list item,
+/// paragraph, heading, section, block quote, article.
+const BLOCK_ROLES: [u32; 7] = [31, 32, ROLE_PARAGRAPH, 83, 85, 105, 109];
+/// The toolkit Chromium and Electron apps publish.
+const CHROMIUM: &str = "Chromium";
 /// An app that doesn't answer in this time is taken as not taking text.
 const CALL_TIMEOUT: Duration = Duration::from_millis(500);
 /// The watcher tries the accessibility bus again after this when it can't reach it.
@@ -54,8 +73,21 @@ const MIN_GAP: Duration = Duration::from_millis(100);
 /// How often, while a phone watches a field whose text isn't shared, the PC
 /// checks whether someone used its own keyboard or mouse.
 const ACTIVITY_POLL: Duration = Duration::from_millis(500);
-/// Input this long after the phone's own is someone at the PC.
-const OURS_FOR: Duration = Duration::from_millis(250);
+/// Input this long after the phone's own was typed, or this long before it
+/// started, is still the phone's: a busy compositor handles keys late.
+const OURS_FOR: Duration = Duration::from_millis(400);
+const OURS_BEFORE: Duration = Duration::from_millis(50);
+/// Edits a phone meant for a window still run in the field found in it this
+/// soon after.
+const ALIAS_FOR: Duration = Duration::from_secs(2);
+/// Looking for the focused field of an app just asked to publish it: tries,
+/// the gap between them, and how far one look goes.
+const WAKE_TRIES: u32 = 6;
+const WAKE_GAP: Duration = Duration::from_millis(250);
+const WAKE_NODES: usize = 2000;
+const WAKE_TIME: Duration = Duration::from_millis(300);
+/// How far up from a field its web document is looked for.
+const MAX_ANCESTORS: usize = 30;
 /// How long after a window gets the focus an app has to tell of its focused
 /// field before the window is taken as the field.
 const WINDOW_GRACE: Duration = Duration::from_millis(150);
@@ -88,6 +120,11 @@ struct Focus {
     window_pending: Option<(Instant, Window)>,
     /// Activity at the PC from this time on doubts the field's draft.
     watched_since: Option<Instant>,
+    /// The objects a rich field's text was read from, whose text events count.
+    pieces: Vec<Object>,
+    /// The window's own focus id, when this field was found in a window that
+    /// was the field until then, and since when.
+    alias: Option<(u32, Instant)>,
 }
 
 static FOCUS: Mutex<Focus> = Mutex::new(Focus {
@@ -102,7 +139,11 @@ static FOCUS: Mutex<Focus> = Mutex::new(Focus {
     told_at: None,
     window_pending: None,
     watched_since: None,
+    pieces: Vec::new(),
+    alias: None,
 });
+/// The window that has the focus, from the Shell extension.
+static FOCUSED_WINDOW: Mutex<Option<Window>> = Mutex::new(None);
 static FIELDS: Mutex<Option<FieldTable>> = Mutex::new(None);
 static IN_TERMINAL: AtomicBool = AtomicBool::new(false);
 static WATCHING: AtomicBool = AtomicBool::new(false);
@@ -112,11 +153,19 @@ static RESEND: AtomicBool = AtomicBool::new(false);
 /// Wakes the state thread: something changed, or the watch did.
 static DIRTY: Mutex<bool> = Mutex::new(false);
 static WAKE: Condvar = Condvar::new();
-/// The last time the phone's input was injected.
-static INJECTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
-/// The connection used to read and place text, apart from the listener's.
-static READER: Mutex<Option<zbus::blocking::Connection>> = Mutex::new(None);
+/// The phone's input being typed, and the last burst of it.
+static BURSTS: Mutex<Bursts> = Mutex::new(Bursts { active: 0, started: None, ended: None });
+/// The connection used to read and place text, apart from the listener's,
+/// and whether it asked apps for text events.
+static READER: Mutex<Option<(zbus::blocking::Connection, bool)>> = Mutex::new(None);
+/// Whether Chromium and Electron apps are asked to publish their fields.
+static WAKE_CHROMIUM: AtomicBool = AtomicBool::new(true);
+/// Apps (accessibility bus names) already asked.
+static WOKEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 static SEND_STATE: OnceLock<fn(RemoteTextState)> = OnceLock::new();
+/// Hands phones' app icons to the core to serve, and the last one handed.
+static KEEP_ICON: OnceLock<fn(String, Vec<u8>)> = OnceLock::new();
+static KEPT_ICON: Mutex<Option<String>> = Mutex::new(None);
 
 fn focus() -> std::sync::MutexGuard<'static, Focus> {
     FOCUS.lock().unwrap_or_else(|e| e.into_inner())
@@ -143,15 +192,63 @@ pub fn plain_enter() -> bool {
         || (focus.object.is_some() && focus.kind != TextFieldKind::None && !focus.multiline)
 }
 
-/// The current focus's id, which a phone's edits carry.
-pub fn current_focus() -> u32 {
-    focus().id
+/// Whether a phone's edit or caret move for focus `id` is for what has the
+/// focus now: the current focus, or the window it was found in just before.
+pub fn accepts_focus(id: u32) -> bool {
+    let focus = focus();
+    id == focus.id || focus.alias.is_some_and(|(alias, since)| alias == id && since.elapsed() < ALIAS_FOR)
 }
 
-/// The phone's input was just injected: activity at the PC around now is
-/// the phone's, not someone at the PC.
-pub fn note_injected() {
-    *INJECTED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+/// The phone's input being typed and when, so activity at the PC then isn't
+/// taken as someone at the PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Bursts {
+    active: usize,
+    started: Option<Instant>,
+    ended: Option<Instant>,
+}
+
+impl Bursts {
+    /// Whether the PC's last input, at `activity`, was someone at the PC
+    /// rather than the phone, when the phone has watched since `since`.
+    fn someone_else(&self, activity: Instant, since: Option<Instant>) -> bool {
+        if self.active > 0 || since.is_none_or(|since| activity <= since) {
+            return false;
+        }
+        let ours = match (self.started, self.ended) {
+            (Some(started), Some(ended)) => activity + OURS_BEFORE >= started && activity <= ended + OURS_FOR,
+            _ => false,
+        };
+        !ours
+    }
+}
+
+/// While this lives, the phone's input is being typed.
+pub struct Injecting(());
+
+/// The phone's input starts being typed: until the returned guard goes,
+/// and a little after, activity at the PC is the phone's.
+pub fn injecting() -> Injecting {
+    let mut bursts = BURSTS.lock().unwrap_or_else(|e| e.into_inner());
+    if bursts.active == 0 {
+        bursts.started = Some(Instant::now());
+    }
+    bursts.active += 1;
+    Injecting(())
+}
+
+impl Drop for Injecting {
+    fn drop(&mut self) {
+        let mut bursts = BURSTS.lock().unwrap_or_else(|e| e.into_inner());
+        bursts.active = bursts.active.saturating_sub(1);
+        bursts.ended = Some(Instant::now());
+    }
+}
+
+/// Whether Chromium and Electron apps are asked to publish their fields
+/// while a phone watches (Settings).
+pub fn set_wake_chromium(on: bool) {
+    WAKE_CHROMIUM.store(on, Ordering::SeqCst);
 }
 
 /// A phone started (`true`) or stopped (`false`, with no phone left)
@@ -163,9 +260,11 @@ pub fn set_watching(on: bool) {
         RESEND.store(true, Ordering::SeqCst);
     }
     if on != was {
+        let window = on.then(|| focus().window.then(focused_window).flatten()).flatten();
         let _ = std::thread::Builder::new().name("text-events".into()).spawn(move || {
-            if let Some(conn) = reader() {
-                register_text_events(&conn, on);
+            sync_text_events();
+            if let Some(window) = window {
+                wake(&window);
             }
         });
     }
@@ -179,10 +278,12 @@ pub fn mark_dirty() {
 }
 
 /// Calls `editable` with whether the focus takes text each time that
-/// changes, and `state` with the focused field while a phone watches.
+/// changes, `state` with the focused field while a phone watches, and
+/// `keep_icon` with the icon of the app a state names, to serve phones.
 /// Threads for the app's lifetime.
-pub fn watch(editable: fn(bool), state: fn(RemoteTextState)) {
+pub fn watch(editable: fn(bool), state: fn(RemoteTextState), keep_icon: fn(String, Vec<u8>)) {
     let _ = SEND_STATE.set(state);
+    let _ = KEEP_ICON.set(keep_icon);
     let _ = std::thread::Builder::new().name("text-focus".into()).spawn(move || {
         loop {
             follow(editable);
@@ -210,20 +311,37 @@ fn a11y_bus() -> Option<zbus::blocking::Connection> {
 /// The reading connection, made again after it failed. It's also the one
 /// that asks apps for text events while a phone watches.
 fn reader() -> Option<zbus::blocking::Connection> {
-    let mut reader = READER.lock().unwrap_or_else(|e| e.into_inner());
-    if reader.is_none() {
-        *reader = a11y_bus();
-        if let Some(conn) = reader.as_ref()
-            && WATCHING.load(Ordering::SeqCst)
-        {
-            register_text_events(conn, true);
+    let made = {
+        let mut reader = READER.lock().unwrap_or_else(|e| e.into_inner());
+        if reader.is_none() {
+            *reader = a11y_bus().map(|conn| (conn, false));
         }
+        reader.as_ref().map(|(conn, registered)| (conn.clone(), *registered))
+    };
+    let (conn, registered) = made?;
+    if !registered && WATCHING.load(Ordering::SeqCst) {
+        sync_text_events();
     }
-    reader.clone()
+    Some(conn)
 }
 
 fn drop_reader() {
     *READER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// Asks apps for text events while a phone watches and stops asking when
+/// none does, once per reading connection.
+fn sync_text_events() {
+    let mut reader = READER.lock().unwrap_or_else(|e| e.into_inner());
+    if reader.is_none() {
+        *reader = a11y_bus().map(|conn| (conn, false));
+    }
+    let Some((conn, registered)) = reader.as_mut() else { return };
+    let wanted = WATCHING.load(Ordering::SeqCst);
+    if *registered != wanted {
+        register_text_events(conn, wanted);
+        *registered = wanted;
+    }
 }
 
 fn register_text_events(conn: &zbus::blocking::Connection, on: bool) {
@@ -279,6 +397,7 @@ fn follow(editable_changed: fn(bool)) {
     drop_reader();
 
     let mut editable = false;
+    let mut pids: HashMap<String, u32> = HashMap::new();
     for message in messages {
         let Ok(message) = message else { break };
         let header = message.header();
@@ -288,13 +407,20 @@ fn follow(editable_changed: fn(bool)) {
         };
         let object = Object { sender: sender.to_string(), path: path.to_string() };
         if member.as_str() != "StateChanged" {
-            // Text, caret or selection of the focused field.
-            if focus().object.as_ref() == Some(&object) {
+            // Text, caret or selection of the focused field, or of a part of it.
+            let focus = focus();
+            if focus.object.as_ref() == Some(&object) || focus.pieces.contains(&object) {
+                drop(focus);
                 mark_dirty();
             }
             continue;
         }
         let Some(gained) = focus_gained(&message) else { continue };
+        if gained && !in_focused_window(&conn, &dbus, &object, &mut pids) {
+            // Another app's focus (a background window, the Shell's own) isn't
+            // where the keys go.
+            continue;
+        }
         let now = if gained {
             focus_moved(&conn, object)
         } else {
@@ -322,6 +448,44 @@ fn focus_gained(message: &zbus::Message) -> Option<bool> {
         })
         .ok()?;
     (detail == "focused").then_some(gained == 1)
+}
+
+/// The window that has the focus, when the Shell extension tells.
+fn focused_window() -> Option<Window> {
+    FOCUSED_WINDOW.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Whether `object` is in the window that has the focus: its app's process
+/// has it, or, for an app reached through a proxy (Flatpak), its own window
+/// is the active one. Without the Shell extension, every object is.
+fn in_focused_window(
+    conn: &zbus::blocking::Connection,
+    dbus: &zbus::blocking::fdo::DBusProxy<'_>,
+    object: &Object,
+    pids: &mut HashMap<String, u32>,
+) -> bool {
+    let Some(window) = focused_window().filter(|window| window.pid != 0) else { return true };
+    let pid = *pids.entry(object.sender.clone()).or_insert_with(|| {
+        zbus::names::BusName::try_from(object.sender.as_str())
+            .ok()
+            .and_then(|name| dbus.get_connection_unix_process_id(name).ok())
+            .unwrap_or(0)
+    });
+    pid == window.pid || top_level_active(conn, object).unwrap_or(true)
+}
+
+/// Whether the top-level window `object` is in is its app's active one.
+fn top_level_active(conn: &zbus::blocking::Connection, object: &Object) -> Option<bool> {
+    let mut at = object.clone();
+    for _ in 0..MAX_ANCESTORS {
+        let up = parent(conn, &at)?;
+        if role(conn, &up) == Some(ROLE_APPLICATION) {
+            let states = call::<Vec<u32>>(conn, &at, ACCESSIBLE, "GetState", &())?;
+            return Some(has_state(&states, STATE_ACTIVE));
+        }
+        at = up;
+    }
+    None
 }
 
 /// The focus arrived at `object`: what it is, and which field. Returns
@@ -355,6 +519,9 @@ fn focus_moved(conn: &zbus::blocking::Connection, object: Object) -> bool {
     };
 
     let mut focus = focus();
+    // Found in the window that stood for it: what the phone typed for the
+    // window still lands here.
+    focus.alias = focus.window.then(|| (focus.id, Instant::now()));
     focus.id = focus.id.wrapping_add(1);
     focus.object = Some(object);
     focus.kind = kind;
@@ -366,6 +533,7 @@ fn focus_moved(conn: &zbus::blocking::Connection, object: Object) -> bool {
     focus.told_at = Some(Instant::now());
     focus.window_pending = None;
     focus.watched_since = Some(Instant::now());
+    focus.pieces.clear();
     drop(focus);
     mark_dirty();
     takes_text
@@ -384,6 +552,8 @@ fn focus_left(object: &Object) {
     focus.label = None;
     focus.window = false;
     focus.field = 0;
+    focus.pieces.clear();
+    focus.alias = None;
     drop(focus);
     IN_TERMINAL.store(false, Ordering::Relaxed);
     mark_dirty();
@@ -392,6 +562,7 @@ fn focus_left(object: &Object) {
 /// A window got the focus: unless its app tells of a field soon, the
 /// window is the field.
 fn window_focused(window: Window) {
+    *FOCUSED_WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = Some(window.clone());
     focus().window_pending = Some((Instant::now(), window));
     mark_dirty();
 }
@@ -418,6 +589,12 @@ fn settle_window(now: Instant) -> Option<Duration> {
     focus.window = true;
     focus.field = field;
     focus.watched_since = Some(now);
+    focus.pieces.clear();
+    focus.alias = None;
+    drop(focus);
+    if WATCHING.load(Ordering::SeqCst) {
+        let _ = std::thread::Builder::new().name("text-wake".into()).spawn(move || wake(&window));
+    }
     None
 }
 
@@ -480,10 +657,8 @@ fn doubt_after_activity() {
     let Some(idle) = super::input::idle_ms() else { return };
     let now = Instant::now();
     let Some(activity) = now.checked_sub(Duration::from_millis(idle)) else { return };
-    let ours = *INJECTED_AT.lock().unwrap_or_else(|e| e.into_inner());
-    let theirs =
-        since.is_some_and(|since| activity > since) && ours.is_none_or(|ours| activity > ours + OURS_FOR);
-    if theirs {
+    let bursts = *BURSTS.lock().unwrap_or_else(|e| e.into_inner());
+    if bursts.someone_else(activity, since) {
         with_fields(|fields| fields.doubt(field));
         focus().watched_since = Some(now);
     }
@@ -510,9 +685,13 @@ fn read_state() -> Option<RemoteTextState> {
             anchor: None,
             more_before: false,
             more_after: false,
+            icon: None,
         };
         (focus.object.clone(), state)
     };
+    if state.kind != TextFieldKind::None {
+        name_app(&mut state);
+    }
     if state.kind == TextFieldKind::Mirror
         && let Some(object) = object
     {
@@ -524,6 +703,10 @@ fn read_state() -> Option<RemoteTextState> {
                 state.anchor = text.anchor;
                 state.more_before = text.more_before;
                 state.more_after = text.more_after;
+                let mut focus = focus();
+                if focus.id == state.focus {
+                    focus.pieces = text.pieces;
+                }
             }
             None => {
                 // The app stopped answering: keys only, until the focus moves.
@@ -539,6 +722,24 @@ fn read_state() -> Option<RemoteTextState> {
     state.is_valid().then_some(state)
 }
 
+/// Names the app a state is about as its desktop entry does, with its icon,
+/// when the Shell extension tells which window has the focus (a field the PC
+/// heard of is in it: others are dropped).
+fn name_app(state: &mut RemoteTextState) {
+    let Some(window) = focused_window() else { return };
+    let Some(app) = super::app_entry::identify(&window.class, window.pid) else { return };
+    state.app = Some(cut(&app.name, remote_limits::MAX_STATE_APP));
+    let Some(icon) = &app.icon else { return };
+    state.icon = Some(icon.key.clone());
+    let mut kept = KEPT_ICON.lock().unwrap_or_else(|e| e.into_inner());
+    if kept.as_deref() != Some(icon.key.as_str())
+        && let Some(keep) = KEEP_ICON.get()
+    {
+        keep(icon.key.clone(), icon.png.to_vec());
+        *kept = Some(icon.key.clone());
+    }
+}
+
 struct FieldText {
     start: u32,
     before: String,
@@ -546,6 +747,8 @@ struct FieldText {
     anchor: Option<u32>,
     more_before: bool,
     more_after: bool,
+    /// For a rich field, the objects its text came from.
+    pieces: Vec<Object>,
 }
 
 fn read_text(conn: &zbus::blocking::Connection, object: &Object) -> Option<FieldText> {
@@ -555,10 +758,9 @@ fn read_text(conn: &zbus::blocking::Connection, object: &Object) -> Option<Field
     let to = caret.saturating_add(READ_AFTER).min(count);
     let before: String = call(conn, object, TEXT, "GetText", &(from, caret))?;
     let after: String = call(conn, object, TEXT, "GetText", &(caret, to))?;
-    let (before, dropped) = cut_front(&before, remote_limits::MAX_STATE_BEFORE);
-    let after_len = after.chars().count();
-    let after = cut(&after, remote_limits::MAX_STATE_AFTER);
-    let start = u32::try_from(from).ok()?.saturating_add(dropped);
+    if before.contains(rich_text::EMBEDDED) || after.contains(rich_text::EMBEDDED) {
+        return read_rich_text(conn, object);
+    }
     let selections = call::<i32>(conn, object, TEXT, "GetNSelections", &()).unwrap_or(0);
     let anchor = if selections > 0 {
         call::<(i32, i32)>(conn, object, TEXT, "GetSelection", &(0i32,))
@@ -568,24 +770,182 @@ fn read_text(conn: &zbus::blocking::Connection, object: &Object) -> Option<Field
     } else {
         None
     };
-    Some(FieldText {
+    let (Ok(from), Ok(to), Ok(count)) = (u32::try_from(from), u32::try_from(to), u32::try_from(count)) else {
+        return None;
+    };
+    Some(window_around(before, after, from, to, count, anchor, Vec::new()))
+}
+
+/// The text read around the caret, `from..to` of `count`, cut to what a
+/// state carries.
+fn window_around(
+    before: String,
+    after: String,
+    from: u32,
+    to: u32,
+    count: u32,
+    anchor: Option<u32>,
+    pieces: Vec<Object>,
+) -> FieldText {
+    let (before, dropped) = cut_front(&before, remote_limits::MAX_STATE_BEFORE);
+    let after_len = after.chars().count();
+    let after = cut(&after, remote_limits::MAX_STATE_AFTER);
+    let start = from.saturating_add(dropped);
+    FieldText {
         start,
         more_before: start > 0,
         more_after: to < count || after.chars().count() < after_len,
         before,
         after,
         anchor,
-    })
+        pieces,
+    }
+}
+
+/// A rich field (a browser's contenteditable): its paragraphs read as one
+/// text, the caret found in the paragraph that has it. `None` makes it a field
+/// whose text isn't shared.
+fn read_rich_text(conn: &zbus::blocking::Connection, object: &Object) -> Option<FieldText> {
+    let (flat, objects) = flatten(conn, object)?;
+    let (owner, local) = caret_in(conn, object, &objects, 0)?;
+    let caret = flat.to_flat(owner, local)?;
+    let chars: Vec<char> = flat.text.chars().collect();
+    let count = u32::try_from(chars.len()).ok()?;
+    let caret = caret.min(count);
+    let from = caret.saturating_sub(READ_BEFORE as u32);
+    let to = caret.saturating_add(READ_AFTER as u32).min(count);
+    let before: String = chars[from as usize..caret as usize].iter().collect();
+    let after: String = chars[caret as usize..to as usize].iter().collect();
+    Some(window_around(before, after, from, to, count, None, objects))
+}
+
+/// Reads `field` and the objects its U+FFFCs stand for, as one text, with the
+/// objects in the order [`rich_text::flatten`] numbers them.
+fn flatten(conn: &zbus::blocking::Connection, field: &Object) -> Option<(Flat, Vec<Object>)> {
+    let mut objects = Vec::new();
+    let root = read_node(conn, field, 0, &mut objects)?;
+    let flat = rich_text::flatten(&root)?;
+    (flat.objects() == objects.len()).then_some((flat, objects))
+}
+
+fn read_node(
+    conn: &zbus::blocking::Connection,
+    object: &Object,
+    depth: usize,
+    objects: &mut Vec<Object>,
+) -> Option<Node> {
+    if depth > rich_text::MAX_DEPTH || objects.len() >= rich_text::MAX_OBJECTS {
+        return None;
+    }
+    objects.push(object.clone());
+    let count = property::<i32>(conn, object, TEXT, "CharacterCount")?;
+    if usize::try_from(count).ok()? > rich_text::MAX_CHARS {
+        return None;
+    }
+    let text: String = call(conn, object, TEXT, "GetText", &(0i32, count))?;
+    let mut children = Vec::new();
+    if text.contains(rich_text::EMBEDDED) {
+        let n = call::<i32>(conn, object, HYPERTEXT, "GetNLinks", &())?;
+        if usize::try_from(n).ok()? > rich_text::MAX_OBJECTS {
+            return None;
+        }
+        for i in 0..n {
+            let link = object_at(call(conn, object, HYPERTEXT, "GetLink", &(i,))?);
+            let at = u32::try_from(property::<i32>(conn, &link, HYPERLINK, "StartIndex")?).ok()?;
+            let child = object_at(call(conn, &link, HYPERLINK, "GetObject", &(0i32,))?);
+            let block = role(conn, &child).is_some_and(|role| BLOCK_ROLES.contains(&role));
+            children.push((at, block, child));
+        }
+        // In the text's order, as `rich_text::flatten` numbers them.
+        children.sort_by_key(|(at, ..)| *at);
+    }
+    let mut links = Vec::with_capacity(children.len());
+    for (at, block, child) in children {
+        let node = read_node(conn, &child, depth + 1, objects)?;
+        links.push(Link { at, block, node });
+    }
+    Some(Node { text, links })
+}
+
+fn object_at((sender, path): (String, OwnedObjectPath)) -> Object {
+    Object { sender, path: path.to_string() }
+}
+
+/// Which of `objects` has the caret, and where in it: from the field down
+/// through the object whose U+FFFC the caret is at (or just after).
+fn caret_in(
+    conn: &zbus::blocking::Connection,
+    object: &Object,
+    objects: &[Object],
+    depth: usize,
+) -> Option<(usize, u32)> {
+    let owner = objects.iter().position(|o| o == object)?;
+    // An object that doesn't have the caret says -1.
+    let caret = u32::try_from(property::<i32>(conn, object, TEXT, "CaretOffset")?).ok()?;
+    if depth >= rich_text::MAX_DEPTH {
+        return Some((owner, caret));
+    }
+    let embedded_at = |offset: u32| -> Option<Object> {
+        let offset = i32::try_from(offset).ok()?;
+        let text: String = call(conn, object, TEXT, "GetText", &(offset, offset + 1))?;
+        if !text.starts_with(rich_text::EMBEDDED) {
+            return None;
+        }
+        let index = call::<i32>(conn, object, HYPERTEXT, "GetLinkIndex", &(offset,)).filter(|&i| i >= 0)?;
+        let link = object_at(call(conn, object, HYPERTEXT, "GetLink", &(index,))?);
+        Some(object_at(call(conn, &link, HYPERLINK, "GetObject", &(0i32,))?))
+    };
+    // The caret is in the object at it, or the one just before it; when
+    // neither says, the start of the first or the end of the second.
+    let here = embedded_at(caret);
+    let before = caret.checked_sub(1).and_then(embedded_at);
+    for child in here.iter().chain(&before) {
+        if let Some(found) = caret_in(conn, child, objects, depth + 1) {
+            return Some(found);
+        }
+    }
+    if let Some(child) = here.and_then(|child| objects.iter().position(|o| *o == child)) {
+        return Some((child, 0));
+    }
+    if let Some(child) = before {
+        let end = u32::try_from(property::<i32>(conn, &child, TEXT, "CharacterCount")?).ok()?;
+        return Some((objects.iter().position(|o| *o == child)?, end));
+    }
+    Some((owner, caret))
 }
 
 /// Selects `start..end` of the focused field (or puts the caret at `start`
-/// when they're equal), when `focus` still has it and its text is shared.
+/// when they're equal), when `focus` still has it and its text is shared. In
+/// a rich field, a range across paragraphs isn't selected: the caller moves
+/// there with the keys instead.
 pub fn select(focus_id: u32, start: u32, end: u32) -> bool {
-    let Some(object) = mirrored(focus_id) else { return false };
+    let Some((field, rich)) = mirrored(focus_id) else { return false };
     let Some(conn) = reader() else { return false };
-    let (Ok(start), Ok(end)) = (i32::try_from(start), i32::try_from(end)) else { return false };
-    if start == end {
+    let flat = if rich {
+        match flatten(&conn, &field) {
+            Some(flat) => Some(flat),
+            None => return false,
+        }
+    } else {
+        None
+    };
+    let locate = |at: u32| -> Option<(Object, i32)> {
+        match &flat {
+            Some((flat, objects)) => {
+                let (owner, local) = flat.to_local(at)?;
+                Some((objects.get(owner)?.clone(), i32::try_from(local).ok()?))
+            }
+            None => Some((field.clone(), i32::try_from(at).ok()?)),
+        }
+    };
+    let caret_only = start == end;
+    let Some((object, start)) = locate(start) else { return false };
+    if caret_only {
         return call::<bool>(&conn, &object, TEXT, "SetCaretOffset", &(start,)).unwrap_or(false);
+    }
+    let Some((end_object, end)) = locate(end) else { return false };
+    if end_object != object {
+        return false;
     }
     call::<bool>(&conn, &object, TEXT, "SetSelection", &(0i32, start, end)).unwrap_or(false)
         || call::<bool>(&conn, &object, TEXT, "AddSelection", &(start, end)).unwrap_or(false)
@@ -603,14 +963,23 @@ pub fn set_caret(focus_id: u32, caret: u32, anchor: u32) -> bool {
 /// Where the caret of the focused field is, when `focus` still has it and
 /// its text is shared.
 pub fn caret_offset(focus_id: u32) -> Option<u32> {
-    let object = mirrored(focus_id)?;
+    let (field, rich) = mirrored(focus_id)?;
     let conn = reader()?;
-    property::<i32>(&conn, &object, TEXT, "CaretOffset").and_then(|caret| u32::try_from(caret).ok())
+    if rich {
+        let (flat, objects) = flatten(&conn, &field)?;
+        let (owner, local) = caret_in(&conn, &field, &objects, 0)?;
+        return flat.to_flat(owner, local);
+    }
+    property::<i32>(&conn, &field, TEXT, "CaretOffset").and_then(|caret| u32::try_from(caret).ok())
 }
 
-fn mirrored(focus_id: u32) -> Option<Object> {
+/// The focused field, when `focus` still has it and its text is shared, and
+/// whether it's a rich one.
+fn mirrored(focus_id: u32) -> Option<(Object, bool)> {
     let focus = focus();
-    (focus.id == focus_id && focus.kind == TextFieldKind::Mirror).then(|| focus.object.clone()).flatten()
+    (focus.id == focus_id && focus.kind == TextFieldKind::Mirror)
+        .then(|| focus.object.clone().map(|object| (object, !focus.pieces.is_empty())))
+        .flatten()
 }
 
 /// What describes the field at `object`, for finding it again. A paragraph
@@ -636,6 +1005,8 @@ fn stable_key(conn: &zbus::blocking::Connection, object: &Object, role: u32) -> 
             property::<String>(conn, &Object { sender, path: path.to_string() }, ACCESSIBLE, "Name")
         })
         .unwrap_or_default();
+    let window = focused_window().map(|window| window.id);
+    let doc = document_url(conn, &target);
     let mut path = Vec::new();
     if name.is_empty() && id.is_empty() {
         let mut at = target.clone();
@@ -646,7 +1017,112 @@ fn stable_key(conn: &zbus::blocking::Connection, object: &Object, role: u32) -> 
             at = parent;
         }
     }
-    StableKey { app, window: None, role, name, description, id, path }
+    StableKey { app, window, doc, role, name, description, id, path }
+}
+
+/// The address of the web page `object` is in, so the same field on two
+/// pages or tabs is two fields; empty outside a browser.
+fn document_url(conn: &zbus::blocking::Connection, object: &Object) -> String {
+    let mut at = object.clone();
+    for _ in 0..MAX_ANCESTORS {
+        if role(conn, &at) == Some(ROLE_DOCUMENT_WEB) {
+            return call::<String>(conn, &at, DOCUMENT, "GetAttributeValue", &("DocURL",))
+                .unwrap_or_default();
+        }
+        let Some(up) = parent(conn, &at) else { break };
+        at = up;
+    }
+    String::new()
+}
+
+/// Asks the Chromium or Electron app that has `window` to publish its fields
+/// (once per app: it can't be asked to stop, it stops when it quits), then
+/// finds the field that has the focus in it, which the app won't tell of
+/// again on its own.
+fn wake(window: &Window) {
+    if !WAKE_CHROMIUM.load(Ordering::SeqCst) || window.pid == 0 {
+        return;
+    }
+    let Some(conn) = reader() else { return };
+    let Some(app) = chromium_app(&conn, window.pid) else { return };
+    let fresh =
+        WOKEN.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).insert(app.clone());
+    let root = Object { sender: app, path: ROOT_PATH.into() };
+    if fresh {
+        // Being asked for attributes is what makes Chromium build its tree.
+        let _ = call::<HashMap<String, String>>(&conn, &root, ACCESSIBLE, "GetAttributes", &());
+    }
+    let focus_id = focus().id;
+    let still_window = || {
+        let focus = focus();
+        focus.id == focus_id && focus.window
+    };
+    for _ in 0..WAKE_TRIES {
+        if let Some(field) = find_focused(&conn, &root) {
+            if still_window() {
+                focus_moved(&conn, field);
+            }
+            return;
+        }
+        std::thread::sleep(WAKE_GAP);
+        if !still_window() {
+            return;
+        }
+    }
+}
+
+/// The accessibility bus name of the Chromium or Electron app with `pid`.
+fn chromium_app(conn: &zbus::blocking::Connection, pid: u32) -> Option<String> {
+    let dbus = zbus::blocking::fdo::DBusProxy::new(conn).ok()?;
+    dbus.list_names().ok()?.into_iter().find_map(|name| {
+        if !name.starts_with(':') || dbus.get_connection_unix_process_id(name.inner().clone()).ok()? != pid {
+            return None;
+        }
+        let root = Object { sender: name.to_string(), path: ROOT_PATH.into() };
+        (property::<String>(conn, &root, APPLICATION, "ToolkitName").as_deref() == Some(CHROMIUM))
+            .then(|| name.to_string())
+    })
+}
+
+/// The focused editable object under `root`, looked for in its active window
+/// within [`WAKE_NODES`] objects and [`WAKE_TIME`].
+fn find_focused(conn: &zbus::blocking::Connection, root: &Object) -> Option<Object> {
+    let deadline = Instant::now() + WAKE_TIME;
+    let windows = children(conn, root)?;
+    let active: Vec<Object> = windows
+        .iter()
+        .filter(|window| {
+            call::<Vec<u32>>(conn, window, ACCESSIBLE, "GetState", &())
+                .is_some_and(|states| has_state(&states, STATE_ACTIVE))
+        })
+        .cloned()
+        .collect();
+    let mut stack = if active.is_empty() { windows } else { active };
+    stack.reverse();
+    let mut seen = 0;
+    while let Some(object) = stack.pop() {
+        seen += 1;
+        if seen > WAKE_NODES || Instant::now() > deadline {
+            return None;
+        }
+        let states = call::<Vec<u32>>(conn, &object, ACCESSIBLE, "GetState", &()).unwrap_or_default();
+        if has_state(&states, STATE_FOCUSED) && has_state(&states, STATE_EDITABLE) {
+            return Some(object);
+        }
+        if !has_state(&states, STATE_SHOWING) {
+            continue;
+        }
+        if let Some(mut kids) = children(conn, &object) {
+            kids.reverse();
+            stack.extend(kids);
+        }
+    }
+    None
+}
+
+fn children(conn: &zbus::blocking::Connection, object: &Object) -> Option<Vec<Object>> {
+    call::<Vec<(String, OwnedObjectPath)>>(conn, object, ACCESSIBLE, "GetChildren", &())
+        .map(|children| children.into_iter().map(object_at).collect())
 }
 
 fn role(conn: &zbus::blocking::Connection, object: &Object) -> Option<u32> {
@@ -728,6 +1204,25 @@ mod tests {
         // A state in the second word.
         assert!(has_state(&[0, 1 << 3], 35));
         assert!(has_state(&[1 << STATE_MULTI_LINE], STATE_MULTI_LINE));
+    }
+
+    #[test]
+    fn the_phones_own_typing_isnt_someone_at_the_pc() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let since = Some(at(0));
+        let quiet = Bursts { active: 0, started: None, ended: None };
+        assert!(quiet.someone_else(at(100), since));
+        assert!(!quiet.someone_else(at(100), Some(at(200))), "before the phone watched");
+        assert!(!quiet.someone_else(at(100), None));
+        let typing = Bursts { active: 1, started: Some(at(1000)), ended: None };
+        assert!(!typing.someone_else(at(5000), since), "nothing is judged while the phone types");
+        let burst = Bursts { active: 0, started: Some(at(1000)), ended: Some(at(1040)) };
+        assert!(!burst.someone_else(at(960), since), "just before it started");
+        assert!(!burst.someone_else(at(1020), since), "while it was typed");
+        assert!(!burst.someone_else(at(1400), since), "a key a busy compositor handled late");
+        assert!(burst.someone_else(at(1500), since));
+        assert!(burst.someone_else(at(900), since), "well before it");
     }
 
     #[test]

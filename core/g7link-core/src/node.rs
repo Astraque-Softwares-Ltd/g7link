@@ -3552,6 +3552,21 @@ impl Node {
         crate::remote::mirrors_text(&self.shared, peer)
     }
 
+    /// PC: keeps the focused app's icon (a PNG of at most
+    /// `remote::MAX_ICON_BYTES`) for phones to fetch by `key`, the key its
+    /// text states name.
+    pub fn keep_app_icon(&self, key: String, png: Vec<u8>) -> Result<()> {
+        crate::remote::keep_app_icon(&self.shared, key, png)
+    }
+
+    /// Phone: fetches the app icon `key` that a text state from the PC
+    /// `peer` named (`remote.app_icon`). `Error::Unsupported` when that PC
+    /// serves none.
+    pub async fn remote_app_icon(&self, peer: DeviceId, key: String) -> Result<Vec<u8>> {
+        let session = self.connected(&peer)?;
+        crate::remote::app_icon(&self.shared, &session, key).await
+    }
+
     /// Tells a PC something about its mirroring, by `code` (`mirror.notice`):
     /// say, that this phone refuses its taps.
     pub async fn mirror_notice(&self, peer: DeviceId, mirroring: u32, code: &str) -> Result<()> {

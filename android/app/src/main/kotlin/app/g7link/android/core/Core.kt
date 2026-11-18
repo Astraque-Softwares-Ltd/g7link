@@ -3,10 +3,13 @@ package app.g7link.android.core
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.util.Log
+import android.util.LruCache
 import android.widget.Toast
 import android.net.Uri
 import app.g7link.android.BuildConfig
@@ -2112,11 +2115,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             val failed = runCatching { node?.clearAllLocalData() }
                 .onFailure { Log.w(TAG, "couldn't clear local data", it) }
                 .isFailure
-            listOf("mms", "continuity_camera", "clipboard", "received").forEach { dirName ->
+            listOf("mms", "continuity_camera", "clipboard", "received", PcAppIcons.DIR).forEach { dirName ->
                 java.io.File(context.cacheDir, dirName).listFiles()?.forEach { file ->
                     runCatching { file.deleteRecursively() }
                 }
             }
+            pcAppIcons.evictAll()
             _state.update { s -> s.copy(transfers = s.transfers.filterNot { it.isFinished() }) }
             refreshClipboardHistory()
             refreshTimeline()
@@ -2605,8 +2609,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     /**
      * PCs whose caret or focus this phone just moved (a click, a key such as
-     * an arrow, Enter or a paste): the typing box starts afresh in a field it
-     * can't read.
+     * an arrow, Enter or a paste): in a field it can't read, what the typing
+     * box holds may no longer match.
      */
     val pcCaretMoved: SharedFlow<String> get() = _pcCaretMoved
     private val _pcCaretMoved = MutableSharedFlow<String>(extraBufferCapacity = 8)
@@ -2621,6 +2625,42 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     fun remoteTextWatch(id: String, on: Boolean) {
         if (!on) _state.update { it.copy(pcTextState = it.pcTextState - id) }
         enqueueRemoteOp { runCatching { it.remoteTextWatch(id, on) } }
+    }
+
+    /** App icons from the PCs, by "pcId/key": a key names one icon, so a changed icon has a new key. */
+    private val pcAppIcons = LruCache<String, Bitmap>(PcAppIcons.IN_MEMORY)
+
+    /**
+     * The icon of an app on PC [pcId] that its field state named by [key]:
+     * from memory, from this phone's cache or from the PC. Null when there's
+     * none to be had; never throws.
+     */
+    suspend fun pcAppIcon(pcId: String, key: String): Bitmap? {
+        if (!PcAppIcons.isKey(key) || !PcAppIcons.isPcFolder(pcId)) return null
+        val name = "$pcId/$key"
+        pcAppIcons.get(name)?.let { return it }
+        val icon = withContext(Dispatchers.IO) {
+            val file = java.io.File(context.cacheDir, "${PcAppIcons.DIR}/$name.png")
+            PcAppIcons.read(file) ?: fetchPcAppIcon(pcId, key)?.let { bytes ->
+                PcAppIcons.decode(bytes)?.also { PcAppIcons.save(file, bytes) }
+            }
+        } ?: return null
+        pcAppIcons.put(name, icon)
+        return icon
+    }
+
+    /** An app icon's bytes as PC [pcId] sent them: not yet checked. */
+    private suspend fun fetchPcAppIcon(pcId: String, key: String): ByteArray? {
+        startJob?.join()
+        val node = node ?: return null
+        return try {
+            node.remoteAppIcon(pcId, key)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.i(TAG, "an app icon wasn't fetched: ${e.javaClass.simpleName}")
+            null
+        }
     }
 
     /**
@@ -3101,6 +3141,71 @@ data class PcFolder(
     @androidx.annotation.StringRes val problem: Int? = null,
 )
 
-/** Keys that leave the PC's caret where it is: the typing box keeps its draft. */
+/** Keys that leave the PC's caret where it is: what the typing box holds still matches. */
 private val KEYS_KEEPING_CARET =
     setOf("volume_up", "volume_down", "volume_mute", "play_pause", "next_track", "prev_track")
+
+/**
+ * Icons of the apps focused on the PCs, for the typing box. A PC names each
+ * by a key (16 hex characters of its PNG's hash), so a key always means the
+ * same icon. The bytes are the PC's: bounded and checked before decoding.
+ */
+internal object PcAppIcons {
+    /** In the app's cache folder: a folder per PC, a PNG per key. */
+    const val DIR = "pc-icons"
+    const val IN_MEMORY = 32
+    const val FILES_PER_PC = 64
+    const val MAX_BYTES = 16 * 1024
+    const val MAX_PX = 256
+
+    /** A key as the PC sends it: 16 lowercase hex characters, safe as a file name. */
+    fun isKey(key: String): Boolean = key.length == 16 && key.all { it in '0'..'9' || it in 'a'..'f' }
+
+    /** A PC id that's safe as a folder name. */
+    fun isPcFolder(pcId: String): Boolean = pcId.length in 1..128 && pcId.all { it in 'a'..'z' || it in '0'..'9' }
+
+    /** Whether a picture of [size] bytes, [width] by [height] pixels, is one to decode. */
+    fun fits(size: Int, width: Int, height: Int): Boolean =
+        size in 1..MAX_BYTES && width in 1..MAX_PX && height in 1..MAX_PX
+
+    /** Decodes a PNG once its size and dimensions check out: a small file can claim a huge image. */
+    fun decode(bytes: ByteArray): Bitmap? {
+        if (bytes.size !in 1..MAX_BYTES) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outMimeType != "image/png" || !fits(bytes.size, bounds.outWidth, bounds.outHeight)) return null
+        return runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
+    }
+
+    /** The icon kept in [file], marked as just used; one that won't decode goes. */
+    fun read(file: java.io.File): Bitmap? {
+        if (!file.isFile) return null
+        val icon = runCatching { if (file.length() <= MAX_BYTES) decode(file.readBytes()) else null }.getOrNull()
+        if (icon == null) {
+            runCatching { file.delete() }
+            return null
+        }
+        runCatching { file.setLastModified(System.currentTimeMillis()) }
+        return icon
+    }
+
+    /** Keeps [bytes] in [file], then only the [FILES_PER_PC] icons of that PC used last. */
+    fun save(file: java.io.File, bytes: ByteArray) {
+        val dir = file.parentFile ?: return
+        runCatching {
+            dir.mkdirs()
+            val temp = java.io.File.createTempFile("icon", ".tmp", dir)
+            try {
+                temp.writeBytes(bytes)
+                temp.renameTo(file)
+            } finally {
+                temp.delete()
+            }
+            dir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".png") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(FILES_PER_PC)
+                ?.forEach { it.delete() }
+        }
+    }
+}

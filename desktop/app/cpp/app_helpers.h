@@ -61,6 +61,10 @@ rust::String translate(rust::Str context, rust::Str text);
 // Decodes image bytes (PNG, JPEG, WebP, BMP, etc.) into width, height and ARGB32 bytes.
 rust::Vec<uint8_t> decode_image(rust::Slice<const uint8_t> bytes);
 rust::Vec<uint8_t> encode_png(rust::Slice<const uint8_t> bytes, bool fast);
+// An app's icon (a theme name, or an absolute path) as a PNG of at most `edge`
+// pixels a side, drawn on the GUI thread from any thread; empty when there's
+// none or it couldn't be drawn.
+rust::Vec<uint8_t> app_icon_png(rust::Str icon, uint32_t edge);
 bool app_window_active();
 
 // Linux QSystemTrayIcon + QMenu, screen geometry, activation token, and QClipboard.

@@ -471,6 +471,51 @@ bool runOnQtMainThreadSync(F &&fn, uint32_t timeout_ms = 500)
 }
 } // namespace
 
+rust::Vec<uint8_t> app_icon_png(rust::Str icon, uint32_t edge)
+{
+    // The largest edge a phone takes (remote::MAX_ICON_EDGE), and how long the
+    // GUI thread may take to start drawing.
+    constexpr uint32_t MAX_EDGE = 256;
+    constexpr uint32_t DRAW_TIMEOUT_MS = 2000;
+    rust::Vec<uint8_t> result;
+    if (icon.empty() || edge == 0 || edge > MAX_EDGE)
+        return result;
+    // A QPixmap without a QGuiApplication ends the process.
+    if (!qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
+        return result;
+    const QString name = QString::fromUtf8(icon.data(), static_cast<qsizetype>(icon.size()));
+    const int side = static_cast<int>(edge);
+    QByteArray png;
+    const bool drawn = runOnQtMainThreadSync(
+        [&name, side, &png]() {
+            QIcon qicon;
+            if (QDir::isAbsolutePath(name)) {
+                // Never a FIFO or a device, which would block the GUI thread.
+                if (QFileInfo(name).isFile())
+                    qicon = QIcon(name);
+            } else {
+                qicon = QIcon::fromTheme(name);
+            }
+            if (qicon.isNull())
+                return;
+            QImage image = qicon.pixmap(QSize(side, side), 1.0).toImage();
+            if (image.isNull())
+                return;
+            if (image.width() > side || image.height() > side)
+                image = image.scaled(side, side, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            QBuffer buffer(&png);
+            if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG"))
+                png.clear();
+        },
+        DRAW_TIMEOUT_MS);
+    if (!drawn)
+        return result;
+    result.reserve(static_cast<size_t>(png.size()));
+    for (const char byte : png)
+        result.push_back(static_cast<uint8_t>(byte));
+    return result;
+}
+
 namespace {
 // This process's arguments, as the kernel has them.
 std::vector<std::string> processArguments()

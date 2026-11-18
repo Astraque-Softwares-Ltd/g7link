@@ -1084,6 +1084,18 @@ Item {
 
                         SettingRow {
                             width: parent.width
+                            iconPath: Icons.text
+                            title: qsTr("Show browser fields on the phone")
+                            description: qsTr("Chrome and Electron apps, while you type from the phone")
+                            Toggle {
+                                label: qsTr("Show browser fields on the phone")
+                                checked: Preferences.readBrowserText
+                                onToggled: (on) => Preferences.readBrowserText = on
+                            }
+                        }
+
+                        SettingRow {
+                            width: parent.width
                             iconPath: Icons.keyboard
                             title: qsTr("Enter sends messages")
                             description: qsTr("In mirroring · Ctrl+Enter for a new line · needs Assist")

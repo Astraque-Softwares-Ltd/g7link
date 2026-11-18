@@ -3996,7 +3996,9 @@ async fn remote_input_needs_toggle_and_delivers_motion_keys_and_slides() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_watching_phone_hears_the_pcs_text_field_and_edits_it() {
-    use g7link_core::{INPUT_INJECT, INPUT_TEXT_MIRROR, RemoteInput, RemoteTextState, TextFieldKind};
+    use g7link_core::{
+        INPUT_APP_ICON, INPUT_INJECT, INPUT_TEXT_MIRROR, RemoteInput, RemoteTextState, TextFieldKind,
+    };
 
     let mut pc = device("Desktop", DeviceKind::Desktop).await;
     let mut phone = device("Pixel", DeviceKind::Phone).await;
@@ -4016,9 +4018,14 @@ async fn a_watching_phone_hears_the_pcs_text_field_and_edits_it() {
     .await;
     assert!(!phone.node.remote_mirrors_text(&pc_id));
     assert!(matches!(phone.node.remote_text_watch(pc_id, true).await, Err(Error::Unsupported)));
+    let icon_key = "0123456789abcdef".to_owned();
+    assert!(matches!(phone.node.remote_app_icon(pc_id, icon_key.clone()).await, Err(Error::Unsupported)));
 
     pc.node
-        .update_power(PowerLevel::NotApplicable, vec![INPUT_INJECT.into(), INPUT_TEXT_MIRROR.into()])
+        .update_power(
+            PowerLevel::NotApplicable,
+            vec![INPUT_INJECT.into(), INPUT_TEXT_MIRROR.into(), INPUT_APP_ICON.into()],
+        )
         .await;
     let deadline = tokio::time::Instant::now() + WAIT;
     while !phone.node.remote_mirrors_text(&pc_id) {
@@ -4053,6 +4060,7 @@ async fn a_watching_phone_hears_the_pcs_text_field_and_edits_it() {
         anchor: None,
         more_before: false,
         more_after: false,
+        icon: Some(icon_key.clone()),
     };
     pc.node.remote_text_state(phone_id, &state).await.unwrap();
     let heard = wait_for(&mut phone, "the PC's field", |e| match e {
@@ -4061,6 +4069,15 @@ async fn a_watching_phone_hears_the_pcs_text_field_and_edits_it() {
     })
     .await;
     assert_eq!(heard, state);
+
+    // The icon the state names: not kept yet, then kept and fetched.
+    assert!(phone.node.remote_app_icon(pc_id, icon_key.clone()).await.is_err());
+    let png = b"\x89PNG\r\n\x1a\nicon".to_vec();
+    assert!(pc.node.keep_app_icon("not a key".into(), png.clone()).is_err());
+    assert!(pc.node.keep_app_icon(icon_key.clone(), b"GIF89a".to_vec()).is_err());
+    pc.node.keep_app_icon(icon_key.clone(), png.clone()).unwrap();
+    assert_eq!(phone.node.remote_app_icon(pc_id, icon_key.clone()).await.unwrap(), png);
+    assert!(matches!(phone.node.remote_app_icon(pc_id, "../etc".into()).await, Err(Error::Protocol(_))));
 
     let edit = RemoteInput::Edit {
         focus: 4,

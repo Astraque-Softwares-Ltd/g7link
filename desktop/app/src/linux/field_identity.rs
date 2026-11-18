@@ -23,6 +23,8 @@ pub struct StableKey {
     pub app: String,
     /// The window it's in, when known.
     pub window: Option<u64>,
+    /// The address of the web page it's on (hashed with the rest, not kept).
+    pub doc: String,
     pub role: u32,
     pub name: String,
     pub description: String,

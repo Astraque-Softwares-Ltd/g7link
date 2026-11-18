@@ -310,6 +310,8 @@
     <string name="remote_type_placeholder">Escribe en %1$s…</string>
     <string name="remote_field_secret">Campo de contraseña</string>
     <string name="remote_field_none">Nada admite texto en %1$s</string>
+    <string name="remote_field_may_differ">Puede ser distinto en %1$s</string>
+    <string name="remote_field_start_afresh">Empezar de cero</string>
     <string name="remote_image_not_pasted">%1$s no pudo recibir la imagen. ¿Está activada la extensión de GNOME de G7 Linux?</string>
     <string name="remote_attachment_remove">Quitar %1$s</string>
     <string name="remote_dictate">Dictar</string>

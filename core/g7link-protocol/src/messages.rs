@@ -90,6 +90,7 @@ pub mod types {
     pub const REMOTE_TEXT_FOCUS: &str = "remote.text_focus";
     pub const REMOTE_TEXT_WATCH: &str = "remote.text_watch";
     pub const REMOTE_TEXT_STATE: &str = "remote.text_state";
+    pub const REMOTE_APP_ICON: &str = "remote.app_icon";
     pub const PHONE_TOGGLES: &str = "phone.toggles";
     pub const PHONE_TOGGLE_SET: &str = "phone.toggle.set";
     pub const DECK_LAYOUT: &str = "deck.layout";
@@ -3531,6 +3532,11 @@ pub mod remote {
     /// Most UTF-8 bytes of the app name, and of the field's label, in a text state.
     pub const MAX_STATE_APP: usize = 64;
     pub const MAX_STATE_LABEL: usize = 64;
+    /// An app icon's key in a text state: hex digits of a hash of its PNG.
+    pub const ICON_KEY_LEN: usize = 16;
+    /// Most bytes of an app icon's PNG, and its largest edge in pixels.
+    pub const MAX_ICON_BYTES: usize = 16 * 1024;
+    pub const MAX_ICON_EDGE: u32 = 256;
     /// What a PC answers an `Edit` or `Caret` meant for a field that no
     /// longer has the focus.
     pub const STALE_FOCUS: &str = "stale focus";
@@ -3739,6 +3745,10 @@ pub struct RemoteTextState {
     pub more_before: bool,
     #[serde(default)]
     pub more_after: bool,
+    /// The focused app's icon, to fetch with `remote.app_icon` (PCs that
+    /// offer `input.app_icon`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// Never prints the field's text (protocol v0 §11).
@@ -3774,6 +3784,37 @@ impl RemoteTextState {
             && (mirrored || (self.before.is_empty() && self.after.is_empty() && self.anchor.is_none()))
             && !self.before.contains('\0')
             && !self.after.contains('\0')
+            && self.icon.as_deref().is_none_or(is_icon_key)
+    }
+}
+
+/// Whether `key` looks like an app icon's key in a text state.
+pub fn is_icon_key(key: &str) -> bool {
+    key.len() == remote::ICON_KEY_LEN && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Body of `remote.app_icon` (phone → PC): the icon a text state named.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAppIcon {
+    pub key: String,
+}
+
+/// Reply to `remote.app_icon`: the icon as a PNG.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteAppIconData {
+    #[serde(with = "serde_bytes")]
+    pub png: Vec<u8>,
+}
+
+impl std::fmt::Debug for RemoteAppIconData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteAppIconData").field("png_bytes", &self.png.len()).finish()
+    }
+}
+
+impl RemoteAppIconData {
+    pub fn is_valid(&self) -> bool {
+        self.png.len() <= remote::MAX_ICON_BYTES && self.png.starts_with(b"\x89PNG\r\n\x1a\n")
     }
 }
 
@@ -6824,6 +6865,7 @@ mod tests {
             anchor: Some(12),
             more_before: true,
             more_after: false,
+            icon: Some("0123456789abcdef".into()),
         };
         assert!(state.is_valid());
         assert_eq!(state.caret(), 19);
@@ -6841,8 +6883,27 @@ mod tests {
         assert!(!opaque.is_valid(), "only a mirrored field carries text");
         let opaque = RemoteTextState { before: String::new(), after: String::new(), anchor: None, ..opaque };
         assert!(opaque.is_valid());
+        for icon in ["0123456789ABCDEF", "0123456789abcde", "../../etc/passwd"] {
+            assert!(!RemoteTextState { icon: Some(icon.into()), ..state.clone() }.is_valid(), "{icon}");
+        }
         let long = RemoteTextState { before: "x".repeat(remote::MAX_STATE_BEFORE + 1), ..state };
         assert!(!long.is_valid());
+
+        // No icon, as from an older PC: the key isn't sent at all.
+        let plain = RemoteTextState { icon: None, ..opaque.clone() };
+        let env = Envelope::new(types::REMOTE_TEXT_STATE, &plain).unwrap();
+        let map = env.body::<ciborium::Value>().unwrap();
+        assert!(!map.as_map().unwrap().iter().any(|(k, _)| k.as_text() == Some("icon")));
+        assert_eq!(env.body::<RemoteTextState>().unwrap(), plain);
+
+        let ask = RemoteAppIcon { key: "0123456789abcdef".into() };
+        let env = Envelope::new(types::REMOTE_APP_ICON, &ask).unwrap();
+        assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<RemoteAppIcon>().unwrap(), ask);
+        let icon = RemoteAppIconData { png: b"\x89PNG\r\n\x1a\nrest".to_vec() };
+        assert!(icon.is_valid());
+        assert!(!format!("{icon:?}").contains("PNG"));
+        assert!(!RemoteAppIconData { png: b"GIF89a".to_vec() }.is_valid());
+        assert!(!RemoteAppIconData { png: vec![0x89; remote::MAX_ICON_BYTES + 1] }.is_valid());
 
         let watch = RemoteTextWatch { on: true };
         let env = Envelope::new(types::REMOTE_TEXT_WATCH, &watch).unwrap();

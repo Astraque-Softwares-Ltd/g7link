@@ -47,9 +47,9 @@ fn injected(done: bool) -> Result<(), String> {
 /// typed or pressed, or an edit was meant for a field that lost the focus.
 pub fn handle_input(peer: &DeviceId, input: RemoteInput) -> Result<(), String> {
     let _ = crate::input_share::enter_remote(*peer);
-    let done = run_input(peer, input);
-    sys::text_focus::note_injected();
-    done
+    // Activity at the PC while this runs, and just after, is the phone's.
+    let _typing = sys::text_focus::injecting();
+    run_input(peer, input)
 }
 
 fn run_input(peer: &DeviceId, input: RemoteInput) -> Result<(), String> {
@@ -68,7 +68,7 @@ fn run_input(peer: &DeviceId, input: RemoteInput) -> Result<(), String> {
         }
         RemoteInput::Key { key, mods } => return injected(sys::input::press_key_checked(&key, &mods)),
         RemoteInput::Edit { focus, seq, range, moves, backspaces, text } => {
-            if focus != 0 && focus != sys::text_focus::current_focus() {
+            if focus != 0 && !sys::text_focus::accepts_focus(focus) {
                 return Err(remote_limits::STALE_FOCUS.into());
             }
             match range {
@@ -78,7 +78,7 @@ fn run_input(peer: &DeviceId, input: RemoteInput) -> Result<(), String> {
             applied(peer, seq);
         }
         RemoteInput::Caret { focus, seq, caret, anchor } => {
-            if focus != 0 && focus != sys::text_focus::current_focus() {
+            if focus != 0 && !sys::text_focus::accepts_focus(focus) {
                 return Err(remote_limits::STALE_FOCUS.into());
             }
             injected(sys::text_focus::set_caret(focus, caret, anchor))?;
@@ -188,6 +188,14 @@ pub fn text_state_changed(state: RemoteTextState) {
             }
         }
     });
+}
+
+/// The icon of the app a text state names, for phones to fetch.
+pub fn keep_app_icon(key: String, png: Vec<u8>) {
+    let Some(node) = core_host::node() else { return };
+    if let Err(error) = node.keep_app_icon(key, png) {
+        tracing::debug!(%error, "couldn't keep an app icon for phones");
+    }
 }
 
 /// Clears any active laser pointer and releases held mouse buttons (e.g. when
