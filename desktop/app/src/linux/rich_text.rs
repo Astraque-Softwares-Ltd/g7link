@@ -48,6 +48,9 @@ pub struct Flat {
     pub runs: Vec<Run>,
     /// Where each object starts in the flat text, by owner.
     starts: Vec<u32>,
+    /// Each object's own text: how much of it is shown, and how long it is
+    /// (a paragraph's last line break is the editor's placeholder, not text).
+    lens: Vec<(u32, u32)>,
 }
 
 impl Flat {
@@ -72,6 +75,11 @@ impl Flat {
 
     /// Where `local` in object `owner` is in the flat text.
     pub fn to_flat(&self, owner: usize, local: u32) -> Option<u32> {
+        // At or after a paragraph's placeholder break: the end of its text.
+        let local = match self.lens.get(owner) {
+            Some(&(shown, total)) if local > shown && local <= total => shown,
+            _ => local,
+        };
         if let Some(run) = self
             .runs
             .iter()
@@ -101,20 +109,25 @@ impl Flat {
 pub fn flatten(root: &Node) -> Option<Flat> {
     let mut flat = Flat::default();
     let mut chars = 0u32;
-    walk(root, 0, &mut flat, &mut chars)?;
+    walk(root, false, 0, &mut flat, &mut chars)?;
     Some(flat)
 }
 
-fn walk(node: &Node, depth: usize, flat: &mut Flat, chars: &mut u32) -> Option<()> {
+fn walk(node: &Node, block: bool, depth: usize, flat: &mut Flat, chars: &mut u32) -> Option<()> {
     if depth > MAX_DEPTH || flat.starts.len() >= MAX_OBJECTS {
         return None;
     }
     let owner = flat.starts.len();
     flat.starts.push(*chars);
+    // Editors end a paragraph with a line break that holds its line open (an
+    // empty one is only that): it isn't text anyone typed.
+    let total = u32::try_from(node.text.chars().count()).ok()?;
+    let shown = if block && node.text.ends_with('\n') { total - 1 } else { total };
+    flat.lens.push((shown, total));
     let mut links = node.links.iter().peekable();
     let mut run_start: Option<(u32, u32)> = None;
     let mut last_block = false;
-    for (local, ch) in node.text.chars().enumerate() {
+    for (local, ch) in node.text.chars().take(shown as usize).enumerate() {
         let local = u32::try_from(local).ok()?;
         if ch != EMBEDDED {
             if run_start.is_none() {
@@ -134,14 +147,13 @@ fn walk(node: &Node, depth: usize, flat: &mut Flat, chars: &mut u32) -> Option<(
         if (link.block && *chars > flat.starts[owner]) || (last_block && !link.block) {
             push(flat, chars, '\n')?;
         }
-        walk(&link.node, depth + 1, flat, chars)?;
+        walk(&link.node, link.block, depth + 1, flat, chars)?;
         last_block = link.block;
     }
     if links.next().is_some() {
         return None;
     }
-    let end = u32::try_from(node.text.chars().count()).ok()?;
-    close_run(flat, owner, &mut run_start, end);
+    close_run(flat, owner, &mut run_start, shown);
     Some(())
 }
 
@@ -238,6 +250,24 @@ mod tests {
         }
         assert_eq!(flatten(&deep), None);
         assert_eq!(flatten(&text(&"x".repeat(MAX_CHARS + 1))), None);
+    }
+
+    #[test]
+    fn a_paragraphs_placeholder_break_isnt_text() {
+        // An empty prompt: one paragraph holding only the editor's line break.
+        let flat = flatten(&field(&["\n"])).unwrap();
+        assert_eq!(flat.text, "");
+        assert_eq!(flat.to_local(0), Some((1, 0)));
+        assert_eq!(flat.to_flat(1, 0), Some(0));
+        assert_eq!(flat.to_flat(1, 1), Some(0), "after the placeholder is where the text ends");
+        // A line break typed at the end of a paragraph stays; the placeholder after it goes.
+        let flat = flatten(&field(&["hi\n\n", "\n", "there"])).unwrap();
+        assert_eq!(flat.text, "hi\n\n\nthere");
+        assert_eq!(flat.to_flat(1, 3), Some(3));
+        assert_eq!(flat.to_flat(1, 4), Some(3));
+        assert_eq!(flat.to_local(5), Some((3, 0)));
+        // The field's own text keeps its last line break.
+        assert_eq!(flatten(&text("a\n")).unwrap().text, "a\n");
     }
 
     #[test]
