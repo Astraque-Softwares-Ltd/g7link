@@ -241,6 +241,20 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_in_the_text_takes_no_room() {
+        let line =
+            Node { text: format!("a{EMBEDDED}b"), links: vec![Link { at: 1, block: false, node: text("") }] };
+        let flat = flatten(&line).unwrap();
+        assert_eq!(flat.text, "ab");
+        assert_eq!(flat.objects(), 2);
+        // Between the two letters is after the picture; both sides map back.
+        assert_eq!(flat.to_local(1), Some((0, 2)));
+        assert_eq!(flat.to_flat(0, 1), Some(1));
+        assert_eq!(flat.to_flat(0, 2), Some(1));
+        assert_eq!(flat.to_flat(0, 3), Some(2));
+    }
+
+    #[test]
     fn text_around_paragraphs_gets_its_own_lines() {
         let root = Node {
             text: format!("top{EMBEDDED}tail"),

@@ -373,6 +373,8 @@ fun RemoteScreen(
                         showKeyboard = it
                         keyboardOpenedForPc = false
                     },
+                    // Typing makes the keyboard the user's: it no longer goes by itself.
+                    onTypedHere = { keyboardOpenedForPc = false },
                     pasteChip = pasteChip,
                     pasteReady = freshClip != null,
                     onPasted = onPasted,
@@ -1001,6 +1003,7 @@ private fun TouchpadView(
     onTouchpadOnly: (Boolean) -> Unit,
     showKeyboard: Boolean,
     onShowKeyboard: (Boolean) -> Unit,
+    onTypedHere: () -> Unit,
     pasteChip: PcClipNotice?,
     pasteReady: Boolean,
     onPasted: () -> Unit,
@@ -1306,7 +1309,10 @@ private fun TouchpadView(
                         return@TypingComposer
                     }
                     // Modifiers are for shortcuts and keys: typing lets go of them.
-                    if (next.text != typed.text) activeMods.clear()
+                    if (next.text != typed.text) {
+                        activeMods.clear()
+                        onTypedHere()
+                    }
                     // What changed goes over as one edit where it changed (a new
                     // line is Shift+Enter: a line break in chats and prompts).
                     typed = next

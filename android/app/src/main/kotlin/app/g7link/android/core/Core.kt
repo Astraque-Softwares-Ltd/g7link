@@ -2675,7 +2675,15 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         onDone: (app.g7link.android.ui.remote.TypingResult) -> Unit,
     ) {
         val send: suspend (G7LinkNode) -> Unit = { started ->
-            val result = runTyping(started, id, op, onStatus)
+            // Whatever goes wrong, the box hears: it holds the next change until then.
+            val result = try {
+                runTyping(started, id, op, onStatus)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "typing failed: ${e.javaClass.simpleName}")
+                app.g7link.android.ui.remote.TypingResult.Failed
+            }
             withContext(Dispatchers.Main) { onDone(result) }
         }
         val queued = synchronized(opsLock) { isRunning && node != null && remoteOps.trySend(send).isSuccess }

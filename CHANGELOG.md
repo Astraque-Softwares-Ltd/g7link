@@ -68,6 +68,11 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   already in them, multi-paragraph prompts included. The PC asks each app once,
   only when the phone types into it; Settings › General, "Show browser fields
   on the phone", turns it off.
+- **The typing box doesn't freeze or fill in suggestions.** It keeps following
+  the laptop after an edit that didn't go through, or a read that failed
+  while an app changed its field. A browser's address-bar suggestion stays out
+  of the box, and what you type next replaces it on the laptop as typing there
+  would. Once you've typed, the keyboard stays open until you close it.
 - **The bubble over the typing box shows the app's icon,** with the field's
   name only when it adds something ("Claude · Claude" is gone), and no longer
   crowds the keys above it. It follows the window you're in, not another

@@ -38,6 +38,56 @@ class TypingSyncTest {
     }
 
     @Test
+    fun aFailedEditDoesNotStopTheBoxFollowingThePc() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Mirror, before = "hi"))
+        sync.type("!")
+        sync.onDone(sync.nextOp()!!, TypingResult.Failed)
+        // Typed at the laptop since: the PC ran nothing from here.
+        sync.onState(field(1, FieldKind.Mirror, before = "hi there", applied = 0))
+        now += 2_000
+        assertTrue("the laptop's text is taken", sync.tick())
+        assertEquals("hi there", sync.box.text)
+    }
+
+    @Test
+    fun anEditThatNeverAnswersIsLetGo() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Mirror, before = "hi"))
+        sync.type("!")
+        assertTrue(sync.nextOp() != null)
+        sync.type("?")
+        assertNull("one at a time", sync.nextOp())
+        now += TypingSync.IN_FLIGHT_MS
+        assertTrue("the next may go", sync.tick())
+        assertEquals(TypingOp.Edit(1, 2, 3, 3, 0, 0, "?"), sync.nextOp())
+    }
+
+    @Test
+    fun anAddressBarsSuggestionStaysOutOfTheBox() {
+        val sync = sync()
+        sync.onState(field(1, FieldKind.Mirror))
+        sync.type("h")
+        assertEquals(TypingOp.Edit(1, 1, 0, 0, 0, 0, "h"), sync.sendAndAck())
+        // The browser completes it and selects what it added.
+        sync.onState(field(1, FieldKind.Mirror, before = "h", after = "ttps://example.com", applied = 1, anchor = 19))
+        now += 2_000
+        assertFalse("the suggestion isn't taken", sync.tick())
+        assertEquals("h", sync.box.text)
+        // The next letter goes as typed, replacing the suggestion there.
+        sync.type("e")
+        assertEquals(TypingOp.Edit(1, 2, null, null, 0, 0, "e"), sync.sendAndAck())
+        sync.onState(field(1, FieldKind.Mirror, before = "he", after = "llo.com", applied = 2, anchor = 9))
+        // Backspace drops the suggestion first, then the letter.
+        sync.onLocal(BoxText("h"))
+        assertEquals(TypingOp.Edit(1, 3, null, null, 0, 2, ""), sync.sendAndAck())
+        // Without a suggestion, edits go by range again.
+        sync.onState(field(1, FieldKind.Mirror, before = "h", applied = 3))
+        sync.type("i")
+        assertEquals(TypingOp.Edit(1, 4, 1, 1, 0, 0, "i"), sync.sendAndAck())
+    }
+
+    @Test
     fun typingInAFieldWithoutSharedTextGoesAsKeysAtTheCaret() {
         val sync = sync()
         sync.onState(field(1, FieldKind.Opaque))

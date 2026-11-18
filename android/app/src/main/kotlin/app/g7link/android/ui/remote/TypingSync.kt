@@ -127,9 +127,18 @@ internal class TypingSync(
     private var shadowAnchor = 0
     private var windowStart = 0
     private var sentSeq = 0
+    /** The last op the PC ran: a state from before it is out of date. */
+    private var doneSeq = 0
     private var inFlight: TypingOp? = null
+    private var inFlightAt = 0L
     private var beforeOp: Triple<String, Int, Int>? = null
     private var blocked = false
+    /**
+     * The PC's field has a suggestion after what was typed here, selected (a
+     * browser's address bar completing it): the box leaves it out, and keys go
+     * to the app as typed, which replace or drop it as the app would.
+     */
+    private var suggestionAhead = false
     private var pending: PcField? = null
     private var pendingAt = 0L
     private var typedAt = 0L
@@ -159,7 +168,18 @@ internal class TypingSync(
         val seq = sentSeq + 1
         val op: TypingOp.Edit
         var removedStart = prefix
-        if (kind == FieldKind.Mirror) {
+        if (kind == FieldKind.Mirror && suggestionAhead && editEnd == shadow.length) {
+            // At the end, where the suggestion starts: typing replaces it, and the
+            // first Backspace drops it before deleting what was typed.
+            val backspaces = if (removed.isEmpty()) 0 else graphemeCount(removed) + 1
+            if (backspaces > MAX_STEPS) {
+                suggestionAhead = false
+                return nextOp()
+            }
+            suggestionAhead = false
+            op = TypingOp.Edit(focus, seq, null, null, 0, backspaces, added)
+        } else if (kind == FieldKind.Mirror) {
+            suggestionAhead = false
             val start = windowStart + shadow.codePointCount(0, prefix)
             op = TypingOp.Edit(focus, seq, start, start + removed.codePointCount(0, removed.length), 0, 0, added)
         } else {
@@ -190,6 +210,7 @@ internal class TypingSync(
         shadowAnchor = shadowCaret
         sentSeq = seq
         inFlight = op
+        inFlightAt = clock()
         return op
     }
 
@@ -205,12 +226,14 @@ internal class TypingSync(
         sentSeq += 1
         val op = TypingOp.Caret(focus, sentSeq, caret, anchor)
         inFlight = op
+        inFlightAt = clock()
         return op
     }
 
     /** How [op] went. */
     fun onDone(op: TypingOp, result: TypingResult) {
         if (inFlight?.seq == op.seq) inFlight = null
+        if (result == TypingResult.Done) doneSeq = maxOf(doneSeq, op.seq)
         if (op.focus != focus) return
         if (result == TypingResult.Failed) {
             // Not typed: the box keeps it, and it goes again with the next change.
@@ -238,8 +261,15 @@ internal class TypingSync(
         }
         when (state.kind) {
             FieldKind.Mirror -> {
-                if (inFlight != null || state.applied < sentSeq) return
+                if (inFlight != null || state.applied < doneSeq) return
                 val text = state.before + state.after
+                if (state.start == windowStart && isSuggestion(state, text)) {
+                    // What was typed here, and the app's suggestion after it.
+                    pending = null
+                    suggestionAhead = true
+                    return
+                }
+                suggestionAhead = false
                 if (state.start == windowStart && text == shadow) {
                     // Our own typing, come back.
                     pending = null
@@ -266,13 +296,22 @@ internal class TypingSync(
 
     /** Takes a waiting field state once both sides are quiet. Returns whether it did. */
     fun tick(): Boolean {
-        val state = pending ?: return false
-        if (state.applied < sentSeq) {
+        val now = clock()
+        var released = false
+        if (inFlight != null && now - inFlightAt >= IN_FLIGHT_MS) {
+            // No answer: whether it ran, the PC's next state tells (or, where
+            // its text isn't shared, nobody can). What's waiting can go now.
+            inFlight = null
+            beforeOp = null
+            if (kind != FieldKind.Mirror) unverified = true
+            released = true
+        }
+        val state = pending ?: return released
+        if (state.applied < doneSeq) {
             pending = null
-            return false
+            return released
         }
         if (inFlight != null) return false
-        val now = clock()
         val quiet = now - typedAt >= QUIET_MS && now - pendingAt >= QUIET_MS
         val settled = !box.composing && box.text == shadow && quiet
         if (!settled && now - pendingAt < FORCE_MS) return false
@@ -313,6 +352,7 @@ internal class TypingSync(
         pending = null
         blocked = false
         unverified = false
+        suggestionAhead = false
         when (state.kind) {
             FieldKind.Mirror -> adopt(state)
             FieldKind.Opaque -> {
@@ -336,6 +376,20 @@ internal class TypingSync(
         }
     }
 
+    /**
+     * Whether [state]'s [text] is what was typed here with a suggestion after
+     * it: a selection running to the end of the field, from where the typing ends.
+     */
+    private fun isSuggestion(state: PcField, text: String): Boolean {
+        val anchor = state.anchor ?: return false
+        if (shadow.isEmpty()) return false
+        val caret = state.before.length
+        val other = utf16Index(text, anchor - state.start)
+        val from = minOf(caret, other)
+        val to = maxOf(caret, other)
+        return from == shadow.length && to == text.length && from < to && text.startsWith(shadow)
+    }
+
     private fun adopt(state: PcField) {
         val text = state.before + state.after
         val caret = state.before.length
@@ -343,6 +397,7 @@ internal class TypingSync(
         windowStart = state.start
         pending = null
         unverified = false
+        suggestionAhead = false
         replace(BoxText(text, anchor, caret), shadowToo = true)
     }
 
@@ -367,6 +422,9 @@ internal class TypingSync(
         const val MAX_STEPS = 512
         const val QUIET_MS = 300L
         const val FORCE_MS = 1500L
+
+        /** An op unanswered this long is let go: the PC answers or fails long before. */
+        const val IN_FLIGHT_MS = 8_000L
 
         private val characters: BreakIterator = BreakIterator.getCharacterInstance()
 

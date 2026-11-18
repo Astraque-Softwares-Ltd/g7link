@@ -88,6 +88,10 @@ const WAKE_NODES: usize = 2000;
 const WAKE_TIME: Duration = Duration::from_millis(300);
 /// How far up from a field its web document is looked for.
 const MAX_ANCESTORS: usize = 30;
+/// Reads of a shared field that may fail in a row (the app changing it under
+/// the read) before it's taken as not shared for [`READ_PAUSE`].
+const MAX_READ_FAILURES: u32 = 3;
+const READ_PAUSE: Duration = Duration::from_secs(2);
 /// How long after a window gets the focus an app has to tell of its focused
 /// field before the window is taken as the field.
 const WINDOW_GRACE: Duration = Duration::from_millis(150);
@@ -162,6 +166,12 @@ static READER: Mutex<Option<(zbus::blocking::Connection, bool)>> = Mutex::new(No
 static WAKE_CHROMIUM: AtomicBool = AtomicBool::new(true);
 /// Apps (accessibility bus names) already asked.
 static WOKEN: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+/// Failed reads of the focused field: its focus id, how many in a row, and
+/// until when it's not read.
+static READ_TROUBLE: Mutex<(u32, u32, Option<Instant>)> = Mutex::new((0, 0, None));
+/// Whether the focus takes text, as last told, and who to tell.
+static EDITABLE: AtomicBool = AtomicBool::new(false);
+static EDITABLE_CHANGED: OnceLock<fn(bool)> = OnceLock::new();
 static SEND_STATE: OnceLock<fn(RemoteTextState)> = OnceLock::new();
 /// Hands phones' app icons to the core to serve, and the last one handed.
 static KEEP_ICON: OnceLock<fn(String, Vec<u8>)> = OnceLock::new();
@@ -284,9 +294,10 @@ pub fn mark_dirty() {
 pub fn watch(editable: fn(bool), state: fn(RemoteTextState), keep_icon: fn(String, Vec<u8>)) {
     let _ = SEND_STATE.set(state);
     let _ = KEEP_ICON.set(keep_icon);
+    let _ = EDITABLE_CHANGED.set(editable);
     let _ = std::thread::Builder::new().name("text-focus".into()).spawn(move || {
         loop {
-            follow(editable);
+            follow();
             std::thread::sleep(RETRY);
         }
     });
@@ -368,8 +379,17 @@ fn event_rule(member: &str, focused_only: bool) -> Option<zbus::MatchRule<'stati
     Some(builder.build())
 }
 
+/// Tells whether the focus takes text, when that changed.
+fn report_editable(now: bool) {
+    if EDITABLE.swap(now, Ordering::SeqCst) != now
+        && let Some(changed) = EDITABLE_CHANGED.get()
+    {
+        changed(now);
+    }
+}
+
 /// Follows focus changes until the accessibility bus connection ends.
-fn follow(editable_changed: fn(bool)) {
+fn follow() {
     let Some(conn) = a11y_bus() else { return };
     let messages = zbus::blocking::MessageIterator::from(&conn);
     let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&conn) else { return };
@@ -396,7 +416,6 @@ fn follow(editable_changed: fn(bool)) {
     // A new bus: the reading connection is made again too.
     drop_reader();
 
-    let mut editable = false;
     let mut pids: HashMap<String, u32> = HashMap::new();
     for message in messages {
         let Ok(message) = message else { break };
@@ -427,10 +446,7 @@ fn follow(editable_changed: fn(bool)) {
             focus_left(&object);
             false
         };
-        if now != editable {
-            editable = now;
-            editable_changed(editable);
-        }
+        report_editable(now);
     }
     IN_TERMINAL.store(false, Ordering::Relaxed);
 }
@@ -695,7 +711,16 @@ fn read_state() -> Option<RemoteTextState> {
     if state.kind == TextFieldKind::Mirror
         && let Some(object) = object
     {
-        match reader().and_then(|conn| read_text(&conn, &object)) {
+        let now = Instant::now();
+        let paused = {
+            let mut trouble = READ_TROUBLE.lock().unwrap_or_else(|e| e.into_inner());
+            if trouble.0 != state.focus {
+                *trouble = (state.focus, 0, None);
+            }
+            trouble.2.is_some_and(|until| now < until)
+        };
+        let text = if paused { None } else { reader().and_then(|conn| read_text(&conn, &object)) };
+        match text {
             Some(text) => {
                 state.start = text.start;
                 state.before = text.before;
@@ -703,17 +728,26 @@ fn read_state() -> Option<RemoteTextState> {
                 state.anchor = text.anchor;
                 state.more_before = text.more_before;
                 state.more_after = text.more_after;
+                *READ_TROUBLE.lock().unwrap_or_else(|e| e.into_inner()) = (state.focus, 0, None);
                 let mut focus = focus();
                 if focus.id == state.focus {
                     focus.pieces = text.pieces;
                 }
             }
             None => {
-                // The app stopped answering: keys only, until the focus moves.
-                drop_reader();
-                let mut focus = focus();
-                if focus.id == state.focus {
-                    focus.kind = TextFieldKind::Opaque;
+                // A read fails now and then while the app changes the field
+                // under it: nothing is said until a few fail in a row. Then
+                // it's keys only for a while (the app may have stopped
+                // answering), and it's read again.
+                if !paused {
+                    let mut trouble = READ_TROUBLE.lock().unwrap_or_else(|e| e.into_inner());
+                    trouble.1 += 1;
+                    if trouble.1 < MAX_READ_FAILURES {
+                        return None;
+                    }
+                    *trouble = (state.focus, 0, Some(now + READ_PAUSE));
+                    drop(trouble);
+                    drop_reader();
                 }
                 state.kind = TextFieldKind::Opaque;
             }
@@ -838,7 +872,10 @@ fn read_node(
         return None;
     }
     objects.push(object.clone());
-    let count = property::<i32>(conn, object, TEXT, "CharacterCount")?;
+    let Some(count) = property::<i32>(conn, object, TEXT, "CharacterCount") else {
+        // An embedded object with no text (a picture): nothing on the line.
+        return (depth > 0).then(|| Node { text: String::new(), links: Vec::new() });
+    };
     if usize::try_from(count).ok()? > rich_text::MAX_CHARS {
         return None;
     }
@@ -1060,7 +1097,8 @@ fn wake(window: &Window) {
     for _ in 0..WAKE_TRIES {
         if let Some(field) = find_focused(&conn, &root) {
             if still_window() {
-                focus_moved(&conn, field);
+                let takes_text = focus_moved(&conn, field);
+                report_editable(takes_text);
             }
             return;
         }
