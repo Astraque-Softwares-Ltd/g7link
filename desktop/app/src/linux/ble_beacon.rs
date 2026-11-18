@@ -170,18 +170,43 @@ pub fn can_link() -> bool {
     CAN_LINK.load(Ordering::Relaxed)
 }
 
+/// Records whether an adapter here can serve GATT; phones are told when it changes.
+fn set_can_link(can: bool) {
+    if CAN_LINK.swap(can, Ordering::Relaxed) != can {
+        crate::core_host::refresh_capabilities();
+    }
+}
+
 /// Lets the phones whose beacon keys are `keys` connect over Bluetooth for
 /// `open`: the PC advertises their "connect" tags, and can be connected to,
-/// until the window closes or a link is up.
+/// until the window closes or a link is up. Phones already in an open window
+/// stay in it, as many as fit.
 pub fn open_window(keys: Vec<[u8; 32]>, open: Duration) {
     if keys.is_empty() {
         return;
     }
     if let Some(worker) = WORKER.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        *worker.wake.window.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Window { keys, until: Instant::now() + open });
+        let now = Instant::now();
+        let mut window = worker.wake.window.lock().unwrap_or_else(|e| e.into_inner());
+        *window = Some(merged(window.as_ref(), keys, now + open, now));
+        drop(window);
         worker.wake.set(|w| w.resync = true);
     }
+}
+
+/// A window for `keys` until `until`, with the phones of `current` (while it's
+/// still open) after them, as many as a window has slots for.
+fn merged(current: Option<&Window>, keys: Vec<[u8; 32]>, until: Instant, now: Instant) -> Window {
+    let current = current.filter(|w| w.until > now);
+    let mut all: Vec<[u8; 32]> = Vec::with_capacity(WINDOW_SLOTS);
+    for key in keys.into_iter().chain(current.iter().flat_map(|w| w.keys.iter().copied())) {
+        if !all.contains(&key) {
+            all.push(key);
+        }
+    }
+    all.truncate(WINDOW_SLOTS);
+    let until = current.map_or(until, |w| w.until.max(until));
+    Window { keys: all, until }
 }
 
 /// Ends the window early (a phone connected).
@@ -567,14 +592,11 @@ impl Beacon {
             }
             self.adapter = adapter;
         }
+        let can_gatt = serves_gatt(objects, self.adapter.as_ref());
+        set_can_link(can_gatt);
         let Some(adapter) = self.adapter.clone() else {
             return;
         };
-
-        let can_gatt = objects.get(&adapter).is_some_and(|ifaces| ifaces.contains_key(GATT_MANAGER));
-        if CAN_LINK.swap(can_gatt, Ordering::Relaxed) != can_gatt {
-            crate::core_host::refresh_capabilities();
-        }
         let gatt_wanted = phones.linkable && can_gatt;
         if gatt_wanted && !self.gatt {
             match register_application(conn, &adapter) {
@@ -711,6 +733,12 @@ fn unregister(conn: &zbus::blocking::Connection, adapter: &OwnedObjectPath, path
     );
 }
 
+/// Whether `adapter` (the one the beacon uses) can serve the GATT service.
+/// No adapter, none.
+fn serves_gatt(objects: &ManagedObjects, adapter: Option<&OwnedObjectPath>) -> bool {
+    adapter.and_then(|adapter| objects.get(adapter)).is_some_and(|ifaces| ifaces.contains_key(GATT_MANAGER))
+}
+
 /// The first powered adapter (by path, so the choice is stable) that can
 /// advertise.
 fn advertising_adapter(objects: &ManagedObjects) -> Option<OwnedObjectPath> {
@@ -807,6 +835,9 @@ fn run_worker(env: &Env, device_id: &DeviceId, wake: &Arc<Wake>) {
         let bluez_running = super::dbus_name_has_owner(&conn, BLUEZ);
         if woken.bluez_changed || !bluez_running {
             beacon.forget();
+        }
+        if !bluez_running {
+            set_can_link(false);
         }
         if bluez_running && let Some(objects) = managed_objects(&conn) {
             let window = wake.window();
@@ -1114,6 +1145,33 @@ mod tests {
             ifaces.insert(GATT_MANAGER.to_owned(), HashMap::new());
         }
         objects
+    }
+
+    #[test]
+    fn only_an_adapter_in_use_that_serves_gatt_can_link() {
+        let objects = gatt_adapter();
+        let hci0 = OwnedObjectPath::try_from("/org/bluez/hci0").unwrap();
+        assert!(serves_gatt(&objects, Some(&hci0)));
+        assert!(!serves_gatt(&objects, None), "Bluetooth turned off: no adapter in use");
+        assert!(!serves_gatt(&adapter("/org/bluez/hci0", true, true), Some(&hci0)), "no GattManager1");
+        assert!(!serves_gatt(&HashMap::new(), Some(&hci0)), "the adapter went");
+    }
+
+    #[test]
+    fn a_window_asked_for_while_one_is_open_keeps_its_phones() {
+        let now = Instant::now();
+        let first = Window { keys: vec![key(1)], until: now + Duration::from_secs(40) };
+        let both = merged(Some(&first), vec![key(2)], now + Duration::from_secs(30), now);
+        assert_eq!(both.keys, [key(2), key(1)]);
+        assert_eq!(both.until, first.until, "the later end");
+        let again = merged(Some(&both), vec![key(1)], now + Duration::from_secs(45), now);
+        assert_eq!(again.keys, [key(1), key(2)], "no phone twice");
+        assert_eq!(again.until, now + Duration::from_secs(45));
+        let full = merged(Some(&again), vec![key(3), key(4)], now + Duration::from_secs(30), now);
+        assert_eq!(full.keys.len(), WINDOW_SLOTS);
+        assert_eq!(full.keys[..2], [key(3), key(4)], "the new phones first");
+        let closed = Window { keys: vec![key(1)], until: now };
+        assert_eq!(merged(Some(&closed), vec![key(2)], now + Duration::from_secs(30), now).keys, [key(2)]);
     }
 
     #[test]

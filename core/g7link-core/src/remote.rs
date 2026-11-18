@@ -21,7 +21,7 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, NodeEvent, Result, node::Shared, session::Session};
+use crate::{Error, NodeEvent, Result, ble_link::RemotePath, node::Shared, session::Session};
 
 /// Capability ID announced by a desktop that can inject mouse, keyboard and
 /// presentation input (`docs/protocol/remote.md` §1).
@@ -115,6 +115,12 @@ pub(crate) struct RemoteState {
     prompted: HashSet<DeviceId>,
     /// PC: app icons named in text states, by key, oldest first.
     icons: Vec<(String, Arc<Vec<u8>>)>,
+    /// PC: the path each watching phone's last `text_watch` came on, which
+    /// its states go back on.
+    watch_via: HashMap<DeviceId, RemotePath>,
+    /// Phone: the focus and `rev` of the last state each PC's typing box
+    /// was given. One from the path used before can arrive after a newer one.
+    last_state: HashMap<DeviceId, (u32, u32)>,
 }
 
 impl RemoteState {
@@ -148,7 +154,34 @@ impl RemoteState {
     pub fn remove_peer(&mut self, peer: &DeviceId) {
         self.peers.remove(peer);
         self.prompted.remove(peer);
+        self.watch_via.remove(peer);
+        self.last_state.remove(peer);
     }
+
+    /// Whether a state from `peer` for `focus` numbered `rev` is newer than
+    /// the last one given for that focus; it's recorded when it is.
+    fn fresh_state(&mut self, peer: DeviceId, focus: u32, rev: u32) -> bool {
+        if let Some(&(last_focus, last_rev)) = self.last_state.get(&peer)
+            && last_focus == focus
+            // `rev` counts on and wraps: newer is less than half the range ahead.
+            && !(1..=i32::MAX as u32).contains(&rev.wrapping_sub(last_rev))
+        {
+            return false;
+        }
+        self.last_state.insert(peer, (focus, rev));
+        true
+    }
+}
+
+/// Phone: what the typing box was given from `peer` no longer counts (it
+/// closed, or the PC is gone and may come back with its states starting over).
+pub(crate) fn forget_text_state(shared: &Shared, peer: &DeviceId) {
+    shared.remote.lock().unwrap_or_else(|e| e.into_inner()).last_state.remove(peer);
+}
+
+/// PC: the path `peer`'s last `text_watch` came on, while it watches.
+pub(crate) fn watch_via(shared: &Shared, peer: &DeviceId) -> Option<RemotePath> {
+    shared.remote.lock().unwrap_or_else(|e| e.into_inner()).watch_via.get(peer).copied()
 }
 
 fn peer_offers(shared: &Shared, peer: &DeviceId, cap: &str) -> Result<bool> {
@@ -388,35 +421,60 @@ async fn send_datagram(shared: &Arc<Shared>, session: &Arc<Session>, event: &Rem
     Ok(())
 }
 
+/// The typing box's one-way messages from `peer`, from a session or the
+/// Bluetooth link (`via`): whether `env` was one.
+pub(crate) fn incoming_one_way(
+    shared: &Shared,
+    peer: DeviceId,
+    env: &Envelope,
+    via: RemotePath,
+) -> Result<bool> {
+    match env.t.as_str() {
+        // A PC's text focus: heard only where input isn't injected.
+        types::REMOTE_TEXT_FOCUS => {
+            if !shared.we_offer(INPUT_INJECT) {
+                let RemoteTextFocus { editable } = env.body()?;
+                shared.emit(NodeEvent::PcTextFocus { device: peer, editable });
+            }
+        }
+        // The PC's focused field: heard only where input isn't injected, and
+        // dropped when it isn't newer than one already given.
+        types::REMOTE_TEXT_STATE => {
+            if !shared.we_offer(INPUT_INJECT) {
+                let state: RemoteTextState = env.body()?;
+                let fresh = state.is_valid()
+                    && shared.remote.lock().unwrap_or_else(|e| e.into_inner()).fresh_state(
+                        peer,
+                        state.focus,
+                        state.rev,
+                    );
+                if fresh {
+                    shared.emit(NodeEvent::PcTextState { device: peer, state });
+                }
+            }
+        }
+        // A phone's typing box opened or closed: only phones that may
+        // control this PC are heard. Its states go on the path this came on.
+        types::REMOTE_TEXT_WATCH => {
+            if shared.we_offer(INPUT_TEXT_MIRROR) {
+                let RemoteTextWatch { on } = env.body()?;
+                if !on {
+                    shared.remote.lock().unwrap_or_else(|e| e.into_inner()).watch_via.remove(&peer);
+                    shared.emit(NodeEvent::TextWatch { device: peer, on });
+                } else if check_allowed(shared, &peer).is_ok() {
+                    shared.remote.lock().unwrap_or_else(|e| e.into_inner()).watch_via.insert(peer, via);
+                    shared.emit(NodeEvent::TextWatch { device: peer, on });
+                }
+            }
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 /// Handles incoming `remote.*` requests on the control stream.
 pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
-    // A PC's text focus (one way, no reply): heard only where input isn't injected.
-    if env.t == types::REMOTE_TEXT_FOCUS {
-        if !shared.we_offer(INPUT_INJECT) {
-            let RemoteTextFocus { editable } = env.body()?;
-            shared.emit(NodeEvent::PcTextFocus { device: session.peer, editable });
-        }
-        return Ok(true);
-    }
-    // The PC's focused field (one way): heard only where input isn't injected.
-    if env.t == types::REMOTE_TEXT_STATE {
-        if !shared.we_offer(INPUT_INJECT) {
-            let state: RemoteTextState = env.body()?;
-            if state.is_valid() {
-                shared.emit(NodeEvent::PcTextState { device: session.peer, state });
-            }
-        }
-        return Ok(true);
-    }
-    // A phone's typing box opened or closed (one way): only phones that may
-    // control this PC are heard.
-    if env.t == types::REMOTE_TEXT_WATCH {
-        if shared.we_offer(INPUT_TEXT_MIRROR) {
-            let RemoteTextWatch { on } = env.body()?;
-            if !on || check_allowed(shared, &session.peer).is_ok() {
-                shared.emit(NodeEvent::TextWatch { device: session.peer, on });
-            }
-        }
+    if incoming_one_way(shared, session.peer, env, RemotePath::Session)? {
         return Ok(true);
     }
     let reply = match env.t.as_str() {
@@ -528,5 +586,23 @@ mod tests {
         assert!(state.mark_prompted(b));
         state.remove_peer(&a);
         assert!(state.mark_prompted(a), "unpairing resets prompt state");
+    }
+
+    #[test]
+    fn a_state_that_isnt_newer_for_its_focus_is_dropped() {
+        let mut state = RemoteState::default();
+        let pc = DeviceId([1; 32]);
+        assert!(state.fresh_state(pc, 7, 5));
+        assert!(!state.fresh_state(pc, 7, 4), "older, from the path used before");
+        assert!(!state.fresh_state(pc, 7, 5), "the same one twice");
+        assert!(state.fresh_state(pc, 7, 6));
+        assert!(state.fresh_state(pc, 8, 1), "another focus starts over");
+        assert!(state.fresh_state(DeviceId([2; 32]), 8, 0), "each PC its own");
+        for rev in [0x7FFF_FFFF, 0xF000_0000, u32::MAX, 0] {
+            assert!(state.fresh_state(pc, 8, rev), "rev counts on and wraps: {rev:#x}");
+        }
+        assert!(!state.fresh_state(pc, 8, u32::MAX), "just before the wrap");
+        state.last_state.remove(&pc);
+        assert!(state.fresh_state(pc, 8, 0), "forgotten");
     }
 }

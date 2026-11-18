@@ -62,4 +62,8 @@ object BeaconMatcher {
         }
         return null
     }
+
+    /** Whether [payload] is [pcId]'s beacon asking this phone to connect, not just saying it's there. */
+    fun asksToConnect(payload: ByteArray, pcId: String, key: ByteArray, unixSeconds: Long): Boolean =
+        match(payload, mapOf(pcId to key), unixSeconds) == Match(pcId, Kind.CONNECT)
 }

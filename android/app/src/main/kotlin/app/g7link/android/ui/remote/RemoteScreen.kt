@@ -131,8 +131,13 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
+import app.g7link.android.ble.PcBleLink
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
 import app.g7link.android.core.PcCaptureState
@@ -141,7 +146,6 @@ import app.g7link.android.core.WakeState
 import app.g7link.android.ui.capture.recordLabel
 import app.g7link.android.ui.capture.screenshotLabel
 import app.g7link.android.ui.home.PcSoundRows
-import app.g7link.android.ui.home.linkText
 import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7IconKeycap
@@ -207,6 +211,34 @@ fun RemoteScreen(
     var mode by rememberSaveable(initialMode) { mutableStateOf(initialMode) }
     var showKeyboard by rememberSaveable { mutableStateOf(false) }
     var screenFullScreen by rememberSaveable { mutableStateOf(false) }
+    var showConnection by rememberSaveable(device.id) { mutableStateOf(false) }
+
+    // While this screen shows, the core measures both paths and the PC keeps a
+    // Bluetooth link for it; a little longer once it's in the background.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, core, device.id) {
+        val id = device.id
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> core.remoteShown(id, true)
+                Lifecycle.Event.ON_STOP -> core.remoteShown(id, false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            core.remoteClosed(id)
+        }
+    }
+    // A quick link while a tab that takes Bluetooth shows; balanced again soon after.
+    val urgentLink = wantsUrgentLink(device, mode)
+    LifecycleStartEffect(device.id, urgentLink) {
+        val id = device.id
+        if (urgentLink) PcBleLink.setUrgent(id, true)
+        onStopOrDispose { if (urgentLink) PcBleLink.setUrgent(id, false) }
+    }
+
     var access by remember(device.id) { mutableStateOf(Core.RemoteAccess.Allowed) }
     // In landscape the touchpad takes the screen, with its buttons under it.
     var touchpadOnlyChosen by rememberSaveable { mutableStateOf(true) }
@@ -297,13 +329,15 @@ fun RemoteScreen(
             .then(if (isFullScreen) Modifier else Modifier.systemBarsPadding()),
     ) {
         if (!isFullScreen) {
-            // With no network, the touchpad and keyboard go over Bluetooth.
-            val note = if (!device.online && device.bleLinked) {
-                stringResource(R.string.bt_media_pc_hint)
-            } else {
-                linkText(device.link)
-            }
-            G7Header(title = device.name, onBack = onBack, note = note)
+            // How input reaches the PC; where it can go over Bluetooth, the note opens the choice.
+            val note = remoteNote(device, mode)
+            G7Header(
+                title = device.name,
+                onBack = onBack,
+                note = remoteNoteText(note, device.link),
+                noteColor = if (note is RemoteNote.Path && note.warn) g7Tints().amber else Color.Unspecified,
+                onNoteClick = if (opensConnectionSheet(device, mode)) ({ showConnection = true }) else null,
+            )
             G7Tabs(
                 options = listOf(
                     RemoteMode.Touchpad to stringResource(R.string.remote_mode_touchpad),
@@ -470,6 +504,10 @@ fun RemoteScreen(
                 )
             }
         }
+    }
+
+    if (showConnection && device.bleRemote) {
+        ConnectionSheet(device = device, core = core, onDismiss = { showConnection = false })
     }
 }
 
@@ -1038,6 +1076,16 @@ private fun TouchpadView(
                 showField()
             }
         }
+    }
+    // The PC sends the field on the path the box last asked on: after a switch, it asks again.
+    val startPath = remember(core, pcId) { core.state.value.device(pcId)?.activePath }
+    val activePath by remember(core, pcId) {
+        core.state.map { it.device(pcId)?.activePath }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = startPath)
+    var watchedPath by remember(pcId) { mutableStateOf(activePath) }
+    LaunchedEffect(showKeyboard, activePath) {
+        if (watchAgain(showKeyboard, activePath, watchedPath)) core.remoteTextWatch(pcId, true)
+        watchedPath = activePath
     }
     val pcState by remember(core, pcId) {
         core.state.map { it.pcTextState[pcId] }.distinctUntilChanged()

@@ -1001,6 +1001,54 @@ NativeWindow {
     }
 
     Sheet {
+        id: blePromptSheet
+        opened: AppController.blePromptDeviceId.length > 0
+        cardWidth: 440
+        onOpenedChanged: {
+            if (!opened && AppController.blePromptDeviceId.length > 0)
+                AppController.dismissBlePrompt()
+        }
+        Column {
+            width: parent.width
+            spacing: 16
+            Avatar {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 56; height: 56
+                iconPath: Icons.bluetooth
+                emphasized: true
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("Let %1 use Bluetooth with this PC?").arg(AppController.blePromptDeviceName)
+                role: "headline"
+                wrapMode: Text.WordWrap
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("%1 wants its touchpad and keyboard to reach this PC over Bluetooth. It also lets this PC ring it, turn on its hotspot and pass small copied text with no network. You can change this in Settings.").arg(AppController.blePromptDeviceName)
+                role: "body"
+                muted: true
+                wrapMode: Text.WordWrap
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 10
+                Button {
+                    variant: "text"
+                    text: qsTr("Not now")
+                    onClicked: AppController.dismissBlePrompt()
+                }
+                Button {
+                    text: qsTr("Allow")
+                    onClicked: AppController.allowBleLink(AppController.blePromptDeviceId)
+                }
+            }
+        }
+    }
+
+    Sheet {
         id: pcMirrorPromptSheet
         opened: AppController.pcMirrorPromptDeviceId.length > 0
         cardWidth: 460

@@ -294,6 +294,21 @@ impl Responder {
     }
 }
 
+/// Both ends' ciphers of a finished handshake between two test devices: the
+/// phone's, the PC's, and the two devices.
+#[cfg(test)]
+pub(crate) fn linked_ciphers() -> (Cipher, Cipher, DeviceId, DeviceId) {
+    let (phone_key, pc_key) = (iroh::SecretKey::from_bytes(&[1; 32]), iroh::SecretKey::from_bytes(&[2; 32]));
+    let (phone, pc) = (DeviceId(*phone_key.public().as_bytes()), DeviceId(*pc_key.public().as_bytes()));
+    let secret = [3; LINK_SECRET_LEN];
+    let (initiator, msg1) = Initiator::start(phone, pc, secret).expect("a handshake starts");
+    let (responder, msg2) =
+        Responder::read_msg1(pc, &msg1, &[(phone, secret)], &|m| pc_key.sign(m).to_bytes()).expect("msg1");
+    let (on_phone, msg3) = initiator.read_msg2(&msg2, &|m| phone_key.sign(m).to_bytes()).expect("msg2");
+    let on_pc = responder.read_msg3(&msg3).expect("msg3");
+    (on_phone, on_pc, phone, pc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

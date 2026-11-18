@@ -6,7 +6,8 @@
 A paired phone and PC use Bluetooth LE for two things: the phone recognises
 the PC's beacon nearby (to reconnect at once), and, when the user turns it on
 for that pair, the two open a small encrypted channel when they share no
-network. Sessions themselves never run over Bluetooth.
+network, or while the phone's touchpad uses it (§4.5). Sessions themselves
+never run over Bluetooth.
 
 ## 1. Capabilities and toggles
 
@@ -14,6 +15,7 @@ network. Sessions themselves never run over Bluetooth.
 |---|---|---|
 | `ble.beacon2` | phone | Recognises the rotating beacon (§3). While a paired phone lacks it, the PC also broadcasts the old one (§3.4). |
 | `ble.link` | phone, PC | Can open the channel (§4): the phone has the Nearby devices permission, the PC an adapter that serves GATT. |
+| `ble.remote` | phone, PC | Offered with `ble.link`. The channel also carries the typing box (§4.4) and holds (§4.5); a phone picks a path for its touchpad (§4.6). |
 
 The device toggle `ble_link` (off by default) lets a paired device use the
 channel. Each device checks its own toggle for the other.
@@ -81,8 +83,10 @@ The PC serves it while a phone may use the channel, but can be connected to
 only in windows: a connectable advertisement shows the PC's public address. A
 window (30 s when the PC has something for a phone, 45 s after a phone's
 session ends or at start, those two at most once a minute) carries `C` tags
-for the phones wanted; a phone that sees its tag connects. The link ends 10 s
-after the phone's session is back.
+for the phones wanted; a phone that sees its tag connects. A window asked for
+while another is open joins it (at most three phones). The PC serves one link
+at a time. The link ends 10 s after the phone's session is back, unless the
+phone holds it (§4.5).
 
 ### 4.2 Framing
 
@@ -90,7 +94,9 @@ Each value is one fragment: a header byte (bit 7 first, bit 6 last, bits 0-5
 a sequence number per direction), on the first fragment the record's length
 (2 bytes, big endian), then the record's bytes. Records are at most 4112
 bytes, 256 before the handshake ends. Anything out of sequence, too long or
-short ends the link.
+short ends the link. A message whose record wouldn't fit, or for which the
+sender has no room, is refused before it's sealed: a sealed record that isn't
+sent would leave the counters apart.
 
 ### 4.3 Handshake ("G7BLE/1")
 
@@ -110,9 +116,8 @@ other exactly; nonces are four zero bytes and the counter, big endian.
 
 ### 4.4 Messages
 
-Envelopes are as on a session, at most 4096 bytes, 20 records then 2 a
-second from the other side (`BUSY` past that). Only these are carried, each
-also needing the receiver's `ble_link` toggle:
+Envelopes are as on a session, at most 4095 bytes. Only these are carried,
+each also needing the receiver's `ble_link` toggle:
 
 | Type | Direction |
 |---|---|
@@ -122,9 +127,81 @@ also needing the receiver's `ble_link` toggle:
 | `ble.otp { code, source? }` (needs `notifications`) | phone → PC |
 | `phone.toggle.set` → `ok` (`hotspot` only, needs `toggles`), `phone.toggles` | PC → phone, phone → PC |
 | `remote.check` → `ok`, `remote.input` (needs `remote_input`) | phone → PC |
+| `remote.text_watch` (`ble.remote`, needs `remote_input`) | phone → PC |
+| `remote.text_state`, `remote.text_focus` (`ble.remote`, needs `remote_input`) | PC → phone |
+| `ble.use` → `ble.use` (`ble.remote`, §4.5) | phone → PC |
 
-Anything else is answered `UNSUPPORTED`. A `remote.input` without an `id` is
-pointer motion, a scroll or the laser: it has no reply, is held to the PC's
-datagram limit instead of the record limit, and the phone adds motion up
-while the link is busy rather than queueing it. Copied text that doesn't go
-over the link waits in the send queue for the network.
+Anything else is answered `UNSUPPORTED`; `remote.app_icon` isn't carried (the
+phone shows the icon it has, or the app's name). Each side holds what the
+other sends to three budgets, each a burst and then a rate:
+
+| Budget | Messages | Burst, then a second |
+|---|---|---|
+| records | everything not below | 20, 2 |
+| input | `remote.input` with an `id`, `remote.text_watch`, `ble.use`, `ping` | 60, 25 |
+| states | `remote.text_state`, `remote.text_focus` | 20, 12 |
+
+Past a budget a request is answered `BUSY` and a one-way message dropped.
+Replies aren't counted: they come as fast as the side that asked sends. A
+`remote.input` without an `id` is pointer motion, a scroll or the laser: it
+has no reply, is held to the PC's datagram limit instead, and the phone adds
+motion up while the link is busy rather than queueing it. Copied text that
+doesn't go over the link waits in the send queue for the network.
+
+Text states over the link are cut to 2048 bytes before the caret and 512
+after it (512 and 128 while the link's ATT MTU is under 185), with `start`
+and `more_before`/`more_after` saying so (remote.md §2.4). The newest waiting
+state replaces an older one: a slow link carries fewer, newer states, after
+any replies queued. The PC sends each state on the path the phone's last
+`remote.text_watch` with `on` came on, or on the other while that one is
+down; a phone sends `text_watch` with `on` again on its new path whenever its
+touchpad's path changes.
+
+### 4.5 Holding the link (`ble.remote`)
+
+```
+t = "ble.use"  id = n  b = { on: bool, ask?: bool }        phone → PC, session or link
+t = "ble.use"  re = n  b = { state: text, lease?: u32 }    lease in seconds, with linked and open
+state = "linked" | "open" | "asking" | "off" | "unavailable" | "busy"
+```
+
+While its touchpad shows and its route is Auto or Bluetooth, a phone asks the
+PC to keep a link with it, and renews that every 20 s; a hold that isn't
+renewed ends 45 s after the last renewal (the `lease`). Unknown `state` values
+read as `off`. Only a phone sends it, only to a PC that offers `ble.remote`;
+a PC answers:
+
+- `off` to `on: false` (the hold ends), and while its `ble_link` toggle is off
+  for the phone and it isn't asking its user.
+- `asking` while its toggle is off and it asks its user: a phone's `ask: true`
+  raises the PC's prompt at most once a minute. The phone asks again with
+  `ask: false` every 1.5 s, for a minute at most, until it's `open`,
+  `linked` or `off`. "Not now" isn't kept: the next answer is `off`.
+- `unavailable` when it has no adapter that serves GATT (or Bluetooth is off
+  there), or the phone hasn't announced `ble.link` or has no link secret.
+- `busy` while another phone's link is up.
+- `linked` (held) when the phone's link is up, `open` (held) otherwise: the
+  PC opens a window (§4.1) for the phone.
+
+While a phone holds the link, it isn't closed when the phone's session comes
+back; the 10 s rule applies again once the hold ends. When a held link drops,
+the PC opens a window again, at most four in any five minutes per phone (two
+minutes of advertising in five at worst); past that, only a `ble.use` with
+`ask: true` (the phone's user asked) opens one.
+
+### 4.6 The touchpad's path (phone)
+
+A phone keeps a route per PC: Auto (the default), Network or Bluetooth.
+Pinned to one, input takes that path while it's up and the other while it
+isn't. Auto measures both every 2 s while a touchpad shows (a ping each, and
+the round trip of each click or key) and moves to the other path when it
+scores better three times in a row (score = 0.7 × median + 0.3 × max of the
+last eight; better is at most 0.7 of the one in use, and 15 ms less), at most
+once in 20 s. A path changes only when nothing would notice: no input waiting
+for its answer, no button held, no motion for 150 ms (and for Auto, no key or
+click for 300 ms); a path that goes down is left at once. A key or click on
+the link with no answer for 1.5 s, or two pings lost, counts the link as down
+for 10 s; the input isn't sent again on the session, as it may have run.
+Discrete input goes one at a time whatever path each takes, so the PC runs it
+in order. With a PC that doesn't offer `ble.remote`, input takes the link only
+when there's no session.

@@ -4,7 +4,9 @@ package app.g7link.android.companion
 import app.g7link.android.companion.BeaconMatcher.Kind
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BeaconMatcherTest {
@@ -56,6 +58,18 @@ class BeaconMatcherTest {
         assertEquals(BeaconMatcher.Match("pc", Kind.CONNECT), BeaconMatcher.match(both, keys, now))
         val others = beacon(BeaconMatcher.tag(otherKey, Kind.PRESENCE, 1_900_000))
         assertEquals("other", BeaconMatcher.match(others, keys, now)?.pcId)
+    }
+
+    @Test
+    fun `only that pc's connect tag asks to connect`() {
+        val connect = beacon(BeaconMatcher.tag(key, Kind.CONNECT, 1_900_000))
+        assertTrue(BeaconMatcher.asksToConnect(connect, "pc", key, now))
+        assertTrue("the window either side", BeaconMatcher.asksToConnect(connect, "pc", key, now + 900))
+        val presence = beacon(BeaconMatcher.tag(key, Kind.PRESENCE, 1_900_000))
+        assertFalse("there, but not asking", BeaconMatcher.asksToConnect(presence, "pc", key, now))
+        val other = beacon(BeaconMatcher.tag(otherKey, Kind.CONNECT, 1_900_000))
+        assertFalse("another PC asking", BeaconMatcher.asksToConnect(other, "pc", key, now))
+        assertFalse("an old window", BeaconMatcher.asksToConnect(connect, "pc", key, now + 1800))
     }
 
     @Test

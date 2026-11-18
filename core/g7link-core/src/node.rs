@@ -780,6 +780,7 @@ impl Shared {
         let changed = lock(&self.links).insert(peer, link.clone()).as_ref() != Some(&link);
         if changed {
             self.emit(NodeEvent::LinkChanged { device: peer, link });
+            self.route_refresh(&peer);
         }
     }
 
@@ -1300,6 +1301,7 @@ impl Shared {
         if changed {
             self.emit(NodeEvent::Capabilities(matrix));
         }
+        self.route_caps_changed(peer);
     }
 
     /// Recomputes every paired device's matrix (after a local change).
@@ -1437,6 +1439,7 @@ impl Shared {
             }
         }
         self.close_ble_link(peer);
+        self.forget_ble(peer);
         if existed {
             self.emit(NodeEvent::DeviceRemoved(*peer));
             self.emit(NodeEvent::BleKeysChanged);
@@ -2619,6 +2622,70 @@ impl Node {
         self.shared.close_ble_link(&peer);
     }
 
+    /// PC: whether the phone `peer` holds its Bluetooth link with this PC
+    /// (`ble.use`): the link isn't closed once its session is back.
+    pub fn ble_held(&self, peer: DeviceId) -> bool {
+        self.shared.ble_held(&peer)
+    }
+
+    /// PC: the prompt raised by [`NodeEvent::BleLinkRequested`] for `peer`
+    /// closed without the `ble_link` toggle being turned on ("Not now"): the
+    /// phone is told no. Turning the toggle on answers it too.
+    pub fn ble_prompt_closed(&self, peer: DeviceId) {
+        self.shared.ble_prompt_closed(&peer);
+    }
+
+    /// Phone: asks the PC `peer` to keep a Bluetooth link with this phone
+    /// (`on`) or to stop (`ble.use`, over the session or else the link);
+    /// with `ask`, the PC may ask its user when its `ble_link` toggle is
+    /// off. Renew it every 20 s while the touchpad shows: a hold that isn't
+    /// renewed ends after 45 s. `Error::Unsupported` for a PC without
+    /// `ble.remote`.
+    pub async fn ble_use(&self, peer: DeviceId, on: bool, ask: bool) -> Result<crate::BleUseState> {
+        if !self.shared.store.is_paired(&peer)? {
+            return Err(Error::NotPaired);
+        }
+        if !self.shared.peer_offers_ble_remote(&peer) {
+            return Err(Error::Unsupported);
+        }
+        let env = Envelope::new(types::BLE_USE, &g7link_protocol::messages::BleUse { on, ask })?;
+        let reply = if self.shared.session(&peer).is_some() {
+            self.request(peer, env).await?
+        } else if self.shared.ble_link(&peer).is_some() {
+            self.shared.ble_request(peer, env, crate::ble_link::REQUEST_TIMEOUT).await?
+        } else {
+            return Err(Error::Offline);
+        };
+        let reply: g7link_protocol::messages::BleUseReply = reply.expect_body(types::BLE_USE)?;
+        Ok(reply.state)
+    }
+
+    /// Whether this device can reach `peer` for touchpad input and the
+    /// typing box: over a session or a Bluetooth link.
+    pub fn input_reachable(&self, peer: DeviceId) -> bool {
+        self.shared.input_reachable(&peer)
+    }
+
+    /// Phone: the route the user picked for the touchpad of the PC `peer`
+    /// (kept by the app, which sets it at start and on change). The path
+    /// changes once nothing is mid-gesture; [`NodeEvent::RemoteRouteChanged`]
+    /// says when.
+    pub fn set_remote_route(&self, peer: DeviceId, route: crate::RemoteRoute) -> Result<()> {
+        self.shared.set_remote_route(&peer, route)
+    }
+
+    /// Phone: where the touchpad route of the PC `peer` stands; the default
+    /// for a device that isn't paired.
+    pub fn remote_route_state(&self, peer: DeviceId) -> crate::RouteState {
+        self.shared.remote_route_state(&peer)
+    }
+
+    /// Phone: a touchpad for the PC `peer` shows (`active`) or no longer
+    /// does. While it shows, both paths are measured every 2 s.
+    pub fn set_remote_active(&self, peer: DeviceId, active: bool) -> Result<()> {
+        self.shared.set_remote_active(&peer, active)
+    }
+
     /// Checks the Bluetooth link with `peer` answers; how long it took.
     pub async fn ble_ping(&self, peer: DeviceId) -> Result<Duration> {
         let started = std::time::Instant::now();
@@ -2692,6 +2759,9 @@ impl Node {
         }
         if toggle == crate::toggles::TOGGLE {
             self.shared.toggles_toggled(peer, enabled);
+        }
+        if toggle == crate::BLE_LINK_TOGGLE {
+            self.shared.ble_toggled(peer, enabled);
         }
         if (toggle == crate::actions::POWER_TOGGLE || toggle == crate::deck::INPUT_TOGGLE)
             && let Some(session) = self.shared.session(&peer)
@@ -3525,25 +3595,58 @@ impl Node {
     }
 
     /// Tells a phone whether what has the focus on this PC takes text
-    /// (`remote.text_focus`), when it may control this PC.
+    /// (`remote.text_focus`), when it may control this PC: on the session,
+    /// or else the Bluetooth link.
     pub async fn remote_text_focus(&self, peer: DeviceId, editable: bool) -> Result<()> {
-        let session = self.connected(&peer)?;
-        crate::remote::text_focus(&self.shared, &session, editable).await
+        match self.connected(&peer) {
+            Err(Error::Offline) if self.shared.ble_link(&peer).is_some() => {
+                self.shared.ble_text_focus(peer, editable)
+            }
+            session => {
+                let session = session?;
+                crate::remote::text_focus(&self.shared, &session, editable).await
+            }
+        }
     }
 
     /// Sends a phone the field that has the focus on this PC
-    /// (`remote.text_state`), when it may control this PC.
+    /// (`remote.text_state`), when it may control this PC: on the path the
+    /// phone's last `remote.text_watch` came on, or the other while that one
+    /// is down. Over the link it's cut shorter, and a newer one replaces it
+    /// while it waits.
     pub async fn remote_text_state(&self, peer: DeviceId, state: &crate::RemoteTextState) -> Result<()> {
-        let session = self.connected(&peer)?;
+        if !self.shared.store.is_paired(&peer)? {
+            return Err(Error::NotPaired);
+        }
+        let session = self.shared.session(&peer);
+        let link = self.shared.ble_link(&peer).is_some() && self.shared.peer_offers_ble_remote(&peer);
+        let over_link = match crate::remote::watch_via(&self.shared, &peer) {
+            Some(crate::RemotePath::Ble) => link,
+            _ => session.is_none() && link,
+        };
+        if over_link {
+            return self.shared.ble_text_state(peer, state);
+        }
+        let session = session.ok_or(Error::Offline)?;
         crate::remote::text_state(&self.shared, &session, state).await
     }
 
     /// Phone: tells a PC its typing box opened (`on`) or closed
-    /// (`remote.text_watch`). `Error::Unsupported` when that PC doesn't
-    /// mirror its text fields.
+    /// (`remote.text_watch`), on the path input takes: the PC sends its
+    /// states back on it. Send it again with `on` when that path changes
+    /// ([`NodeEvent::RemoteRouteChanged`]). `Error::Unsupported` when that
+    /// PC doesn't mirror its text fields.
     pub async fn remote_text_watch(&self, peer: DeviceId, on: bool) -> Result<()> {
-        let session = self.connected(&peer)?;
-        crate::remote::text_watch(&self.shared, &session, on).await
+        if !on {
+            crate::remote::forget_text_state(&self.shared, &peer);
+        }
+        match self.shared.path_for(&peer)? {
+            crate::RemotePath::Ble => self.shared.ble_text_watch(peer, on),
+            crate::RemotePath::Session => {
+                let session = self.connected(&peer)?;
+                crate::remote::text_watch(&self.shared, &session, on).await
+            }
+        }
     }
 
     /// Phone: whether the PC `peer` mirrors its text fields and takes
@@ -4063,49 +4166,91 @@ impl Node {
     /// phone. If `remote_input` is off on the PC, returns [`Error::Denied`]
     /// and triggers the PC's one-time prompt the first time.
     pub async fn remote_check(&self, peer: DeviceId) -> Result<()> {
-        if self.shared.input_over_ble(&peer) {
-            return self.shared.ble_input_check(peer).await;
+        match self.shared.path_for(&peer)? {
+            crate::RemotePath::Ble => self.shared.ble_input_check(peer).await,
+            crate::RemotePath::Session => {
+                let session = self.connected(&peer)?;
+                crate::remote::check(&self.shared, &session).await
+            }
         }
-        let session = self.connected(&peer)?;
-        crate::remote::check(&self.shared, &session).await
     }
 
-    /// Sends a remote input event to a paired PC: over the session, or over
-    /// the Bluetooth link when that's all there is.
+    /// Sends a remote input event to a paired PC, on the path its route
+    /// gives (`set_remote_route`): the session, the Bluetooth link, or the
+    /// other when that one is down. Discrete input goes one at a time: each
+    /// waits for the one before it to be answered, whatever path each took.
     pub async fn remote_input(&self, peer: DeviceId, input: crate::RemoteInput) -> Result<()> {
-        if self.shared.input_over_ble(&peer) {
-            return self.shared.ble_input(peer, input).await;
-        }
-        let session = self.connected(&peer)?;
-        crate::remote::input(&self.shared, &session, input).await
+        let lane = self.shared.input_lane(&peer)?;
+        let _turn = lane.lock().await;
+        let path = self.shared.path_for(&peer)?;
+        let started = self.shared.input_started(&peer, &input);
+        let result = match path {
+            crate::RemotePath::Ble => self.shared.ble_input(peer, input).await,
+            crate::RemotePath::Session => match self.connected(&peer) {
+                Ok(session) => crate::remote::input(&self.shared, &session, input).await,
+                Err(error) => Err(error),
+            },
+        };
+        self.shared.input_done(&peer, path, started, &result);
+        result
     }
 
     /// Sends relative pointer motion `(dx, dy)` in a QUIC datagram (never on
     /// the control stream), or over the Bluetooth link.
     pub async fn remote_move(&self, peer: DeviceId, dx: f32, dy: f32) -> Result<()> {
-        if self.shared.input_over_ble(&peer) {
-            return self.shared.ble_input(peer, crate::RemoteInput::Move { dx, dy }).await;
+        let path = self.shared.path_for(&peer)?;
+        self.shared.input_moved(&peer);
+        match path {
+            crate::RemotePath::Ble => self.shared.ble_input(peer, crate::RemoteInput::Move { dx, dy }).await,
+            crate::RemotePath::Session => {
+                let session = self.connected(&peer)?;
+                crate::remote::move_pointer(&self.shared, &session, dx, dy).await
+            }
         }
-        let session = self.connected(&peer)?;
-        crate::remote::move_pointer(&self.shared, &session, dx, dy).await
     }
 
     /// Sends smooth scroll `(dx, dy)` in a QUIC datagram, or over the Bluetooth link.
     pub async fn remote_scroll_fast(&self, peer: DeviceId, dx: f32, dy: f32) -> Result<()> {
-        if self.shared.input_over_ble(&peer) {
-            return self.shared.ble_input(peer, crate::RemoteInput::Scroll { dx, dy }).await;
+        let path = self.shared.path_for(&peer)?;
+        self.shared.input_moved(&peer);
+        match path {
+            crate::RemotePath::Ble => {
+                self.shared.ble_input(peer, crate::RemoteInput::Scroll { dx, dy }).await
+            }
+            crate::RemotePath::Session => {
+                let session = self.connected(&peer)?;
+                crate::remote::scroll_fast(&self.shared, &session, dx, dy).await
+            }
         }
-        let session = self.connected(&peer)?;
-        crate::remote::scroll_fast(&self.shared, &session, dx, dy).await
     }
 
     /// Sends a laser pointer update to a paired PC (`x`, `y` in `0.0..=1.0`).
+    /// Turning it off goes in its turn, as a key does.
     pub async fn remote_laser(&self, peer: DeviceId, on: bool, x: f32, y: f32) -> Result<()> {
-        if self.shared.input_over_ble(&peer) {
-            return self.shared.ble_input(peer, crate::RemoteInput::Laser { on, x, y }).await;
+        let event = crate::RemoteInput::Laser { on, x, y };
+        let lane = if on { None } else { Some(self.shared.input_lane(&peer)?) };
+        let _turn = match &lane {
+            Some(lane) => Some(lane.lock().await),
+            None => None,
+        };
+        let path = self.shared.path_for(&peer)?;
+        let started = if on {
+            self.shared.input_moved(&peer);
+            None
+        } else {
+            Some(self.shared.input_started(&peer, &event))
+        };
+        let result = match path {
+            crate::RemotePath::Ble => self.shared.ble_input(peer, event).await,
+            crate::RemotePath::Session => match self.connected(&peer) {
+                Ok(session) => crate::remote::laser(&self.shared, &session, on, x, y).await,
+                Err(error) => Err(error),
+            },
+        };
+        if let Some(started) = started {
+            self.shared.input_done(&peer, path, started, &result);
         }
-        let session = self.connected(&peer)?;
-        crate::remote::laser(&self.shared, &session, on, x, y).await
+        result
     }
 
     // ---- Media (docs/protocol/media.md) ----

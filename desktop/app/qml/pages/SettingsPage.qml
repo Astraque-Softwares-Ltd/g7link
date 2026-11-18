@@ -501,7 +501,7 @@ Item {
         commands: qsTr("Run Deck shell commands"),
         remote_files: qsTr("Browse PC folders"),
         bt_media: qsTr("Phone media on this PC"),
-        ble_link: qsTr("Bluetooth when there's no network")
+        ble_link: qsTr("Bluetooth link")
     })
     readonly property var toggleDetails: ({
         notifications: qsTr("Show on this PC"),
@@ -524,7 +524,7 @@ Item {
         commands: qsTr("Only for a phone you trust"),
         remote_files: qsTr("Your PC's folders on the phone"),
         bt_media: qsTr("Over Bluetooth. Off: it keeps playing on the phone's own speaker or headphones"),
-        ble_link: qsTr("Ring it, turn on its hotspot and pass small copied text over Bluetooth. Turn it on on the phone too")
+        ble_link: qsTr("Its touchpad and keyboard, ringing it, its hotspot and small copied text over Bluetooth. Turn it on on the phone too")
     })
     readonly property var toggleTints: ({
         notifications: Theme.tintBlue,

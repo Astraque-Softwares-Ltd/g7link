@@ -743,6 +743,12 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             Ok(body) => shared.ble_key_from_peer(peer, body)?,
             Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed ble.key"),
         },
+        types::BLE_USE => {
+            let reply = shared.ble_use_reply(peer, &env);
+            if env.id.is_some() {
+                session.send(reply.reply_to(env.id)).await?;
+            }
+        }
         other => {
             if env.id.is_some() {
                 let reply = Envelope::error(ErrorCode::Unsupported, format!("unknown message type {other}"));

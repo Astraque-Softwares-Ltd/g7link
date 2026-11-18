@@ -91,6 +91,10 @@ pub mod qobject {
         /// first time while `remote_input` is off ("" when none).
         #[qproperty(QString, remote_prompt_device_id)]
         #[qproperty(QString, remote_prompt_device_name)]
+        /// Device ID and name of a phone asking to use Bluetooth with this PC
+        /// while `ble_link` is off ("" when none).
+        #[qproperty(QString, ble_prompt_device_id)]
+        #[qproperty(QString, ble_prompt_device_name)]
         /// Device ID and name of a phone asking to view this PC's screen
         /// while `pc_mirror` is off ("" when none), plus active sharing indicator.
         #[qproperty(QString, pc_mirror_prompt_device_id)]
@@ -208,6 +212,12 @@ pub mod qobject {
         /// Dismisses the one-time remote input prompt without enabling the toggle.
         #[qinvokable]
         fn dismiss_remote_prompt(self: Pin<&mut AppController>);
+        /// Lets a paired phone use Bluetooth with this PC (from its prompt sheet).
+        #[qinvokable]
+        fn allow_ble_link(self: Pin<&mut AppController>, device: &QString);
+        /// Closes the Bluetooth prompt without allowing it: the phone is told no.
+        #[qinvokable]
+        fn dismiss_ble_prompt(self: Pin<&mut AppController>);
         /// Allows a paired phone to view this PC's screen for the current session only.
         #[qinvokable]
         fn allow_pc_mirror_once(self: Pin<&mut AppController>, device: &QString);
@@ -477,6 +487,8 @@ pub struct AppControllerRust {
     update_status: QString,
     remote_prompt_device_id: QString,
     remote_prompt_device_name: QString,
+    ble_prompt_device_id: QString,
+    ble_prompt_device_name: QString,
     pc_mirror_prompt_device_id: QString,
     pc_mirror_prompt_device_name: QString,
     pc_mirror_active: bool,
@@ -1197,6 +1209,7 @@ impl qobject::AppController {
             toggles_version,
             battery,
             remote_prompt,
+            ble_prompt,
             pc_mirror_prompt,
             pc_mirror_peer_name,
             laser,
@@ -1209,6 +1222,10 @@ impl qobject::AppController {
                 s.ringing_from.map(|id| s.name_of(&id).unwrap_or_else(|| id.short())).unwrap_or_default();
             let ringing_devices = s.ringing_devices.iter().map(|id| QString::from(&id.to_string())).collect();
             let remote_prompt = s.remote_prompt.map(|id| {
+                let name = s.name_of(&id).unwrap_or_else(|| id.short());
+                (id.to_string(), name)
+            });
+            let ble_prompt = s.ble_prompt.map(|id| {
                 let name = s.name_of(&id).unwrap_or_else(|| id.short());
                 (id.to_string(), name)
             });
@@ -1250,6 +1267,7 @@ impl qobject::AppController {
                 s.toggles_version,
                 battery,
                 remote_prompt,
+                ble_prompt,
                 pc_mirror_prompt,
                 pc_mirror_peer_name,
                 s.laser,
@@ -1284,6 +1302,9 @@ impl qobject::AppController {
         let (prompt_id, prompt_name) = remote_prompt.unwrap_or_default();
         self.as_mut().set_remote_prompt_device_id(QString::from(&prompt_id));
         self.as_mut().set_remote_prompt_device_name(QString::from(&prompt_name));
+        let (ble_prompt_id, ble_prompt_name) = ble_prompt.unwrap_or_default();
+        self.as_mut().set_ble_prompt_device_id(QString::from(&ble_prompt_id));
+        self.as_mut().set_ble_prompt_device_name(QString::from(&ble_prompt_name));
         let (mirror_prompt_id, mirror_prompt_name) = pc_mirror_prompt.unwrap_or_default();
         self.as_mut().set_pc_mirror_prompt_device_id(QString::from(&mirror_prompt_id));
         self.as_mut().set_pc_mirror_prompt_device_name(QString::from(&mirror_prompt_name));
@@ -1619,6 +1640,21 @@ impl qobject::AppController {
             .update(|s| if s.remote_prompt.take().is_some() { Changes::REMOTE } else { Changes::NONE });
     }
 
+    pub fn allow_ble_link(mut self: Pin<&mut Self>, device: &QString) {
+        self.as_mut().set_device_toggle(device, &QString::from(g7link_core::BLE_LINK_TOGGLE), true);
+    }
+
+    pub fn dismiss_ble_prompt(self: Pin<&mut Self>) {
+        let mut asked = None;
+        core_host::host().hub.update(|s| {
+            asked = s.ble_prompt.take();
+            if asked.is_some() { Changes::REMOTE } else { Changes::NONE }
+        });
+        if let (Some(device), Some(node)) = (asked, core_host::node()) {
+            node.ble_prompt_closed(device);
+        }
+    }
+
     pub fn allow_pc_mirror_once(self: Pin<&mut Self>, device: &QString) {
         let Some(id) = super::parse_device(device) else { return };
         if let Some(node) = core_host::node() {
@@ -1744,6 +1780,17 @@ impl qobject::AppController {
                 }
             });
             core_host::refresh_capabilities();
+        }
+        if name_str == g7link_core::BLE_LINK_TOGGLE {
+            core_host::host().hub.update(|s| {
+                if s.ble_prompt == Some(id) {
+                    s.ble_prompt = None;
+                    Changes::REMOTE
+                } else {
+                    Changes::NONE
+                }
+            });
+            crate::sys::ble_beacon::phones_changed();
         }
         if name_str == "pc_mirror" {
             if !on {

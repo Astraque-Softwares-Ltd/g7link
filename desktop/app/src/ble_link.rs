@@ -2,9 +2,10 @@
 //! When a paired phone can connect to this PC over Bluetooth
 //! (docs/protocol/bluetooth.md): only in short windows, because a connectable
 //! advertisement shows the PC's address. One opens when the core has
-//! something for a phone that isn't connected, when a phone's connection just
-//! ended, and at start; the last two at most once a minute. A Bluetooth link
-//! ends a little after its phone is back on the network.
+//! something for a phone that isn't connected, when a phone asks for one
+//! (`ble.use`), when a phone's connection just ended, and at start; the last
+//! two at most once a minute. A Bluetooth link ends a little after its phone
+//! is back on the network, unless the phone holds it for its touchpad.
 
 use std::{
     collections::HashSet,
@@ -22,7 +23,8 @@ const WANTED_FOR: Duration = Duration::from_secs(30);
 const UNSOLICITED_FOR: Duration = Duration::from_secs(45);
 /// Unsolicited windows at most this often.
 const UNSOLICITED_GAP: Duration = Duration::from_secs(60);
-/// A Bluetooth link ends this long after its phone is back on the network.
+/// A Bluetooth link ends this long after its phone is back on the network,
+/// or after the phone stops holding it.
 const CLOSE_AFTER_ONLINE: Duration = Duration::from_secs(10);
 
 /// The phones connected over the network now.
@@ -65,6 +67,23 @@ fn open_for(node: &Node, devices: &[DeviceId], open: Duration, unsolicited: bool
     ble_beacon::open_window(keys, open);
 }
 
+/// Whether a phone's link should end: it's back on the network and doesn't
+/// hold the link for its touchpad. With no network the link is the only way.
+fn link_not_needed(online: bool, linked: bool, held: bool) -> bool {
+    online && linked && !held
+}
+
+/// Ends `device`'s link after [`CLOSE_AFTER_ONLINE`], if it still isn't needed then.
+fn close_later(node: Node, device: DeviceId) {
+    core_host::spawn(async move {
+        tokio::time::sleep(CLOSE_AFTER_ONLINE).await;
+        let online = online(|set| set.contains(&device));
+        if link_not_needed(online, node.ble_linked(device), node.ble_held(device)) {
+            node.close_ble_link(device);
+        }
+    });
+}
+
 pub fn on_event(event: &NodeEvent) {
     match event {
         NodeEvent::BleWanted { device } => {
@@ -72,19 +91,31 @@ pub fn on_event(event: &NodeEvent) {
                 open_for(&node, &[*device], WANTED_FOR, false);
             }
         }
-        NodeEvent::BleLinkChanged { up: true, .. } => ble_beacon::close_window(),
+        NodeEvent::BleLinkChanged { device, up: true } => {
+            ble_beacon::close_window();
+            let device = *device;
+            let Some(node) = core_host::node() else { return };
+            if link_not_needed(online(|set| set.contains(&device)), true, node.ble_held(device)) {
+                close_later(node, device);
+            }
+        }
+        NodeEvent::BleHoldChanged { device, held: false } => {
+            let device = *device;
+            let Some(node) = core_host::node() else { return };
+            if link_not_needed(online(|set| set.contains(&device)), node.ble_linked(device), false) {
+                close_later(node, device);
+            }
+        }
         NodeEvent::LinkChanged { device, link } => {
             let device = *device;
             let now_online = matches!(link, LinkState::Online { .. });
             let was_online = online(|set| if now_online { !set.insert(device) } else { set.remove(&device) });
             let Some(node) = core_host::node() else { return };
-            if now_online && !was_online && node.ble_linked(device) {
-                core_host::spawn(async move {
-                    tokio::time::sleep(CLOSE_AFTER_ONLINE).await;
-                    if online(|set| set.contains(&device)) {
-                        node.close_ble_link(device);
-                    }
-                });
+            if now_online
+                && !was_online
+                && link_not_needed(true, node.ble_linked(device), node.ble_held(device))
+            {
+                close_later(node, device);
             } else if !now_online && was_online {
                 open_for(&node, &[device], UNSOLICITED_FOR, true);
             }
@@ -123,6 +154,14 @@ pub fn started() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_ends_once_the_phone_is_back_unless_it_holds_it() {
+        assert!(link_not_needed(true, true, false));
+        assert!(!link_not_needed(true, true, true), "held for the touchpad");
+        assert!(!link_not_needed(false, true, false), "no network: the only way");
+        assert!(!link_not_needed(true, false, false), "nothing to end");
+    }
 
     #[test]
     fn unsolicited_windows_open_at_most_once_a_minute() {

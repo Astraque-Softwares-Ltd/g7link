@@ -3,6 +3,7 @@ package app.g7link.android.core
 
 import android.view.Surface
 import app.g7link.core.Battery
+import app.g7link.core.BleUseState
 import app.g7link.core.DeviceInfo
 import app.g7link.core.DeviceKind
 import app.g7link.core.DiscoveredDevice
@@ -12,6 +13,9 @@ import app.g7link.core.Notification
 import app.g7link.core.PairedDevice
 import app.g7link.core.PairingFailure
 import app.g7link.core.PcClipKind
+import app.g7link.core.RemotePath
+import app.g7link.core.RemoteRoute
+import app.g7link.core.RouteState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -68,6 +72,94 @@ class CoreStateTest {
         assertTrue("other toggles leave it alone", state.device("a")!!.btMedia)
         state = state.reduce(Event.DeviceToggleChanged("a", BT_MEDIA_TOGGLE, false))
         assertFalse(state.device("a")!!.btMedia)
+    }
+
+    @Test
+    fun theTouchpadsRouteIsThePhonesAndItsPathsAreTheCores() {
+        var state = CoreState()
+            .reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
+            .withRoute("a", RemoteRoute.BLUETOOTH)
+        assertFalse("off until the PC says it takes the touchpad over Bluetooth", state.device("a")!!.bleRemote)
+        val fromCore = RouteState(
+            route = RemoteRoute.AUTO,
+            active = RemotePath.SESSION,
+            fallback = true,
+            sessionRttMs = 9u,
+            bleRttMs = null,
+            bleRemote = true,
+            bleLinked = false,
+        )
+        state = state.reduce(Event.RemoteRouteChanged(id = "a", state = fromCore))
+        val device = state.device("a")!!
+        assertEquals("the phone keeps the route it picked", RemoteRoute.BLUETOOTH, device.route)
+        assertEquals(RemotePath.SESSION, device.activePath)
+        assertTrue(device.fallback)
+        assertEquals(9u, device.sessionRttMs)
+        assertNull(device.bleRttMs)
+        assertTrue(device.bleRemote)
+        assertFalse(device.bleLinked)
+
+        val stopped = state.withBleSetup("a", BleSetup.Connecting).withDevicesOffline().device("a")!!
+        assertEquals("kept across a stop", RemoteRoute.BLUETOOTH, stopped.route)
+        assertNull(stopped.activePath)
+        assertFalse(stopped.fallback)
+        assertNull(stopped.sessionRttMs)
+        assertNull(stopped.bleSetup)
+    }
+
+    @Test
+    fun routesKeptOnThePhoneJoinTheCoresStateAtStart() {
+        val state = CoreState()
+            .withDevices(listOf(pc("a", "Desk", 10), pc("b", "Laptop", 20)))
+            .withRoutes(
+                routes = mapOf("a" to RemoteRoute.NETWORK, "b" to RemoteRoute.BLUETOOTH),
+                states = mapOf(
+                    "b" to RouteState(
+                        route = RemoteRoute.BLUETOOTH,
+                        active = RemotePath.BLE,
+                        fallback = false,
+                        sessionRttMs = null,
+                        bleRttMs = 30u,
+                        bleRemote = true,
+                        bleLinked = true,
+                    ),
+                ),
+            )
+        assertEquals(RemoteRoute.NETWORK, state.device("a")!!.route)
+        assertNull(state.device("a")!!.activePath)
+        assertEquals(RemoteRoute.BLUETOOTH, state.device("b")!!.route)
+        assertEquals(RemotePath.BLE, state.device("b")!!.activePath)
+        assertTrue(state.device("b")!!.bleLinked)
+        val paired = CoreState().reduce(Event.DeviceAdded(pc("c", "New", 30)))
+        assertEquals("a new pairing starts on Auto", RemoteRoute.AUTO, paired.device("c")!!.route)
+    }
+
+    @Test
+    fun aBluetoothSetupThatCantGoOnClearsWhenThatChanges() {
+        var state = CoreState()
+            .reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
+            .withBleSetup("a", BleSetup.NoPath)
+        state = state.reduce(Event.LinkChanged("a", Link.Online(relayed = false, usb = false, rttMs = 5u)))
+        assertNull("a network to ask over", state.device("a")!!.bleSetup)
+
+        state = state.withBleSetup("a", BleSetup.Unavailable)
+        state = state.reduce(Event.Capabilities(id = "a", features = emptyList()))
+        assertNull("the PC's Bluetooth may be back", state.device("a")!!.bleSetup)
+
+        state = state.withBleSetup("a", BleSetup.Declined)
+        state = state.reduce(Event.Capabilities(id = "a", features = emptyList()))
+        assertEquals("an answer stays", BleSetup.Declined, state.device("a")!!.bleSetup)
+    }
+
+    @Test
+    fun bleUseAnswersBecomeSetupSteps() {
+        assertEquals(BleSetup.Linked, bleSetupAfter(BleUseState.LINKED, asked = false))
+        assertEquals(BleSetup.Connecting, bleSetupAfter(BleUseState.OPEN, asked = true))
+        assertEquals("Not now", BleSetup.Declined, bleSetupAfter(BleUseState.OFF, asked = true))
+        assertEquals("not asked", BleSetup.NotAllowed, bleSetupAfter(BleUseState.OFF, asked = false))
+        assertEquals("a prompt left a minute", BleSetup.NotAllowed, bleSetupAfter(BleUseState.ASKING, asked = true))
+        assertEquals(BleSetup.Unavailable, bleSetupAfter(BleUseState.UNAVAILABLE, asked = true))
+        assertEquals(BleSetup.Busy, bleSetupAfter(BleUseState.BUSY, asked = false))
     }
 
     @Test

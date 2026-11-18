@@ -88,6 +88,7 @@ import app.g7link.android.storage.PhoneStorage
 import app.g7link.android.toggles.PhoneToggles
 import app.g7link.android.ui.AppLanguage
 import app.g7link.android.ui.guide.GuideHighlightTarget
+import app.g7link.android.ui.remote.rememberNearbyDevices
 import app.g7link.android.ui.theme.Appearance
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7Row
@@ -230,12 +231,10 @@ fun SettingsScreen(
             val context = LocalContext.current
             // The PC whose Bluetooth switch waits for the Nearby devices permission.
             var bleLinkFor by remember { mutableStateOf<String?>(null) }
-            val bleLinkPermission = rememberLauncherForActivityResult(
-                ActivityResultContracts.RequestMultiplePermissions(),
-            ) { granted ->
+            val nearbyDevices = rememberNearbyDevices { granted ->
                 val pc = bleLinkFor
                 bleLinkFor = null
-                if (pc != null && granted.values.all { it }) onSetBleLink(pc, true)
+                if (pc != null && granted) onSetBleLink(pc, true)
                 onAccessChanged()
             }
             Column {
@@ -282,12 +281,7 @@ fun SettingsScreen(
                                         onCheckedChange = { on ->
                                             if (on && !PcBleLink.canConnect(context)) {
                                                 bleLinkFor = device.id
-                                                bleLinkPermission.launch(
-                                                    arrayOf(
-                                                        Manifest.permission.BLUETOOTH_CONNECT,
-                                                        Manifest.permission.BLUETOOTH_SCAN,
-                                                    ),
-                                                )
+                                                nearbyDevices.ask()
                                             } else {
                                                 onSetBleLink(device.id, on)
                                             }

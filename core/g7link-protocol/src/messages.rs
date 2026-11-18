@@ -132,6 +132,8 @@ pub mod types {
     pub const AUDIO_BT_MEDIA: &str = "audio.bt_media";
     pub const BLE_KEY: &str = "ble.key";
     pub const BLE_OTP: &str = "ble.otp";
+    /// Phone to PC: keep a Bluetooth link with me while I renew this.
+    pub const BLE_USE: &str = "ble.use";
 }
 
 /// What kind of device this is.
@@ -1436,6 +1438,47 @@ impl BleOtp {
 pub fn is_bt_addr(addr: &str) -> bool {
     addr.len() == 17
         && addr.bytes().enumerate().all(|(i, b)| if i % 3 == 2 { b == b':' } else { b.is_ascii_hexdigit() })
+}
+
+/// Body of `ble.use` (phone → PC, over the session or the Bluetooth link,
+/// docs/protocol/bluetooth.md §4.5): keep a Bluetooth link with this phone
+/// while it renews this (`on`), or stop. `ask` lets the PC ask its user when
+/// its `ble_link` toggle is off for the phone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BleUse {
+    pub on: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ask: bool,
+}
+
+/// Where a phone's `ble.use` stands on the PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BleUseState {
+    /// The link with this phone is up and held.
+    Linked,
+    /// Held: the PC can be connected to now.
+    Open,
+    /// The PC's user is being asked.
+    Asking,
+    /// The PC can't serve a link (no adapter that serves GATT, Bluetooth
+    /// off), or the phone can't use one.
+    Unavailable,
+    /// Another phone holds the PC's one link.
+    Busy,
+    /// Not held: the PC's user said no, the toggle is off, or the phone
+    /// asked to stop. Unknown values (from a newer PC) read as this.
+    #[serde(other)]
+    Off,
+}
+
+/// Reply to `ble.use`: where it stands and, while held, for how many
+/// seconds the hold lasts unless renewed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BleUseReply {
+    pub state: BleUseState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<u32>,
 }
 
 // ---- Screen mirroring (docs/protocol/mirror.md) ----
@@ -3529,6 +3572,14 @@ pub mod remote {
     /// Most UTF-8 bytes of a mirrored field sent before and after its caret.
     pub const MAX_STATE_BEFORE: usize = 4096;
     pub const MAX_STATE_AFTER: usize = 1024;
+    /// The same over the Bluetooth link, whose messages are smaller
+    /// (docs/protocol/bluetooth.md §4.4); the `SMALL` ones when its ATT MTU is
+    /// under [`SMALL_ATT_MTU`].
+    pub const MAX_BLE_STATE_BEFORE: usize = 2048;
+    pub const MAX_BLE_STATE_AFTER: usize = 512;
+    pub const MAX_BLE_STATE_SMALL_BEFORE: usize = 512;
+    pub const MAX_BLE_STATE_SMALL_AFTER: usize = 128;
+    pub const SMALL_ATT_MTU: u16 = 185;
     /// Most UTF-8 bytes of the app name, and of the field's label, in a text state.
     pub const MAX_STATE_APP: usize = 64;
     pub const MAX_STATE_LABEL: usize = 64;
@@ -3786,6 +3837,42 @@ impl RemoteTextState {
             && !self.after.contains('\0')
             && self.icon.as_deref().is_none_or(is_icon_key)
     }
+
+    /// This state with at most `max_before` bytes of `before` (its end) and
+    /// `max_after` of `after` (its start), cut on character boundaries:
+    /// `start` moves by the characters dropped, and `more_before` and
+    /// `more_after` say what was. The caret and `anchor` stay where they are.
+    pub fn trimmed(&self, max_before: usize, max_after: usize) -> Self {
+        let mut state = self.clone();
+        if state.before.len() > max_before {
+            let (before, dropped) = cut_text_front(&state.before, max_before);
+            state.before = before.to_owned();
+            state.start = state.start.saturating_add(dropped);
+            state.more_before = true;
+        }
+        if state.after.len() > max_after {
+            state.after = cut_text(&state.after, max_after).to_owned();
+            state.more_after = true;
+        }
+        state
+    }
+}
+
+/// `text` cut to at most `max` bytes, on a character boundary.
+pub fn cut_text(text: &str, max: usize) -> &str {
+    let end = (0..=max.min(text.len())).rev().find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+    &text[..end]
+}
+
+/// `text` cut to its last `max` bytes, on a character boundary, and how many
+/// characters were dropped from the front.
+pub fn cut_text_front(text: &str, max: usize) -> (&str, u32) {
+    if text.len() <= max {
+        return (text, 0);
+    }
+    let start = (text.len() - max..=text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(text.len());
+    let dropped = u32::try_from(text[..start].chars().count()).unwrap_or(u32::MAX);
+    (&text[start..], dropped)
 }
 
 /// Whether `key` looks like an app icon's key in a text state.
@@ -6956,5 +7043,129 @@ mod tests {
         let with_file = PcCaptureRecordEnded { file: Some(file.clone()) };
         let env = crate::Envelope::new(types::PC_CAPTURE_RECORD_ENDED, &with_file).unwrap();
         assert_eq!(env.body::<PcCaptureRecordEnded>().unwrap(), with_file);
+    }
+
+    /// A text state with every field at its longest, and `before`/`after`
+    /// of `before` and `after` bytes made of `unit`.
+    fn longest_state(unit: &str, before: usize, after: usize) -> RemoteTextState {
+        RemoteTextState {
+            focus: u32::MAX,
+            field: u64::MAX,
+            epoch: u32::MAX,
+            rev: u32::MAX,
+            applied: u32::MAX,
+            kind: TextFieldKind::Mirror,
+            app: Some("a".repeat(remote::MAX_STATE_APP)),
+            label: Some("l".repeat(remote::MAX_STATE_LABEL)),
+            window: false,
+            multiline: true,
+            start: u32::MAX,
+            before: unit.repeat(before / unit.len()),
+            after: unit.repeat(after / unit.len()),
+            anchor: Some(u32::MAX),
+            more_before: true,
+            more_after: true,
+            icon: Some("0123456789abcdef".into()),
+        }
+    }
+
+    #[test]
+    fn a_trimmed_text_state_fits_a_bluetooth_message() {
+        // bluetooth.md §4.4: 345 bytes besides the text, so 2048 + 512 is 2905.
+        const { assert!(2905 <= crate::ble::MAX_PLAIN) };
+        for unit in ["x", "\u{1F600}"] {
+            let state = longest_state(unit, remote::MAX_BLE_STATE_BEFORE, remote::MAX_BLE_STATE_AFTER);
+            assert!(state.is_valid());
+            let len = Envelope::new(types::REMOTE_TEXT_STATE, &state).unwrap().to_cbor().len();
+            assert!(len <= 2905, "{len} bytes");
+            let small =
+                longest_state(unit, remote::MAX_BLE_STATE_SMALL_BEFORE, remote::MAX_BLE_STATE_SMALL_AFTER);
+            let len = Envelope::new(types::REMOTE_TEXT_STATE, &small).unwrap().to_cbor().len();
+            assert!(len <= 985, "{len} bytes");
+        }
+        // The full window doesn't fit: it has to be trimmed.
+        let full = longest_state("x", remote::MAX_STATE_BEFORE, remote::MAX_STATE_AFTER);
+        assert!(
+            Envelope::new(types::REMOTE_TEXT_STATE, &full).unwrap().to_cbor().len() > crate::ble::MAX_PLAIN
+        );
+        let trimmed = full.trimmed(remote::MAX_BLE_STATE_BEFORE, remote::MAX_BLE_STATE_AFTER);
+        let len = Envelope::new(types::REMOTE_TEXT_STATE, &trimmed).unwrap().to_cbor().len();
+        assert!(len <= 2905, "{len} bytes");
+    }
+
+    #[test]
+    fn trimming_cuts_on_characters_and_keeps_the_caret() {
+        let state = RemoteTextState {
+            focus: 1,
+            field: 0,
+            epoch: 0,
+            rev: 1,
+            applied: 0,
+            kind: TextFieldKind::Mirror,
+            app: None,
+            label: None,
+            window: false,
+            multiline: false,
+            start: 10,
+            // 1 + 2 + 3 + 4 bytes, then the caret, then 4 + 3 + 2 + 1.
+            before: "aé漢😀".into(),
+            after: "😀漢éa".into(),
+            anchor: Some(12),
+            more_before: false,
+            more_after: false,
+            icon: None,
+        };
+        assert_eq!(state.trimmed(100, 100), state, "nothing to cut");
+
+        let cut = state.trimmed(5, 5);
+        assert_eq!(cut.before, "😀", "the last whole characters within 5 bytes");
+        assert_eq!(cut.start, 13);
+        assert_eq!(cut.after, "😀");
+        assert!(cut.more_before && cut.more_after);
+        assert_eq!(cut.caret(), state.caret());
+        assert_eq!(cut.anchor, state.anchor);
+        assert!(cut.is_valid());
+
+        let cut = state.trimmed(7, 0);
+        assert_eq!((cut.before.as_str(), cut.start), ("漢😀", 12));
+        assert_eq!(cut.after, "");
+        assert!(cut.more_after);
+        assert_eq!(cut.caret(), state.caret());
+        assert_eq!(cut_text_front("", 0), ("", 0));
+        assert_eq!(cut_text("é", 1), "");
+    }
+
+    #[test]
+    fn ble_use_says_where_a_hold_stands_and_reads_newer_states_as_off() {
+        let ask = BleUse { on: true, ask: true };
+        let env = Envelope::new(types::BLE_USE, &ask).unwrap();
+        assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<BleUse>().unwrap(), ask);
+        // `ask` is left out when false, and missing reads as false.
+        let renew = Envelope::new(types::BLE_USE, &BleUse { on: true, ask: false }).unwrap();
+        let map = renew.body::<ciborium::Value>().unwrap();
+        assert!(!map.as_map().unwrap().iter().any(|(k, _)| k.as_text() == Some("ask")));
+        assert_eq!(renew.body::<BleUse>().unwrap(), BleUse { on: true, ask: false });
+
+        for (state, text) in [
+            (BleUseState::Linked, "linked"),
+            (BleUseState::Open, "open"),
+            (BleUseState::Asking, "asking"),
+            (BleUseState::Off, "off"),
+            (BleUseState::Unavailable, "unavailable"),
+            (BleUseState::Busy, "busy"),
+        ] {
+            let reply = BleUseReply { state, lease: Some(45) };
+            let env = Envelope::new(types::BLE_USE, &reply).unwrap();
+            let body = env.body::<ciborium::Value>().unwrap();
+            let sent = body.as_map().unwrap().iter().find(|(k, _)| k.as_text() == Some("state")).unwrap();
+            assert_eq!(sent.1.as_text(), Some(text));
+            assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<BleUseReply>().unwrap(), reply);
+        }
+        let newer = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("state".into()),
+            ciborium::Value::Text("roaming".into()),
+        )]);
+        let reply: BleUseReply = newer.deserialized().unwrap();
+        assert_eq!(reply, BleUseReply { state: BleUseState::Off, lease: None });
     }
 }

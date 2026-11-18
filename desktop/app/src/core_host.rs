@@ -178,8 +178,10 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
         caps.push(g7link_core::pc_capture::CAP.into());
     }
     // A phone may open a Bluetooth link to this PC: its adapter serves GATT.
+    // The link also carries the typing box and holds (`ble.use`).
     if crate::sys::ble_beacon::can_link() {
         caps.push(g7link_core::BLE_LINK_CAPABILITY.into());
+        caps.push(g7link_core::BLE_REMOTE_CAPABILITY.into());
     }
     let input_available = crate::sys::input::is_available();
     if remote_input_enabled && input_available {

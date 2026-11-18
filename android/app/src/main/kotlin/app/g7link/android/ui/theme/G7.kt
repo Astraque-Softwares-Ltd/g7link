@@ -1338,7 +1338,11 @@ private class WellLook(density: Density, shade: Color, dot: Color) {
     }
 }
 
-/** A sub-screen's header: Back, the title, and a muted note after it. */
+/**
+ * A sub-screen's header: Back, the title, and a muted note after it. With
+ * [onNoteClick] the whole title row opens something about the note, and a
+ * chevron after it says so.
+ */
 @Composable
 fun G7Header(
     title: String,
@@ -1346,6 +1350,7 @@ fun G7Header(
     modifier: Modifier = Modifier,
     note: String? = null,
     noteColor: Color = Color.Unspecified,
+    onNoteClick: (() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     Row(
@@ -1362,8 +1367,17 @@ fun G7Header(
         } else {
             Box(Modifier.size(8.dp))
         }
+        val tappable = if (onNoteClick != null) {
+            Modifier
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(role = Role.Button, onClick = onNoteClick)
+                .padding(horizontal = 4.dp)
+        } else {
+            Modifier
+        }
         Row(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).then(tappable),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -1374,13 +1388,24 @@ fun G7Header(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
+            val shownColor = if (noteColor == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else noteColor
             if (!note.isNullOrEmpty()) {
                 Text(
                     note,
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (noteColor == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else noteColor,
+                    color = shownColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    // Room for the chevron after it.
+                    modifier = if (onNoteClick != null) Modifier.weight(1f, fill = false) else Modifier,
+                )
+            }
+            if (onNoteClick != null) {
+                Icon(
+                    imageVector = G7Icons.chevronDown,
+                    contentDescription = null,
+                    tint = shownColor,
+                    modifier = Modifier.size(16.dp),
                 )
             }
         }

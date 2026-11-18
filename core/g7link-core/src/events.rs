@@ -365,4 +365,23 @@ pub enum NodeEvent {
         code: String,
         source: Option<String>,
     },
+    /// PC: a paired phone asked to use Bluetooth with this PC (`ble.use`)
+    /// while its `ble_link` toggle is off here: the UI asks the user (at most
+    /// once a minute per phone). "Allow" turns the toggle on; "Not now" is
+    /// [`Node::ble_prompt_closed`](crate::Node::ble_prompt_closed).
+    BleLinkRequested {
+        device: DeviceId,
+    },
+    /// PC: a phone started or stopped holding its Bluetooth link with this
+    /// PC (`ble.use`): while held, the link stays once the session is back.
+    BleHoldChanged {
+        device: DeviceId,
+        held: bool,
+    },
+    /// Phone: the path the touchpad of the PC `device` takes, or a round-trip
+    /// time shown for it (by 5 ms or more), changed.
+    RemoteRouteChanged {
+        device: DeviceId,
+        state: crate::RouteState,
+    },
 }

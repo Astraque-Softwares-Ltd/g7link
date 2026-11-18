@@ -7,6 +7,7 @@ import app.g7link.android.ui.theme.Appearance
 import app.g7link.android.ui.theme.Palettes
 import app.g7link.android.ui.walkthrough.WalkthroughPersistence
 import app.g7link.android.ui.walkthrough.WalkthroughStep
+import app.g7link.core.RemoteRoute
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -134,6 +135,8 @@ class Preferences(context: Context) {
         private const val WALKTHROUGH_COMPLETED = "walkthrough_completed"
         private const val WALKTHROUGH_STEP = "walkthrough_step"
         private const val WHATS_NEW_GUIDE_DISMISSED = "whats_new_guide_dismissed"
+        /** Followed by a PC's ID: the touchpad's route to that PC. */
+        private const val REMOTE_ROUTE = "remote_route."
 
         /** "quiet" (G7) or a color-only palette from [Palettes]. */
         val VALID_THEMES = setOf("quiet") + Palettes.families.map { it.id }
@@ -185,6 +188,38 @@ class Preferences(context: Context) {
                 .getSharedPreferences("appearance", Context.MODE_PRIVATE)
                 .edit { putBoolean(BACKGROUND_SERVICE_ENABLED, enabled) }
         }
+
+        /** The touchpad's way to the PC [pcId], as picked in its connection sheet (Auto until then). */
+        fun remoteRoute(context: Context, pcId: String): RemoteRoute =
+            when (shared(context).getString(REMOTE_ROUTE + pcId, null)) {
+                "network" -> RemoteRoute.NETWORK
+                "bluetooth" -> RemoteRoute.BLUETOOTH
+                else -> RemoteRoute.AUTO
+            }
+
+        fun setRemoteRoute(context: Context, pcId: String, route: RemoteRoute) {
+            val value = when (route) {
+                RemoteRoute.AUTO -> "auto"
+                RemoteRoute.NETWORK -> "network"
+                RemoteRoute.BLUETOOTH -> "bluetooth"
+            }
+            shared(context).edit { putString(REMOTE_ROUTE + pcId, value) }
+        }
+
+        /** Forgets the route to [pcId], which was unpaired. */
+        fun removeRemoteRoute(context: Context, pcId: String) {
+            shared(context).edit { remove(REMOTE_ROUTE + pcId) }
+        }
+
+        /** Forgets the routes to PCs that aren't among [paired] (unpaired while the app wasn't running). */
+        fun keepRemoteRoutes(context: Context, paired: Collection<String>) {
+            val prefs = shared(context)
+            val gone = prefs.all.keys.filter { it.startsWith(REMOTE_ROUTE) && it.removePrefix(REMOTE_ROUTE) !in paired }
+            if (gone.isNotEmpty()) prefs.edit { gone.forEach { remove(it) } }
+        }
+
+        private fun shared(context: Context) =
+            context.applicationContext.getSharedPreferences("appearance", Context.MODE_PRIVATE)
     }
 }
 

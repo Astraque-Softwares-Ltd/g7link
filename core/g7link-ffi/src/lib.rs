@@ -122,6 +122,114 @@ impl From<core::RemoteTextState> for TextFieldState {
     }
 }
 
+/// The route the user picked for a PC's touchpad (`set_remote_route`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RemoteRoute {
+    /// The faster of the two, measured.
+    Auto,
+    /// The session; the Bluetooth link only when there's none.
+    Network,
+    /// The Bluetooth link; the session only when it's down.
+    Bluetooth,
+}
+
+impl From<RemoteRoute> for core::RemoteRoute {
+    fn from(route: RemoteRoute) -> Self {
+        match route {
+            RemoteRoute::Auto => core::RemoteRoute::Auto,
+            RemoteRoute::Network => core::RemoteRoute::Network,
+            RemoteRoute::Bluetooth => core::RemoteRoute::Bluetooth,
+        }
+    }
+}
+
+impl From<core::RemoteRoute> for RemoteRoute {
+    fn from(route: core::RemoteRoute) -> Self {
+        match route {
+            core::RemoteRoute::Auto => RemoteRoute::Auto,
+            core::RemoteRoute::Network => RemoteRoute::Network,
+            core::RemoteRoute::Bluetooth => RemoteRoute::Bluetooth,
+        }
+    }
+}
+
+/// The way touchpad input reaches a PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RemotePath {
+    Session,
+    Ble,
+}
+
+impl From<core::RemotePath> for RemotePath {
+    fn from(path: core::RemotePath) -> Self {
+        match path {
+            core::RemotePath::Session => RemotePath::Session,
+            core::RemotePath::Ble => RemotePath::Ble,
+        }
+    }
+}
+
+/// Where a PC stands on keeping a Bluetooth link with this phone (`ble_use`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum BleUseState {
+    /// The link is up and held.
+    Linked,
+    /// Held: the PC can be connected to now (scan for its connect tag).
+    Open,
+    /// The PC's user is being asked: ask again (`ask` false) every 1.5 s.
+    Asking,
+    /// Not held: the PC's user said no, or its toggle is off.
+    Off,
+    /// The PC can't serve a link now (no GATT adapter, Bluetooth off).
+    Unavailable,
+    /// Another phone holds the PC's one link.
+    Busy,
+}
+
+impl From<core::BleUseState> for BleUseState {
+    fn from(state: core::BleUseState) -> Self {
+        match state {
+            core::BleUseState::Linked => BleUseState::Linked,
+            core::BleUseState::Open => BleUseState::Open,
+            core::BleUseState::Asking => BleUseState::Asking,
+            core::BleUseState::Off => BleUseState::Off,
+            core::BleUseState::Unavailable => BleUseState::Unavailable,
+            core::BleUseState::Busy => BleUseState::Busy,
+        }
+    }
+}
+
+/// Where a PC's touchpad route stands (`remote_route_state`,
+/// `Event::RemoteRouteChanged`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RouteState {
+    pub route: RemoteRoute,
+    /// The path input takes now; None when neither is up.
+    pub active: Option<RemotePath>,
+    /// The chosen route's path is down and the other one is used.
+    pub fallback: bool,
+    pub session_rtt_ms: Option<u32>,
+    pub ble_rtt_ms: Option<u32>,
+    /// The PC offers `ble.remote`: the picker applies.
+    pub ble_remote: bool,
+    /// A Bluetooth link with that PC is up.
+    pub ble_linked: bool,
+}
+
+impl From<core::RouteState> for RouteState {
+    fn from(state: core::RouteState) -> Self {
+        RouteState {
+            route: state.route.into(),
+            active: state.active.map(Into::into),
+            fallback: state.fallback,
+            session_rtt_ms: state.session_rtt_ms,
+            ble_rtt_ms: state.ble_rtt_ms,
+            ble_remote: state.ble_remote,
+            ble_linked: state.ble_linked,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct ScreenRect {
     pub x: f32,
@@ -988,6 +1096,13 @@ pub enum Event {
     BleLinkChanged {
         id: String,
         up: bool,
+    },
+    /// The path a PC's touchpad takes, or a round-trip time shown for it
+    /// (by 5 ms or more), changed. Send `remote_text_watch(on)` again when
+    /// `active` changes while the typing box is open.
+    RemoteRouteChanged {
+        id: String,
+        state: RouteState,
     },
 }
 
@@ -2819,8 +2934,15 @@ impl Event {
             NodeEvent::BleKeysChanged => Event::BleKeysChanged,
             NodeEvent::BleOutbound { endpoint } => Event::BleOutbound { endpoint },
             NodeEvent::BleLinkChanged { device, up } => Event::BleLinkChanged { id: device.to_string(), up },
+            NodeEvent::RemoteRouteChanged { device, state } => {
+                Event::RemoteRouteChanged { id: device.to_string(), state: state.into() }
+            }
             // Asked for by PCs only, and codes go to PCs.
-            NodeEvent::BleWanted { .. } | NodeEvent::OneTimeCode { .. } | NodeEvent::TextWatch { .. } => return None,
+            NodeEvent::BleWanted { .. }
+            | NodeEvent::OneTimeCode { .. }
+            | NodeEvent::TextWatch { .. }
+            | NodeEvent::BleLinkRequested { .. }
+            | NodeEvent::BleHoldChanged { .. } => return None,
         })
     }
 }
@@ -4545,6 +4667,47 @@ impl G7LinkNode {
     /// Whether PC `id` mirrors its focused text field and takes `remote_edit`.
     pub fn remote_mirrors_text(&self, id: String) -> bool {
         parse_id(&id).is_ok_and(|id| self.node.remote_mirrors_text(&id))
+    }
+
+    /// The route the user picked for PC `id`'s touchpad. Kept by the app
+    /// (per PC): set it at start and on change. The path changes once
+    /// nothing is mid-gesture; `Event::RemoteRouteChanged` says when.
+    pub fn set_remote_route(&self, id: String, route: RemoteRoute) {
+        if let Ok(id) = parse_id(&id)
+            && let Err(error) = self.node.set_remote_route(id, route.into())
+        {
+            tracing::debug!(%error, "couldn't set a touchpad route");
+        }
+    }
+
+    /// Where PC `id`'s touchpad route stands; a default state for an ID
+    /// that isn't a paired device's.
+    pub fn remote_route_state(&self, id: String) -> RouteState {
+        let state = parse_id(&id).map(|id| self.node.remote_route_state(id)).unwrap_or_default();
+        state.into()
+    }
+
+    /// A touchpad (touchpad, air mouse or presentation tab) for PC `id`
+    /// shows (`active`) or no longer does: while it shows, both paths are
+    /// measured every 2 s and Auto picks between them.
+    pub fn set_remote_active(&self, id: String, active: bool) {
+        if let Ok(id) = parse_id(&id)
+            && let Err(error) = self.node.set_remote_active(id, active)
+        {
+            tracing::debug!(%error, "couldn't follow a touchpad");
+        }
+    }
+
+    /// Asks PC `id` to keep a Bluetooth link with this phone (`on`) or to
+    /// stop, over the session or else the link. With `ask`, a PC whose
+    /// `ble_link` toggle is off for this phone may ask its user (at most once
+    /// a minute); poll with `ask` false while it's `Asking`. Renew every
+    /// 20 s while a touchpad shows: a hold not renewed ends after 45 s.
+    /// `Unsupported` for a PC without `ble.remote`, `Offline` with neither path.
+    pub async fn ble_use(&self, id: String, on: bool, ask: bool) -> Result<BleUseState> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.ble_use(id, on, ask).await?.into()) }).await
     }
 
     /// The app icon `key` that a `TextFieldState.icon` from PC `id` named, as

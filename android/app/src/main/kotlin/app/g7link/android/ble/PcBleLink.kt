@@ -42,9 +42,16 @@ object PcBleLink {
     /** A failed attempt with a PC is tried again at most this often. */
     private const val RETRY_GAP_MS = 15_000L
 
+    /** A link goes back to balanced priority this long after the touchpad stops wanting it quick. */
+    private const val CALM_AFTER_MS = 5_000L
+
     private val links = ConcurrentHashMap<String, Link>()
     private val lastAttempt = ConcurrentHashMap<String, Long>()
     private val timeouts = Handler(Looper.getMainLooper())
+
+    /** PCs whose link the touchpad wants quick, and the step back to balanced waiting for each. */
+    private val quick: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val calming = ConcurrentHashMap<String, Runnable>()
 
     /** Whether this phone may connect to a PC over Bluetooth now (Android 12 and later). */
     fun canConnect(context: Context): Boolean =
@@ -53,19 +60,73 @@ object PcBleLink {
                 ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
             }
 
+    /** Whether Bluetooth is on (Android 12 and later; false before, where there's no link). */
+    @SuppressLint("MissingPermission") // isEnabled needs no permission from Android 12.
+    fun bluetoothOn(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return false
+        return runCatching { adapter.isEnabled }.getOrDefault(false)
+    }
+
     /** Whether a link with [pcId] is being made or is up. */
     fun active(pcId: String): Boolean = links.containsKey(pcId)
+
+    /** Whether a link with [pcId] is up: connected, subscribed and past the handshake. */
+    fun linkedTo(pcId: String): Boolean = links[pcId]?.linked == true
 
     /** Connects to the PC [pcId] at [address], unless a link with it is under way. */
     @SuppressLint("MissingPermission") // The caller checks BLUETOOTH_CONNECT.
     fun connect(context: Context, node: G7LinkNode, pcId: String, address: String) {
-        if (links.containsKey(pcId)) return
-        val now = android.os.SystemClock.elapsedRealtime()
-        val last = lastAttempt[pcId]
-        if (last != null && now - last in 0L until RETRY_GAP_MS) return
-        lastAttempt[pcId] = now
+        if (links.containsKey(pcId) || !mayTry(pcId, userStarted = false)) return
         val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return
         val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull() ?: return
+        startLink(context, node, pcId, device)
+    }
+
+    /**
+     * Connects to the PC [pcId] as a scan found it ([device] keeps its address
+     * type), unless a link with it is under way. [urgent] is an attempt the user
+     * started: it doesn't wait out the gap after a failed one.
+     */
+    @SuppressLint("MissingPermission") // canConnect checks BLUETOOTH_CONNECT.
+    fun connect(context: Context, node: G7LinkNode, pcId: String, device: BluetoothDevice, urgent: Boolean = true) {
+        if (!canConnect(context) || links.containsKey(pcId) || !mayTry(pcId, userStarted = urgent)) return
+        startLink(context, node, pcId, device)
+    }
+
+    /**
+     * High connection priority for [pcId]'s link while the touchpad wants it ([on]),
+     * back to balanced [CALM_AFTER_MS] after it stops. Kept for a link that comes up
+     * later. Called on the main thread.
+     */
+    fun setUrgent(pcId: String, on: Boolean) {
+        calming.remove(pcId)?.let { timeouts.removeCallbacks(it) }
+        if (on) {
+            quick += pcId
+            links[pcId]?.setPriority(high = true)
+            return
+        }
+        val calm = object : Runnable {
+            override fun run() {
+                if (!calming.remove(pcId, this)) return
+                quick -= pcId
+                links[pcId]?.setPriority(high = false)
+            }
+        }
+        calming[pcId] = calm
+        timeouts.postDelayed(calm, CALM_AFTER_MS)
+    }
+
+    /** Whether an attempt with [pcId] may start now; one that may is counted. */
+    private fun mayTry(pcId: String, userStarted: Boolean): Boolean {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val last = lastAttempt[pcId]
+        if (!userStarted && last != null && now - last in 0L until RETRY_GAP_MS) return false
+        lastAttempt[pcId] = now
+        return true
+    }
+
+    private fun startLink(context: Context, node: G7LinkNode, pcId: String, device: BluetoothDevice) {
         val endpoint = runCatching { node.bleConnect(pcId) }.getOrElse {
             Log.i(TAG, "won't connect over Bluetooth: ${it.message}")
             return
@@ -95,7 +156,14 @@ object PcBleLink {
         private var rx: BluetoothGattCharacteristic? = null
         private var writing = false
         @Volatile private var closed = false
+        /** Subscribed to TX: the link takes priority and PHY requests from here on. */
+        @Volatile private var ready = false
+        private var priorityHigh = false
         private val queue = GattQueue { why -> teardown(why) }
+
+        /** Up: connected, subscribed and past the handshake. */
+        val linked: Boolean
+            get() = ready && !closed && runCatching { endpoint.peer() }.getOrNull() != null
 
         @SuppressLint("MissingPermission")
         fun open(context: Context, device: BluetoothDevice) {
@@ -130,6 +198,44 @@ object PcBleLink {
                     g.writeCharacteristic(characteristic)
                 }
             }
+        }
+
+        /** Asks for high or balanced connection priority (best effort: Android may not grant it). */
+        @SuppressLint("MissingPermission") // Only a link connect opened, with BLUETOOTH_CONNECT.
+        fun setPriority(high: Boolean) {
+            val g = gatt ?: return
+            synchronized(this) {
+                if (!ready || closed || high == priorityHigh) return
+                priorityHigh = high
+            }
+            val wanted = if (high) BluetoothGatt.CONNECTION_PRIORITY_HIGH else BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+            queue.add("priority") {
+                runCatching { g.requestConnectionPriority(wanted) }
+                doneSoon()
+            }
+        }
+
+        /** Subscribed: 2M PHY is asked for once, and the priority follows the touchpad. */
+        @SuppressLint("MissingPermission") // Only a link connect opened, with BLUETOOTH_CONNECT.
+        private fun onReady(g: BluetoothGatt) {
+            ready = true
+            queue.add("phy") {
+                runCatching {
+                    g.setPreferredPhy(
+                        BluetoothDevice.PHY_LE_2M_MASK,
+                        BluetoothDevice.PHY_LE_2M_MASK,
+                        BluetoothDevice.PHY_OPTION_NO_PREFERRED,
+                    )
+                }
+                doneSoon()
+            }
+            setPriority(high = pcId in quick)
+        }
+
+        /** For a request whose callback doesn't matter: it's done once it's made. */
+        private fun doneSoon(): Boolean {
+            timeouts.post { queue.complete(true) }
+            return true
         }
 
         @SuppressLint("MissingPermission")
@@ -199,6 +305,7 @@ object PcBleLink {
                 queue.complete(status == BluetoothGatt.GATT_SUCCESS)
                 // Subscribed: the handshake's first message goes now.
                 pump()
+                if (status == BluetoothGatt.GATT_SUCCESS) onReady(g)
             }
 
             override fun onCharacteristicWrite(

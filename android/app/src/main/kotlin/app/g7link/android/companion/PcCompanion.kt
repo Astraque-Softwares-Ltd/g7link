@@ -3,6 +3,7 @@ package app.g7link.android.companion
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
@@ -181,27 +182,51 @@ object PcCompanion {
      * a short scan, or null when it isn't seen within [timeoutMs] (or this phone
      * can't scan, or has no key for it yet).
      */
-    @SuppressLint("MissingPermission") // canScan checks BLUETOOTH_SCAN.
     suspend fun findPc(context: Context, pcId: String, timeoutMs: Long = 10_000): String? {
-        if (!PcBeaconScan.canScan(context)) return null
         val key = BeaconKeys.all(context)[pcId] ?: return null
+        return scanFor(context, timeoutMs) { result ->
+            val data = result.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID)
+            val now = System.currentTimeMillis() / 1000
+            if (data != null && BeaconMatcher.match(data, mapOf(pcId to key), now) != null) result.device.address else null
+        }
+    }
+
+    /**
+     * [pcId]'s PC while its beacon asks this phone to connect (its `C` tag), from
+     * a low-latency scan: the device as scanned, which keeps its address type.
+     * Null when it isn't seen within [timeoutMs] (or this phone can't scan, or has
+     * no key for it yet).
+     */
+    suspend fun findPcToConnect(context: Context, pcId: String, timeoutMs: Long = 25_000): BluetoothDevice? {
+        val key = BeaconKeys.all(context)[pcId] ?: return null
+        return scanFor(context, timeoutMs) { result ->
+            val data = result.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID)
+            val now = System.currentTimeMillis() / 1000
+            if (data != null && BeaconMatcher.asksToConnect(data, pcId, key, now)) result.device else null
+        }
+    }
+
+    /**
+     * Scans for rotating beacons at low latency until [pick] makes something of a
+     * result, for at most [timeoutMs]; null when nothing was picked or this phone
+     * can't scan.
+     */
+    @SuppressLint("MissingPermission") // canScan checks BLUETOOTH_SCAN.
+    private suspend fun <T : Any> scanFor(context: Context, timeoutMs: Long, pick: (ScanResult) -> T?): T? {
+        if (!PcBeaconScan.canScan(context)) return null
         val scanner = context.getSystemService(BluetoothManager::class.java)?.adapter
             ?.let { runCatching { it.bluetoothLeScanner }.getOrNull() } ?: return null
         return withTimeoutOrNull(timeoutMs) {
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<T?> { cont ->
                 val done = AtomicBoolean(false)
-                fun finish(address: String?, callback: ScanCallback) {
+                fun finish(found: T?, callback: ScanCallback) {
                     if (!done.compareAndSet(false, true)) return
                     runCatching { scanner.stopScan(callback) }
-                    cont.resume(address)
+                    cont.resume(found)
                 }
                 val callback = object : ScanCallback() {
                     override fun onScanResult(callbackType: Int, result: ScanResult) {
-                        val data = result.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID) ?: return
-                        val now = System.currentTimeMillis() / 1000
-                        if (BeaconMatcher.match(data, mapOf(pcId to key), now) != null) {
-                            finish(result.device.address, this)
-                        }
+                        pick(result)?.let { finish(it, this) }
                     }
 
                     override fun onScanFailed(errorCode: Int) = finish(null, this)

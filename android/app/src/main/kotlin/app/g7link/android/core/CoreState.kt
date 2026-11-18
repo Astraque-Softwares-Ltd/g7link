@@ -9,12 +9,16 @@ import app.g7link.core.Feature
 import app.g7link.core.FfiQueueItem
 import app.g7link.core.FfiQueueKind
 import app.g7link.core.FfiQueueStatus
+import app.g7link.core.BleUseState
 import app.g7link.core.Link
 import app.g7link.core.LocalSendPeer
 import app.g7link.core.PairedDevice
 import app.g7link.core.PairingFailure
 import app.g7link.core.PcClipKind
 import app.g7link.core.PowerLevel
+import app.g7link.core.RemotePath
+import app.g7link.core.RemoteRoute
+import app.g7link.core.RouteState
 import app.g7link.core.TextFieldState
 import app.g7link.core.TimelineEntry
 import app.g7link.core.Transfer
@@ -134,6 +138,53 @@ enum class WakeState {
     TimedOut,
 }
 
+/** How far bringing up Bluetooth for the touchpad got ([Core.useBluetooth]). */
+enum class BleSetup {
+    /** Asking the PC to keep a link. */
+    Starting,
+
+    /** The PC asks its user; waiting for the answer. */
+    Asking,
+
+    /** The PC opened its connect window: finding it and connecting. */
+    Connecting,
+
+    /** A link is up. */
+    Linked,
+
+    /** Not allowed yet, and nothing was asked: the PC's switch is off. */
+    NotAllowed,
+
+    /** The PC's user said Not now. */
+    Declined,
+
+    /** The PC has no Bluetooth it can link with (or it's off there). */
+    Unavailable,
+
+    /** Another phone holds the PC's one link. */
+    Busy,
+
+    /** The PC's window was open, but it wasn't found or linked in time. */
+    OutOfRange,
+
+    /** No network and no link: there's nothing to ask the PC over. */
+    NoPath,
+
+    /** Asking the PC went wrong (it didn't answer in time, say). */
+    Failed,
+}
+
+/** Where a `ble.use` answer other than "open" leaves the bring-up; [asked] when the PC could ask its user. */
+internal fun bleSetupAfter(state: BleUseState, asked: Boolean): BleSetup = when (state) {
+    BleUseState.LINKED -> BleSetup.Linked
+    BleUseState.OPEN -> BleSetup.Connecting
+    // Still asking: the PC's user left its prompt for a minute.
+    BleUseState.ASKING -> BleSetup.NotAllowed
+    BleUseState.OFF -> if (asked) BleSetup.Declined else BleSetup.NotAllowed
+    BleUseState.UNAVAILABLE -> BleSetup.Unavailable
+    BleUseState.BUSY -> BleSetup.Busy
+}
+
 /** A paired device as the UI shows it. */
 @androidx.compose.runtime.Immutable
 data class Device(
@@ -161,8 +212,21 @@ data class Device(
     val btMedia: Boolean = false,
     /** Whether this phone and this PC may use Bluetooth when they share no network (off by default). */
     val bleLink: Boolean = false,
-    /** A Bluetooth link with this PC is up (there's no shared network). */
+    /** A Bluetooth link with this PC is up. */
     val bleLinked: Boolean = false,
+    /** The touchpad's way to this PC, as picked on this phone (Auto until picked). */
+    val route: RemoteRoute = RemoteRoute.AUTO,
+    /** The path the touchpad's input takes now; null when neither is up. */
+    val activePath: RemotePath? = null,
+    /** The picked route's path is down and input takes the other. */
+    val fallback: Boolean = false,
+    /** Round trips over the network and over the Bluetooth link, in ms, once measured. */
+    val sessionRttMs: UInt? = null,
+    val bleRttMs: UInt? = null,
+    /** The PC takes the touchpad over Bluetooth by choice (`ble.remote`): its connection can be picked. */
+    val bleRemote: Boolean = false,
+    /** How bringing up Bluetooth for the touchpad last went; null when it hasn't run. */
+    val bleSetup: BleSetup? = null,
 ) {
     /** A paired phone or tablet rather than a PC. */
     val isAndroid: Boolean
@@ -318,10 +382,33 @@ data class CoreState(
                     micEnabled = p.id !in micOff,
                     btMedia = p.id in btMediaOn,
                     bleLink = p.id in bleLinkOn,
+                    route = prev?.route ?: RemoteRoute.AUTO,
                 )
             }.sortedWith(deviceOrder),
         )
     }
+
+    /** The touchpad's [routes] as this phone keeps them, and what the core says of each ([states]). */
+    fun withRoutes(routes: Map<String, RemoteRoute>, states: Map<String, RouteState>): CoreState {
+        val routed = routes.entries.fold(this) { state, (id, route) -> state.withRoute(id, route) }
+        return states.entries.fold(routed) { state, (id, routeState) -> state.withRouteState(id, routeState) }
+    }
+
+    fun withRoute(id: String, route: RemoteRoute): CoreState = update(id) { it.copy(route = route) }
+
+    /** What the core says of [id]'s touchpad paths. The route is this phone's own ([withRoute]). */
+    fun withRouteState(id: String, state: RouteState): CoreState = update(id) {
+        it.copy(
+            activePath = state.active,
+            fallback = state.fallback,
+            sessionRttMs = state.sessionRttMs,
+            bleRttMs = state.bleRttMs,
+            bleRemote = state.bleRemote,
+            bleLinked = state.bleLinked,
+        )
+    }
+
+    fun withBleSetup(id: String, setup: BleSetup?): CoreState = update(id) { it.copy(bleSetup = setup) }
 
     fun withWakeState(id: String, state: WakeState): CoreState =
         update(id) { it.copy(wakeState = state) }
@@ -346,7 +433,16 @@ data class CoreState(
         ringingPeer = null,
         ringingDevices = emptySet(),
         devices = devices.map { d ->
-            if (d.online) d.copy(link = Link.Offline(System.currentTimeMillis() / 1000L), wakeState = WakeState.Idle) else d
+            // With the core stopped, no path is up and no Bluetooth link either.
+            val stopped = d.copy(
+                bleLinked = false,
+                activePath = null,
+                fallback = false,
+                sessionRttMs = null,
+                bleRttMs = null,
+                bleSetup = null,
+            )
+            if (d.online) stopped.copy(link = Link.Offline(System.currentTimeMillis() / 1000L), wakeState = WakeState.Idle) else stopped
         }.sortedWith(deviceOrder),
         keyboardFromPc = emptySet(),
         pcClip = emptyMap(),
@@ -393,6 +489,8 @@ data class CoreState(
                         it.copy(
                             link = newLink,
                             wakeState = if (newLink is Link.Online) WakeState.Idle else it.wakeState,
+                            // With a network back there's something to ask the PC over again.
+                            bleSetup = it.bleSetup.takeUnless { setup -> newLink is Link.Online && setup == BleSetup.NoPath },
                         )
                     }.let { updated ->
                         updated.copy(
@@ -427,7 +525,10 @@ data class CoreState(
         // Changed on the PC; the core already keeps it.
         is Event.DeviceToggleChanged -> if (event.toggle == BT_MEDIA_TOGGLE) withBtMedia(event.id, event.on) else this
         is Event.Battery -> update(event.id) { it.copy(battery = event.battery) }
-        is Event.Capabilities -> update(event.id) { it.copy(features = event.features) }
+        // A PC whose Bluetooth came back says so here: it's worth asking again.
+        is Event.Capabilities -> update(event.id) {
+            it.copy(features = event.features, bleSetup = it.bleSetup.takeUnless { setup -> setup == BleSetup.Unavailable })
+        }
         is Event.DeckLayout -> update(event.id) { it.copy(deckLayout = event.layout) }
         is Event.DeckState -> update(event.id) { it.copy(deckState = event.state) }
         is Event.Ring -> copy(ringingPeer = if (event.on) event.id else ringingPeer?.takeUnless { it == event.id })
@@ -460,6 +561,7 @@ data class CoreState(
         // The beacon scan and the Bluetooth link follow these (Core); nothing shows.
         is Event.BleKeysChanged, is Event.BleOutbound -> this
         is Event.BleLinkChanged -> update(event.id) { it.copy(bleLinked = event.up) }
+        is Event.RemoteRouteChanged -> withRouteState(event.id, event.state)
         is Event.Transfer -> copy(
             transfers = withTransfer(event.transfer),
             sendQueue = withTransferQueueProgress(event.transfer),

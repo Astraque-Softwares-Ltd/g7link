@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.util.Log
 import android.util.LruCache
@@ -14,6 +15,7 @@ import android.widget.Toast
 import android.net.Uri
 import app.g7link.android.BuildConfig
 import app.g7link.android.audio.PcSpeakerPlayer
+import app.g7link.android.ble.PcBleLink
 import app.g7link.android.clipboard.PhoneClipboard
 import app.g7link.android.links.LinkNotifications
 import app.g7link.android.media.PcMedia
@@ -45,6 +47,7 @@ import app.g7link.android.mirror.MirrorService
 import app.g7link.android.toggles.PhoneToggles
 import app.g7link.android.webcam.WebcamRequests
 import app.g7link.android.webcam.WebcamService
+import app.g7link.core.BleUseState
 import app.g7link.core.FfiQueueStatus
 import app.g7link.core.Event
 import app.g7link.core.EventListener
@@ -62,6 +65,7 @@ import app.g7link.core.RelayEdit
 import app.g7link.core.RelayEditResult
 import app.g7link.core.RelayProbe
 import app.g7link.core.RelaySnapshot
+import app.g7link.core.RemoteRoute
 import app.g7link.core.RemoteStorageEntry
 import app.g7link.core.TimelineEntry
 import app.g7link.core.TimelineKind
@@ -84,6 +88,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -95,6 +100,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -484,8 +490,16 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 isRunning = true
             }
             applyInteractive(started)
-            val devices = runCatching { started.pairedDevices() }.getOrDefault(emptyList())
+            val paired = runCatching { started.pairedDevices() }
+            val devices = paired.getOrDefault(emptyList())
             val pcToggles = perPcToggles(started, devices.map { it.id })
+            // The touchpad's routes live here; the core gets them at each start.
+            if (paired.isSuccess) app.g7link.android.ui.Preferences.keepRemoteRoutes(context, devices.map { it.id })
+            val routes = devices.associate { it.id to app.g7link.android.ui.Preferences.remoteRoute(context, it.id) }
+            routes.forEach { (id, route) -> runCatching { started.setRemoteRoute(id, route) } }
+            val routeStates = devices
+                .mapNotNull { d -> runCatching { started.remoteRouteState(d.id) }.getOrNull()?.let { d.id to it } }
+                .toMap()
             val clipHistEnabled = runCatching { started.clipboardHistoryEnabled() }.getOrDefault(true)
             val clipHist = if (clipHistEnabled) {
                 runCatching { started.clipboardHistory(null) }.getOrDefault(emptyList())
@@ -510,7 +524,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     pcToggles.micOff,
                     pcToggles.btMediaOn,
                     pcToggles.bleLinkOn,
-                ).copy(
+                ).withRoutes(routes, routeStates).copy(
                     sendQueue = initialQueue,
                     clipboardHistoryEnabled = clipHistEnabled,
                     clipboardHistory = clipHist,
@@ -722,6 +736,12 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 localsendMulticast?.runCatching { if (isHeld) release() }
                 wakeTimers.values.forEach { it.cancel() }
                 wakeTimers.clear()
+                // Their jobs ended with the run.
+                bleSetups.clear()
+                bleHolds.clear()
+                bleHoldAsked.clear()
+                bleHeld.clear()
+                bleAllowedBy.clear()
 
                 _state.update { it.withDevicesOffline().copy(status = CoreStatus.Starting) }
                 app.g7link.android.widget.PcWidgetProvider.refreshAll(context, _state.value)
@@ -986,6 +1006,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 wakeTimers.remove(event.id)?.cancel()
                 // Paired again later, it asks again until chosen again.
                 PcAutoStart.set(context, event.id, false)
+                app.g7link.android.ui.Preferences.removeRemoteRoute(context, event.id)
+                forgetBle(event.id)
                 scope.launch(Dispatchers.Default) {
                     pcMedia.update(event.id, "", emptyList())
                     pcNotificationPoster.cancelAll(event.id)
@@ -2214,8 +2236,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         CLIPBOARD_CAPABILITIES +
             // Recognises a paired PC's rotating Bluetooth beacon.
             (if (app.g7link.android.companion.PcBeaconScan.canScan(context)) listOf("ble.beacon2") else emptyList()) +
-            // Opens a Bluetooth link to a PC when there's no shared network.
-            (if (app.g7link.android.ble.PcBleLink.canConnect(context)) listOf("ble.link") else emptyList()) +
+            // Opens a Bluetooth link to a PC when there's no shared network, and carries the touchpad over it by choice.
+            (if (PcBleLink.canConnect(context)) listOf("ble.link", "ble.remote") else emptyList()) +
             // Play on phone: shows a PC's playback, streamed from the PC.
             listOf("media.watch") +
             // Shows a paired phone's or tablet's notifications.
@@ -2298,10 +2320,277 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         scope.launch(Dispatchers.IO) {
             startJob?.join()
             val currentNode = node ?: return@launch
-            runCatching { currentNode.setDeviceToggle(pcId, BLE_LINK_TOGGLE, on) }
-                .onFailure { Log.w(TAG, "can't change the Bluetooth link toggle", it) }
-            currentNode.updatePower(powerLevel(), capabilities(_state.value.notificationAccess))
+            applyBleLink(currentNode, pcId, on)
         }
+    }
+
+    /** Sets this phone's Bluetooth toggle for [pcId] in the core, and tells the PCs what this phone offers now. */
+    private suspend fun applyBleLink(node: G7LinkNode, pcId: String, on: Boolean) {
+        runCatching { node.setDeviceToggle(pcId, BLE_LINK_TOGGLE, on) }
+            .onFailure { Log.w(TAG, "can't change the Bluetooth link toggle", it) }
+        node.updatePower(powerLevel(), capabilities(_state.value.notificationAccess))
+    }
+
+    // ---- The touchpad's connection: Auto, the network or Bluetooth ----
+
+    /** Each PC's Bluetooth bring-up for the touchpad ([setUpBluetooth]). */
+    private val bleSetups = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /** The Remote screen's hold on each PC's link, renewed while it shows ([remoteShown]). */
+    private val bleHolds = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /** When each PC was last asked to keep a link. */
+    private val bleHoldAsked = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** PCs that keep a link for this phone until it lets go (or their lease ends). */
+    private val bleHeld: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** PCs that said yes to Bluetooth since the core started: with no network, their window can still be found. */
+    private val bleAllowedBy: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** Tells the core whether each PC's touchpad shows, newest only. */
+    private val remoteActive = LatestValueSender<String, Boolean>(
+        scope = scope,
+        onError = { Log.w(TAG, "the touchpad's state didn't reach the core", it) },
+    ) send@{ id, on ->
+        startJob?.join()
+        val current = node ?: return@send
+        current.setRemoteActive(id, on)
+    }
+
+    /**
+     * The touchpad's way to [pcId] (§2.3). Kept on this phone, and given to the
+     * core between input ops so no gesture is split across paths. Network lets
+     * the Bluetooth hold go; Auto brings Bluetooth up quietly where it's allowed.
+     */
+    fun setRemoteRoute(pcId: String, route: RemoteRoute) {
+        app.g7link.android.ui.Preferences.setRemoteRoute(context, pcId, route)
+        _state.update { it.withRoute(pcId, route) }
+        enqueueRemoteOp { node ->
+            runCatching { node.setRemoteRoute(pcId, route) }
+                .onFailure { Log.w(TAG, "the touchpad's route didn't reach the core", it) }
+            runCatching { node.remoteRouteState(pcId) }.getOrNull()?.let { routeState ->
+                _state.update { it.withRouteState(pcId, routeState) }
+            }
+        }
+        when (route) {
+            RemoteRoute.NETWORK -> {
+                bleSetups.remove(pcId)?.cancel()
+                releaseBleHold(pcId)
+            }
+            RemoteRoute.AUTO -> if (mayHoldBle(pcId)) setUpBluetooth(pcId, ask = false)
+            RemoteRoute.BLUETOOTH -> Unit
+        }
+    }
+
+    /**
+     * Brings up Bluetooth with [pcId] for the touchpad ([useBluetooth]), shown in
+     * [Device.bleSetup] as it goes. Another call starts it over.
+     */
+    fun setUpBluetooth(pcId: String, ask: Boolean) {
+        val runs = runScope ?: return
+        bleSetups.remove(pcId)?.cancel()
+        val job = runs.launch(Dispatchers.IO) {
+            useBluetooth(pcId, ask).collect { step -> _state.update { it.withBleSetup(pcId, step) } }
+        }
+        bleSetups[pcId] = job
+        job.invokeOnCompletion { bleSetups.remove(pcId, job) }
+    }
+
+    /**
+     * Bluetooth with [pcId] for the touchpad, step by step (§2.3, steps 4 to 6).
+     * With [ask] the user asked for it: this phone's switch for that PC goes on
+     * (picking Bluetooth is the consent) and the PC may ask its user. Without, only
+     * what's allowed already is used and nobody is asked. Nothing happens without
+     * the Nearby devices permission and Bluetooth on: the sheet sees to those first.
+     */
+    fun useBluetooth(pcId: String, ask: Boolean): Flow<BleSetup> = flow {
+        startJob?.join()
+        val current = node
+        if (current == null) {
+            emit(BleSetup.NoPath)
+            return@flow
+        }
+        if (!PcBleLink.canConnect(context) || !PcBleLink.bluetoothOn(context)) return@flow
+        if (ask) {
+            _state.update { it.withBleLink(pcId, true) }
+            applyBleLink(current, pcId, true)
+        } else if (_state.value.device(pcId)?.bleLink != true) {
+            return@flow
+        }
+        val device = _state.value.device(pcId) ?: return@flow
+        emit(BleSetup.Starting)
+        if (!device.online && !device.bleLinked) {
+            // Nothing to ask over. A PC that said yes opens a window by itself when its session ends.
+            if (pcId in bleAllowedBy) {
+                emit(BleSetup.Connecting)
+                emit(if (linkNow(current, pcId, BLE_NO_NETWORK_SCAN_MS)) BleSetup.Linked else BleSetup.OutOfRange)
+            } else {
+                emit(BleSetup.NoPath)
+            }
+            return@flow
+        }
+        val askedAt = SystemClock.elapsedRealtime()
+        var reply = bleUseOnce(current, pcId, ask)
+        if (ask && reply.getOrNull() == BleUseState.UNAVAILABLE) {
+            // The PC may not have heard yet that this phone offers Bluetooth now.
+            delay(BLE_CAPABILITIES_SETTLE_MS)
+            reply = bleUseOnce(current, pcId, ask)
+        }
+        while (reply.getOrNull() == BleUseState.ASKING && SystemClock.elapsedRealtime() - askedAt < BLE_ASK_WAIT_MS) {
+            emit(BleSetup.Asking)
+            delay(BLE_ASK_POLL_MS)
+            reply = bleUseOnce(current, pcId, ask = false)
+        }
+        val state = reply.getOrNull()
+        if (state == null) {
+            emit(bleSetupAfterError(reply.exceptionOrNull()))
+        } else if (state == BleUseState.OPEN && !PcBleLink.linkedTo(pcId)) {
+            emit(BleSetup.Connecting)
+            emit(if (linkNow(current, pcId, BLE_CONNECT_WAIT_MS)) BleSetup.Linked else BleSetup.OutOfRange)
+        } else {
+            // Open while a link is already up counts as linked.
+            emit(if (state == BleUseState.OPEN) BleSetup.Linked else bleSetupAfter(state, asked = ask))
+        }
+    }
+
+    /** Where a `ble.use` that went wrong leaves the bring-up. */
+    private fun bleSetupAfterError(error: Throwable?): BleSetup = when (error) {
+        is G7LinkException.Offline -> BleSetup.NoPath
+        // An older PC: it doesn't know ble.use.
+        is G7LinkException.Unsupported -> BleSetup.Unavailable
+        else -> BleSetup.Failed
+    }
+
+    /** One `ble.use { on: true }` to [pcId], and what it says about the PC. */
+    private suspend fun bleUseOnce(node: G7LinkNode, pcId: String, ask: Boolean): Result<BleUseState> {
+        val state = try {
+            node.bleUse(pcId, true, ask)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: G7LinkException) {
+            Log.i(TAG, "a PC didn't answer about Bluetooth: ${e.javaClass.simpleName}")
+            return Result.failure(e)
+        }
+        bleHoldAsked[pcId] = SystemClock.elapsedRealtime()
+        when (state) {
+            BleUseState.OPEN, BleUseState.LINKED -> {
+                bleHeld += pcId
+                bleAllowedBy += pcId
+            }
+            BleUseState.OFF -> bleAllowedBy -= pcId
+            else -> Unit
+        }
+        return Result.success(state)
+    }
+
+    /**
+     * Finds [pcId]'s connect window and links with it within [timeoutMs]: whether
+     * a link is up. An attempt that ends early gets a fresh scan, a few times.
+     */
+    private suspend fun linkNow(node: G7LinkNode, pcId: String, timeoutMs: Long): Boolean =
+        withTimeoutOrNull(timeoutMs) {
+            var attempts = 0
+            while (!PcBleLink.linkedTo(pcId)) {
+                if (!PcBleLink.active(pcId)) {
+                    if (attempts == BLE_LINK_ATTEMPTS) return@withTimeoutOrNull false
+                    attempts++
+                    val device = PcCompanion.findPcToConnect(context, pcId, timeoutMs) ?: return@withTimeoutOrNull false
+                    PcBleLink.connect(context, node, pcId, device, urgent = true)
+                }
+                delay(BLE_LINK_POLL_MS)
+            }
+            true
+        } ?: false
+
+    /**
+     * The Remote screen for [pcId] shows ([shown]) or went to the background.
+     * While it shows the core measures the touchpad's paths more often, and the
+     * Bluetooth hold is renewed; in the background the hold lasts a little longer
+     * (§6.3), for a glance at another app.
+     */
+    fun remoteShown(pcId: String, shown: Boolean) {
+        remoteActive.offer(pcId, shown)
+        keepBleHold(pcId, lingerMs = if (shown) null else BLE_HOLD_LINGER_MS)
+    }
+
+    /** The Remote screen for [pcId] closed: the hold goes now. */
+    fun remoteClosed(pcId: String) {
+        remoteActive.offer(pcId, false)
+        bleHolds.remove(pcId)?.cancel()
+        releaseBleHold(pcId)
+    }
+
+    /** Renews [pcId]'s hold while it's wanted, for [lingerMs] more or until cancelled, then lets it go. */
+    private fun keepBleHold(pcId: String, lingerMs: Long?) {
+        val runs = runScope ?: return
+        bleHolds.remove(pcId)?.cancel()
+        val until = lingerMs?.let { SystemClock.elapsedRealtime() + it }
+        val job = runs.launch(Dispatchers.IO) {
+            while (until == null || SystemClock.elapsedRealtime() < until) {
+                val current = node
+                if (current != null && mayHoldBle(pcId)) {
+                    val asked = bleHoldAsked[pcId]
+                    if (asked == null || SystemClock.elapsedRealtime() - asked >= BLE_HOLD_RENEW_MS) renewBleHold(current, pcId)
+                } else {
+                    releaseBleHold(pcId)
+                }
+                delay(BLE_HOLD_TICK_MS)
+            }
+            releaseBleHold(pcId)
+        }
+        bleHolds[pcId] = job
+        job.invokeOnCompletion { bleHolds.remove(pcId, job) }
+    }
+
+    /**
+     * Whether the touchpad keeps a Bluetooth link with [pcId] now: Auto or
+     * Bluetooth (never while on Network), set up on this phone, and a way to ask.
+     */
+    private fun mayHoldBle(pcId: String): Boolean {
+        val device = _state.value.device(pcId) ?: return false
+        return device.bleRemote && device.bleLink && device.route != RemoteRoute.NETWORK &&
+            (device.online || device.bleLinked) &&
+            PcBleLink.canConnect(context) && PcBleLink.bluetoothOn(context)
+    }
+
+    /** Renews [pcId]'s hold; when the PC opened its window and no link is up, looks for it a short while. */
+    private suspend fun renewBleHold(node: G7LinkNode, pcId: String) {
+        // A bring-up under way asks for itself.
+        if (bleSetups[pcId]?.isActive == true) return
+        val state = bleUseOnce(node, pcId, ask = false).getOrNull() ?: return
+        val step = when {
+            state == BleUseState.OPEN && PcBleLink.linkedTo(pcId) -> BleSetup.Linked
+            state == BleUseState.OPEN -> {
+                _state.update { it.withBleSetup(pcId, BleSetup.Connecting) }
+                if (linkNow(node, pcId, BLE_HOLD_LINK_MS)) BleSetup.Linked else BleSetup.OutOfRange
+            }
+            else -> bleSetupAfter(state, asked = false)
+        }
+        _state.update { it.withBleSetup(pcId, step) }
+    }
+
+    /** Lets [pcId]'s hold go (`ble.use { on: false }`), when this phone has one. */
+    private fun releaseBleHold(pcId: String) {
+        bleHoldAsked.remove(pcId)
+        if (!bleHeld.remove(pcId)) return
+        val current = node ?: return
+        scope.launch(Dispatchers.IO) {
+            try {
+                current.bleUse(pcId, false, false)
+            } catch (e: G7LinkException) {
+                Log.i(TAG, "a PC wasn't told to let its Bluetooth link go: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Drops what the touchpad kept about [pcId]'s Bluetooth: it was unpaired. */
+    private fun forgetBle(pcId: String) {
+        bleSetups.remove(pcId)?.cancel()
+        bleHolds.remove(pcId)?.cancel()
+        bleHoldAsked.remove(pcId)
+        bleHeld.remove(pcId)
+        bleAllowedBy.remove(pcId)
     }
 
     /**
@@ -3132,6 +3421,22 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         const val MAX_CLIPBOARD_PNG_BYTES = 32 * 1024 * 1024
         /** How long a Bluetooth connect waits for the core to start. */
         const val BLE_START_WAIT_MS = 10_000L
+        /** A PC asking its user is asked again this often, for this long (§2.3). */
+        const val BLE_ASK_POLL_MS = 1_500L
+        const val BLE_ASK_WAIT_MS = 60_000L
+        /** How long the PC's window is looked for once it's open; with no network, its own window lasts 45 s. */
+        const val BLE_CONNECT_WAIT_MS = 25_000L
+        const val BLE_NO_NETWORK_SCAN_MS = 45_000L
+        const val BLE_LINK_ATTEMPTS = 3
+        /** Time for the PC to hear this phone's new capabilities before it's asked again. */
+        const val BLE_CAPABILITIES_SETTLE_MS = 1_000L
+        const val BLE_LINK_POLL_MS = 250L
+        /** The touchpad's hold: asked again this often while it shows, and kept this long after it's left (§6.3). */
+        const val BLE_HOLD_RENEW_MS = 20_000L
+        const val BLE_HOLD_LINGER_MS = 30_000L
+        const val BLE_HOLD_TICK_MS = 1_000L
+        /** A renewal that finds the window open and no link looks for it this long. */
+        const val BLE_HOLD_LINK_MS = 12_000L
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */

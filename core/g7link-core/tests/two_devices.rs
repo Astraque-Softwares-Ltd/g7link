@@ -4,7 +4,10 @@
 use std::{
     future::Future,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -1193,6 +1196,406 @@ async fn garbage_before_the_handshake_ends_the_link() {
     assert!(on_pc.receive(&[0x80, 0x01, 0x2C, 1, 2, 3]).is_err());
     let on_pc = pc.node.ble_accept();
     assert!(on_pc.receive(&[0x05]).is_err(), "out of sequence");
+}
+
+/// A phone and a PC as [`ble_pair`] makes them, with the PC offering
+/// `pc_caps` and the phone `phone_caps` (both with `ble.link`), each knowing
+/// what the other offers, and the PC taking the phone's input.
+async fn remote_pair(pc_caps: &[&str], phone_caps: &[&str]) -> (TestDevice, TestDevice) {
+    let (pc, phone) = ble_pair().await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let caps = |extra: &[&str]| -> Vec<String> {
+        ["ble.link"].iter().chain(extra).map(|c| (*c).to_owned()).collect()
+    };
+    pc.node.update_power(PowerLevel::NotApplicable, caps(pc_caps)).await;
+    phone.node.update_power(PowerLevel::NotApplicable, caps(phone_caps)).await;
+    until("each knows what the other offers", || {
+        pc_caps.iter().all(|c| phone.node.peer_offers(pc_id, c))
+            && phone_caps.iter().all(|c| pc.node.peer_offers(phone_id, c))
+    })
+    .await;
+    pc.node.set_device_toggle(phone_id, "remote_input", true).unwrap();
+    (pc, phone)
+}
+
+/// Brings a Bluetooth link up between `pc` and `phone`, at `att_mtu`: both
+/// ends, and the pump carrying values between them with a count of those
+/// the phone sent.
+async fn link_up(
+    pc: &TestDevice,
+    phone: &TestDevice,
+    att_mtu: u16,
+) -> (
+    Arc<g7link_core::BleEndpoint>,
+    Arc<g7link_core::BleEndpoint>,
+    tokio::task::JoinHandle<()>,
+    Arc<AtomicUsize>,
+) {
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let on_pc = pc.node.ble_accept();
+    let on_phone = phone.node.ble_connect(pc_id).unwrap();
+    on_pc.set_mtu(att_mtu);
+    on_phone.set_mtu(att_mtu);
+    let sent = Arc::new(AtomicUsize::new(0));
+    let pump = tapped_wire(on_phone.clone(), on_pc.clone(), sent.clone());
+    until("link up", || pc.node.ble_linked(phone_id) && phone.node.ble_linked(pc_id)).await;
+    (on_pc, on_phone, pump, sent)
+}
+
+/// [`wire`], counting the values `phone` sends.
+fn tapped_wire(
+    phone: Arc<g7link_core::BleEndpoint>,
+    pc: Arc<g7link_core::BleEndpoint>,
+    sent: Arc<AtomicUsize>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let mut moved = false;
+            while let Some(value) = phone.next_outbound() {
+                moved = true;
+                sent.fetch_add(1, Ordering::SeqCst);
+                if pc.receive(&value).is_err() {
+                    return;
+                }
+            }
+            while let Some(value) = pc.next_outbound() {
+                moved = true;
+                if phone.receive(&value).is_err() {
+                    return;
+                }
+            }
+            if !moved {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    })
+}
+
+/// Every event `dev` has had since it last looked.
+fn drain(dev: &mut TestDevice) -> Vec<NodeEvent> {
+    let mut events = Vec::new();
+    loop {
+        match dev.events.try_recv() {
+            Ok(event) => events.push(event),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(_) => return events,
+        }
+    }
+}
+
+fn text_state(rev: u32, applied: u32, before: &str, after: &str) -> g7link_core::RemoteTextState {
+    g7link_core::RemoteTextState {
+        focus: 3,
+        field: 9,
+        epoch: 0,
+        rev,
+        applied,
+        kind: g7link_core::TextFieldKind::Mirror,
+        app: Some("Writer".into()),
+        label: Some("Document".into()),
+        window: false,
+        multiline: true,
+        start: 0,
+        before: before.into(),
+        after: after.into(),
+        anchor: None,
+        more_before: false,
+        more_after: false,
+        icon: Some("0123456789abcdef".into()),
+    }
+}
+
+fn pc_text_state(
+    from: g7link_core::DeviceId,
+) -> impl FnMut(&NodeEvent) -> Option<g7link_core::RemoteTextState> {
+    move |e| match e {
+        NodeEvent::PcTextState { device, state } if *device == from => Some(state.clone()),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_typing_box_follows_the_pc_over_bluetooth() {
+    use g7link_core::{BLE_REMOTE_CAPABILITY, INPUT_APP_ICON, INPUT_INJECT, INPUT_TEXT_MIRROR, RemoteInput};
+
+    let (mut pc, mut phone) = remote_pair(
+        &[BLE_REMOTE_CAPABILITY, INPUT_INJECT, INPUT_TEXT_MIRROR, INPUT_APP_ICON],
+        &[BLE_REMOTE_CAPABILITY],
+    )
+    .await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.set_reconnect(phone_id, false).unwrap();
+    phone.node.set_reconnect(pc_id, false).unwrap();
+    wait_offline(&mut pc, phone_id).await;
+    wait_offline(&mut phone, pc_id).await;
+    let (_on_pc, on_phone, pump, _) = link_up(&pc, &phone, 517).await;
+
+    // The box opens: the PC hears it over the link.
+    with_timeout("watch", phone.node.remote_text_watch(pc_id, true)).await.unwrap();
+    wait_for(&mut pc, "the phone watches", |e| match e {
+        NodeEvent::TextWatch { device, on: true } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+
+    // A long field arrives cut to what a message on the link holds.
+    let long = text_state(1, 0, &"b".repeat(4000), &"a".repeat(1000));
+    with_timeout("state", pc.node.remote_text_state(phone_id, &long)).await.unwrap();
+    let heard = wait_for(&mut phone, "the PC's field", pc_text_state(pc_id)).await;
+    assert_eq!((heard.before.len(), heard.after.len()), (2048, 512));
+    assert_eq!(heard.start, 4000 - 2048);
+    assert!(heard.more_before && heard.more_after);
+    assert_eq!(heard.caret(), long.caret());
+    assert_eq!(heard.label, long.label);
+
+    // An edit runs, and the next state says it did.
+    let edit = RemoteInput::Edit { focus: 3, seq: 1, range: None, moves: 0, backspaces: 1, text: "c".into() };
+    with_timeout("edit", phone.node.remote_input(pc_id, edit.clone())).await.unwrap();
+    assert!(pc.platform.remote_inputs.lock().unwrap().contains(&edit));
+    let after = text_state(2, 1, "bc", "");
+    with_timeout("state", pc.node.remote_text_state(phone_id, &after)).await.unwrap();
+    let heard = wait_for(&mut phone, "the PC's field", pc_text_state(pc_id)).await;
+    assert_eq!((heard.applied, heard.before.as_str()), (1, "bc"));
+    assert!(phone.node.remote_route_state(pc_id).ble_linked);
+
+    // Icons need the session: nothing goes on the link for one.
+    pump.abort();
+    let icon = phone.node.remote_app_icon(pc_id, "0123456789abcdef".into()).await;
+    assert!(matches!(icon, Err(Error::Offline)), "{icon:?}");
+    assert!(on_phone.next_outbound().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn states_dont_queue_behind_a_slow_link() {
+    use g7link_core::{BLE_REMOTE_CAPABILITY, INPUT_INJECT, INPUT_TEXT_MIRROR};
+
+    let (mut pc, mut phone) =
+        remote_pair(&[BLE_REMOTE_CAPABILITY, INPUT_INJECT, INPUT_TEXT_MIRROR], &[BLE_REMOTE_CAPABILITY])
+            .await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.set_reconnect(phone_id, false).unwrap();
+    phone.node.set_reconnect(pc_id, false).unwrap();
+    wait_offline(&mut pc, phone_id).await;
+    wait_offline(&mut phone, pc_id).await;
+    let (on_pc, on_phone, pump, _) = link_up(&pc, &phone, 23).await;
+
+    // The link takes nothing for a while; the field changes thirty times.
+    pump.abort();
+    for rev in 1..=30 {
+        let state = text_state(rev, 0, &format!("draft {rev} ").repeat(40), "");
+        pc.node.remote_text_state(phone_id, &state).await.unwrap();
+    }
+    drain(&mut phone);
+    let pump = wire(on_phone.clone(), on_pc.clone());
+    let heard = wait_for(&mut phone, "the PC's field", pc_text_state(pc_id)).await;
+    assert_eq!(heard.rev, 30, "only the newest went");
+    assert!(heard.before.len() <= 512, "cut for a small MTU: {}", heard.before.len());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!drain(&mut phone).iter().any(|e| matches!(e, NodeEvent::PcTextState { .. })));
+    pump.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_asks_to_use_bluetooth() {
+    use g7link_core::{BLE_REMOTE_CAPABILITY, BleUseState};
+
+    let (mut pc, phone) = remote_pair(&[BLE_REMOTE_CAPABILITY], &[BLE_REMOTE_CAPABILITY]).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.set_device_toggle(phone_id, "ble_link", false).unwrap();
+    drain(&mut pc);
+    let requested =
+        |e: &NodeEvent| matches!(e, NodeEvent::BleLinkRequested { device } if *device == phone_id);
+
+    // Off on the PC: its user is asked, once.
+    let ask = phone.node.ble_use(pc_id, true, true);
+    assert_eq!(with_timeout("ask", ask).await.unwrap(), BleUseState::Asking);
+    wait_for(&mut pc, "the prompt", |e| requested(e).then_some(())).await;
+    let again = phone.node.ble_use(pc_id, true, true);
+    assert_eq!(with_timeout("ask again", again).await.unwrap(), BleUseState::Asking, "still showing");
+    // "Not now": the phone is told, and asking again within a minute doesn't prompt.
+    pc.node.ble_prompt_closed(phone_id);
+    let poll = phone.node.ble_use(pc_id, true, false);
+    assert_eq!(with_timeout("poll", poll).await.unwrap(), BleUseState::Off);
+    let again = phone.node.ble_use(pc_id, true, true);
+    assert_eq!(with_timeout("ask again", again).await.unwrap(), BleUseState::Off);
+    assert!(!drain(&mut pc).iter().any(requested), "one prompt a minute");
+    assert!(!pc.node.ble_held(phone_id));
+
+    // Allowed: held, and the PC can be connected to.
+    pc.node.set_device_toggle(phone_id, "ble_link", true).unwrap();
+    let poll = phone.node.ble_use(pc_id, true, false);
+    assert_eq!(with_timeout("poll", poll).await.unwrap(), BleUseState::Open);
+    wait_for(&mut pc, "a window", |e| match e {
+        NodeEvent::BleWanted { device } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(pc.node.ble_held(phone_id));
+    let (_on_pc, _on_phone, pump, _) = link_up(&pc, &phone, 517).await;
+    let renew = phone.node.ble_use(pc_id, true, false);
+    assert_eq!(with_timeout("renew", renew).await.unwrap(), BleUseState::Linked);
+
+    // Let go of.
+    drain(&mut pc);
+    let stop = phone.node.ble_use(pc_id, false, false);
+    assert_eq!(with_timeout("stop", stop).await.unwrap(), BleUseState::Off);
+    wait_for(&mut pc, "the hold ends", |e| match e {
+        NodeEvent::BleHoldChanged { device, held: false } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(!pc.node.ble_held(phone_id));
+    pump.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_phone_finds_the_pc_busy() {
+    use g7link_core::{BLE_REMOTE_CAPABILITY, BleUseState};
+
+    let (mut pc, phone) = remote_pair(&[BLE_REMOTE_CAPABILITY], &[BLE_REMOTE_CAPABILITY]).await;
+    let pc_id = pc.node.device_id();
+    let mut other = device_with("Galaxy", DeviceKind::Phone, &["ble.link", BLE_REMOTE_CAPABILITY]).await;
+    pair_qr(&mut pc, &mut other).await;
+    let other_id = other.node.device_id();
+    beacon_keys(&other, 1).await;
+    pc.node.set_device_toggle(other_id, "ble_link", true).unwrap();
+    other.node.set_device_toggle(pc_id, "ble_link", true).unwrap();
+    until("the PC knows the other phone", || pc.node.peer_offers(other_id, BLE_REMOTE_CAPABILITY)).await;
+
+    // The PC serves one link: while the first phone has it, the other waits.
+    let (_on_pc, _on_phone, pump, _) = link_up(&pc, &phone, 517).await;
+    assert_eq!(with_timeout("ask", other.node.ble_use(pc_id, true, true)).await.unwrap(), BleUseState::Busy);
+    assert!(!pc.node.ble_held(other_id));
+    pump.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pinned_route_is_used_and_falls_back() {
+    use g7link_core::{BLE_REMOTE_CAPABILITY, INPUT_INJECT, RemoteInput, RemotePath, RemoteRoute};
+
+    let (pc, mut phone) = remote_pair(&[BLE_REMOTE_CAPABILITY, INPUT_INJECT], &[BLE_REMOTE_CAPABILITY]).await;
+    let pc_id = pc.node.device_id();
+    let (on_pc, on_phone, pump, sent) = link_up(&pc, &phone, 517).await;
+    let key = |n: usize| RemoteInput::Key { key: format!("f{n}"), mods: Vec::new() };
+
+    // Pinned to Bluetooth with both up: the key goes on the link.
+    phone.node.set_remote_route(pc_id, RemoteRoute::Bluetooth).unwrap();
+    let state = wait_for(&mut phone, "the route", |e| match e {
+        NodeEvent::RemoteRouteChanged { device, state } if *device == pc_id => Some(*state),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        (state.route, state.active, state.fallback),
+        (RemoteRoute::Bluetooth, Some(RemotePath::Ble), false)
+    );
+    assert!(state.ble_remote && state.ble_linked);
+    let before = sent.load(Ordering::SeqCst);
+    with_timeout("key", phone.node.remote_input(pc_id, key(1))).await.unwrap();
+    assert!(sent.load(Ordering::SeqCst) > before, "it went on the link");
+
+    // Network: the session.
+    phone.node.set_remote_route(pc_id, RemoteRoute::Network).unwrap();
+    let before = sent.load(Ordering::SeqCst);
+    with_timeout("key", phone.node.remote_input(pc_id, key(2))).await.unwrap();
+    assert_eq!(sent.load(Ordering::SeqCst), before, "it went on the session");
+
+    // Pinned to Bluetooth and the link goes: the session.
+    phone.node.set_remote_route(pc_id, RemoteRoute::Bluetooth).unwrap();
+    pump.abort();
+    on_phone.close();
+    on_pc.close();
+    with_timeout("key", phone.node.remote_input(pc_id, key(3))).await.unwrap();
+    let state = phone.node.remote_route_state(pc_id);
+    assert_eq!((state.active, state.fallback, state.ble_linked), (Some(RemotePath::Session), true, false));
+    assert_eq!(pc.platform.remote_inputs.lock().unwrap()[..], [key(1), key(2), key(3)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_keeps_its_order_across_a_switch() {
+    use g7link_core::{BLE_REMOTE_CAPABILITY, INPUT_INJECT, RemoteInput, RemoteRoute};
+
+    let (pc, phone) = remote_pair(&[BLE_REMOTE_CAPABILITY, INPUT_INJECT], &[BLE_REMOTE_CAPABILITY]).await;
+    let pc_id = pc.node.device_id();
+    let (_on_pc, _on_phone, pump, sent) = link_up(&pc, &phone, 185).await;
+    let handshake = sent.load(Ordering::SeqCst);
+    let typed: Vec<RemoteInput> = (0..50).map(|n| RemoteInput::Text { text: format!("{n} ") }).collect();
+    for (n, input) in typed.iter().enumerate() {
+        let route = if n % 2 == 0 { RemoteRoute::Bluetooth } else { RemoteRoute::Network };
+        phone.node.set_remote_route(pc_id, route).unwrap();
+        with_timeout("key", phone.node.remote_input(pc_id, input.clone())).await.unwrap();
+    }
+    assert!(sent.load(Ordering::SeqCst) > handshake, "some went on the link");
+    assert_eq!(*pc.platform.remote_inputs.lock().unwrap(), typed, "in order, none twice");
+    pump.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_pc_gets_no_ble_use() {
+    use g7link_core::{
+        BLE_REMOTE_CAPABILITY, INPUT_INJECT, INPUT_TEXT_MIRROR, RemoteInput, RemotePath, RemoteRoute,
+    };
+
+    // A PC whose link carries input but that doesn't offer `ble.remote`.
+    let (pc, phone) = remote_pair(&[INPUT_INJECT, INPUT_TEXT_MIRROR], &[BLE_REMOTE_CAPABILITY]).await;
+    let pc_id = pc.node.device_id();
+    assert!(matches!(phone.node.ble_use(pc_id, true, true).await, Err(Error::Unsupported)));
+    let (on_pc, on_phone, pump, sent) = link_up(&pc, &phone, 517).await;
+    let handshake = sent.load(Ordering::SeqCst);
+
+    // With a session, input takes it whatever the route: as before the picker.
+    phone.node.set_remote_route(pc_id, RemoteRoute::Bluetooth).unwrap();
+    let state = phone.node.remote_route_state(pc_id);
+    assert!(!state.ble_remote && !state.fallback);
+    assert_eq!(state.active, Some(RemotePath::Session));
+    let key = RemoteInput::Key { key: "enter".into(), mods: Vec::new() };
+    with_timeout("key", phone.node.remote_input(pc_id, key.clone())).await.unwrap();
+    assert_eq!(sent.load(Ordering::SeqCst), handshake, "nothing on the link");
+    // The typing box's watch doesn't go on the link either.
+    let mut phone = phone;
+    pc.node.set_reconnect(phone.node.device_id(), false).unwrap();
+    phone.node.set_reconnect(pc_id, false).unwrap();
+    wait_offline(&mut phone, pc_id).await;
+    assert!(matches!(phone.node.remote_text_watch(pc_id, true).await, Err(Error::Offline)));
+    // Without one, the link.
+    with_timeout("key", phone.node.remote_input(pc_id, key.clone())).await.unwrap();
+    assert!(sent.load(Ordering::SeqCst) > handshake);
+    assert_eq!(*pc.platform.remote_inputs.lock().unwrap(), [key.clone(), key]);
+    pump.abort();
+    drop((on_pc, on_phone));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_state_from_the_old_path_is_dropped() {
+    use g7link_core::{BLE_REMOTE_CAPABILITY, INPUT_INJECT, INPUT_TEXT_MIRROR, RemoteRoute};
+
+    let (mut pc, mut phone) =
+        remote_pair(&[BLE_REMOTE_CAPABILITY, INPUT_INJECT, INPUT_TEXT_MIRROR], &[BLE_REMOTE_CAPABILITY])
+            .await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let (_on_pc, _on_phone, pump, _) = link_up(&pc, &phone, 517).await;
+    let watching = |e: &NodeEvent| match e {
+        NodeEvent::TextWatch { device, on: true } if *device == phone_id => Some(()),
+        _ => None,
+    };
+
+    // Watching over the session: rev 5 comes that way.
+    phone.node.set_remote_route(pc_id, RemoteRoute::Network).unwrap();
+    phone.node.remote_text_watch(pc_id, true).await.unwrap();
+    wait_for(&mut pc, "the phone watches", watching).await;
+    pc.node.remote_text_state(phone_id, &text_state(5, 0, "five", "")).await.unwrap();
+    assert_eq!(wait_for(&mut phone, "rev 5", pc_text_state(pc_id)).await.rev, 5);
+
+    // The route moves to the link and the watch with it: rev 4, sent before
+    // the move, lands after; it's dropped. Rev 6 isn't.
+    phone.node.set_remote_route(pc_id, RemoteRoute::Bluetooth).unwrap();
+    phone.node.remote_text_watch(pc_id, true).await.unwrap();
+    wait_for(&mut pc, "the phone watches over the link", watching).await;
+    pc.node.remote_text_state(phone_id, &text_state(4, 0, "four", "")).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    pc.node.remote_text_state(phone_id, &text_state(6, 0, "six", "")).await.unwrap();
+    assert_eq!(wait_for(&mut phone, "rev 6", pc_text_state(pc_id)).await.rev, 6, "rev 4 was dropped");
+    pump.abort();
 }
 
 #[tokio::test(flavor = "multi_thread")]

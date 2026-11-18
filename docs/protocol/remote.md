@@ -104,7 +104,11 @@ A PC that offers `input.text_mirror` keeps a phone's typing box and its
 focused field the same. The phone sends `text_watch` `on` while its box is
 open (and `false` when it closes); while it watches, and has `remote_input`,
 the PC sends a `text_state` each time the focused field, its text or its
-caret changes. Neither has a reply.
+caret changes, and one at once for each `text_watch` with `on`, on the path
+it came on (the session, or the Bluetooth link: bluetooth.md §4.4). Neither
+has a reply. A phone drops a state whose `rev` isn't newer than the last one
+it took for the same `focus` (one sent on the path used before can land
+after a newer one).
 
 - `focus` changes on every focus move; `field` is the same each time the
   focus comes back to one field (0 when the PC can't tell), and means nothing
@@ -116,7 +120,8 @@ caret changes. Neither has a reply.
 - `mirror`: the PC reads the field (AT-SPI). `before` and `after` are the text
   around the caret (at most 4096 and 1024 UTF-8 bytes), `start` is where
   `before` starts and `anchor` where a selection starts; offsets count Unicode
-  scalar values. `opaque`: the field takes text but its app doesn't share it,
+  scalar values. Over the Bluetooth link `before` and `after` are shorter
+  (bluetooth.md §4.4), and `more_before`/`more_after` say so. `opaque`: the field takes text but its app doesn't share it,
   or it's a terminal, or (`window`) the PC only knows the window that has the
   focus. `secret`: a password field; nothing is read. `none`: nothing takes
   text. `label` is the field's name, or the window's title; it and the text
@@ -206,7 +211,8 @@ SlideAction  = "next" | "previous" | "start" | "stop" | "black"
 
 - The PC validates all bounds and key names before touching the OS input APIs.
 - Per-peer token buckets bound incoming rates (240 datagrams/s with burst 60;
-  60 control requests/s with burst 30).
+  500 control requests/s with burst 500, which voice typing's runs of
+  backspaces need).
 - Implementations **MUST NOT** log typed `text` (v0 §11).
 - While the PC session is locked, the PC drops `text`, `key` and `slide`
   input, so a phone can't type into the unlock prompt. Pointer moves, button

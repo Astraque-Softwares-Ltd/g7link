@@ -168,15 +168,14 @@ fn watch(peer: DeviceId, on: bool) {
     sys::text_focus::set_watching(any);
 }
 
-/// The field that has the focus on this PC changed: phones watching it hear.
+/// The field that has the focus on this PC changed: phones watching it hear,
+/// over their session or their Bluetooth link.
 pub fn text_state_changed(state: RemoteTextState) {
-    let (Some(host), Some(node)) = (core_host::try_host(), core_host::node()) else { return };
-    let online: Vec<DeviceId> = host.hub.read(|s| {
-        s.devices.iter().filter(|d| matches!(d.link, LinkState::Online { .. })).map(|d| d.id).collect()
-    });
-    let phones: Vec<(DeviceId, u32)> = watchers(|watchers| {
-        watchers.iter().filter(|(id, _)| online.contains(id)).map(|(id, applied)| (*id, *applied)).collect()
-    });
+    let Some(node) = core_host::node() else { return };
+    let phones: Vec<(DeviceId, u32)> =
+        watchers(|watchers| watchers.iter().map(|(id, applied)| (*id, *applied)).collect());
+    let phones: Vec<(DeviceId, u32)> =
+        phones.into_iter().filter(|(id, _)| node.input_reachable(*id)).collect();
     if phones.is_empty() {
         return;
     }
@@ -206,12 +205,26 @@ pub fn stop_all() {
     hide_laser();
 }
 
+/// `device` can't send input any more (no session and no link): what it
+/// held is let go of, and it no longer watches.
+fn unreachable(device: DeviceId) {
+    let _ = crate::input_share::leave_remote();
+    sys::input::release_held_buttons();
+    watch(device, false);
+}
+
 pub fn on_event(event: &NodeEvent) {
     match event {
+        // Input may go on over the other path: only when neither is left.
         NodeEvent::LinkChanged { device, link: LinkState::Offline { .. } } => {
-            let _ = crate::input_share::leave_remote();
-            sys::input::release_held_buttons();
-            watch(*device, false);
+            if !core_host::node().is_some_and(|node| node.ble_linked(*device)) {
+                unreachable(*device);
+            }
+        }
+        NodeEvent::BleLinkChanged { device, up: false } => {
+            if !core_host::node().is_some_and(|node| node.input_reachable(*device)) {
+                unreachable(*device);
+            }
         }
         NodeEvent::DeviceRemoved(device) => {
             let _ = crate::input_share::leave_remote();
@@ -226,13 +239,13 @@ pub fn on_event(event: &NodeEvent) {
     }
 }
 
-/// What has the focus on this PC takes text, or no longer does. Connected
-/// phones that may control this PC hear it, so their keyboard can open.
+/// What has the focus on this PC takes text, or no longer does. Phones that
+/// may control this PC and can be reached (a session or a Bluetooth link)
+/// hear it, so their keyboard can open.
 pub fn text_focus_changed(editable: bool) {
     let (Some(host), Some(node)) = (core_host::try_host(), core_host::node()) else { return };
-    let phones: Vec<DeviceId> = host.hub.read(|s| {
-        s.devices.iter().filter(|d| matches!(d.link, LinkState::Online { .. })).map(|d| d.id).collect()
-    });
+    let devices: Vec<DeviceId> = host.hub.read(|s| s.devices.iter().map(|d| d.id).collect());
+    let phones: Vec<DeviceId> = devices.into_iter().filter(|id| node.input_reachable(*id)).collect();
     core_host::spawn(async move {
         for phone in phones {
             if let Err(error) = node.remote_text_focus(phone, editable).await {

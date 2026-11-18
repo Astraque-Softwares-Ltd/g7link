@@ -29,6 +29,14 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   too. A bubble over it names the app and field, and moving to another field
   switches the box; what you typed into a field that doesn't share its text
   comes back when you return to it.
+- **Pick how the touchpad reaches the PC.** Tap "Connected · 9 ms" at the top
+  of the Touchpad, Air mouse or Presentation tab: Auto (whichever answers
+  faster, measured as you go), Wi-Fi or USB, or Bluetooth. Bluetooth carries
+  the touchpad, keys and the typing box, so it keeps working with no network,
+  and asks for what's missing on the way: the phone's Nearby devices
+  permission, and an Allow on the PC. Auto never switches in the middle of a
+  drag or a word, and never asks for anything by itself; it offers Set up.
+  Each PC keeps its own choice. Bluetooth links one phone to a PC at a time.
 - **Pictures and files wait over the typing box** with a small preview each,
   to take out with a tap or send with the message.
 - **Bluetooth when there's no network.** Turn it on for a phone and a PC on
@@ -68,6 +76,9 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   already in them, multi-paragraph prompts included. The PC asks each app once,
   only when the phone types into it; Settings › General, "Show browser fields
   on the phone", turns it off.
+- **Bluetooth fixes.** A message of exactly 4 KB no longer ends the link,
+  more than about 20 keys typed in a burst no longer time out over it, and a
+  PC whose Bluetooth is off no longer offers the link.
 - **The typing box doesn't freeze or fill in suggestions.** It keeps following
   the laptop after an edit that didn't go through, or a read that failed
   while an app changed its field. A browser's address-bar suggestion stays out

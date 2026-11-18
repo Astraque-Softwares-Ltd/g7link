@@ -53,7 +53,10 @@ pub mod usb;
 pub mod webcam;
 
 pub use actions::{PC_WAKE, PowerAction};
-pub use ble_link::{BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BleEndpoint};
+pub use ble_link::{
+    BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BLE_REMOTE_CAPABILITY, BleEndpoint, RemotePath, RemoteRoute,
+    RouteState,
+};
 pub use calls::CallCommand;
 pub use clip_kind::{
     ClipKind, ClipSuggestion, classify_clip, maps_web_url, percent_encode, tracking_search_url,
@@ -78,7 +81,7 @@ pub use g7link_protocol::ble;
 pub use g7link_protocol::messages::clip::{
     IMAGE_TYPES as CLIP_IMAGE_TYPES, MAX_IMAGE_BYTES as CLIP_MAX_IMAGE_BYTES,
 };
-pub use g7link_protocol::messages::{RemoteTextState, TextFieldKind, remote as remote_limits};
+pub use g7link_protocol::messages::{BleUseState, RemoteTextState, TextFieldKind, remote as remote_limits};
 pub use g7link_protocol::{
     DeviceId, PacketKind,
     messages::{

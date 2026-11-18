@@ -130,6 +130,10 @@ pub const RX_UUID: &str = "7f2964e4-c2df-4b2e-8425-68d2be4c85ab";
 pub const TX_UUID: &str = "ea1df14d-6860-4376-a3b0-64fdcb79d7f2";
 /// A record at most: a 4096-byte message and its 16-byte tag.
 pub const MAX_RECORD: usize = 4096 + 16;
+/// A record's bytes besides its message: the record byte and the tag.
+pub const RECORD_OVERHEAD: usize = 1 + 16;
+/// A message's plain bytes at most, so that its record fits [`MAX_RECORD`].
+pub const MAX_PLAIN: usize = MAX_RECORD - RECORD_OVERHEAD;
 /// A record before the other device has proved who it is: a handshake message.
 pub const MAX_HANDSHAKE_RECORD: usize = 256;
 /// The smallest ATT MTU, whose values hold 20 bytes.
@@ -188,6 +192,14 @@ pub fn fragments(record: &[u8], att_mtu: u16, seq: &mut u8) -> Result<Vec<Vec<u8
         rest = tail;
         first = false;
     }
+}
+
+/// How many fragments a record of `len` bytes goes in over a link with
+/// `att_mtu`, as [`fragments`] cuts it.
+pub fn fragment_count(len: usize, att_mtu: u16) -> usize {
+    let value = value_len(att_mtu);
+    let first = value - 3;
+    if len <= first { 1 } else { 1 + (len - first).div_ceil(value - 1) }
 }
 
 /// Puts records back together from their fragments, in order, refusing
@@ -322,11 +334,12 @@ mod tests {
     #[test]
     fn records_come_back_whole_from_their_fragments() {
         for mtu in [MIN_ATT_MTU, 100, MAX_ATT_MTU] {
-            for len in [0, 1, 17, 19, 20, 300, MAX_RECORD] {
+            for len in [0, 1, 17, 18, 19, 20, 36, 37, 300, 2922, MAX_RECORD] {
                 let record: Vec<u8> = (0..len).map(|i| i as u8).collect();
                 let mut seq = 60;
                 let parts = fragments(&record, mtu, &mut seq).unwrap();
                 assert!(parts.iter().all(|p| p.len() <= usize::from(mtu) - 3), "fits the MTU");
+                assert_eq!(parts.len(), fragment_count(len, mtu), "{len} bytes at MTU {mtu}");
                 let mut rx = Reassembler { next_seq: 60, open: None };
                 let mut out = None;
                 for (i, part) in parts.iter().enumerate() {
@@ -337,6 +350,14 @@ mod tests {
                 assert_eq!(out.unwrap(), record);
             }
         }
+    }
+
+    #[test]
+    fn a_largest_text_state_takes_six_notifications() {
+        assert_eq!(MAX_PLAIN, 4095);
+        // bluetooth.md §4.4: 2922 bytes sealed at MTU 517, 1002 at MTU 23.
+        assert_eq!(fragment_count(2922, MAX_ATT_MTU), 6);
+        assert_eq!(fragment_count(1002, MIN_ATT_MTU), 53);
     }
 
     #[test]

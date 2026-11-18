@@ -10,6 +10,8 @@
 
 mod crypto;
 mod endpoint;
+mod hold;
+mod route;
 
 use std::{
     collections::HashMap,
@@ -24,13 +26,14 @@ use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
     ble::{self, LINK_SECRET_LEN},
     messages::{
-        BleKey, BleOtp, ClipSet, Notification, PhoneToggleSet, PhoneToggles, RemoteInput, Ring, RingStopped,
-        toggle_ids, types,
+        BleKey, BleOtp, ClipSet, Notification, PhoneToggleSet, PhoneToggles, RemoteInput, RemoteTextFocus,
+        RemoteTextState, RemoteTextWatch, Ring, RingStopped, remote as remote_limits, toggle_ids, types,
     },
 };
 use tokio::sync::{Notify, oneshot};
 
 pub use endpoint::BleEndpoint;
+pub use route::{RemotePath, RemoteRoute, RouteState};
 
 use crate::{
     Error, Result,
@@ -129,11 +132,18 @@ impl Shared {
 pub const BLE_LINK_TOGGLE: &str = "ble_link";
 /// What a device whose app can use the Bluetooth channel announces.
 pub const BLE_LINK_CAPABILITY: &str = "ble.link";
+/// What a device announces whose link also carries the typing box and
+/// `ble.use`, and (a phone) that picks a path for its touchpad
+/// (docs/protocol/bluetooth.md §4.5). Offered with [`BLE_LINK_CAPABILITY`].
+pub const BLE_REMOTE_CAPABILITY: &str = "ble.remote";
 /// How long the PC waits for a phone to connect over Bluetooth when it has
 /// something for it.
 const LINK_WAIT: Duration = Duration::from_secs(20);
 /// How long a request over Bluetooth waits for its reply.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a key or click over Bluetooth waits for its answer: the input
+/// after it waits behind it, and a link that stalls loses it to the session.
+const INPUT_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long a key or click the PC turned away as too many keeps being
 /// resent, and how long between tries.
 const INPUT_RETRY_FOR: Duration = Duration::from_secs(3);
@@ -152,6 +162,10 @@ pub(crate) struct BleLinks {
     next_request: AtomicU64,
     /// A link came up.
     changed: Notify,
+    /// PC: the phones holding a link (`ble.use`).
+    holds: Mutex<hold::Holds>,
+    /// Phone: each PC's touchpad route.
+    routes: Mutex<route::Routes>,
 }
 
 impl std::fmt::Debug for BleLinks {
@@ -176,6 +190,10 @@ fn allowed(t: &str) -> bool {
             | types::PHONE_TOGGLES
             | types::REMOTE_CHECK
             | types::REMOTE_INPUT
+            | types::REMOTE_TEXT_WATCH
+            | types::REMOTE_TEXT_STATE
+            | types::REMOTE_TEXT_FOCUS
+            | types::BLE_USE
     )
 }
 
@@ -221,6 +239,7 @@ impl Shared {
         tracing::info!(peer = %peer.short(), "Bluetooth link up");
         self.ble.changed.notify_waiters();
         self.emit(NodeEvent::BleLinkChanged { device: peer, up: true });
+        self.route_refresh(&peer);
     }
 
     pub(crate) fn ble_link_down(&self, peer: DeviceId, endpoint: &Arc<BleEndpoint>) {
@@ -233,7 +252,15 @@ impl Shared {
         if removed {
             tracing::info!(peer = %peer.short(), "Bluetooth link down");
             self.emit(NodeEvent::BleLinkChanged { device: peer, up: false });
+            self.route_refresh(&peer);
+            self.held_link_down(peer);
         }
+    }
+
+    /// Forgets what's kept for the Bluetooth link with `peer` (unpaired).
+    pub(crate) fn forget_ble(&self, peer: &DeviceId) {
+        lock(&self.ble.holds).remove_peer(peer);
+        lock(&self.ble.routes).remove_peer(peer);
     }
 
     /// A message that came in on a Bluetooth link.
@@ -304,6 +331,12 @@ impl Shared {
             }
             // The phone's touchpad and keyboard: the PC's own checks and limits apply.
             types::REMOTE_CHECK => Ok(Some(crate::remote::run_check(self, &peer))),
+            // The typing box, as on a session.
+            types::REMOTE_TEXT_WATCH | types::REMOTE_TEXT_STATE | types::REMOTE_TEXT_FOCUS => {
+                crate::remote::incoming_one_way(self, peer, &env, RemotePath::Ble)?;
+                Ok(None)
+            }
+            types::BLE_USE => Ok(Some(self.ble_use_reply(peer, &env))),
             types::REMOTE_INPUT => {
                 let event: RemoteInput = env.body()?;
                 if env.id.is_none() {
@@ -373,12 +406,6 @@ impl Shared {
         }
     }
 
-    /// Phone: whether input for the PC `peer` goes over Bluetooth: there's no
-    /// session but a link is up.
-    pub(crate) fn input_over_ble(&self, peer: &DeviceId) -> bool {
-        self.session(peer).is_none() && self.ble_link(peer).is_some()
-    }
-
     /// Phone: sends touchpad or keyboard input to the PC `peer` over the
     /// Bluetooth link. Motion is added up and sent as the link has room;
     /// anything else waits for the PC's answer.
@@ -397,7 +424,18 @@ impl Shared {
         let give_up = Instant::now() + INPUT_RETRY_FOR;
         loop {
             let env = Envelope::new(types::REMOTE_INPUT, &event)?;
-            match self.ble_request(peer, env, REQUEST_TIMEOUT).await?.expect(types::OK) {
+            let request = self.ble_request(peer, env, INPUT_TIMEOUT);
+            tokio::pin!(request);
+            // No answer for a while: input goes on the session meanwhile. This
+            // one isn't sent again there, as it may have run.
+            let reply = tokio::select! {
+                reply = &mut request => reply,
+                () = tokio::time::sleep(route::STALL_AFTER) => {
+                    self.ble_stalled(&peer);
+                    request.await
+                }
+            };
+            match reply?.expect(types::OK) {
                 Err(g7link_protocol::ProtocolError::Remote {
                     code: g7link_protocol::ErrorCode::Busy,
                     ..
@@ -415,6 +453,65 @@ impl Shared {
             .await?
             .expect(types::OK)?;
         Ok(())
+    }
+
+    /// Phone: tells the PC `peer` over the link that the typing box opened
+    /// (`on`) or closed (`remote.text_watch`). The PC sends its states on the
+    /// path the last watch came on.
+    pub(crate) fn ble_text_watch(&self, peer: DeviceId, on: bool) -> Result<()> {
+        if !crate::remote::mirrors_text(self, &peer) {
+            return Err(Error::Unsupported);
+        }
+        if !self.peer_offers_ble_remote(&peer) {
+            return Err(Error::Offline);
+        }
+        self.ble_send(&peer, &Envelope::new(types::REMOTE_TEXT_WATCH, &RemoteTextWatch { on })?)
+    }
+
+    /// PC: sends the phone `peer` the focused field over the link, cut to
+    /// what a message there holds; a newer one replaces it while it waits.
+    pub(crate) fn ble_text_state(&self, peer: DeviceId, state: &RemoteTextState) -> Result<()> {
+        if !self.toggle_on(&peer, crate::remote::TOGGLE) {
+            return Ok(());
+        }
+        if !state.is_valid() {
+            return Err(Error::Protocol("invalid text state".into()));
+        }
+        if !self.peer_offers_ble_remote(&peer) {
+            return Err(Error::Offline);
+        }
+        let link = self.ble_link(&peer).ok_or(Error::Offline)?;
+        let (mut before, mut after) = if link.att_mtu() < remote_limits::SMALL_ATT_MTU {
+            (remote_limits::MAX_BLE_STATE_SMALL_BEFORE, remote_limits::MAX_BLE_STATE_SMALL_AFTER)
+        } else {
+            (remote_limits::MAX_BLE_STATE_BEFORE, remote_limits::MAX_BLE_STATE_AFTER)
+        };
+        loop {
+            let env = Envelope::new(types::REMOTE_TEXT_STATE, &state.trimmed(before, after))?;
+            if env.to_cbor().len() <= endpoint::MAX_MESSAGE {
+                return link.send_state(&env);
+            }
+            if before == 0 && after == 0 {
+                return Err(Error::TooLarge);
+            }
+            (before, after) = (before / 2, after / 2);
+        }
+    }
+
+    /// PC: tells the phone `peer` over the link whether the focus takes text.
+    pub(crate) fn ble_text_focus(&self, peer: DeviceId, editable: bool) -> Result<()> {
+        if !self.toggle_on(&peer, crate::remote::TOGGLE) {
+            return Ok(());
+        }
+        if !self.peer_offers_ble_remote(&peer) {
+            return Err(Error::Offline);
+        }
+        self.ble_send(&peer, &Envelope::new(types::REMOTE_TEXT_FOCUS, &RemoteTextFocus { editable })?)
+    }
+
+    /// Whether paired `peer` offers [`BLE_REMOTE_CAPABILITY`].
+    pub(crate) fn peer_offers_ble_remote(&self, peer: &DeviceId) -> bool {
+        self.store.get_peer(peer).ok().flatten().is_some_and(|p| p.caps.contains(BLE_REMOTE_CAPABILITY))
     }
 
     /// The devices a Bluetooth link is up with.

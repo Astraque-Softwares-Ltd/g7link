@@ -28,6 +28,8 @@ capability is missing.
 | `clip.image` | Accepts images on its clipboard ([clipboard service](clipboard.md)) | app update |
 | `media.control` | Shares its media players for remote control ([media service](media.md); phone: needs notification access) | phone: notification access · desktop: app update |
 | `media.remote` | Shows and controls other devices' media players | app update |
+| `ble.link` | Opens the Bluetooth channel with a paired phone or PC ([Bluetooth](bluetooth.md) §4) | phone: Nearby devices permission, Android 12+ · desktop: an adapter that serves GATT |
+| `ble.remote` | The Bluetooth channel also carries the typing box and holds (`ble.use`); a phone picks a path for its touchpad ([Bluetooth](bluetooth.md) §4.5-4.6). Offered with `ble.link` | as `ble.link`, app update |
 
 > **LocalSend v2.1 LAN interop:** Unpaired LocalSend discovery and file transfer
 > (`224.0.0.167:53317` UDP multicast + HTTP/HTTPS `/api/localsend/v2/*` on TCP

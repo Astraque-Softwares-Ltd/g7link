@@ -289,6 +289,8 @@ pub struct AppState {
     pub history_enabled: bool,
     /// Phone asking to control this PC for the first time while `remote_input` is off.
     pub remote_prompt: Option<DeviceId>,
+    /// Phone asking to use Bluetooth with this PC while `ble_link` is off.
+    pub ble_prompt: Option<DeviceId>,
     /// Phone asking to view this PC's screen while `pc_mirror` is off.
     pub pc_mirror_prompt: Option<(DeviceId, g7link_core::MirrorStart)>,
     /// Active laser pointer overlay (`(device, x, y)` in `0.0..=1.0`).
@@ -404,6 +406,10 @@ impl AppState {
                     self.remote_prompt = None;
                     changes |= Changes::REMOTE;
                 }
+                if self.ble_prompt == Some(*id) {
+                    self.ble_prompt = None;
+                    changes |= Changes::REMOTE;
+                }
                 if self.pc_mirror_prompt.as_ref().is_some_and(|(d, _)| d == id) {
                     self.pc_mirror_prompt = None;
                     changes |= Changes::REMOTE;
@@ -515,6 +521,13 @@ impl AppState {
                 self.remote_prompt = Some(*device);
                 Changes::REMOTE
             }
+            NodeEvent::BleLinkRequested { device } => {
+                if self.ble_prompt == Some(*device) {
+                    return Changes::NONE;
+                }
+                self.ble_prompt = Some(*device);
+                Changes::REMOTE
+            }
             NodeEvent::PcMirrorRequested { device, options } => {
                 self.pc_mirror_prompt = Some((*device, options.clone()));
                 Changes::REMOTE
@@ -610,6 +623,9 @@ impl AppState {
             | NodeEvent::BleOutbound { .. }
             | NodeEvent::BleWanted { .. }
             | NodeEvent::BleLinkChanged { .. }
+            | NodeEvent::BleHoldChanged { .. }
+            // A phone's own touchpad route; a PC has none.
+            | NodeEvent::RemoteRouteChanged { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,
@@ -1274,6 +1290,18 @@ mod tests {
 
         s.apply(&NodeEvent::Pairing(PairingEvent::Failed(PairingFailure::Expired)));
         assert_eq!(s.pairing, PairingView::Failed(PairingFailure::Expired));
+    }
+
+    #[test]
+    fn a_phone_asking_for_bluetooth_shows_until_it_is_removed() {
+        let mut s = AppState::default();
+        s.apply(&NodeEvent::DeviceAdded(paired(5, 10)));
+        let id = DeviceId([5; 32]);
+        assert_eq!(s.apply(&NodeEvent::BleLinkRequested { device: id }), Changes::REMOTE);
+        assert_eq!(s.ble_prompt, Some(id));
+        assert_eq!(s.apply(&NodeEvent::BleLinkRequested { device: id }), Changes::NONE);
+        assert!(s.apply(&NodeEvent::DeviceRemoved(id)).intersects(Changes::REMOTE));
+        assert_eq!(s.ble_prompt, None);
     }
 
     #[test]
