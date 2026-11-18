@@ -919,39 +919,6 @@ Item {
                     }
                 }
 
-                // Undo, after dismissing a notification or an app's group.
-                ActionRow {
-                    width: parent.width
-                    visible: NotificationList.undoLabel.length > 0
-                    interactive: false
-                    iconPath: Icons.check
-                    tint: Theme.surfaceContentVariant
-                    title: NotificationList.undoLabel
-                    Timer {
-                        id: undoTimer
-                        interval: 6000
-                        running: NotificationList.undoLabel.length > 0
-                        onTriggered: NotificationList.clearUndo()
-                    }
-                    Connections {
-                        target: NotificationList
-                        function onUndoLabelChanged() {
-                            if (NotificationList.undoLabel.length > 0)
-                                undoTimer.restart()
-                        }
-                    }
-                    TextAction {
-                        text: qsTr("Undo")
-                        onClicked: NotificationList.undoDismiss()
-                    }
-                    IconButton {
-                        width: 24; height: 24
-                        iconSize: 14
-                        iconPath: Icons.close
-                        label: qsTr("Dismiss")
-                        onClicked: NotificationList.clearUndo()
-                    }
-                }
                 // The desktop hides every app's notifications when they're
                 // off or Do Not Disturb is on: say so.
                 ActionRow {

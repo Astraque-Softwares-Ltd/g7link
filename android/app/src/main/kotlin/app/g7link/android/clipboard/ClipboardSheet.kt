@@ -75,9 +75,6 @@ internal sealed interface ClipSheetState {
         val pasteProblem: String? = null,
     ) : ClipSheetState
 
-    /** Waiting for an offline PC; [message] says so. */
-    data class Queued(val clip: CopiedClip, val message: String) : ClipSheetState
-
     data object Empty : ClipSheetState
 
     /** Only a message, and Close: what was copied is private ([isPrivate]), or it didn't go. */
@@ -126,7 +123,6 @@ internal fun ClipboardSheet(
     val clip = when (state) {
         is ClipSheetState.Preview -> state.clip
         is ClipSheetState.Sent -> state.clip
-        is ClipSheetState.Queued -> state.clip
         else -> null
     }
     val imageUri = (clip as? CopiedClip.Image)?.uri
@@ -174,11 +170,6 @@ internal fun ClipboardSheet(
                     onPaste = onPaste,
                     onDone = onClose,
                 )
-                is ClipSheetState.Queued -> {
-                    StatusHeading(icon = G7Icons.clock, tint = g7Tints().amber, title = state.message)
-                    OneLine(state.clip, image, imageDetails)
-                    G7PrimaryButton(label = stringResource(R.string.action_done), onClick = onClose)
-                }
                 ClipSheetState.Empty -> {
                     StatusHeading(
                         icon = G7Icons.clipboard,

@@ -812,6 +812,7 @@ impl qobject::NotificationList {
                 } else {
                     tr!("Notifications", "Dismissed from %1", view.notification.app_name)
                 };
+                super::app::show_dismissed(label.clone());
                 core_host::host().hub.update(|s| s.record_dismissed(vec![view], label));
             }
         }
@@ -840,6 +841,7 @@ impl qobject::NotificationList {
             tr!("Notifications", "Dismissed %1 from %2", count, app_name)
         };
         let keys: Vec<String> = views.iter().map(|v| v.notification.key.clone()).collect();
+        super::app::show_dismissed(label.clone());
         core_host::host().hub.update(|s| s.record_dismissed(views, label));
         for key in keys {
             crate::notifications::dismiss(&dev_str, key);
@@ -870,6 +872,7 @@ impl qobject::NotificationList {
             tr!("Notifications", "Dismissed %1 notifications", count)
         };
         let keys: Vec<String> = views.iter().map(|v| v.notification.key.clone()).collect();
+        super::app::show_dismissed(label.clone());
         core_host::host().hub.update(|s| s.record_dismissed(views, label));
         for key in keys {
             crate::notifications::dismiss(&dev_str, key);

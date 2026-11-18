@@ -16,7 +16,7 @@ use g7link_core::{DeviceId, Error, FeatureState, LinkState, PhoneToggleValue, fe
 
 use crate::{
     core_host,
-    state::{Changes, CoreStatus},
+    state::{AppState, Changes, CoreStatus},
     sys::{self, tray},
 };
 
@@ -571,7 +571,12 @@ static PROBING_TOASTS: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 #[derive(Debug, Clone)]
 enum ToastAction {
     ClipSuggestion,
-    UndoQueuedSend { device: DeviceId, item_id: Option<String> },
+    UndoQueuedSend {
+        device: DeviceId,
+        item_id: Option<String>,
+    },
+    /// Puts the notifications just dismissed back in the PC's feed.
+    UndoDismiss,
 }
 
 static LAST_TOAST_ACTION: OnceLock<Mutex<Option<ToastAction>>> = OnceLock::new();
@@ -728,6 +733,17 @@ pub(crate) fn show_message(message: impl Into<String>) {
     }
 }
 
+/// Says notifications were dismissed, with Undo (from any thread).
+pub(crate) fn show_dismissed(message: impl Into<String>) {
+    let message = message.into();
+    set_last_toast_action(Some(ToastAction::UndoDismiss));
+    if let Some(qt) = controller() {
+        let undo = tr!("App", "Undo");
+        let _ =
+            qt.queue(move |object| object.toast_with_action(QString::from(&message), QString::from(&undo)));
+    }
+}
+
 /// Shows a short message with a context action chip in the app (from any thread).
 pub(crate) fn show_message_with_action(message: impl Into<String>, action_label: impl Into<String>) {
     let message = message.into();
@@ -770,10 +786,11 @@ pub(crate) fn show_offline_queued_toast(device: DeviceId, item_id: Option<String
         })
     });
     set_last_toast_action(Some(ToastAction::UndoQueuedSend { device, item_id: resolved_item_id }));
-    let message = format!("{device_name} is offline. Will send when it's back.");
+    let message = tr!("App", "%1 is offline. Will send when it's back.", device_name);
+    let undo = tr!("App", "Undo");
     if let Some(qt) = controller() {
         let _ = qt.queue(move |object| {
-            object.toast_with_action(QString::from(&message), QString::from("Undo"));
+            object.toast_with_action(QString::from(&message), QString::from(&undo));
         });
     }
     true
@@ -1435,6 +1452,7 @@ impl qobject::AppController {
                 }
                 show_message(tr!("App", "Send cancelled"));
             }
+            Some(ToastAction::UndoDismiss) => core_host::host().hub.update(AppState::undo_dismiss),
             _ => crate::clipboard::run_last_suggestion(),
         }
     }

@@ -342,11 +342,38 @@ class SendActivity : ComponentActivity() {
             val result = sending.await()
             clipSending = null
             clipSheet.value = when (result) {
-                is Core.ClipSend.Sent -> ClipSheetState.Sent(clip, result.pcIds)
-                is Core.ClipSend.Queued -> ClipSheetState.Queued(clip, result.message)
+                // Done, with nothing more to do here: a toast says so and the sheet goes.
+                is Core.ClipSend.Sent -> if (canPasteOn(result.pcIds)) {
+                    ClipSheetState.Sent(clip, result.pcIds)
+                } else {
+                    finishWith(sentMessage(result.pcIds))
+                    return@launch
+                }
+                is Core.ClipSend.Queued -> {
+                    finishWith(result.message)
+                    return@launch
+                }
                 is Core.ClipSend.Failed ->
                     ClipSheetState.Note(result.message.ifBlank { getString(R.string.error_generic) })
             }
+        }
+    }
+
+    /** Whether the one PC [pcIds] names takes this phone's keys, so the sheet offers Paste there. */
+    private fun canPasteOn(pcIds: List<String>): Boolean {
+        val pc = pcIds.singleOrNull()?.let { (application as G7LinkApplication).core.state.value.device(it) }
+        return pc != null && pc.online && !pc.isAndroid && pc.has("input.remote")
+    }
+
+    /** "On guchu's clipboard", or the names of the devices it went to. */
+    private fun sentMessage(pcIds: List<String>): String {
+        val state = (application as G7LinkApplication).core.state.value
+        val sentTo = pcIds.mapNotNull { state.device(it) }
+        val single = sentTo.singleOrNull()
+        return if (single != null) {
+            getString(R.string.clip_sheet_on_clipboard, single.name)
+        } else {
+            getString(R.string.clip_sent_to, sentTo.joinToString { it.name }.ifEmpty { getString(R.string.your_pc) })
         }
     }
 

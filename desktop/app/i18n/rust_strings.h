@@ -4,6 +4,7 @@
 // in Rust is translated like the rest (see desktop/app/src/i18n.rs).
 
 static const char *const g7link_rust_strings[] = {
+    QT_TRANSLATE_NOOP("App", "%1 is offline. Will send when it's back."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Already on clipboard."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Command palette"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Copied to clipboard."), // desktop/app/src/bridge/app.rs
@@ -35,6 +36,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("App", "The received file history couldn't be cleared. Try again."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "The update couldn't be installed. Try again."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Toggle Shelf"), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("App", "Undo"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Wi-Fi %1/4"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Your phone"), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Automations", "Triggered by %1"), // desktop/app/src/automations.rs

@@ -72,6 +72,11 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   name only when it adds something ("Claude · Claude" is gone), and no longer
   crowds the keys above it. It follows the window you're in, not another
   app's focus.
+- **Confirmations come as toasts.** Dismissing the phone's notifications on
+  the PC says so in a toast with Undo, instead of a row in the feed. On the
+  phone, sharing to the PC closes the sheet with a toast when there's nothing
+  more to do (the sheet stays to offer Paste on a PC that takes it), as does
+  a share that waits for an offline PC.
 - **The PC app scrolls with the touchpad** the way GNOME's own apps do: a
   flick keeps a list going and slows it down, instead of stopping the moment
   your fingers lift. Every list and page that scrolls up and down does it,
