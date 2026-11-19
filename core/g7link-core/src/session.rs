@@ -591,6 +591,12 @@ fn is_background_rpc(t: &str) -> bool {
             | types::STORAGE_RENAME
             | types::STORAGE_DELETE
             | types::WAKE_RELAY
+            | types::AGENT_THREADS
+            | types::AGENT_START
+            | types::AGENT_SEND
+            | types::AGENT_CANCEL
+            | types::AGENT_READ
+            | types::AGENT_ANSWER
     )
 }
 
@@ -685,6 +691,7 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
         t if (t.starts_with("deck.") || t == types::PC_AUDIO_SET)
             && crate::deck::handle(shared, session, &env).await? => {}
         t if t.starts_with("storage.") && crate::storage::handle(shared, session, &env).await? => {}
+        t if t.starts_with("agent.") && crate::agents::handle(shared, session, &env).await? => {}
         t if (t == types::FILES_RESUME || t == types::FILES_CANCEL)
             && crate::transfer::handle_control(shared, peer, &env).await? => {}
         types::WAKE_RELAY => {

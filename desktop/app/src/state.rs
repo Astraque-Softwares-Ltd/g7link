@@ -75,6 +75,8 @@ impl Changes {
     pub const MIC: Changes = Changes(1 << 29);
     /// Photo backup settings or progress (kept by crate::photo_backup).
     pub const PHOTO_BACKUP: Changes = Changes(1 << 30);
+    /// The agent host as Settings shows it (kept by crate::agents).
+    pub const AGENTS: Changes = Changes(1 << 31);
 
     pub fn is_empty(self) -> bool {
         self.0 == 0
@@ -289,6 +291,8 @@ pub struct AppState {
     pub history_enabled: bool,
     /// Phone asking to control this PC for the first time while `remote_input` is off.
     pub remote_prompt: Option<DeviceId>,
+    /// Phone asking to use Agents on this PC for the first time while `agents` is off.
+    pub agents_prompt: Option<DeviceId>,
     /// Phone asking to use Bluetooth with this PC while `ble_link` is off.
     pub ble_prompt: Option<DeviceId>,
     /// Phone asking to view this PC's screen while `pc_mirror` is off.
@@ -406,6 +410,10 @@ impl AppState {
                     self.remote_prompt = None;
                     changes |= Changes::REMOTE;
                 }
+                if self.agents_prompt == Some(*id) {
+                    self.agents_prompt = None;
+                    changes |= Changes::REMOTE;
+                }
                 if self.ble_prompt == Some(*id) {
                     self.ble_prompt = None;
                     changes |= Changes::REMOTE;
@@ -521,6 +529,13 @@ impl AppState {
                 self.remote_prompt = Some(*device);
                 Changes::REMOTE
             }
+            NodeEvent::AgentsRequested { device } => {
+                if self.agents_prompt == Some(*device) {
+                    return Changes::NONE;
+                }
+                self.agents_prompt = Some(*device);
+                Changes::REMOTE
+            }
             NodeEvent::BleLinkRequested { device } => {
                 if self.ble_prompt == Some(*device) {
                     return Changes::NONE;
@@ -626,6 +641,11 @@ impl AppState {
             | NodeEvent::BleHoldChanged { .. }
             // A phone's own touchpad route; a PC has none.
             | NodeEvent::RemoteRouteChanged { .. }
+            // A phone follows a PC's agents; this is a PC.
+            | NodeEvent::AgentCatalog { .. }
+            | NodeEvent::AgentEvent { .. }
+            | NodeEvent::AgentAsk { .. }
+            | NodeEvent::AgentAsked { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,
@@ -1302,6 +1322,19 @@ mod tests {
         assert_eq!(s.apply(&NodeEvent::BleLinkRequested { device: id }), Changes::NONE);
         assert!(s.apply(&NodeEvent::DeviceRemoved(id)).intersects(Changes::REMOTE));
         assert_eq!(s.ble_prompt, None);
+    }
+
+    #[test]
+    fn the_agents_prompt_appears_once_and_clears_on_unpair() {
+        let mut s = AppState::default();
+        s.apply(&NodeEvent::DeviceAdded(paired(6, 10)));
+        let id = DeviceId([6; 32]);
+        assert_eq!(s.apply(&NodeEvent::AgentsRequested { device: id }), Changes::REMOTE);
+        assert_eq!(s.agents_prompt, Some(id));
+        assert_eq!(s.apply(&NodeEvent::AgentsRequested { device: id }), Changes::NONE, "once");
+        assert_eq!(s.remote_prompt, None, "its own prompt, not the remote input one");
+        assert!(s.apply(&NodeEvent::DeviceRemoved(id)).intersects(Changes::REMOTE));
+        assert_eq!(s.agents_prompt, None);
     }
 
     #[test]

@@ -384,4 +384,35 @@ pub enum NodeEvent {
         device: DeviceId,
         state: crate::RouteState,
     },
+    /// PC: a paired phone asked for agents while its `agents` toggle is off
+    /// (emitted once per phone per run so the UI can show a one-time prompt).
+    AgentsRequested {
+        device: DeviceId,
+    },
+    /// Phone: what a PC lets this phone start (`agent.catalog`); `None` when
+    /// nothing can run there or access is off.
+    AgentCatalog {
+        device: DeviceId,
+        catalog: Option<crate::AgentCatalog>,
+    },
+    /// Phone: a PC's agent thread changed (`agent.event`).
+    AgentEvent {
+        device: DeviceId,
+        event: Box<crate::AgentEvent>,
+    },
+    /// Phone: an agent on a PC asks for an answer (`agent.ask`).
+    AgentAsk {
+        device: DeviceId,
+        ask: crate::AgentAsk,
+    },
+    /// Phone: an ask on a PC ended (`agent.asked`): answered on some device,
+    /// expired, or its turn ended.
+    AgentAsked {
+        device: DeviceId,
+        token: String,
+        thread: String,
+        outcome: String,
+        /// The device that answered, for `allowed` and `denied`.
+        by_name: Option<String>,
+    },
 }

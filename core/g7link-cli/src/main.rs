@@ -4923,6 +4923,28 @@ fn print_event(node: &Node, event: &NodeEvent) {
             name(device),
             device.short()
         ),
+        NodeEvent::AgentsRequested { device } => println!(
+            "{}: asked to use Agents on this PC (allow with: g7link toggle {} agents on)",
+            name(device),
+            device.short()
+        ),
+        NodeEvent::AgentCatalog { device, catalog } => println!(
+            "{}: Agents: {}",
+            name(device),
+            catalog
+                .as_ref()
+                .map(|c| format!("{} agent(s), {} folder(s)", c.agents.len(), c.folders.len()))
+                .unwrap_or_else(|| "not available".into())
+        ),
+        NodeEvent::AgentEvent { device, event } => {
+            println!("{}: agent thread {} {}", name(device), event.thread, event.kind)
+        }
+        NodeEvent::AgentAsk { device, ask } => {
+            println!("{}: an agent asks ({}) in thread {}", name(device), ask.kind, ask.thread)
+        }
+        NodeEvent::AgentAsked { device, thread, outcome, .. } => {
+            println!("{}: an agent's ask in thread {thread} was {outcome}", name(device))
+        }
         NodeEvent::StorageChanged { device, path } => println!(
             "{}: storage folder {} changed",
             name(device),

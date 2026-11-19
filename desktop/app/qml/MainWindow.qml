@@ -1001,6 +1001,54 @@ NativeWindow {
     }
 
     Sheet {
+        id: agentsPromptSheet
+        opened: AppController.agentsPromptDeviceId.length > 0
+        cardWidth: 440
+        onOpenedChanged: {
+            if (!opened && AppController.agentsPromptDeviceId.length > 0)
+                AppController.dismissAgentsPrompt()
+        }
+        Column {
+            width: parent.width
+            spacing: 16
+            Avatar {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 56; height: 56
+                iconPath: Icons.terminal
+                emphasized: true
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("Let %1 use agents on this PC?").arg(AppController.agentsPromptDeviceName)
+                role: "headline"
+                wrapMode: Text.WordWrap
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("It will be able to start Claude and Codex threads in your agent folders, reply to them and approve what they ask. Started from the phone, a thread asks before it changes a file or runs a command that could change something.")
+                role: "body"
+                muted: true
+                wrapMode: Text.WordWrap
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 10
+                Button {
+                    variant: "text"
+                    text: qsTr("Not now")
+                    onClicked: AppController.dismissAgentsPrompt()
+                }
+                Button {
+                    text: qsTr("Allow")
+                    onClicked: AppController.allowAgentsPrompt()
+                }
+            }
+        }
+    }
+
+    Sheet {
         id: blePromptSheet
         opened: AppController.blePromptDeviceId.length > 0
         cardWidth: 440

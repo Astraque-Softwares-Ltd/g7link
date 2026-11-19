@@ -22,6 +22,7 @@ cxx-qt-lib.workspace = true
 data-encoding.workspace = true
 dirs.workspace = true
 hostname.workspace = true
+g7-agents.workspace = true
 g7link-core.workspace = true
 g7link-vcam.workspace = true
 qrcode.workspace = true

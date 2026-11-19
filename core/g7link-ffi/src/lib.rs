@@ -1104,6 +1104,63 @@ pub enum Event {
         id: String,
         state: RouteState,
     },
+    /// What a PC lets this phone start (`agent.catalog`). `None`: nothing
+    /// can run there now, or access is off.
+    AgentCatalog {
+        id: String,
+        catalog: Option<AgentCatalog>,
+    },
+    /// A thread on a PC changed: its state, asks, title or summary.
+    AgentThreadChanged {
+        id: String,
+        thread: AgentThread,
+    },
+    /// A thread on a PC was deleted.
+    AgentThreadRemoved {
+        id: String,
+        thread: String,
+    },
+    /// Assistant text streaming into item `item_id` (`seq`) of the watched
+    /// thread, at byte `offset` of its text. A gap (`offset` past what you
+    /// have) means read the thread again.
+    AgentDelta {
+        id: String,
+        thread: String,
+        item_id: String,
+        seq: u64,
+        offset: u32,
+        text: String,
+    },
+    /// An item of the watched thread was added or updated (it replaces the
+    /// streamed text).
+    AgentItemChanged {
+        id: String,
+        thread: String,
+        item: AgentItem,
+    },
+    /// A turn of a thread on a PC ended.
+    AgentDone {
+        id: String,
+        thread: AgentThread,
+        outcome: AgentOutcome,
+        summary: String,
+    },
+    /// An agent on a PC asks for an answer.
+    AgentAsk {
+        id: String,
+        ask: AgentAsk,
+    },
+    /// An ask ended: answered on some device, expired, or its turn ended.
+    AgentAsked {
+        id: String,
+        token: String,
+        thread: String,
+        outcome: AgentAskOutcome,
+        /// The device that answered ("Allowed on guchu"), for `Allowed` and
+        /// `Denied`. Added after contract §6.3.
+        #[uniffi(default = None)]
+        by_name: Option<String>,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -1236,6 +1293,450 @@ impl From<core::DeckState> for DeckState {
             output_devices: s.output_devices.into_iter().map(Into::into).collect(),
         }
     }
+}
+
+// ---- Agents (docs/protocol/agents.md) ----
+
+/// A thread's state on a PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentThreadState {
+    /// A turn is running.
+    Working,
+    /// A turn is running and waits for an answer.
+    Waiting,
+    /// The last turn finished; the thread takes a follow-up.
+    Done,
+    Failed,
+    Interrupted,
+}
+
+impl AgentThreadState {
+    fn from_wire(state: &str) -> Option<Self> {
+        use core::agent::state;
+        Some(match state {
+            state::WORKING => Self::Working,
+            state::WAITING => Self::Waiting,
+            state::DONE => Self::Done,
+            state::FAILED => Self::Failed,
+            state::INTERRUPTED => Self::Interrupted,
+            _ => return None,
+        })
+    }
+}
+
+/// How a thread asks before acting. A phone starts `Supervised` only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentMode {
+    /// Asks before every edit and every command that isn't read-only.
+    Supervised,
+    /// Edits without asking.
+    AutoEdit,
+}
+
+impl AgentMode {
+    fn from_wire(mode: &str) -> Option<Self> {
+        match mode {
+            core::agent::mode::SUPERVISED => Some(Self::Supervised),
+            core::agent::mode::AUTO_EDIT => Some(Self::AutoEdit),
+            _ => None,
+        }
+    }
+
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Supervised => core::agent::mode::SUPERVISED,
+            Self::AutoEdit => core::agent::mode::AUTO_EDIT,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentItemKind {
+    User,
+    Assistant,
+    Tool,
+    Notice,
+}
+
+impl AgentItemKind {
+    fn from_wire(kind: &str) -> Option<Self> {
+        use core::agent::item;
+        Some(match kind {
+            item::USER => Self::User,
+            item::ASSISTANT => Self::Assistant,
+            item::TOOL => Self::Tool,
+            item::NOTICE => Self::Notice,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentToolStatus {
+    Running,
+    Ok,
+    Error,
+    Denied,
+}
+
+impl AgentToolStatus {
+    fn from_wire(status: &str) -> Option<Self> {
+        use core::agent::tool;
+        Some(match status {
+            tool::RUNNING => Self::Running,
+            tool::OK => Self::Ok,
+            tool::ERROR => Self::Error,
+            tool::DENIED => Self::Denied,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentAskKind {
+    Command,
+    Edit,
+    Other,
+}
+
+impl AgentAskKind {
+    fn from_wire(kind: &str) -> Option<Self> {
+        use core::agent::ask;
+        Some(match kind {
+            ask::COMMAND => Self::Command,
+            ask::EDIT => Self::Edit,
+            ask::OTHER => Self::Other,
+            _ => return None,
+        })
+    }
+}
+
+/// How a turn ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentOutcome {
+    Done,
+    Failed,
+    Interrupted,
+}
+
+impl AgentOutcome {
+    fn from_wire(outcome: &str) -> Option<Self> {
+        use core::agent::outcome;
+        Some(match outcome {
+            outcome::DONE => Self::Done,
+            outcome::FAILED => Self::Failed,
+            outcome::INTERRUPTED => Self::Interrupted,
+            _ => return None,
+        })
+    }
+}
+
+/// How an ask ended: answered on some device, expired, or its turn ended first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentAskOutcome {
+    Allowed,
+    Denied,
+    Expired,
+    Cancelled,
+}
+
+impl AgentAskOutcome {
+    fn from_wire(outcome: &str) -> Option<Self> {
+        use core::agent::asked;
+        Some(match outcome {
+            asked::ALLOWED => Self::Allowed,
+            asked::DENIED => Self::Denied,
+            asked::EXPIRED => Self::Expired,
+            asked::CANCELLED => Self::Cancelled,
+            _ => return None,
+        })
+    }
+}
+
+fn ms(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// An agent a PC can run. `login_hint` is the command that signs it in, to
+/// run on the PC.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub signed_in: bool,
+    pub login_hint: String,
+    /// How it's signed in: `subscription`, `api_key` ("Using an API key")
+    /// or `other`; null when the PC doesn't say. Added after contract §6.3.
+    #[uniffi(default = None)]
+    pub auth: Option<String>,
+}
+
+impl std::fmt::Debug for AgentInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentInfo")
+            .field("id", &self.id)
+            .field("installed", &self.installed)
+            .field("signed_in", &self.signed_in)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A folder an agent may work in on a PC: its label only, never its path.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentFolder {
+    pub id: String,
+    pub label: String,
+}
+
+impl std::fmt::Debug for AgentFolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentFolder").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
+/// What a PC lets this phone start (`agent.catalog`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentCatalog {
+    pub agents: Vec<AgentInfo>,
+    pub folders: Vec<AgentFolder>,
+    /// The modes this phone may start: `[Supervised]`.
+    pub modes: Vec<AgentMode>,
+}
+
+impl From<core::AgentCatalog> for AgentCatalog {
+    fn from(c: core::AgentCatalog) -> Self {
+        AgentCatalog {
+            agents: c
+                .agents
+                .into_iter()
+                .map(|a| AgentInfo {
+                    id: a.id,
+                    name: a.name,
+                    installed: a.installed,
+                    signed_in: a.signed_in,
+                    login_hint: a.login_hint,
+                    auth: a.auth,
+                })
+                .collect(),
+            folders: c.folders.into_iter().map(|f| AgentFolder { id: f.id, label: f.label }).collect(),
+            // A mode this build doesn't know can't be started from here.
+            modes: c.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
+        }
+    }
+}
+
+/// A thread on a PC. `folder` is the folder's label; `from_phone`: this
+/// phone started it.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentThread {
+    pub id: String,
+    /// The agent's id (`claude`, `codex`): its name is in the catalog.
+    pub agent: String,
+    pub folder: String,
+    pub title: String,
+    pub state: AgentThreadState,
+    pub mode: AgentMode,
+    pub from_phone: bool,
+    /// Unix milliseconds.
+    pub updated_ms: i64,
+    /// Requests waiting for an answer.
+    pub asks: u32,
+    pub summary: Option<String>,
+    /// For a usage limit, ends in `|resets_ms=<Unix ms>` when the agent said when it resets.
+    pub error: Option<String>,
+    /// Why it failed: `usage_limit` (show "Paused"), `login` (signed out), or
+    /// the agent's own code. Added after contract §6.3; defaults to null.
+    #[uniffi(default = None)]
+    pub error_code: Option<String>,
+}
+
+impl std::fmt::Debug for AgentThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentThread")
+            .field("id", &self.id)
+            .field("agent", &self.agent)
+            .field("state", &self.state)
+            .field("asks", &self.asks)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentThread {
+    fn from_core(t: core::AgentThread) -> Option<Self> {
+        Some(AgentThread {
+            state: AgentThreadState::from_wire(&t.state)?,
+            mode: AgentMode::from_wire(&t.mode)?,
+            id: t.id,
+            agent: t.agent,
+            folder: t.folder,
+            title: t.title,
+            from_phone: t.from_phone,
+            updated_ms: ms(t.updated),
+            asks: t.asks,
+            summary: t.summary,
+            error: t.error,
+            error_code: t.error_code,
+        })
+    }
+}
+
+/// A tool step in a thread: `detail` is the command or a diff, `output` the
+/// tail of what it printed.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentTool {
+    pub name: String,
+    pub title: String,
+    pub detail: Option<String>,
+    pub status: AgentToolStatus,
+    pub output: Option<String>,
+}
+
+impl std::fmt::Debug for AgentTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentTool").field("status", &self.status).finish_non_exhaustive()
+    }
+}
+
+/// One entry of a thread, in `seq` order.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentItem {
+    pub seq: u64,
+    pub id: String,
+    pub kind: AgentItemKind,
+    pub when_ms: i64,
+    pub text: Option<String>,
+    pub truncated: bool,
+    pub tool: Option<AgentTool>,
+}
+
+impl std::fmt::Debug for AgentItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentItem")
+            .field("seq", &self.seq)
+            .field("kind", &self.kind)
+            .field("tool", &self.tool)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentItem {
+    fn from_core(i: core::AgentItem) -> Option<Self> {
+        let tool = match i.tool {
+            Some(t) => Some(AgentTool {
+                status: AgentToolStatus::from_wire(&t.status)?,
+                name: t.name,
+                title: t.title,
+                detail: t.detail,
+                output: t.output,
+            }),
+            None => None,
+        };
+        Some(AgentItem {
+            kind: AgentItemKind::from_wire(&i.kind)?,
+            seq: i.seq,
+            id: i.id,
+            when_ms: ms(i.when),
+            text: i.text,
+            truncated: i.truncated,
+            tool,
+        })
+    }
+}
+
+/// A request from an agent waiting for an answer: `command` or `diff` is
+/// what it wants to do; `reason` is the agent's own words.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentAsk {
+    pub token: String,
+    pub thread: String,
+    pub thread_title: String,
+    /// The agent's id: its name is in the catalog.
+    pub agent: String,
+    pub kind: AgentAskKind,
+    pub title: String,
+    pub command: Option<String>,
+    pub diff: Option<String>,
+    pub path: Option<String>,
+    pub reason: Option<String>,
+    /// The PC cut the command or diff: the rest is on the PC.
+    pub truncated: bool,
+    pub expires_ms: i64,
+}
+
+impl std::fmt::Debug for AgentAsk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentAsk")
+            .field("thread", &self.thread)
+            .field("kind", &self.kind)
+            .field("truncated", &self.truncated)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentAsk {
+    fn from_core(a: core::AgentAsk) -> Option<Self> {
+        Some(AgentAsk {
+            kind: AgentAskKind::from_wire(&a.kind)?,
+            token: a.token,
+            thread: a.thread,
+            thread_title: a.thread_title,
+            agent: a.agent,
+            title: a.title,
+            command: a.command,
+            diff: a.diff,
+            path: a.path,
+            reason: a.reason,
+            truncated: a.truncated,
+            expires_ms: ms(a.expires),
+        })
+    }
+}
+
+/// A page of a thread (`agent_read`): its items in `seq` order and the asks
+/// waiting in it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentPage {
+    pub thread: AgentThread,
+    pub items: Vec<AgentItem>,
+    pub more_before: bool,
+    pub asks: Vec<AgentAsk>,
+}
+
+impl AgentPage {
+    fn from_core(p: core::AgentItems) -> Option<Self> {
+        Some(AgentPage {
+            thread: AgentThread::from_core(p.thread)?,
+            items: p.items.into_iter().filter_map(AgentItem::from_core).collect(),
+            more_before: p.more_before,
+            asks: p.asks.into_iter().filter_map(AgentAsk::from_core).collect(),
+        })
+    }
+}
+
+/// The `Event` for an `agent.event`, if its wire strings are known.
+fn agent_event(id: String, e: core::AgentEvent) -> Option<Event> {
+    use core::agent::event;
+    Some(match e.kind.as_str() {
+        event::STATE => Event::AgentThreadChanged { id, thread: AgentThread::from_core(e.state?)? },
+        event::REMOVED => Event::AgentThreadRemoved { id, thread: e.thread },
+        event::DELTA => Event::AgentDelta {
+            id,
+            thread: e.thread,
+            item_id: e.item_id?,
+            seq: e.seq?,
+            offset: e.offset?,
+            text: e.text?,
+        },
+        event::ITEM => Event::AgentItemChanged { id, thread: e.thread, item: AgentItem::from_core(e.item?)? },
+        event::DONE => Event::AgentDone {
+            id,
+            thread: AgentThread::from_core(e.state?)?,
+            outcome: AgentOutcome::from_wire(e.outcome.as_deref()?)?,
+            summary: e.summary.unwrap_or_default(),
+        },
+        _ => return None,
+    })
 }
 
 /// What a PC's clipboard got (`clip.changed`).
@@ -2937,6 +3438,22 @@ impl Event {
             NodeEvent::RemoteRouteChanged { device, state } => {
                 Event::RemoteRouteChanged { id: device.to_string(), state: state.into() }
             }
+            NodeEvent::AgentCatalog { device, catalog } => {
+                Event::AgentCatalog { id: device.to_string(), catalog: catalog.map(Into::into) }
+            }
+            NodeEvent::AgentEvent { device, event } => return agent_event(device.to_string(), *event),
+            NodeEvent::AgentAsk { device, ask } => {
+                Event::AgentAsk { id: device.to_string(), ask: AgentAsk::from_core(ask)? }
+            }
+            NodeEvent::AgentAsked { device, token, thread, outcome, by_name } => Event::AgentAsked {
+                id: device.to_string(),
+                token,
+                thread,
+                outcome: AgentAskOutcome::from_wire(&outcome)?,
+                by_name,
+            },
+            // Shown on PCs only.
+            NodeEvent::AgentsRequested { .. } => return None,
             // Asked for by PCs only, and codes go to PCs.
             NodeEvent::BleWanted { .. }
             | NodeEvent::OneTimeCode { .. }
@@ -4849,6 +5366,91 @@ impl G7LinkNode {
         self.run(async move { Ok(node.set_pc_audio_output(id, output).await?) }).await
     }
 
+    // ---- Agents (docs/protocol/agents.md) ----
+    //
+    // Errors: `Denied` means the PC's `agents` toggle is off for this phone
+    // (the PC now shows its user a prompt); `Unsupported` that the PC has no
+    // agent host, can't reach it, or the agent isn't installed or signed in;
+    // `NotFound` an unknown or removed thread, folder or agent, or an ask
+    // already answered. A busy PC (the thread is working, or too many run)
+    // is `Internal` with a reason that starts with `BUSY`.
+
+    /// The last catalog a connected PC sent, if it has agents.
+    pub fn agent_catalog(&self, id: String) -> Result<Option<AgentCatalog>> {
+        let id = parse_id(&id)?;
+        Ok(self.node.agent_catalog(id).map(Into::into))
+    }
+
+    /// A PC's threads, newest first (at most 50).
+    pub async fn agent_threads(&self, id: String) -> Result<Vec<AgentThread>> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let threads = self.run(async move { node.agent_threads(id).await }).await?;
+        Ok(threads.into_iter().filter_map(AgentThread::from_core).collect())
+    }
+
+    /// Starts a thread on a PC: `agent` and `folder` are ids from its catalog.
+    pub async fn agent_start(
+        &self,
+        id: String,
+        agent: String,
+        folder: String,
+        prompt: String,
+        mode: AgentMode,
+    ) -> Result<AgentThread> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let start = core::AgentStart { agent, folder, prompt, mode: mode.wire().into() };
+        let thread = self.run(async move { node.agent_start(id, start).await }).await?;
+        AgentThread::from_core(thread)
+            .ok_or_else(|| G7LinkError::Internal { reason: "unknown thread state".into() })
+    }
+
+    /// Sends a follow-up to a thread that isn't running.
+    pub async fn agent_send(&self, id: String, thread: String, text: String) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.agent_send(id, thread, text).await?) }).await
+    }
+
+    /// Stops a thread's running turn.
+    pub async fn agent_cancel(&self, id: String, thread: String) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.agent_cancel(id, thread).await?) }).await
+    }
+
+    /// A page of a thread: the newest `limit` items (at most 50), or the
+    /// ones before `before` (a `seq`).
+    pub async fn agent_read(
+        &self,
+        id: String,
+        thread: String,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<AgentPage> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let page = self.run(async move { node.agent_read(id, thread, before, limit).await }).await?;
+        AgentPage::from_core(page)
+            .ok_or_else(|| G7LinkError::Internal { reason: "unknown thread state".into() })
+    }
+
+    /// The one thread whose text this phone shows (`None`: none). Only it
+    /// gets `AgentDelta` and `AgentItemChanged`; the watch ends with the session.
+    pub async fn agent_watch(&self, id: String, thread: Option<String>) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.agent_watch(id, thread).await?) }).await
+    }
+
+    /// Answers an ask, this time only.
+    pub async fn agent_answer(&self, id: String, token: String, allow: bool) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.agent_answer(id, token, allow).await?) }).await
+    }
+
     /// The context chip suggestion for the most recently received text clip, if any.
     pub fn last_clip_suggestion(&self) -> Option<ClipSuggestion> {
         self.node.last_clip_suggestion().map(|(_, s)| s.into())
@@ -5480,6 +6082,94 @@ pub fn init_logging(filter: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn core_thread(state: &str) -> core::AgentThread {
+        core::AgentThread {
+            id: "abc".into(),
+            agent: "claude".into(),
+            folder: "g7linux".into(),
+            title: "Fix it".into(),
+            state: state.into(),
+            mode: "supervised".into(),
+            from_phone: true,
+            updated: 1_795_000_000_000,
+            asks: 2,
+            summary: None,
+            error: None,
+            error_code: None,
+        }
+    }
+
+    #[test]
+    fn agent_events_become_their_own_variants() {
+        let pc = core::DeviceId([3; 32]);
+        let to_event = |event: core::AgentEvent| {
+            Event::from_node(NodeEvent::AgentEvent { device: pc, event: Box::new(event) })
+        };
+        match to_event(core::AgentEvent::delta("abc".into(), 4, "m:0".into(), 10, "more".into())) {
+            Some(Event::AgentDelta { thread, item_id, seq, offset, text, .. }) => {
+                assert_eq!(
+                    (thread.as_str(), item_id.as_str(), seq, offset, text.as_str()),
+                    ("abc", "m:0", 4, 10, "more")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        match to_event(core::AgentEvent::state(core_thread("waiting"))) {
+            Some(Event::AgentThreadChanged { thread, .. }) => {
+                assert_eq!(thread.state, AgentThreadState::Waiting);
+                assert_eq!((thread.asks, thread.updated_ms, thread.from_phone), (2, 1_795_000_000_000, true));
+            }
+            other => panic!("{other:?}"),
+        }
+        match to_event(core::AgentEvent::done(core_thread("failed"), "failed", "out".into())) {
+            Some(Event::AgentDone { outcome, summary, .. }) => {
+                assert_eq!((outcome, summary.as_str()), (AgentOutcome::Failed, "out"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            to_event(core::AgentEvent::removed("abc".into())),
+            Some(Event::AgentThreadRemoved { thread, .. }) if thread == "abc"
+        ));
+        assert_eq!(
+            to_event(core::AgentEvent::state(core_thread("paused"))),
+            None,
+            "unknown words drop the event"
+        );
+        assert_eq!(Event::from_node(NodeEvent::AgentsRequested { device: pc }), None);
+        let asked = NodeEvent::AgentAsked {
+            device: pc,
+            token: "t1".into(),
+            thread: "abc".into(),
+            outcome: "expired".into(),
+            by_name: None,
+        };
+        assert!(matches!(
+            Event::from_node(asked),
+            Some(Event::AgentAsked { outcome: AgentAskOutcome::Expired, .. })
+        ));
+    }
+
+    #[test]
+    fn an_agent_catalog_keeps_the_modes_this_build_knows() {
+        let catalog = AgentCatalog::from(core::AgentCatalog {
+            agents: vec![core::AgentCatalogAgent {
+                id: "codex".into(),
+                name: "Codex".into(),
+                installed: true,
+                signed_in: true,
+                login_hint: "codex login".into(),
+                auth: Some("api_key".into()),
+            }],
+            folders: vec![core::AgentCatalogFolder { id: "f1".into(), label: "g7linux".into() }],
+            modes: vec!["supervised".into(), "plan".into()],
+        });
+        assert_eq!(catalog.modes, vec![AgentMode::Supervised]);
+        assert_eq!(catalog.agents[0].auth.as_deref(), Some("api_key"));
+        assert_eq!(catalog.folders[0].label, "g7linux");
+        assert_eq!(AgentMode::AutoEdit.wire(), "auto_edit");
+    }
 
     #[test]
     fn errors_map_to_actionable_variants() {

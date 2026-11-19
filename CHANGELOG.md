@@ -4,6 +4,22 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## Unreleased
+
+### Added
+
+- **Agents: follow and answer coding agents on your PC from your phone.**
+  G7 Link now comes with the agent host, which runs the Claude Code and
+  Codex you installed on the PC, signed in with your own accounts, in folders
+  you list in Settings › Agents. From the phone you can see every thread,
+  read what the agent writes as it writes it, start a thread, reply when it
+  stops, stop it, and allow or deny what it asks to run or change. A thread
+  started from the phone always asks before it changes a file or runs a
+  command that could change something, and the PC shows a notification with
+  Stop. Each phone needs your OK on the PC first: it asks once, and the
+  switch is under that phone in Settings. Your phone sees folder names only,
+  never their paths. G7 is not affiliated with Anthropic or OpenAI.
+
 ## 0.1.12 (2026-11-13)
 
 A touchpad you can feel, motion in both apps, a look before the clipboard

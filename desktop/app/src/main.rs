@@ -5,6 +5,7 @@
 //! Qt Quick draws the UI. Windows are created when opened and destroyed when
 //! closed; the app keeps running in the tray (docs/PLAN.md §5).
 
+mod agents;
 mod atomic_file;
 mod automations;
 mod badges;
@@ -195,6 +196,13 @@ impl Platform for DesktopPlatform {
     }
     fn deck_press(&self, peer: &g7link_core::DeviceId, tile: &str) -> Result<(), String> {
         deck::handle_press(peer, tile)
+    }
+    fn agent_request(
+        &self,
+        from: &g7link_core::DeviceId,
+        request: g7link_core::AgentRequest,
+    ) -> Result<g7link_core::AgentReply, g7link_core::AgentFailure> {
+        agents::handle_request(from, request)
     }
     fn set_pc_audio(
         &self,
@@ -586,6 +594,7 @@ fn main() -> ExitCode {
     sys::smtc::start(media::on_flyout);
     sys::media_sessions::start(media::local_changed);
     deck::init(&data_dir);
+    agents::start();
     let settings = settings::Settings::load(&data_dir);
     settings.apply_runtime();
     clipboard::set_auto_send(settings.auto_clipboard);

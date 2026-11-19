@@ -8,6 +8,7 @@
 
 mod actions;
 mod adb_wifi;
+pub mod agents;
 mod ble_link;
 mod calls;
 pub mod clip_kind;
@@ -53,6 +54,11 @@ pub mod usb;
 pub mod webcam;
 
 pub use actions::{PC_WAKE, PowerAction};
+pub use agents::{
+    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentFailure,
+    AgentItem, AgentItems, AgentReply, AgentRequest, AgentStart, AgentThread, AgentTool,
+    TOGGLE as AGENTS_TOGGLE, agent, is_valid_agent_id,
+};
 pub use ble_link::{
     BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BLE_REMOTE_CAPABILITY, BleEndpoint, RemotePath, RemoteRoute,
     RouteState,

@@ -4,6 +4,11 @@
 // in Rust is translated like the rest (see desktop/app/src/i18n.rs).
 
 static const char *const g7link_rust_strings[] = {
+    QT_TRANSLATE_NOOP("Agents", "Couldn't change the folders"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't reach the agent host"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That folder can't be used. Pick a folder you can read, other than the whole disk."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That folder is no longer in the list."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "You can add up to 64 folders."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("App", "%1 is offline. Will send when it's back."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Already on clipboard."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Command palette"), // desktop/app/src/bridge/app.rs

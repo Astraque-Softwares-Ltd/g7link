@@ -534,6 +534,18 @@ pub trait Platform: Send + Sync + 'static {
         Err("this device has no deck actions".into())
     }
 
+    /// Answer a phone's agents request on this PC (`docs/protocol/agents.md`).
+    /// The core has checked that this PC offers `agent.host`, that the
+    /// `agents` toggle is on for `from`, the limits, ids and the mode. Called
+    /// on a blocking thread; the core gives up after 15 s.
+    fn agent_request(
+        &self,
+        _from: &g7link_protocol::DeviceId,
+        _request: crate::agents::AgentRequest,
+    ) -> Result<crate::agents::AgentReply, crate::agents::AgentFailure> {
+        Err(crate::agents::AgentFailure::Unsupported)
+    }
+
     /// Change this PC's master speaker volume (`0..=100`) and/or mute state
     /// (`pc.audio.set`, `docs/protocol/deck.md` §2.5). `volume` and `muted`
     /// have been validated and the per-device permission checked.

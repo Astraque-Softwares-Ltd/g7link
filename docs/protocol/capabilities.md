@@ -81,6 +81,7 @@ capability is missing.
 | `mic.stream` | Streams its microphone when its user agrees ([mic](mic.md)) | app update (asks for the microphone permission when first used) |
 | `media.watch` | Shows a PC's playback streamed to it (Play on phone, [media](media.md) §4) | app update |
 | `camera.capture` | Captures a photo or document scan on request ([Continuity Camera](v0.md#12-continuity-camera-cameracapture)) | camera permission |
+| `agent.remote` | Shows a PC's coding-agent threads, starts them and answers their requests ([agents](agents.md)) | app update |
 
 ## Desktop
 
@@ -107,5 +108,6 @@ capability is missing.
 | `media.stream` | Streams a player's picture and sound to a phone that watches (Play on phone, [media](media.md) §4) | app update |
 | `addon.vcam` | The virtual camera add-on is installed ([webcam](webcam.md)) | installing the add-on |
 | `camera.continuity` | Requests and receives Continuity Camera photos and document scans ([Continuity Camera](v0.md#12-continuity-camera-cameracapture)) | app update |
+| `agent.host` | The agent host is installed: paired phones with the `agents` toggle can follow, start and answer coding-agent threads on this PC ([agents](agents.md)) | installing G7 Link with its agent host |
 
 

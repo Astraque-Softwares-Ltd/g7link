@@ -366,6 +366,8 @@ pub const DEVICE_TOGGLES: &[(&str, bool)] = &[
     ("commands", false),
     // Browsing the PC's files from anywhere is opt-in.
     ("remote_files", false),
+    // Running coding agents on this PC from a phone is opt-in.
+    ("agents", false),
 ];
 
 /// The default for a toggle, or `None` if no such toggle exists.
@@ -1013,6 +1015,14 @@ pub const FEATURES: &[FeatureDef] = &[
         id: "input.deck",
         group: FeatureGroup::Input,
         requires: &[desktop("deck.actions", UPDATE)],
+        partial: None,
+    },
+    FeatureDef {
+        id: "input.agents",
+        group: FeatureGroup::Input,
+        // Like `input.deck`: the PC's own `agents` toggle (its prompt and
+        // Settings row) gates it there; the phone reads its own toggles here.
+        requires: &[phone("agent.remote", UPDATE), desktop("agent.host", UPDATE)],
         partial: None,
     },
     // Away

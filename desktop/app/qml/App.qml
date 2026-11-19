@@ -187,6 +187,13 @@ QtObject {
                     app.mainWindow.flash()
             }
         }
+        function onAgentsPromptDeviceIdChanged() {
+            if (AppController.agentsPromptDeviceId.length > 0) {
+                app.showMain()
+                if (app.mainWindow)
+                    app.mainWindow.flash()
+            }
+        }
         function onBlePromptDeviceIdChanged() {
             if (AppController.blePromptDeviceId.length > 0) {
                 app.showMain()

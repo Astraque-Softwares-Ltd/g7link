@@ -193,6 +193,11 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     if crate::sys::vcam::is_registered() {
         caps.push(g7link_core::WEBCAM_ADDON_VCAM.into());
     }
+    // Phones may follow and start agents here once the host is installed,
+    // whether or not it runs yet (it starts when wanted).
+    if crate::agents::host_installed() {
+        caps.push(g7link_core::agent::HOST.into());
+    }
     caps
 }
 
@@ -374,6 +379,7 @@ async fn run(data_dir: PathBuf, platform: Arc<dyn Platform>) {
                 crate::update_relay::on_event(&event);
                 crate::storage::on_event(&event);
                 crate::webcam::on_event(&event);
+                crate::agents::on_event(&event);
                 crate::phone_mic::on_event(&event);
                 crate::automations::on_event(&event);
                 crate::bridge::app::on_home_event(&event);

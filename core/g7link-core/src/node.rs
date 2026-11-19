@@ -119,6 +119,9 @@ impl LocalState {
         if !matches!(self.device.kind, DeviceKind::Phone | DeviceKind::Tablet) {
             caps.push(g7link_protocol::messages::continuity_camera::RECEIVE.to_owned());
         }
+        if matches!(self.device.kind, DeviceKind::Phone | DeviceKind::Tablet) {
+            caps.push(g7link_protocol::messages::agent::REMOTE.to_owned());
+        }
         for cap in &self.extra_capabilities {
             if !caps.contains(cap) {
                 caps.push(cap.clone());
@@ -135,6 +138,8 @@ impl LocalState {
         BASE_CAPABILITIES.contains(&cap)
             || (cap == g7link_protocol::messages::continuity_camera::RECEIVE
                 && !matches!(self.device.kind, DeviceKind::Phone | DeviceKind::Tablet))
+            || (cap == g7link_protocol::messages::agent::REMOTE
+                && matches!(self.device.kind, DeviceKind::Phone | DeviceKind::Tablet))
             || self.extra_capabilities.iter().any(|c| c == cap)
             || (self.adb && cap == g7link_protocol::messages::elevated::USB)
     }
@@ -218,6 +223,8 @@ pub(crate) struct Shared {
     pub(crate) tasks: crate::actions::ActiveTasks,
     /// This PC's Deck layout and live state, and connected PCs' Decks (docs/protocol/deck.md).
     pub(crate) deck: crate::deck::Current,
+    /// Agent threads: this PC's catalog and phones' watches, or PCs' catalogs (docs/protocol/agents.md).
+    pub(crate) agents: crate::agents::Agents,
     /// Stop signals for phone screens shown here, by phone.
     pub(crate) mirror_stops: Mutex<HashMap<MirrorStop, Arc<tokio::sync::Notify>>>,
     /// Active outgoing mirror session IDs requested by peers (`(peer, session)`).
@@ -1416,6 +1423,7 @@ impl Shared {
         lock(&self.storage).remove_peer(peer);
         self.toggles.remove_peer(peer);
         self.deck.remove_peer(peer);
+        self.agents.remove_peer(peer);
         self.clear_remote_ring(*peer, None);
         let peer_id = *peer;
         self.stop_local_ring_if(move |ring| ring.peer == peer_id).await;
@@ -1588,6 +1596,7 @@ impl Shared {
             crate::actions::send_wake_info(&shared, &s).await;
             crate::actions::send_active_tasks(&shared, &s).await;
             shared.send_deck(&s).await;
+            crate::agents::send_catalog(&shared, &s).await;
             shared.send_update_hints(&s).await;
         });
         Some(session)
@@ -1605,6 +1614,7 @@ impl Shared {
             lock(&self.storage).remove_peer(&ended.peer);
             self.toggles.remove_peer(&ended.peer);
             self.deck.remove_peer(&ended.peer);
+            self.agents.session_ended(&ended.peer);
             if paired {
                 // Why, as QUIC tells it: timed out, closed by the other side...
                 let reason = ended.conn.close_reason().map(|r| r.to_string()).unwrap_or_default();
@@ -2099,6 +2109,7 @@ impl Node {
             wake_info: Default::default(),
             tasks: Default::default(),
             deck: Default::default(),
+            agents: Default::default(),
             mirror_stops: Mutex::new(HashMap::new()),
             outgoing_mirror_sessions: Mutex::new(std::collections::HashSet::new()),
             pc_mirror_sessions: Mutex::new(std::collections::HashSet::new()),
@@ -2774,6 +2785,9 @@ impl Node {
                 }
                 shared.send_deck(&session).await;
             });
+        }
+        if toggle == crate::agents::TOGGLE {
+            crate::agents::toggled(&self.shared, peer, enabled);
         }
         if toggle == crate::storage::TOGGLE {
             let mut st = self.shared.storage.lock().unwrap_or_else(|e| e.into_inner());
@@ -4464,6 +4478,100 @@ impl Node {
     /// when it changed and this device offers `deck.actions`.
     pub async fn set_deck_state(&self, state: crate::DeckState) -> Result<()> {
         self.shared.set_deck_state(state).await
+    }
+
+    // ---- Agents (docs/protocol/agents.md) ----
+
+    /// PC: replaces what phones may start here and sends it to the phones
+    /// that may have it when it changed. `None`: the host is gone (they get
+    /// an empty catalog).
+    pub async fn set_agent_catalog(&self, catalog: Option<crate::AgentCatalog>) -> Result<()> {
+        crate::agents::set_catalog(&self.shared, catalog);
+        Ok(())
+    }
+
+    /// PC: passes a thread event to the phones that get it: `delta` and
+    /// `item` to the phone watching that thread, the rest to every phone with
+    /// the `agents` toggle (`docs/protocol/agents.md` §2.1). `started_by` is
+    /// the phone that started the thread, which alone sees `from_phone`.
+    pub async fn agent_event(&self, event: crate::AgentEvent, started_by: Option<DeviceId>) -> Result<()> {
+        crate::agents::send_event(&self.shared, event, started_by)
+    }
+
+    /// PC: an agent asks; every phone with the `agents` toggle gets it.
+    pub async fn agent_ask(&self, ask: crate::AgentAsk) -> Result<()> {
+        crate::agents::send_ask(&self.shared, ask)
+    }
+
+    /// PC: an ask ended (`outcome`: `allowed`, `denied`, `expired` or
+    /// `cancelled`); `by_name` names the device that answered.
+    pub async fn agent_asked(
+        &self,
+        token: String,
+        thread: String,
+        outcome: String,
+        by_name: Option<String>,
+    ) -> Result<()> {
+        crate::agents::send_asked(&self.shared, crate::AgentAsked { token, thread, outcome, by_name })
+    }
+
+    /// Phone: the last catalog `peer` sent this session, if it had agents.
+    pub fn agent_catalog(&self, peer: DeviceId) -> Option<crate::AgentCatalog> {
+        self.shared.agents.peer_catalog(&peer)
+    }
+
+    /// Phone: `peer`'s threads, newest first.
+    pub async fn agent_threads(&self, peer: DeviceId) -> Result<Vec<crate::AgentThread>> {
+        crate::agents::threads(&self.shared, peer).await
+    }
+
+    /// Phone: starts a thread on `peer`.
+    pub async fn agent_start(&self, peer: DeviceId, start: crate::AgentStart) -> Result<crate::AgentThread> {
+        crate::agents::start(&self.shared, peer, start).await
+    }
+
+    /// Phone: sends a follow-up to a thread that isn't running.
+    pub async fn agent_send(&self, peer: DeviceId, thread: String, text: String) -> Result<()> {
+        crate::agents::send(&self.shared, peer, thread, text).await
+    }
+
+    /// Phone: stops a thread's running turn.
+    pub async fn agent_cancel(&self, peer: DeviceId, thread: String) -> Result<()> {
+        crate::agents::cancel(&self.shared, peer, thread).await
+    }
+
+    /// Phone: a page of a thread's items, the newest `limit` (at most 50) or
+    /// the ones before `before`.
+    pub async fn agent_read(
+        &self,
+        peer: DeviceId,
+        thread: String,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<crate::AgentItems> {
+        crate::agents::read(&self.shared, peer, thread, before, limit).await
+    }
+
+    /// Phone: the one thread whose text this phone shows (`None`: none).
+    pub async fn agent_watch(&self, peer: DeviceId, thread: Option<String>) -> Result<()> {
+        crate::agents::watch(&self.shared, peer, thread).await
+    }
+
+    /// Phone: answers an ask, this time only.
+    pub async fn agent_answer(&self, peer: DeviceId, token: String, allow: bool) -> Result<()> {
+        crate::agents::answer_ask(&self.shared, peer, token, allow).await
+    }
+
+    /// Sends an `agent.*` request as is, without the checks the methods
+    /// above make, so tests can see what a PC refuses.
+    #[doc(hidden)]
+    pub async fn debug_agent_request<T: serde::Serialize>(
+        &self,
+        peer: DeviceId,
+        t: &str,
+        body: &T,
+    ) -> Result<()> {
+        crate::agents::raw(&self.shared, peer, t, body).await
     }
 
     /// Asks a paired PC to run the action bound to `tile` (`deck.press`).

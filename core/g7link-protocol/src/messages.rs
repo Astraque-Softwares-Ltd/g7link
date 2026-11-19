@@ -134,6 +134,19 @@ pub mod types {
     pub const BLE_OTP: &str = "ble.otp";
     /// Phone to PC: keep a Bluetooth link with me while I renew this.
     pub const BLE_USE: &str = "ble.use";
+    pub const AGENT_CATALOG: &str = "agent.catalog";
+    pub const AGENT_THREADS: &str = "agent.threads";
+    pub const AGENT_START: &str = "agent.start";
+    pub const AGENT_THREAD: &str = "agent.thread";
+    pub const AGENT_SEND: &str = "agent.send";
+    pub const AGENT_CANCEL: &str = "agent.cancel";
+    pub const AGENT_READ: &str = "agent.read";
+    pub const AGENT_ITEMS: &str = "agent.items";
+    pub const AGENT_WATCH: &str = "agent.watch";
+    pub const AGENT_ANSWER: &str = "agent.answer";
+    pub const AGENT_EVENT: &str = "agent.event";
+    pub const AGENT_ASK: &str = "agent.ask";
+    pub const AGENT_ASKED: &str = "agent.asked";
 }
 
 /// What kind of device this is.
@@ -5050,6 +5063,983 @@ impl StorageChanged {
     }
 }
 
+// ---- Agents (docs/protocol/agents.md) ----
+
+/// Capabilities, limits and wire strings of the agents service (`docs/protocol/agents.md`).
+pub mod agent {
+    /// Desktop: the agent host is installed on this PC.
+    pub const HOST: &str = "agent.host";
+    /// Phone: shows a PC's agent threads and answers their requests.
+    pub const REMOTE: &str = "agent.remote";
+    /// The per-device toggle on the PC that governs the whole service (off by default).
+    pub const TOGGLE: &str = "agents";
+
+    /// Bytes in an `agent`, `folder`, `thread` or `token` id (`[a-z0-9]`).
+    pub const MAX_ID_BYTES: usize = 40;
+    /// Bytes in an item's id.
+    pub const MAX_ITEM_ID_BYTES: usize = 96;
+    pub const MAX_PROMPT_BYTES: usize = 8192;
+    /// `label`, `name`, a thread's `folder`, `login_hint`, a tool's `name`.
+    pub const MAX_LABEL_BYTES: usize = 64;
+    /// A thread's `title`, an ask's `thread_title`.
+    pub const MAX_TITLE_BYTES: usize = 80;
+    /// An ask's or a tool step's `title`.
+    pub const MAX_ASK_TITLE_BYTES: usize = 200;
+    pub const MAX_SUMMARY_BYTES: usize = 280;
+    pub const MAX_ERROR_BYTES: usize = 200;
+    /// A thread's `error_code`: `[a-z0-9_]`.
+    pub const MAX_ERROR_CODE_BYTES: usize = 40;
+    pub const MAX_REASON_BYTES: usize = 300;
+    pub const MAX_ITEM_TEXT_BYTES: usize = 16384;
+    pub const MAX_TOOL_DETAIL_BYTES: usize = 4096;
+    pub const MAX_TOOL_OUTPUT_BYTES: usize = 2048;
+    pub const MAX_COMMAND_BYTES: usize = 2048;
+    pub const MAX_DIFF_BYTES: usize = 8192;
+    pub const MAX_PATH_BYTES: usize = 512;
+    pub const MAX_DELTA_BYTES: usize = 4096;
+    /// `delta` events a second to one phone; later text is joined.
+    pub const MAX_DELTAS_PER_SEC: u32 = 10;
+    pub const MAX_AGENTS: usize = 8;
+    pub const MAX_FOLDERS: usize = 64;
+    pub const MAX_MODES: usize = 8;
+    /// Bytes in a mode or another short wire word.
+    pub const MAX_WORD_BYTES: usize = 32;
+    /// Threads in `agent.threads`.
+    pub const MAX_THREADS: usize = 50;
+    /// Items in `agent.items`, and the default and most `agent.read` asks for.
+    pub const MAX_ITEMS: usize = 50;
+    /// Bytes the items of one `agent.items` may take ([`AgentItem::size`]).
+    pub const MAX_ITEMS_BYTES: usize = 196_608;
+    /// Asks in one `agent.items`.
+    pub const MAX_ASKS: usize = 16;
+
+    /// A thread's `state`.
+    pub mod state {
+        pub const WORKING: &str = "working";
+        pub const WAITING: &str = "waiting";
+        pub const DONE: &str = "done";
+        pub const FAILED: &str = "failed";
+        pub const INTERRUPTED: &str = "interrupted";
+        pub const ALL: &[&str] = &[WORKING, WAITING, DONE, FAILED, INTERRUPTED];
+    }
+
+    /// A thread's `mode`, and the catalog's `modes`.
+    pub mod mode {
+        /// Asks before every edit and every command that isn't read-only.
+        pub const SUPERVISED: &str = "supervised";
+        /// Edits without asking (never offered to a phone in v1).
+        pub const AUTO_EDIT: &str = "auto_edit";
+        pub const ALL: &[&str] = &[SUPERVISED, AUTO_EDIT];
+    }
+
+    /// An item's `kind`.
+    pub mod item {
+        pub const USER: &str = "user";
+        pub const ASSISTANT: &str = "assistant";
+        pub const TOOL: &str = "tool";
+        pub const NOTICE: &str = "notice";
+        pub const ALL: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE];
+    }
+
+    /// A tool step's `status`.
+    pub mod tool {
+        pub const RUNNING: &str = "running";
+        pub const OK: &str = "ok";
+        pub const ERROR: &str = "error";
+        pub const DENIED: &str = "denied";
+        pub const ALL: &[&str] = &[RUNNING, OK, ERROR, DENIED];
+    }
+
+    /// An ask's `kind`.
+    pub mod ask {
+        pub const COMMAND: &str = "command";
+        pub const EDIT: &str = "edit";
+        pub const OTHER: &str = "other";
+        pub const ALL: &[&str] = &[COMMAND, EDIT, OTHER];
+    }
+
+    /// An `agent.event`'s `kind`.
+    pub mod event {
+        pub const STATE: &str = "state";
+        pub const DELTA: &str = "delta";
+        pub const ITEM: &str = "item";
+        pub const DONE: &str = "done";
+        pub const REMOVED: &str = "removed";
+        pub const ALL: &[&str] = &[STATE, DELTA, ITEM, DONE, REMOVED];
+    }
+
+    /// How a turn ended (`done` events).
+    pub mod outcome {
+        pub const DONE: &str = "done";
+        pub const FAILED: &str = "failed";
+        pub const INTERRUPTED: &str = "interrupted";
+        pub const ALL: &[&str] = &[DONE, FAILED, INTERRUPTED];
+    }
+
+    /// How an ask ended (`agent.asked`).
+    pub mod asked {
+        pub const ALLOWED: &str = "allowed";
+        pub const DENIED: &str = "denied";
+        pub const EXPIRED: &str = "expired";
+        pub const CANCELLED: &str = "cancelled";
+        pub const ALL: &[&str] = &[ALLOWED, DENIED, EXPIRED, CANCELLED];
+    }
+
+    /// `agent.answer`'s `decision`.
+    pub mod decision {
+        pub const ALLOW: &str = "allow";
+        pub const DENY: &str = "deny";
+        pub const ALL: &[&str] = &[ALLOW, DENY];
+    }
+
+    /// `agent.answer`'s `scope`: only `once` is answered; `thread` is refused.
+    pub mod scope {
+        pub const ONCE: &str = "once";
+        pub const THREAD: &str = "thread";
+    }
+}
+
+/// Whether `id` is an agent, folder, thread or token id: 1 to 40 of `[a-z0-9]`.
+pub fn is_valid_agent_id(id: &str) -> bool {
+    (1..=agent::MAX_ID_BYTES).contains(&id.len())
+        && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+fn is_agent_word(word: &str) -> bool {
+    (1..=agent::MAX_WORD_BYTES).contains(&word.len())
+        && word.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn is_agent_code(code: &str) -> bool {
+    (1..=agent::MAX_ERROR_CODE_BYTES).contains(&code.len())
+        && code.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn is_agent_item_id(id: &str) -> bool {
+    (1..=agent::MAX_ITEM_ID_BYTES).contains(&id.len()) && !id.chars().any(char::is_control)
+}
+
+fn fits_opt(text: &Option<String>, max: usize) -> bool {
+    text.as_ref().is_none_or(|t| t.len() <= max)
+}
+
+/// The bidirectional formatting controls agent text may not carry.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// `text` without control characters (keeping `\n` and `\t` when
+/// `multiline`) and bidi controls, cut to `max` bytes; and whether it was cut.
+fn clean_agent_text(text: &str, multiline: bool, max: usize) -> (String, bool) {
+    let mut out: String = text
+        .chars()
+        .filter(|&c| !is_bidi_control(c) && (!c.is_control() || (multiline && matches!(c, '\n' | '\t'))))
+        .collect();
+    let cut = out.len() > max;
+    if cut {
+        let end = cut_text(&out, max).len();
+        out.truncate(end);
+    }
+    (out, cut)
+}
+
+fn clean_line(text: &mut String, max: usize) {
+    *text = clean_agent_text(text, false, max).0;
+}
+
+fn clean_opt(text: &mut Option<String>, multiline: bool, max: usize) -> bool {
+    match text.as_deref() {
+        Some(t) => {
+            let (clean, cut) = clean_agent_text(t, multiline, max);
+            *text = Some(clean);
+            cut
+        }
+        None => false,
+    }
+}
+
+/// One agent in an [`AgentCatalog`].
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCatalogAgent {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub signed_in: bool,
+    /// The command that signs it in, run on the PC (`claude auth login`).
+    pub login_hint: String,
+    /// How it's signed in: `subscription`, `api_key` or `other`. Nothing
+    /// else about the account ever crosses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+}
+
+impl std::fmt::Debug for AgentCatalogAgent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentCatalogAgent")
+            .field("id", &self.id)
+            .field("installed", &self.installed)
+            .field("signed_in", &self.signed_in)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One folder in an [`AgentCatalog`]: its id and label, never its path.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCatalogFolder {
+    pub id: String,
+    pub label: String,
+}
+
+impl std::fmt::Debug for AgentCatalogFolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentCatalogFolder").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
+/// Body of `agent.catalog`: what a phone may start on this PC. No agents
+/// means the host isn't running.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentCatalog {
+    #[serde(default)]
+    pub agents: Vec<AgentCatalogAgent>,
+    #[serde(default)]
+    pub folders: Vec<AgentCatalogFolder>,
+    #[serde(default)]
+    pub modes: Vec<String>,
+}
+
+impl std::fmt::Debug for AgentCatalog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentCatalog")
+            .field("agents", &self.agents)
+            .field("folders", &self.folders.len())
+            .field("modes", &self.modes)
+            .finish()
+    }
+}
+
+impl AgentCatalog {
+    pub fn is_valid(&self) -> bool {
+        self.agents.len() <= agent::MAX_AGENTS
+            && self.agents.iter().all(|a| {
+                is_valid_agent_id(&a.id)
+                    && a.name.len() <= agent::MAX_LABEL_BYTES
+                    && a.login_hint.len() <= agent::MAX_LABEL_BYTES
+                    && a.auth.as_deref().is_none_or(is_agent_word)
+            })
+            && self.folders.len() <= agent::MAX_FOLDERS
+            && self
+                .folders
+                .iter()
+                .all(|f| is_valid_agent_id(&f.id) && f.label.len() <= agent::MAX_LABEL_BYTES)
+            && self.modes.len() <= agent::MAX_MODES
+            && self.modes.iter().all(|m| is_agent_word(m))
+    }
+
+    /// The catalog within its limits: bad entries and extra ones left out,
+    /// text cleaned and cut.
+    pub fn sanitized(mut self) -> Self {
+        self.agents.retain(|a| is_valid_agent_id(&a.id));
+        self.agents.truncate(agent::MAX_AGENTS);
+        for a in &mut self.agents {
+            clean_line(&mut a.name, agent::MAX_LABEL_BYTES);
+            clean_line(&mut a.login_hint, agent::MAX_LABEL_BYTES);
+            if !a.auth.as_deref().is_none_or(is_agent_word) {
+                a.auth = None;
+            }
+        }
+        self.folders.retain(|f| is_valid_agent_id(&f.id));
+        self.folders.truncate(agent::MAX_FOLDERS);
+        for f in &mut self.folders {
+            clean_line(&mut f.label, agent::MAX_LABEL_BYTES);
+        }
+        self.modes.retain(|m| is_agent_word(m));
+        self.modes.truncate(agent::MAX_MODES);
+        self
+    }
+}
+
+/// A thread as a phone sees it (`AgentThread`, `docs/protocol/agents.md` §2).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentThread {
+    pub id: String,
+    pub agent: String,
+    /// The folder's label.
+    pub folder: String,
+    pub title: String,
+    /// One of [`agent::state`].
+    pub state: String,
+    /// One of [`agent::mode`].
+    pub mode: String,
+    /// Started by the phone this is sent to.
+    #[serde(default)]
+    pub from_phone: bool,
+    /// Unix milliseconds.
+    pub updated: u64,
+    /// Requests waiting for an answer.
+    #[serde(default)]
+    pub asks: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Why it failed, as a word: `usage_limit` (`error` may end in
+    /// `|resets_ms=<Unix ms>`), `login`, or the agent's own code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+/// Never prints the title, summary or error (protocol v0 §11).
+impl std::fmt::Debug for AgentThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentThread")
+            .field("id", &self.id)
+            .field("agent", &self.agent)
+            .field("state", &self.state)
+            .field("mode", &self.mode)
+            .field("from_phone", &self.from_phone)
+            .field("asks", &self.asks)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentThread {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.id)
+            && is_valid_agent_id(&self.agent)
+            && self.folder.len() <= agent::MAX_LABEL_BYTES
+            && self.title.len() <= agent::MAX_TITLE_BYTES
+            && agent::state::ALL.contains(&self.state.as_str())
+            && agent::mode::ALL.contains(&self.mode.as_str())
+            && fits_opt(&self.summary, agent::MAX_SUMMARY_BYTES)
+            && fits_opt(&self.error, agent::MAX_ERROR_BYTES)
+            && self.error_code.as_deref().is_none_or(is_agent_code)
+    }
+
+    /// The thread within its limits, or `None` when an id or a wire word is bad.
+    pub fn sanitized(mut self) -> Option<Self> {
+        if !is_valid_agent_id(&self.id)
+            || !is_valid_agent_id(&self.agent)
+            || !agent::state::ALL.contains(&self.state.as_str())
+            || !agent::mode::ALL.contains(&self.mode.as_str())
+        {
+            return None;
+        }
+        clean_line(&mut self.folder, agent::MAX_LABEL_BYTES);
+        clean_line(&mut self.title, agent::MAX_TITLE_BYTES);
+        clean_opt(&mut self.summary, false, agent::MAX_SUMMARY_BYTES);
+        clean_opt(&mut self.error, false, agent::MAX_ERROR_BYTES);
+        if !self.error_code.as_deref().is_none_or(is_agent_code) {
+            self.error_code = None;
+        }
+        Some(self)
+    }
+
+    /// Whether a turn is running (`working` or `waiting`).
+    pub fn is_running(&self) -> bool {
+        matches!(self.state.as_str(), agent::state::WORKING | agent::state::WAITING)
+    }
+}
+
+/// A tool step in an [`AgentItem`].
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTool {
+    pub name: String,
+    pub title: String,
+    /// The command or a diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// One of [`agent::tool`].
+    pub status: String,
+    /// The tail of what it printed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl std::fmt::Debug for AgentTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentTool").field("status", &self.status).finish_non_exhaustive()
+    }
+}
+
+impl AgentTool {
+    fn is_valid(&self) -> bool {
+        self.name.len() <= agent::MAX_LABEL_BYTES
+            && self.title.len() <= agent::MAX_ASK_TITLE_BYTES
+            && fits_opt(&self.detail, agent::MAX_TOOL_DETAIL_BYTES)
+            && agent::tool::ALL.contains(&self.status.as_str())
+            && fits_opt(&self.output, agent::MAX_TOOL_OUTPUT_BYTES)
+    }
+
+    /// Cleans and cuts the text; whether anything was cut.
+    fn clean(&mut self) -> bool {
+        clean_line(&mut self.name, agent::MAX_LABEL_BYTES);
+        clean_line(&mut self.title, agent::MAX_ASK_TITLE_BYTES);
+        let detail = clean_opt(&mut self.detail, true, agent::MAX_TOOL_DETAIL_BYTES);
+        let output = clean_opt(&mut self.output, true, agent::MAX_TOOL_OUTPUT_BYTES);
+        detail || output
+    }
+}
+
+/// One entry of a thread's transcript (`AgentItem`, `docs/protocol/agents.md` §2).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentItem {
+    /// 1-based, per thread, never reused.
+    pub seq: u64,
+    pub id: String,
+    /// One of [`agent::item`].
+    pub kind: String,
+    /// Unix milliseconds.
+    pub when: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<AgentTool>,
+}
+
+/// Never prints the text (protocol v0 §11).
+impl std::fmt::Debug for AgentItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentItem")
+            .field("seq", &self.seq)
+            .field("kind", &self.kind)
+            .field("bytes", &self.text.as_ref().map_or(0, String::len))
+            .field("tool", &self.tool)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentItem {
+    pub fn is_valid(&self) -> bool {
+        self.seq >= 1
+            && is_agent_item_id(&self.id)
+            && agent::item::ALL.contains(&self.kind.as_str())
+            && fits_opt(&self.text, agent::MAX_ITEM_TEXT_BYTES)
+            && self.tool.as_ref().is_none_or(AgentTool::is_valid)
+    }
+
+    /// The item within its limits (text cut is flagged `truncated`), or
+    /// `None` when its id, seq or kind is bad.
+    pub fn sanitized(mut self) -> Option<Self> {
+        if self.seq == 0 || !is_agent_item_id(&self.id) || !agent::item::ALL.contains(&self.kind.as_str()) {
+            return None;
+        }
+        let text_cut = clean_opt(&mut self.text, true, agent::MAX_ITEM_TEXT_BYTES);
+        let mut tool_cut = false;
+        if let Some(tool) = &mut self.tool {
+            if !agent::tool::ALL.contains(&tool.status.as_str()) {
+                return None;
+            }
+            tool_cut = tool.clean();
+        }
+        self.truncated |= text_cut || tool_cut;
+        Some(self)
+    }
+
+    /// What the item counts toward [`agent::MAX_ITEMS_BYTES`]: the bytes of
+    /// its text fields and a little for the rest.
+    pub fn size(&self) -> usize {
+        const OVERHEAD: usize = 64;
+        let tool = self.tool.as_ref().map_or(0, |t| {
+            t.name.len()
+                + t.title.len()
+                + t.status.len()
+                + t.detail.as_ref().map_or(0, String::len)
+                + t.output.as_ref().map_or(0, String::len)
+        });
+        OVERHEAD + self.id.len() + self.text.as_ref().map_or(0, String::len) + tool
+    }
+}
+
+/// A request waiting for an answer (`AgentAsk`, `docs/protocol/agents.md` §2).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAsk {
+    /// Single use.
+    pub token: String,
+    pub thread: String,
+    pub thread_title: String,
+    pub agent: String,
+    /// One of [`agent::ask`].
+    pub kind: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The agent's own words about why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+    /// Unix milliseconds.
+    pub expires: u64,
+}
+
+/// Never prints the token, command, diff, path or reason (protocol v0 §11).
+impl std::fmt::Debug for AgentAsk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentAsk")
+            .field("thread", &self.thread)
+            .field("agent", &self.agent)
+            .field("kind", &self.kind)
+            .field("truncated", &self.truncated)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentAsk {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.token)
+            && is_valid_agent_id(&self.thread)
+            && is_valid_agent_id(&self.agent)
+            && self.thread_title.len() <= agent::MAX_TITLE_BYTES
+            && agent::ask::ALL.contains(&self.kind.as_str())
+            && self.title.len() <= agent::MAX_ASK_TITLE_BYTES
+            && fits_opt(&self.command, agent::MAX_COMMAND_BYTES)
+            && fits_opt(&self.diff, agent::MAX_DIFF_BYTES)
+            && fits_opt(&self.path, agent::MAX_PATH_BYTES)
+            && fits_opt(&self.reason, agent::MAX_REASON_BYTES)
+    }
+
+    /// The ask within its limits (a command or diff cut is flagged
+    /// `truncated`), or `None` when an id or its kind is bad.
+    pub fn sanitized(mut self) -> Option<Self> {
+        if !is_valid_agent_id(&self.token)
+            || !is_valid_agent_id(&self.thread)
+            || !is_valid_agent_id(&self.agent)
+            || !agent::ask::ALL.contains(&self.kind.as_str())
+        {
+            return None;
+        }
+        clean_line(&mut self.thread_title, agent::MAX_TITLE_BYTES);
+        clean_line(&mut self.title, agent::MAX_ASK_TITLE_BYTES);
+        let command = clean_opt(&mut self.command, true, agent::MAX_COMMAND_BYTES);
+        let diff = clean_opt(&mut self.diff, true, agent::MAX_DIFF_BYTES);
+        let path = clean_opt(&mut self.path, false, agent::MAX_PATH_BYTES);
+        clean_opt(&mut self.reason, true, agent::MAX_REASON_BYTES);
+        self.truncated |= command || diff || path;
+        Some(self)
+    }
+}
+
+/// Body of `agent.items`: a page of a thread's transcript and its asks.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentItems {
+    pub thread: AgentThread,
+    #[serde(default)]
+    pub items: Vec<AgentItem>,
+    #[serde(default)]
+    pub more_before: bool,
+    #[serde(default)]
+    pub asks: Vec<AgentAsk>,
+}
+
+impl std::fmt::Debug for AgentItems {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentItems")
+            .field("thread", &self.thread)
+            .field("items", &self.items.len())
+            .field("more_before", &self.more_before)
+            .field("asks", &self.asks.len())
+            .finish()
+    }
+}
+
+impl AgentItems {
+    pub fn is_valid(&self) -> bool {
+        self.thread.is_valid()
+            && self.items.len() <= agent::MAX_ITEMS
+            && self.items.iter().all(AgentItem::is_valid)
+            && self.items.iter().map(AgentItem::size).sum::<usize>() <= agent::MAX_ITEMS_BYTES
+            && self.asks.len() <= agent::MAX_ASKS
+            && self.asks.iter().all(AgentAsk::is_valid)
+    }
+
+    /// The page within its limits: bad items and asks left out, then the
+    /// oldest items until at most [`agent::MAX_ITEMS`] fit in
+    /// [`agent::MAX_ITEMS_BYTES`] (`more_before` is then set). `None` when the
+    /// thread is bad.
+    pub fn sanitized(mut self) -> Option<Self> {
+        self.thread = self.thread.sanitized()?;
+        self.items = self.items.into_iter().filter_map(AgentItem::sanitized).collect();
+        self.items.sort_by_key(|i| i.seq);
+        let mut keep = 0;
+        let mut bytes = 0;
+        for item in self.items.iter().rev() {
+            if keep == agent::MAX_ITEMS || bytes + item.size() > agent::MAX_ITEMS_BYTES {
+                break;
+            }
+            bytes += item.size();
+            keep += 1;
+        }
+        if keep < self.items.len() {
+            self.items.drain(..self.items.len() - keep);
+            self.more_before = true;
+        }
+        self.asks = self.asks.into_iter().filter_map(AgentAsk::sanitized).collect();
+        self.asks.truncate(agent::MAX_ASKS);
+        Some(self)
+    }
+}
+
+/// Body of an `agent.event` (`AgentEvent`, `docs/protocol/agents.md` §2).
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentEvent {
+    pub thread: String,
+    /// One of [`agent::event`].
+    pub kind: String,
+    /// `state`, `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<AgentThread>,
+    /// `delta`: the item's `seq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    /// `delta`: the byte offset of `text` in the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// `item`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<AgentItem>,
+    /// `done`: one of [`agent::outcome`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Never prints text or the summary (protocol v0 §11).
+impl std::fmt::Debug for AgentEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentEvent")
+            .field("thread", &self.thread)
+            .field("kind", &self.kind)
+            .field("seq", &self.seq)
+            .field("offset", &self.offset)
+            .field("bytes", &self.text.as_ref().map_or(0, String::len))
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentEvent {
+    /// A thread changed (`state`).
+    pub fn state(thread: AgentThread) -> Self {
+        Self {
+            thread: thread.id.clone(),
+            kind: agent::event::STATE.into(),
+            state: Some(thread),
+            ..Self::default()
+        }
+    }
+
+    /// Assistant text streamed into item `seq`/`item_id` at byte `offset` (`delta`).
+    pub fn delta(thread: String, seq: u64, item_id: String, offset: u32, text: String) -> Self {
+        Self {
+            thread,
+            kind: agent::event::DELTA.into(),
+            seq: Some(seq),
+            item_id: Some(item_id),
+            offset: Some(offset),
+            text: Some(text),
+            ..Self::default()
+        }
+    }
+
+    /// An item was added or updated (`item`).
+    pub fn item(thread: String, item: AgentItem) -> Self {
+        Self { thread, kind: agent::event::ITEM.into(), item: Some(item), ..Self::default() }
+    }
+
+    /// A turn ended (`done`).
+    pub fn done(thread: AgentThread, outcome: &str, summary: String) -> Self {
+        Self {
+            thread: thread.id.clone(),
+            kind: agent::event::DONE.into(),
+            state: Some(thread),
+            outcome: Some(outcome.into()),
+            summary: Some(summary),
+            ..Self::default()
+        }
+    }
+
+    /// A thread was deleted (`removed`).
+    pub fn removed(thread: String) -> Self {
+        Self { thread, kind: agent::event::REMOVED.into(), ..Self::default() }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        if !is_valid_agent_id(&self.thread) {
+            return false;
+        }
+        let state_ok =
+            |s: &Option<AgentThread>| s.as_ref().is_some_and(|t| t.is_valid() && t.id == self.thread);
+        match self.kind.as_str() {
+            agent::event::STATE => state_ok(&self.state),
+            agent::event::DELTA => {
+                self.seq.is_some_and(|s| s >= 1)
+                    && self.item_id.as_deref().is_some_and(is_agent_item_id)
+                    && self.offset.is_some()
+                    && self.text.as_ref().is_some_and(|t| t.len() <= agent::MAX_DELTA_BYTES)
+            }
+            agent::event::ITEM => self.item.as_ref().is_some_and(AgentItem::is_valid),
+            agent::event::DONE => {
+                state_ok(&self.state)
+                    && self.outcome.as_deref().is_some_and(|o| agent::outcome::ALL.contains(&o))
+                    && fits_opt(&self.summary, agent::MAX_SUMMARY_BYTES)
+            }
+            agent::event::REMOVED => true,
+            _ => false,
+        }
+    }
+
+    /// The event within its limits, or `None` when it can't be made valid.
+    /// A delta's text is never cut (its offsets would be wrong): one over the
+    /// limit is `None`.
+    pub fn sanitized(mut self) -> Option<Self> {
+        if !is_valid_agent_id(&self.thread) {
+            return None;
+        }
+        match self.kind.as_str() {
+            agent::event::STATE | agent::event::DONE => {
+                let state = self.state.take()?.sanitized()?;
+                if state.id != self.thread {
+                    return None;
+                }
+                self.state = Some(state);
+                if self.kind == agent::event::DONE {
+                    if !self.outcome.as_deref().is_some_and(|o| agent::outcome::ALL.contains(&o)) {
+                        return None;
+                    }
+                    clean_opt(&mut self.summary, false, agent::MAX_SUMMARY_BYTES);
+                }
+            }
+            agent::event::DELTA => {
+                if !self.is_valid() {
+                    return None;
+                }
+            }
+            agent::event::ITEM => self.item = Some(self.item.take()?.sanitized()?),
+            agent::event::REMOVED => {}
+            _ => return None,
+        }
+        Some(self)
+    }
+}
+
+/// Body of `agent.threads` (the reply): newest first, at most [`agent::MAX_THREADS`].
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentThreads {
+    #[serde(default)]
+    pub threads: Vec<AgentThread>,
+}
+
+impl std::fmt::Debug for AgentThreads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentThreads").field("threads", &self.threads.len()).finish()
+    }
+}
+
+impl AgentThreads {
+    pub fn is_valid(&self) -> bool {
+        self.threads.len() <= agent::MAX_THREADS && self.threads.iter().all(AgentThread::is_valid)
+    }
+
+    pub fn sanitized(mut self) -> Self {
+        self.threads = self.threads.into_iter().filter_map(AgentThread::sanitized).collect();
+        self.threads.truncate(agent::MAX_THREADS);
+        self
+    }
+}
+
+/// Body of `agent.start`: phone to PC.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStart {
+    pub agent: String,
+    /// The folder's id.
+    pub folder: String,
+    pub prompt: String,
+    pub mode: String,
+}
+
+/// Never prints the prompt (protocol v0 §11).
+impl std::fmt::Debug for AgentStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentStart")
+            .field("agent", &self.agent)
+            .field("folder", &self.folder)
+            .field("mode", &self.mode)
+            .field("bytes", &self.prompt.len())
+            .finish()
+    }
+}
+
+impl AgentStart {
+    /// Ids, a prompt of 1 to 8192 bytes and a well-formed mode. Whether the
+    /// mode may be used is the PC's call (`DENIED`), not a shape error.
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.agent)
+            && is_valid_agent_id(&self.folder)
+            && (1..=agent::MAX_PROMPT_BYTES).contains(&self.prompt.len())
+            && is_agent_word(&self.mode)
+    }
+}
+
+/// Body of `agent.send`: phone to PC.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSend {
+    pub thread: String,
+    pub text: String,
+}
+
+/// Never prints the text (protocol v0 §11).
+impl std::fmt::Debug for AgentSend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentSend").field("thread", &self.thread).field("bytes", &self.text.len()).finish()
+    }
+}
+
+impl AgentSend {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.thread) && (1..=agent::MAX_PROMPT_BYTES).contains(&self.text.len())
+    }
+}
+
+/// Body of `agent.cancel`: phone to PC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCancel {
+    pub thread: String,
+}
+
+impl AgentCancel {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.thread)
+    }
+}
+
+/// Body of `agent.read`: phone to PC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRead {
+    pub thread: String,
+    /// Items before this `seq`; the newest without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<u64>,
+    /// Default and most: [`agent::MAX_ITEMS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl AgentRead {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.thread) && self.limit != Some(0)
+    }
+
+    /// How many items to send: `limit`, at most [`agent::MAX_ITEMS`].
+    pub fn limit(&self) -> u32 {
+        self.limit.unwrap_or(agent::MAX_ITEMS as u32).clamp(1, agent::MAX_ITEMS as u32)
+    }
+}
+
+/// Body of `agent.watch`: the one thread whose text the phone shows; none without `thread`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentWatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+}
+
+impl AgentWatch {
+    pub fn is_valid(&self) -> bool {
+        self.thread.as_deref().is_none_or(is_valid_agent_id)
+    }
+}
+
+/// Body of `agent.answer`: phone to PC.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAnswer {
+    pub token: String,
+    /// One of [`agent::decision`].
+    pub decision: String,
+    /// Reserved: only [`agent::scope::ONCE`] is answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// Never prints the token (protocol v0 §11).
+impl std::fmt::Debug for AgentAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentAnswer")
+            .field("decision", &self.decision)
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentAnswer {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.token)
+            && agent::decision::ALL.contains(&self.decision.as_str())
+            && self.scope.as_deref().is_none_or(is_agent_word)
+    }
+
+    pub fn allow(&self) -> bool {
+        self.decision == agent::decision::ALLOW
+    }
+}
+
+/// Body of `agent.asked`: an ask ended (first answer from any device, expiry, or the turn ended).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAsked {
+    pub token: String,
+    pub thread: String,
+    /// One of [`agent::asked`].
+    pub outcome: String,
+    /// The name of the device that answered (`allowed`, `denied`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_name: Option<String>,
+}
+
+/// Never prints the token (protocol v0 §11).
+impl std::fmt::Debug for AgentAsked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentAsked")
+            .field("thread", &self.thread)
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentAsked {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.token)
+            && is_valid_agent_id(&self.thread)
+            && agent::asked::ALL.contains(&self.outcome.as_str())
+            && fits_opt(&self.by_name, agent::MAX_LABEL_BYTES)
+    }
+
+    /// The resolution with its device name cleaned and cut, or `None` when
+    /// it isn't valid otherwise.
+    pub fn sanitized(mut self) -> Option<Self> {
+        if !is_valid_agent_id(&self.token)
+            || !is_valid_agent_id(&self.thread)
+            || !agent::asked::ALL.contains(&self.outcome.as_str())
+        {
+            return None;
+        }
+        clean_opt(&mut self.by_name, false, agent::MAX_LABEL_BYTES);
+        if self.by_name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+            self.by_name = None;
+        }
+        Some(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -7167,5 +8157,251 @@ mod tests {
         )]);
         let reply: BleUseReply = newer.deserialized().unwrap();
         assert_eq!(reply, BleUseReply { state: BleUseState::Off, lease: None });
+    }
+    fn agent_thread(id: &str) -> super::AgentThread {
+        super::AgentThread {
+            id: id.into(),
+            agent: "claude".into(),
+            folder: "g7linux".into(),
+            title: "List the files here.".into(),
+            state: super::agent::state::WORKING.into(),
+            mode: super::agent::mode::SUPERVISED.into(),
+            from_phone: true,
+            updated: 1_795_000_000_000,
+            asks: 1,
+            summary: None,
+            error: None,
+            error_code: None,
+        }
+    }
+
+    fn agent_item(seq: u64, text: &str) -> super::AgentItem {
+        super::AgentItem {
+            seq,
+            id: format!("msg_01Ab:{seq}"),
+            kind: super::agent::item::ASSISTANT.into(),
+            when: 1_795_000_000_000 + seq,
+            text: Some(text.into()),
+            truncated: false,
+            tool: None,
+        }
+    }
+
+    fn agent_ask() -> super::AgentAsk {
+        super::AgentAsk {
+            token: "0123456789abcdef0123456789abcdef".into(),
+            thread: "a".repeat(32),
+            thread_title: "Fix the build".into(),
+            agent: "codex".into(),
+            kind: super::agent::ask::COMMAND.into(),
+            title: "Run command".into(),
+            command: Some("cargo test".into()),
+            diff: None,
+            path: None,
+            reason: Some("To check the fix.".into()),
+            truncated: false,
+            expires: 1_795_007_200_000,
+        }
+    }
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+        t: &str,
+        body: &T,
+    ) {
+        let env = crate::Envelope::new(t, body).unwrap();
+        let back = crate::Envelope::from_cbor(&env.to_cbor()).unwrap();
+        assert_eq!(&back.body::<T>().unwrap(), body);
+    }
+
+    #[test]
+    fn agent_bodies_round_trip() {
+        use super::{
+            AgentAnswer, AgentAsked, AgentCancel, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder,
+            AgentEvent, AgentItems, AgentRead, AgentSend, AgentStart, AgentThreads, AgentTool, AgentWatch,
+            agent, types,
+        };
+        let catalog = AgentCatalog {
+            agents: vec![AgentCatalogAgent {
+                id: "claude".into(),
+                name: "Claude".into(),
+                installed: true,
+                signed_in: true,
+                login_hint: "claude auth login".into(),
+                auth: Some("api_key".into()),
+            }],
+            folders: vec![AgentCatalogFolder { id: "f0123456789ab".into(), label: "g7linux".into() }],
+            modes: vec![agent::mode::SUPERVISED.into()],
+        };
+        assert!(catalog.is_valid());
+        round_trip(types::AGENT_CATALOG, &catalog);
+        let thread = agent_thread(&"b".repeat(32));
+        assert!(thread.is_valid());
+        round_trip(types::AGENT_THREAD, &thread);
+        round_trip(types::AGENT_THREADS, &AgentThreads { threads: vec![thread.clone()] });
+        let mut tool = agent_item(2, "");
+        tool.kind = agent::item::TOOL.into();
+        tool.text = None;
+        tool.tool = Some(AgentTool {
+            name: "Bash".into(),
+            title: "Run command".into(),
+            detail: Some("ls -A".into()),
+            status: agent::tool::OK.into(),
+            output: Some("Cargo.toml\nsrc".into()),
+        });
+        let items = AgentItems {
+            thread: thread.clone(),
+            items: vec![agent_item(1, "Hi"), tool],
+            more_before: false,
+            asks: vec![agent_ask()],
+        };
+        assert!(items.is_valid());
+        round_trip(types::AGENT_ITEMS, &items);
+        for event in [
+            AgentEvent::state(thread.clone()),
+            AgentEvent::delta(thread.id.clone(), 3, "msg_01Ab:0".into(), 12, "more".into()),
+            AgentEvent::item(thread.id.clone(), agent_item(3, "Done.")),
+            AgentEvent::done(thread.clone(), agent::outcome::DONE, "Done.".into()),
+            AgentEvent::removed(thread.id.clone()),
+        ] {
+            assert!(event.is_valid(), "{event:?}");
+            round_trip(types::AGENT_EVENT, &event);
+        }
+        let start = AgentStart {
+            agent: "claude".into(),
+            folder: "f0123456789ab".into(),
+            prompt: "List the files here.".into(),
+            mode: agent::mode::SUPERVISED.into(),
+        };
+        assert!(start.is_valid());
+        round_trip(types::AGENT_START, &start);
+        round_trip(types::AGENT_SEND, &AgentSend { thread: thread.id.clone(), text: "Go on".into() });
+        round_trip(types::AGENT_CANCEL, &AgentCancel { thread: thread.id.clone() });
+        round_trip(
+            types::AGENT_READ,
+            &AgentRead { thread: thread.id.clone(), before: Some(4), limit: Some(20) },
+        );
+        round_trip(types::AGENT_WATCH, &AgentWatch { thread: None });
+        round_trip(
+            types::AGENT_ANSWER,
+            &AgentAnswer { token: "c".repeat(32), decision: agent::decision::ALLOW.into(), scope: None },
+        );
+        round_trip(types::AGENT_ASK, &agent_ask());
+        round_trip(
+            types::AGENT_ASKED,
+            &AgentAsked {
+                token: "c".repeat(32),
+                thread: thread.id,
+                outcome: agent::asked::ALLOWED.into(),
+                by_name: Some("guchu".into()),
+            },
+        );
+    }
+
+    #[test]
+    fn agent_ids_are_short_lowercase_hex_or_words() {
+        use super::is_valid_agent_id;
+        assert!(is_valid_agent_id("claude"));
+        assert!(is_valid_agent_id("f0123456789ab"));
+        assert!(is_valid_agent_id(&"a".repeat(40)));
+        for bad in ["", "Claude", "f01/23", "../etc", "a b", "a.b", "a-b", &"a".repeat(41)] {
+            assert!(!is_valid_agent_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn agent_requests_over_their_limits_are_invalid() {
+        use super::{AgentAnswer, AgentRead, AgentSend, AgentStart, AgentWatch, agent};
+        let start = |prompt: String, folder: &str, mode: &str| AgentStart {
+            agent: "claude".into(),
+            folder: folder.into(),
+            prompt,
+            mode: mode.into(),
+        };
+        assert!(start("x".repeat(agent::MAX_PROMPT_BYTES), "f0123456789ab", "supervised").is_valid());
+        assert!(!start("x".repeat(agent::MAX_PROMPT_BYTES + 1), "f0123456789ab", "supervised").is_valid());
+        assert!(!start(String::new(), "f0123456789ab", "supervised").is_valid());
+        assert!(!start("hi".into(), "/home/me", "supervised").is_valid());
+        // A mode the PC doesn't offer is its call (DENIED), not a shape error.
+        assert!(start("hi".into(), "f0123456789ab", "auto_edit").is_valid());
+        assert!(!start("hi".into(), "f0123456789ab", "--dangerously").is_valid());
+        assert!(!AgentSend { thread: "a".into(), text: "x".repeat(8193) }.is_valid());
+        assert!(!AgentRead { thread: "a".into(), before: None, limit: Some(0) }.is_valid());
+        assert_eq!(AgentRead { thread: "a".into(), before: None, limit: Some(500) }.limit(), 50);
+        assert_eq!(AgentRead { thread: "a".into(), before: None, limit: None }.limit(), 50);
+        assert!(!AgentWatch { thread: Some("A".into()) }.is_valid());
+        let answer =
+            |decision: &str| AgentAnswer { token: "a".repeat(32), decision: decision.into(), scope: None };
+        assert!(answer("allow").is_valid() && answer("deny").is_valid());
+        assert!(!answer("allow_thread").is_valid());
+    }
+
+    #[test]
+    fn agent_text_is_cleaned_cut_and_flagged() {
+        use super::{AgentEvent, AgentItems, agent};
+        let mut item = agent_item(1, "");
+        item.text = Some(format!("a\u{202E}b\u{1b}[31m\nc\td{}", "é".repeat(agent::MAX_ITEM_TEXT_BYTES)));
+        let item = item.sanitized().unwrap();
+        let text = item.text.as_deref().unwrap();
+        assert!(text.starts_with("ab[31m\nc\td"), "{text:?}");
+        assert!(text.len() <= agent::MAX_ITEM_TEXT_BYTES && item.truncated);
+
+        let mut ask = agent_ask();
+        ask.command = Some("x".repeat(agent::MAX_COMMAND_BYTES + 5));
+        ask.thread_title = "line one\nline two".into();
+        let ask = ask.sanitized().unwrap();
+        assert!(ask.truncated && ask.command.as_ref().unwrap().len() == agent::MAX_COMMAND_BYTES);
+        assert_eq!(ask.thread_title, "line oneline two");
+        assert!(ask.is_valid());
+
+        let mut bad = agent_ask();
+        bad.kind = "sudo".into();
+        assert!(bad.sanitized().is_none());
+
+        // A page keeps the newest items that fit, and says there are more.
+        let big = "z".repeat(10_000);
+        let items: Vec<_> = (1..=60).map(|seq| agent_item(seq, &big)).collect();
+        let page = AgentItems { thread: agent_thread("abc"), items, more_before: false, asks: vec![] }
+            .sanitized()
+            .unwrap();
+        assert!(page.is_valid() && page.more_before);
+        assert_eq!(page.items.last().unwrap().seq, 60);
+        assert!(page.items.len() < 20);
+
+        // A delta is never cut: its offsets would no longer add up.
+        let long = AgentEvent::delta("abc".into(), 1, "m".into(), 0, "y".repeat(agent::MAX_DELTA_BYTES + 1));
+        assert!(!long.is_valid() && long.sanitized().is_none());
+        let mut other = agent_thread("abd");
+        other.state = "paused".into();
+        assert!(AgentEvent::state(other).sanitized().is_none());
+        let mut wrong = AgentEvent::state(agent_thread("abc"));
+        wrong.thread = "abd".into();
+        assert!(!wrong.is_valid());
+    }
+
+    #[test]
+    fn agent_debug_never_shows_text_or_tokens() {
+        use super::{AgentAnswer, AgentEvent, AgentSend, AgentStart};
+        let ask = agent_ask();
+        let shown = format!(
+            "{:?} {:?} {:?} {:?} {:?} {:?}",
+            ask,
+            agent_item(1, "secret words"),
+            agent_thread("abc"),
+            AgentEvent::delta("abc".into(), 1, "m".into(), 0, "secret words".into()),
+            AgentStart {
+                agent: "claude".into(),
+                folder: "f1".into(),
+                prompt: "secret words".into(),
+                mode: "supervised".into()
+            },
+            AgentSend { thread: "abc".into(), text: "secret words".into() },
+        );
+        assert!(
+            !shown.contains("secret") && !shown.contains("cargo test") && !shown.contains(&ask.token),
+            "{shown}"
+        );
+        assert!(!shown.contains("List the files"), "{shown}");
+        let answer = AgentAnswer { token: ask.token.clone(), decision: "allow".into(), scope: None };
+        assert!(!format!("{answer:?}").contains(&ask.token));
     }
 }
