@@ -20,8 +20,6 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.animation.using
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ColorScheme
@@ -153,9 +151,17 @@ fun PlayerLayer(bottomBarHeight: Dp, modifier: Modifier = Modifier) {
 /** The mini and full player's swap: shared elements carry it, so only a fade here; under reduced motion a quick crossfade. */
 private fun AnimatedContentTransitionScope<Boolean>.playerSwap(reducedMotion: Boolean): ContentTransform =
     if (reducedMotion) {
-        (fadeIn(G7Motion.enter(G7Motion.QUICK_IN)) togetherWith fadeOut(G7Motion.exit(G7Motion.QUICK_OUT))) using null
+        ContentTransform(
+            fadeIn(G7Motion.enter(G7Motion.QUICK_IN)),
+            fadeOut(G7Motion.exit(G7Motion.QUICK_OUT)),
+            sizeTransform = null,
+        )
     } else {
-        (fadeIn(G7Motion.enter(G7Motion.LARGE_IN)) togetherWith fadeOut(G7Motion.exit(G7Motion.LARGE_OUT))) using null
+        ContentTransform(
+            fadeIn(G7Motion.enter(G7Motion.LARGE_IN)),
+            fadeOut(G7Motion.exit(G7Motion.LARGE_OUT)),
+            sizeTransform = null,
+        )
     }
 
 /**
