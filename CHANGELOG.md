@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## Unreleased
+## 0.1.14 (2026-11-19)
 
 Agents get a page of their own on the PC, the phone follows the sessions
 you start in a terminal or the Claude app, and music on the PC gets a real
@@ -74,8 +74,19 @@ player on the phone.
 
 ### Fixed
 
-- **The notification icon is centred** in the status bar and the Live Update
-  chip.
+- **The notification icon is the G7 mark,** centred in the status bar and the
+  Live Update chip, instead of the old two-loop mark that read as ∞.
+- **Bluetooth to the touchpad says what really happened.** "Out of range" now
+  means the phone never saw the PC; any other failure says Couldn't connect,
+  and when the PC isn't offering Bluetooth for a few minutes the phone says
+  so instead of retrying every 20 seconds. Retries in the background back off,
+  and Try again starts over. The PC tells the phone whether it really opened a
+  connection window, and a renewal joins the open window instead of using up
+  another. Ending G7 Link's Bluetooth link no longer disconnects the phone's
+  other Bluetooth connections, such as audio. Both sides now log each step of
+  the link, so a failure can be traced.
+- **A cover cut short while downloading isn't shown** half grey; the player
+  keeps the small picture.
 
 ## 0.1.13 (2026-11-19)
 
