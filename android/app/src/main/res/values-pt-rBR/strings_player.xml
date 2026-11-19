@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The music player (ui/player). Kept apart from strings.xml so the player and the rest of the app never edit one file. -->
+<resources>
+    <string name="player_open">Abrir o player</string>
+    <string name="player_close">Fechar o player</string>
+    <string name="player_choose">Escolher o player e a saída</string>
+    <string name="player_sheet_title">Tocar em %1$s</string>
+    <string name="player_output">Saída</string>
+    <string name="player_players_on">Players em %1$s</string>
+    <string name="player_phone_speaker_note">O som de %1$s toca neste celular.</string>
+    <string name="player_state_playing">%1$s · tocando</string>
+    <string name="player_state_paused">%1$s · pausado</string>
+    <string name="player_volume_keys_note">Os botões de volume mudam o volume de %1$s enquanto ele toca algo. Desative isso em Configurações.</string>
+    <string name="player_shuffle_on">Aleatório, ativado</string>
+    <string name="player_shuffle_off">Aleatório, desativado</string>
+    <string name="player_repeat_off">Repetir, desativado</string>
+    <string name="player_repeat_playlist">Repetir a playlist, ativado</string>
+    <string name="player_repeat_track">Repetir esta faixa, ativado</string>
+    <string name="player_position">Posição</string>
+    <string name="player_time_of">%1$s de %2$s</string>
+    <string name="player_volume_on">Volume de %1$s</string>
+    <string name="player_mute_pc">Silenciar %1$s</string>
+    <string name="player_unmute_pc">Ativar o som de %1$s</string>
+    <string name="player_showing">Em exibição</string>
+</resources>

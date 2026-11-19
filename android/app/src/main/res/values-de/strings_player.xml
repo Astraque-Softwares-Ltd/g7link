@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The music player (ui/player). Kept apart from strings.xml so the player and the rest of the app never edit one file. -->
+<resources>
+    <string name="player_open">Player öffnen</string>
+    <string name="player_close">Player schließen</string>
+    <string name="player_choose">Player und Ausgabe wählen</string>
+    <string name="player_sheet_title">Wiedergabe auf %1$s</string>
+    <string name="player_output">Ausgabe</string>
+    <string name="player_players_on">Player auf %1$s</string>
+    <string name="player_phone_speaker_note">Der Ton von %1$s wird auf diesem Gerät abgespielt.</string>
+    <string name="player_state_playing">%1$s · läuft</string>
+    <string name="player_state_paused">%1$s · pausiert</string>
+    <string name="player_volume_keys_note">Die Lautstärketasten ändern die Lautstärke von %1$s, solange dort etwas läuft. Das kannst du in den Einstellungen ausschalten.</string>
+    <string name="player_shuffle_on">Zufallswiedergabe, an</string>
+    <string name="player_shuffle_off">Zufallswiedergabe, aus</string>
+    <string name="player_repeat_off">Wiederholen, aus</string>
+    <string name="player_repeat_playlist">Playlist wiederholen, an</string>
+    <string name="player_repeat_track">Titel wiederholen, an</string>
+    <string name="player_position">Position</string>
+    <string name="player_time_of">%1$s von %2$s</string>
+    <string name="player_volume_on">Lautstärke von %1$s</string>
+    <string name="player_mute_pc">%1$s stummschalten</string>
+    <string name="player_unmute_pc">Stummschaltung von %1$s aufheben</string>
+    <string name="player_showing">Angezeigt</string>
+</resources>

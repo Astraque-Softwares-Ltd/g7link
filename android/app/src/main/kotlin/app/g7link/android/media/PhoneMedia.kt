@@ -252,6 +252,8 @@ class PhoneMedia(context: Context, private val onChange: (List<MediaPlayer>) -> 
             MediaAction.NEXT -> controls.skipToNext()
             MediaAction.PREVIOUS -> controls.skipToPrevious()
             MediaAction.SEEK -> controls.seekTo(position?.toLong() ?: throw MediaFailure.Unsupported())
+            // This phone's players aren't shuffled or repeated from a PC.
+            MediaAction.SHUFFLE, MediaAction.REPEAT -> throw MediaFailure.Unsupported()
         }
     }
 

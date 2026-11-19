@@ -137,6 +137,9 @@ class Preferences(context: Context) {
         private const val WHATS_NEW_GUIDE_DISMISSED = "whats_new_guide_dismissed"
         /** Followed by a PC's ID: the touchpad's route to that PC. */
         private const val REMOTE_ROUTE = "remote_route."
+        private const val AGENT_CHOICE_AGENT = "agent_choice.agent."
+        private const val AGENT_CHOICE_FOLDER = "agent_choice.folder."
+        private const val AGENT_SESSIONS_ALLOWED = "agent_sessions_allowed."
 
         /** "quiet" (G7) or a color-only palette from [Palettes]. */
         val VALID_THEMES = setOf("quiet") + Palettes.families.map { it.id }
@@ -215,6 +218,53 @@ class Preferences(context: Context) {
         fun keepRemoteRoutes(context: Context, paired: Collection<String>) {
             val prefs = shared(context)
             val gone = prefs.all.keys.filter { it.startsWith(REMOTE_ROUTE) && it.removePrefix(REMOTE_ROUTE) !in paired }
+            if (gone.isNotEmpty()) prefs.edit { gone.forEach { remove(it) } }
+        }
+
+        /** The agent and folder last picked to start a thread on [pcId] (their ids only), or nulls. */
+        fun agentChoice(context: Context, pcId: String): Pair<String?, String?> {
+            val prefs = shared(context)
+            return prefs.getString(AGENT_CHOICE_AGENT + pcId, null) to prefs.getString(AGENT_CHOICE_FOLDER + pcId, null)
+        }
+
+        fun setAgentChoice(context: Context, pcId: String, agent: String, folder: String) {
+            shared(context).edit {
+                putString(AGENT_CHOICE_AGENT + pcId, agent)
+                putString(AGENT_CHOICE_FOLDER + pcId, folder)
+            }
+        }
+
+        /** Whether [pcId] has listed its sessions started outside G7 to this phone before (it allowed it there). */
+        fun agentSessionsAllowed(context: Context, pcId: String): Boolean =
+            shared(context).getBoolean(AGENT_SESSIONS_ALLOWED + pcId, false)
+
+        fun setAgentSessionsAllowed(context: Context, pcId: String, allowed: Boolean) {
+            shared(context).edit {
+                if (allowed) putBoolean(AGENT_SESSIONS_ALLOWED + pcId, true) else remove(AGENT_SESSIONS_ALLOWED + pcId)
+            }
+        }
+
+        /** Forgets what was picked on [pcId], and that it listed its sessions, as it was unpaired. */
+        fun removeAgentChoice(context: Context, pcId: String) {
+            shared(context).edit {
+                remove(AGENT_CHOICE_AGENT + pcId)
+                remove(AGENT_CHOICE_FOLDER + pcId)
+                remove(AGENT_SESSIONS_ALLOWED + pcId)
+            }
+        }
+
+        /** Forgets the same for PCs that aren't among [paired]. */
+        fun keepAgentChoices(context: Context, paired: Collection<String>) {
+            val prefs = shared(context)
+            val gone = prefs.all.keys.filter { key ->
+                val pc = when {
+                    key.startsWith(AGENT_CHOICE_AGENT) -> key.removePrefix(AGENT_CHOICE_AGENT)
+                    key.startsWith(AGENT_CHOICE_FOLDER) -> key.removePrefix(AGENT_CHOICE_FOLDER)
+                    key.startsWith(AGENT_SESSIONS_ALLOWED) -> key.removePrefix(AGENT_SESSIONS_ALLOWED)
+                    else -> return@filter false
+                }
+                pc !in paired
+            }
             if (gone.isNotEmpty()) prefs.edit { gone.forEach { remove(it) } }
         }
 

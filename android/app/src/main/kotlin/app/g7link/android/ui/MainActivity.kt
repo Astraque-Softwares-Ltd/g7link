@@ -31,6 +31,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,6 +41,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -58,6 +61,7 @@ import app.g7link.android.core.PairingState
 import app.g7link.android.mirror.MirrorService
 import app.g7link.android.recorder.RecorderService
 import app.g7link.android.service.ConnectionService
+import app.g7link.android.ui.agents.AgentSessionScreen
 import app.g7link.android.ui.agents.AgentThreadScreen
 import app.g7link.android.ui.agents.AgentsModel
 import app.g7link.android.ui.agents.AgentsScreen
@@ -68,6 +72,9 @@ import app.g7link.android.ui.home.HomeScreen
 import app.g7link.android.ui.capture.PcShotActivity
 import androidx.lifecycle.repeatOnLifecycle
 import app.g7link.android.ui.pairing.PairingActions
+import app.g7link.android.ui.player.LocalMiniPlayerInset
+import app.g7link.android.ui.player.PlayerLayer
+import app.g7link.android.ui.player.rememberMiniPlayerInset
 import app.g7link.android.ui.pairing.PairingLinkDialog
 import app.g7link.android.ui.pairing.PairingScreen
 import app.g7link.android.ui.recorder.RecorderScreen
@@ -102,6 +109,9 @@ class MainActivity : ComponentActivity() {
     /** An agent thread to open, from its notification: the PC, and the thread (null for the list). */
     private var requestedAgentPc by mutableStateOf<String?>(null)
     private var requestedAgentThread by mutableStateOf<String?>(null)
+
+    /** A followed session to open, from its notification (with [requestedAgentPc]). */
+    private var requestedAgentSession by mutableStateOf<String?>(null)
 
     /**
      * A pairing link that arrived from outside the app (a web page, another app, the system
@@ -194,9 +204,11 @@ class MainActivity : ComponentActivity() {
                         onElevatedSettingsConsumed = { requestedElevatedSettings = false },
                         requestedAgentPc = requestedAgentPc,
                         requestedAgentThread = requestedAgentThread,
+                        requestedAgentSession = requestedAgentSession,
                         onAgentConsumed = {
                             requestedAgentPc = null
                             requestedAgentThread = null
+                            requestedAgentSession = null
                         },
                     )
                     pendingPairingLink?.let { link ->
@@ -352,6 +364,7 @@ class MainActivity : ComponentActivity() {
         val pc = intent?.getStringExtra(EXTRA_OPEN_AGENT_PC)?.takeIf { AgentsModel.isId(it, max = AgentsModel.MAX_PC_ID) } ?: return
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         requestedAgentThread = intent.getStringExtra(EXTRA_OPEN_AGENT_THREAD)?.takeIf { AgentsModel.isId(it) }
+        requestedAgentSession = intent.getStringExtra(EXTRA_OPEN_AGENT_SESSION)?.takeIf { AgentsModel.isId(it) }
         requestedAgentPc = pc
     }
 
@@ -362,6 +375,9 @@ class MainActivity : ComponentActivity() {
         /** Opens a PC's agent threads, and with [EXTRA_OPEN_AGENT_THREAD] one of them (from its notification). */
         const val EXTRA_OPEN_AGENT_PC = "open_agent_pc"
         const val EXTRA_OPEN_AGENT_THREAD = "open_agent_thread"
+
+        /** With [EXTRA_OPEN_AGENT_PC]: a session started on that PC, followed (from its notification). */
+        const val EXTRA_OPEN_AGENT_SESSION = "open_agent_session"
         private const val STATE_PENDING_PAIRING_LINK = "pending_pairing_link"
     }
 }
@@ -380,6 +396,7 @@ private sealed interface ScreenRoute {
     data class Remote(val pcId: String) : ScreenRoute
     data class Agents(val pcId: String) : ScreenRoute
     data class AgentThread(val pcId: String, val threadId: String) : ScreenRoute
+    data class AgentSession(val pcId: String, val sessionId: String) : ScreenRoute
     data object Main : ScreenRoute
 }
 
@@ -406,6 +423,7 @@ private fun App(
     onElevatedSettingsConsumed: () -> Unit,
     requestedAgentPc: String?,
     requestedAgentThread: String?,
+    requestedAgentSession: String?,
     onAgentConsumed: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(Tab.Home) }
@@ -424,6 +442,7 @@ private fun App(
     var webcamInitialCamera by rememberSaveable { mutableStateOf<String?>(null) }
     var agentsPcId by rememberSaveable { mutableStateOf<String?>(null) }
     var agentThreadId by rememberSaveable { mutableStateOf<String?>(null) }
+    var agentSessionId by rememberSaveable { mutableStateOf<String?>(null) }
     val walkthroughPersistence by preferences.walkthrough.collectAsStateWithLifecycle()
     val startupWalkthrough = remember(walkthroughPersistence, state.devices.isNotEmpty(), activeFirstRunWalkthrough) {
         resolveStartupWalkthrough(
@@ -553,7 +572,7 @@ private fun App(
         }
     }
 
-    LaunchedEffect(requestedAgentPc, requestedAgentThread, state.devices) {
+    LaunchedEffect(requestedAgentPc, requestedAgentThread, requestedAgentSession, state.devices) {
         val req = requestedAgentPc ?: return@LaunchedEffect
         val target = state.device(req)?.id
         if (target != null) {
@@ -565,6 +584,7 @@ private fun App(
             pairing = false
             agentsPcId = target
             agentThreadId = requestedAgentThread
+            agentSessionId = requestedAgentSession.takeIf { requestedAgentThread == null }
         }
         // A PC that isn't paired (anymore): nothing to open.
         if (target != null || state.status is CoreStatus.Ready) onAgentConsumed()
@@ -573,6 +593,7 @@ private fun App(
     val remoteDevice = remotePcId?.let { state.device(it) }
     val agentsDevice = agentsPcId?.let { state.device(it) }
     val openAgentThread = agentThreadId
+    val openAgentSession = agentSessionId
     val deckDevice = deckPcId?.let { state.device(it) }
     val deskDevice = deskPcId?.let { state.device(it) }
     val recordDevice = recordPcId?.let { state.device(it) }
@@ -606,6 +627,7 @@ private fun App(
         deskDevice != null -> ScreenRoute.Desk(deskDevice.id)
         remoteDevice != null -> ScreenRoute.Remote(remoteDevice.id)
         agentsDevice != null && openAgentThread != null -> ScreenRoute.AgentThread(agentsDevice.id, openAgentThread)
+        agentsDevice != null && openAgentSession != null -> ScreenRoute.AgentSession(agentsDevice.id, openAgentSession)
         agentsDevice != null -> ScreenRoute.Agents(agentsDevice.id)
         else -> ScreenRoute.Main
     }
@@ -732,6 +754,7 @@ private fun App(
                         val id = dev.id
                         deskPcId = null
                         agentThreadId = null
+                        agentSessionId = null
                         agentsPcId = id
                     },
                     modifier = Modifier.fillMaxSize(),
@@ -747,7 +770,28 @@ private fun App(
                         device = dev,
                         core = core,
                         onOpenThread = { agentThreadId = it },
+                        onOpenSession = { agentSessionId = it },
                         onBack = { agentsPcId = null },
+                        modifier = Modifier.fillMaxSize().padding(padding),
+                    )
+                }
+            }
+            is ScreenRoute.AgentSession -> {
+                val dev = state.device(route.pcId) ?: return@AnimatedContent
+                BackHandler { agentSessionId = null }
+                Scaffold(
+                    snackbarHost = { SnackbarHost(snackbar) },
+                ) { padding ->
+                    AgentSessionScreen(
+                        device = dev,
+                        core = core,
+                        sessionId = route.sessionId,
+                        onOpenThread = { threadId ->
+                            // Continued here: it's a thread now; Back from it goes to the list.
+                            agentSessionId = null
+                            agentThreadId = threadId
+                        },
+                        onBack = { agentSessionId = null },
                         modifier = Modifier.fillMaxSize().padding(padding),
                     )
                 }
@@ -789,281 +833,305 @@ private fun App(
             }
             ScreenRoute.Main -> Box(Modifier.fillMaxSize()) {
                 BackHandler(enabled = tab != Tab.Home) { tab = Tab.Home }
-                Scaffold(
-                    containerColor = androidx.compose.ui.graphics.Color.Transparent,
-                    snackbarHost = { SnackbarHost(snackbar) },
-                    bottomBar = { G7BottomBar(selectedTab = tab, onSelectTab = { tab = it }) },
-                ) { padding ->
-                    val context = LocalContext.current
-                    val mirrorSession by MirrorService.session.collectAsStateWithLifecycle()
-                    val webcamSession by WebcamService.session.collectAsStateWithLifecycle()
-                    val micStreamingTo by app.g7link.android.mic.MicService.streaming.collectAsStateWithLifecycle()
-                    val pcCaptureStates by core.pcCapture.states.collectAsStateWithLifecycle()
-                    val recorderFlow = remember {
-                        RecorderService.session.distinctUntilChanged { a, b ->
-                            a.active == b.active &&
-                                a.paused == b.paused &&
-                                a.pcId == b.pcId &&
-                                (a.elapsedMs / 1000L) == (b.elapsedMs / 1000L)
-                        }
-                    }
-                    val recorderInitial = remember { RecorderService.currentSession() }
-                    val recorderSession by recorderFlow.collectAsStateWithLifecycle(recorderInitial)
-                    val touchpadSensitivity by preferences.touchpadSensitivity.collectAsStateWithLifecycle()
-                    val suggestClipboardActions by preferences.suggestClipboardActions.collectAsStateWithLifecycle()
-                    val volumeKeysControlPc by preferences.volumeKeysControlPc.collectAsStateWithLifecycle()
-                    val touchpadHaptics by preferences.touchpadHaptics.collectAsStateWithLifecycle()
-                    val backgroundServiceEnabled by preferences.backgroundServiceEnabled.collectAsStateWithLifecycle()
-                    val startWithoutAsking by app.g7link.android.service.PcAutoStart.pcs(context).collectAsStateWithLifecycle()
-                    val saveableStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
-
-                    // Tabs slide in from the side of the tab you picked.
-                    AnimatedContent(
-                        targetState = tab,
-                        transitionSpec = {
-                            g7Page(forward = targetState.ordinal > initialState.ordinal, reducedMotion)
+                // What plays on a PC: the mini player above the tabs, the full player over everything (ui/player).
+                // It owns the inset lists keep clear of; Back closes the full player first (its handler comes later).
+                var bottomBarHeight by remember { mutableStateOf(0.dp) }
+                val density = LocalDensity.current
+                CompositionLocalProvider(LocalMiniPlayerInset provides rememberMiniPlayerInset()) {
+                    Scaffold(
+                        containerColor = androidx.compose.ui.graphics.Color.Transparent,
+                        snackbarHost = { SnackbarHost(snackbar) },
+                        bottomBar = {
+                            G7BottomBar(
+                                selectedTab = tab,
+                                onSelectTab = { tab = it },
+                                modifier = Modifier.onSizeChanged { size -> bottomBarHeight = with(density) { size.height.toDp() } },
+                            )
                         },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding()),
-                        label = "main_tab",
-                    ) { shownTab ->
-                        when (shownTab) {
-                            Tab.Home -> saveableStateHolder.SaveableStateProvider("tab_home") {
-                                HomeScreen(
-                                    state = state,
-                                    onRing = core::ring,
-                                    onStopRinging = core::stopRinging,
-                                    onPairNew = { pairing = true },
-                                    onRefresh = core::refresh,
-                                    onPower = core::pcPower,
-                                    onWake = core::wake,
-                                    onSetReconnect = core::setReconnect,
-                                    onRemote = { id ->
-                                        remoteInitialMode = RemoteMode.Touchpad
-                                        remotePcId = id
-                                    },
-                                    onDeck = { id ->
-                                        deckPcId = id
-                                    },
-                                    onDesk = { id ->
-                                        deskPcId = id
-                                    },
-                                    onAgents = { id ->
-                                        agentThreadId = null
-                                        agentsPcId = id
-                                    },
-                                    onRecord = { id ->
-                                        recordPcId = id
-                                    },
-                                    onWebcam = { id ->
-                                        webcamAutoStart = false
-                                        webcamPcId = id
-                                    },
-                                    updater = (context.applicationContext as G7LinkApplication).updater,
-                                    onSendFiles = core::sendFiles,
-                                    onSendFolder = core::sendFolder,
-                                    onAccessChanged = core::refreshNotificationAccess,
-                                    onCancelTransfer = core::cancelTransfer,
-                                    onPauseTransfer = core::pauseTransfer,
-                                    onResumeTransfer = core::resumeTransfer,
-                                    onAcceptTransfer = core::acceptTransfer,
-                                    onCancelQueueItem = core::cancelQueueItem,
-                                    onCancelAllQueueItems = { core.cancelAllQueueItems(null) },
-                                    onRetryQueueItem = core::retryQueueItem,
-                                    onClearFinishedQueueItems = { core.clearFinishedQueueItems(null) },
-                                    onRefreshLocalSend = core::refreshLocalSend,
-                                    onAllowStorage = { pcId -> core.setStorageEnabled(pcId, true) },
-                                    onDismissStorageRequest = core::dismissStorageRequest,
-                                    onAcceptWebcamRequest = { req ->
-                                        core.clearWebcamRequest(req.pcId)
-                                        webcamInitialHeight = req.height
-                                        webcamInitialCamera = req.camera
-                                        webcamAutoStart = true
-                                        webcamPcId = req.pcId
-                                    },
-                                    onDismissWebcamRequest = { core.clearWebcamRequest() },
-                                    onCopyClipboardHistory = core::copyClipboardHistory,
-                                    onPinClipboardHistory = core::pinClipboardHistory,
-                                    onDeleteClipboardHistory = core::deleteClipboardHistory,
-                                    onClearClipboardHistory = core::clearClipboardHistory,
-                                    loadClipboardHistoryImage = core::clipboardHistoryImage,
-                                    queryTimelinePage = { kind, dev, search, offset ->
-                                        core.queryTimelinePage(kind, dev, search, offset)
-                                    },
-                                    onDeleteTimelineEntry = core::deleteTimelineEntry,
-                                    onClearTimeline = core::clearTimeline,
-                                    onResendTimelineEntry = core::resendTimelineEntry,
-                                    onSetPcAudio = core::setPcAudio,
-                                    onSetBtMedia = core::setBtMedia,
-                                    onStopKeyboardFromPc = core::stopKeyboardFromPc,
-                                    onListPcFiles = core::listPcFiles,
-                                    onDownloadPcFile = core::downloadPcFile,
-                                    onOpenLink = { id, url ->
-                                        appScope.launch { snackbar.showSnackbar(core.openLinkOnPc(id, url)) }
-                                    },
-                                    pcCapture = pcCaptureStates,
-                                    onPcScreenshot = core.pcCapture::screenshot,
-                                    onPcRecord = core.pcCapture::toggleRecording,
-                                    mirrorSession = mirrorSession,
-                                    webcamSession = webcamSession,
-                                    recorderSession = recorderSession,
-                                    micStreamingTo = micStreamingTo,
-                                    onDeclineMicRequest = core::declineMicRequest,
-                                    onStartMic = { pcId ->
-                                        // Asks for the microphone permission if needed, then starts.
-                                        context.startActivity(
-                                            android.content.Intent(context, app.g7link.android.mic.MicStartActivity::class.java)
-                                                .putExtra(app.g7link.android.mic.MicStartActivity.EXTRA_PC, pcId),
-                                        )
-                                    },
-                                    onStopMic = { app.g7link.android.mic.MicService.stopFromUser(context) },
-                                    onStopMirror = { MirrorService.stopCurrent() },
-                                    onOpenWebcam = { pcId ->
-                                        webcamAutoStart = false
-                                        webcamPcId = pcId
-                                    },
-                                    onStopWebcam = { WebcamService.stop(context) },
-                                    onOpenRecorder = { pcId -> recordPcId = pcId },
-                                    onStopRecorder = { RecorderService.stop(context) },
-                                    showWhatsNewGuideBanner = startupWalkthrough.showWhatsNewGuideBanner,
-                                    backgroundServiceEnabled = backgroundServiceEnabled,
-                                    onTurnOnBackgroundService = {
-                                        preferences.updateBackgroundServiceEnabled(true)
-                                        core.start()
-                                        ConnectionService.start(context)
-                                    },
-                                    onDismissWhatsNewGuide = {
-                                        preferences.updateWalkthrough { it.dismissWhatsNewGuide() }
-                                    },
-                                    onOpenFeaturesGuide = {
-                                        preferences.updateWalkthrough { it.dismissWhatsNewGuide() }
-                                        tab = Tab.Guide
-                                    },
-                                    onOpenWalkthrough = {
-                                        preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
-                                        manualWalkthroughOpen = true
-                                    },
-                                    highlightTarget = pendingHighlightTarget,
-                                    onHighlightConsumed = { pendingHighlightTarget = null },
-                                    modifier = Modifier.fillMaxSize(),
-                                )
+                    ) { padding ->
+                        val context = LocalContext.current
+                        val mirrorSession by MirrorService.session.collectAsStateWithLifecycle()
+                        val webcamSession by WebcamService.session.collectAsStateWithLifecycle()
+                        val micStreamingTo by app.g7link.android.mic.MicService.streaming.collectAsStateWithLifecycle()
+                        val pcCaptureStates by core.pcCapture.states.collectAsStateWithLifecycle()
+                        val recorderFlow = remember {
+                            RecorderService.session.distinctUntilChanged { a, b ->
+                                a.active == b.active &&
+                                    a.paused == b.paused &&
+                                    a.pcId == b.pcId &&
+                                    (a.elapsedMs / 1000L) == (b.elapsedMs / 1000L)
                             }
-                            Tab.Guide -> saveableStateHolder.SaveableStateProvider("tab_guide") {
-                                FeaturesGuideScreen(
-                                    state = state,
-                                    onShowMe = { target ->
-                                        core.resetPairing()
-                                        pairing = false
-                                        pendingHighlightTarget = target
-                                        tab = when (target) {
-                                            GuideHighlightTarget.HOME_PAIR_PC,
-                                            GuideHighlightTarget.HOME_PC_CARD,
-                                            GuideHighlightTarget.HOME_PC_AUDIO,
-                                            GuideHighlightTarget.HOME_CLIPBOARD_HISTORY,
-                                            GuideHighlightTarget.HOME_TIMELINE,
-                                            GuideHighlightTarget.HOME_SEND_QUEUE,
-                                            GuideHighlightTarget.HOME_SETUP_PERMISSIONS,
-                                            GuideHighlightTarget.HOME_LOCALSEND -> Tab.Home
-                                            GuideHighlightTarget.SETTINGS_DEVICES,
-                                            GuideHighlightTarget.SETTINGS_NOTIFICATIONS,
-                                            GuideHighlightTarget.SETTINGS_CONTROL,
-                                            GuideHighlightTarget.SETTINGS_BACKGROUND,
-                                            GuideHighlightTarget.SETTINGS_CALLS_CONTACTS,
-                                            GuideHighlightTarget.SETTINGS_PHOTOS_STORAGE,
-                                            GuideHighlightTarget.SETTINGS_CLIPBOARD,
-                                            GuideHighlightTarget.SETTINGS_LOCALSEND,
-                                            GuideHighlightTarget.SETTINGS_DATA_STORAGE -> Tab.Settings
-                                        }
-                                    },
-                                    onOpenWalkthrough = {
-                                        core.resetPairing()
-                                        pairing = false
-                                        preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
-                                        manualWalkthroughOpen = true
-                                    },
-                                    onPairNew = { pairing = true },
-                                    onAccessChanged = core::refreshNotificationAccess,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            }
-                            Tab.Settings -> saveableStateHolder.SaveableStateProvider("tab_settings") {
-                                var relaySettingsOpen by remember { mutableStateOf(false) }
-                                if (relaySettingsOpen) {
-                                    RelaySettingsDialog(
-                                        core = core,
-                                        awayMode = state.awayMode,
-                                        onDismiss = { relaySettingsOpen = false },
-                                    )
-                                }
-                                SettingsScreen(
-                                    state = state,
-                                    appearance = appearance,
-                                    onAppearance = preferences::update,
-                                    touchpadSensitivity = touchpadSensitivity,
-                                    onTouchpadSensitivity = preferences::updateTouchpadSensitivity,
-                                    onUnpair = core::unpair,
-                                    onPairNew = { pairing = true },
-                                    onAccessChanged = core::refreshNotificationAccess,
-                                    updater = (context.applicationContext as G7LinkApplication).updater,
-                                    onSetStorageEnabled = core::setStorageEnabled,
-                                    onSetMicEnabled = core::setMicEnabled,
-                                    onSetBtMedia = core::setBtMedia,
-                                    onSetBleLink = core::setBleLink,
-                                    startWithoutAsking = startWithoutAsking,
-                                    onSetStartWithoutAsking = { pc, on -> app.g7link.android.service.PcAutoStart.set(context, pc, on) },
-                                    onAddSafFolder = core::addSafFolder,
-                                    onRemoveSafFolder = core::removeSafFolder,
-                                    onSetClipboardHistoryEnabled = core::setClipboardHistoryEnabled,
-                                    onClearClipboardHistory = core::clearClipboardHistory,
-                                    suggestClipboardActions = suggestClipboardActions,
-                                    onSetSuggestClipboardActions = preferences::updateSuggestClipboardActions,
-                                    touchpadHaptics = touchpadHaptics,
-                                    onSetTouchpadHaptics = preferences::updateTouchpadHaptics,
-                                    volumeKeysControlPc = volumeKeysControlPc,
-                                    onSetVolumeKeysControlPc = preferences::updateVolumeKeysControlPc,
-                                    backgroundServiceEnabled = backgroundServiceEnabled,
-                                    onToggleBackgroundService = { enabled ->
-                                        preferences.updateBackgroundServiceEnabled(enabled)
-                                        if (enabled) {
+                        }
+                        val recorderInitial = remember { RecorderService.currentSession() }
+                        val recorderSession by recorderFlow.collectAsStateWithLifecycle(recorderInitial)
+                        val touchpadSensitivity by preferences.touchpadSensitivity.collectAsStateWithLifecycle()
+                        val suggestClipboardActions by preferences.suggestClipboardActions.collectAsStateWithLifecycle()
+                        val volumeKeysControlPc by preferences.volumeKeysControlPc.collectAsStateWithLifecycle()
+                        val touchpadHaptics by preferences.touchpadHaptics.collectAsStateWithLifecycle()
+                        val backgroundServiceEnabled by preferences.backgroundServiceEnabled.collectAsStateWithLifecycle()
+                        val startWithoutAsking by app.g7link.android.service.PcAutoStart.pcs(context).collectAsStateWithLifecycle()
+                        val saveableStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+
+                        // Tabs slide in from the side of the tab you picked.
+                        AnimatedContent(
+                            targetState = tab,
+                            transitionSpec = {
+                                g7Page(forward = targetState.ordinal > initialState.ordinal, reducedMotion)
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding()),
+                            label = "main_tab",
+                        ) { shownTab ->
+                            when (shownTab) {
+                                Tab.Home -> saveableStateHolder.SaveableStateProvider("tab_home") {
+                                    HomeScreen(
+                                        state = state,
+                                        onRing = core::ring,
+                                        onStopRinging = core::stopRinging,
+                                        onPairNew = { pairing = true },
+                                        onRefresh = core::refresh,
+                                        onPower = core::pcPower,
+                                        onWake = core::wake,
+                                        onSetReconnect = core::setReconnect,
+                                        onRemote = { id ->
+                                            remoteInitialMode = RemoteMode.Touchpad
+                                            remotePcId = id
+                                        },
+                                        onDeck = { id ->
+                                            deckPcId = id
+                                        },
+                                        onDesk = { id ->
+                                            deskPcId = id
+                                        },
+                                        onAgents = { id ->
+                                            agentThreadId = null
+                                            agentSessionId = null
+                                            agentsPcId = id
+                                        },
+                                        onAgentThread = { id, threadId ->
+                                            agentSessionId = null
+                                            agentThreadId = threadId
+                                            agentsPcId = id
+                                        },
+                                        onAgentSession = { id, sessionId ->
+                                            agentThreadId = null
+                                            agentSessionId = sessionId
+                                            agentsPcId = id
+                                        },
+                                        onRecord = { id ->
+                                            recordPcId = id
+                                        },
+                                        onWebcam = { id ->
+                                            webcamAutoStart = false
+                                            webcamPcId = id
+                                        },
+                                        updater = (context.applicationContext as G7LinkApplication).updater,
+                                        onSendFiles = core::sendFiles,
+                                        onSendFolder = core::sendFolder,
+                                        onAccessChanged = core::refreshNotificationAccess,
+                                        onCancelTransfer = core::cancelTransfer,
+                                        onPauseTransfer = core::pauseTransfer,
+                                        onResumeTransfer = core::resumeTransfer,
+                                        onAcceptTransfer = core::acceptTransfer,
+                                        onCancelQueueItem = core::cancelQueueItem,
+                                        onCancelAllQueueItems = { core.cancelAllQueueItems(null) },
+                                        onRetryQueueItem = core::retryQueueItem,
+                                        onClearFinishedQueueItems = { core.clearFinishedQueueItems(null) },
+                                        onRefreshLocalSend = core::refreshLocalSend,
+                                        onAllowStorage = { pcId -> core.setStorageEnabled(pcId, true) },
+                                        onDismissStorageRequest = core::dismissStorageRequest,
+                                        onAcceptWebcamRequest = { req ->
+                                            core.clearWebcamRequest(req.pcId)
+                                            webcamInitialHeight = req.height
+                                            webcamInitialCamera = req.camera
+                                            webcamAutoStart = true
+                                            webcamPcId = req.pcId
+                                        },
+                                        onDismissWebcamRequest = { core.clearWebcamRequest() },
+                                        onCopyClipboardHistory = core::copyClipboardHistory,
+                                        onPinClipboardHistory = core::pinClipboardHistory,
+                                        onDeleteClipboardHistory = core::deleteClipboardHistory,
+                                        onClearClipboardHistory = core::clearClipboardHistory,
+                                        loadClipboardHistoryImage = core::clipboardHistoryImage,
+                                        queryTimelinePage = { kind, dev, search, offset ->
+                                            core.queryTimelinePage(kind, dev, search, offset)
+                                        },
+                                        onDeleteTimelineEntry = core::deleteTimelineEntry,
+                                        onClearTimeline = core::clearTimeline,
+                                        onResendTimelineEntry = core::resendTimelineEntry,
+                                        onSetPcAudio = core::setPcAudio,
+                                        onSetBtMedia = core::setBtMedia,
+                                        onStopKeyboardFromPc = core::stopKeyboardFromPc,
+                                        onListPcFiles = core::listPcFiles,
+                                        onDownloadPcFile = core::downloadPcFile,
+                                        onOpenLink = { id, url ->
+                                            appScope.launch { snackbar.showSnackbar(core.openLinkOnPc(id, url)) }
+                                        },
+                                        pcCapture = pcCaptureStates,
+                                        onPcScreenshot = core.pcCapture::screenshot,
+                                        onPcRecord = core.pcCapture::toggleRecording,
+                                        mirrorSession = mirrorSession,
+                                        webcamSession = webcamSession,
+                                        recorderSession = recorderSession,
+                                        micStreamingTo = micStreamingTo,
+                                        onDeclineMicRequest = core::declineMicRequest,
+                                        onStartMic = { pcId ->
+                                            // Asks for the microphone permission if needed, then starts.
+                                            context.startActivity(
+                                                android.content.Intent(context, app.g7link.android.mic.MicStartActivity::class.java)
+                                                    .putExtra(app.g7link.android.mic.MicStartActivity.EXTRA_PC, pcId),
+                                            )
+                                        },
+                                        onStopMic = { app.g7link.android.mic.MicService.stopFromUser(context) },
+                                        onStopMirror = { MirrorService.stopCurrent() },
+                                        onOpenWebcam = { pcId ->
+                                            webcamAutoStart = false
+                                            webcamPcId = pcId
+                                        },
+                                        onStopWebcam = { WebcamService.stop(context) },
+                                        onOpenRecorder = { pcId -> recordPcId = pcId },
+                                        onStopRecorder = { RecorderService.stop(context) },
+                                        showWhatsNewGuideBanner = startupWalkthrough.showWhatsNewGuideBanner,
+                                        backgroundServiceEnabled = backgroundServiceEnabled,
+                                        onTurnOnBackgroundService = {
+                                            preferences.updateBackgroundServiceEnabled(true)
                                             core.start()
                                             ConnectionService.start(context)
-                                        } else {
-                                            ConnectionService.stop(context)
-                                        }
-                                    },
-                                    onSetTimelineRetentionDays = core::setTimelineRetentionDays,
-                                    onClearTimeline = core::clearTimeline,
-                                    onClearMessageCache = core::clearMessageCache,
-                                    onClearPhotoCache = core::clearPhotoThumbnailsCache,
-                                    onClearReceivedFileHistory = core::clearReceivedFileHistory,
-                                    onClearEverything = core::clearEverything,
-                                    onToggleLocalSend = core::setLocalSendEnabled,
-                                    onToggleAwayMode = core::setAwayMode,
-                                    onOpenRelaySettings = { relaySettingsOpen = true },
-                                    onOpenWalkthrough = {
-                                        preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
-                                        manualWalkthroughOpen = true
-                                    },
-                                    highlightTarget = pendingHighlightTarget,
-                                    onHighlightConsumed = { pendingHighlightTarget = null },
-                                    modifier = Modifier.fillMaxSize(),
-                                )
+                                        },
+                                        onDismissWhatsNewGuide = {
+                                            preferences.updateWalkthrough { it.dismissWhatsNewGuide() }
+                                        },
+                                        onOpenFeaturesGuide = {
+                                            preferences.updateWalkthrough { it.dismissWhatsNewGuide() }
+                                            tab = Tab.Guide
+                                        },
+                                        onOpenWalkthrough = {
+                                            preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
+                                            manualWalkthroughOpen = true
+                                        },
+                                        highlightTarget = pendingHighlightTarget,
+                                        onHighlightConsumed = { pendingHighlightTarget = null },
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
+                                Tab.Guide -> saveableStateHolder.SaveableStateProvider("tab_guide") {
+                                    FeaturesGuideScreen(
+                                        state = state,
+                                        onShowMe = { target ->
+                                            core.resetPairing()
+                                            pairing = false
+                                            pendingHighlightTarget = target
+                                            tab = when (target) {
+                                                GuideHighlightTarget.HOME_PAIR_PC,
+                                                GuideHighlightTarget.HOME_PC_CARD,
+                                                GuideHighlightTarget.HOME_PC_AUDIO,
+                                                GuideHighlightTarget.HOME_CLIPBOARD_HISTORY,
+                                                GuideHighlightTarget.HOME_TIMELINE,
+                                                GuideHighlightTarget.HOME_SEND_QUEUE,
+                                                GuideHighlightTarget.HOME_SETUP_PERMISSIONS,
+                                                GuideHighlightTarget.HOME_LOCALSEND -> Tab.Home
+                                                GuideHighlightTarget.SETTINGS_DEVICES,
+                                                GuideHighlightTarget.SETTINGS_NOTIFICATIONS,
+                                                GuideHighlightTarget.SETTINGS_CONTROL,
+                                                GuideHighlightTarget.SETTINGS_BACKGROUND,
+                                                GuideHighlightTarget.SETTINGS_CALLS_CONTACTS,
+                                                GuideHighlightTarget.SETTINGS_PHOTOS_STORAGE,
+                                                GuideHighlightTarget.SETTINGS_CLIPBOARD,
+                                                GuideHighlightTarget.SETTINGS_LOCALSEND,
+                                                GuideHighlightTarget.SETTINGS_DATA_STORAGE -> Tab.Settings
+                                            }
+                                        },
+                                        onOpenWalkthrough = {
+                                            core.resetPairing()
+                                            pairing = false
+                                            preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
+                                            manualWalkthroughOpen = true
+                                        },
+                                        onPairNew = { pairing = true },
+                                        onAccessChanged = core::refreshNotificationAccess,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
+                                Tab.Settings -> saveableStateHolder.SaveableStateProvider("tab_settings") {
+                                    var relaySettingsOpen by remember { mutableStateOf(false) }
+                                    if (relaySettingsOpen) {
+                                        RelaySettingsDialog(
+                                            core = core,
+                                            awayMode = state.awayMode,
+                                            onDismiss = { relaySettingsOpen = false },
+                                        )
+                                    }
+                                    SettingsScreen(
+                                        state = state,
+                                        appearance = appearance,
+                                        onAppearance = preferences::update,
+                                        touchpadSensitivity = touchpadSensitivity,
+                                        onTouchpadSensitivity = preferences::updateTouchpadSensitivity,
+                                        onUnpair = core::unpair,
+                                        onPairNew = { pairing = true },
+                                        onAccessChanged = core::refreshNotificationAccess,
+                                        updater = (context.applicationContext as G7LinkApplication).updater,
+                                        onSetStorageEnabled = core::setStorageEnabled,
+                                        onSetMicEnabled = core::setMicEnabled,
+                                        onSetBtMedia = core::setBtMedia,
+                                        onSetBleLink = core::setBleLink,
+                                        startWithoutAsking = startWithoutAsking,
+                                        onSetStartWithoutAsking = { pc, on -> app.g7link.android.service.PcAutoStart.set(context, pc, on) },
+                                        onAddSafFolder = core::addSafFolder,
+                                        onRemoveSafFolder = core::removeSafFolder,
+                                        onSetClipboardHistoryEnabled = core::setClipboardHistoryEnabled,
+                                        onClearClipboardHistory = core::clearClipboardHistory,
+                                        suggestClipboardActions = suggestClipboardActions,
+                                        onSetSuggestClipboardActions = preferences::updateSuggestClipboardActions,
+                                        touchpadHaptics = touchpadHaptics,
+                                        onSetTouchpadHaptics = preferences::updateTouchpadHaptics,
+                                        volumeKeysControlPc = volumeKeysControlPc,
+                                        onSetVolumeKeysControlPc = preferences::updateVolumeKeysControlPc,
+                                        backgroundServiceEnabled = backgroundServiceEnabled,
+                                        onToggleBackgroundService = { enabled ->
+                                            preferences.updateBackgroundServiceEnabled(enabled)
+                                            if (enabled) {
+                                                core.start()
+                                                ConnectionService.start(context)
+                                            } else {
+                                                ConnectionService.stop(context)
+                                            }
+                                        },
+                                        onSetTimelineRetentionDays = core::setTimelineRetentionDays,
+                                        onClearTimeline = core::clearTimeline,
+                                        onClearMessageCache = core::clearMessageCache,
+                                        onClearPhotoCache = core::clearPhotoThumbnailsCache,
+                                        onClearReceivedFileHistory = core::clearReceivedFileHistory,
+                                        onClearEverything = core::clearEverything,
+                                        onToggleLocalSend = core::setLocalSendEnabled,
+                                        onToggleAwayMode = core::setAwayMode,
+                                        onOpenRelaySettings = { relaySettingsOpen = true },
+                                        onOpenWalkthrough = {
+                                            preferences.updateWalkthrough { it.goToStep(WalkthroughStep.Welcome) }
+                                            manualWalkthroughOpen = true
+                                        },
+                                        highlightTarget = pendingHighlightTarget,
+                                        onHighlightConsumed = { pendingHighlightTarget = null },
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
                             }
                         }
                     }
                 }
+                PlayerLayer(bottomBarHeight = bottomBarHeight)
             }
         }
     }
 }
 
 @Composable
-private fun G7BottomBar(selectedTab: Tab, onSelectTab: (Tab) -> Unit) {
+private fun G7BottomBar(selectedTab: Tab, onSelectTab: (Tab) -> Unit, modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
     val line = scheme.outlineVariant
     androidx.compose.foundation.layout.Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .background(scheme.background)
             .drawBehind { drawRect(line, size = androidx.compose.ui.geometry.Size(size.width, 1.dp.toPx())) }

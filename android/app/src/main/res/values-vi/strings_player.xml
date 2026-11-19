@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The music player (ui/player). Kept apart from strings.xml so the player and the rest of the app never edit one file. -->
+<resources>
+    <string name="player_open">Mở trình phát</string>
+    <string name="player_close">Đóng trình phát</string>
+    <string name="player_choose">Chọn trình phát và đầu ra</string>
+    <string name="player_sheet_title">Phát trên %1$s</string>
+    <string name="player_output">Đầu ra</string>
+    <string name="player_players_on">Trình phát trên %1$s</string>
+    <string name="player_phone_speaker_note">Âm thanh của %1$s phát trên điện thoại này.</string>
+    <string name="player_state_playing">%1$s · đang phát</string>
+    <string name="player_state_paused">%1$s · đã tạm dừng</string>
+    <string name="player_volume_keys_note">Nút âm lượng thay đổi âm lượng của %1$s khi máy đang phát. Tắt tính năng này trong Cài đặt.</string>
+    <string name="player_shuffle_on">Phát ngẫu nhiên, bật</string>
+    <string name="player_shuffle_off">Phát ngẫu nhiên, tắt</string>
+    <string name="player_repeat_off">Lặp lại, tắt</string>
+    <string name="player_repeat_playlist">Lặp lại danh sách phát, bật</string>
+    <string name="player_repeat_track">Lặp lại bài này, bật</string>
+    <string name="player_position">Vị trí</string>
+    <string name="player_time_of">%1$s / %2$s</string>
+    <string name="player_volume_on">Âm lượng trên %1$s</string>
+    <string name="player_mute_pc">Tắt tiếng %1$s</string>
+    <string name="player_unmute_pc">Bật tiếng %1$s</string>
+    <string name="player_showing">Đang hiển thị</string>
+</resources>

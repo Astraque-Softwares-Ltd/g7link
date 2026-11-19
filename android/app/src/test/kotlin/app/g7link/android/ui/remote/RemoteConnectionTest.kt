@@ -92,6 +92,16 @@ class RemoteConnectionTest {
             remoteNote(pc(route = RemoteRoute.BLUETOOTH, bleLinked = false, bleSetup = BleSetup.OutOfRange), RemoteMode.Touchpad),
         )
         assertEquals(
+            "still trying after the PC was found but didn't link",
+            RemoteNote.BluetoothComing(PathName.WiFi),
+            remoteNote(pc(route = RemoteRoute.BLUETOOTH, bleLinked = false, bleSetup = BleSetup.CouldntConnect), RemoteMode.Touchpad),
+        )
+        assertEquals(
+            "the PC opens a window again later",
+            RemoteNote.BluetoothComing(PathName.WiFi),
+            remoteNote(pc(route = RemoteRoute.BLUETOOTH, bleLinked = false, bleSetup = BleSetup.Later), RemoteMode.Touchpad),
+        )
+        assertEquals(
             "nothing is connecting once the PC said no",
             RemoteNote.Path(PathName.WiFi, 9, warn = true),
             remoteNote(pc(route = RemoteRoute.BLUETOOTH, bleLinked = false, bleSetup = BleSetup.Declined), RemoteMode.Touchpad),
@@ -158,6 +168,8 @@ class RemoteConnectionTest {
         assertEquals(RowStatus(RowText.PcHasNoBluetooth, enabled = false), row(BleSetup.Unavailable))
         assertEquals(RowStatus(RowText.PcBusy, RowAction.TryAgain), row(BleSetup.Busy))
         assertEquals(RowStatus(RowText.OutOfRange, RowAction.TryAgain), row(BleSetup.OutOfRange))
+        assertEquals(RowStatus(RowText.CouldntConnect, RowAction.TryAgain), row(BleSetup.CouldntConnect))
+        assertEquals(RowStatus(RowText.Later, RowAction.TryAgain), row(BleSetup.Later))
         assertEquals(RowStatus(RowText.ConnectOverNetworkFirst), row(BleSetup.NoPath))
         assertEquals(RowStatus(RowText.Failed, RowAction.TryAgain), row(BleSetup.Failed))
         assertEquals("not tried yet", RowStatus(RowText.NotConnected), row(null))

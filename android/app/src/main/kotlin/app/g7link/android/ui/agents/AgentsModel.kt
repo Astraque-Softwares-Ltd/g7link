@@ -8,15 +8,23 @@ import app.g7link.core.AgentAskOutcome
 import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentInfo
 import app.g7link.core.AgentItem
+import app.g7link.core.AgentItemKind
 import app.g7link.core.AgentPage
+import app.g7link.core.AgentPlanStatus
+import app.g7link.core.AgentPlanStep
+import app.g7link.core.AgentSession
+import app.g7link.core.AgentSessionPage
+import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
 import app.g7link.core.AgentThreadState
+import app.g7link.core.AgentToolStatus
 import app.g7link.core.Event
 
 /**
  * A PC's agent threads as this phone knows them (docs/protocol/agents.md), in
  * memory only: the catalog, the threads, the requests waiting for an answer,
- * and the one thread whose transcript is open.
+ * the one thread whose transcript is open, and the sessions started on the PC
+ * outside G7 (§3) with the one being followed.
  */
 @Immutable
 data class AgentsState(
@@ -29,8 +37,17 @@ data class AgentsState(
     /** Tokens this phone sent an answer for and hasn't heard back about. */
     val answering: Set<String> = emptySet(),
     val open: OpenThread? = null,
+    /** Sessions started on the PC outside G7, in the PC's order (exact "needs you" first). */
+    val sessions: List<AgentSession> = emptyList(),
+    /** True: the PC lists them to this phone. False: its switch for this phone is off. Null: not asked yet, or the PC doesn't list them. */
+    val sessionsAllowed: Boolean? = null,
+    /** The PC said it doesn't list sessions (an older G7 Link): the section isn't shown. */
+    val sessionsUnsupported: Boolean = false,
+    val openSession: OpenSession? = null,
 ) {
     fun thread(id: String): AgentThread? = threads.firstOrNull { it.id == id }
+
+    fun session(id: String): AgentSession? = sessions.firstOrNull { it.id == id }
 
     /** A thread's waiting requests, oldest first. */
     fun asksFor(threadId: String): List<AgentAsk> =
@@ -68,6 +85,67 @@ data class OpenThread(
             val stream = streaming.values.maxOfOrNull { it.seq } ?: 0uL
             return maxOf(item, stream)
         }
+}
+
+/**
+ * The followed session on screen: its items in `seq` order. A session's `seq`s
+ * grow but aren't consecutive, so nothing here looks for gaps; it's read again
+ * on coming back and on reconnecting.
+ */
+@Immutable
+data class OpenSession(
+    val sessionId: String,
+    val items: List<AgentItem> = emptyList(),
+    val moreBefore: Boolean = false,
+    /** A page has been read since it opened. */
+    val loaded: Boolean = false,
+    /** It left the PC's list while open (it became a thread, its file went, or it aged out). */
+    val removed: Boolean = false,
+)
+
+/** A step of what a thread did lately, for its "Now" timeline: a tool, or what it does between tools. */
+@Immutable
+data class Step(
+    /** The tool item's `seq`; null for the step between tools. */
+    val seq: ULong?,
+    /** The tool's own title; null for the step between tools ([kind] says which). */
+    val title: String?,
+    val status: AgentToolStatus,
+    val whenMs: Long,
+    val kind: StepKind = StepKind.TOOL,
+)
+
+enum class StepKind { TOOL, WRITING, THINKING }
+
+/**
+ * What Home shows of a PC's agents: what needs you first (a request, or a
+ * session started on the PC that waits there), then what's working, or, with
+ * nothing of either, a box to start a thread and the last one that ran.
+ */
+@Immutable
+data class HomeSummary(
+    val lead: HomeLead? = null,
+    val working: List<HomeWork> = emptyList(),
+    /** Nothing needs you or works, and a thread can be started. */
+    val start: Boolean = false,
+    /** Under the start box: the thread that ran last. */
+    val recent: AgentThread? = null,
+)
+
+@Immutable
+sealed interface HomeLead {
+    /** A thread that needs you; [ask] is its oldest request when the phone has it. */
+    data class NeedsYou(val thread: AgentThread?, val ask: AgentAsk?) : HomeLead
+
+    /** A session started on the PC that waits for an answer there (reported by the agent, never a guess). */
+    data class SessionNeedsYou(val session: AgentSession) : HomeLead
+}
+
+@Immutable
+sealed interface HomeWork {
+    data class Thread(val thread: AgentThread) : HomeWork
+
+    data class Session(val session: AgentSession) : HomeWork
 }
 
 /** Streaming assistant text: [bytes] is its UTF-8 length, which delta offsets count in. */
@@ -166,6 +244,16 @@ object AgentsModel {
     private const val MAX_THREADS = 200
     private const val MAX_ASKS = 64
 
+    /** The most sessions a PC lists (§3), and the most items kept for the followed one. */
+    private const val MAX_SESSIONS = 50
+    private const val MAX_SESSION_ITEMS = 400
+
+    /** Tool steps shown in a thread's "Now" timeline. */
+    private const val MAX_STEPS = 6
+
+    /** Rows Home shows of a PC's agents. */
+    private const val HOME_ROWS = 2
+
     /** Streaming text stops growing past this; the finished item replaces it anyway. */
     private const val MAX_STREAM_CHARS = 20_000
 
@@ -186,6 +274,9 @@ object AgentsModel {
         is Event.AgentDone -> event.id
         is Event.AgentAsk -> event.id
         is Event.AgentAsked -> event.id
+        is Event.AgentSessionChanged -> event.id
+        is Event.AgentSessionRemoved -> event.id
+        is Event.AgentSessionItem -> event.id
         else -> null
     }
 
@@ -207,7 +298,202 @@ object AgentsModel {
         }
         is Event.AgentAsk -> AgentsUpdate(withAsk(state, event.ask))
         is Event.AgentAsked -> AgentsUpdate(asked(state, event.token, event.thread, event.outcome, event.byName))
+        // The PC sends these only while it lets this phone see its sessions.
+        is Event.AgentSessionChanged -> AgentsUpdate(withSession(state, event.session))
+        is Event.AgentSessionRemoved -> AgentsUpdate(sessionRemoved(state, event.session))
+        is Event.AgentSessionItem -> AgentsUpdate(withSessionItem(state, event.session, event.item))
         else -> AgentsUpdate(state)
+    }
+
+    // ---- Sessions started on the PC (§3) ----
+
+    /** The PC's list, as it sent it: it lets this phone see them. */
+    fun withSessions(state: AgentsState, sessions: List<AgentSession>): AgentsState =
+        state.copy(sessions = sortedSessions(sessions.distinctBy { it.id }.take(MAX_SESSIONS)), sessionsAllowed = true, sessionsUnsupported = false)
+
+    /** The PC's switch for this phone is off: nothing listed until it's allowed there. */
+    fun sessionsOff(state: AgentsState): AgentsState =
+        state.copy(sessions = emptyList(), sessionsAllowed = false, sessionsUnsupported = false)
+
+    /** The PC doesn't list sessions (an older G7 Link, or no host). */
+    fun sessionsUnsupported(state: AgentsState): AgentsState =
+        state.copy(sessions = emptyList(), sessionsAllowed = null, sessionsUnsupported = true)
+
+    /** One session, added or replaced. */
+    fun withSession(state: AgentsState, session: AgentSession): AgentsState {
+        val others = state.sessions.filterNot { it.id == session.id }
+        return state.copy(sessions = sortedSessions(others + session).take(MAX_SESSIONS), sessionsAllowed = true, sessionsUnsupported = false)
+    }
+
+    /**
+     * The PC's order: what needs you (as the agent reported it) first, then
+     * working, what may need you, idle, ended; the newest first within each.
+     */
+    fun sortedSessions(sessions: List<AgentSession>): List<AgentSession> =
+        sessions.sortedWith(compareBy<AgentSession> { sessionRank(it) }.thenByDescending { it.updatedMs })
+
+    private fun sessionRank(session: AgentSession): Int = when (session.state) {
+        AgentSessionState.NEEDS_YOU -> if (session.guess) 2 else 0
+        AgentSessionState.WORKING -> 1
+        AgentSessionState.MAY_NEED_YOU -> 2
+        AgentSessionState.IDLE -> 3
+        AgentSessionState.ENDED -> 4
+    }
+
+    /** Waits for an answer as the agent reported it: counted on Home, unlike a guess ("May need you"). */
+    fun needsYouExactly(session: AgentSession): Boolean =
+        session.state == AgentSessionState.NEEDS_YOU && !session.guess
+
+    /** Looks like it waits, guessed from its file: shown as "May need you", never counted. */
+    fun mayNeedYou(session: AgentSession): Boolean =
+        session.state == AgentSessionState.MAY_NEED_YOU || (session.state == AgentSessionState.NEEDS_YOU && session.guess)
+
+    /** The session's view is on screen (or about to be). */
+    fun sessionOpened(state: AgentsState, sessionId: String): AgentsState =
+        if (state.openSession?.sessionId == sessionId) state else state.copy(openSession = OpenSession(sessionId))
+
+    /** Left the session's view: its items are dropped. */
+    fun sessionClosed(state: AgentsState, sessionId: String): AgentsState =
+        if (state.openSession?.sessionId == sessionId) state.copy(openSession = null) else state
+
+    /** The newest page of a session (on open, on coming back, on reconnecting). */
+    fun withSessionPage(state: AgentsState, page: AgentSessionPage): AgentsState {
+        val next = withSession(state, page.session)
+        val open = next.openSession?.takeIf { it.sessionId == page.session.id } ?: return next
+        val items = page.items.distinctBy { it.seq }.sortedBy { it.seq }
+        val kept = if (items.size > MAX_SESSION_ITEMS) items.takeLast(MAX_SESSION_ITEMS) else items
+        return next.copy(
+            openSession = open.copy(items = kept, moreBefore = page.moreBefore || kept.size < items.size, loaded = true, removed = false),
+        )
+    }
+
+    /** An older page of a session, read with `before`: goes in front of what's shown. */
+    fun withOlderSessionPage(state: AgentsState, page: AgentSessionPage): AgentsState {
+        val next = withSession(state, page.session)
+        val open = next.openSession?.takeIf { it.sessionId == page.session.id } ?: return next
+        val first = open.items.firstOrNull()?.seq ?: ULong.MAX_VALUE
+        val older = page.items.filter { it.seq < first }.distinctBy { it.seq }.sortedBy { it.seq }
+        val items = older + open.items
+        // The newest are kept when there are too many; the oldest can be read again.
+        val kept = if (items.size > MAX_SESSION_ITEMS) items.takeLast(MAX_SESSION_ITEMS) else items
+        return next.copy(openSession = open.copy(items = kept, moreBefore = page.moreBefore || kept.size < items.size))
+    }
+
+    private fun sessionRemoved(state: AgentsState, sessionId: String): AgentsState {
+        val open = state.openSession
+        return state.copy(
+            sessions = state.sessions.filterNot { it.id == sessionId },
+            openSession = if (open != null && open.sessionId == sessionId) open.copy(removed = true) else open,
+        )
+    }
+
+    private fun withSessionItem(state: AgentsState, sessionId: String, item: AgentItem): AgentsState {
+        val open = state.openSession?.takeIf { it.sessionId == sessionId } ?: return state
+        val index = open.items.indexOfFirst { it.seq == item.seq }
+        val items = if (index >= 0) {
+            open.items.toMutableList().also { it[index] = item }
+        } else {
+            val at = open.items.indexOfFirst { it.seq > item.seq }.let { if (it < 0) open.items.size else it }
+            open.items.toMutableList().also { it.add(at, item) }
+        }
+        val kept = if (items.size > MAX_SESSION_ITEMS) items.takeLast(MAX_SESSION_ITEMS) else items
+        return state.copy(openSession = open.copy(items = kept, moreBefore = open.moreBefore || kept.size < items.size))
+    }
+
+    // ---- What a thread is doing now ----
+
+    /**
+     * The thread's newest tool steps, oldest first, and, while it works with no
+     * tool running, one last step for what it does between tools: Writing while
+     * its text streams in, else Thinking.
+     */
+    fun steps(open: OpenThread, thread: AgentThread): List<Step> {
+        val tools = open.items.filter { it.kind == AgentItemKind.TOOL && it.tool != null }.takeLast(MAX_STEPS)
+        val steps = tools.mapNotNull { item -> item.tool?.let { Step(item.seq, it.title, it.status, item.whenMs) } }
+        val toolRunning = steps.any { it.status == AgentToolStatus.RUNNING }
+        if (thread.state != AgentThreadState.WORKING || toolRunning) return steps
+        val kind = if (open.streaming.isNotEmpty()) StepKind.WRITING else StepKind.THINKING
+        val whenMs = maxOf(open.items.lastOrNull()?.whenMs ?: 0L, thread.sinceMs ?: 0L)
+        return steps + Step(null, null, AgentToolStatus.RUNNING, whenMs, kind)
+    }
+
+    /** The tool still running last in the transcript: its command or change shows under "Now". */
+    fun runningTool(items: List<AgentItem>): AgentItem? =
+        items.lastOrNull { it.kind == AgentItemKind.TOOL && it.tool?.status == AgentToolStatus.RUNNING }
+
+    /** How many of a plan's steps are done. */
+    fun planDone(plan: List<AgentPlanStep>): Int = plan.count { it.status == AgentPlanStatus.COMPLETED }
+
+    /**
+     * Which step of the plan is under way, from 1 ("Step 4 of 5"): the first in
+     * progress, else the first not done, else the last. Null without a plan.
+     */
+    fun planPosition(plan: List<AgentPlanStep>?): Int? {
+        if (plan.isNullOrEmpty()) return null
+        val inProgress = plan.indexOfFirst { it.status == AgentPlanStatus.IN_PROGRESS }
+        if (inProgress >= 0) return inProgress + 1
+        val pending = plan.indexOfFirst { it.status != AgentPlanStatus.COMPLETED }
+        return if (pending >= 0) pending + 1 else plan.size
+    }
+
+    /** Time since a state began, as a clock shows it: "0:42", "4:12", "1:05:09". */
+    fun elapsed(ms: Long): String {
+        val total = (ms.coerceAtLeast(0L) / 1000L)
+        val hours = total / 3600L
+        val minutes = (total % 3600L) / 60L
+        val seconds = total % 60L
+        return if (hours > 0L) {
+            "$hours:${two(minutes)}:${two(seconds)}"
+        } else {
+            "$minutes:${two(seconds)}"
+        }
+    }
+
+    private fun two(value: Long): String = if (value < 10L) "0$value" else value.toString()
+
+    // ---- Home ----
+
+    /**
+     * What Home shows of one PC's agents, or null when it shows only the row
+     * that opens them (nothing to show yet, or nothing can run there):
+     *
+     * 1. A thread that needs you (its oldest request), else a session started
+     *    on the PC that needs you there, as the agent reported it; a guess
+     *    ("May need you") never counts.
+     * 2. What works: threads, else sessions; at most two rows in all.
+     * 3. With neither, the start box when a thread can be started, and the
+     *    thread that ran last.
+     */
+    fun homeSummary(state: AgentsState): HomeSummary? {
+        val catalog = state.catalog ?: return null
+        val ask = state.asks.values.minByOrNull { it.expiresMs }
+        val lead: HomeLead? = when {
+            ask != null -> HomeLead.NeedsYou(state.thread(ask.thread), ask)
+            else -> state.threads
+                .filter { it.state == AgentThreadState.WAITING || it.asks > 0u }
+                .maxByOrNull { it.updatedMs }
+                ?.let { HomeLead.NeedsYou(it, null) }
+                ?: state.sessions.filter { needsYouExactly(it) }.maxByOrNull { it.updatedMs }?.let { HomeLead.SessionNeedsYou(it) }
+        }
+        val leadThread = (lead as? HomeLead.NeedsYou)?.let { it.thread?.id ?: it.ask?.thread }
+        val room = HOME_ROWS - if (lead != null) 1 else 0
+        val threads = state.threads
+            .filter { it.state == AgentThreadState.WORKING && it.id != leadThread }
+            .sortedByDescending { it.updatedMs }
+        val working: List<HomeWork> = if (threads.isNotEmpty()) {
+            threads.take(room).map { HomeWork.Thread(it) }
+        } else {
+            state.sessions
+                .filter { it.state == AgentSessionState.WORKING && (lead as? HomeLead.SessionNeedsYou)?.session?.id != it.id }
+                .sortedByDescending { it.updatedMs }
+                .take(room)
+                .map { HomeWork.Session(it) }
+        }
+        if (lead != null || working.isNotEmpty()) return HomeSummary(lead = lead, working = working)
+        val canStart = state.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty()
+        if (!canStart) return null
+        val recent = state.threads.filterNot { running(it) }.maxByOrNull { it.updatedMs }
+        return HomeSummary(start = true, recent = recent)
     }
 
     /** The thread list as the PC sent it. */

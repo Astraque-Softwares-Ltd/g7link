@@ -108,6 +108,8 @@ internal sealed interface RowText {
     data object PcHasNoBluetooth : RowText
     data object PcBusy : RowText
     data object OutOfRange : RowText
+    data object CouldntConnect : RowText
+    data object Later : RowText
     data object ConnectOverNetworkFirst : RowText
     data object Failed : RowText
 }
@@ -198,6 +200,9 @@ internal fun bluetoothRow(
         BleSetup.Unavailable -> RowStatus(RowText.PcHasNoBluetooth, enabled = false)
         BleSetup.Busy -> RowStatus(RowText.PcBusy, RowAction.TryAgain)
         BleSetup.OutOfRange -> RowStatus(RowText.OutOfRange, RowAction.TryAgain)
+        BleSetup.CouldntConnect -> RowStatus(RowText.CouldntConnect, RowAction.TryAgain)
+        // Trying again asks as the user, which the PC opens a window for.
+        BleSetup.Later -> RowStatus(RowText.Later, RowAction.TryAgain)
         BleSetup.NoPath -> RowStatus(RowText.ConnectOverNetworkFirst)
         BleSetup.Failed -> RowStatus(RowText.Failed, RowAction.TryAgain)
     }

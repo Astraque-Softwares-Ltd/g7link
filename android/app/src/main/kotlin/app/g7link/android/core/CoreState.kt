@@ -164,8 +164,14 @@ enum class BleSetup {
     /** Another phone holds the PC's one link. */
     Busy,
 
-    /** The PC's window was open, but it wasn't found or linked in time. */
+    /** The PC's window was open (or the PC didn't say), and its tag was never seen. */
     OutOfRange,
+
+    /** The PC was found, but the link didn't come up (connecting, its service or the handshake failed). */
+    CouldntConnect,
+
+    /** The PC opened its windows for this phone lately: it opens one again in a few minutes. */
+    Later,
 
     /** No network and no link: there's nothing to ask the PC over. */
     NoPath,
@@ -609,6 +615,9 @@ data class CoreState(
         is Event.AgentDone,
         is Event.AgentAsk,
         is Event.AgentAsked,
+        is Event.AgentSessionChanged,
+        is Event.AgentSessionRemoved,
+        is Event.AgentSessionItem,
         -> this
     }
 
@@ -706,6 +715,9 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.AgentDone,
     is Event.AgentAsk,
     is Event.AgentAsked,
+    is Event.AgentSessionChanged,
+    is Event.AgentSessionRemoved,
+    is Event.AgentSessionItem,
     -> false
     else -> true
 }

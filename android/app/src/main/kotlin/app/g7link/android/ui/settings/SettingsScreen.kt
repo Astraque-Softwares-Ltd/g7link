@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.settings
 
+import app.g7link.android.ui.player.LocalMiniPlayerInset
 import app.g7link.android.ui.theme.G7Slider
 import android.Manifest
 import android.app.Activity
@@ -217,7 +218,7 @@ fun SettingsScreen(
     LazyColumn(
         state = listState,
         modifier = modifier,
-        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 16.dp),
+        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 16.dp + LocalMiniPlayerInset.current),
     ) {
         item(key = "header", contentType = "header") {
             Text(

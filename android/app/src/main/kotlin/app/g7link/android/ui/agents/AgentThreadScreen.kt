@@ -2,7 +2,9 @@
 package app.g7link.android.ui.agents
 
 import android.text.format.DateFormat
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
@@ -23,9 +25,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -72,15 +76,23 @@ import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
 import app.g7link.android.ui.theme.G7RaisedButton
+import app.g7link.android.ui.theme.G7Chevron
 import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.LocalAppFonts
+import app.g7link.android.ui.theme.LocalReducedMotion
+import app.g7link.android.ui.theme.g7Collapse
+import app.g7link.android.ui.theme.g7Expand
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentAsk
 import app.g7link.core.AgentAskKind
 import app.g7link.core.AgentAskOutcome
 import app.g7link.core.AgentItem
 import app.g7link.core.AgentItemKind
+import app.g7link.core.AgentPlanStatus
+import app.g7link.core.AgentPlanStep
 import app.g7link.core.AgentThread
+import app.g7link.core.AgentThreadState
 import app.g7link.core.AgentTool
 import app.g7link.core.AgentToolStatus
 import java.util.Date
@@ -105,6 +117,7 @@ fun AgentThreadScreen(
     modifier: Modifier = Modifier,
 ) {
     val resources = LocalResources.current
+    val context = LocalContext.current
     val all by core.agents.collectAsStateWithLifecycle()
     val agents = all[device.id] ?: AgentsState()
     val thread = agents.thread(threadId)
@@ -154,6 +167,7 @@ fun AgentThreadScreen(
     var draft by rememberSaveable(threadId) { mutableStateOf("") }
     var sending by remember(threadId) { mutableStateOf(false) }
     var loadingEarlier by remember(threadId) { mutableStateOf(false) }
+    var sharing by remember(threadId) { mutableStateOf(false) }
     val retry: () -> Unit = { attempt++ }
 
     val stop: () -> Unit = {
@@ -211,11 +225,51 @@ fun AgentThreadScreen(
             }
         }
     }
+    val share: () -> Unit = {
+        val title = thread?.title.orEmpty()
+        if (!sharing) {
+            sharing = true
+            scope.launch {
+                when (val result = core.agentExport(device.id, threadId, null)) {
+                    is AgentCall.Ok -> if (!AgentShare.share(context, result.value, title)) {
+                        core.say(resources.getString(R.string.agents_share_failed))
+                    }
+                    is AgentCall.Failed -> core.say(
+                        when (result.failure) {
+                            AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
+                            AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
+                            AgentFailure.NOT_FOUND -> resources.getString(R.string.agents_thread_gone)
+                            AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> resources.getString(R.string.agents_unreachable_title, device.name)
+                            AgentFailure.OTHER -> resources.getString(R.string.agents_share_failed)
+                        },
+                    )
+                }
+                sharing = false
+            }
+        }
+    }
+
+    val listState = rememberLazyListState()
+    val reducedMotion = LocalReducedMotion.current
+    val entries = remember(open) { open?.let { AgentsModel.transcript(it) }.orEmpty() }
+    val earlier = open != null && open.moreBefore && open.items.isNotEmpty()
+    val scrollToSeq: (ULong) -> Unit = { seq ->
+        val index = entries.indexOfFirst { it.key == "seq:$seq" }
+        if (index >= 0) {
+            scope.launch {
+                val at = index + if (earlier) 1 else 0
+                if (reducedMotion) listState.scrollToItem(at) else listState.animateScrollToItem(at)
+            }
+        }
+    }
 
     Column(modifier.fillMaxSize().imePadding()) {
         G7Header(title = thread?.title.orEmpty(), onBack = onBack) {
             if (running) {
                 G7RowAction(label = stringResource(R.string.agents_stop), enabled = !stopping, onClick = stop)
+            }
+            if (thread != null && load == ThreadLoad.READY) {
+                G7RowAction(label = stringResource(R.string.agents_share), enabled = !sharing, onClick = share)
             }
         }
         if (thread != null && status != null) {
@@ -223,6 +277,15 @@ fun AgentThreadScreen(
                 status = status,
                 trailing = "$agentName · ${thread.folder}",
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+            )
+        }
+        val plan = thread?.plan
+        if (!plan.isNullOrEmpty() && load == ThreadLoad.READY) {
+            PlanCard(
+                plan = plan,
+                startOpen = asks.isEmpty(),
+                key = threadId,
+                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 6.dp),
             )
         }
         when {
@@ -253,12 +316,25 @@ fun AgentThreadScreen(
                 CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
             }
             open != null -> {
-                Transcript(
-                    open = open,
+                TranscriptList(
+                    entries = entries,
+                    earlier = earlier,
                     loadingEarlier = loadingEarlier,
                     onLoadEarlier = loadEarlier,
+                    listState = listState,
                     modifier = Modifier.weight(1f),
                 )
+                if (thread != null && thread.state == AgentThreadState.WORKING && asks.isEmpty()) {
+                    NowCard(
+                        step = thread.step,
+                        steps = remember(open, thread) { AgentsModel.steps(open, thread) },
+                        sinceMs = thread.sinceMs,
+                        running = remember(open.items) { AgentsModel.runningTool(open.items) },
+                        folder = thread.folder,
+                        onStep = scrollToSeq,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
                 if (thread != null && status != null) {
                     EndNote(status, thread, agents, device.name)
                 }
@@ -288,22 +364,26 @@ fun AgentThreadScreen(
     }
 }
 
+/**
+ * A transcript, a thread's or a followed session's: items in order, an
+ * Earlier row on top when there's more, following new items while the end is
+ * in view.
+ */
 @Composable
-private fun Transcript(
-    open: OpenThread,
+internal fun TranscriptList(
+    entries: List<TranscriptEntry>,
+    earlier: Boolean,
     loadingEarlier: Boolean,
     onLoadEarlier: () -> Unit,
+    listState: LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    val entries = remember(open) { AgentsModel.transcript(open) }
-    val listState = rememberLazyListState()
     // Follows new text while the end is in view; scrolling up stops that, scrolling back down resumes it.
     var follow by remember { mutableStateOf(true) }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
             .collect { scroll -> if (scroll.first) follow = !scroll.second }
     }
-    val earlier = open.moreBefore && open.items.isNotEmpty()
     val last = entries.lastOrNull()
     val lastLength = (last as? TranscriptEntry.Streaming)?.text?.length ?: 0
     LaunchedEffect(entries.size, last?.key, lastLength) {
@@ -349,7 +429,7 @@ private fun contentTypeOf(entry: TranscriptEntry): String = when (entry) {
 }
 
 @Composable
-private fun ColumnScope.ItemView(item: AgentItem) {
+internal fun ColumnScope.ItemView(item: AgentItem) {
     val scheme = MaterialTheme.colorScheme
     when (item.kind) {
         AgentItemKind.USER -> Row(
@@ -764,9 +844,204 @@ private fun Composer(
     }
 }
 
+/**
+ * The agent's own plan for the turn, when it made one: how much is done, and
+ * each step with a check when done, a dot for the one under way, a ring for
+ * the rest. Opens and closes with a tap.
+ */
+@Composable
+private fun PlanCard(plan: List<AgentPlanStep>, startOpen: Boolean, key: String, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    var shown by rememberSaveable(key) { mutableStateOf(startOpen) }
+    val done = AgentsModel.planDone(plan)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(scheme.surfaceContainer),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp)
+                .clickable(role = Role.Button) { shown = !shown }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(G7Icons.clipboardList, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            Text(stringResource(R.string.agents_step_plan), style = MaterialTheme.typography.titleSmall)
+            Text(
+                stringResource(R.string.agents_step_plan_done, done, plan.size),
+                style = MaterialTheme.typography.labelMedium,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            G7Chevron(shown)
+        }
+        AnimatedVisibility(visible = shown, enter = g7Expand(), exit = g7Collapse()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (step in plan) PlanStepRow(step)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanStepRow(step: AgentPlanStep) {
+    val scheme = MaterialTheme.colorScheme
+    val tints = g7Tints()
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+            when (step.status) {
+                AgentPlanStatus.COMPLETED -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(16.dp))
+                AgentPlanStatus.IN_PROGRESS -> Box(Modifier.size(10.dp).clip(CircleShape).background(tints.blue))
+                AgentPlanStatus.PENDING -> Box(Modifier.size(10.dp).border(1.5.dp, scheme.outline, CircleShape))
+            }
+        }
+        Text(
+            step.text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (step.status == AgentPlanStatus.COMPLETED) scheme.onSurfaceVariant else scheme.onSurface,
+        )
+    }
+}
+
+/**
+ * What a working thread does now, above the reply box: "Now: <step>" and how
+ * long it has worked, the command or change still running, and, opened, its
+ * last steps; a step scrolls the transcript to it.
+ */
+@Composable
+private fun NowCard(
+    step: String?,
+    steps: List<Step>,
+    sinceMs: Long?,
+    running: AgentItem?,
+    folder: String,
+    onStep: (ULong) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val tints = g7Tints()
+    var showSteps by rememberSaveable { mutableStateOf(false) }
+    val shownStep = step?.takeIf { it.isNotBlank() } ?: steps.lastOrNull()?.let { stepTitle(it) } ?: stringResource(R.string.agents_step_thinking)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(scheme.surfaceContainer)
+            .clickable(enabled = steps.isNotEmpty(), role = Role.Button) { showSteps = !showSteps }
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            G7StatusDot(tints.blue)
+            Text(
+                stringResource(R.string.agents_step_now, shownStep),
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (sinceMs != null && sinceMs > 0L) {
+                ElapsedText(sinceMs, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
+            }
+            if (steps.isNotEmpty()) G7Chevron(showSteps)
+        }
+        val detail = running?.tool?.detail?.takeIf { it.isNotBlank() }
+        if (detail != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(scheme.surface)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (folder.isNotBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(G7Icons.folder, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
+                        Text(folder, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant, maxLines = 1)
+                    }
+                }
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = LocalAppFonts.current.mono,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        AnimatedVisibility(visible = showSteps, enter = g7Expand(), exit = g7Collapse()) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                for (each in steps) StepRow(each, onStep)
+            }
+        }
+    }
+}
+
+/** One step of the timeline: its state, its title and when it ran. */
+@Composable
+private fun StepRow(step: Step, onStep: (ULong) -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val tints = g7Tints()
+    val context = LocalContext.current
+    val seq = step.seq
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .then(if (seq != null) Modifier.clickable(role = Role.Button) { onStep(seq) } else Modifier)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+            when (step.status) {
+                AgentToolStatus.RUNNING -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = tints.blue)
+                AgentToolStatus.OK -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(16.dp))
+                AgentToolStatus.ERROR -> Icon(G7Icons.close, contentDescription = null, tint = tints.red, modifier = Modifier.size(16.dp))
+                AgentToolStatus.DENIED -> Icon(G7Icons.close, contentDescription = null, tint = scheme.outline, modifier = Modifier.size(16.dp))
+            }
+        }
+        Text(
+            stepTitle(step),
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (step.whenMs > 0L) {
+            Text(
+                remember(step.whenMs) { DateFormat.getTimeFormat(context).format(Date(step.whenMs)) },
+                style = MaterialTheme.typography.labelMedium,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/** A step's title: the tool's own, or what the agent does between tools. */
+@Composable
+private fun stepTitle(step: Step): String = step.title?.takeIf { it.isNotBlank() } ?: when (step.kind) {
+    StepKind.WRITING -> stringResource(R.string.agents_step_writing)
+    StepKind.THINKING, StepKind.TOOL -> stringResource(R.string.agents_step_thinking)
+}
+
 /** Monospace text that wraps instead of hiding anything; a diff's added and removed lines in their colours. */
 @Composable
-private fun CodeBlock(
+internal fun CodeBlock(
     text: String,
     diff: Boolean,
     modifier: Modifier = Modifier,

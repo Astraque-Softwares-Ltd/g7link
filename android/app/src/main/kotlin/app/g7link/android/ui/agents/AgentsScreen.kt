@@ -16,12 +16,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -34,6 +37,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -47,6 +51,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,6 +74,9 @@ import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentAsk
 import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentInfo
+import app.g7link.core.AgentSession
+import app.g7link.core.AgentSessionSource
+import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
 import app.g7link.core.AgentThreadState
 import kotlinx.coroutines.delay
@@ -102,6 +111,7 @@ fun AgentsScreen(
     device: Device,
     core: Core,
     onOpenThread: (String) -> Unit,
+    onOpenSession: (String) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -113,6 +123,7 @@ fun AgentsScreen(
     var filter by rememberSaveable { mutableStateOf(ThreadFilter.ALL) }
     var newThread by rememberSaveable { mutableStateOf(false) }
     val hasCatalog = catalog != null
+    val sessionsAllowed by rememberUpdatedState(agents.sessionsAllowed)
 
     // Again when the PC allows this phone (its catalog arrives) or comes back.
     LaunchedEffect(device.id, device.online, hasCatalog, attempt) {
@@ -129,6 +140,19 @@ fun AgentsScreen(
                 AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> ListLoad.UNREACHABLE
                 AgentFailure.NOT_FOUND, AgentFailure.OTHER -> ListLoad.FAILED
             }
+        }
+        // Sessions started on the PC, only when asking can't make the PC prompt unasked (it listed them before, or the user asked).
+        if (load == ListLoad.READY && sessionsAllowed != false) core.agentSessionsIfAllowed(device.id)
+    }
+    // The user asked on the PC: ask now (the PC may show its prompt), then look again now and then while this is on screen.
+    var askedSessions by remember(device.id) { mutableStateOf(false) }
+    val sessionsListed = agents.sessionsAllowed == true
+    val sessionsUnsupported = agents.sessionsUnsupported
+    LaunchedEffect(device.id, askedSessions, sessionsListed, sessionsUnsupported, device.online) {
+        if (!askedSessions || sessionsListed || sessionsUnsupported || !device.online) return@LaunchedEffect
+        repeat(SESSIONS_ASK_TRIES) {
+            core.agentSessionsAsk(device.id)
+            delay(SESSIONS_ASK_EVERY_MS)
         }
     }
 
@@ -191,6 +215,9 @@ fun AgentsScreen(
                     canStart = canStart,
                     onNewThread = { newThread = true },
                     onOpenThread = onOpenThread,
+                    onOpenSession = onOpenSession,
+                    askedSessions = askedSessions,
+                    onAskSessions = { askedSessions = true },
                 )
             }
         }
@@ -221,9 +248,15 @@ private fun ThreadList(
     canStart: Boolean,
     onNewThread: () -> Unit,
     onOpenThread: (String) -> Unit,
+    onOpenSession: (String) -> Unit,
+    askedSessions: Boolean,
+    onAskSessions: () -> Unit,
 ) {
     val now = rememberNow()
     val shown = remember(agents.threads, filter) { agents.threads.filter { filter.matches(it) } }
+    // The chips count threads only: sessions have their own section.
+    val needsYou = remember(agents.threads) { agents.threads.count { ThreadFilter.NEEDS_YOU.matches(it) } }
+    val working = remember(agents.threads) { agents.threads.count { ThreadFilter.WORKING.matches(it) } }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
@@ -262,8 +295,8 @@ private fun ThreadList(
                 G7Tabs(
                     options = listOf(
                         ThreadFilter.ALL to stringResource(R.string.agents_filter_all),
-                        ThreadFilter.NEEDS_YOU to stringResource(R.string.agents_state_waiting),
-                        ThreadFilter.WORKING to stringResource(R.string.agents_state_working),
+                        ThreadFilter.NEEDS_YOU to counted(stringResource(R.string.agents_state_waiting), needsYou),
+                        ThreadFilter.WORKING to counted(stringResource(R.string.agents_state_working), working),
                         ThreadFilter.RECENT to stringResource(R.string.agents_filter_recent),
                     ),
                     selected = filter,
@@ -281,7 +314,209 @@ private fun ThreadList(
                 )
             }
         }
+        // Sessions started on the PC outside G7: listed once the PC allows it, else a way to ask (never asked unprompted).
+        if (!agents.sessionsUnsupported) {
+            item(key = "sessions_label", contentType = "label") {
+                G7SectionLabel(stringResource(R.string.agents_session_section, pcName), Modifier.padding(top = 8.dp))
+            }
+            when {
+                agents.sessionsAllowed != true -> item(key = "sessions_off", contentType = "sessions_off") {
+                    SessionsOff(pcName = pcName, asked = askedSessions, onAsk = onAskSessions)
+                }
+                agents.sessions.isEmpty() -> item(key = "sessions_none", contentType = "setup") {
+                    SetupNote(stringResource(R.string.agents_session_none, pcName))
+                }
+                else -> items(agents.sessions, key = { "session:${it.id}" }, contentType = { "session" }) { session ->
+                    SessionRow(
+                        session = session,
+                        agentName = agents.agentName(session.agent),
+                        pcName = pcName,
+                        now = now,
+                        onOpen = { onOpenSession(session.id) },
+                    )
+                }
+            }
+        }
     }
+}
+
+/** A chip's word and how many it holds, when any. */
+@Composable
+private fun counted(word: String, count: Int): String =
+    if (count > 0) stringResource(R.string.agents_filter_count, word, count) else word
+
+/**
+ * The PC hasn't let this phone see the sessions started on it: what they
+ * are, and a way to ask (the PC then shows its user a prompt).
+ */
+@Composable
+private fun SessionsOff(pcName: String, asked: Boolean, onAsk: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .border(1.dp, scheme.outlineVariant, RoundedCornerShape(8.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Icon(G7Icons.terminal, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            Text(stringResource(R.string.agents_session_off_body, pcName), style = MaterialTheme.typography.bodyMedium)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            G7RaisedButton(label = stringResource(R.string.agents_session_ask, pcName), onClick = onAsk, modifier = Modifier.padding(horizontal = 4.dp))
+            Text(
+                if (asked) stringResource(R.string.agents_session_allow_on, pcName) else stringResource(R.string.agents_session_off_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/** A session started on the PC: its state, title, agent and folder and where it runs, and what to do about it. */
+@Composable
+private fun SessionRow(session: AgentSession, agentName: String, pcName: String, now: Long, onOpen: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(scheme.surfaceContainer)
+            .clickable(role = Role.Button, onClick = onOpen)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        SessionStatusLine(session = session, now = now, trailing = relativeTime(session.updatedMs, now))
+        Text(session.title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(
+            sessionPlace(session, agentName),
+            style = MaterialTheme.typography.bodySmall,
+            color = scheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        val line = when {
+            AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_session_answer_on, pcName)
+            AgentsModel.mayNeedYou(session) -> mayWait(session, agentName, pcName)
+            else -> null
+        }
+        if (line != null) {
+            Text(line, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+        } else if (session.state == AgentSessionState.WORKING) {
+            NowLine(step = session.step, sinceMs = session.sinceMs)
+        }
+    }
+}
+
+/** "Claude · g7linux · in a terminal": the agent, the folder's name and where it runs. */
+@Composable
+internal fun sessionPlace(session: AgentSession, agentName: String): String {
+    val where = when (session.source) {
+        AgentSessionSource.TERMINAL -> stringResource(R.string.agents_session_in_terminal)
+        AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_in_app, agentName)
+        AgentSessionSource.OTHER -> null
+    }
+    return listOfNotNull(agentName, session.folder.ifBlank { null }, where).joinToString(" · ")
+}
+
+/** A guessed wait: it may be a prompt or a long command, so it's checked on the PC. */
+@Composable
+internal fun mayWait(session: AgentSession, agentName: String, pcName: String): String =
+    if (session.source == AgentSessionSource.TERMINAL) {
+        stringResource(R.string.agents_session_may_wait_terminal, agentName, pcName)
+    } else {
+        stringResource(R.string.agents_session_may_wait, agentName, pcName)
+    }
+
+/**
+ * A session's state as a dot and a word: Needs you (amber), May need you (an
+ * amber ring: a guess), Working for 6 min, Idle, Ended.
+ */
+@Composable
+internal fun SessionStatusLine(session: AgentSession, now: Long, trailing: String?, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    val tints = g7Tints()
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        val (word, color) = when {
+            AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_state_waiting) to tints.amber
+            AgentsModel.mayNeedYou(session) -> stringResource(R.string.agents_session_state_may_need_you) to tints.amber
+            session.state == AgentSessionState.WORKING -> workingFor(session.sinceMs, now) to scheme.onSurfaceVariant
+            session.state == AgentSessionState.IDLE -> stringResource(R.string.agents_session_state_idle) to scheme.onSurfaceVariant
+            else -> stringResource(R.string.agents_session_state_ended) to scheme.onSurfaceVariant
+        }
+        when {
+            AgentsModel.mayNeedYou(session) -> Box(Modifier.size(6.dp).border(1.dp, tints.amber, CircleShape))
+            AgentsModel.needsYouExactly(session) -> G7StatusDot(tints.amber)
+            session.state == AgentSessionState.WORKING -> G7StatusDot(tints.blue)
+            else -> G7StatusDot(scheme.outline)
+        }
+        Text(word, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1)
+        if (!trailing.isNullOrBlank()) {
+            Text(
+                trailing,
+                style = MaterialTheme.typography.labelMedium,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.End,
+            )
+        }
+    }
+}
+
+/** "Working for 4 min" from when it began working; "Working" when the PC didn't say. */
+@Composable
+internal fun workingFor(sinceMs: Long?, now: Long): String {
+    if (sinceMs == null || sinceMs <= 0L) return stringResource(R.string.agents_state_working)
+    val minutes = ((now - sinceMs).coerceAtLeast(0L) / 60_000L).coerceAtLeast(1L)
+    return if (minutes < 60L) {
+        pluralStringResource(R.plurals.agents_step_working_for_minutes, minutes.toInt(), minutes.toInt())
+    } else {
+        val hours = (minutes / 60L).toInt()
+        pluralStringResource(R.plurals.agents_step_working_for_hours, hours, hours)
+    }
+}
+
+/** "Now: Run command · 4:12" on one line: the step is cut short before the time is. */
+@Composable
+internal fun NowLine(step: String?, sinceMs: Long?, modifier: Modifier = Modifier) {
+    val style = MaterialTheme.typography.bodySmall
+    val color = MaterialTheme.colorScheme.onSurface
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) } ?: stringResource(R.string.agents_state_working),
+            style = style,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        if (sinceMs != null && sinceMs > 0L) {
+            Text(" · ", style = style, color = color, maxLines = 1)
+            ElapsedText(sinceMs, style = style, color = color)
+        }
+    }
+}
+
+/** The time since [sinceMs] as a clock ("4:12"), ticking each second; only this text redraws. */
+@Composable
+internal fun ElapsedText(sinceMs: Long, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(sinceMs) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1_000L - (now - sinceMs).mod(1_000L))
+        }
+    }
+    Text(AgentsModel.elapsed(now - sinceMs), style = style, color = color, maxLines = 1, modifier = modifier)
 }
 
 @Composable
@@ -297,7 +532,11 @@ private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, no
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        StatusLine(status = status, trailing = relativeTime(thread.updatedMs, now))
+        StatusLine(
+            status = status,
+            trailing = relativeTime(thread.updatedMs, now),
+            word = if (status is ThreadStatus.Working) workingFor(thread.sinceMs, now) else null,
+        )
         Text(
             thread.title,
             style = MaterialTheme.typography.bodyLarge,
@@ -332,6 +571,8 @@ private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, no
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
                 G7RowAction(label = stringResource(R.string.agents_review), accent = true, onClick = onOpen)
             }
+        } else if (status is ThreadStatus.Working) {
+            NowLine(step = thread.step, sinceMs = thread.sinceMs)
         } else {
             val line = statusDetail(status) ?: thread.summary
             if (!line.isNullOrBlank()) {
@@ -524,10 +765,10 @@ internal fun AgentsEmptyState(title: String, body: String? = null, action: Strin
 
 /** A dot in the state's colour, the state in words, and something after it (a time, the agent and folder). */
 @Composable
-internal fun StatusLine(status: ThreadStatus, trailing: String?, modifier: Modifier = Modifier) {
+internal fun StatusLine(status: ThreadStatus, trailing: String?, modifier: Modifier = Modifier, word: String? = null) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
-    val (dot, word, wordColor) = when (status) {
+    val (dot, stateWord, wordColor) = when (status) {
         ThreadStatus.NeedsYou -> Triple(tints.amber, stringResource(R.string.agents_state_waiting), tints.amber)
         ThreadStatus.Working -> Triple(tints.blue, stringResource(R.string.agents_state_working), scheme.onSurfaceVariant)
         ThreadStatus.Done -> Triple(tints.teal, stringResource(R.string.agents_state_done), scheme.onSurfaceVariant)
@@ -541,7 +782,7 @@ internal fun StatusLine(status: ThreadStatus, trailing: String?, modifier: Modif
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         G7StatusDot(dot)
-        Text(word, style = MaterialTheme.typography.labelMedium, color = wordColor, maxLines = 1)
+        Text(word ?: stateWord, style = MaterialTheme.typography.labelMedium, color = wordColor, maxLines = 1)
         if (!trailing.isNullOrBlank()) {
             Text(
                 trailing,
@@ -626,3 +867,7 @@ internal fun relativeTime(ms: Long, now: Long): String =
 /** The PC's limits on running threads (the reconcile file): 4 in all, 3 per agent. */
 private const val MAX_RUNNING = 4
 private const val MAX_RUNNING_PER_AGENT = 3
+
+/** After asking the PC to show its sessions: look again this often, this many times, while the list is on screen. */
+private const val SESSIONS_ASK_EVERY_MS = 5_000L
+private const val SESSIONS_ASK_TRIES = 24

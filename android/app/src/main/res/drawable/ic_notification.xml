@@ -1,15 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!-- The G7 Link mark for notifications: flat white, inside the 20dp live area. -->
+<!-- The G7 mark for notifications, the app icon's mark in flat white, centred in the
+     status bar's 20dp live area (it spans x 0.5-96.5 and y 8.5-96.5 before the group). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp" android:viewportWidth="100" android:viewportHeight="100">
-    <group android:pivotX="50" android:pivotY="50" android:scaleX="0.96" android:scaleY="0.96" android:rotation="-25">
-        <path android:pathData="M41.5,42.5C26,24 13.5,31 13.5,50C13.5,69 26,76 41.5,57.5"
-            android:strokeColor="#FFFFFFFF" android:strokeWidth="11.4" android:strokeLineCap="round"
-            android:fillColor="#00000000" />
-        <path android:pathData="M58.5,42.5C74,24 86.5,31 86.5,50C86.5,69 74,76 58.5,57.5"
-            android:strokeColor="#FFFFFFFF" android:strokeWidth="11.4" android:strokeLineCap="round"
-            android:fillColor="#00000000" />
-        <path android:pathData="M50,41.2a8.8,8.8 0,1 1,0 17.6a8.8,8.8 0,1 1,0 -17.6z" android:fillColor="#FFFFFFFF" />
+    <group android:pivotX="50" android:pivotY="50" android:scaleX="0.84" android:scaleY="0.84"
+        android:translateX="1.3" android:translateY="-2.1">
+        <path android:fillColor="#FFFFFFFF" android:pathData="M88 25.5 L36 25.5 A18.5 18.5 0 0 0 36 62.5 L44 62.5 A3.5 3.5 0 0 0 44 55.5 L33 55.5 A8.5 8.5 0 0 1 33 38.5 L44 38.5 A20.5 20.5 0 0 1 44 79.5 L36 79.5 A35.5 35.5 0 0 1 36 8.5 L88 8.5 A8.5 8.5 0 0 1 88 25.5 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M96.182 19.305 L81.64 70.929 L65.276 66.319 L79.818 14.695 A8.5 8.5 0 0 1 96.182 19.305 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M82.182 69.005 L76.182 90.305 A8.5 8.5 0 0 1 59.818 85.695 L65.818 64.395 Z" />
     </group>
 </vector>

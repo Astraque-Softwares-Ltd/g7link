@@ -12,6 +12,12 @@ import app.g7link.core.AgentItemKind
 import app.g7link.core.AgentMode
 import app.g7link.core.AgentOutcome
 import app.g7link.core.AgentPage
+import app.g7link.core.AgentPlanStatus
+import app.g7link.core.AgentPlanStep
+import app.g7link.core.AgentSession
+import app.g7link.core.AgentSessionPage
+import app.g7link.core.AgentSessionSource
+import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
 import app.g7link.core.AgentThreadState
 import app.g7link.core.AgentTool
@@ -366,5 +372,235 @@ class AgentsModelTest {
         assertEquals(pc, AgentsModel.pcOf(Event.AgentAsked(pc, "a", "t", AgentAskOutcome.EXPIRED)))
         assertEquals(pc, AgentsModel.pcOf(Event.AgentCatalog(pc, null)))
         assertNull(AgentsModel.pcOf(Event.ReconnectChanged(pc, true)))
+    }
+
+    // ---- 0.1.14: sessions started on the PC, steps, plan, Home ----
+
+    private fun session(
+        id: String = "sc0123456789abcdef0123456789abcdef",
+        state: AgentSessionState = AgentSessionState.WORKING,
+        guess: Boolean = false,
+        updatedMs: Long = 1_000L,
+        canContinue: Boolean = false,
+    ) = AgentSession(
+        id = id,
+        agent = "claude",
+        folder = "g7linux",
+        title = "Fix the settings import",
+        state = state,
+        guess = guess,
+        source = AgentSessionSource.TERMINAL,
+        updatedMs = updatedMs,
+        step = null,
+        summary = null,
+        waitingFor = null,
+        canContinue = canContinue,
+        blocked = null,
+    )
+
+    private fun tool(seq: ULong, status: AgentToolStatus, title: String = "Run command") =
+        item(seq, kind = AgentItemKind.TOOL, text = null, tool = AgentTool(name = "Bash", title = title, detail = "cargo test", status = status, output = null))
+
+    private val idA = "sc0123456789abcdef0123456789abcdef"
+    private val idB = "sxfedcba9876543210fedcba9876543210"
+
+    @Test
+    fun `session events add, replace and remove sessions, and mean the PC lists them`() {
+        var state = AgentsState(catalog = catalog())
+        assertNull(state.sessionsAllowed)
+        state = reduce(state, Event.AgentSessionChanged(pc, session(idA))).state
+        assertEquals(true, state.sessionsAllowed)
+        assertEquals(listOf(idA), state.sessions.map { it.id })
+
+        state = reduce(state, Event.AgentSessionChanged(pc, session(idA, state = AgentSessionState.IDLE))).state
+        assertEquals(AgentSessionState.IDLE, state.sessions.single().state)
+
+        state = reduce(state, Event.AgentSessionChanged(pc, session(idB, state = AgentSessionState.ENDED))).state
+        state = reduce(state, Event.AgentSessionRemoved(pc, idA)).state
+        assertEquals(listOf(idB), state.sessions.map { it.id })
+        assertEquals(pc, AgentsModel.pcOf(Event.AgentSessionRemoved(pc, idA)))
+        assertEquals(pc, AgentsModel.pcOf(Event.AgentSessionItem(pc, idA, item(1u))))
+    }
+
+    @Test
+    fun `sessions sort like the PC's list, and a guess sorts with may need you`() {
+        val sorted = AgentsModel.sortedSessions(
+            listOf(
+                session("sc01", AgentSessionState.ENDED, updatedMs = 9_000L),
+                session("sc02", AgentSessionState.IDLE, updatedMs = 8_000L),
+                session("sc03", AgentSessionState.NEEDS_YOU, guess = true, updatedMs = 7_000L),
+                session("sc04", AgentSessionState.WORKING, updatedMs = 6_000L),
+                session("sc05", AgentSessionState.NEEDS_YOU, updatedMs = 1_000L),
+                session("sc06", AgentSessionState.WORKING, updatedMs = 6_500L),
+            ),
+        )
+        assertEquals(listOf("sc05", "sc06", "sc04", "sc03", "sc02", "sc01"), sorted.map { it.id })
+        assertTrue(AgentsModel.mayNeedYou(session(state = AgentSessionState.MAY_NEED_YOU)))
+        assertTrue(AgentsModel.mayNeedYou(session(state = AgentSessionState.NEEDS_YOU, guess = true)))
+        assertFalse(AgentsModel.needsYouExactly(session(state = AgentSessionState.NEEDS_YOU, guess = true)))
+        assertTrue(AgentsModel.needsYouExactly(session(state = AgentSessionState.NEEDS_YOU)))
+    }
+
+    @Test
+    fun `a switch that's off, or a PC that doesn't list sessions, is remembered`() {
+        val listed = AgentsModel.withSessions(AgentsState(catalog = catalog()), listOf(session(idA)))
+        val off = AgentsModel.sessionsOff(listed)
+        assertEquals(false, off.sessionsAllowed)
+        assertTrue(off.sessions.isEmpty())
+        val unsupported = AgentsModel.sessionsUnsupported(listed)
+        assertNull(unsupported.sessionsAllowed)
+        assertTrue(unsupported.sessionsUnsupported)
+        // Not asked yet: neither listed nor unsupported, so the list offers to ask.
+        assertNull(AgentsState().sessionsAllowed)
+        assertFalse(AgentsState().sessionsUnsupported)
+        assertFalse(AgentsModel.withSession(unsupported, session(idA)).sessionsUnsupported)
+    }
+
+    @Test
+    fun `the followed session takes its page and then its items, and others are ignored`() {
+        var state = AgentsModel.sessionOpened(AgentsState(catalog = catalog()), idA)
+        state = AgentsModel.withSessionPage(state, AgentSessionPage(session(idA), listOf(item(64u), item(128u)), moreBefore = true))
+        val open = state.openSession!!
+        assertTrue(open.loaded)
+        assertTrue(open.moreBefore)
+        assertEquals(listOf(64uL, 128uL), open.items.map { it.seq })
+
+        // Seqs aren't consecutive: a far one is simply added, an update replaces in place.
+        state = reduce(state, Event.AgentSessionItem(pc, idA, item(4096u))).state
+        state = reduce(state, Event.AgentSessionItem(pc, idA, item(64u, text = "changed"))).state
+        assertEquals(listOf(64uL, 128uL, 4096uL), state.openSession!!.items.map { it.seq })
+        assertEquals("changed", state.openSession!!.items.first().text)
+
+        val other = reduce(state, Event.AgentSessionItem(pc, idB, item(9u))).state
+        assertSame(state, other)
+
+        val removed = reduce(state, Event.AgentSessionRemoved(pc, idA)).state
+        assertTrue(removed.openSession!!.removed)
+        assertNull(AgentsModel.sessionClosed(removed, idA).openSession)
+    }
+
+    @Test
+    fun `an older session page goes in front`() {
+        var state = AgentsModel.sessionOpened(AgentsState(), idA)
+        state = AgentsModel.withSessionPage(state, AgentSessionPage(session(idA), listOf(item(640u)), moreBefore = true))
+        state = AgentsModel.withOlderSessionPage(state, AgentSessionPage(session(idA), listOf(item(64u), item(640u)), moreBefore = false))
+        assertEquals(listOf(64uL, 640uL), state.openSession!!.items.map { it.seq })
+        assertFalse(state.openSession!!.moreBefore)
+    }
+
+    @Test
+    fun `sessions are cleared with the catalog`() {
+        var state = reduce(AgentsState(), Event.AgentCatalog(pc, catalog())).state
+        state = reduce(state, Event.AgentSessionChanged(pc, session(idA))).state
+        state = AgentsModel.sessionOpened(state, idA)
+        val cleared = reduce(state, Event.AgentCatalog(pc, null)).state
+        assertTrue(cleared.sessions.isEmpty())
+        assertNull(cleared.sessionsAllowed)
+        assertNull(cleared.openSession)
+    }
+
+    @Test
+    fun `steps are the newest tools then what it does between them`() {
+        val items = (1..8).map { tool(it.toULong(), AgentToolStatus.OK, "Step $it") } + item(9u)
+        val open = AgentsModel.withPage(AgentsModel.opened(AgentsState(), "t1"), page(thread(), items)).open!!
+        val steps = AgentsModel.steps(open, thread())
+        // Six tools, oldest first, then Thinking: it works and no tool runs.
+        assertEquals(listOf("Step 3", "Step 4", "Step 5", "Step 6", "Step 7", "Step 8", null), steps.map { it.title })
+        assertEquals(StepKind.THINKING, steps.last().kind)
+        assertNull(steps.last().seq)
+
+        val running = AgentsModel.withPage(AgentsModel.opened(AgentsState(), "t1"), page(thread(), listOf(tool(1u, AgentToolStatus.RUNNING)))).open!!
+        val now = AgentsModel.steps(running, thread())
+        assertEquals(1, now.size)
+        assertEquals(AgentToolStatus.RUNNING, now.single().status)
+        assertEquals(1uL, AgentsModel.runningTool(running.items)?.seq)
+
+        // Text streaming in: Writing.
+        val streaming = reduce(opened(listOf(item(1u))), Event.AgentDelta(pc, "t1", "m2", 2u, 0u, "Hello")).state.open!!
+        assertEquals(StepKind.WRITING, AgentsModel.steps(streaming, thread()).last().kind)
+
+        // Not working: no step between tools.
+        assertTrue(AgentsModel.steps(open, thread(state = AgentThreadState.DONE)).none { it.seq == null })
+    }
+
+    @Test
+    fun `a plan says how much is done and which step is under way`() {
+        val plan = listOf(
+            AgentPlanStep("Reproduce", AgentPlanStatus.COMPLETED),
+            AgentPlanStep("Find it", AgentPlanStatus.COMPLETED),
+            AgentPlanStep("Fix it", AgentPlanStatus.COMPLETED),
+            AgentPlanStep("Run the tests", AgentPlanStatus.IN_PROGRESS),
+            AgentPlanStep("Say why", AgentPlanStatus.PENDING),
+        )
+        assertEquals(3, AgentsModel.planDone(plan))
+        assertEquals(4, AgentsModel.planPosition(plan))
+        assertEquals(1, AgentsModel.planPosition(listOf(AgentPlanStep("a", AgentPlanStatus.PENDING))))
+        assertEquals(2, AgentsModel.planPosition(listOf(AgentPlanStep("a", AgentPlanStatus.COMPLETED), AgentPlanStep("b", AgentPlanStatus.COMPLETED))))
+        assertNull(AgentsModel.planPosition(null))
+        assertNull(AgentsModel.planPosition(emptyList()))
+    }
+
+    @Test
+    fun `elapsed time reads like a clock`() {
+        assertEquals("0:00", AgentsModel.elapsed(-5_000L))
+        assertEquals("0:42", AgentsModel.elapsed(42_000L))
+        assertEquals("4:12", AgentsModel.elapsed(252_999L))
+        assertEquals("1:05:09", AgentsModel.elapsed(3_909_000L))
+    }
+
+    @Test
+    fun `home shows a request first, then a session that needs you, then what works, then start, then nothing`() {
+        val ready = AgentsState(catalog = catalog())
+        val working = thread("t2", AgentThreadState.WORKING, updatedMs = 5_000L)
+        val waiting = thread("t1", AgentThreadState.WAITING, updatedMs = 2_000L)
+
+        // A request, with the thread working beside it.
+        var state = AgentsModel.withThreads(ready, listOf(waiting, working))
+        state = reduce(state, Event.AgentAsk(pc, ask())).state
+        var summary = AgentsModel.homeSummary(state)!!
+        val lead = summary.lead as HomeLead.NeedsYou
+        assertEquals("a1", lead.ask?.token)
+        assertEquals("t1", lead.thread?.id)
+        assertEquals(listOf("t2"), summary.working.map { (it as HomeWork.Thread).thread.id })
+        assertFalse(summary.start)
+
+        // A session that needs you, as the agent reported, when no thread does.
+        state = AgentsModel.withThreads(ready, listOf(working))
+        state = AgentsModel.withSessions(state, listOf(session(idA, AgentSessionState.NEEDS_YOU)))
+        summary = AgentsModel.homeSummary(state)!!
+        assertEquals(idA, (summary.lead as HomeLead.SessionNeedsYou).session.id)
+        assertEquals(1, summary.working.size)
+
+        // Working only: up to two rows.
+        val three = listOf(working, thread("t3", updatedMs = 4_000L), thread("t4", updatedMs = 3_000L))
+        summary = AgentsModel.homeSummary(AgentsModel.withThreads(ready, three))!!
+        assertNull(summary.lead)
+        assertEquals(listOf("t2", "t3"), summary.working.map { (it as HomeWork.Thread).thread.id })
+
+        // A session at work, when no thread works.
+        summary = AgentsModel.homeSummary(AgentsModel.withSessions(ready, listOf(session(idB, AgentSessionState.WORKING))))!!
+        assertEquals(idB, (summary.working.single() as HomeWork.Session).session.id)
+
+        // Nothing needs you or works: start, with the last thread that ran.
+        val done = thread("t5", AgentThreadState.DONE, updatedMs = 9_000L)
+        summary = AgentsModel.homeSummary(AgentsModel.withThreads(ready, listOf(done)))!!
+        assertTrue(summary.start)
+        assertEquals("t5", summary.recent?.id)
+
+        // Nothing can start (no folder, or no agent signed in), or no catalog: the plain row.
+        val noFolders = AgentsState(catalog = catalog().copy(folders = emptyList()))
+        assertNull(AgentsModel.homeSummary(noFolders))
+        assertNull(AgentsModel.homeSummary(AgentsState()))
+    }
+
+    @Test
+    fun `a guessed needs-you is never the summary`() {
+        val ready = AgentsState(catalog = catalog())
+        for (guessed in listOf(session(idA, AgentSessionState.NEEDS_YOU, guess = true), session(idA, AgentSessionState.MAY_NEED_YOU))) {
+            val summary = AgentsModel.homeSummary(AgentsModel.withSessions(ready, listOf(guessed)))!!
+            assertNull(summary.lead)
+            assertTrue(summary.working.isEmpty())
+            assertTrue(summary.start)
+        }
     }
 }

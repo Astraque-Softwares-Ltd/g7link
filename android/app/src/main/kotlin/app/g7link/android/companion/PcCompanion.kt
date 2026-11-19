@@ -17,8 +17,10 @@ import android.companion.ObservingDevicePresenceRequest
 import android.content.Context
 import android.content.IntentSender
 import android.os.Build
+import android.util.Log
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -32,6 +34,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 object PcCompanion {
     const val MANUFACTURER_ID: Int = 0xFFFF
+    private const val TAG = "PcCompanion"
 
     /** Association ID to the device ID of the PC it was made for. */
     private const val ASSOCIATIONS = "companion_associations"
@@ -199,11 +202,26 @@ object PcCompanion {
      */
     suspend fun findPcToConnect(context: Context, pcId: String, timeoutMs: Long = 25_000): BluetoothDevice? {
         val key = BeaconKeys.all(context)[pcId] ?: return null
-        return scanFor(context, timeoutMs) { result ->
-            val data = result.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID)
+        // What the scan saw, for the log: G7 Link advertisements (`47 02`), and this PC's beacon among them.
+        val seen = AtomicInteger()
+        val presence = AtomicInteger()
+        val found = scanFor(context, timeoutMs) { result ->
+            val data = result.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID) ?: return@scanFor null
+            seen.incrementAndGet()
             val now = System.currentTimeMillis() / 1000
-            if (data != null && BeaconMatcher.asksToConnect(data, pcId, key, now)) result.device else null
+            when (BeaconMatcher.match(data, mapOf(pcId to key), now)?.kind) {
+                BeaconMatcher.Kind.CONNECT -> result.device
+                BeaconMatcher.Kind.PRESENCE -> {
+                    presence.incrementAndGet()
+                    null
+                }
+                null -> null
+            }
         }
+        if (found == null) {
+            Log.i(TAG, "no connect window from a PC in ${timeoutMs / 1000} s: ${seen.get()} G7 Link advertisements, ${presence.get()} of them its beacon")
+        }
+        return found
     }
 
     /**
@@ -229,7 +247,10 @@ object PcCompanion {
                         pick(result)?.let { finish(it, this) }
                     }
 
-                    override fun onScanFailed(errorCode: Int) = finish(null, this)
+                    override fun onScanFailed(errorCode: Int) {
+                        Log.i(TAG, "a Bluetooth scan failed ($errorCode)")
+                        finish(null, this)
+                    }
                 }
                 val filter = ScanFilter.Builder()
                     .setManufacturerData(MANUFACTURER_ID, BeaconMatcher.HEADER, byteArrayOf(-1, -1))

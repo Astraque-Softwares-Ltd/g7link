@@ -10,6 +10,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import app.g7link.android.ui.theme.G7Icons
+import app.g7link.android.ui.player.LocalMiniPlayerInset
 import app.g7link.android.ui.theme.G7Row
 import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.G7Tints
@@ -228,7 +229,7 @@ fun FeaturesGuideScreen(
     val scheme = MaterialTheme.colorScheme
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 16.dp),
+        contentPadding = PaddingValues(start = 10.dp, top = 8.dp, end = 10.dp, bottom = 16.dp + LocalMiniPlayerInset.current),
     ) {
         item(key = "guide_header", contentType = "guide_header") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(horizontal = 6.dp)) {

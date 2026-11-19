@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The music player (ui/player). Kept apart from strings.xml so the player and the rest of the app never edit one file. -->
+<resources>
+    <string name="player_open">Open the player</string>
+    <string name="player_close">Close the player</string>
+    <string name="player_choose">Choose the player and output</string>
+    <string name="player_sheet_title">Play on %1$s</string>
+    <string name="player_output">Output</string>
+    <string name="player_players_on">Players on %1$s</string>
+    <string name="player_phone_speaker_note">%1$s\'s sound plays on this phone.</string>
+    <string name="player_state_playing">%1$s · playing</string>
+    <string name="player_state_paused">%1$s · paused</string>
+    <string name="player_volume_keys_note">The volume buttons change %1$s\'s volume while it plays. Turn that off in Settings.</string>
+    <string name="player_shuffle_on">Shuffle, on</string>
+    <string name="player_shuffle_off">Shuffle, off</string>
+    <string name="player_repeat_off">Repeat, off</string>
+    <string name="player_repeat_playlist">Repeat the playlist, on</string>
+    <string name="player_repeat_track">Repeat this track, on</string>
+    <string name="player_position">Position</string>
+    <string name="player_time_of">%1$s of %2$s</string>
+    <string name="player_volume_on">Volume on %1$s</string>
+    <string name="player_mute_pc">Mute %1$s</string>
+    <string name="player_unmute_pc">Unmute %1$s</string>
+    <string name="player_showing">Showing</string>
+</resources>

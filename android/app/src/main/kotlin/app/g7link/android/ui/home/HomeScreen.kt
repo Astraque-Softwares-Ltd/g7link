@@ -113,7 +113,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.sms.PhoneSms
+import app.g7link.android.ui.agents.AgentsHomeSection
 import app.g7link.android.ui.guide.GuideHighlightTarget
+import app.g7link.android.ui.player.LocalMiniPlayerInset
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.bentoWell
 import app.g7link.android.update.AppUpdater
@@ -196,6 +198,8 @@ fun HomeScreen(
     onDeck: (pcId: String) -> Unit,
     onDesk: (pcId: String) -> Unit = {},
     onAgents: (pcId: String) -> Unit = {},
+    onAgentThread: (pcId: String, threadId: String) -> Unit = { _, _ -> },
+    onAgentSession: (pcId: String, sessionId: String) -> Unit = { _, _ -> },
     onRecord: (pcId: String) -> Unit,
     onWebcam: (pcId: String) -> Unit = {},
     updater: AppUpdater,
@@ -284,6 +288,7 @@ fun HomeScreen(
     val tints = g7Tints()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val core = remember(context) { (context.applicationContext as? G7LinkApplication)?.core }
 
     val pcs = state.devices.filter { !it.isAndroid }
     val peers = state.devices.filter { it.isAndroid }
@@ -335,6 +340,8 @@ fun HomeScreen(
         if (pulsingTarget == target) pulsingTarget = null
     }
 
+    // The mini player sits over the end of the list while something plays on a PC.
+    val miniPlayerInset = LocalMiniPlayerInset.current
     LazyColumn(
         state = listState,
         modifier = modifier,
@@ -342,7 +349,7 @@ fun HomeScreen(
             start = 10.dp,
             top = 8.dp,
             end = 10.dp,
-            bottom = 16.dp,
+            bottom = 16.dp + miniPlayerInset,
         ),
     ) {
         g7Item(key = "home_header", contentType = "header") {
@@ -610,6 +617,18 @@ fun HomeScreen(
             }
         } else {
             val online = pc.online
+            // The PC's agents first: what needs you, what's working, or a box to start one.
+            if (pc.offersAgents && core != null) {
+                g7Item(key = "pc_agents", contentType = "agents") {
+                    AgentsHomeSection(
+                        pc = pc,
+                        core = core,
+                        onOpenAgents = { onAgents(pc.id) },
+                        onOpenThread = { threadId -> onAgentThread(pc.id, threadId) },
+                        onOpenSession = { sessionId -> onAgentSession(pc.id, sessionId) },
+                    )
+                }
+            }
             g7Item(key = "pc_send", contentType = "group") {
                 val pulsing = pulsingTarget == GuideHighlightTarget.HOME_PC_CARD
                 Column {
@@ -678,15 +697,6 @@ fun HomeScreen(
                         enabled = online,
                         onClick = { onDeck(pc.id) },
                     )
-                    if (pc.offersAgents) {
-                        G7Row(
-                            label = stringResource(R.string.action_agents_pc),
-                            icon = G7Icons.terminal,
-                            tint = tints.coral,
-                            enabled = online,
-                            onClick = { onAgents(pc.id) },
-                        )
-                    }
                     G7Row(
                         label = stringResource(R.string.action_browse_pc_files),
                         icon = G7Icons.folder,
@@ -1207,8 +1217,8 @@ private fun LinkDialog(pcName: String, onOpen: (String) -> Unit, onDismiss: () -
 }
 
 /**
- * The PC's sound under its controls: what plays, the volume, where it plays,
- * and whether it plays on this phone instead.
+ * The PC's sound under its controls: the volume, where it plays, and whether
+ * it plays on this phone instead. What plays is the mini player's (ui/player).
  */
 @Composable
 internal fun PcSoundRows(
@@ -1223,15 +1233,6 @@ internal fun PcSoundRows(
     val context = LocalContext.current
     val tints = g7Tints()
     val scheme = MaterialTheme.colorScheme
-    val pcMedia = remember(context) {
-        (context.applicationContext as? G7LinkApplication)?.core?.pcMedia
-    }
-    val mediaSummary = if (pcMedia != null) {
-        val summaries by pcMedia.summaries.collectAsStateWithLifecycle()
-        summaries[pcId]
-    } else {
-        null
-    }
     var draggingVolume by remember { mutableStateOf<Float?>(null) }
     var lastSentVolume by remember { mutableStateOf(deckState.volume.toInt()) }
     if (draggingVolume == null) {
@@ -1247,82 +1248,12 @@ internal fun PcSoundRows(
     }
     val volumeLabel = stringResource(R.string.pc_audio_volume)
 
-    if (mediaSummary != null) {
-        // What plays: artwork and the title on their own line, the controls
-        // centred under them, so a long title never squeezes them.
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-                .then(if (highlighted) Modifier.background(scheme.surfaceContainerHigh) else Modifier)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                val artwork = mediaSummary.artwork
-                if (artwork != null) {
-                    androidx.compose.foundation.Image(
-                        bitmap = remember(artwork) { artwork.asImageBitmap() },
-                        contentDescription = null,
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                        modifier = Modifier.size(44.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
-                    )
-                } else {
-                    Icon(G7Icons.music, contentDescription = null, tint = tints.pink, modifier = Modifier.size(22.dp))
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        mediaSummary.title,
-                        style = MaterialTheme.typography.bodyLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (mediaSummary.subtitle.isNotBlank()) {
-                        Text(
-                            mediaSummary.subtitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = scheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                G7IconButton(
-                    icon = G7Icons.previous,
-                    contentDescription = stringResource(R.string.media_previous),
-                    onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.PREVIOUS) },
-                )
-                G7IconButton(
-                    icon = if (mediaSummary.playing) G7Icons.pause else G7Icons.play,
-                    contentDescription = stringResource(if (mediaSummary.playing) R.string.media_pause else R.string.media_play),
-                    filled = true,
-                    onClick = {
-                        pcMedia?.pressed(
-                            pcId,
-                            if (mediaSummary.playing) app.g7link.core.MediaAction.PAUSE else app.g7link.core.MediaAction.PLAY,
-                        )
-                    },
-                )
-                G7IconButton(
-                    icon = G7Icons.next,
-                    contentDescription = stringResource(R.string.media_next),
-                    onClick = { pcMedia?.pressed(pcId, app.g7link.core.MediaAction.NEXT) },
-                )
-            }
-        }
-    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-            .then(if (highlighted && mediaSummary == null) Modifier.background(scheme.surfaceContainerHigh) else Modifier)
+            .then(if (highlighted) Modifier.background(scheme.surfaceContainerHigh) else Modifier)
             .padding(start = 12.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),

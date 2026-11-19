@@ -3,11 +3,13 @@
 <!-- Received files on Android 8–9 (see files/ReceivedFiles.kt), images
      a PC put on the clipboard (see clipboard/PhoneClipboard.kt), outgoing
      MMS PDUs (see sms/PhoneSms.kt), and screenshots of a PC being shared
-     (see ui/capture/PcShotActivity.kt). -->
+     (see ui/capture/PcShotActivity.kt), and agent transcripts too long to
+     share as text (see ui/agents/AgentShare.kt). -->
 <paths>
     <external-files-path name="received" path="Download/G7Link/" />
     <files-path name="recordings" path="recordings/" />
     <cache-path name="clipboard" path="clipboard/" />
     <cache-path name="mms" path="mms/" />
     <cache-path name="pc_shots" path="pc-shots/shared/" />
+    <cache-path name="agent_exports" path="agent-exports/" />
 </paths>

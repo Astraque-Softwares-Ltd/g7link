@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The music player (ui/player). Kept apart from strings.xml so the player and the rest of the app never edit one file. -->
+<resources>
+    <string name="player_open">Oynatıcıyı aç</string>
+    <string name="player_close">Oynatıcıyı kapat</string>
+    <string name="player_choose">Oynatıcıyı ve çıkışı seçin</string>
+    <string name="player_sheet_title">%1$s üzerinde çal</string>
+    <string name="player_output">Çıkış</string>
+    <string name="player_players_on">%1$s üzerindeki oynatıcılar</string>
+    <string name="player_phone_speaker_note">%1$s sesi bu telefonda çalar.</string>
+    <string name="player_state_playing">%1$s · çalıyor</string>
+    <string name="player_state_paused">%1$s · duraklatıldı</string>
+    <string name="player_volume_keys_note">Ses düğmeleri, %1$s bir şey çalarken onun ses düzeyini değiştirir. Bunu Ayarlar\'dan kapatabilirsiniz.</string>
+    <string name="player_shuffle_on">Karıştır, açık</string>
+    <string name="player_shuffle_off">Karıştır, kapalı</string>
+    <string name="player_repeat_off">Tekrarla, kapalı</string>
+    <string name="player_repeat_playlist">Çalma listesini tekrarla, açık</string>
+    <string name="player_repeat_track">Bu parçayı tekrarla, açık</string>
+    <string name="player_position">Konum</string>
+    <string name="player_time_of">%1$s / %2$s</string>
+    <string name="player_volume_on">%1$s ses düzeyi</string>
+    <string name="player_mute_pc">%1$s sesini kapat</string>
+    <string name="player_unmute_pc">%1$s sesini aç</string>
+    <string name="player_showing">Gösteriliyor</string>
+</resources>

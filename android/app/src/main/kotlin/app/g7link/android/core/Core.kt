@@ -15,6 +15,7 @@ import android.widget.Toast
 import android.net.Uri
 import app.g7link.android.BuildConfig
 import app.g7link.android.audio.PcSpeakerPlayer
+import app.g7link.android.ble.LinkFailure
 import app.g7link.android.ble.PcBleLink
 import app.g7link.android.clipboard.PhoneClipboard
 import app.g7link.android.links.LinkNotifications
@@ -47,8 +48,12 @@ import app.g7link.android.mirror.MirrorService
 import app.g7link.android.toggles.PhoneToggles
 import app.g7link.android.webcam.WebcamRequests
 import app.g7link.android.webcam.WebcamService
+import app.g7link.core.AgentExport
 import app.g7link.core.AgentMode
 import app.g7link.core.AgentPage
+import app.g7link.core.AgentSession
+import app.g7link.core.AgentSessionPage
+import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
 import app.g7link.core.BleUseState
 import app.g7link.core.FfiQueueStatus
@@ -237,6 +242,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         scope = scope,
         onSeedColorChanged = { syncActiveMediaColor() },
         setPcAudio = { pc, volume, muted -> setPcAudio(pc, volume, muted) },
+        node = { startJob?.join(); node },
     ) { pc, player, action, position ->
         command { it.mediaCommand(pc, player, action, position) }
     }.also { it.volumeKeys(app.g7link.android.ui.Preferences.isVolumeKeysControlPcEnabled(this.context)) }
@@ -502,7 +508,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             val devices = paired.getOrDefault(emptyList())
             val pcToggles = perPcToggles(started, devices.map { it.id })
             // The touchpad's routes live here; the core gets them at each start.
-            if (paired.isSuccess) app.g7link.android.ui.Preferences.keepRemoteRoutes(context, devices.map { it.id })
+            if (paired.isSuccess) {
+                app.g7link.android.ui.Preferences.keepRemoteRoutes(context, devices.map { it.id })
+                app.g7link.android.ui.Preferences.keepAgentChoices(context, devices.map { it.id })
+            }
             val routes = devices.associate { it.id to app.g7link.android.ui.Preferences.remoteRoute(context, it.id) }
             routes.forEach { (id, route) -> runCatching { started.setRemoteRoute(id, route) } }
             val routeStates = devices
@@ -755,6 +764,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 _agents.value = emptyMap()
                 agentWatchWanted.clear()
                 agentForeground = null
+                agentSessionWatchWanted.clear()
+                agentSessionForeground = null
+                _agentKeptSessions.value = emptySet()
 
                 _state.update { it.withDevicesOffline().copy(status = CoreStatus.Starting) }
                 app.g7link.android.widget.PcWidgetProvider.refreshAll(context, _state.value)
@@ -1025,6 +1037,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 // Paired again later, it asks again until chosen again.
                 PcAutoStart.set(context, event.id, false)
                 app.g7link.android.ui.Preferences.removeRemoteRoute(context, event.id)
+                app.g7link.android.ui.Preferences.removeAgentChoice(context, event.id)
+                agentSessionsConsent.forget(event.id)
                 forgetBle(event.id)
                 scope.launch(Dispatchers.Default) {
                     pcMedia.update(event.id, "", emptyList())
@@ -2261,8 +2275,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             listOf("media.watch") +
             // Shows a paired phone's or tablet's notifications.
             listOf("notify.show") +
-            // Follows and answers a PC's coding-agent threads (docs/protocol/agents.md).
-            listOf("agent.remote") +
+            // Follows and answers a PC's coding-agent threads (docs/protocol/agents.md),
+            // and shows the sessions started on it outside G7 when the PC allows (§3).
+            listOf("agent.remote", "agent.follow") +
             // Phone as microphone: asks for the permission when a PC first wants it.
             (if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)) listOf("mic.stream") else emptyList()) +
             toggles.capabilities() +
@@ -2363,6 +2378,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     /** When each PC was last asked to keep a link. */
     private val bleHoldAsked = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    /** How often background renewals look for each PC's window, after tries that came to nothing. */
+    private val bleBackoffs = java.util.concurrent.ConcurrentHashMap<String, BleBackoff>()
+
     /** PCs that keep a link for this phone until it lets go (or their lease ends). */
     private val bleHeld: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
@@ -2411,6 +2429,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     fun setUpBluetooth(pcId: String, ask: Boolean) {
         val runs = runScope ?: return
         bleSetups.remove(pcId)?.cancel()
+        bleBackoff(pcId).reset()
         val job = runs.launch(Dispatchers.IO) {
             useBluetooth(pcId, ask).collect { step -> _state.update { it.withBleSetup(pcId, step) } }
         }
@@ -2445,7 +2464,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             // Nothing to ask over. A PC that said yes opens a window by itself when its session ends.
             if (pcId in bleAllowedBy) {
                 emit(BleSetup.Connecting)
-                emit(if (linkNow(current, pcId, BLE_NO_NETWORK_SCAN_MS)) BleSetup.Linked else BleSetup.OutOfRange)
+                emit(afterLinkTry(pcId, linkNow(current, pcId, BLE_NO_NETWORK_SCAN_MS)))
             } else {
                 emit(BleSetup.NoPath)
             }
@@ -2453,25 +2472,28 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
         val askedAt = SystemClock.elapsedRealtime()
         var reply = bleUseOnce(current, pcId, ask)
-        if (ask && reply.getOrNull() == BleUseState.UNAVAILABLE) {
+        if (ask && reply.getOrNull()?.state == BleUseState.UNAVAILABLE) {
             // The PC may not have heard yet that this phone offers Bluetooth now.
             delay(BLE_CAPABILITIES_SETTLE_MS)
             reply = bleUseOnce(current, pcId, ask)
         }
-        while (reply.getOrNull() == BleUseState.ASKING && SystemClock.elapsedRealtime() - askedAt < BLE_ASK_WAIT_MS) {
+        while (reply.getOrNull()?.state == BleUseState.ASKING && SystemClock.elapsedRealtime() - askedAt < BLE_ASK_WAIT_MS) {
             emit(BleSetup.Asking)
             delay(BLE_ASK_POLL_MS)
             reply = bleUseOnce(current, pcId, ask = false)
         }
-        val state = reply.getOrNull()
-        if (state == null) {
-            emit(bleSetupAfterError(reply.exceptionOrNull()))
-        } else if (state == BleUseState.OPEN && !PcBleLink.linkedTo(pcId)) {
-            emit(BleSetup.Connecting)
-            emit(if (linkNow(current, pcId, BLE_CONNECT_WAIT_MS)) BleSetup.Linked else BleSetup.OutOfRange)
-        } else {
+        val answer = reply.getOrNull()
+        when {
+            answer == null -> emit(bleSetupAfterError(reply.exceptionOrNull()))
+            answer.state != BleUseState.OPEN -> emit(bleSetupAfter(answer.state, asked = ask))
             // Open while a link is already up counts as linked.
-            emit(if (state == BleUseState.OPEN) BleSetup.Linked else bleSetupAfter(state, asked = ask))
+            PcBleLink.linkedTo(pcId) -> emit(BleSetup.Linked)
+            // The PC opened its windows for this phone lately: nothing to look for until it can again.
+            !answer.windowOpen -> emit(BleSetup.Later)
+            else -> {
+                emit(BleSetup.Connecting)
+                emit(afterLinkTry(pcId, linkNow(current, pcId, BLE_CONNECT_WAIT_MS)))
+            }
         }
     }
 
@@ -2484,9 +2506,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     }
 
     /** One `ble.use { on: true }` to [pcId], and what it says about the PC. */
-    private suspend fun bleUseOnce(node: G7LinkNode, pcId: String, ask: Boolean): Result<BleUseState> {
-        val state = try {
-            node.bleUse(pcId, true, ask)
+    private suspend fun bleUseOnce(node: G7LinkNode, pcId: String, ask: Boolean): Result<BleUseAnswer> {
+        val answer = try {
+            node.bleUseReply(pcId, true, ask).let {
+                BleUseAnswer(it.state, it.windowSecs?.toInt(), it.retrySecs?.toInt())
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: G7LinkException) {
@@ -2494,7 +2518,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             return Result.failure(e)
         }
         bleHoldAsked[pcId] = SystemClock.elapsedRealtime()
-        when (state) {
+        when (answer.state) {
             BleUseState.OPEN, BleUseState.LINKED -> {
                 bleHeld += pcId
                 bleAllowedBy += pcId
@@ -2502,27 +2526,55 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             BleUseState.OFF -> bleAllowedBy -= pcId
             else -> Unit
         }
-        return Result.success(state)
+        return Result.success(answer)
     }
 
+    /** How a try at linking ended: [failure] null once a link is up. */
+    private class LinkTry(val failure: LinkFailure?)
+
     /**
-     * Finds [pcId]'s connect window and links with it within [timeoutMs]: whether
-     * a link is up. An attempt that ends early gets a fresh scan, a few times.
+     * Looks for [pcId]'s connect window for up to [scanMs] and links with it: null once
+     * a link is up, or why none came. An attempt that found the PC is waited for to its
+     * end (it has its own limit); one that ends early gets a fresh scan, a few times.
      */
-    private suspend fun linkNow(node: G7LinkNode, pcId: String, timeoutMs: Long): Boolean =
-        withTimeoutOrNull(timeoutMs) {
+    private suspend fun linkNow(node: G7LinkNode, pcId: String, scanMs: Long): LinkFailure? {
+        val tried = withTimeoutOrNull(scanMs + BLE_LINK_FINISH_MS) {
+            val scanUntil = SystemClock.elapsedRealtime() + scanMs
             var attempts = 0
+            var failure: LinkFailure = LinkFailure.NotSeen
             while (!PcBleLink.linkedTo(pcId)) {
                 if (!PcBleLink.active(pcId)) {
-                    if (attempts == BLE_LINK_ATTEMPTS) return@withTimeoutOrNull false
+                    // The PC was seen and the attempt ended: that says more than a scan that comes up empty later.
+                    if (attempts > 0) failure = PcBleLink.lastOutcome(pcId)?.failure ?: failure
+                    val left = scanUntil - SystemClock.elapsedRealtime()
+                    if (attempts == BLE_LINK_ATTEMPTS || left <= 0) return@withTimeoutOrNull LinkTry(failure)
                     attempts++
-                    val device = PcCompanion.findPcToConnect(context, pcId, timeoutMs) ?: return@withTimeoutOrNull false
-                    PcBleLink.connect(context, node, pcId, device, urgent = true)
+                    val device = PcCompanion.findPcToConnect(context, pcId, left)
+                        ?: return@withTimeoutOrNull LinkTry(failure)
+                    if (!PcBleLink.connect(context, node, pcId, device, urgent = true)) {
+                        return@withTimeoutOrNull LinkTry(LinkFailure.Connect(-1))
+                    }
                 }
                 delay(BLE_LINK_POLL_MS)
             }
-            true
-        } ?: false
+            LinkTry(null)
+        }
+        return if (tried == null) LinkFailure.TimedOut else tried.failure
+    }
+
+    /** Where a try at linking with [pcId] leaves the bring-up; counted for the background looks' back-off. */
+    private fun afterLinkTry(pcId: String, failure: LinkFailure?): BleSetup {
+        val backoff = bleBackoff(pcId)
+        if (failure == null) {
+            backoff.reset()
+        } else {
+            val wait = backoff.failed(SystemClock.elapsedRealtime())
+            Log.i(TAG, "no Bluetooth link with a PC: $failure; background looks wait ${wait / 1000} s")
+        }
+        return bleSetupAfterLink(failure)
+    }
+
+    private fun bleBackoff(pcId: String): BleBackoff = bleBackoffs.computeIfAbsent(pcId) { BleBackoff() }
 
     /**
      * The Remote screen for [pcId] shows ([shown]) or went to the background.
@@ -2575,18 +2627,25 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             PcBleLink.canConnect(context) && PcBleLink.bluetoothOn(context)
     }
 
-    /** Renews [pcId]'s hold; when the PC opened its window and no link is up, looks for it a short while. */
+    /**
+     * Renews [pcId]'s hold. When the PC has its window open and no link is up, looks
+     * for it a short while, less often after tries that came to nothing. Only a
+     * bring-up the user started shows progress: a renewal changes the row once it
+     * knows how it went, and leaves it as it was when it doesn't look.
+     */
     private suspend fun renewBleHold(node: G7LinkNode, pcId: String) {
         // A bring-up under way asks for itself.
         if (bleSetups[pcId]?.isActive == true) return
-        val state = bleUseOnce(node, pcId, ask = false).getOrNull() ?: return
+        val answer = bleUseOnce(node, pcId, ask = false).getOrNull() ?: return
         val step = when {
-            state == BleUseState.OPEN && PcBleLink.linkedTo(pcId) -> BleSetup.Linked
-            state == BleUseState.OPEN -> {
-                _state.update { it.withBleSetup(pcId, BleSetup.Connecting) }
-                if (linkNow(node, pcId, BLE_HOLD_LINK_MS)) BleSetup.Linked else BleSetup.OutOfRange
-            }
-            else -> bleSetupAfter(state, asked = false)
+            answer.state != BleUseState.OPEN -> bleSetupAfter(answer.state, asked = false)
+            PcBleLink.linkedTo(pcId) -> BleSetup.Linked.also { bleBackoff(pcId).reset() }
+            // One under way (the PC's beacon asked for it) is looked at by the next renewal.
+            PcBleLink.active(pcId) -> return
+            // No window now: nothing to look for until the PC can open one again.
+            !answer.windowOpen -> return
+            !bleBackoff(pcId).due(SystemClock.elapsedRealtime()) -> return
+            else -> afterLinkTry(pcId, linkNow(node, pcId, BLE_HOLD_LINK_MS))
         }
         _state.update { it.withBleSetup(pcId, step) }
     }
@@ -2594,6 +2653,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     /** Lets [pcId]'s hold go (`ble.use { on: false }`), when this phone has one. */
     private fun releaseBleHold(pcId: String) {
         bleHoldAsked.remove(pcId)
+        // The next hold looks for the PC from the start.
+        bleBackoffs.remove(pcId)
         if (!bleHeld.remove(pcId)) return
         val current = node ?: return
         scope.launch(Dispatchers.IO) {
@@ -2610,6 +2671,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         bleSetups.remove(pcId)?.cancel()
         bleHolds.remove(pcId)?.cancel()
         bleHoldAsked.remove(pcId)
+        bleBackoffs.remove(pcId)
         bleHeld.remove(pcId)
         bleAllowedBy.remove(pcId)
     }
@@ -3130,50 +3192,115 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     private val _agents = MutableStateFlow<Map<String, AgentsState>>(emptyMap())
 
     /**
-     * Each PC's agent threads, by PC, in memory only. Kept apart from [state] so
-     * streaming text redraws only the thread on screen.
+     * Each PC's agent threads and the sessions started on it outside G7, by PC,
+     * in memory only. Kept apart from [state] so streaming text redraws only
+     * the thread on screen.
      */
     val agents: StateFlow<Map<String, AgentsState>> = _agents.asStateFlow()
 
     /** The thread whose screen is in front (PC, thread): its notifications wait. */
     @Volatile private var agentForeground: Pair<String, String>? = null
 
+    /** The followed session whose view is in front (PC, session). */
+    @Volatile private var agentSessionForeground: Pair<String, String>? = null
+
     /** Threads this phone started, opened or replied to ("pc/thread"): their working notification shows. */
     private val agentFollowed: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private val _agentKeptSessions = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * Sessions the user keeps in the status bar ("pc/session"), in memory only:
+     * a Live Update while they work, until Stop following, until they end or go,
+     * or until the PC goes away.
+     */
+    val agentKeptSessions: StateFlow<Set<String>> = _agentKeptSessions.asStateFlow()
 
     /** The thread each PC should send this phone's text for; absent for none. */
     private val agentWatchWanted = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val agentWatchLock = Mutex()
     private val agentRereads = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
+    /** The session each PC should send this phone's items for; absent for none. */
+    private val agentSessionWatchWanted = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val agentSessionWatchLock = Mutex()
+
+    /** Whether a sessions request may go out unasked (it would make the PC prompt otherwise). */
+    private val agentSessionsConsent = app.g7link.android.ui.agents.SessionsConsent(
+        object : app.g7link.android.ui.agents.SessionsConsent.Store {
+            override fun allowedBefore(pcId: String): Boolean = app.g7link.android.ui.Preferences.agentSessionsAllowed(context, pcId)
+
+            override fun setAllowedBefore(pcId: String, allowed: Boolean) =
+                app.g7link.android.ui.Preferences.setAgentSessionsAllowed(context, pcId, allowed)
+        },
+    )
+
+    /** Reading a PC's threads and sessions after its catalog arrives, once at a time per PC. */
+    private val agentRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val agentSessionRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
     private fun onAgentEvent(pcId: String, event: Event) {
+        var before = AgentsState()
         var after = AgentsState()
         var reread: String? = null
         _agents.update { all ->
             val current = all[pcId] ?: AgentsState()
             val result = AgentsModel.reduce(current, event)
+            before = current
             after = result.state
             reread = result.reread
             if (result.state === current) all else all + (pcId to result.state)
         }
         reread?.let { agentReread(pcId, it) }
+        when (event) {
+            // Home shows what runs and waits without the Agents screen open: read it all once the PC says what it offers.
+            is Event.AgentCatalog -> if (event.catalog != null) agentRefresh(pcId)
+            // Allowed on the PC (it sends these only then): the whole list, not just this one.
+            is Event.AgentSessionChanged -> if (before.sessionsAllowed != true) agentRefreshSessions(pcId)
+            else -> Unit
+        }
         val shown = agentForeground?.takeIf { it.first == pcId }?.second
+        val shownSession = agentSessionForeground?.takeIf { it.first == pcId }?.second
         val state = after
-        val notices = AgentNotifications.plan(pcId, event, state, shown) { thread -> agentFollows(pcId, thread, state) }
+        val notices = AgentNotifications.plan(
+            pcId,
+            event,
+            state,
+            shown,
+            shownSession,
+            kept = { session -> agentKeeps(pcId, session) },
+        ) { thread -> agentFollows(pcId, thread, state) }
         if (notices.isNotEmpty()) AgentNotifications.apply(context, agentPcName(pcId), notices)
+        // A session that ended or left the list isn't kept in the status bar any more (its notice went above).
+        when (event) {
+            is Event.AgentSessionChanged -> if (event.session.state == AgentSessionState.ENDED) agentForgetKept(pcId, event.session.id)
+            is Event.AgentSessionRemoved -> agentForgetKept(pcId, event.session)
+            else -> Unit
+        }
     }
 
     private fun agentFollows(pcId: String, threadId: String, state: AgentsState): Boolean =
         state.thread(threadId)?.fromPhone == true || "$pcId/$threadId" in agentFollowed
 
+    private fun agentKeeps(pcId: String, sessionId: String): Boolean = "$pcId/$sessionId" in _agentKeptSessions.value
+
+    private fun agentForgetKept(pcId: String, sessionId: String) {
+        _agentKeptSessions.update { it - "$pcId/$sessionId" }
+    }
+
     private fun agentPcName(pcId: String): String =
         _state.value.nameOf(pcId)?.ifBlank { null } ?: context.getString(R.string.your_pc)
 
-    /** The PC went away or was unpaired: what this phone knew of its threads goes with it. */
+    /** The PC went away or was unpaired: what this phone knew of its threads and sessions goes with it. */
     private fun agentsGone(pcId: String) {
         _agents.update { it - pcId }
         agentWatchWanted.remove(pcId)
+        agentSessionWatchWanted.remove(pcId)
         if (agentForeground?.first == pcId) agentForeground = null
+        if (agentSessionForeground?.first == pcId) agentSessionForeground = null
+        _agentKeptSessions.update { kept -> kept.filterNot { it.startsWith("$pcId/") }.toSet() }
+        agentRefreshes.remove(pcId)?.cancel()
+        agentSessionRefreshes.remove(pcId)?.cancel()
         AgentNotifications.cancelPc(context, pcId)
     }
 
@@ -3190,6 +3317,19 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         val key = "$pcId/$threadId"
         if (agentRereads[key]?.isActive == true) return
         agentRereads[key] = scope.launch { agentRead(pcId, threadId, null) }
+    }
+
+    /** A PC's threads and then, when that can't make the PC prompt unasked, its sessions, after its catalog arrived. */
+    private fun agentRefresh(pcId: String) {
+        if (agentRefreshes[pcId]?.isActive == true) return
+        agentRefreshes[pcId] = scope.launch {
+            if (agentThreads(pcId) is AgentCall.Ok) agentSessionsIfAllowed(pcId)
+        }
+    }
+
+    private fun agentRefreshSessions(pcId: String) {
+        if (agentSessionRefreshes[pcId]?.isActive == true) return
+        agentSessionRefreshes[pcId] = scope.launch { agentSessions(pcId) }
     }
 
     private suspend fun <T> agentCall(block: suspend (G7LinkNode) -> T): AgentCall<T> {
@@ -3336,6 +3476,143 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             }
         }
     }
+
+    // ---- Sessions started on a PC outside G7 (docs/protocol/agents.md §3) ----
+
+    /**
+     * The PC's sessions, unless asking could make the PC show its prompt
+     * without the user having asked ([agentSessionsConsent]): then nothing is
+     * sent and the list keeps its "Ask on <PC>" state.
+     */
+    suspend fun agentSessionsIfAllowed(pcId: String): AgentCall<List<AgentSession>>? =
+        if (agentSessionsConsent.mayAskAutomatically(pcId)) agentSessions(pcId) else null
+
+    /** "Ask on <PC>": the user asks, so the PC may now show its prompt; asked again for the rest of this run. */
+    suspend fun agentSessionsAsk(pcId: String): AgentCall<List<AgentSession>> {
+        agentSessionsConsent.userAsked(pcId)
+        return agentSessions(pcId)
+    }
+
+    /**
+     * The PC's sessions. Denied means its switch for this phone is off (the
+     * first refusal makes the PC prompt): remembered until asked again.
+     * Unsupported: it doesn't list them. Only for a request the user asked
+     * for, or one [agentSessionsConsent] allows, or while the PC already sends
+     * sessions (it's allowed).
+     */
+    private suspend fun agentSessions(pcId: String): AgentCall<List<AgentSession>> {
+        val result = agentCall { it.agentSessions(pcId) }
+        when (result) {
+            is AgentCall.Ok -> {
+                agentSessionsConsent.answered(pcId, app.g7link.android.ui.agents.SessionsConsent.Answer.LISTED)
+                updateAgents(pcId) { AgentsModel.withSessions(it, result.value) }
+            }
+            is AgentCall.Failed -> agentSessionsRefused(pcId, result.failure)
+        }
+        return result
+    }
+
+    private fun agentSessionsRefused(pcId: String, failure: AgentFailure) {
+        when (failure) {
+            AgentFailure.DENIED -> {
+                agentSessionsConsent.answered(pcId, app.g7link.android.ui.agents.SessionsConsent.Answer.REFUSED)
+                updateAgents(pcId) { AgentsModel.sessionsOff(it) }
+            }
+            AgentFailure.UNSUPPORTED -> updateAgents(pcId) { AgentsModel.sessionsUnsupported(it) }
+            AgentFailure.NOT_FOUND, AgentFailure.OFFLINE, AgentFailure.TIMEOUT, AgentFailure.OTHER -> Unit
+        }
+    }
+
+    /** The newest page of a session, or the one before [before]; the open session takes it. */
+    suspend fun agentSessionRead(pcId: String, sessionId: String, before: ULong?): AgentCall<AgentSessionPage> {
+        val result = agentCall { it.agentSessionRead(pcId, sessionId, before, AgentsModel.PAGE.toUInt()) }
+        when (result) {
+            is AgentCall.Ok -> updateAgents(pcId) {
+                if (before == null) AgentsModel.withSessionPage(it, result.value) else AgentsModel.withOlderSessionPage(it, result.value)
+            }
+            // Turned off on the PC while followed.
+            is AgentCall.Failed -> if (result.failure == AgentFailure.DENIED) agentSessionsRefused(pcId, result.failure)
+        }
+        return result
+    }
+
+    /** Asks the PC for the items of the session this phone shows now ([agentSessionWatchWanted]), in order. */
+    private suspend fun agentSessionSyncWatch(pcId: String): AgentCall<Unit> = agentSessionWatchLock.withLock {
+        val wanted = agentSessionWatchWanted[pcId]
+        agentCall { it.agentSessionWatch(pcId, wanted) }
+    }
+
+    /**
+     * A followed session's view came into view (opened, back from the
+     * background, or the PC reconnected): its notification waits, the PC sends
+     * its items, and its newest page is read again. No gap is looked for.
+     */
+    suspend fun agentSessionShown(pcId: String, sessionId: String): AgentCall<AgentSessionPage> {
+        agentSessionForeground = pcId to sessionId
+        updateAgents(pcId) { AgentsModel.sessionOpened(it, sessionId) }
+        AgentNotifications.cancelSession(context, pcId, sessionId)
+        agentSessionWatchWanted[pcId] = sessionId
+        val watched = agentSessionSyncWatch(pcId)
+        if (watched is AgentCall.Failed) return AgentCall.Failed(watched.failure)
+        return agentSessionRead(pcId, sessionId, null)
+    }
+
+    /** A followed session's view went out of view: its items stop, and a kept one shows in the status bar again. */
+    fun agentSessionHidden(pcId: String, sessionId: String) {
+        if (agentSessionForeground == pcId to sessionId) agentSessionForeground = null
+        agentSessionWatchWanted.remove(pcId, sessionId)
+        scope.launch { agentSessionSyncWatch(pcId) }
+        agentRefreshSessionNotice(pcId, sessionId)
+    }
+
+    /** Left a followed session's view: its items are dropped. */
+    fun agentSessionClosed(pcId: String, sessionId: String) = updateAgents(pcId) { AgentsModel.sessionClosed(it, sessionId) }
+
+    /**
+     * Keep in status bar, from the followed view (on) or Stop following on its
+     * Live Update (off).
+     */
+    fun agentSessionKeep(pcId: String, sessionId: String, on: Boolean) {
+        val key = "$pcId/$sessionId"
+        _agentKeptSessions.update { if (on) it + key else it - key }
+        if (on) {
+            agentRefreshSessionNotice(pcId, sessionId)
+        } else {
+            AgentNotifications.cancelSession(context, pcId, sessionId)
+        }
+    }
+
+    private fun agentRefreshSessionNotice(pcId: String, sessionId: String) {
+        val state = _agents.value[pcId] ?: return
+        val session = state.session(sessionId) ?: return
+        val shownSession = agentSessionForeground?.takeIf { it.first == pcId }?.second
+        val notice = AgentNotifications.sessionNotice(pcId, state, session, shownSession) { agentKeeps(pcId, it) }
+        if (notice != null) AgentNotifications.apply(context, agentPcName(pcId), listOf(notice))
+    }
+
+    /**
+     * Continue here: the PC makes the session a supervised thread started by
+     * this phone, idle until something is sent. The session leaves the list.
+     */
+    suspend fun agentSessionContinue(pcId: String, sessionId: String): AgentCall<AgentThread> {
+        val result = agentCall { it.agentSessionContinue(pcId, sessionId) }
+        if (result is AgentCall.Ok) {
+            agentFollowed += "$pcId/${result.value.id}"
+            agentSessionKeep(pcId, sessionId, false)
+            updateAgents(pcId) { state ->
+                AgentsModel.withThread(state, result.value).let { it.copy(sessions = it.sessions.filterNot { s -> s.id == sessionId }) }
+            }
+        }
+        return result
+    }
+
+    /**
+     * A thread ([threadId]) or a followed session ([sessionId]) as Markdown,
+     * to share: exactly one of the two. Kept in memory only; the caller hands
+     * it to the share sheet.
+     */
+    suspend fun agentExport(pcId: String, threadId: String?, sessionId: String?): AgentCall<AgentExport> =
+        agentCall { it.agentExport(pcId, threadId, sessionId) }
 
     /** A short message at the bottom of the app's screen. */
     fun say(message: String) {
@@ -3675,6 +3952,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         const val BLE_HOLD_TICK_MS = 1_000L
         /** A renewal that finds the window open and no link looks for it this long. */
         const val BLE_HOLD_LINK_MS = 12_000L
+        /** An attempt that found the PC is waited for this long past the look, at most: its own limit is 20 s. */
+        const val BLE_LINK_FINISH_MS = 21_000L
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */

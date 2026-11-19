@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The music player (ui/player). Kept apart from strings.xml so the player and the rest of the app never edit one file. -->
+<resources>
+    <string name="player_open">打开播放器</string>
+    <string name="player_close">关闭播放器</string>
+    <string name="player_choose">选择播放器和输出</string>
+    <string name="player_sheet_title">在 %1$s 上播放</string>
+    <string name="player_output">输出</string>
+    <string name="player_players_on">%1$s 上的播放器</string>
+    <string name="player_phone_speaker_note">%1$s 的声音在这部手机上播放。</string>
+    <string name="player_state_playing">%1$s · 正在播放</string>
+    <string name="player_state_paused">%1$s · 已暂停</string>
+    <string name="player_volume_keys_note">%1$s 播放时，音量键会调节它的音量。可在设置中关闭。</string>
+    <string name="player_shuffle_on">随机播放，开</string>
+    <string name="player_shuffle_off">随机播放，关</string>
+    <string name="player_repeat_off">重复播放，关</string>
+    <string name="player_repeat_playlist">重复播放列表，开</string>
+    <string name="player_repeat_track">单曲循环，开</string>
+    <string name="player_position">播放位置</string>
+    <string name="player_time_of">%1$s / %2$s</string>
+    <string name="player_volume_on">%1$s 的音量</string>
+    <string name="player_mute_pc">将 %1$s 静音</string>
+    <string name="player_unmute_pc">取消 %1$s 的静音</string>
+    <string name="player_showing">正在显示</string>
+</resources>

@@ -264,6 +264,8 @@ private fun rowText(text: RowText, pcName: String): String = when (text) {
     RowText.PcHasNoBluetooth -> stringResource(R.string.remote_bt_unavailable, pcName)
     RowText.PcBusy -> stringResource(R.string.remote_bt_busy, pcName)
     RowText.OutOfRange -> stringResource(R.string.remote_bt_out_of_range)
+    RowText.CouldntConnect -> stringResource(R.string.remote_bt_couldnt_connect)
+    RowText.Later -> stringResource(R.string.remote_bt_later, pcName)
     RowText.ConnectOverNetworkFirst -> stringResource(R.string.remote_bt_connect_first)
     RowText.Failed -> stringResource(R.string.remote_bt_failed)
 }
