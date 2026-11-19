@@ -99,10 +99,10 @@ pub mod qobject {
         /// the first time while its `agents` toggle is off ("" when none).
         #[qproperty(QString, agents_prompt_device_id)]
         #[qproperty(QString, agents_prompt_device_name)]
-        /// The agent host as Settings shows it, as JSON:
-        /// `{ status, agents: [{ id, name, installed, signedIn, version, auth, plan, loginHint, problem }],
-        /// folders: [{ id, label, path, exists }] }`.
-        #[qproperty(QString, agents_json)]
+        /// Device ID and name of a phone asking to see the sessions started on
+        /// this PC while its `agent_sessions` toggle is off ("" when none).
+        #[qproperty(QString, agent_sessions_prompt_device_id)]
+        #[qproperty(QString, agent_sessions_prompt_device_name)]
         /// Device ID and name of a phone asking to view this PC's screen
         /// while `pc_mirror` is off ("" when none), plus active sharing indicator.
         #[qproperty(QString, pc_mirror_prompt_device_id)]
@@ -227,18 +227,13 @@ pub mod qobject {
         /// Closes the Agents prompt without allowing it.
         #[qinvokable]
         fn dismiss_agents_prompt(self: Pin<&mut AppController>);
-        /// Settings shows (or stopped showing) its Agents section.
+        /// Lets the phone in the sessions prompt see the sessions started on
+        /// this PC (turns its `agent_sessions` toggle on), then closes the prompt.
         #[qinvokable]
-        fn set_agents_settings_open(self: &AppController, open: bool);
-        /// Starts the agent host (Settings, "Start it").
+        fn allow_agent_sessions_prompt(self: Pin<&mut AppController>);
+        /// Closes the sessions prompt without allowing it.
         #[qinvokable]
-        fn start_agents_host(self: &AppController);
-        /// Adds a folder agents may work in, by its local path (after the user confirmed it).
-        #[qinvokable]
-        fn add_agent_folder(self: &AppController, path: &QString);
-        /// Removes a folder from the agents' list.
-        #[qinvokable]
-        fn remove_agent_folder(self: &AppController, id: &QString);
+        fn dismiss_agent_sessions_prompt(self: Pin<&mut AppController>);
         /// Lets a paired phone use Bluetooth with this PC (from its prompt sheet).
         #[qinvokable]
         fn allow_ble_link(self: Pin<&mut AppController>, device: &QString);
@@ -518,7 +513,8 @@ pub struct AppControllerRust {
     ble_prompt_device_name: QString,
     agents_prompt_device_id: QString,
     agents_prompt_device_name: QString,
-    agents_json: QString,
+    agent_sessions_prompt_device_id: QString,
+    agent_sessions_prompt_device_name: QString,
     pc_mirror_prompt_device_id: QString,
     pc_mirror_prompt_device_name: QString,
     pc_mirror_active: bool,
@@ -752,6 +748,16 @@ pub fn is_quit_requested() -> bool {
     QUIT_REQUESTED.load(Ordering::Acquire)
 }
 
+/// Shows the main window on `page` (from any thread).
+pub(crate) fn show_page(page: &'static str) {
+    if let Some(qt) = controller() {
+        let _ = qt.queue(move |mut object| {
+            object.as_mut().set_current_page(QString::from(page));
+            object.activate_requested();
+        });
+    }
+}
+
 /// Asks the UI to show the main window (from any thread).
 pub fn request_activation() {
     if let Some(qt) = controller() {
@@ -958,10 +964,6 @@ impl cxx_qt::Initialize for qobject::AppController {
                 | Changes::QUEUE,
             Self::refresh,
         );
-        self.as_mut().set_agents_json(QString::from(&crate::agents::settings_json()));
-        super::subscribe(qt.clone(), Changes::AGENTS, |object| {
-            object.set_agents_json(QString::from(&crate::agents::settings_json()));
-        });
         super::subscribe(qt.clone(), Changes::UPDATE, |object| {
             // Its name for people: "0.1.5", or "Nightly 7 (Amber Clover)".
             let version = crate::updater::available().map(|u| u.title()).unwrap_or_default();
@@ -1244,6 +1246,7 @@ impl qobject::AppController {
             battery,
             remote_prompt,
             agents_prompt,
+            agent_sessions_prompt,
             ble_prompt,
             pc_mirror_prompt,
             pc_mirror_peer_name,
@@ -1261,6 +1264,10 @@ impl qobject::AppController {
                 (id.to_string(), name)
             });
             let agents_prompt = s.agents_prompt.map(|id| {
+                let name = s.name_of(&id).unwrap_or_else(|| id.short());
+                (id.to_string(), name)
+            });
+            let agent_sessions_prompt = s.agent_sessions_prompt.map(|id| {
                 let name = s.name_of(&id).unwrap_or_else(|| id.short());
                 (id.to_string(), name)
             });
@@ -1307,6 +1314,7 @@ impl qobject::AppController {
                 battery,
                 remote_prompt,
                 agents_prompt,
+                agent_sessions_prompt,
                 ble_prompt,
                 pc_mirror_prompt,
                 pc_mirror_peer_name,
@@ -1345,6 +1353,9 @@ impl qobject::AppController {
         let (agents_prompt_id, agents_prompt_name) = agents_prompt.unwrap_or_default();
         self.as_mut().set_agents_prompt_device_id(QString::from(&agents_prompt_id));
         self.as_mut().set_agents_prompt_device_name(QString::from(&agents_prompt_name));
+        let (sessions_prompt_id, sessions_prompt_name) = agent_sessions_prompt.unwrap_or_default();
+        self.as_mut().set_agent_sessions_prompt_device_id(QString::from(&sessions_prompt_id));
+        self.as_mut().set_agent_sessions_prompt_device_name(QString::from(&sessions_prompt_name));
         let (ble_prompt_id, ble_prompt_name) = ble_prompt.unwrap_or_default();
         self.as_mut().set_ble_prompt_device_id(QString::from(&ble_prompt_id));
         self.as_mut().set_ble_prompt_device_name(QString::from(&ble_prompt_name));
@@ -1701,23 +1712,22 @@ impl qobject::AppController {
             .update(|s| if s.agents_prompt.take().is_some() { Changes::REMOTE } else { Changes::NONE });
     }
 
-    pub fn set_agents_settings_open(&self, open: bool) {
-        crate::agents::settings_open(open);
+    pub fn allow_agent_sessions_prompt(mut self: Pin<&mut Self>) {
+        let Some(id) = core_host::host().hub.read(|s| s.agent_sessions_prompt) else { return };
+        self.as_mut().set_device_toggle(
+            &QString::from(&id.to_string()),
+            &QString::from(g7link_core::AGENT_SESSIONS_TOGGLE),
+            true,
+        );
+        core_host::host().hub.update(|s| {
+            if s.agent_sessions_prompt.take().is_some() { Changes::REMOTE } else { Changes::NONE }
+        });
     }
 
-    pub fn start_agents_host(&self) {
-        crate::agents::start_host();
-    }
-
-    pub fn add_agent_folder(&self, path: &QString) {
-        let path = String::from(path);
-        if !path.is_empty() {
-            crate::agents::add_folder(path);
-        }
-    }
-
-    pub fn remove_agent_folder(&self, id: &QString) {
-        crate::agents::remove_folder(String::from(id));
+    pub fn dismiss_agent_sessions_prompt(self: Pin<&mut Self>) {
+        core_host::host().hub.update(|s| {
+            if s.agent_sessions_prompt.take().is_some() { Changes::REMOTE } else { Changes::NONE }
+        });
     }
 
     pub fn allow_ble_link(mut self: Pin<&mut Self>, device: &QString) {
@@ -1846,6 +1856,16 @@ impl qobject::AppController {
         let name_str = String::from(name);
         if let Err(e) = node.set_device_toggle(id, &name_str, on) {
             show_message(describe(&e));
+        }
+        if name_str == g7link_core::AGENT_SESSIONS_TOGGLE && on {
+            core_host::host().hub.update(|s| {
+                if s.agent_sessions_prompt == Some(id) {
+                    s.agent_sessions_prompt = None;
+                    Changes::REMOTE
+                } else {
+                    Changes::NONE
+                }
+            });
         }
         if name_str == g7link_core::AGENTS_TOGGLE {
             crate::agents::wake();

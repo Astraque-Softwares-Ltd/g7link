@@ -1042,6 +1042,7 @@ fn build_candidates() -> Vec<PaletteCandidate> {
     // 4. Navigation pages
     let nav_pages = [
         ("home", "Go to Home", "Device status, quick toggles, transfers, and notifications", "home"),
+        ("agents", "Go to Agents", "Claude and Codex threads, and sessions started on this PC", "terminal"),
         ("messages", "Go to Messages", "SMS, MMS, RCS, and chat conversations", "messages"),
         ("calls", "Go to Calls", "Call history, contacts, and dialpad", "call"),
         ("photos", "Go to Photos", "Recent photos, screenshots, and videos from your phone", "photo"),

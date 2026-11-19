@@ -86,6 +86,31 @@ pub fn identify(class: &str, pid: u32) -> Option<Arc<AppIdentity>> {
     identify_in(&CACHE, &src, class, pid, Instant::now())
 }
 
+/// The icon of the app a media player's MPRIS `DesktopEntry` names (its
+/// desktop id, with or without ".desktop"): its key and PNG, as
+/// [`AppIcon`]. Cached with the rest; may draw the icon the first time, so
+/// call it off the GUI thread.
+pub(crate) fn icon_for_desktop_entry(entry: &str) -> Option<(String, Vec<u8>)> {
+    let dirs = application_dirs();
+    let languages = languages();
+    let src =
+        Sources { dirs: &dirs, proc: Path::new("/proc"), languages: &languages, render: render_with_qt };
+    icon_for_entry_in(&CACHE, &src, entry, Instant::now())
+}
+
+fn icon_for_entry_in(
+    cache: &Cache,
+    src: &Sources<'_>,
+    entry: &str,
+    now: Instant,
+) -> Option<(String, Vec<u8>)> {
+    let entry = entry.trim();
+    let id = entry.strip_suffix(".desktop").unwrap_or(entry);
+    let app = identify_in(cache, src, id, 0, now)?;
+    let icon = app.icon.as_ref()?;
+    Some((icon.key.clone(), icon.png.to_vec()))
+}
+
 fn render_with_qt(icon: &str, edge: u32) -> Vec<u8> {
     crate::bridge::native::ffi::app_icon_png(icon, edge)
 }
@@ -999,6 +1024,29 @@ mod tests {
         assert_eq!(png(make_icon(stub_png, "org.gnome.Foo.svg")), Some(stub_png("org.gnome.Foo", 96)));
         for hostile in ["../icon", "icons/app", "", ".hidden", "/nonexistent/g7link/icon.png", "a\nb"] {
             assert_eq!(make_icon(stub_png, hostile), Rendered::Missing, "{hostile:?}");
+        }
+    }
+
+    #[test]
+    fn a_media_players_desktop_entry_gives_its_apps_icon() {
+        let fx = Fixture::new();
+        fx.write(0, "org.example.Player", &app("Player", ""));
+        fx.write(1, "com.example.Flat", &app("Flat", "StartupWMClass=FlatPlayer\n"));
+        fx.write(0, "org.example.Plain", "[Desktop Entry]\nType=Application\nName=Plain\n");
+        let languages: Vec<String> = Vec::new();
+        let src = Sources { dirs: &fx.dirs, proc: &fx.proc, languages: &languages, render: stub_png };
+        let icon = |entry: &str| icon_for_entry_in(&fx.cache, &src, entry, Instant::now());
+
+        let (key, png) = icon("org.example.Player").unwrap();
+        assert_eq!(png, stub_png("app", 96));
+        assert_eq!(key, icon_key(&png));
+        assert_eq!(key.len(), remote_limits::ICON_KEY_LEN);
+        assert!(key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{key}");
+        assert_eq!(icon(" org.example.Player.desktop ").map(|(k, _)| k), Some(key), "with its extension");
+        assert!(icon("flatplayer").is_some(), "by the entry's StartupWMClass");
+        assert_eq!(icon("org.example.Plain"), None, "an entry without an icon");
+        for hostile in ["", "../org.example.Player", "org.example.Missing", "a\nb"] {
+            assert_eq!(icon(hostile), None, "{hostile:?}");
         }
     }
 

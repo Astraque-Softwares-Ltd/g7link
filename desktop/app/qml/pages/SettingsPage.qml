@@ -361,7 +361,6 @@ Item {
                                  && page.Window.window.visibility !== Window.Minimized)
         if (page.active && (page.currentSection === "storage" || page.currentSection === "appearance"))
             AppController.refreshDataRetention()
-        AppController.setAgentsSettingsOpen(page.active && page.currentSection === "agents")
     }
 
     function formatTrigger(t) {
@@ -439,7 +438,6 @@ Item {
     }
     Component.onDestruction: {
         Webcam.setPreviewVisible("settings", false)
-        AppController.setAgentsSettingsOpen(false)
     }
 
     Connections {
@@ -507,7 +505,8 @@ Item {
         remote_files: qsTr("Browse PC folders"),
         bt_media: qsTr("Phone media on this PC"),
         ble_link: qsTr("Bluetooth link"),
-        agents: qsTr("Agents")
+        agents: qsTr("Agents"),
+        agent_sessions: qsTr("Sessions on this PC")
     })
     readonly property var toggleDetails: ({
         notifications: qsTr("Show on this PC"),
@@ -531,7 +530,8 @@ Item {
         remote_files: qsTr("Your PC's folders on the phone"),
         bt_media: qsTr("Over Bluetooth. Off: it keeps playing on the phone's own speaker or headphones"),
         ble_link: qsTr("Its touchpad and keyboard, ringing it, its hotspot and small copied text over Bluetooth. Turn it on on the phone too"),
-        agents: qsTr("Start and answer coding agents from this phone")
+        agents: qsTr("Start and answer coding agents from this phone"),
+        agent_sessions: qsTr("See Claude and Codex sessions you started on this PC yourself")
     })
     readonly property var toggleTints: ({
         notifications: Theme.tintBlue,
@@ -555,10 +555,11 @@ Item {
         remote_files: Theme.tintAmber,
         bt_media: Theme.tintBlue,
         ble_link: Theme.tintBlue,
-        agents: Theme.tintLavender
+        agents: Theme.tintLavender,
+        agent_sessions: Theme.tintLavender
     })
     // Higher-trust access: off until the user turns it on.
-    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage", "ble_link", "agents"]
+    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage", "ble_link", "agents", "agent_sessions"]
 
     readonly property var toggleIcons: ({
         notifications: Icons.bell,
@@ -582,46 +583,9 @@ Item {
         remote_files: Icons.folder,
         bt_media: Icons.bluetooth,
         ble_link: Icons.bluetooth,
-        agents: Icons.terminal
+        agents: Icons.terminal,
+        agent_sessions: Icons.terminal
     })
-
-    // ---- Agents: the host as G7 Link sees it ----
-    readonly property var agentsInfo: {
-        try {
-            return JSON.parse(AppController.agentsJson || "{}")
-        } catch (e) {
-            return ({})
-        }
-    }
-    readonly property bool agentsConnected: agentsInfo.status === "connected"
-    // The line under an agent's name: its command and version, then how it's signed in.
-    function agentDetail(a) {
-        if (!a.installed)
-            return qsTr("%1 isn't installed on this PC.").arg(a.name)
-        const version = a.version.length > 0 ? a.id + " " + a.version : a.id
-        if (a.problem.length > 0)
-            return a.problem
-        if (!a.signedIn)
-            return version
-        if (a.auth === "api_key")
-            return version + " · " + (a.id === "claude"
-                ? qsTr("using ANTHROPIC_API_KEY, billed to your API account")
-                : qsTr("using an API key, billed to your API account"))
-        if (a.plan.length > 0)
-            return version + " · " + qsTr("signed in with %1").arg(a.plan.charAt(0).toUpperCase() + a.plan.slice(1))
-        return version + " · " + qsTr("signed in")
-    }
-    function agentState(a) {
-        if (!a.installed)
-            return qsTr("Not installed")
-        if (a.problem.length > 0)
-            return qsTr("Needs an update")
-        return a.signedIn ? qsTr("Ready") : qsTr("Signed out")
-    }
-    function folderName(path) {
-        const parts = path.split("/").filter((p) => p.length > 0)
-        return parts.length > 0 ? parts[parts.length - 1] : path
-    }
 
     FolderDialog {
         id: photoBackupFolderPicker
@@ -634,12 +598,6 @@ Item {
         id: folderSyncPcPicker
         title: qsTr("Sync into")
         onAccepted: folderSyncSheet.pcFolder = Preferences.localFolder(selectedFolder.toString())
-    }
-
-    FolderDialog {
-        id: agentFolderPicker
-        title: qsTr("Add a folder for agents")
-        onAccepted: agentFolderSheet.ask(Preferences.localFolder(selectedFolder.toString()))
     }
 
     FolderDialog {
@@ -1896,161 +1854,26 @@ Item {
             }
 
             // ================================================================
-            // AGENTS
+            // AGENTS: one row, the page has the rest
             // ================================================================
             Column {
                 visible: page.currentSection === "agents"
                 width: visible ? parent.width : 0
                 spacing: 14
 
-                Txt {
-                    x: Theme.rowPadding
-                    width: parent.width - 2 * Theme.rowPadding
-                    text: qsTr("Coding agents installed on this PC, for the launcher and your phone.")
-                    role: "bodySmall"
-                    muted: true
-                    wrapMode: Text.WordWrap
-                }
-
                 Group {
-                    visible: !page.agentsConnected
                     SettingRow {
                         width: parent.width
-                        iconPath: page.agentsInfo.status === "failed" ? Icons.warning : Icons.info
-                        title: page.agentsInfo.status === "not_installed"
-                            ? qsTr("The agent service isn't installed with this copy of G7 Link.")
-                            : page.agentsInfo.status === "connecting"
-                                ? qsTr("Starting the agent service…")
-                                : page.agentsInfo.status === "failed"
-                                    ? qsTr("Couldn't reach the agent service.")
-                                    : qsTr("The agent service isn't running.")
-                        Button {
-                            visible: page.agentsInfo.status !== "not_installed" && page.agentsInfo.status !== "connecting"
-                            size: "sm"
-                            variant: "tonal"
-                            text: page.agentsInfo.status === "failed" ? qsTr("Try again") : qsTr("Start it")
-                            onClicked: AppController.startAgentsHost()
-                        }
-                    }
-                }
-
-                Group {
-                    visible: page.agentsConnected
-                    Repeater {
-                        model: page.agentsConnected ? page.agentsInfo.agents : []
-                        delegate: SettingRow {
-                            required property var modelData
-                            width: parent.width
-                            iconPath: Icons.terminal
-                            iconColor: modelData.installed && modelData.signedIn && modelData.problem.length === 0
-                                ? Theme.tintTeal : Theme.surfaceContentVariant
-                            title: modelData.name
-                            description: page.agentDetail(modelData)
-                            Row {
-                                spacing: 8
-                                Txt {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    visible: modelData.installed && !modelData.signedIn && modelData.problem.length === 0
-                                    text: modelData.loginHint
-                                    role: "code"
-                                }
-                                Button {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    visible: modelData.installed && !modelData.signedIn && modelData.problem.length === 0
-                                    variant: "text"
-                                    size: "sm"
-                                    iconPath: Icons.copy
-                                    text: qsTr("Copy")
-                                    onClicked: AppController.copyText(modelData.loginHint)
-                                }
-                                Txt {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: page.agentState(modelData)
-                                    role: "bodySmall"
-                                    muted: true
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Group {
-                    title: qsTr("Folders agents may work in")
-                    SettingRow {
-                        width: parent.width
-                        iconPath: Icons.folder
-                        readonly property int count: page.agentsConnected ? page.agentsInfo.folders.length : 0
-                        title: !page.agentsConnected ? qsTr("Add a folder the agent may work in")
-                            : count === 0 ? qsTr("No folders yet.") : qsTr("%n folder(s)", "", count)
+                        iconPath: Icons.terminal
+                        iconColor: Theme.tintAmber
+                        title: qsTr("Agents has its own page now")
                         Button {
                             variant: "tonal"
                             size: "sm"
-                            iconPath: Icons.plus
-                            text: qsTr("Add folder…")
-                            onClicked: agentFolderPicker.open()
+                            text: qsTr("Open Agents")
+                            onClicked: AppController.currentPage = "agents"
                         }
                     }
-                    Repeater {
-                        model: page.agentsConnected ? page.agentsInfo.folders : []
-                        delegate: SettingRow {
-                            required property var modelData
-                            width: parent.width
-                            iconPath: Icons.folder
-                            iconColor: modelData.exists ? Theme.tintAmber : Theme.surfaceContentVariant
-                            title: modelData.shownPath
-                            description: modelData.exists ? "" : qsTr("Not found")
-                            Button {
-                                variant: "text"
-                                size: "sm"
-                                iconPath: Icons.trash
-                                text: qsTr("Remove")
-                                onClicked: AppController.removeAgentFolder(modelData.id)
-                            }
-                        }
-                    }
-                    Txt {
-                        x: Theme.rowPadding
-                        width: parent.width - 2 * Theme.rowPadding
-                        topPadding: 6
-                        text: qsTr("Agents can read, change and run things in these folders, and a command you approve can reach outside them. A folder's own agent settings, such as hooks, also run, so add only folders you trust. Your phone sees only the folder names.")
-                        role: "bodySmall"
-                        muted: true
-                        wrapMode: Text.WordWrap
-                    }
-                }
-
-                Group {
-                    visible: DeviceList.count > 0
-                    title: qsTr("Phones")
-                    Repeater {
-                        model: page.currentSection === "agents" ? DeviceList : null
-                        delegate: SettingRow {
-                            id: agentPhoneRow
-                            required property string deviceId
-                            required property string name
-                            readonly property var agentsToggle: AppController.togglesRevision >= 0
-                                ? AppController.deviceToggles(deviceId).find((t) => t.name === "agents") : undefined
-                            width: parent.width
-                            iconPath: Icons.phone
-                            iconColor: Theme.tintLavender
-                            title: qsTr("%1 can use agents").arg(name)
-                            description: qsTr("Start threads, reply and approve. Started from the phone, a thread asks before it changes a file or runs a command that could change something.")
-                            Toggle {
-                                label: agentPhoneRow.title
-                                checked: Boolean(agentPhoneRow.agentsToggle && agentPhoneRow.agentsToggle.on)
-                                onToggled: (on) => AppController.setDeviceToggle(agentPhoneRow.deviceId, "agents", on)
-                            }
-                        }
-                    }
-                }
-
-                Txt {
-                    x: Theme.rowPadding
-                    width: parent.width - 2 * Theme.rowPadding
-                    text: qsTr("Agents run the Claude Code and Codex you installed, signed in with your own accounts, and count against your own plan's limits. G7 is not affiliated with Anthropic or OpenAI.")
-                    role: "bodySmall"
-                    muted: true
-                    wrapMode: Text.WordWrap
                 }
             }
 
@@ -3422,55 +3245,6 @@ Item {
                     onClicked: {
                         AppController.unpair(unpairSheet.deviceId)
                         unpairSheet.close()
-                    }
-                }
-            }
-        }
-    }
-
-    // Asks before agents may work in a folder: it shows the whole path.
-    Sheet {
-        id: agentFolderSheet
-        cardWidth: 460
-        property string path: ""
-        function ask(path) {
-            if (path.length === 0)
-                return
-            agentFolderSheet.path = path
-            open()
-        }
-        Column {
-            width: parent.width
-            spacing: 12
-            Txt {
-                width: parent.width
-                text: qsTr("Let agents work in %1?").arg(page.folderName(agentFolderSheet.path))
-                role: "headline"
-                wrapMode: Text.WordWrap
-            }
-            Txt {
-                width: parent.width
-                text: agentFolderSheet.path
-                role: "code"
-                wrapMode: Text.WrapAnywhere
-            }
-            Txt {
-                width: parent.width
-                wrapMode: Text.WordWrap
-                role: "body"
-                muted: true
-                text: qsTr("Agents can read, change and run things in this folder, and a command you approve can reach outside it. The folder's own agent settings, such as hooks, also run, so add it only if you trust it. Your phone sees only its name.")
-            }
-            Row {
-                anchors.right: parent.right
-                spacing: 10
-                Button { variant: "text"; text: qsTr("Cancel"); onClicked: agentFolderSheet.close() }
-                Button {
-                    iconPath: Icons.plus
-                    text: qsTr("Add folder")
-                    onClicked: {
-                        AppController.addAgentFolder(agentFolderSheet.path)
-                        agentFolderSheet.close()
                     }
                 }
             }

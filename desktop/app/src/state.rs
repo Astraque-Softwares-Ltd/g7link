@@ -75,7 +75,7 @@ impl Changes {
     pub const MIC: Changes = Changes(1 << 29);
     /// Photo backup settings or progress (kept by crate::photo_backup).
     pub const PHOTO_BACKUP: Changes = Changes(1 << 30);
-    /// The agent host as Settings shows it (kept by crate::agents).
+    /// What the Agents page shows (kept by crate::agents).
     pub const AGENTS: Changes = Changes(1 << 31);
 
     pub fn is_empty(self) -> bool {
@@ -293,6 +293,9 @@ pub struct AppState {
     pub remote_prompt: Option<DeviceId>,
     /// Phone asking to use Agents on this PC for the first time while `agents` is off.
     pub agents_prompt: Option<DeviceId>,
+    /// Phone asking to see sessions started on this PC for the first time
+    /// while `agent_sessions` is off (`agents` on).
+    pub agent_sessions_prompt: Option<DeviceId>,
     /// Phone asking to use Bluetooth with this PC while `ble_link` is off.
     pub ble_prompt: Option<DeviceId>,
     /// Phone asking to view this PC's screen while `pc_mirror` is off.
@@ -412,6 +415,10 @@ impl AppState {
                 }
                 if self.agents_prompt == Some(*id) {
                     self.agents_prompt = None;
+                    changes |= Changes::REMOTE;
+                }
+                if self.agent_sessions_prompt == Some(*id) {
+                    self.agent_sessions_prompt = None;
                     changes |= Changes::REMOTE;
                 }
                 if self.ble_prompt == Some(*id) {
@@ -536,6 +543,13 @@ impl AppState {
                 self.agents_prompt = Some(*device);
                 Changes::REMOTE
             }
+            NodeEvent::AgentSessionsRequested { device } => {
+                if self.agent_sessions_prompt == Some(*device) {
+                    return Changes::NONE;
+                }
+                self.agent_sessions_prompt = Some(*device);
+                Changes::REMOTE
+            }
             NodeEvent::BleLinkRequested { device } => {
                 if self.ble_prompt == Some(*device) {
                     return Changes::NONE;
@@ -646,6 +660,8 @@ impl AppState {
             | NodeEvent::AgentEvent { .. }
             | NodeEvent::AgentAsk { .. }
             | NodeEvent::AgentAsked { .. }
+            | NodeEvent::AgentSession { .. }
+            | NodeEvent::AgentSessionItem { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,
@@ -1335,6 +1351,19 @@ mod tests {
         assert_eq!(s.remote_prompt, None, "its own prompt, not the remote input one");
         assert!(s.apply(&NodeEvent::DeviceRemoved(id)).intersects(Changes::REMOTE));
         assert_eq!(s.agents_prompt, None);
+    }
+
+    #[test]
+    fn the_sessions_prompt_appears_once_and_clears_on_unpair() {
+        let mut s = AppState::default();
+        s.apply(&NodeEvent::DeviceAdded(paired(6, 10)));
+        let id = DeviceId([6; 32]);
+        assert_eq!(s.apply(&NodeEvent::AgentSessionsRequested { device: id }), Changes::REMOTE);
+        assert_eq!(s.agent_sessions_prompt, Some(id));
+        assert_eq!(s.apply(&NodeEvent::AgentSessionsRequested { device: id }), Changes::NONE, "once");
+        assert_eq!(s.agents_prompt, None, "its own prompt, not the first one");
+        assert!(s.apply(&NodeEvent::DeviceRemoved(id)).intersects(Changes::REMOTE));
+        assert_eq!(s.agent_sessions_prompt, None);
     }
 
     #[test]

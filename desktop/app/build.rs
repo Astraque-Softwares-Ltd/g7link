@@ -18,6 +18,9 @@ const QML: &[&str] = &[
     "qml/MirrorWindow.qml",
     "qml/ShelfWindow.qml",
     "qml/components/ActionRow.qml",
+    "qml/components/AgentItem.qml",
+    "qml/components/AgentRow.qml",
+    "qml/components/AgentSetup.qml",
     "qml/components/AppsSheet.qml",
     "qml/components/Avatar.qml",
     "qml/components/Button.qml",
@@ -57,6 +60,7 @@ const QML: &[&str] = &[
     "qml/components/SwitchBar.qml",
     "qml/components/TextAction.qml",
     "qml/components/Txt.qml",
+    "qml/pages/AgentsPage.qml",
     "qml/pages/AppsPage.qml",
     "qml/pages/CallsPage.qml",
     "qml/pages/DeckPage.qml",
@@ -286,6 +290,7 @@ fn main() {
         .qrc(shaders_qrc())
         .files([
             "src/bridge/native.rs",
+            "src/bridge/agents.rs",
             "src/bridge/app.rs",
             "src/bridge/calls.rs",
             "src/bridge/devices.rs",

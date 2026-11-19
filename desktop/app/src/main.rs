@@ -128,8 +128,15 @@ impl Platform for DesktopPlatform {
         player: &str,
         action: MediaAction,
         position: Option<u64>,
+        value: Option<&str>,
     ) -> Result<(), MediaError> {
-        sys::media_sessions::command(player, action, position)
+        media::local_command(player, action, position, value)
+    }
+    fn media_art(&self, key: &str) -> Option<(Vec<u8>, g7link_core::ArtFormat)> {
+        media::local_art(key)
+    }
+    fn media_icon(&self, key: &str) -> Option<Vec<u8>> {
+        media::local_icon(key)
     }
     fn mirror_requested(&self, peer: &g7link_core::DeviceId, options: &MirrorStart) -> Result<(), String> {
         if options.session != g7link_core::MIRROR_SCREEN {

@@ -44,6 +44,9 @@ pub const BEACON2: &str = "ble.beacon2";
 /// How often the beacon is checked, in case a change in BlueZ went
 /// unreported, and for its next window.
 const BEACON_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+/// The worker wakes this long after a connect window's end, so the window
+/// reads as over when it looks.
+const WINDOW_END_SLACK: Duration = Duration::from_millis(50);
 /// With more phones than fit in one beacon, each set is broadcast this long in turn.
 const TURN_SECS: u64 = 20;
 /// The beacon changes up to this long after a window starts, a different
@@ -612,8 +615,12 @@ impl Beacon {
 
         let wanted = wanted(phones, window, now, self.delay);
         if wanted != self.shown {
+            let was_connect = self.shown.as_ref().is_some_and(|s| s.kind == TagKind::Connect);
             if let Some(shown) = self.shown.take() {
                 unregister(conn, &adapter, self.path(shown.kind));
+            }
+            if was_connect && wanted.as_ref().is_none_or(|w| w.kind != TagKind::Connect) {
+                tracing::info!("Bluetooth: the connect window closed");
             }
             if let Some(wanted) = wanted {
                 *self.payload.lock().unwrap_or_else(|e| e.into_inner()) = beacon_payload(&wanted);
@@ -623,6 +630,15 @@ impl Beacon {
                 };
                 match registered {
                     Ok(()) => {
+                        if wanted.kind == TagKind::Connect && !was_connect {
+                            let left = window
+                                .map_or(0, |w| w.until.saturating_duration_since(Instant::now()).as_secs());
+                            tracing::info!(
+                                phones = wanted.keys.len(),
+                                secs = left,
+                                "Bluetooth: a connect window is open: phones can connect"
+                            );
+                        }
                         self.shown = Some(wanted);
                         self.last_error = None;
                     }
@@ -821,6 +837,14 @@ fn connect(
     }
 }
 
+/// How long the worker waits for its next look: until the open window ends,
+/// and otherwise its regular check.
+fn next_check(window: Option<&Window>, now: Instant) -> Duration {
+    window.map_or(BEACON_CHECK_INTERVAL, |w| {
+        w.until.saturating_duration_since(now).min(BEACON_CHECK_INTERVAL) + WINDOW_END_SLACK
+    })
+}
+
 fn run_worker(env: &Env, device_id: &DeviceId, wake: &Arc<Wake>) {
     let Some((conn, mut beacon, to_link, writes)) = connect(env, device_id, wake) else {
         return;
@@ -846,7 +870,7 @@ fn run_worker(env: &Env, device_id: &DeviceId, wake: &Arc<Wake>) {
         if woken.devices {
             let _ = to_link.try_send(LinkMsg::DeviceChanged);
         }
-        woken = wake.wait(BEACON_CHECK_INTERVAL);
+        woken = wake.wait(next_check(wake.window().as_ref(), Instant::now()));
         if woken.stopped {
             break;
         }
@@ -1644,6 +1668,53 @@ mod tests {
 
         stop_in(&slot);
         assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn the_worker_wakes_when_a_window_ends() {
+        let now = Instant::now();
+        let window = Window { keys: vec![key(1)], until: now + Duration::from_secs(3) };
+        assert_eq!(next_check(Some(&window), now), Duration::from_secs(3) + WINDOW_END_SLACK);
+        let long = Window { keys: vec![key(1)], until: now + Duration::from_secs(45) };
+        assert_eq!(next_check(Some(&long), now), BEACON_CHECK_INTERVAL + WINDOW_END_SLACK);
+        assert_eq!(next_check(None, now), BEACON_CHECK_INTERVAL);
+    }
+
+    #[test]
+    fn a_connect_window_ends_on_time() {
+        let Some(bus) = TestBus::start() else {
+            eprintln!("skipped: dbus-daemon isn't installed");
+            return;
+        };
+        let manager = FakeManager::default();
+        let _bluez = fake_bluez(&bus, &manager);
+        let phones = BeaconPhones { keys: vec![key(1)], legacy: false, linkable: true };
+        let slot = Mutex::new(None);
+        start_in(&slot, test_env(&bus, phones), DeviceId([0x19; 32]));
+        let registered = |path: &'static str| {
+            move |calls: &[Call]| {
+                calls.iter().any(|c| matches!(c, Call::Register { path: p, .. } if p == path))
+            }
+        };
+        manager.wait_for(registered(ADVERTISEMENT_PATH));
+
+        let ends = Instant::now() + Duration::from_secs(1);
+        {
+            let worker = slot.lock().unwrap();
+            let wake = &worker.as_ref().unwrap().wake;
+            *wake.window.lock().unwrap() = Some(Window { keys: vec![key(1)], until: ends });
+            wake.set(|w| w.resync = true);
+        }
+        let calls = manager.wait_for(registered(CONNECT_PATH));
+        assert!(registered(CONNECT_PATH)(&calls), "{calls:?}");
+        let closed = Call::Unregister(CONNECT_PATH.into());
+        let calls = manager.wait_for(|calls| calls.contains(&closed));
+        assert!(calls.contains(&closed), "{calls:?}");
+        assert!(
+            Instant::now() < ends + Duration::from_secs(1),
+            "within a second of its end, not at the next check"
+        );
+        stop_in(&slot);
     }
 
     #[test]

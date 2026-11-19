@@ -4,10 +4,32 @@
 // in Rust is translated like the rest (see desktop/app/src/i18n.rs).
 
 static const char *const g7link_rust_strings[] = {
+    QT_TRANSLATE_NOOP("Agents", "Add its folder to your agent folders first."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Copied as Markdown"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't change that setting"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't change the folders"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't delete it"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't export it"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't open a terminal"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't reach the agent host"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't save it"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't stop it"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "It's no longer there."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Saved %1"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Something went wrong. Try again."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Still open in a terminal. Close it there to continue here."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Still open in a terminal. Close it there to reply here."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Still open in another app. Close it there to continue here."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Still open in the Claude app. Close it there to continue here."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Still open in the Codex app. Close it there to continue here."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That agent isn't ready. Check it in Setup."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That folder can't be used. Pick a folder you can read, other than the whole disk."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That folder is no longer in the list."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That folder isn't one of your agent folders."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That request was already answered."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "The command is copied. Paste it in a terminal."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Too many sessions are being followed. New lines show when you open it again."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Too many threads are running. Wait for one to finish."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "You can add up to 64 folders."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("App", "%1 is offline. Will send when it's back."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("App", "Already on clipboard."), // desktop/app/src/bridge/app.rs

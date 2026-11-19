@@ -9,6 +9,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Mutex, MutexGuard, OnceLock},
+    time::Instant,
 };
 
 use g7link_core::{DeviceId, Error, MediaAction, NodeEvent};
@@ -17,7 +18,7 @@ use crate::{
     bridge::app::{describe, show_message},
     core_host,
     state::PlayerView,
-    sys::smtc,
+    sys::{media_sessions::LocalPlayer, smtc},
 };
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -215,7 +216,12 @@ pub fn local_playback_position_secs() -> Option<u32> {
         .find(|(p, _, _)| p.playing && p.position.is_some_and(|pos| pos > 0))
         .or_else(|| guard.iter().find(|(p, _, _)| p.position.is_some_and(|pos| pos > 0)))?;
     let base_ms = player.position?;
-    let extra_ms = if player.playing { sampled_at.elapsed().as_millis() as u64 } else { 0 };
+    let rate = u128::from(player.rate_milli.unwrap_or(1000));
+    let extra_ms = if player.playing {
+        u64::try_from(sampled_at.elapsed().as_millis() * rate / 1000).unwrap_or(u64::MAX)
+    } else {
+        0
+    };
     let total_ms = match player.duration {
         Some(dur) if dur > 0 => base_ms.saturating_add(extra_ms).min(dur),
         _ => base_ms.saturating_add(extra_ms),
@@ -224,11 +230,66 @@ pub fn local_playback_position_secs() -> Option<u32> {
     (secs > 0).then_some(secs)
 }
 
+/// A paired device's command for one of this PC's players
+/// (`Platform::media_command`): `value` is a `shuffle`'s or `loop`'s.
+pub(crate) fn local_command(
+    player: &str,
+    action: MediaAction,
+    position: Option<u64>,
+    value: Option<&str>,
+) -> Result<(), g7link_core::MediaError> {
+    crate::sys::media_sessions::command_value(player, action, position, value)
+}
+
+/// The large picture one of this PC's players names as `art_full`
+/// (`Platform::media_art`, a phone's `media.art`).
+pub(crate) fn local_art(key: &str) -> Option<(Vec<u8>, g7link_core::ArtFormat)> {
+    crate::sys::media_sessions::full_art(key)
+}
+
+/// The app icon one of this PC's players names as `icon`
+/// (`Platform::media_icon`, a phone's `media.icon`).
+pub(crate) fn local_icon(key: &str) -> Option<Vec<u8>> {
+    crate::sys::media_sessions::app_icon(key)
+}
+
+/// How long ago a position read at `sampled_at` was, in milliseconds: a
+/// player's `age` in `media.state`. `None` when it wasn't timed.
+fn age_ms(sampled_at: Option<Instant>, now: Instant) -> Option<u64> {
+    let age = now.saturating_duration_since(sampled_at?);
+    Some(u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// This PC's players as they go to the phones, aged at `now`: a position
+/// read a while ago (artwork is loaded in between) says how long ago.
+fn for_phones(players: Vec<LocalPlayer>, now: Instant) -> Vec<g7link_core::MediaPlayer> {
+    players
+        .into_iter()
+        .map(|local| {
+            let mut player = local.player;
+            player.age = player.position.and(age_ms(local.sampled_at, now)).filter(|&ms| ms > 0);
+            player
+        })
+        .collect()
+}
+
 /// What plays on this PC changed: tell the phones and refresh Desktop UI.
-pub fn local_changed(players: Vec<g7link_core::MediaPlayer>) {
+pub fn local_changed(local: Vec<LocalPlayer>) {
     let now_sys = std::time::SystemTime::now();
-    let now = std::time::Instant::now();
-    *lock(&LOCAL_PLAYERS) = players.iter().cloned().map(|p| (p, now_sys, now)).collect();
+    let now = Instant::now();
+    // Positions are as they were when read, which may be a moment ago.
+    let sampled = |p: &LocalPlayer| {
+        let ago = std::time::Duration::from_millis(age_ms(p.sampled_at, now).unwrap_or(0));
+        (now_sys.checked_sub(ago).unwrap_or(now_sys), now.checked_sub(ago).unwrap_or(now))
+    };
+    *lock(&LOCAL_PLAYERS) = local
+        .iter()
+        .map(|p| {
+            let (sampled_sys, sampled_at) = sampled(p);
+            (p.player.clone(), sampled_sys, sampled_at)
+        })
+        .collect();
+    let players: Vec<g7link_core::MediaPlayer> = local.iter().map(|p| p.player.clone()).collect();
     let mut per_player_art = HashMap::new();
     for p in &players {
         if let Some(bytes) = p.art.as_ref() {
@@ -255,24 +316,66 @@ pub fn local_changed(players: Vec<g7link_core::MediaPlayer>) {
     *lock(&LOCAL_PLAYER_ART) = Some(per_player_art);
     core_host::host().hub.changed(crate::state::Changes::MEDIA);
     crate::deck::on_local_media_changed(&players);
-    static UPDATES: OnceLock<tokio::sync::watch::Sender<Vec<g7link_core::MediaPlayer>>> = OnceLock::new();
+    static UPDATES: OnceLock<tokio::sync::watch::Sender<Vec<LocalPlayer>>> = OnceLock::new();
     let updates = UPDATES.get_or_init(|| {
         let (tx, mut rx) = tokio::sync::watch::channel(Vec::new());
         core_host::spawn(async move {
             let Some(node) = core_host::wait_for_node().await else { return };
             while rx.changed().await.is_ok() {
                 let players = rx.borrow_and_update().clone();
-                node.media_changed(players).await;
+                node.media_changed(for_phones(players, Instant::now())).await;
             }
         });
         tx
     });
-    updates.send_replace(players);
+    updates.send_replace(local);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn this_pcs_positions_go_with_their_age() {
+        let now = Instant::now();
+        let local = |position: Option<u64>, ago_ms: Option<u64>| LocalPlayer {
+            player: g7link_core::MediaPlayer {
+                id: "vlc".into(),
+                app: "VLC".into(),
+                title: Some("Track".into()),
+                artist: None,
+                album: None,
+                playing: true,
+                duration: Some(200_000),
+                position,
+                actions: Vec::new(),
+                art_key: None,
+                art: None,
+                rate_milli: Some(1500),
+                age: Some(99),
+                art_full: None,
+                icon: None,
+                shuffle: None,
+                repeat: None,
+            },
+            sampled_at: ago_ms.map(|ms| now - std::time::Duration::from_millis(ms)),
+        };
+        let ages: Vec<Option<u64>> = for_phones(
+            vec![
+                local(Some(1000), Some(4200)),
+                local(Some(1000), Some(0)),
+                local(None, Some(4200)),
+                local(Some(1000), None),
+            ],
+            now,
+        )
+        .into_iter()
+        .map(|p| p.age)
+        .collect();
+        assert_eq!(ages, [Some(4200), None, None, None]);
+        assert_eq!(age_ms(Some(now), now + std::time::Duration::from_millis(30)), Some(30));
+        assert_eq!(age_ms(None, now), None);
+    }
 
     #[test]
     fn this_pcs_old_artwork_goes_and_the_rest_stays() {

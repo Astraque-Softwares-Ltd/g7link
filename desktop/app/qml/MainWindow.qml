@@ -95,11 +95,16 @@ NativeWindow {
             window.page = "timeline"
             return
         }
+        if (targetId.indexOf("agents:") === 0) {
+            window.page = "agents"
+            return
+        }
         window.page = "home"
     }
     function pageUrl(name) {
         switch (name) {
         case "timeline": return "qrc:/qt/qml/app/g7link/qml/pages/TimelinePage.qml"
+        case "agents": return "qrc:/qt/qml/app/g7link/qml/pages/AgentsPage.qml"
         case "messages": return "qrc:/qt/qml/app/g7link/qml/pages/MessagesPage.qml"
         case "calls": return "qrc:/qt/qml/app/g7link/qml/pages/CallsPage.qml"
         case "photos": return "qrc:/qt/qml/app/g7link/qml/pages/PhotosPage.qml"
@@ -450,6 +455,7 @@ NativeWindow {
     readonly property var screenActions: pageItem && pageItem.screenActions ? pageItem.screenActions : []
     readonly property var navItems: [
         { page: "home", icon: Icons.home, tint: Theme.tintLavender, name: qsTr("Home") },
+        { page: "agents", icon: Icons.terminal, tint: Theme.tintAmber, name: qsTr("Agents") },
         { page: "messages", icon: Icons.messages, tint: Theme.tintBlue, name: qsTr("Messages") },
         { page: "calls", icon: Icons.call, tint: Theme.tintTeal, name: qsTr("Calls") },
         { page: "photos", icon: Icons.photo, tint: Theme.tintCoral, name: qsTr("Photos") },
@@ -631,15 +637,40 @@ NativeWindow {
             Repeater {
                 model: window.navItems
                 ActionRow {
+                    id: navRow
                     required property var modelData
+                    // Agents counts what certainly needs you, in the warning colour.
+                    readonly property bool agents: modelData.page === "agents"
+                    readonly property int needsYou: agents ? Agents.needsYou : 0
                     width: parent.width
                     iconPath: modelData.icon
                     tint: modelData.tint
                     title: sidebar.iconsOnly ? "" : modelData.name
-                    accessibleName: modelData.name
-                    meta: sidebar.iconsOnly ? "" : window.navCount(modelData.page)
+                    accessibleName: navRow.needsYou === 1 ? qsTr("%1, 1 needs you").arg(modelData.name)
+                        : navRow.needsYou > 1 ? qsTr("%1, %2 need you").arg(modelData.name).arg(navRow.needsYou)
+                        : modelData.name
+                    meta: sidebar.iconsOnly || navRow.agents ? "" : window.navCount(modelData.page)
                     selected: window.page === modelData.page
                     onClicked: window.page = modelData.page
+                    Txt {
+                        visible: !sidebar.iconsOnly && navRow.needsYou > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: String(navRow.needsYou)
+                        role: "bodySmall"
+                        weight: 600
+                        color: Theme.warning
+                    }
+                    // Icons only: an amber dot on the glyph.
+                    Rectangle {
+                        parent: navRow
+                        visible: sidebar.iconsOnly && navRow.needsYou > 0
+                        x: Theme.rowPadding + 14
+                        y: Math.round(navRow.height / 2) - 10
+                        width: 6
+                        height: 6
+                        radius: 3
+                        color: Theme.tintAmber
+                    }
                 }
             }
         }
@@ -1049,6 +1080,54 @@ NativeWindow {
     }
 
     Sheet {
+        id: agentSessionsPromptSheet
+        opened: AppController.agentSessionsPromptDeviceId.length > 0
+        cardWidth: 440
+        onOpenedChanged: {
+            if (!opened && AppController.agentSessionsPromptDeviceId.length > 0)
+                AppController.dismissAgentSessionsPrompt()
+        }
+        Column {
+            width: parent.width
+            spacing: 16
+            Avatar {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 56; height: 56
+                iconPath: Icons.terminal
+                emphasized: true
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("Let %1 see sessions started on this PC?").arg(AppController.agentSessionsPromptDeviceName)
+                role: "headline"
+                wrapMode: Text.WordWrap
+            }
+            Txt {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: qsTr("It will be able to list and read the Claude and Codex sessions you start here in a terminal or the Claude app, in any folder, including what you and the agent wrote. It can't type into them. Once one ends, it can continue it as a thread in your agent folders. It sees each folder's name, never its path.")
+                role: "body"
+                muted: true
+                wrapMode: Text.WordWrap
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 10
+                Button {
+                    variant: "text"
+                    text: qsTr("Not now")
+                    onClicked: AppController.dismissAgentSessionsPrompt()
+                }
+                Button {
+                    text: qsTr("Allow")
+                    onClicked: AppController.allowAgentSessionsPrompt()
+                }
+            }
+        }
+    }
+
+    Sheet {
         id: blePromptSheet
         opened: AppController.blePromptDeviceId.length > 0
         cardWidth: 440
@@ -1231,7 +1310,7 @@ NativeWindow {
     Timer {
         id: uiCheckTour
         property int step: 0
-        readonly property var stops: ["messages", "calls", "photos", "apps", "deck", "timeline", "settings", "guide", "home"]
+        readonly property var stops: ["agents", "messages", "calls", "photos", "apps", "deck", "timeline", "settings", "guide", "home"]
         interval: 450
         repeat: true
         running: window.uiCheck && AppController.status === "ready"

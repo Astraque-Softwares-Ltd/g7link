@@ -197,6 +197,7 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     // whether or not it runs yet (it starts when wanted).
     if crate::agents::host_installed() {
         caps.push(g7link_core::agent::HOST.into());
+        caps.push(g7link_core::agent::SESSIONS.into());
     }
     caps
 }

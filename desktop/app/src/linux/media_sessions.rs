@@ -4,21 +4,56 @@
 //! and signal subscriptions (`PropertiesChanged`, `Seeked`, `NameOwnerChanged`),
 //! artwork resolution/caching, and remote transport commands.
 //!
+//! Artwork comes from `file://` URLs and, bounded, from `https://` ones. Each
+//! player gets a small picture sent inline and, when the cover is bigger, a
+//! large one (`art_full`) a phone fetches on its own stream; the player's app
+//! icon is fetched the same way.
+//!
 //! G7 Link's own MPRIS session (`org.mpris.MediaPlayer2.g7link`) is
 //! excluded so a phone never gets its own music echoed back.
 
-use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-use g7link_core::{MediaAction, MediaError, MediaPlayer};
+use g7link_core::{ArtFormat, MediaAction, MediaError, MediaPlayer};
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
+use super::image::Bitmap;
+
 /// Maximum inline artwork payload (256 KiB); larger covers are scaled and JPEG-encoded.
-const ART_BYTES: u64 = 256 * 1024;
+const ART_BYTES: usize = 256 * 1024;
+/// The small picture's longest side, stepping down until it fits.
+const ART_SIDES: [u32; 4] = [360, 280, 220, 160];
+/// The large picture (`art_full`): at most 2 MiB (`media_limits::ART_FULL_BYTES`)
+/// and 1200 px on its longer side, stepping down until it fits.
+const ART_FULL_BYTES: usize = 2 * 1024 * 1024;
+const ART_FULL_SIDES: [u32; 3] = [1200, 1000, 800];
+/// Large pictures kept for phones to fetch.
+const KEPT_FULL_ART: usize = 4;
+/// The largest art file read from disk.
+const ART_FILE_BYTES: u64 = 16 * 1024 * 1024;
+/// The largest picture loaded from an `https://` art URL, and how long that may take.
+const HTTPS_ART_BYTES: usize = 4 * 1024 * 1024;
+const HTTPS_ART_TIMEOUT: Duration = Duration::from_secs(5);
+const HTTPS_ART_REDIRECTS: u32 = 3;
+const MAX_ART_URL_BYTES: usize = 4096;
+/// The largest picture from the network decoded (64 MiB of pixels).
+const MAX_FETCHED_PIXELS: u64 = 4096 * 4096;
+/// Artwork that couldn't be loaded is tried again after this.
+const ART_RETRY: Duration = Duration::from_secs(10 * 60);
+/// Artwork URLs remembered at most.
+const MAX_ART_URLS: usize = 64;
+/// App icons kept for phones to fetch, and desktop entries remembered.
+const KEPT_ICONS: usize = 16;
+const MAX_ICON_ENTRIES: usize = 32;
+/// The longest desktop entry id looked up.
+const MAX_ENTRY_BYTES: usize = 255;
 const ACTIVE_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const SIGNAL_COALESCE_WINDOW: Duration = Duration::from_millis(60);
@@ -26,11 +61,19 @@ const CALL_PAUSE_TTL: Duration = Duration::from_secs(60 * 30);
 
 const PLAYERCTL_FORMAT: &str = "{{playerName}}\t{{status}}\t{{mpris:trackid}}\t{{xesam:title}}\t{{xesam:artist}}\t{{xesam:album}}\t{{mpris:length}}\t{{position}}\t{{mpris:artUrl}}";
 
-type OnChange = Box<dyn Fn(Vec<MediaPlayer>) + Send + Sync>;
+type OnChange = Box<dyn Fn(Vec<LocalPlayer>) + Send + Sync>;
 
 static STARTED: OnceLock<()> = OnceLock::new();
 static PAUSED_FOR_CALL: Mutex<Option<PausedForCall>> = Mutex::new(None);
 static CALL_MEDIA: Mutex<()> = Mutex::new(());
+/// Large pictures by key, for `media.art`.
+static FULL_ART: Mutex<FullArt> = Mutex::new(FullArt::new());
+/// App icons by key, for `media.icon`.
+static ICONS: Mutex<IconStore> = Mutex::new(IconStore::new());
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Debug)]
 struct PausedForCall {
@@ -79,6 +122,19 @@ pub fn says_video(id: &str) -> bool {
     false
 }
 
+/// MPRIS `LoopStatus` values and the protocol's `loop` ones (`media_loop`).
+const LOOP_STATUSES: [(&str, &str); 3] = [("None", "none"), ("Track", "track"), ("Playlist", "playlist")];
+
+/// The protocol's `loop` for an MPRIS `LoopStatus`.
+fn loop_from_mpris(status: &str) -> Option<&'static str> {
+    LOOP_STATUSES.iter().find(|(mpris, _)| *mpris == status).map(|&(_, wire)| wire)
+}
+
+/// The MPRIS `LoopStatus` for a `loop` command's value.
+fn loop_to_mpris(value: &str) -> Option<&'static str> {
+    LOOP_STATUSES.iter().find(|(_, wire)| *wire == value).map(|&(mpris, _)| mpris)
+}
+
 /// Raw MPRIS player record before artwork bytes are loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawMprisPlayer {
@@ -92,34 +148,522 @@ pub(crate) struct RawMprisPlayer {
     pub position: Option<u64>,
     pub actions: Vec<String>,
     pub art_url: Option<String>,
+    /// Playback rate in thousandths, when it isn't 1 (MPRIS `Rate`).
+    pub rate_milli: Option<u32>,
+    pub shuffle: Option<bool>,
+    /// The protocol's `loop`, from MPRIS `LoopStatus`.
+    pub repeat: Option<&'static str>,
+    /// The player's desktop entry id (MPRIS `DesktopEntry`).
+    pub desktop_entry: Option<String>,
+    /// When `position` was read.
+    pub sampled_at: Option<Instant>,
 }
 
-/// Caches resolved artwork bytes by URL so repeated polls do not re-read disk.
-#[derive(Default)]
-struct ArtCache {
-    by_url: HashMap<String, Option<(String, Vec<u8>)>>,
+/// One of this PC's players, as it goes to the phones. Its `art_full` is
+/// served by [`full_art`] and its `icon` by [`app_icon`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalPlayer {
+    pub player: MediaPlayer,
+    /// When `player.position` was read; the state's `age` counts from it.
+    pub sampled_at: Option<Instant>,
 }
 
-impl ArtCache {
-    fn resolve(&mut self, art_url: Option<&str>) -> Option<(String, Vec<u8>)> {
-        let url = art_url?.trim();
-        if url.is_empty() {
-            return None;
-        }
-        if let Some(cached) = self.by_url.get(url) {
-            return cached.clone();
-        }
-        if self.by_url.len() > 64 {
-            self.by_url.clear();
-        }
-        let loaded = load_art_from_url(url);
-        self.by_url.insert(url.to_owned(), loaded.clone());
-        loaded
+/// A rate as the protocol carries it: thousandths from 250 to 4000, and
+/// `None` for 1, for none at all (0) and for anything a receiver would drop.
+fn protocol_rate(rate: f64) -> Option<u32> {
+    if !rate.is_finite() {
+        return None;
     }
+    let milli = (rate * 1000.0).round();
+    if !(250.0..=4000.0).contains(&milli) || milli == 1000.0 {
+        return None;
+    }
+    Some(milli as u32)
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+fn art_key(bytes: &[u8]) -> String {
+    format!("{:016x}", fnv(bytes))
+}
+
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// A JPEG's or PNG's format and size from its header, without decoding it.
+/// Whether a picture's bytes run to its format's own end: a JPEG's end-of-image marker, or a PNG's
+/// IEND chunk (with its CRC).
+fn complete(format: ArtFormat, bytes: &[u8]) -> bool {
+    match format {
+        ArtFormat::Jpeg => bytes.ends_with(&[0xFF, 0xD9]),
+        ArtFormat::Png => bytes.len() >= 12 && &bytes[bytes.len() - 8..bytes.len() - 4] == b"IEND",
+    }
+}
+
+fn picture_header(bytes: &[u8]) -> Option<(ArtFormat, u32, u32)> {
+    if bytes.starts_with(PNG_SIGNATURE) {
+        if bytes.get(12..16)? != b"IHDR" {
+            return None;
+        }
+        let width = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
+        let height = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
+        return (width > 0 && height > 0).then_some((ArtFormat::Png, width, height));
+    }
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut at = 2;
+    while at + 1 < bytes.len() {
+        if bytes[at] != 0xFF {
+            return None;
+        }
+        let marker = bytes[at + 1];
+        at += if marker == 0xFF { 1 } else { 2 };
+        match marker {
+            0xFF | 0x01 | 0xD0..=0xD8 => continue,
+            0xD9 | 0xDA => return None,
+            _ => {}
+        }
+        let length = usize::from(u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+        if length < 2 {
+            return None;
+        }
+        if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+            let frame = bytes.get(at + 2..at + length)?;
+            let height = u32::from(u16::from_be_bytes(frame.get(1..3)?.try_into().ok()?));
+            let width = u32::from(u16::from_be_bytes(frame.get(3..5)?.try_into().ok()?));
+            return (width > 0 && height > 0).then_some((ArtFormat::Jpeg, width, height));
+        }
+        at += length;
+    }
+    None
+}
+
+/// A picture as it's sent: its key is the FNV-1a hash of its bytes.
+#[derive(Clone, PartialEq, Eq)]
+struct Art {
+    key: String,
+    bytes: Vec<u8>,
+    kind: ArtFormat,
+    /// Its longer side, when known.
+    longest: Option<u32>,
+}
+
+impl Art {
+    fn new(bytes: Vec<u8>, kind: ArtFormat, longest: Option<u32>) -> Art {
+        Art { key: art_key(&bytes), bytes, kind, longest }
+    }
+}
+
+/// A player's artwork: the small picture sent inline and, when the cover
+/// is bigger than that, the large one.
+#[derive(Default)]
+struct Pictures {
+    small: Option<Art>,
+    full: Option<Art>,
+}
+
+impl Pictures {
+    /// Artwork from a file a player named: passed on as it is where it fits.
+    fn from_file(bytes: &[u8]) -> Pictures {
+        let header = picture_header(bytes);
+        let mut decoded = Decoded { bytes, bitmap: None };
+        let is_png = bytes.starts_with(b"\x89PNG");
+        let small = if (is_png || bytes.starts_with(b"\xFF\xD8\xFF")) && bytes.len() <= ART_BYTES {
+            let kind = if is_png { ArtFormat::Png } else { ArtFormat::Jpeg };
+            Some(Art::new(bytes.to_vec(), kind, header.map(|(_, w, h)| w.max(h))))
+        } else {
+            decoded.get().and_then(|bitmap| reencode(bitmap, &ART_SIDES, 85, ART_BYTES))
+        };
+        let full = match header {
+            Some((kind, w, h)) if w.max(h) <= ART_FULL_SIDES[0] && bytes.len() <= ART_FULL_BYTES => {
+                Some(Art::new(bytes.to_vec(), kind, Some(w.max(h))))
+            }
+            _ => decoded.get().and_then(|bitmap| reencode(bitmap, &ART_FULL_SIDES, 88, ART_FULL_BYTES)),
+        };
+        Pictures::new(small, full)
+    }
+
+    /// Artwork from the network: only a JPEG or PNG of a sane size, decoded
+    /// and encoded again, never passed on as it came.
+    fn from_network(bytes: &[u8]) -> Pictures {
+        let fits = |w: u32, h: u32| u64::from(w) * u64::from(h) <= MAX_FETCHED_PIXELS;
+        let Some((format, width, height)) = picture_header(bytes).filter(|&(_, w, h)| fits(w, h)) else {
+            return Pictures::default();
+        };
+        // A download cut short decodes with a grey band where the rest should be.
+        if !complete(format, bytes) {
+            return Pictures::default();
+        }
+        let Ok(bitmap) = super::image::decode(bytes) else { return Pictures::default() };
+        let whole = bitmap.width > 0
+            && bitmap.height > 0
+            && fits(bitmap.width, bitmap.height)
+            && bitmap.width.max(bitmap.height) == width.max(height);
+        if !whole {
+            return Pictures::default();
+        }
+        let small = reencode(&bitmap, &ART_SIDES, 85, ART_BYTES);
+        let full = reencode(&bitmap, &ART_FULL_SIDES, 88, ART_FULL_BYTES);
+        Pictures::new(small, full)
+    }
+
+    /// Keeps the large picture only when it's bigger than the small one.
+    fn new(small: Option<Art>, full: Option<Art>) -> Pictures {
+        let bigger = |full: &Art| match &small {
+            None => true,
+            Some(small) => {
+                full.key != small.key && matches!((full.longest, small.longest), (Some(f), Some(s)) if f > s)
+            }
+        };
+        let full = full.filter(bigger);
+        Pictures { small, full }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.small.is_none() && self.full.is_none()
+    }
+}
+
+/// A picture decoded at most once, when it's first needed.
+struct Decoded<'a> {
+    bytes: &'a [u8],
+    bitmap: Option<Option<Bitmap>>,
+}
+
+impl Decoded<'_> {
+    fn get(&mut self) -> Option<&Bitmap> {
+        let bytes = self.bytes;
+        self.bitmap.get_or_insert_with(|| super::image::decode(bytes).ok()).as_ref()
+    }
+}
+
+/// `bitmap` as a JPEG of at most `limit` bytes, at the first of `sides` that fits.
+fn reencode(bitmap: &Bitmap, sides: &[u32], quality: u8, limit: usize) -> Option<Art> {
+    sides.iter().find_map(|&side| {
+        let scaled = super::image::scale_to(bitmap, side);
+        let jpeg = super::image::encode_jpeg(&scaled, quality).ok().filter(|jpeg| jpeg.len() <= limit)?;
+        Some(Art::new(jpeg, ArtFormat::Jpeg, Some(scaled.width.max(scaled.height))))
+    })
+}
+
+/// An art file's bytes: a regular file of at most [`ART_FILE_BYTES`].
+/// Opened without blocking, so a FIFO in its place can't hang the thread.
+fn read_art_file(path: &Path) -> Option<Vec<u8>> {
+    let file: File =
+        OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > ART_FILE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).ok()?);
+    file.take(ART_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (!bytes.is_empty() && bytes.len() as u64 <= ART_FILE_BYTES).then_some(bytes)
+}
+
+/// `url` when it's an `https://` URL fit to fetch: nothing that isn't
+/// printable, and no user name or password.
+fn https_art_url(url: &str) -> Option<&str> {
+    let url = url.trim();
+    if url.len() > MAX_ART_URL_BYTES || url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+    {
+        return None;
+    }
+    let rest = url.get(8..).filter(|_| url.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://")))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    (!authority.is_empty() && !authority.contains('@')).then_some(url)
+}
+
+/// `curl` for one picture: no config file (`-q` first), https only even
+/// after a redirect, a few redirects, 5 s in all, a size cap, no URL
+/// globbing, and no cookies or credentials (none are given).
+fn curl_art_args(url: &str) -> Vec<String> {
+    let secs = HTTPS_ART_TIMEOUT.as_secs().to_string();
+    [
+        "-q",
+        "--silent",
+        "--fail",
+        "--globoff",
+        "--location",
+        "--max-redirs",
+        &HTTPS_ART_REDIRECTS.to_string(),
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--connect-timeout",
+        &secs,
+        "--max-time",
+        &secs,
+        "--max-filesize",
+        &HTTPS_ART_BYTES.to_string(),
+        "-H",
+        "Accept: image/jpeg, image/png",
+        "-A",
+        &format!("G7Link/{} (Linux)", env!("CARGO_PKG_VERSION")),
+        "--",
+        url,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+/// Fetches an `https://` art URL: at most [`HTTPS_ART_BYTES`], in at most
+/// [`HTTPS_ART_TIMEOUT`] (curl stops itself; this stops curl a second later
+/// if it hasn't). Errors never name the URL.
+fn fetch_https_art(url: &str) -> Result<Vec<u8>, &'static str> {
+    let url = https_art_url(url).ok_or("not an https URL")?;
+    let mut child = Command::new("curl")
+        .args(curl_art_args(url))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "curl isn't available")?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("no output");
+    };
+    let (sent, received) = mpsc::channel();
+    let reader = std::thread::Builder::new().name("art-fetch".into()).spawn(move || {
+        let mut body = Vec::new();
+        let read = stdout.take(HTTPS_ART_BYTES as u64 + 1).read_to_end(&mut body);
+        let _ = sent.send(read.map(|_| body));
+    });
+    let body = match reader {
+        Ok(_) => match received.recv_timeout(HTTPS_ART_TIMEOUT + Duration::from_secs(1)) {
+            Ok(Ok(body)) if body.len() <= HTTPS_ART_BYTES => Ok(body),
+            Ok(Ok(_)) => Err("too large"),
+            Ok(Err(_)) => Err("read failed"),
+            Err(_) => Err("timed out"),
+        },
+        Err(_) => Err("can't read"),
+    };
+    if body.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|_| "curl failed")?;
+    let body = body?;
+    if !status.success() {
+        return Err(if status.code() == Some(63) { "too large" } else { "fetch failed" });
+    }
+    Ok(body)
+}
+
+type Fetch = fn(&str) -> Result<Vec<u8>, &'static str>;
+
+/// What a URL's artwork came to, kept so polls don't load it again. The
+/// large picture's bytes are in [`FullArt`].
+#[derive(Clone)]
+enum Cached {
+    Loaded { small: Option<(String, Vec<u8>)>, full: Option<String> },
+    Failed(Instant),
+}
+
+/// A player's artwork for one state: the small picture and the large one's key.
+#[derive(Default)]
+struct Resolved {
+    small: Option<(String, Vec<u8>)>,
+    full: Option<String>,
+}
+
+/// Caches resolved artwork by URL so repeated polls do not load it again.
+struct ArtCache {
+    by_url: HashMap<String, Cached>,
+    /// URLs in the last state, and in the one being made.
+    shown: HashSet<String>,
+    showing: HashSet<String>,
+    full: &'static Mutex<FullArt>,
+    fetch: Fetch,
+}
+
+impl ArtCache {
+    fn new(full: &'static Mutex<FullArt>, fetch: Fetch) -> ArtCache {
+        ArtCache { by_url: HashMap::new(), shown: HashSet::new(), showing: HashSet::new(), full, fetch }
+    }
+
+    fn resolve(&mut self, art_url: Option<&str>, now: Instant) -> Resolved {
+        let Some(url) = art_url.map(str::trim).filter(|url| !url.is_empty()) else {
+            return Resolved::default();
+        };
+        self.showing.insert(url.to_owned());
+        match self.by_url.get(url) {
+            Some(Cached::Failed(at)) if now.saturating_duration_since(*at) < ART_RETRY => {
+                return Resolved::default();
+            }
+            Some(Cached::Loaded { small, full }) => {
+                let held = full.as_ref().is_some_and(|key| lock(self.full).touch(key));
+                // A large picture that went while its player was showing stays
+                // gone (more players than pictures kept); one that comes back
+                // is loaded again.
+                if held || full.is_none() || self.shown.contains(url) {
+                    return Resolved { small: small.clone(), full: full.clone().filter(|_| held) };
+                }
+            }
+            _ => {}
+        }
+        if self.by_url.len() >= MAX_ART_URLS {
+            self.by_url.retain(|url, _| self.shown.contains(url));
+            if self.by_url.len() >= MAX_ART_URLS {
+                self.by_url.clear();
+            }
+        }
+        let cached = match self.load(url) {
+            Some(pictures) if !pictures.is_empty() => {
+                let full = pictures.full.map(|art| {
+                    lock(self.full).insert(art.key.clone(), art.bytes, art.kind);
+                    art.key
+                });
+                Cached::Loaded { small: pictures.small.map(|art| (art.key, art.bytes)), full }
+            }
+            _ => Cached::Failed(now),
+        };
+        self.by_url.insert(url.to_owned(), cached.clone());
+        match cached {
+            Cached::Loaded { small, full } => Resolved { small, full },
+            Cached::Failed(_) => Resolved::default(),
+        }
+    }
+
+    fn load(&self, url: &str) -> Option<Pictures> {
+        if let Some(path) = resolve_art_file_url(url) {
+            return Some(Pictures::from_file(&read_art_file(&path)?));
+        }
+        let bytes = (self.fetch)(https_art_url(url)?)
+            .inspect_err(|error| tracing::debug!(error, "can't load a player's artwork"))
+            .ok()?;
+        Some(Pictures::from_network(&bytes))
+    }
+
+    /// Ends a state: its URLs are the ones shown.
+    fn end_state(&mut self) {
+        self.shown = std::mem::take(&mut self.showing);
+    }
+}
+
+/// The large pictures phones may fetch, the most recently shown last.
+struct FullArt {
+    pictures: VecDeque<(String, Arc<Vec<u8>>, ArtFormat)>,
+}
+
+impl FullArt {
+    const fn new() -> FullArt {
+        FullArt { pictures: VecDeque::new() }
+    }
+
+    fn insert(&mut self, key: String, bytes: Vec<u8>, kind: ArtFormat) {
+        self.pictures.retain(|(held, _, _)| *held != key);
+        self.pictures.push_back((key, Arc::new(bytes), kind));
+        while self.pictures.len() > KEPT_FULL_ART {
+            self.pictures.pop_front();
+        }
+    }
+
+    /// Whether `key` is held; it's now the most recently shown.
+    fn touch(&mut self, key: &str) -> bool {
+        let Some(at) = self.pictures.iter().position(|(held, _, _)| held == key) else { return false };
+        if let Some(picture) = self.pictures.remove(at) {
+            self.pictures.push_back(picture);
+        }
+        true
+    }
+
+    fn get(&self, key: &str) -> Option<(Arc<Vec<u8>>, ArtFormat)> {
+        self.pictures
+            .iter()
+            .find(|(held, _, _)| held == key)
+            .map(|(_, bytes, kind)| (Arc::clone(bytes), *kind))
+    }
+}
+
+/// The large picture a player's `art_full` names, for a phone's `media.art`
+/// (through `media::local_art`).
+pub fn full_art(key: &str) -> Option<(Vec<u8>, ArtFormat)> {
+    let (bytes, kind) = lock(&FULL_ART).get(key)?;
+    Some((bytes.to_vec(), kind))
+}
+
+/// App icons by key, the most recently shown last.
+struct IconStore {
+    pngs: VecDeque<(String, Arc<Vec<u8>>)>,
+}
+
+impl IconStore {
+    const fn new() -> IconStore {
+        IconStore { pngs: VecDeque::new() }
+    }
+
+    fn insert(&mut self, key: String, png: Vec<u8>) {
+        self.pngs.retain(|(held, _)| *held != key);
+        self.pngs.push_back((key, Arc::new(png)));
+        while self.pngs.len() > KEPT_ICONS {
+            self.pngs.pop_front();
+        }
+    }
+
+    fn touch(&mut self, key: &str) -> bool {
+        let Some(at) = self.pngs.iter().position(|(held, _)| held == key) else { return false };
+        if let Some(icon) = self.pngs.remove(at) {
+            self.pngs.push_back(icon);
+        }
+        true
+    }
+
+    fn get(&self, key: &str) -> Option<Arc<Vec<u8>>> {
+        self.pngs.iter().find(|(held, _)| held == key).map(|(_, png)| Arc::clone(png))
+    }
+}
+
+/// The icon a player's `icon` names, for a phone's `media.icon` (through
+/// `media::local_icon`).
+pub fn app_icon(key: &str) -> Option<Vec<u8>> {
+    lock(&ICONS).get(key).map(|png| png.to_vec())
+}
+
+type IconLookup = fn(&str) -> Option<(String, Vec<u8>)>;
+
+/// Whether an icon is what a phone takes: a PNG of at most 16 KiB with a
+/// key of 16 lowercase hex digits.
+fn valid_icon(key: &str, png: &[u8]) -> bool {
+    key.len() == g7link_core::remote_limits::ICON_KEY_LEN
+        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && png.len() <= g7link_core::remote_limits::MAX_ICON_BYTES
+        && png.starts_with(PNG_SIGNATURE)
+}
+
+/// Players' app icons by desktop entry. Looked up (which may draw the icon
+/// on the GUI thread) without holding the store's lock.
+struct IconCache {
+    by_entry: HashMap<String, String>,
+    store: &'static Mutex<IconStore>,
+    lookup: IconLookup,
+}
+
+impl IconCache {
+    fn new(store: &'static Mutex<IconStore>, lookup: IconLookup) -> IconCache {
+        IconCache { by_entry: HashMap::new(), store, lookup }
+    }
+
+    fn key_for(&mut self, entry: &str) -> Option<String> {
+        if entry.len() > MAX_ENTRY_BYTES {
+            return None;
+        }
+        if let Some(key) = self.by_entry.get(entry)
+            && lock(self.store).touch(key)
+        {
+            return Some(key.clone());
+        }
+        let (key, png) = (self.lookup)(entry).filter(|(key, png)| valid_icon(key, png))?;
+        lock(self.store).insert(key.clone(), png);
+        if self.by_entry.len() >= MAX_ICON_ENTRIES {
+            self.by_entry.clear();
+        }
+        self.by_entry.insert(entry.to_owned(), key.clone());
+        Some(key)
+    }
 }
 
 fn percent_decode(input: &str) -> String {
@@ -150,32 +694,11 @@ pub(crate) fn resolve_art_file_url(art_url: &str) -> Option<PathBuf> {
     if decoded.trim().is_empty() { None } else { Some(PathBuf::from(decoded)) }
 }
 
-fn load_art_from_url(art_url: &str) -> Option<(String, Vec<u8>)> {
-    let path = resolve_art_file_url(art_url)?;
-    let bytes = fs::read(path).ok().filter(|b| !b.is_empty())?;
-    let is_png_or_jpeg = bytes.starts_with(b"\x89PNG") || bytes.starts_with(b"\xFF\xD8\xFF");
-    if is_png_or_jpeg && (bytes.len() as u64) <= ART_BYTES {
-        let key = format!("{:016x}", fnv(&bytes));
-        return Some((key, bytes));
-    }
-    let bitmap = super::image::decode(&bytes).ok()?;
-    for max_side in [360, 280, 220, 160] {
-        let scaled = super::image::scale_to(&bitmap, max_side);
-        if let Ok(jpeg) = super::image::encode_jpeg(&scaled, 85)
-            && (jpeg.len() as u64) <= ART_BYTES
-        {
-            let key = format!("{:016x}", fnv(&jpeg));
-            return Some((key, jpeg));
-        }
-    }
-    None
-}
-
 /// Watches this PC's active MPRIS2 media sessions on a background thread;
 /// `on_change` is invoked whenever the player list or playback state meaningfully changes.
 pub fn start<F>(on_change: F)
 where
-    F: Fn(Vec<MediaPlayer>) + Send + Sync + 'static,
+    F: Fn(Vec<LocalPlayer>) + Send + Sync + 'static,
 {
     if STARTED.set(()).is_err() {
         return;
@@ -191,11 +714,12 @@ fn run(on_change: &OnChange) {
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     spawn_dbus_signal_watchers(wake_tx);
 
-    let mut art_cache = ArtCache::default();
-    let mut last: Option<(Vec<MediaPlayer>, Instant)> = None;
+    let mut art_cache = ArtCache::new(&FULL_ART, fetch_https_art);
+    let mut icons = IconCache::new(&ICONS, super::app_entry::icon_for_desktop_entry);
+    let mut last: Option<(Vec<LocalPlayer>, Instant)> = None;
     loop {
-        let players = snapshot(&mut art_cache);
-        let any_playing = players.iter().any(|p| p.playing);
+        let players = snapshot(&mut art_cache, &mut icons);
+        let any_playing = players.iter().any(|p| p.player.playing);
         let should_emit = match &last {
             None => true,
             Some((prev, prev_at)) => players_meaningfully_changed(prev, &players, prev_at.elapsed()),
@@ -276,18 +800,20 @@ fn spawn_dbus_signal_watchers(wake_tx: mpsc::Sender<()>) {
     });
 }
 
-/// Compares two snapshots of [`MediaPlayer`]s while ignoring normal linear playback
-/// position progression so periodic polling does not trigger spurious UI/network updates.
+/// Compares two snapshots of players while ignoring normal playback progress
+/// (at the player's rate) so periodic polling does not trigger spurious
+/// UI/network updates. `elapsed` is the time between them, for players
+/// whose positions weren't timed.
 pub(crate) fn players_meaningfully_changed(
-    old: &[MediaPlayer],
-    new: &[MediaPlayer],
+    old: &[LocalPlayer],
+    new: &[LocalPlayer],
     elapsed: Duration,
 ) -> bool {
     if old.len() != new.len() {
         return true;
     }
-    let elapsed_ms = elapsed.as_millis() as u64;
-    for (a, b) in old.iter().zip(new.iter()) {
+    for (old, new) in old.iter().zip(new.iter()) {
+        let (a, b) = (&old.player, &new.player);
         if a.id != b.id
             || a.app != b.app
             || a.title != b.title
@@ -298,6 +824,11 @@ pub(crate) fn players_meaningfully_changed(
             || a.actions != b.actions
             || a.art_key != b.art_key
             || a.art.is_some() != b.art.is_some()
+            || a.rate_milli != b.rate_milli
+            || a.shuffle != b.shuffle
+            || a.repeat != b.repeat
+            || a.art_full != b.art_full
+            || a.icon != b.icon
         {
             return true;
         }
@@ -305,8 +836,14 @@ pub(crate) fn players_meaningfully_changed(
             (None, None) => {}
             (Some(_), None) | (None, Some(_)) => return true,
             (Some(old_pos), Some(new_pos)) => {
+                let between = match (old.sampled_at, new.sampled_at) {
+                    (Some(then), Some(now)) => now.saturating_duration_since(then),
+                    _ => elapsed,
+                };
                 let expected = if a.playing {
-                    old_pos.saturating_add(elapsed_ms).min(a.duration.unwrap_or(u64::MAX))
+                    let rate = u128::from(a.rate_milli.unwrap_or(1000));
+                    let moved = u64::try_from(between.as_millis() * rate / 1000).unwrap_or(u64::MAX);
+                    old_pos.saturating_add(moved).min(a.duration.unwrap_or(u64::MAX))
                 } else {
                     old_pos
                 };
@@ -319,7 +856,7 @@ pub(crate) fn players_meaningfully_changed(
     false
 }
 
-fn snapshot(art_cache: &mut ArtCache) -> Vec<MediaPlayer> {
+fn snapshot(art_cache: &mut ArtCache, icons: &mut IconCache) -> Vec<LocalPlayer> {
     let raw_players = query_raw_players();
     let now = Instant::now();
     let mut players = Vec::with_capacity(raw_players.len());
@@ -330,22 +867,34 @@ fn snapshot(art_cache: &mut ArtCache) -> Vec<MediaPlayer> {
         {
             state.observe_playing(&raw.id, now);
         }
-        let (art_key, art) = art_cache.resolve(raw.art_url.as_deref()).unzip();
-        players.push(MediaPlayer {
-            app: raw.app,
-            id: raw.id,
-            title: Some(raw.title),
-            artist: raw.artist,
-            album: raw.album,
-            playing: raw.playing,
-            duration: raw.duration,
-            position: raw.position,
-            actions: raw.actions,
-            art_key,
-            art,
+        let art = art_cache.resolve(raw.art_url.as_deref(), Instant::now());
+        let icon = raw.desktop_entry.as_deref().and_then(|entry| icons.key_for(entry));
+        let (art_key, art_bytes) = art.small.unzip();
+        players.push(LocalPlayer {
+            player: MediaPlayer {
+                app: raw.app,
+                id: raw.id,
+                title: Some(raw.title),
+                artist: raw.artist,
+                album: raw.album,
+                playing: raw.playing,
+                duration: raw.duration,
+                position: raw.position,
+                actions: raw.actions,
+                art_key,
+                art: art_bytes,
+                rate_milli: raw.rate_milli,
+                age: None,
+                art_full: art.full,
+                icon,
+                shuffle: raw.shuffle,
+                repeat: raw.repeat.map(str::to_owned),
+            },
+            sampled_at: raw.sampled_at,
         });
     }
-    players.sort_by_key(|p| !p.playing);
+    art_cache.end_state();
+    players.sort_by_key(|p| !p.player.playing);
     players
 }
 
@@ -421,6 +970,10 @@ fn val_as_bool(v: &OwnedValue) -> Option<bool> {
     bool::try_from(v).ok()
 }
 
+fn val_as_f64(v: &OwnedValue) -> Option<f64> {
+    f64::try_from(v).ok().filter(|f| f.is_finite())
+}
+
 fn val_as_dict(v: &OwnedValue) -> Option<HashMap<String, OwnedValue>> {
     let cloned = v.try_clone().ok()?;
     HashMap::<String, OwnedValue>::try_from(cloned).ok()
@@ -451,9 +1004,8 @@ pub(crate) fn parse_zbus_player_properties(
         duration.map_or(ms, |d| ms.min(d))
     });
 
-    let identity = root_props.and_then(|r| {
-        r.get("Identity").and_then(val_as_str).or_else(|| r.get("DesktopEntry").and_then(val_as_str))
-    });
+    let desktop_entry = root_props.and_then(|r| r.get("DesktopEntry")).and_then(val_as_str);
+    let identity = root_props.and_then(|r| r.get("Identity")).and_then(val_as_str).or(desktop_entry.clone());
     let mut app = identity.unwrap_or_else(|| readable_player_app(short_id));
     let mut title = raw_title;
     if (says_video(short_id) || says_video(&app))
@@ -483,6 +1035,17 @@ pub(crate) fn parse_zbus_player_properties(
     if player_props.get("CanSeek").and_then(val_as_bool).unwrap_or(duration.is_some()) {
         actions.push("seek".to_owned());
     }
+    let rate_milli = player_props.get("Rate").and_then(val_as_f64).and_then(protocol_rate);
+    let shuffle = player_props.get("Shuffle").and_then(val_as_bool);
+    let repeat = player_props.get("LoopStatus").and_then(val_as_str).as_deref().and_then(loop_from_mpris);
+    // Read-only without `CanControl`.
+    let can_control = player_props.get("CanControl").and_then(val_as_bool) != Some(false);
+    if can_control && shuffle.is_some() {
+        actions.push("shuffle".to_owned());
+    }
+    if can_control && repeat.is_some() {
+        actions.push("loop".to_owned());
+    }
 
     Some(RawMprisPlayer {
         id: short_id.to_owned(),
@@ -495,6 +1058,11 @@ pub(crate) fn parse_zbus_player_properties(
         position,
         actions,
         art_url,
+        rate_milli,
+        shuffle,
+        repeat,
+        desktop_entry,
+        sampled_at: None,
     })
 }
 
@@ -546,10 +1114,12 @@ fn query_via_zbus() -> Option<Vec<RawMprisPlayer>> {
         ) else {
             continue;
         };
+        let read_at = Instant::now();
         let Some(player_props) = deserialize_properties_map(&player_msg) else {
             continue;
         };
-        if let Some(player) = parse_zbus_player_properties(&bus, root_props.as_ref(), &player_props) {
+        if let Some(mut player) = parse_zbus_player_properties(&bus, root_props.as_ref(), &player_props) {
+            player.sampled_at = Some(read_at);
             players.push(player);
         }
     }
@@ -568,8 +1138,10 @@ fn query_via_playerctl() -> Option<Vec<RawMprisPlayer>> {
         }
         return None;
     }
+    let read_at = Instant::now();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Some(stdout.lines().filter_map(parse_playerctl_line).collect())
+    let sampled = |player: RawMprisPlayer| RawMprisPlayer { sampled_at: Some(read_at), ..player };
+    Some(stdout.lines().filter_map(parse_playerctl_line).map(sampled).collect())
 }
 
 fn is_excluded_player(name: &str) -> bool {
@@ -673,6 +1245,11 @@ pub(crate) fn parse_playerctl_line(line: &str) -> Option<RawMprisPlayer> {
         position,
         actions,
         art_url,
+        rate_milli: None,
+        shuffle: None,
+        repeat: None,
+        desktop_entry: None,
+        sampled_at: None,
     })
 }
 
@@ -783,6 +1360,11 @@ pub(crate) fn parse_gdbus_player_properties(bus_name: &str, gdbus_output: &str) 
         position,
         actions,
         art_url,
+        rate_milli: None,
+        shuffle: None,
+        repeat: None,
+        desktop_entry: None,
+        sampled_at: None,
     })
 }
 
@@ -825,9 +1407,10 @@ fn query_via_gdbus() -> Option<Vec<RawMprisPlayer>> {
             .output()
             && out.status.success()
         {
+            let read_at = Instant::now();
             let text = String::from_utf8_lossy(&out.stdout);
             if let Some(player) = parse_gdbus_player_properties(&bus, &text) {
-                players.push(player);
+                players.push(RawMprisPlayer { sampled_at: Some(read_at), ..player });
             }
         }
     }
@@ -910,6 +1493,55 @@ fn resolve_zbus_target_bus(conn: &zbus::blocking::Connection, player: &str) -> O
     Some(exact)
 }
 
+/// A property a `shuffle` or `loop` command sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Setting {
+    Shuffle(bool),
+    /// An MPRIS `LoopStatus`.
+    Loop(&'static str),
+}
+
+impl Setting {
+    /// What `action` sets with `value`; `None` for actions that aren't settings.
+    fn of(action: MediaAction, value: Option<&str>) -> Result<Option<Setting>, MediaError> {
+        let unknown = || MediaError::Failed(format!("{} needs a value it takes", action.as_str()));
+        match action {
+            MediaAction::Shuffle => match value {
+                Some("on") => Ok(Some(Setting::Shuffle(true))),
+                Some("off") => Ok(Some(Setting::Shuffle(false))),
+                _ => Err(unknown()),
+            },
+            MediaAction::Loop => {
+                value.and_then(loop_to_mpris).map(|s| Some(Setting::Loop(s))).ok_or_else(unknown)
+            }
+            MediaAction::Play
+            | MediaAction::Pause
+            | MediaAction::Next
+            | MediaAction::Previous
+            | MediaAction::Seek => Ok(None),
+        }
+    }
+
+    fn property(self) -> (&'static str, zbus::zvariant::Value<'static>) {
+        match self {
+            Setting::Shuffle(on) => ("Shuffle", zbus::zvariant::Value::from(on)),
+            Setting::Loop(status) => ("LoopStatus", zbus::zvariant::Value::from(status)),
+        }
+    }
+}
+
+fn zbus_set(conn: &zbus::blocking::Connection, bus_name: &str, setting: Setting) -> bool {
+    let (name, value) = setting.property();
+    conn.call_method(
+        Some(bus_name),
+        "/org/mpris/MediaPlayer2",
+        Some("org.freedesktop.DBus.Properties"),
+        "Set",
+        &("org.mpris.MediaPlayer2.Player", name, value),
+    )
+    .is_ok()
+}
+
 fn zbus_player_command(
     conn: &zbus::blocking::Connection,
     bus_name: &str,
@@ -917,6 +1549,8 @@ fn zbus_player_command(
     position: Option<u64>,
 ) -> bool {
     match action {
+        // Settings, never sent here.
+        MediaAction::Shuffle | MediaAction::Loop => false,
         MediaAction::Play => conn
             .call_method(
                 Some(bus_name),
@@ -1004,9 +1638,28 @@ fn zbus_player_command(
 }
 
 pub fn command(player: &str, action: MediaAction, position: Option<u64>) -> Result<(), MediaError> {
+    command_value(player, action, position, None)
+}
+
+/// Runs `action` on one of this PC's players: `position` is a seek's,
+/// `value` a `shuffle`'s (`on`, `off`) or a `loop`'s (`none`, `track`,
+/// `playlist`). Shuffle and loop are set over D-Bus only.
+pub fn command_value(
+    player: &str,
+    action: MediaAction,
+    position: Option<u64>,
+    value: Option<&str>,
+) -> Result<(), MediaError> {
     let trimmed = player.trim();
     if trimmed.starts_with('-') || trimmed.chars().any(char::is_control) {
         return Err(MediaError::Failed("invalid player identifier".into()));
+    }
+    if let Some(setting) = Setting::of(action, value)? {
+        return super::non_tokio(|| {
+            let conn = zbus::blocking::Connection::session().map_err(|_| MediaError::Unsupported)?;
+            let bus = resolve_zbus_target_bus(&conn, trimmed).ok_or(MediaError::NotFound)?;
+            if zbus_set(&conn, &bus, setting) { Ok(()) } else { Err(MediaError::Unsupported) }
+        });
     }
 
     if super::non_tokio(|| {
@@ -1042,6 +1695,7 @@ pub fn command(player: &str, action: MediaAction, position: Option<u64>) -> Resu
             let secs = (position.unwrap_or(0) as f64) / 1000.0;
             cmd.args(["position", &format!("{secs:.2}")]);
         }
+        MediaAction::Shuffle | MediaAction::Loop => return Err(MediaError::Unsupported),
     }
     if cmd.status().is_ok_and(|s| s.success()) {
         return Ok(());
@@ -1068,6 +1722,7 @@ pub fn command(player: &str, action: MediaAction, position: Option<u64>) -> Resu
                 gdbus_player_call(&target_bus, "Seek", &[&offset_str])
             })
         }
+        MediaAction::Shuffle | MediaAction::Loop => return Err(MediaError::Unsupported),
     };
     if ok {
         Ok(())
@@ -1189,22 +1844,70 @@ fn resume_after_call_blocking() {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
-    fn sample_player(id: &str, playing: bool, position: Option<u64>) -> MediaPlayer {
-        MediaPlayer {
-            id: id.to_owned(),
-            app: "Spotify".to_owned(),
-            title: Some("Track 1".to_owned()),
-            artist: Some("Artist".to_owned()),
-            album: Some("Album".to_owned()),
-            playing,
-            duration: Some(200_000),
-            position,
-            actions: vec!["play".to_owned(), "pause".to_owned(), "seek".to_owned()],
-            art_key: None,
-            art: None,
+    fn sample_player(id: &str, playing: bool, position: Option<u64>) -> LocalPlayer {
+        LocalPlayer {
+            player: MediaPlayer {
+                id: id.to_owned(),
+                app: "Spotify".to_owned(),
+                title: Some("Track 1".to_owned()),
+                artist: Some("Artist".to_owned()),
+                album: Some("Album".to_owned()),
+                playing,
+                duration: Some(200_000),
+                position,
+                actions: vec!["play".to_owned(), "pause".to_owned(), "seek".to_owned()],
+                art_key: None,
+                art: None,
+                rate_milli: None,
+                age: None,
+                art_full: None,
+                icon: None,
+                shuffle: None,
+                repeat: None,
+            },
+            sampled_at: None,
         }
+    }
+
+    /// A picture whose JPEG doesn't compress much: noise from `seed`.
+    fn noisy(width: u32, height: u32, seed: u64) -> Bitmap {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut bgra = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..width * height {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let [b, g, r, ..] = state.to_le_bytes();
+            bgra.extend_from_slice(&[b, g, r, 255]);
+        }
+        Bitmap { width, height, bgra }
+    }
+
+    /// A smooth picture, which compresses well.
+    fn smooth(width: u32, height: u32) -> Bitmap {
+        let mut bgra = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                bgra.extend_from_slice(&[(x / 4 % 256) as u8, (y / 4 % 256) as u8, 128, 255]);
+            }
+        }
+        Bitmap { width, height, bgra }
+    }
+
+    fn jpeg(bitmap: &Bitmap, quality: u8) -> Vec<u8> {
+        super::super::image::encode_jpeg(bitmap, quality).unwrap()
+    }
+
+    fn longest(bytes: &[u8]) -> u32 {
+        picture_header(bytes).map(|(_, w, h)| w.max(h)).expect("a JPEG or PNG")
+    }
+
+    fn store() -> &'static Mutex<FullArt> {
+        Box::leak(Box::new(Mutex::new(FullArt::new())))
     }
 
     #[test]
@@ -1263,6 +1966,7 @@ mod tests {
     #[test]
     fn players_meaningfully_changed_ignores_linear_progress_and_detects_seeks() {
         let old = vec![sample_player("spotify", true, Some(10_000))];
+        assert!(!players_meaningfully_changed(&old, &old, Duration::ZERO));
         // 2 seconds later, position is 12_100 ms (within 1500 ms of expected 12_000 ms)
         let normal_tick = vec![sample_player("spotify", true, Some(12_100))];
         assert!(!players_meaningfully_changed(&old, &normal_tick, Duration::from_secs(2)));
@@ -1274,6 +1978,306 @@ mod tests {
         // Playback paused
         let paused = vec![sample_player("spotify", false, Some(12_000))];
         assert!(players_meaningfully_changed(&old, &paused, Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn progress_counts_at_the_players_rate_and_a_changed_rate_is_a_change() {
+        let start = Instant::now();
+        let timed = |position: u64, rate: Option<u32>, after: Duration| {
+            let mut p = sample_player("vlc", true, Some(position));
+            p.player.rate_milli = rate;
+            p.sampled_at = Some(start + after);
+            p
+        };
+        let old = [timed(10_000, Some(2000), Duration::ZERO)];
+        // Read 4 s apart (artwork took a while), 2 s since the last state: the
+        // reads' own times count, at twice the speed.
+        let steady = [timed(18_000, Some(2000), Duration::from_secs(4))];
+        assert!(!players_meaningfully_changed(&old, &steady, Duration::from_secs(2)));
+        let at_normal_speed = [timed(14_000, Some(2000), Duration::from_secs(4))];
+        assert!(players_meaningfully_changed(&old, &at_normal_speed, Duration::from_secs(2)));
+        let slowed = [timed(18_000, None, Duration::from_secs(4))];
+        assert!(players_meaningfully_changed(&old, &slowed, Duration::from_secs(2)));
+
+        let base = [sample_player("vlc", false, Some(0))];
+        let changes: [fn(&mut MediaPlayer); 5] = [
+            |p| p.shuffle = Some(true),
+            |p| p.repeat = Some("track".into()),
+            |p| p.art_full = Some("0011223344556677".into()),
+            |p| p.icon = Some("8899aabbccddeeff".into()),
+            |p| p.rate_milli = Some(1500),
+        ];
+        for change in changes {
+            let mut changed = base.clone();
+            change(&mut changed[0].player);
+            assert!(players_meaningfully_changed(&base, &changed, Duration::ZERO));
+        }
+    }
+
+    #[test]
+    fn rates_are_carried_in_thousandths_when_a_receiver_takes_them() {
+        assert_eq!(protocol_rate(1.5), Some(1500));
+        assert_eq!(protocol_rate(0.25), Some(250));
+        assert_eq!(protocol_rate(4.0), Some(4000));
+        assert_eq!(protocol_rate(1.0), None, "absent means 1");
+        for dropped in [0.0, -1.0, 0.1, 8.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(protocol_rate(dropped), None, "{dropped}");
+        }
+    }
+
+    #[test]
+    fn reads_a_pictures_size_from_its_header() {
+        let small = jpeg(&smooth(300, 200), 80);
+        assert_eq!(picture_header(&small), Some((ArtFormat::Jpeg, 300, 200)));
+        let png = super::super::image::encode_png(&smooth(40, 70)).unwrap();
+        assert_eq!(picture_header(&png), Some((ArtFormat::Png, 40, 70)));
+        // A JPEG with an APP segment and fill bytes before its frame.
+        let mut padded = vec![0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x04, 0xAA, 0xBB, 0xFF, 0xFF];
+        padded.extend_from_slice(&[0xC2, 0x00, 0x0B, 0x08, 0x02, 0x58, 0x03, 0x20, 0x03, 0x01, 0x22, 0x00]);
+        assert_eq!(picture_header(&padded), Some((ArtFormat::Jpeg, 800, 600)));
+        let garbage: [&[u8]; 6] =
+            [b"GIF89a", b"", b"\xFF\xD8", &[0xFF, 0xD8, 0xFF, 0xDA, 0, 2], &png[..20], &small[..30]];
+        for garbage in garbage {
+            assert_eq!(picture_header(garbage), None, "{garbage:?}");
+        }
+    }
+
+    #[test]
+    fn a_small_cover_file_passes_through_and_a_bigger_one_gets_a_large_picture() {
+        let small = jpeg(&smooth(300, 300), 90);
+        let pictures = Pictures::from_file(&small);
+        assert_eq!(pictures.small.as_ref().map(|a| &a.bytes), Some(&small), "as it is");
+        assert_eq!(pictures.small.as_ref().map(|a| a.key.clone()), Some(art_key(&small)));
+        assert!(pictures.full.is_none(), "no bigger than the small one");
+
+        let medium = jpeg(&noisy(700, 700, 1), 90);
+        assert!((ART_BYTES..=ART_FULL_BYTES).contains(&medium.len()), "{}", medium.len());
+        let pictures = Pictures::from_file(&medium);
+        let small = pictures.small.expect("a small picture");
+        assert!(small.bytes.len() <= ART_BYTES && longest(&small.bytes) <= 360);
+        let full = pictures.full.expect("a large picture");
+        assert_eq!(full.bytes, medium, "the original, which fits");
+        assert_eq!((full.key, full.kind), (art_key(&medium), ArtFormat::Jpeg));
+    }
+
+    #[test]
+    fn a_big_cover_file_is_encoded_again_under_the_limits() {
+        // An uncompressed PNG: over 2 MiB, though only 1000 px wide.
+        let heavy = super::super::image::encode_png(&smooth(1000, 700)).unwrap();
+        assert!(heavy.len() > ART_FULL_BYTES);
+        let full = Pictures::from_file(&heavy).full.expect("a large picture");
+        assert_eq!(full.kind, ArtFormat::Jpeg);
+        assert!(full.bytes.len() <= ART_FULL_BYTES);
+        assert_eq!(longest(&full.bytes), 1000);
+
+        // Over 1200 px on its longer side.
+        let wide = super::super::image::encode_png(&smooth(1600, 120)).unwrap();
+        let full = Pictures::from_file(&wide).full.expect("a large picture");
+        assert_eq!(picture_header(&full.bytes), Some((ArtFormat::Jpeg, 1200, 90)));
+    }
+
+    #[test]
+    fn art_files_are_read_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let cover = dir.path().join("cover.jpg");
+        std::fs::write(&cover, jpeg(&smooth(64, 64), 80)).unwrap();
+        assert!(read_art_file(&cover).is_some());
+
+        let huge = dir.path().join("huge.jpg");
+        File::create(&huge).unwrap().set_len(20 * 1024 * 1024).unwrap();
+        assert_eq!(read_art_file(&huge), None, "over 16 MiB");
+        std::fs::write(dir.path().join("empty.jpg"), b"").unwrap();
+        assert_eq!(read_art_file(&dir.path().join("empty.jpg")), None);
+        assert_eq!(read_art_file(dir.path()), None, "not a file");
+        assert_eq!(read_art_file(&dir.path().join("missing.jpg")), None);
+    }
+
+    #[test]
+    fn artwork_from_the_network_is_never_passed_on_as_it_came() {
+        let small = jpeg(&smooth(300, 300), 90);
+        let pictures = Pictures::from_network(&small);
+        let art = pictures.small.expect("a small picture");
+        assert_ne!(art.bytes, small, "encoded again");
+        assert_eq!(longest(&art.bytes), 300);
+        assert!(pictures.full.is_none());
+
+        let cover = jpeg(&noisy(640, 480, 2), 90);
+        let pictures = Pictures::from_network(&cover);
+        assert!(pictures.small.as_ref().is_some_and(|a| longest(&a.bytes) == 360));
+        let full = pictures.full.expect("a large picture");
+        assert_ne!(full.bytes, cover);
+        assert_eq!(picture_header(&full.bytes), Some((ArtFormat::Jpeg, 640, 480)));
+
+        // Not JPEG or PNG, corrupt, or too many pixels for its size: nothing.
+        let mut corrupt = small.clone();
+        corrupt.truncate(small.len() / 3);
+        let mut huge = PNG_SIGNATURE.to_vec();
+        huge.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R', 0, 0, 0x4E, 0x20, 0, 0, 0x4E, 0x20]);
+        huge.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        let refused: [&[u8]; 4] = [b"GIF89a\x01\x00\x01\x00", b"<html></html>", &corrupt, &huge];
+        for refused in refused {
+            assert!(Pictures::from_network(refused).is_empty());
+        }
+    }
+
+    #[test]
+    fn only_plain_https_urls_are_fetched() {
+        for url in [
+            "https://i.scdn.co/image/ab67616d0000b273",
+            " HTTPS://Example.com/cover.jpg?size=640 ",
+            "https://example.com/c.jpg?from=a@b",
+        ] {
+            assert!(https_art_url(url).is_some(), "{url}");
+        }
+        let long = format!("https://example.com/{}", "a".repeat(MAX_ART_URL_BYTES));
+        for url in [
+            "http://example.com/cover.jpg",
+            "https://user:secret@example.com/cover.jpg",
+            "https://user@example.com/cover.jpg",
+            "https:///cover.jpg",
+            "https://example.com/a cover.jpg",
+            "https://exa\nmple.com/cover.jpg",
+            "https://example.com\\@evil/cover.jpg",
+            "file:///tmp/cover.jpg",
+            "ftp://example.com/cover.jpg",
+            "https:",
+            long.as_str(),
+        ] {
+            assert_eq!(https_art_url(url), None, "{url}");
+        }
+        assert_eq!(fetch_https_art("http://example.com/cover.jpg"), Err("not an https URL"));
+    }
+
+    #[test]
+    fn curl_is_bounded_and_carries_no_cookies_or_credentials() {
+        let args = curl_art_args("https://example.com/cover.jpg");
+        assert_eq!(args[0], "-q", "first, so no curlrc is read");
+        let pair = |flag: &str, value: &str| args.windows(2).any(|w| w[0] == flag && w[1] == value);
+        assert!(pair("--proto", "=https") && pair("--proto-redir", "=https"));
+        assert!(pair("--max-redirs", "3") && pair("--max-time", "5"));
+        assert!(pair("--max-filesize", &HTTPS_ART_BYTES.to_string()));
+        assert!(args.iter().any(|a| a == "--globoff") && args.iter().any(|a| a == "--fail"));
+        assert_eq!(&args[args.len() - 2..], ["--", "https://example.com/cover.jpg"]);
+        for never in
+            ["-b", "--cookie", "-c", "--cookie-jar", "-n", "--netrc", "-u", "--user", "-k", "--insecure"]
+        {
+            assert!(!args.iter().any(|a| a == never), "{never}");
+        }
+    }
+
+    #[test]
+    fn failed_artwork_is_tried_again_after_ten_minutes() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn failing(_: &str) -> Result<Vec<u8>, &'static str> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Err("fetch failed")
+        }
+        let mut cache = ArtCache::new(store(), failing);
+        let start = Instant::now();
+        let url = Some("https://example.com/cover.jpg");
+        for after in [0, 60, 9 * 60] {
+            let art = cache.resolve(url, start + Duration::from_secs(after));
+            assert!(art.small.is_none() && art.full.is_none());
+            cache.end_state();
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        cache.resolve(url, start + ART_RETRY + Duration::from_secs(1));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+
+        let missing = cache.resolve(Some("file:///nonexistent/g7link/cover.jpg"), start);
+        assert!(missing.small.is_none());
+        for never in ["http://example.com/c.jpg", "data:image/png;base64,AAAA", "https://u:p@example.com/c"] {
+            cache.resolve(Some(never), start);
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2, "only https URLs are fetched");
+    }
+
+    #[test]
+    fn large_pictures_are_served_by_key_and_at_most_four_kept() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn covers(url: &str) -> Result<Vec<u8>, &'static str> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Ok(jpeg(&noisy(480, 480, fnv(url.as_bytes())), 90))
+        }
+        let full = store();
+        let mut cache = ArtCache::new(full, covers);
+        let now = Instant::now();
+        let urls: Vec<String> = (0..5).map(|n| format!("https://example.com/{n}.jpg")).collect();
+        let mut keys = Vec::new();
+        for url in &urls {
+            let art = cache.resolve(Some(url), now);
+            cache.end_state();
+            assert!(art.small.is_some());
+            let key = art.full.expect("a large picture");
+            let (bytes, kind) = lock(full).get(&key).unwrap();
+            assert_eq!((kind, longest(&bytes), art_key(&bytes)), (ArtFormat::Jpeg, 480, key.clone()));
+            keys.push(key);
+        }
+        assert_eq!(CALLS.load(Ordering::SeqCst), 5);
+        assert_eq!(lock(full).pictures.len(), KEPT_FULL_ART);
+        assert!(lock(full).get(&keys[0]).is_none(), "the oldest went");
+
+        // Shown again: still cached, nothing fetched.
+        assert_eq!(cache.resolve(Some(&urls[4]), now).full.as_ref(), Some(&keys[4]));
+        cache.end_state();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 5);
+        // Back after a while: its large picture is made again.
+        assert_eq!(cache.resolve(Some(&urls[0]), now).full.as_ref(), Some(&keys[0]));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 6);
+        assert!(lock(full).get(&keys[0]).is_some());
+    }
+
+    #[test]
+    fn app_icons_are_kept_by_key_and_bad_ones_refused() {
+        fn lookup(entry: &str) -> Option<(String, Vec<u8>)> {
+            let png = [PNG_SIGNATURE, entry.as_bytes()].concat();
+            match entry {
+                "spotify" => Some(("0123456789abcdef".into(), png)),
+                "upper" => Some(("0123456789ABCDEF".into(), png)),
+                "short" => Some(("0123".into(), png)),
+                "huge" => Some(("fedcba9876543210".into(), [PNG_SIGNATURE, &[0u8; 16 * 1024][..]].concat())),
+                "gif" => Some(("00000000000000ff".into(), b"GIF89a".to_vec())),
+                _ => None,
+            }
+        }
+        let icons_store: &'static Mutex<IconStore> = Box::leak(Box::new(Mutex::new(IconStore::new())));
+        let mut icons = IconCache::new(icons_store, lookup);
+        assert_eq!(icons.key_for("spotify").as_deref(), Some("0123456789abcdef"));
+        assert_eq!(icons.key_for("spotify").as_deref(), Some("0123456789abcdef"));
+        let png = lock(icons_store).get("0123456789abcdef").map(|png| png.to_vec());
+        assert_eq!(png, Some([PNG_SIGNATURE, &b"spotify"[..]].concat()));
+        for refused in ["upper", "short", "huge", "gif", "missing"] {
+            assert_eq!(icons.key_for(refused), None, "{refused}");
+        }
+        for n in 0..KEPT_ICONS + 1 {
+            lock(icons_store).insert(format!("{n:016x}"), PNG_SIGNATURE.to_vec());
+        }
+        assert_eq!(lock(icons_store).pngs.len(), KEPT_ICONS);
+    }
+
+    #[test]
+    fn shuffle_and_loop_take_only_their_values() {
+        let of = Setting::of;
+        assert_eq!(of(MediaAction::Shuffle, Some("on")), Ok(Some(Setting::Shuffle(true))));
+        assert_eq!(of(MediaAction::Shuffle, Some("off")), Ok(Some(Setting::Shuffle(false))));
+        assert_eq!(of(MediaAction::Loop, Some("none")), Ok(Some(Setting::Loop("None"))));
+        assert_eq!(of(MediaAction::Loop, Some("track")), Ok(Some(Setting::Loop("Track"))));
+        assert_eq!(of(MediaAction::Loop, Some("playlist")), Ok(Some(Setting::Loop("Playlist"))));
+        for (action, value) in [
+            (MediaAction::Shuffle, None),
+            (MediaAction::Shuffle, Some("yes")),
+            (MediaAction::Loop, None),
+            (MediaAction::Loop, Some("Track")),
+            (MediaAction::Loop, Some("on")),
+        ] {
+            assert!(of(action, value).is_err(), "{action:?} {value:?}");
+        }
+        assert_eq!(of(MediaAction::Play, Some("on")), Ok(None), "ignored for the rest");
+        for (mpris, wire) in LOOP_STATUSES {
+            assert_eq!(loop_from_mpris(mpris), Some(wire));
+            assert_eq!(loop_to_mpris(wire), Some(mpris));
+        }
+        assert_eq!(loop_from_mpris("track"), None);
     }
 
     #[test]
@@ -1326,6 +2330,42 @@ mod tests {
         assert_eq!(parsed.duration, Some(337_000));
         assert_eq!(parsed.position, Some(45_000));
         assert_eq!(parsed.art_url.as_deref(), Some("file:///tmp/ram.jpg"));
+        assert_eq!((parsed.rate_milli, parsed.shuffle, parsed.repeat), (None, None, None));
+        assert_eq!(parsed.actions, ["play", "pause", "next", "previous", "seek"]);
+        assert_eq!(parsed.desktop_entry, None);
+
+        let value = |v: Value<'_>| OwnedValue::try_from(v).unwrap();
+        let mut root: HashMap<String, OwnedValue> = HashMap::new();
+        root.insert("Identity".to_owned(), value(Value::from("Spotify Premium")));
+        root.insert("DesktopEntry".to_owned(), value(Value::from("com.spotify.Client")));
+        player_props.insert("Rate".to_owned(), value(Value::from(1.5_f64)));
+        player_props.insert("Shuffle".to_owned(), value(Value::from(true)));
+        player_props.insert("LoopStatus".to_owned(), value(Value::from("Playlist")));
+        let parsed =
+            parse_zbus_player_properties("org.mpris.MediaPlayer2.spotify", Some(&root), &player_props)
+                .unwrap();
+        assert_eq!(parsed.app, "Spotify Premium");
+        assert_eq!(parsed.desktop_entry.as_deref(), Some("com.spotify.Client"));
+        assert_eq!(
+            (parsed.rate_milli, parsed.shuffle, parsed.repeat),
+            (Some(1500), Some(true), Some("playlist"))
+        );
+        assert_eq!(parsed.actions, ["play", "pause", "next", "previous", "seek", "shuffle", "loop"]);
+
+        // Read-only without CanControl; a rate of 0 or 1 is none; an
+        // unknown LoopStatus isn't offered.
+        player_props.insert("CanControl".to_owned(), value(Value::from(false)));
+        player_props.insert("Rate".to_owned(), value(Value::from(0.0_f64)));
+        player_props.insert("LoopStatus".to_owned(), value(Value::from("Forever")));
+        let parsed =
+            parse_zbus_player_properties("org.mpris.MediaPlayer2.spotify", Some(&root), &player_props)
+                .unwrap();
+        assert_eq!((parsed.rate_milli, parsed.shuffle, parsed.repeat), (None, Some(true), None));
+        assert!(!parsed.actions.iter().any(|a| a == "shuffle" || a == "loop"));
+        player_props.insert("Rate".to_owned(), value(Value::from(1.0_f64)));
+        let parsed =
+            parse_zbus_player_properties("org.mpris.MediaPlayer2.spotify", None, &player_props).unwrap();
+        assert_eq!(parsed.rate_milli, None);
 
         assert_eq!(compute_seek_offset_us(60_000_000, 45_000_000), 15_000_000);
         assert_eq!(compute_seek_offset_us(10_000_000, 45_000_000), -35_000_000);

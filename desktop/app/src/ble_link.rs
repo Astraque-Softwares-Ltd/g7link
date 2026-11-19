@@ -17,8 +17,9 @@ use g7link_core::{DeviceId, LinkState, Node, NodeEvent};
 
 use crate::{core_host, sys::ble_beacon};
 
-/// How long a phone the core asked for has to connect.
-const WANTED_FOR: Duration = Duration::from_secs(30);
+/// How long a phone the core asked for has to connect: the window the core's
+/// replies to `ble.use` count on.
+const WANTED_FOR: Duration = g7link_core::BLE_CONNECT_WINDOW;
 /// How long a window nobody asked for stays open.
 const UNSOLICITED_FOR: Duration = Duration::from_secs(45);
 /// Unsolicited windows at most this often.
