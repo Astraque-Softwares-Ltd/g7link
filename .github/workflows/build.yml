@@ -99,7 +99,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           FFMPEG_SOURCE_CACHE: ${{ runner.temp }}/ffmpeg-sources
         run: |
-          cargo build --release -p g7link-desktop
+          cargo build --release -p g7link-desktop -p g7-agents
           bash ./desktop/packaging/linux/build-ffmpeg-backends.sh
           ./desktop/packaging/linux/build-deb.sh
           ./desktop/packaging/linux/build-rpm.sh
@@ -129,6 +129,7 @@ jobs:
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /dist/*.deb >/dev/null
             g7link-desktop --version
+            g7-agents --version
             # --version loads no platform plugin or QML module: check the
             # bundled libraries, plugins and the QML modules the app imports
             # (file dialogs need Qt.labs.folderlistmodel) find what they link.
@@ -143,10 +144,14 @@ jobs:
             if [ -n "$missing" ]; then echo "$missing"; exit 1; fi'
           docker run --rm -v "$PWD/dist:/dist:ro" fedora:40 bash -euc '
             dnf install -y -q --nogpgcheck /dist/*.rpm >/dev/null
-            g7link-desktop --version'
+            g7link-desktop --version
+            g7-agents --version'
           APPIMAGE_EXTRACT_AND_RUN=1 ./dist/*.AppImage --version
+          (cd /tmp && "$GITHUB_WORKSPACE"/dist/*.AppImage --appimage-extract usr/bin/g7-agents >/dev/null)
+          /tmp/squashfs-root/usr/bin/g7-agents --version
           mkdir -p /tmp/tarball && tar -xzf dist/*.tar.gz -C /tmp/tarball
           /tmp/tarball/*/g7link-desktop --version
+          /tmp/tarball/*/g7-agents --version
       - name: Check that install.sh installs and removes each package
         # The one-line install, from these files instead of GitHub: the .deb on
         # Ubuntu, the .rpm on Fedora, and the tarball in a home folder.
@@ -156,11 +161,13 @@ jobs:
             docker run --rm -v "$PWD/dist:/dist:ro" -e G7LINK_ASSETS_DIR=/dist "$image" sh -euc '
               sh /dist/install.sh
               g7link-desktop --version
+              g7-agents --version
               sh /dist/install.sh --uninstall
               # The shell remembers where it last ran the app, and dash
               # reports that even once the file is gone.
               hash -r
-              ! command -v g7link-desktop'
+              ! command -v g7link-desktop
+              ! command -v g7-agents'
           done
           # The tarball goes in a home folder and can't add system libraries;
           # a desktop has them, a bare container doesn't. Installing the .deb
@@ -170,7 +177,7 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends /dist/*.deb >/dev/null
             apt-get remove -y -qq g7link >/dev/null
             useradd -m user
-            su user -c "G7LINK_ASSETS_DIR=/dist sh /dist/install.sh && ~/.local/bin/g7link-desktop --version"'
+            su user -c "G7LINK_ASSETS_DIR=/dist sh /dist/install.sh && ~/.local/bin/g7link-desktop --version && ~/.local/bin/g7-agents --version"'
           rm dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v7
         with:

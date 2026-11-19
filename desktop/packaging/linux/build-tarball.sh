@@ -32,6 +32,8 @@ if [[ ! -f "${BIN_PATH}" ]]; then
     echo "Building g7link-desktop (release)..."
     (cd "${REPO_ROOT}" && cargo build --release -p g7link-desktop)
 fi
+# The agent host (g7-agents), shipped when it was built.
+AGENTS_BIN_PATH="${AGENTS_BIN_PATH:-$(dirname "${BIN_PATH}")/g7-agents}"
 
 STAGE_DIR="$(mktemp -d -t g7link-tar-XXXXXX)"
 trap 'rm -rf "${STAGE_DIR}"' EXIT
@@ -44,6 +46,9 @@ install -m 0755 "${BIN_PATH}" "${BUNDLE_DIR}/g7link-desktop"
 for adapter in "$(dirname "${BIN_PATH}")"/libg7link-video-ffmpeg*.so; do
     [[ ! -f "${adapter}" ]] || install -m 0755 "${adapter}" "${BUNDLE_DIR}/"
 done
+if [[ -f "${AGENTS_BIN_PATH}" ]]; then
+    install -m 0755 "${AGENTS_BIN_PATH}" "${BUNDLE_DIR}/g7-agents"
+fi
 printf '%s\n' "${VERSION}" > "${BUNDLE_DIR}/VERSION"
 for qm in "$(dirname "${BIN_PATH}")"/g7link_*.qm; do
     if [[ -f "${qm}" ]]; then
@@ -170,6 +175,11 @@ install -m 0755 "${SELF_DIR}/g7link-desktop" "${PREFIX}/g7link-desktop"
 for adapter in "${SELF_DIR}"/libg7link-video-ffmpeg*.so; do
     [[ ! -f "${adapter}" ]] || install -m 0755 "${adapter}" "${PREFIX}/"
 done
+# The agent host, linked beside the app's command so the launcher finds it on PATH.
+if [[ -f "${SELF_DIR}/g7-agents" ]]; then
+    install -m 0755 "${SELF_DIR}/g7-agents" "${PREFIX}/g7-agents"
+    ln -sf "${PREFIX}/g7-agents" "$(dirname "${BIN_LINK}")/g7-agents"
+fi
 [[ -f "${SELF_DIR}/VERSION" ]] && install -m 0644 "${SELF_DIR}/VERSION" "${PREFIX}/VERSION"
 [[ -f "${SELF_DIR}/qt.conf" ]] && install -m 0644 "${SELF_DIR}/qt.conf" "${PREFIX}/qt.conf"
 for dir in lib plugins qml; do
@@ -216,7 +226,7 @@ set -euo pipefail
 
 if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
     rm -rf /opt/g7link
-    rm -f /usr/local/bin/g7link-desktop
+    rm -f /usr/local/bin/g7link-desktop /usr/local/bin/g7-agents
     rm -f /usr/share/applications/g7link.desktop
     rm -f /usr/share/metainfo/org.g7link.desktop.metainfo.xml
     rm -f /usr/share/icons/hicolor/scalable/apps/g7link.svg
@@ -224,7 +234,7 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
 else
     PREFIX="${XDG_DATA_HOME:-$HOME/.local/share}/g7link-app"
     rm -rf "${PREFIX}"
-    rm -f "${HOME}/.local/bin/g7link-desktop"
+    rm -f "${HOME}/.local/bin/g7link-desktop" "${HOME}/.local/bin/g7-agents"
     rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/g7link.desktop"
     rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/metainfo/org.g7link.desktop.metainfo.xml"
     rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps/g7link.svg"

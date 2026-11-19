@@ -18,6 +18,8 @@ mkdir -p "${DIST}" "${WORK}/qt"/{lib,plugins,qml}
 
 # A private Qt that's empty, so the packages need no Qt from the system.
 cp /bin/true "${WORK}/g7link-desktop"
+# The agent host ships beside the app (AGENTS_BIN_PATH defaults to it).
+cp /bin/true "${WORK}/g7-agents"
 cat > "${WORK}/qmake" <<EOF
 #!/bin/sh
 case "\$2" in
@@ -53,9 +55,12 @@ check() {
 ROOT_ROUND_TRIP='
     sh /dist/install.sh
     g7link-desktop --version >/dev/null
+    g7-agents --version >/dev/null
     test -f /etc/udev/rules.d/70-g7link-uinput.rules
     sh /dist/install.sh --uninstall
+    hash -r
     ! command -v g7link-desktop
+    ! command -v g7-agents
     ! test -e /etc/udev/rules.d/70-g7link-uinput.rules'
 
 check deb docker.io/library/ubuntu:24.04 "${ROOT_ROUND_TRIP}"
@@ -65,9 +70,11 @@ check home-folder docker.io/library/ubuntu:24.04 '
     useradd -m user
     su user -c "G7LINK_ASSETS_DIR=/dist sh /dist/install.sh"
     su user -c "~/.local/bin/g7link-desktop --version" >/dev/null
+    su user -c "~/.local/bin/g7-agents --version" >/dev/null
     test -f /home/user/.local/share/applications/g7link.desktop
     su user -c "G7LINK_ASSETS_DIR=/dist sh /dist/install.sh --uninstall"
-    ! test -e /home/user/.local/bin/g7link-desktop'
+    ! test -e /home/user/.local/bin/g7link-desktop
+    ! test -e /home/user/.local/bin/g7-agents'
 check bad-checksum docker.io/library/ubuntu:24.04 '
     mkdir /tampered && cp /dist/* /tampered/
     echo tampered >> /tampered/g7link_9.9.9_amd64.deb

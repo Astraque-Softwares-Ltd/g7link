@@ -75,6 +75,11 @@ done
 if [[ -n "${GLIBC}" ]]; then
     REQUIRES+="Requires: libc.so.6(${GLIBC})(64bit)"$'\n'
 fi
+# The agent host's link, when the .deb has it (its binary is under /usr/lib/g7link).
+AGENTS_FILES=""
+if [[ -L "${TREE}/usr/bin/g7-agents" || -f "${TREE}/usr/bin/g7-agents" ]]; then
+    AGENTS_FILES="/usr/bin/g7-agents"
+fi
 
 cat > "${STAGE_DIR}/rpmbuild/SPECS/g7link.spec" <<EOF
 Name:           g7link
@@ -123,6 +128,7 @@ cp -a "${TREE}/usr" "%{buildroot}/"
 
 %files
 /usr/bin/g7link-desktop
+${AGENTS_FILES}
 /usr/lib/g7link
 /usr/share/g7link
 /usr/share/applications/g7link.desktop

@@ -1340,6 +1340,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "g7-agents"
+version = "0.1.12"
+dependencies = [
+ "clap",
+ "dirs",
+ "rand",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
 name = "g7link-adb"
 version = "0.1.12"
 dependencies = [
@@ -1418,6 +1436,7 @@ dependencies = [
  "cxx-qt-lib",
  "data-encoding",
  "dirs",
+ "g7-agents",
  "g7link-core",
  "g7link-vcam",
  "hostname",

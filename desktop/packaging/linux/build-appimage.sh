@@ -36,6 +36,8 @@ if [[ ! -f "${BIN_PATH}" ]]; then
     echo "Building g7link-desktop (release)..."
     (cd "${REPO_ROOT}" && cargo build --release -p g7link-desktop)
 fi
+# The agent host (g7-agents), shipped when it was built.
+AGENTS_BIN_PATH="${AGENTS_BIN_PATH:-$(dirname "${BIN_PATH}")/g7-agents}"
 
 STAGE_DIR="$(mktemp -d -t g7link-appimage-XXXXXX)"
 trap 'rm -rf "${STAGE_DIR}"' EXIT
@@ -55,6 +57,9 @@ install -m 0755 "${BIN_PATH}" "${APPDIR}/usr/bin/g7link-desktop"
 for adapter in "$(dirname "${BIN_PATH}")"/libg7link-video-ffmpeg*.so; do
     [[ ! -f "${adapter}" ]] || install -m 0755 "${adapter}" "${APPDIR}/usr/bin/"
 done
+if [[ -f "${AGENTS_BIN_PATH}" ]]; then
+    install -m 0755 "${AGENTS_BIN_PATH}" "${APPDIR}/usr/bin/g7-agents"
+fi
 
 for qm in "$(dirname "${BIN_PATH}")"/g7link_*.qm; do
     if [[ -f "${qm}" ]]; then

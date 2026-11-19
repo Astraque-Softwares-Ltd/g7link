@@ -1,0 +1,873 @@
+// SPDX-License-Identifier: MPL-2.0
+//! Clients of the host socket: [`Client`] for tokio, [`BlockingClient`] for
+//! plain threads, the socket path, and starting the host on demand.
+
+use std::collections::{HashMap, VecDeque};
+use std::io::{self, BufReader as StdBufReader, Write as _};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixStream as StdUnixStream;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+use tokio::net::unix::OwnedWriteHalf;
+use tokio::sync::{mpsc, oneshot};
+
+use crate::api::*;
+use crate::lines::{self, LineRead};
+
+/// Overrides the socket path (tests, and the approval bridge).
+pub const SOCKET_ENV: &str = "G7_AGENTS_SOCKET";
+/// Overrides where the host binary is looked for first.
+pub const BIN_ENV: &str = "G7_AGENTS_BIN";
+/// How long a request waits for its reply, unless it says otherwise.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// After spawning the host, how long connecting is retried, and how often.
+pub const SPAWN_WAIT: Duration = Duration::from_secs(3);
+pub const SPAWN_RETRY: Duration = Duration::from_millis(50);
+/// Events buffered for a client that isn't reading them; later ones are
+/// dropped until it catches up.
+pub const EVENT_BUFFER: usize = 4096;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    #[error("the agent host is not installed")]
+    NotInstalled,
+    #[error("the agent host did not start")]
+    NotStarted,
+    #[error("{0} is not private to this user")]
+    Insecure(PathBuf),
+    #[error("the connection to the agent host closed")]
+    Closed,
+    #[error("the agent host did not answer in time")]
+    Timeout,
+    #[error("unexpected reply from the agent host: {0}")]
+    Protocol(String),
+    #[error(transparent)]
+    Remote(#[from] RpcError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl ClientError {
+    /// The host's error code, for errors the host returned.
+    pub fn code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::Remote(e) => Some(e.code),
+            _ => None,
+        }
+    }
+
+    /// The host can't be reached (not installed, not running, gone).
+    pub fn is_unreachable(&self) -> bool {
+        matches!(self, Self::NotInstalled | Self::NotStarted | Self::Closed | Self::Io(_) | Self::Timeout)
+    }
+}
+
+// ---- Paths ----
+
+fn absolute_env(name: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(name)?;
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+/// This process's effective uid.
+pub fn euid() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
+/// The directory that holds the socket and the host's lock:
+/// `$XDG_RUNTIME_DIR/g7-agents`, or `/tmp/g7-agents-<uid>` without it.
+pub fn default_runtime_dir() -> PathBuf {
+    match absolute_env("XDG_RUNTIME_DIR") {
+        Some(dir) => dir.join("g7-agents"),
+        None => PathBuf::from(format!("/tmp/g7-agents-{}", euid())),
+    }
+}
+
+/// The socket path: `$G7_AGENTS_SOCKET`, else `host.sock` in
+/// [`default_runtime_dir`].
+pub fn socket_path() -> PathBuf {
+    absolute_env(SOCKET_ENV).unwrap_or_else(|| default_runtime_dir().join("host.sock"))
+}
+
+/// Checks `dir` is a real directory owned by this user with no access for
+/// anyone else. `Ok(false)` when it doesn't exist.
+pub fn check_private_dir(dir: &Path) -> Result<bool, ClientError> {
+    let meta = match std::fs::symlink_metadata(dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    if !meta.file_type().is_dir() || meta.uid() != euid() || meta.permissions().mode() & 0o077 != 0 {
+        return Err(ClientError::Insecure(dir.to_owned()));
+    }
+    Ok(true)
+}
+
+/// Creates `dir` (and its parents) with mode 0700 if missing, then checks
+/// it is private.
+pub fn ensure_private_dir(dir: &Path) -> Result<(), ClientError> {
+    if !check_private_dir(dir)? {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        // The umask may have narrowed the mode; widen nothing, only fix ours.
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        if !check_private_dir(dir)? {
+            return Err(ClientError::Insecure(dir.to_owned()));
+        }
+    }
+    Ok(())
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+fn search_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|p| is_executable_file(p))
+}
+
+/// Where the host binary is, first hit wins: `$G7_AGENTS_BIN`; `g7-agents`
+/// beside the current executable; `/usr/lib/g7link/g7-agents`; `g7-agents`
+/// on `PATH`; `$XDG_DATA_HOME/g7link-app/g7-agents`; `/opt/g7link/g7-agents`.
+pub fn find_host_binary() -> Option<PathBuf> {
+    let mut candidates = Vec::with_capacity(6);
+    if let Some(path) = absolute_env(BIN_ENV) {
+        candidates.push(path);
+    }
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+        candidates.push(dir.join("g7-agents"));
+    }
+    candidates.push(PathBuf::from("/usr/lib/g7link/g7-agents"));
+    if let Some(found) = candidates.iter().find(|p| is_executable_file(p)) {
+        return Some(found.clone());
+    }
+    if let Some(found) = search_path("g7-agents") {
+        return Some(found);
+    }
+    let data_home =
+        absolute_env("XDG_DATA_HOME").or_else(|| absolute_env("HOME").map(|home| home.join(".local/share")));
+    let mut rest = Vec::with_capacity(2);
+    if let Some(data) = data_home {
+        rest.push(data.join("g7link-app/g7-agents"));
+    }
+    rest.push(PathBuf::from("/opt/g7link/g7-agents"));
+    rest.into_iter().find(|p| is_executable_file(p))
+}
+
+/// `$XDG_STATE_HOME/g7-agents`, where the host's log goes.
+pub fn state_dir() -> Option<PathBuf> {
+    absolute_env("XDG_STATE_HOME")
+        .or_else(|| absolute_env("HOME").map(|home| home.join(".local/state")))
+        .map(|dir| dir.join("g7-agents"))
+}
+
+/// Starts `<bin> serve` detached: its own process group, stdin and stdout
+/// on `/dev/null`, stderr appended to `host.log` in [`state_dir`].
+pub fn spawn_host(bin: &Path) -> io::Result<()> {
+    let stderr = state_dir()
+        .and_then(|dir| {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).ok()?;
+            std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(dir.join("host.log")).ok()
+        })
+        .map_or_else(Stdio::null, Stdio::from);
+    let mut child = Command::new(bin)
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .process_group(0)
+        .spawn()?;
+    // Reap it when it exits so it never lingers as a zombie of ours.
+    std::thread::Builder::new().name("g7-agents-reaper".into()).spawn(move || {
+        let _ = child.wait();
+    })?;
+    Ok(())
+}
+
+fn is_not_running(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
+}
+
+// ---- Typed calls ----
+
+/// One method call: its name, its params, and how to read its result.
+pub struct Call<T> {
+    pub method: &'static str,
+    pub params: Value,
+    parse: fn(Value) -> Result<T, serde_json::Error>,
+}
+
+impl<T> std::fmt::Debug for Call<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Call").field("method", &self.method).finish_non_exhaustive()
+    }
+}
+
+impl<T> Call<T> {
+    fn new<P: Serialize>(
+        method: &'static str,
+        params: &P,
+        parse: fn(Value) -> Result<T, serde_json::Error>,
+    ) -> Self {
+        Self { method, params: serde_json::to_value(params).unwrap_or(Value::Null), parse }
+    }
+
+    pub fn parse(&self, value: Value) -> Result<T, ClientError> {
+        (self.parse)(value).map_err(|e| ClientError::Protocol(e.to_string()))
+    }
+}
+
+fn unit(_: Value) -> Result<(), serde_json::Error> {
+    Ok(())
+}
+
+fn parse_as<T: DeserializeOwned>(value: Value) -> Result<T, serde_json::Error> {
+    serde_json::from_value(value)
+}
+
+/// Builders for every method of §2.3 except `hello` and the bridge's.
+pub mod calls {
+    use super::*;
+
+    pub fn agents_list(refresh: bool) -> Call<Vec<AgentInfo>> {
+        Call::new(method::AGENTS_LIST, &AgentsListParams { refresh }, |v| {
+            parse_as::<AgentsListResult>(v).map(|r| r.agents)
+        })
+    }
+
+    pub fn folders_list() -> Call<Vec<Folder>> {
+        Call::new(method::FOLDERS_LIST, &Empty {}, |v| parse_as::<FoldersListResult>(v).map(|r| r.folders))
+    }
+
+    pub fn folders_add(path: String, label: Option<String>) -> Call<Folder> {
+        Call::new(method::FOLDERS_ADD, &FoldersAddParams { path, label }, |v| {
+            parse_as::<FolderResult>(v).map(|r| r.folder)
+        })
+    }
+
+    pub fn folders_remove(id: String) -> Call<()> {
+        Call::new(method::FOLDERS_REMOVE, &FoldersRemoveParams { id }, unit)
+    }
+
+    pub fn threads_list(limit: Option<u32>, before_ms: Option<u64>) -> Call<Vec<ThreadInfo>> {
+        Call::new(method::THREADS_LIST, &ThreadsListParams { limit, before_ms }, |v| {
+            parse_as::<ThreadsListResult>(v).map(|r| r.threads)
+        })
+    }
+
+    pub fn thread_start(params: ThreadStartParams) -> Call<ThreadInfo> {
+        Call::new(method::THREAD_START, &params, |v| parse_as::<ThreadResult>(v).map(|r| r.thread))
+    }
+
+    pub fn thread_send(thread_id: String, text: String, origin: Origin) -> Call<()> {
+        Call::new(method::THREAD_SEND, &ThreadSendParams { thread_id, text, origin }, unit)
+    }
+
+    pub fn thread_interrupt(thread_id: String) -> Call<()> {
+        Call::new(method::THREAD_INTERRUPT, &ThreadIdParams { thread_id }, unit)
+    }
+
+    pub fn thread_read(params: ThreadReadParams) -> Call<ThreadReadResult> {
+        Call::new(method::THREAD_READ, &params, parse_as)
+    }
+
+    pub fn thread_delete(thread_id: String) -> Call<()> {
+        Call::new(method::THREAD_DELETE, &ThreadIdParams { thread_id }, unit)
+    }
+
+    pub fn thread_terminal_command(thread_id: String) -> Call<TerminalCommandResult> {
+        Call::new(method::THREAD_TERMINAL_COMMAND, &ThreadIdParams { thread_id }, parse_as)
+    }
+
+    pub fn approval_answer(token: String, decision: Decision, by: By) -> Call<()> {
+        Call::new(method::APPROVAL_ANSWER, &ApprovalAnswerParams { token, decision, by }, unit)
+    }
+
+    pub fn subscribe(threads: ThreadSelection, deltas: bool) -> Call<()> {
+        Call::new(method::SUBSCRIBE, &SubscribeParams { threads, deltas }, unit)
+    }
+
+    pub fn unsubscribe() -> Call<()> {
+        Call::new(method::UNSUBSCRIBE, &Empty {}, unit)
+    }
+
+    pub fn ui_viewing(thread_id: Option<String>) -> Call<()> {
+        Call::new(method::UI_VIEWING, &UiViewingParams { thread_id }, unit)
+    }
+}
+
+/// Generates one typed method per call builder, async or blocking.
+macro_rules! with_calls {
+    ($gen:ident) => {
+        $gen! {
+            agents_list(refresh: bool) -> Vec<AgentInfo>;
+            folders_list() -> Vec<Folder>;
+            folders_add(path: String, label: Option<String>) -> Folder;
+            folders_remove(id: String) -> ();
+            threads_list(limit: Option<u32>, before_ms: Option<u64>) -> Vec<ThreadInfo>;
+            thread_start(params: ThreadStartParams) -> ThreadInfo;
+            thread_send(thread_id: String, text: String, origin: Origin) -> ();
+            thread_interrupt(thread_id: String) -> ();
+            thread_read(params: ThreadReadParams) -> ThreadReadResult;
+            thread_delete(thread_id: String) -> ();
+            thread_terminal_command(thread_id: String) -> TerminalCommandResult;
+            approval_answer(token: String, decision: Decision, by: By) -> ();
+            subscribe(threads: ThreadSelection, deltas: bool) -> ();
+            unsubscribe() -> ();
+            ui_viewing(thread_id: Option<String>) -> ();
+        }
+    };
+}
+
+macro_rules! async_methods {
+    ($($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {
+        $(
+            pub async fn $name(&self, $($arg: $ty),*) -> Result<$ret, ClientError> {
+                self.run(calls::$name($($arg),*)).await
+            }
+        )*
+    };
+}
+
+macro_rules! blocking_methods {
+    ($($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {
+        $(
+            pub fn $name(&mut self, $($arg: $ty),*) -> Result<$ret, ClientError> {
+                self.run(calls::$name($($arg),*))
+            }
+        )*
+    };
+}
+
+fn encode_request(id: u64, method: &str, params: Value) -> Result<String, ClientError> {
+    let mut line = serde_json::to_string(&Request { id, method: method.to_owned(), params })
+        .map_err(|e| ClientError::Protocol(e.to_string()))?;
+    if line.len() > MAX_LINE {
+        return Err(ClientError::Remote(RpcError::new(ErrorCode::BadRequest, "request too large")));
+    }
+    line.push('\n');
+    Ok(line)
+}
+
+fn into_result(response: Response) -> Result<Value, ClientError> {
+    match (response.result, response.error) {
+        (_, Some(error)) => Err(ClientError::Remote(error)),
+        (Some(result), None) => Ok(result),
+        (None, None) => Ok(Value::Object(Default::default())),
+    }
+}
+
+fn hello_params(client: ClientKind) -> HelloParams {
+    HelloParams { client, version: API_VERSION, bridge_token: None }
+}
+
+// ---- Async client ----
+
+type Pending = HashMap<u64, oneshot::Sender<Result<Value, ClientError>>>;
+
+struct Shared {
+    writer: tokio::sync::Mutex<OwnedWriteHalf>,
+    /// `None` once the connection has closed.
+    pending: Mutex<Option<Pending>>,
+    next_id: AtomicU64,
+    reader: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        if let Some(reader) = self.reader.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            reader.abort();
+        }
+    }
+}
+
+/// Events from the host, in the order it sent them. Ends when the
+/// connection closes.
+#[derive(Debug)]
+pub struct Events {
+    rx: mpsc::Receiver<Event>,
+}
+
+impl Events {
+    pub async fn recv(&mut self) -> Option<Event> {
+        self.rx.recv().await
+    }
+
+    pub fn try_recv(&mut self) -> Option<Event> {
+        self.rx.try_recv().ok()
+    }
+}
+
+/// A connection to the host for tokio code. Cheap to clone; the connection
+/// closes when the last clone is dropped. Needs a tokio runtime.
+#[derive(Clone)]
+pub struct Client {
+    shared: Arc<Shared>,
+    hello: HelloResult,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").field("hello", &self.hello).finish_non_exhaustive()
+    }
+}
+
+impl Client {
+    /// Connects to the socket at `path` and says `hello`.
+    pub async fn connect(path: &Path, hello: HelloParams) -> Result<(Client, Events), ClientError> {
+        if let Some(dir) = path.parent()
+            && !check_private_dir(dir)?
+        {
+            return Err(io::Error::from(io::ErrorKind::NotFound).into());
+        }
+        let stream = UnixStream::connect(path).await?;
+        let (read, write) = stream.into_split();
+        let (events_tx, events_rx) = mpsc::channel(EVENT_BUFFER);
+        let shared = Arc::new(Shared {
+            writer: tokio::sync::Mutex::new(write),
+            pending: Mutex::new(Some(HashMap::new())),
+            next_id: AtomicU64::new(1),
+            reader: Mutex::new(None),
+        });
+        let reader = tokio::spawn(read_loop(BufReader::new(read), Arc::downgrade(&shared), events_tx));
+        *shared.reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader);
+        let mut client =
+            Client { shared, hello: HelloResult { version: 0, host_version: String::new(), pid: 0 } };
+        let value = client
+            .call_value(
+                method::HELLO,
+                serde_json::to_value(&hello).unwrap_or_default(),
+                Some(REQUEST_TIMEOUT),
+            )
+            .await?;
+        client.hello = serde_json::from_value(value).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        Ok((client, Events { rx: events_rx }))
+    }
+
+    /// Connects to the host, starting it first if it isn't running (§1.3).
+    pub async fn connect_or_spawn(client: ClientKind) -> Result<(Client, Events), ClientError> {
+        let path = socket_path();
+        match Client::connect(&path, hello_params(client)).await {
+            Err(ClientError::Io(e)) if is_not_running(&e) => {}
+            other => return other,
+        }
+        let bin = find_host_binary().ok_or(ClientError::NotInstalled)?;
+        spawn_host(&bin)?;
+        let deadline = Instant::now() + SPAWN_WAIT;
+        loop {
+            tokio::time::sleep(SPAWN_RETRY).await;
+            match Client::connect(&path, hello_params(client)).await {
+                Err(ClientError::Io(e)) if is_not_running(&e) && Instant::now() < deadline => continue,
+                Err(ClientError::Io(e)) if is_not_running(&e) => return Err(ClientError::NotStarted),
+                other => return other,
+            }
+        }
+    }
+
+    /// What the host said to `hello`.
+    pub fn host(&self) -> &HelloResult {
+        &self.hello
+    }
+
+    /// Sends a request and waits for its result, at most `timeout` (none:
+    /// forever).
+    pub async fn call_value(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Option<Duration>,
+    ) -> Result<Value, ClientError> {
+        let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let line = encode_request(id, method, params)?;
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.shared.pending.lock().unwrap_or_else(|e| e.into_inner());
+            match pending.as_mut() {
+                Some(map) => map.insert(id, tx),
+                None => return Err(ClientError::Closed),
+            };
+        }
+        let forget = |shared: &Shared| {
+            if let Some(map) = shared.pending.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                map.remove(&id);
+            }
+        };
+        let write = async {
+            let mut writer = self.shared.writer.lock().await;
+            writer.write_all(line.as_bytes()).await
+        };
+        if let Err(e) = write.await {
+            forget(&self.shared);
+            return Err(e.into());
+        }
+        let reply = match timeout {
+            Some(limit) => match tokio::time::timeout(limit, rx).await {
+                Ok(reply) => reply,
+                Err(_) => {
+                    forget(&self.shared);
+                    return Err(ClientError::Timeout);
+                }
+            },
+            None => rx.await,
+        };
+        reply.unwrap_or(Err(ClientError::Closed))
+    }
+
+    /// Runs a typed call with [`REQUEST_TIMEOUT`].
+    pub async fn run<T>(&self, call: Call<T>) -> Result<T, ClientError> {
+        let value = self.call_value(call.method, call.params.clone(), Some(REQUEST_TIMEOUT)).await?;
+        call.parse(value)
+    }
+
+    with_calls!(async_methods);
+}
+
+async fn read_loop(
+    mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+    shared: Weak<Shared>,
+    events: mpsc::Sender<Event>,
+) {
+    let mut buf = Vec::new();
+    loop {
+        match lines::read_line(&mut reader, &mut buf, MAX_LINE).await {
+            Ok(LineRead::Line) => {}
+            Ok(LineRead::Eof | LineRead::TooLong) | Err(_) => break,
+        }
+        let Ok(text) = std::str::from_utf8(&buf) else { continue };
+        match ServerLine::parse(text) {
+            Ok(ServerLine::Response(response)) => {
+                let Some(shared) = shared.upgrade() else { break };
+                let waiter = shared
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_mut()
+                    .and_then(|map| map.remove(&response.id));
+                // A reply nobody waits for (timed out, or never asked) is dropped.
+                if let Some(waiter) = waiter {
+                    let _ = waiter.send(into_result(response));
+                }
+            }
+            Ok(ServerLine::Event(line)) => {
+                if let Some(event) = Event::from_line(&line)
+                    && events.try_send(event).is_err()
+                {
+                    tracing::warn!("agent host events are not being read; dropped one");
+                }
+            }
+            Err(_) => tracing::debug!("ignored a line from the agent host that isn't JSON"),
+        }
+    }
+    if let Some(shared) = shared.upgrade() {
+        // Dropping the waiters makes every outstanding call fail with Closed.
+        shared.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+}
+
+// ---- Blocking client ----
+
+/// A connection to the host for code without a tokio runtime. Events that
+/// arrive while waiting for a reply are kept for [`BlockingClient::next_event`].
+pub struct BlockingClient {
+    reader: StdBufReader<StdUnixStream>,
+    writer: StdUnixStream,
+    partial: Vec<u8>,
+    next_id: u64,
+    events: VecDeque<Event>,
+    hello: HelloResult,
+    timeout: Duration,
+}
+
+impl std::fmt::Debug for BlockingClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockingClient").field("hello", &self.hello).finish_non_exhaustive()
+    }
+}
+
+enum Incoming {
+    Line(ServerLine),
+    TimedOut,
+}
+
+impl BlockingClient {
+    /// Connects to the socket at `path` and says `hello`.
+    pub fn connect(path: &Path, hello: HelloParams) -> Result<BlockingClient, ClientError> {
+        if let Some(dir) = path.parent()
+            && !check_private_dir(dir)?
+        {
+            return Err(io::Error::from(io::ErrorKind::NotFound).into());
+        }
+        let stream = StdUnixStream::connect(path)?;
+        let writer = stream.try_clone()?;
+        let mut client = BlockingClient {
+            reader: StdBufReader::new(stream),
+            writer,
+            partial: Vec::new(),
+            next_id: 1,
+            events: VecDeque::new(),
+            hello: HelloResult { version: 0, host_version: String::new(), pid: 0 },
+            timeout: REQUEST_TIMEOUT,
+        };
+        let value = client.call_value(method::HELLO, serde_json::to_value(&hello).unwrap_or_default())?;
+        client.hello = serde_json::from_value(value).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        Ok(client)
+    }
+
+    /// Connects to the host, starting it first if it isn't running (§1.3).
+    pub fn connect_or_spawn(client: ClientKind) -> Result<BlockingClient, ClientError> {
+        let path = socket_path();
+        match BlockingClient::connect(&path, hello_params(client)) {
+            Err(ClientError::Io(e)) if is_not_running(&e) => {}
+            other => return other,
+        }
+        let bin = find_host_binary().ok_or(ClientError::NotInstalled)?;
+        spawn_host(&bin)?;
+        let deadline = Instant::now() + SPAWN_WAIT;
+        loop {
+            std::thread::sleep(SPAWN_RETRY);
+            match BlockingClient::connect(&path, hello_params(client)) {
+                Err(ClientError::Io(e)) if is_not_running(&e) && Instant::now() < deadline => continue,
+                Err(ClientError::Io(e)) if is_not_running(&e) => return Err(ClientError::NotStarted),
+                other => return other,
+            }
+        }
+    }
+
+    pub fn host(&self) -> &HelloResult {
+        &self.hello
+    }
+
+    /// How long a call waits for its reply (default [`REQUEST_TIMEOUT`]).
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
+    fn read_incoming(&mut self, timeout: Option<Duration>) -> Result<Incoming, ClientError> {
+        self.reader.get_ref().set_read_timeout(timeout)?;
+        loop {
+            match lines::read_line_blocking(&mut self.reader, &mut self.partial, MAX_LINE) {
+                Ok(LineRead::Line) => {}
+                Ok(LineRead::Eof) => return Err(ClientError::Closed),
+                Ok(LineRead::TooLong) => {
+                    let _ = self.writer.shutdown(std::net::Shutdown::Both);
+                    return Err(ClientError::Protocol("line too long".into()));
+                }
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    return Ok(Incoming::TimedOut);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            }
+            let parsed =
+                std::str::from_utf8(&self.partial).ok().and_then(|text| ServerLine::parse(text).ok());
+            self.partial.clear();
+            if let Some(line) = parsed {
+                return Ok(Incoming::Line(line));
+            }
+        }
+    }
+
+    fn keep_event(&mut self, line: &EventLine) {
+        if let Some(event) = Event::from_line(line) {
+            if self.events.len() >= EVENT_BUFFER {
+                self.events.pop_front();
+            }
+            self.events.push_back(event);
+        }
+    }
+
+    /// Sends a request and waits for its result.
+    pub fn call_value(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let line = encode_request(id, method, params)?;
+        self.writer.write_all(line.as_bytes())?;
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(ClientError::Timeout);
+            }
+            match self.read_incoming(Some(left))? {
+                Incoming::TimedOut => return Err(ClientError::Timeout),
+                Incoming::Line(ServerLine::Event(event)) => self.keep_event(&event),
+                Incoming::Line(ServerLine::Response(response)) if response.id == id => {
+                    return into_result(response);
+                }
+                Incoming::Line(ServerLine::Response(_)) => {}
+            }
+        }
+    }
+
+    /// Runs a typed call.
+    pub fn run<T>(&mut self, call: Call<T>) -> Result<T, ClientError> {
+        let value = self.call_value(call.method, call.params.clone())?;
+        call.parse(value)
+    }
+
+    /// The next event, waiting at most `timeout` (none: forever). `Ok(None)`
+    /// when the wait ran out.
+    pub fn next_event(&mut self, timeout: Option<Duration>) -> Result<Option<Event>, ClientError> {
+        if let Some(event) = self.events.pop_front() {
+            return Ok(Some(event));
+        }
+        let deadline = timeout.map(|t| Instant::now() + t);
+        loop {
+            let left = match deadline {
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Ok(None);
+                    }
+                    Some(left)
+                }
+                None => None,
+            };
+            match self.read_incoming(left)? {
+                Incoming::TimedOut => return Ok(None),
+                Incoming::Line(ServerLine::Event(line)) => {
+                    if let Some(event) = Event::from_line(&line) {
+                        return Ok(Some(event));
+                    }
+                }
+                Incoming::Line(ServerLine::Response(_)) => {}
+            }
+        }
+    }
+
+    with_calls!(blocking_methods);
+}
+
+/// A typed result from a raw value (for callers of `call_value`).
+pub fn parse_result<T: DeserializeOwned>(value: Value) -> Result<T, ClientError> {
+    serde_json::from_value(value).map_err(|e| ClientError::Protocol(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncBufReadExt;
+    use tokio::net::UnixListener;
+
+    fn private_tempdir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    #[test]
+    fn private_dir_check() {
+        let dir = private_tempdir();
+        assert!(check_private_dir(dir.path()).unwrap());
+        assert!(!check_private_dir(&dir.path().join("missing")).unwrap());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(check_private_dir(dir.path()), Err(ClientError::Insecure(_))));
+        let nested = private_tempdir();
+        let sub = nested.path().join("a/b");
+        ensure_private_dir(&sub).unwrap();
+        assert_eq!(std::fs::metadata(&sub).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
+    #[tokio::test]
+    async fn async_client_matches_replies_and_passes_events() {
+        let dir = private_tempdir();
+        let path = dir.path().join("host.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut lines = tokio::io::BufReader::new(read).lines();
+            let hello: Request = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(hello.method, "hello");
+            assert_eq!(hello.params["client"], "test");
+            let reply = format!(
+                "{{\"event\":\"ui.open\",\"params\":{{\"thread_id\":\"ab\"}}}}\n{{\"id\":{},\"result\":{{\"version\":1,\"host_version\":\"x\",\"pid\":3}}}}\n",
+                hello.id
+            );
+            write.write_all(reply.as_bytes()).await.unwrap();
+            let req: Request = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(req.method, "folders.remove");
+            let reply = format!(
+                "{{\"id\":999,\"result\":{{}}}}\n{{\"id\":{},\"error\":{{\"code\":\"NOT_FOUND\",\"message\":\"no\"}}}}\n",
+                req.id
+            );
+            write.write_all(reply.as_bytes()).await.unwrap();
+            let req: Request = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let reply = format!("{{\"id\":{},\"result\":{{\"folders\":[]}}}}\n", req.id);
+            write.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let (client, mut events) =
+            Client::connect(&path, HelloParams { client: ClientKind::Test, version: 1, bridge_token: None })
+                .await
+                .unwrap();
+        assert_eq!(client.host().pid, 3);
+        let err = client.folders_remove("f000000000000".into()).await.unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::NotFound));
+        assert!(client.folders_list().await.unwrap().is_empty());
+        assert_eq!(events.recv().await, Some(Event::UiOpen(ThreadIdParams { thread_id: "ab".into() })));
+        server.await.unwrap();
+        // The host is gone: calls fail as closed and the events end.
+        assert!(events.recv().await.is_none());
+        assert!(matches!(client.folders_list().await, Err(ClientError::Closed | ClientError::Io(_))));
+    }
+
+    #[test]
+    fn blocking_client_keeps_events_seen_while_waiting() {
+        let dir = private_tempdir();
+        let path = dir.path().join("host.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let (stream, _) = listener.accept().unwrap();
+            let mut write = stream.try_clone().unwrap();
+            let mut lines = std::io::BufReader::new(stream).lines();
+            for n in 0..2 {
+                let req: Request = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+                let result =
+                    if n == 0 { r#"{"version":1,"host_version":"x","pid":3}"# } else { r#"{"agents":[]}"# };
+                let reply = format!(
+                    "{{\"event\":\"thread.removed\",\"params\":{{\"thread_id\":\"a{n}\"}}}}\n{{\"id\":{},\"result\":{result}}}\n",
+                    req.id
+                );
+                write.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        let mut client = BlockingClient::connect(
+            &path,
+            HelloParams { client: ClientKind::Test, version: 1, bridge_token: None },
+        )
+        .unwrap();
+        assert!(client.agents_list(false).unwrap().is_empty());
+        server.join().unwrap();
+        let first = client.next_event(Some(Duration::from_secs(1))).unwrap().unwrap();
+        assert_eq!(first.thread_id(), Some("a0"));
+        let second = client.next_event(Some(Duration::from_secs(1))).unwrap().unwrap();
+        assert_eq!(second.thread_id(), Some("a1"));
+        assert!(matches!(client.next_event(Some(Duration::from_millis(50))), Err(ClientError::Closed)));
+    }
+
+    #[test]
+    fn a_world_readable_socket_dir_is_refused() {
+        let dir = private_tempdir();
+        let open = dir.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let err =
+            BlockingClient::connect(&open.join("host.sock"), hello_params(ClientKind::Test)).unwrap_err();
+        assert!(matches!(err, ClientError::Insecure(_)));
+    }
+}
