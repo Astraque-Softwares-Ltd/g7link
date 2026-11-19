@@ -105,6 +105,7 @@ fun DeskScreen(
     onOpenDeck: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    onOpenAgents: () -> Unit = {},
 ) {
     val context = LocalContext.current
     DisposableEffect(Unit) {
@@ -340,7 +341,7 @@ fun DeskScreen(
                 )
             }
 
-            // The dock: the PC's screen, control, Deck, Lock and Exit.
+            // The dock: the PC's screen, control, Deck, Agents, Lock and Exit.
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -372,6 +373,18 @@ fun DeskScreen(
                     onClick = onOpenDeck,
                     modifier = Modifier.weight(1f),
                 )
+                // The PC's coding agents, when it runs the agent host.
+                if (device.offersAgents) {
+                    DeskIconButton(
+                        icon = G7Icons.terminal,
+                        label = stringResource(R.string.action_agents_pc),
+                        tint = tints.coral,
+                        background = raised,
+                        enabled = device.online,
+                        onClick = onOpenAgents,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 DeskIconButton(
                     icon = G7Icons.lock,
                     label = stringResource(R.string.action_lock_pc),

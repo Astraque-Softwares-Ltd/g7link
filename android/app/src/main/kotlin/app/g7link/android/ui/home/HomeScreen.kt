@@ -195,6 +195,7 @@ fun HomeScreen(
     onRemote: (pcId: String) -> Unit,
     onDeck: (pcId: String) -> Unit,
     onDesk: (pcId: String) -> Unit = {},
+    onAgents: (pcId: String) -> Unit = {},
     onRecord: (pcId: String) -> Unit,
     onWebcam: (pcId: String) -> Unit = {},
     updater: AppUpdater,
@@ -677,6 +678,15 @@ fun HomeScreen(
                         enabled = online,
                         onClick = { onDeck(pc.id) },
                     )
+                    if (pc.offersAgents) {
+                        G7Row(
+                            label = stringResource(R.string.action_agents_pc),
+                            icon = G7Icons.terminal,
+                            tint = tints.coral,
+                            enabled = online,
+                            onClick = { onAgents(pc.id) },
+                        )
+                    }
                     G7Row(
                         label = stringResource(R.string.action_browse_pc_files),
                         icon = G7Icons.folder,

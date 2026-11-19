@@ -58,6 +58,9 @@ import app.g7link.android.core.PairingState
 import app.g7link.android.mirror.MirrorService
 import app.g7link.android.recorder.RecorderService
 import app.g7link.android.service.ConnectionService
+import app.g7link.android.ui.agents.AgentThreadScreen
+import app.g7link.android.ui.agents.AgentsModel
+import app.g7link.android.ui.agents.AgentsScreen
 import app.g7link.android.ui.deck.DeckScreen
 import app.g7link.android.ui.guide.FeaturesGuideScreen
 import app.g7link.android.ui.guide.GuideHighlightTarget
@@ -95,6 +98,10 @@ class MainActivity : ComponentActivity() {
     private var requestedRemoteMode by mutableStateOf(RemoteMode.Touchpad)
     private var requestedDeckPc by mutableStateOf<String?>(null)
     private var requestedRecordPc by mutableStateOf<String?>(null)
+
+    /** An agent thread to open, from its notification: the PC, and the thread (null for the list). */
+    private var requestedAgentPc by mutableStateOf<String?>(null)
+    private var requestedAgentThread by mutableStateOf<String?>(null)
 
     /**
      * A pairing link that arrived from outside the app (a web page, another app, the system
@@ -139,6 +146,7 @@ class MainActivity : ComponentActivity() {
             handleRecordIntent(intent)
             handleWebcamIntent(intent)
             handleElevatedIntent(intent)
+            handleAgentIntent(intent)
         }
 
         setContent {
@@ -184,6 +192,12 @@ class MainActivity : ComponentActivity() {
                         onActiveRemoteChanged = { activeRemotePcId = it },
                         requestedElevatedSettings = requestedElevatedSettings,
                         onElevatedSettingsConsumed = { requestedElevatedSettings = false },
+                        requestedAgentPc = requestedAgentPc,
+                        requestedAgentThread = requestedAgentThread,
+                        onAgentConsumed = {
+                            requestedAgentPc = null
+                            requestedAgentThread = null
+                        },
                     )
                     pendingPairingLink?.let { link ->
                         val clearPending = {
@@ -249,6 +263,7 @@ class MainActivity : ComponentActivity() {
         handleRecordIntent(intent)
         handleWebcamIntent(intent)
         handleElevatedIntent(intent)
+        handleAgentIntent(intent)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -332,9 +347,21 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(EXTRA_OPEN_ELEVATED, false) == true) requestedElevatedSettings = true
     }
 
+    /** An agent thread's notification: its PC and thread, checked before they're used. */
+    private fun handleAgentIntent(intent: Intent?) {
+        val pc = intent?.getStringExtra(EXTRA_OPEN_AGENT_PC)?.takeIf { AgentsModel.isId(it, max = AgentsModel.MAX_PC_ID) } ?: return
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        requestedAgentThread = intent.getStringExtra(EXTRA_OPEN_AGENT_THREAD)?.takeIf { AgentsModel.isId(it) }
+        requestedAgentPc = pc
+    }
+
     companion object {
         /** Opens Settings at Elevated (from the notification saying it's paused on a network). */
         const val EXTRA_OPEN_ELEVATED = "open_elevated"
+
+        /** Opens a PC's agent threads, and with [EXTRA_OPEN_AGENT_THREAD] one of them (from its notification). */
+        const val EXTRA_OPEN_AGENT_PC = "open_agent_pc"
+        const val EXTRA_OPEN_AGENT_THREAD = "open_agent_thread"
         private const val STATE_PENDING_PAIRING_LINK = "pending_pairing_link"
     }
 }
@@ -351,6 +378,8 @@ private sealed interface ScreenRoute {
     data class Deck(val pcId: String) : ScreenRoute
     data class Desk(val pcId: String) : ScreenRoute
     data class Remote(val pcId: String) : ScreenRoute
+    data class Agents(val pcId: String) : ScreenRoute
+    data class AgentThread(val pcId: String, val threadId: String) : ScreenRoute
     data object Main : ScreenRoute
 }
 
@@ -375,6 +404,9 @@ private fun App(
     onActiveRemoteChanged: (String?) -> Unit,
     requestedElevatedSettings: Boolean,
     onElevatedSettingsConsumed: () -> Unit,
+    requestedAgentPc: String?,
+    requestedAgentThread: String?,
+    onAgentConsumed: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(Tab.Home) }
     var pairing by rememberSaveable { mutableStateOf(false) }
@@ -390,6 +422,8 @@ private fun App(
     var webcamAutoStart by rememberSaveable { mutableStateOf(false) }
     var webcamInitialHeight by rememberSaveable { mutableStateOf<Int?>(null) }
     var webcamInitialCamera by rememberSaveable { mutableStateOf<String?>(null) }
+    var agentsPcId by rememberSaveable { mutableStateOf<String?>(null) }
+    var agentThreadId by rememberSaveable { mutableStateOf<String?>(null) }
     val walkthroughPersistence by preferences.walkthrough.collectAsStateWithLifecycle()
     val startupWalkthrough = remember(walkthroughPersistence, state.devices.isNotEmpty(), activeFirstRunWalkthrough) {
         resolveStartupWalkthrough(
@@ -519,7 +553,26 @@ private fun App(
         }
     }
 
+    LaunchedEffect(requestedAgentPc, requestedAgentThread, state.devices) {
+        val req = requestedAgentPc ?: return@LaunchedEffect
+        val target = state.device(req)?.id
+        if (target != null) {
+            remotePcId = null
+            deckPcId = null
+            deskPcId = null
+            recordPcId = null
+            webcamPcId = null
+            pairing = false
+            agentsPcId = target
+            agentThreadId = requestedAgentThread
+        }
+        // A PC that isn't paired (anymore): nothing to open.
+        if (target != null || state.status is CoreStatus.Ready) onAgentConsumed()
+    }
+
     val remoteDevice = remotePcId?.let { state.device(it) }
+    val agentsDevice = agentsPcId?.let { state.device(it) }
+    val openAgentThread = agentThreadId
     val deckDevice = deckPcId?.let { state.device(it) }
     val deskDevice = deskPcId?.let { state.device(it) }
     val recordDevice = recordPcId?.let { state.device(it) }
@@ -552,6 +605,8 @@ private fun App(
         deckDevice != null -> ScreenRoute.Deck(deckDevice.id)
         deskDevice != null -> ScreenRoute.Desk(deskDevice.id)
         remoteDevice != null -> ScreenRoute.Remote(remoteDevice.id)
+        agentsDevice != null && openAgentThread != null -> ScreenRoute.AgentThread(agentsDevice.id, openAgentThread)
+        agentsDevice != null -> ScreenRoute.Agents(agentsDevice.id)
         else -> ScreenRoute.Main
     }
 
@@ -673,8 +728,44 @@ private fun App(
                         deskPcId = null
                         deckPcId = id
                     },
+                    onOpenAgents = {
+                        val id = dev.id
+                        deskPcId = null
+                        agentThreadId = null
+                        agentsPcId = id
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
+            }
+            is ScreenRoute.Agents -> {
+                val dev = state.device(route.pcId) ?: return@AnimatedContent
+                BackHandler { agentsPcId = null }
+                Scaffold(
+                    snackbarHost = { SnackbarHost(snackbar) },
+                ) { padding ->
+                    AgentsScreen(
+                        device = dev,
+                        core = core,
+                        onOpenThread = { agentThreadId = it },
+                        onBack = { agentsPcId = null },
+                        modifier = Modifier.fillMaxSize().padding(padding),
+                    )
+                }
+            }
+            is ScreenRoute.AgentThread -> {
+                val dev = state.device(route.pcId) ?: return@AnimatedContent
+                BackHandler { agentThreadId = null }
+                Scaffold(
+                    snackbarHost = { SnackbarHost(snackbar) },
+                ) { padding ->
+                    AgentThreadScreen(
+                        device = dev,
+                        core = core,
+                        threadId = route.threadId,
+                        onBack = { agentThreadId = null },
+                        modifier = Modifier.fillMaxSize().padding(padding),
+                    )
+                }
             }
             is ScreenRoute.Remote -> {
                 val dev = state.device(route.pcId) ?: return@AnimatedContent
@@ -757,6 +848,10 @@ private fun App(
                                     },
                                     onDesk = { id ->
                                         deskPcId = id
+                                    },
+                                    onAgents = { id ->
+                                        agentThreadId = null
+                                        agentsPcId = id
                                     },
                                     onRecord = { id ->
                                         recordPcId = id

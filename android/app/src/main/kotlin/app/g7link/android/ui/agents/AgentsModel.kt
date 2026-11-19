@@ -1,0 +1,498 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package app.g7link.android.ui.agents
+
+import androidx.compose.runtime.Immutable
+import app.g7link.core.AgentAsk
+import app.g7link.core.AgentAskKind
+import app.g7link.core.AgentAskOutcome
+import app.g7link.core.AgentCatalog
+import app.g7link.core.AgentInfo
+import app.g7link.core.AgentItem
+import app.g7link.core.AgentPage
+import app.g7link.core.AgentThread
+import app.g7link.core.AgentThreadState
+import app.g7link.core.Event
+
+/**
+ * A PC's agent threads as this phone knows them (docs/protocol/agents.md), in
+ * memory only: the catalog, the threads, the requests waiting for an answer,
+ * and the one thread whose transcript is open.
+ */
+@Immutable
+data class AgentsState(
+    /** What the PC can run; null until it says, and when nothing can run or access is off. */
+    val catalog: AgentCatalog? = null,
+    /** Requests waiting first, then the most recently changed. */
+    val threads: List<AgentThread> = emptyList(),
+    /** Requests waiting for an answer, by token. */
+    val asks: Map<String, AgentAsk> = emptyMap(),
+    /** Tokens this phone sent an answer for and hasn't heard back about. */
+    val answering: Set<String> = emptySet(),
+    val open: OpenThread? = null,
+) {
+    fun thread(id: String): AgentThread? = threads.firstOrNull { it.id == id }
+
+    /** A thread's waiting requests, oldest first. */
+    fun asksFor(threadId: String): List<AgentAsk> =
+        asks.values.filter { it.thread == threadId }.sortedBy { it.expiresMs }
+
+    /** The agents a thread can start with now. */
+    val readyAgents: List<AgentInfo>
+        get() = catalog?.agents.orEmpty().filter { it.installed && it.signedIn }
+
+    /** The agent's own name ("Claude", "Codex"), from the catalog when it's known. */
+    fun agentName(id: String): String =
+        catalog?.agents?.firstOrNull { it.id == id }?.name?.takeIf { it.isNotBlank() }
+            ?: id.replaceFirstChar { it.uppercaseChar() }
+}
+
+/** The thread on screen: its items in `seq` order and assistant text still streaming in. */
+@Immutable
+data class OpenThread(
+    val threadId: String,
+    val items: List<AgentItem> = emptyList(),
+    /** Assistant text as it streams, by item id, until the finished item replaces it. */
+    val streaming: Map<String, StreamingText> = emptyMap(),
+    val moreBefore: Boolean = false,
+    /** A page has been read since it opened. */
+    val loaded: Boolean = false,
+    /** Requests answered while it was open, shown collapsed in the transcript. */
+    val resolved: List<ResolvedAsk> = emptyList(),
+    /** Deleted on the PC while open. */
+    val removed: Boolean = false,
+) {
+    /** The highest `seq` seen, finished or streaming; 0 before any. */
+    val lastSeq: ULong
+        get() {
+            val item = items.maxOfOrNull { it.seq } ?: 0uL
+            val stream = streaming.values.maxOfOrNull { it.seq } ?: 0uL
+            return maxOf(item, stream)
+        }
+}
+
+/** Streaming assistant text: [bytes] is its UTF-8 length, which delta offsets count in. */
+@Immutable
+data class StreamingText(
+    val seq: ULong,
+    val text: String,
+    val bytes: Int,
+    /** A piece went missing: shown as it is until the finished item arrives. */
+    val gap: Boolean = false,
+)
+
+@Immutable
+data class ResolvedAsk(
+    val token: String,
+    val title: String,
+    val outcome: AgentAskOutcome,
+    /** Answered from this phone. */
+    val here: Boolean,
+    /** Shown after the item with this `seq`. */
+    val afterSeq: ULong,
+    /** The device that answered, when the PC says ("Allowed on guchu"). */
+    val byName: String? = null,
+)
+
+/** One row of the transcript, keyed by what it shows so a streaming item keeps its place when it finishes. */
+@Immutable
+sealed interface TranscriptEntry {
+    val key: String
+
+    @Immutable
+    data class Item(val item: AgentItem) : TranscriptEntry {
+        override val key: String get() = "seq:${item.seq}"
+    }
+
+    @Immutable
+    data class Streaming(val itemId: String, val seq: ULong, val text: String, val gap: Boolean) : TranscriptEntry {
+        override val key: String get() = "seq:$seq"
+    }
+
+    @Immutable
+    data class Resolved(val ask: ResolvedAsk) : TranscriptEntry {
+        override val key: String get() = "ask:${ask.token}"
+    }
+}
+
+/** How a thread reads at a glance (the reconcile file's state words). */
+@Immutable
+sealed interface ThreadStatus {
+    data object Working : ThreadStatus
+    data object NeedsYou : ThreadStatus
+    data object Done : ThreadStatus
+    data object Stopped : ThreadStatus
+
+    /** Stopped by the agent's usage limit; [resetsMs] when the CLI said when it resets. */
+    data class Paused(val resetsMs: Long?) : ThreadStatus
+
+    /** [message] is the CLI's own, shown as it is; [login] when the agent is signed out on the PC. */
+    data class Failed(val message: String?, val login: Boolean = false) : ThreadStatus
+}
+
+/** A state and, when the transcript may be missing something, the thread to read again. */
+data class AgentsUpdate(val state: AgentsState, val reread: String? = null)
+
+/** Why a call to the PC's agents didn't go through. */
+enum class AgentFailure {
+    /** The PC hasn't allowed this phone yet (it now shows its user a prompt). */
+    DENIED,
+
+    /** The PC has no agent host, it can't be reached, or the agent can't run. */
+    UNSUPPORTED,
+
+    /** The thread or request is gone, or someone answered first. */
+    NOT_FOUND,
+    OFFLINE,
+    TIMEOUT,
+    OTHER,
+}
+
+/** A call's result. */
+sealed interface AgentCall<out T> {
+    data class Ok<T>(val value: T) : AgentCall<T>
+    data class Failed(val failure: AgentFailure) : AgentCall<Nothing>
+}
+
+/** The pure part of Agents on the phone: folding events and replies into [AgentsState]. */
+object AgentsModel {
+    /** The longest prompt or reply the phone sends: the wire allows 8192 bytes (§2.2). */
+    const val MAX_PROMPT_CHARS = 8000
+    const val MAX_PROMPT_BYTES = 8192
+
+    /** Items read per page, and the most the phone keeps for the open thread. */
+    const val PAGE = 50
+    private const val MAX_ITEMS = 1000
+    private const val MAX_RESOLVED = 50
+    private const val MAX_THREADS = 200
+    private const val MAX_ASKS = 64
+
+    /** Streaming text stops growing past this; the finished item replaces it anyway. */
+    private const val MAX_STREAM_CHARS = 20_000
+
+    /** How the host appends a usage limit's reset time to the error message. */
+    private const val RESETS_MARKER = "|resets_ms="
+
+    /** Error codes the phone tells apart (contract §2.2, reconcile file). */
+    private const val USAGE_LIMIT = "usage_limit"
+    private const val LOGIN = "login"
+
+    /** The PC an agent event is about, or null for any other event. */
+    fun pcOf(event: Event): String? = when (event) {
+        is Event.AgentCatalog -> event.id
+        is Event.AgentThreadChanged -> event.id
+        is Event.AgentThreadRemoved -> event.id
+        is Event.AgentDelta -> event.id
+        is Event.AgentItemChanged -> event.id
+        is Event.AgentDone -> event.id
+        is Event.AgentAsk -> event.id
+        is Event.AgentAsked -> event.id
+        else -> null
+    }
+
+    /** Folds one of a PC's agent events into its state. */
+    fun reduce(state: AgentsState, event: Event): AgentsUpdate = when (event) {
+        // No catalog: nothing can run there, or this phone's access was turned off.
+        is Event.AgentCatalog ->
+            if (event.catalog == null) AgentsUpdate(AgentsState()) else AgentsUpdate(state.copy(catalog = event.catalog))
+        is Event.AgentThreadChanged -> AgentsUpdate(withThread(state, event.thread))
+        is Event.AgentThreadRemoved -> AgentsUpdate(removed(state, event.thread))
+        is Event.AgentDelta -> delta(state, event)
+        is Event.AgentItemChanged -> itemChanged(state, event)
+        is Event.AgentDone -> {
+            val next = withThread(state, event.thread)
+            val open = next.open
+            // The finished text always comes before the end; text still streaming means some was missed.
+            val reread = if (open != null && open.threadId == event.thread.id && open.streaming.isNotEmpty()) open.threadId else null
+            AgentsUpdate(next, reread)
+        }
+        is Event.AgentAsk -> AgentsUpdate(withAsk(state, event.ask))
+        is Event.AgentAsked -> AgentsUpdate(asked(state, event.token, event.thread, event.outcome, event.byName))
+        else -> AgentsUpdate(state)
+    }
+
+    /** The thread list as the PC sent it. */
+    fun withThreads(state: AgentsState, threads: List<AgentThread>): AgentsState =
+        state.copy(threads = sorted(threads.distinctBy { it.id }.take(MAX_THREADS)))
+
+    /** One thread, added or replaced. */
+    fun withThread(state: AgentsState, thread: AgentThread): AgentsState {
+        val others = state.threads.filterNot { it.id == thread.id }
+        return state.copy(threads = sorted((others + thread).take(MAX_THREADS)))
+    }
+
+    /** Requests waiting first, then the most recently changed. */
+    fun sorted(threads: List<AgentThread>): List<AgentThread> =
+        threads.sortedWith(
+            compareByDescending<AgentThread> { it.state == AgentThreadState.WAITING || it.asks > 0u }
+                .thenByDescending { it.updatedMs },
+        )
+
+    /** The transcript of [threadId] is on screen (or about to be). */
+    fun opened(state: AgentsState, threadId: String): AgentsState =
+        if (state.open?.threadId == threadId) state else state.copy(open = OpenThread(threadId))
+
+    /** Left the transcript: its items are dropped. */
+    fun closed(state: AgentsState, threadId: String): AgentsState =
+        if (state.open?.threadId == threadId) state.copy(open = null) else state
+
+    /** The newest page of a thread (on open, on coming back, and after a gap). */
+    fun withPage(state: AgentsState, page: AgentPage): AgentsState {
+        val threadId = page.thread.id
+        val next = withAsksOf(withThread(state, page.thread), threadId, page.asks)
+        val open = next.open?.takeIf { it.threadId == threadId } ?: return next
+        val items = page.items.distinctBy { it.seq }.sortedBy { it.seq }
+        val pageIds = items.mapTo(HashSet()) { it.id }
+        val newest = items.lastOrNull()?.seq ?: 0uL
+        // Text still streaming past the page's end is an assistant message in progress: keep it.
+        val streaming = open.streaming.filter { (id, text) -> id !in pageIds && text.seq > newest }
+        return next.copy(
+            open = open.copy(
+                items = items,
+                streaming = streaming,
+                moreBefore = page.moreBefore,
+                loaded = true,
+                resolved = open.resolved.filter { it.afterSeq >= (items.firstOrNull()?.seq ?: 0uL) },
+            ),
+        )
+    }
+
+    /** An older page, read with `before`: goes in front of what's shown. */
+    fun withOlder(state: AgentsState, page: AgentPage): AgentsState {
+        val threadId = page.thread.id
+        val next = withThread(state, page.thread)
+        val open = next.open?.takeIf { it.threadId == threadId } ?: return next
+        val first = open.items.firstOrNull()?.seq ?: ULong.MAX_VALUE
+        val older = page.items.filter { it.seq < first }.distinctBy { it.seq }.sortedBy { it.seq }
+        val items = older + open.items
+        // The newest are kept when there are too many; the oldest can be read again.
+        val kept = if (items.size > MAX_ITEMS) items.takeLast(MAX_ITEMS) else items
+        return next.copy(
+            open = open.copy(items = kept, moreBefore = page.moreBefore || kept.size < items.size),
+        )
+    }
+
+    /** This phone sent an answer for [token]. */
+    fun answering(state: AgentsState, token: String): AgentsState =
+        if (token in state.asks) state.copy(answering = state.answering + token) else state
+
+    /** An answer that didn't go through: gone ([AgentFailure.NOT_FOUND]) removes the request, anything else lets it be answered again. */
+    fun answerFailed(state: AgentsState, token: String, failure: AgentFailure): AgentsState =
+        if (failure == AgentFailure.NOT_FOUND) {
+            state.copy(asks = state.asks - token, answering = state.answering - token)
+        } else {
+            state.copy(answering = state.answering - token)
+        }
+
+    /** What the thread's items, streaming text and answered requests show, in order. */
+    fun transcript(open: OpenThread): List<TranscriptEntry> {
+        val finishedIds = open.items.mapTo(HashSet()) { it.id }
+        val entries = ArrayList<Pair<Pair<ULong, Int>, TranscriptEntry>>(open.items.size + open.streaming.size + open.resolved.size)
+        for (item in open.items) entries += (item.seq to 0) to TranscriptEntry.Item(item)
+        for ((id, text) in open.streaming) {
+            if (id in finishedIds) continue
+            entries += (text.seq to 0) to TranscriptEntry.Streaming(id, text.seq, text.text, text.gap)
+        }
+        for (ask in open.resolved) entries += (ask.afterSeq to 1) to TranscriptEntry.Resolved(ask)
+        return entries
+            .sortedWith(compareBy<Pair<Pair<ULong, Int>, TranscriptEntry>> { it.first.first }.thenBy { it.first.second })
+            .map { it.second }
+            .distinctBy { it.key }
+    }
+
+    /** The thread's state as words: usage limits read as Paused, other failures as Failed. */
+    fun status(thread: AgentThread): ThreadStatus = when (thread.state) {
+        AgentThreadState.WORKING -> ThreadStatus.Working
+        AgentThreadState.WAITING -> ThreadStatus.NeedsYou
+        AgentThreadState.DONE -> ThreadStatus.Done
+        AgentThreadState.INTERRUPTED -> ThreadStatus.Stopped
+        AgentThreadState.FAILED -> failure(thread.error, thread.errorCode)
+    }
+
+    /**
+     * A failed thread's error: a usage limit (code `usage_limit`; the host
+     * appends `|resets_ms=<ms>` to the message when the CLI said when it resets)
+     * is Paused, anything else Failed with the CLI's message, marked when the
+     * agent is signed out (code `login`).
+     */
+    fun failure(error: String?, code: String? = null): ThreadStatus {
+        val text = error?.trim().orEmpty()
+        val marker = text.indexOf(RESETS_MARKER)
+        val resets = if (marker >= 0) {
+            text.substring(marker + RESETS_MARKER.length).takeWhile { it.isDigit() }.take(18).toLongOrNull()?.takeIf { it > 0L }
+        } else {
+            null
+        }
+        return when {
+            code == USAGE_LIMIT || marker >= 0 -> ThreadStatus.Paused(resets)
+            code == LOGIN -> ThreadStatus.Failed(shownError(text), login = true)
+            // A host from before the code reached the phone: its strings are English.
+            code == null && text.contains("usage limit", ignoreCase = true) -> ThreadStatus.Paused(null)
+            else -> ThreadStatus.Failed(shownError(text))
+        }
+    }
+
+    /** An error message without the host's machine-readable suffix. */
+    fun shownError(error: String?): String? =
+        error?.substringBefore(RESETS_MARKER)?.trim()?.ifEmpty { null }
+
+    /** Whether a thread is running a turn: it can be stopped, not sent to. */
+    fun running(thread: AgentThread): Boolean =
+        thread.state == AgentThreadState.WORKING || thread.state == AgentThreadState.WAITING
+
+    /** Whether text can be sent as a prompt or reply: not blank and within both limits. */
+    fun fits(text: String): Boolean =
+        text.isNotBlank() && text.length <= MAX_PROMPT_CHARS && utf8Length(text) <= MAX_PROMPT_BYTES
+
+    /** Over a limit (as opposed to empty). */
+    fun tooLong(text: String): Boolean = text.length > MAX_PROMPT_CHARS || utf8Length(text) > MAX_PROMPT_BYTES
+
+    /**
+     * Whether a request can be allowed from a notification: a command shown
+     * whole on one line of at most 100 characters. Anything else is reviewed
+     * in the app.
+     */
+    fun allowableInNotification(ask: AgentAsk): Boolean {
+        if (ask.kind != AgentAskKind.COMMAND || ask.truncated) return false
+        val command = ask.command?.trim() ?: return false
+        return command.isNotEmpty() && command.length <= 100 && command.none { it == '\n' || it == '\r' }
+    }
+
+    /** The command or change a request shows; null when it shows only its title. */
+    fun askBody(ask: AgentAsk): String? = when (ask.kind) {
+        AgentAskKind.COMMAND -> ask.command
+        AgentAskKind.EDIT -> ask.diff ?: ask.path
+        AgentAskKind.OTHER -> ask.command ?: ask.diff
+    }?.takeIf { it.isNotBlank() }
+
+    private fun withAsk(state: AgentsState, ask: AgentAsk): AgentsState {
+        if (ask.token.isEmpty()) return state
+        val asks = state.asks + (ask.token to ask)
+        // A bound on what a PC can make the phone keep; the oldest go first.
+        val kept = if (asks.size > MAX_ASKS) asks.values.sortedBy { it.expiresMs }.takeLast(MAX_ASKS).associateBy { it.token } else asks
+        return state.copy(asks = kept)
+    }
+
+    /** A thread's waiting requests as a page lists them, replacing what was known. */
+    private fun withAsksOf(state: AgentsState, threadId: String, asks: List<AgentAsk>): AgentsState {
+        val others = state.asks.filterValues { it.thread != threadId }
+        val fresh = asks.filter { it.thread == threadId && it.token.isNotEmpty() }.associateBy { it.token }
+        val tokens = fresh.keys
+        return state.copy(
+            asks = others + fresh,
+            answering = state.answering.filter { it in others || it in tokens }.toSet(),
+        )
+    }
+
+    private fun asked(state: AgentsState, token: String, threadId: String, outcome: AgentAskOutcome, byName: String? = null): AgentsState {
+        val ask = state.asks[token]
+        val here = token in state.answering
+        val open = state.open
+        val nextOpen = if (open != null && open.threadId == threadId && ask != null) {
+            val resolved = ResolvedAsk(token, ask.title, outcome, here, open.lastSeq, byName?.takeIf { it.isNotBlank() })
+            open.copy(resolved = (open.resolved.filterNot { it.token == token } + resolved).takeLast(MAX_RESOLVED))
+        } else {
+            open
+        }
+        return state.copy(asks = state.asks - token, answering = state.answering - token, open = nextOpen)
+    }
+
+    private fun removed(state: AgentsState, threadId: String): AgentsState {
+        val gone = state.asks.filterValues { it.thread == threadId }.keys
+        val open = state.open
+        return state.copy(
+            threads = state.threads.filterNot { it.id == threadId },
+            asks = state.asks - gone,
+            answering = state.answering - gone,
+            open = if (open != null && open.threadId == threadId) open.copy(removed = true) else open,
+        )
+    }
+
+    private fun delta(state: AgentsState, event: Event.AgentDelta): AgentsUpdate {
+        val open = state.open?.takeIf { it.threadId == event.thread } ?: return AgentsUpdate(state)
+        // Already finished: the delta is late.
+        if (open.items.any { it.id == event.itemId }) return AgentsUpdate(state)
+        val current = open.streaming[event.itemId]
+        val bytes = utf8Length(event.text)
+        val offset = event.offset.toLong()
+        val next: StreamingText
+        var reread: String? = null
+        when {
+            current == null -> {
+                // A new message: a seq past the next one means items were missed.
+                if (open.loaded && event.seq > open.lastSeq + 1uL) reread = open.threadId
+                next = if (offset == 0L) {
+                    StreamingText(event.seq, event.text, bytes)
+                } else {
+                    // Joined part way (opened while it streamed): the finished item brings the rest.
+                    StreamingText(event.seq, "", 0, gap = true)
+                }
+            }
+            current.gap -> return AgentsUpdate(state)
+            offset == current.bytes.toLong() -> {
+                next = if (current.text.length + event.text.length > MAX_STREAM_CHARS) {
+                    current.copy(gap = true)
+                } else {
+                    current.copy(text = current.text + event.text, bytes = current.bytes + bytes)
+                }
+            }
+            // Text it already has, sent again.
+            offset + bytes <= current.bytes.toLong() -> return AgentsUpdate(state)
+            else -> {
+                next = current.copy(gap = true)
+                reread = open.threadId
+            }
+        }
+        return AgentsUpdate(state.copy(open = open.copy(streaming = open.streaming + (event.itemId to next))), reread)
+    }
+
+    private fun itemChanged(state: AgentsState, event: Event.AgentItemChanged): AgentsUpdate {
+        val open = state.open?.takeIf { it.threadId == event.thread } ?: return AgentsUpdate(state)
+        val item = event.item
+        val reread = if (open.loaded && item.seq > open.lastSeq + 1uL) open.threadId else null
+        val index = open.items.indexOfFirst { it.seq == item.seq }
+        val items = if (index >= 0) {
+            open.items.toMutableList().also { it[index] = item }
+        } else {
+            val at = open.items.indexOfFirst { it.seq > item.seq }.let { if (it < 0) open.items.size else it }
+            open.items.toMutableList().also { it.add(at, item) }
+        }
+        val kept = if (items.size > MAX_ITEMS) items.takeLast(MAX_ITEMS) else items
+        return AgentsUpdate(
+            state.copy(
+                open = open.copy(
+                    items = kept,
+                    streaming = open.streaming - item.id,
+                    moreBefore = open.moreBefore || kept.size < items.size,
+                ),
+            ),
+            reread,
+        )
+    }
+
+    /** A PC's device id is longer than the wire's ids (z-base-32 of 32 bytes). */
+    const val MAX_PC_ID = 128
+
+    /** An id from outside (an intent, a notification): `[a-z0-9]`, 1 to [max] long (§2.2 limits). */
+    fun isId(value: String, max: Int = 40): Boolean =
+        value.length in 1..max && value.all { it in 'a'..'z' || it in '0'..'9' }
+
+    /** UTF-8 length without encoding, as the wire's byte offsets and limits count. */
+    fun utf8Length(text: String): Int {
+        var bytes = 0
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            when {
+                c.code < 0x80 -> bytes += 1
+                c.code < 0x800 -> bytes += 2
+                Character.isHighSurrogate(c) && i + 1 < text.length && Character.isLowSurrogate(text[i + 1]) -> {
+                    bytes += 4
+                    i++
+                }
+                else -> bytes += 3
+            }
+            i++
+        }
+        return bytes
+    }
+}

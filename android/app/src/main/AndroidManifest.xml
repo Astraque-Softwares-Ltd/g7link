@@ -213,6 +213,11 @@
             android:name=".notifications.PcNotificationPoster$DismissReceiver"
             android:exported="false" />
 
+        <!-- Allow, Deny, Stop and Reply on a PC's agent-thread notifications. -->
+        <receiver
+            android:name=".notifications.AgentActionReceiver"
+            android:exported="false" />
+
         <!-- Android's answers while installing an update. -->
         <receiver
             android:name=".update.AppUpdater$InstallResult"

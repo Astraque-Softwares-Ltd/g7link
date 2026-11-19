@@ -47,6 +47,9 @@ import app.g7link.android.mirror.MirrorService
 import app.g7link.android.toggles.PhoneToggles
 import app.g7link.android.webcam.WebcamRequests
 import app.g7link.android.webcam.WebcamService
+import app.g7link.core.AgentMode
+import app.g7link.core.AgentPage
+import app.g7link.core.AgentThread
 import app.g7link.core.BleUseState
 import app.g7link.core.FfiQueueStatus
 import app.g7link.core.Event
@@ -75,6 +78,11 @@ import app.g7link.core.TransferDirection
 import app.g7link.core.TransferStatus
 import app.g7link.core.initLogging
 import app.g7link.android.files.transferTitle
+import app.g7link.android.notifications.AgentNotifications
+import app.g7link.android.ui.agents.AgentCall
+import app.g7link.android.ui.agents.AgentFailure
+import app.g7link.android.ui.agents.AgentsModel
+import app.g7link.android.ui.agents.AgentsState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -742,6 +750,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 bleHoldAsked.clear()
                 bleHeld.clear()
                 bleAllowedBy.clear()
+                // Agent threads are kept in memory only; their notifications go with the run.
+                _agents.value.keys.forEach { AgentNotifications.cancelPc(context, it) }
+                _agents.value = emptyMap()
+                agentWatchWanted.clear()
+                agentForeground = null
 
                 _state.update { it.withDevicesOffline().copy(status = CoreStatus.Starting) }
                 app.g7link.android.widget.PcWidgetProvider.refreshAll(context, _state.value)
@@ -916,6 +929,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 lastTransferUiEmitMs.remove(transfer.id)
             }
         }
+        AgentsModel.pcOf(event)?.let { pcId ->
+            onAgentEvent(pcId, event)
+            return
+        }
         val removedName = if (event is Event.DeviceRemoved) _state.value.nameOf(event.id) else null
         if (event.affectsCoreState()) {
             _state.update { it.reduce(event) }
@@ -982,6 +999,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                     }
                     pcSpeakerPlayer.stopForPc(event.id)
                     pcCapture.onOffline(event.id)
+                    agentsGone(event.id)
                     if (_pcMirrorConfig.value?.pcId == event.id) {
                         _pcMirrorConfig.value = null
                     }
@@ -1014,6 +1032,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 }
                 pcSpeakerPlayer.stopForPc(event.id)
                 pcCapture.onOffline(event.id)
+                agentsGone(event.id)
                 if (_pcMirrorConfig.value?.pcId == event.id) {
                     _pcMirrorConfig.value = null
                 }
@@ -2242,6 +2261,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             listOf("media.watch") +
             // Shows a paired phone's or tablet's notifications.
             listOf("notify.show") +
+            // Follows and answers a PC's coding-agent threads (docs/protocol/agents.md).
+            listOf("agent.remote") +
             // Phone as microphone: asks for the permission when a PC first wants it.
             (if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)) listOf("mic.stream") else emptyList()) +
             toggles.capabilities() +
@@ -3102,6 +3123,223 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 onStatus?.invoke(status)
             }
         }
+    }
+
+    // ---- Agents (docs/protocol/agents.md) ----
+
+    private val _agents = MutableStateFlow<Map<String, AgentsState>>(emptyMap())
+
+    /**
+     * Each PC's agent threads, by PC, in memory only. Kept apart from [state] so
+     * streaming text redraws only the thread on screen.
+     */
+    val agents: StateFlow<Map<String, AgentsState>> = _agents.asStateFlow()
+
+    /** The thread whose screen is in front (PC, thread): its notifications wait. */
+    @Volatile private var agentForeground: Pair<String, String>? = null
+
+    /** Threads this phone started, opened or replied to ("pc/thread"): their working notification shows. */
+    private val agentFollowed: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** The thread each PC should send this phone's text for; absent for none. */
+    private val agentWatchWanted = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val agentWatchLock = Mutex()
+    private val agentRereads = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    private fun onAgentEvent(pcId: String, event: Event) {
+        var after = AgentsState()
+        var reread: String? = null
+        _agents.update { all ->
+            val current = all[pcId] ?: AgentsState()
+            val result = AgentsModel.reduce(current, event)
+            after = result.state
+            reread = result.reread
+            if (result.state === current) all else all + (pcId to result.state)
+        }
+        reread?.let { agentReread(pcId, it) }
+        val shown = agentForeground?.takeIf { it.first == pcId }?.second
+        val state = after
+        val notices = AgentNotifications.plan(pcId, event, state, shown) { thread -> agentFollows(pcId, thread, state) }
+        if (notices.isNotEmpty()) AgentNotifications.apply(context, agentPcName(pcId), notices)
+    }
+
+    private fun agentFollows(pcId: String, threadId: String, state: AgentsState): Boolean =
+        state.thread(threadId)?.fromPhone == true || "$pcId/$threadId" in agentFollowed
+
+    private fun agentPcName(pcId: String): String =
+        _state.value.nameOf(pcId)?.ifBlank { null } ?: context.getString(R.string.your_pc)
+
+    /** The PC went away or was unpaired: what this phone knew of its threads goes with it. */
+    private fun agentsGone(pcId: String) {
+        _agents.update { it - pcId }
+        agentWatchWanted.remove(pcId)
+        if (agentForeground?.first == pcId) agentForeground = null
+        AgentNotifications.cancelPc(context, pcId)
+    }
+
+    private fun updateAgents(pcId: String, change: (AgentsState) -> AgentsState) {
+        _agents.update { all ->
+            val current = all[pcId] ?: AgentsState()
+            val next = change(current)
+            if (next === current) all else all + (pcId to next)
+        }
+    }
+
+    /** Something may be missing from the open transcript: read its newest page again, once at a time. */
+    private fun agentReread(pcId: String, threadId: String) {
+        val key = "$pcId/$threadId"
+        if (agentRereads[key]?.isActive == true) return
+        agentRereads[key] = scope.launch { agentRead(pcId, threadId, null) }
+    }
+
+    private suspend fun <T> agentCall(block: suspend (G7LinkNode) -> T): AgentCall<T> {
+        startJob?.join()
+        val current = node ?: return AgentCall.Failed(AgentFailure.OFFLINE)
+        return try {
+            AgentCall.Ok(block(current))
+        } catch (e: G7LinkException) {
+            AgentCall.Failed(agentFailure(e))
+        }
+    }
+
+    private fun agentFailure(e: G7LinkException): AgentFailure = when (e) {
+        is G7LinkException.Denied -> AgentFailure.DENIED
+        is G7LinkException.Unsupported -> AgentFailure.UNSUPPORTED
+        is G7LinkException.NotFound -> AgentFailure.NOT_FOUND
+        is G7LinkException.Offline, is G7LinkException.NotPaired -> AgentFailure.OFFLINE
+        is G7LinkException.Timeout -> AgentFailure.TIMEOUT
+        else -> AgentFailure.OTHER
+    }
+
+    /** The PC's threads (and the catalog the core last heard, which may predate the screen). */
+    suspend fun agentThreads(pcId: String): AgentCall<List<AgentThread>> {
+        val result = agentCall { current ->
+            val catalog = withContext(Dispatchers.IO) { runCatching { current.agentCatalog(pcId) }.getOrNull() }
+            if (catalog != null) updateAgents(pcId) { if (it.catalog == catalog) it else it.copy(catalog = catalog) }
+            current.agentThreads(pcId)
+        }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThreads(it, result.value) }
+        return result
+    }
+
+    /** Starts a thread on the PC; a phone only ever starts one that asks before each change. */
+    suspend fun agentStart(pcId: String, agent: String, folder: String, prompt: String): AgentCall<AgentThread> {
+        if (!AgentsModel.fits(prompt)) return AgentCall.Failed(AgentFailure.OTHER)
+        val result = agentCall { it.agentStart(pcId, agent, folder, prompt, AgentMode.SUPERVISED) }
+        if (result is AgentCall.Ok) {
+            agentFollowed += "$pcId/${result.value.id}"
+            updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        }
+        return result
+    }
+
+    suspend fun agentSend(pcId: String, threadId: String, text: String): AgentCall<Unit> {
+        if (!AgentsModel.fits(text)) return AgentCall.Failed(AgentFailure.OTHER)
+        val result = agentCall { it.agentSend(pcId, threadId, text) }
+        if (result is AgentCall.Ok) agentFollowed += "$pcId/$threadId"
+        return result
+    }
+
+    suspend fun agentCancel(pcId: String, threadId: String): AgentCall<Unit> =
+        agentCall { it.agentCancel(pcId, threadId) }
+
+    /** The newest page of a thread, or the one before [before]; the open transcript takes it. */
+    suspend fun agentRead(pcId: String, threadId: String, before: ULong?): AgentCall<AgentPage> {
+        val result = agentCall { it.agentRead(pcId, threadId, before, AgentsModel.PAGE.toUInt()) }
+        if (result is AgentCall.Ok) {
+            updateAgents(pcId) {
+                if (before == null) AgentsModel.withPage(it, result.value) else AgentsModel.withOlder(it, result.value)
+            }
+        }
+        return result
+    }
+
+    /** Answers a request; the answer shows as given until the PC says who answered first. */
+    suspend fun agentAnswer(pcId: String, token: String, allow: Boolean): AgentCall<Unit> {
+        updateAgents(pcId) { AgentsModel.answering(it, token) }
+        val result = agentCall { it.agentAnswer(pcId, token, allow) }
+        if (result is AgentCall.Failed) updateAgents(pcId) { AgentsModel.answerFailed(it, token, result.failure) }
+        return result
+    }
+
+    /** Asks the PC for the text of the thread this phone wants now ([agentWatchWanted]), in order. */
+    private suspend fun agentSyncWatch(pcId: String): AgentCall<Unit> = agentWatchLock.withLock {
+        val wanted = agentWatchWanted[pcId]
+        agentCall { it.agentWatch(pcId, wanted) }
+    }
+
+    /**
+     * A thread's screen came into view: its notification goes, the PC sends its
+     * text, and its newest page is read.
+     */
+    suspend fun agentShown(pcId: String, threadId: String): AgentCall<AgentPage> {
+        agentFollowed += "$pcId/$threadId"
+        agentForeground = pcId to threadId
+        updateAgents(pcId) { AgentsModel.opened(it, threadId) }
+        AgentNotifications.cancel(context, pcId, threadId)
+        agentWatchWanted[pcId] = threadId
+        val watched = agentSyncWatch(pcId)
+        if (watched is AgentCall.Failed) return AgentCall.Failed(watched.failure)
+        return agentRead(pcId, threadId, null)
+    }
+
+    /** A thread's screen went out of view: its text stops, and what waits there notifies again. */
+    fun agentHidden(pcId: String, threadId: String) {
+        if (agentForeground == pcId to threadId) agentForeground = null
+        agentWatchWanted.remove(pcId, threadId)
+        scope.launch { agentSyncWatch(pcId) }
+        agentRefreshNotice(pcId, threadId)
+    }
+
+    /** Left a thread's screen: its items are dropped. */
+    fun agentClosed(pcId: String, threadId: String) = updateAgents(pcId) { AgentsModel.closed(it, threadId) }
+
+    /** Shows what a thread's notification should show now. */
+    private fun agentRefreshNotice(pcId: String, threadId: String) {
+        val state = _agents.value[pcId] ?: return
+        val shown = agentForeground?.takeIf { it.first == pcId }?.second
+        val notice = AgentNotifications.threadNotice(pcId, state, threadId, shown) { agentFollows(pcId, it, state) }
+        if (notice != null) AgentNotifications.apply(context, agentPcName(pcId), listOf(notice))
+    }
+
+    /** Allow or Deny on a request's notification. */
+    fun agentAnswerFromNotification(pcId: String, threadId: String, token: String, allow: Boolean) {
+        scope.launch {
+            when (val result = agentAnswer(pcId, token, allow)) {
+                // The PC says who answered (AgentAsked), and the notification follows.
+                is AgentCall.Ok -> Unit
+                is AgentCall.Failed ->
+                    if (result.failure == AgentFailure.NOT_FOUND) {
+                        agentRefreshNotice(pcId, threadId)
+                    } else {
+                        AgentNotifications.failed(context, pcId, threadId, R.string.agents_notify_answer_failed)
+                    }
+            }
+        }
+    }
+
+    /** Stop on a working thread's notification. */
+    fun agentStopFromNotification(pcId: String, threadId: String) {
+        scope.launch {
+            if (agentCancel(pcId, threadId) is AgentCall.Failed) {
+                AgentNotifications.failed(context, pcId, threadId, R.string.agents_failed_generic)
+            }
+        }
+    }
+
+    /** Reply on a finished thread's notification. */
+    fun agentReplyFromNotification(pcId: String, threadId: String, text: String) {
+        scope.launch {
+            when (agentSend(pcId, threadId, text.trim())) {
+                is AgentCall.Ok -> AgentNotifications.cancel(context, pcId, threadId)
+                is AgentCall.Failed -> AgentNotifications.failed(context, pcId, threadId, R.string.agents_notify_reply_failed)
+            }
+        }
+    }
+
+    /** A short message at the bottom of the app's screen. */
+    fun say(message: String) {
+        _messages.tryEmit(message)
     }
 
     // ---- Deck (phone -> PC) ----

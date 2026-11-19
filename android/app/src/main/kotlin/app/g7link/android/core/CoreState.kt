@@ -247,6 +247,13 @@ data class Device(
             it.id == feature &&
                 (it.status is app.g7link.core.FeatureStatus.Available || it.status is app.g7link.core.FeatureStatus.Partial)
         }
+
+    /**
+     * The PC runs the agent host (`agent.host`). Whether this phone may use it is
+     * the PC's to say (its `agents` switch), so the entry shows before that.
+     */
+    val offersAgents: Boolean
+        get() = features.any { it.id == AGENTS_FEATURE && it.status !is app.g7link.core.FeatureStatus.Unsupported }
 }
 
 /** The output a PC's deck state lists while it plays its sound on this phone. */
@@ -255,6 +262,9 @@ const val PHONE_SPEAKER_OUTPUT = "g7link:phone_speaker"
 /** The device toggle that lets this phone play its media on a PC over Bluetooth. */
 const val BT_MEDIA_TOGGLE = "bt_media"
 const val BLE_LINK_TOGGLE = "ble_link"
+
+/** The capability matrix's row for a PC's coding agents (`agent.host` there, `agent.remote` here). */
+const val AGENTS_FEATURE = "input.agents"
 
 private val deviceOrder: Comparator<Device> =
     compareByDescending<Device> { it.online }.thenBy { it.pairedAt }
@@ -590,6 +600,16 @@ data class CoreState(
         is Event.PcCapturePrompt,
         is Event.PcCaptureRecordEnded,
         -> this
+        // A PC's agent threads: kept by Core.agents (AgentsModel), apart from this state so streaming text doesn't redraw Home.
+        is Event.AgentCatalog,
+        is Event.AgentThreadChanged,
+        is Event.AgentThreadRemoved,
+        is Event.AgentDelta,
+        is Event.AgentItemChanged,
+        is Event.AgentDone,
+        is Event.AgentAsk,
+        is Event.AgentAsked,
+        -> this
     }
 
     private fun withTransfer(transfer: Transfer): List<Transfer> {
@@ -678,6 +698,14 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.PcMirrorEnded,
     is Event.PcCapturePrompt,
     is Event.PcCaptureRecordEnded,
+    is Event.AgentCatalog,
+    is Event.AgentThreadChanged,
+    is Event.AgentThreadRemoved,
+    is Event.AgentDelta,
+    is Event.AgentItemChanged,
+    is Event.AgentDone,
+    is Event.AgentAsk,
+    is Event.AgentAsked,
     -> false
     else -> true
 }

@@ -58,6 +58,7 @@ class ConnectionService : LifecycleService() {
         app.g7link.android.media.PcMedia.createChannel(this)
         app.g7link.android.links.LinkNotifications.createChannel(this)
         app.g7link.android.notifications.TaskNotifications.createChannels(this)
+        app.g7link.android.notifications.AgentNotifications.createChannels(this)
         app.g7link.android.webcam.WebcamService.createChannel(this)
         app.g7link.android.webcam.WebcamRequests.createChannel(this)
         val core = (application as G7LinkApplication).core
