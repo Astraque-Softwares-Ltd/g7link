@@ -4,6 +4,79 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## Unreleased
+
+Agents get a page of their own on the PC, the phone follows the sessions
+you start in a terminal or the Claude app, and music on the PC gets a real
+player on the phone.
+
+### Added
+
+- **An Agents page in G7 Link on the PC.** Agents is now in the sidebar,
+  second after Home, with a badge for what needs you. Start a thread, read it,
+  reply, stop it and answer what it asks, all on one page, with your folders
+  and each phone's switches in its setup area. It works with no phone paired.
+  G7 Link connects to an agent host that is already running when it starts,
+  so the badge is right from the first moment; it starts one only when you
+  open the page, start a thread, or a phone asks.
+- **Follow the sessions you start yourself.** Claude and Codex sessions you
+  started on the PC in a terminal or in the Claude app show under "On this
+  PC", and on the phone under "Started on" and the PC's name: what they're
+  doing now, and the whole conversation as it goes, a finished message or
+  step at a time. G7 Link reads them from the agents' own session files,
+  read-only, and lists those that changed in the last 7 days (the newest 50).
+  "Needs you" shows only when Claude itself says it waits for you; when it
+  only looks that way (always the case for Codex) it says "May need you",
+  which never counts in a badge. You can't type into these sessions or answer
+  them from G7 Link: answer them where they run. A switch on the PC, "Follow
+  sessions started outside G7", turns this off altogether.
+- **Continue a session as a thread.** Once nothing has a session open, Continue
+  here makes it an ordinary thread with its last 200 messages and steps,
+  waiting for what you send next. Its folder has to be one of your agent
+  folders: the PC offers to add it; a phone says to add it on the PC. Started
+  from a phone, it always asks before it changes a file or runs a command that
+  could change something.
+- **A phone sees your sessions only if you say so.** It's a second switch per
+  phone, off until you turn it on, and only while that phone can use agents.
+  The PC asks once, the first time the phone looks. The phone sees each
+  folder's name, never its path.
+- **What a thread is doing now.** Threads show their current step ("Now: Run
+  command") and how long they've been at it, and the agent's own plan as a
+  checklist when it made one. On the phone a thread you started or opened
+  shows as a Live Update while it works; a session you follow can too, if you
+  ask for it with "Keep in status bar".
+- **Agents on the phone's Home.** A card for each PC with agents: what needs
+  you (with Review), what's working and its step, or a line to ask an agent
+  something.
+- **Keep a thread as Markdown.** On the PC, Copy as Markdown and Export… in
+  the Agents page's actions copy or save a thread or a followed session, with
+  its messages, commands, edits and approvals; the phone's Share sends it to
+  any app. The folder shows by its name, never its path, and a long thread
+  stops at 2 MiB.
+- **A music player on the phone for what plays on the PC.** A mini player sits
+  above the tabs while something plays; swipe it up for the full player with
+  large artwork, colours taken from the cover, a seek bar that follows the
+  PC's real position (at the player's speed, too), shuffle and repeat where
+  the player has them, and the PC's volume. Large artwork is fetched only when
+  the full player shows it and kept in memory only.
+- **Artwork from Spotify and other streaming players** now shows: the PC loads
+  the cover the player names by an `https://` address, limited to 4 MiB and
+  5 seconds. Before, only covers stored on the PC showed.
+
+### Changed
+
+- **Settings › Agents is one row** that opens the Agents page. Each phone's
+  switches are still in that phone's own settings too.
+- **A thread isn't resumed while it's open elsewhere.** If you opened a thread
+  in a terminal with Open in Terminal and it's still running there, replying
+  in G7 Link says so instead of starting a second copy.
+- **Music on the phone uses the PC's own volume,** not the player app's.
+
+### Fixed
+
+- **The notification icon is centred** in the status bar and the Live Update
+  chip.
+
 ## 0.1.13 (2026-11-19)
 
 Agents: start, follow and answer the Claude and Codex on your PC from your
