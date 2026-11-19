@@ -4,7 +4,10 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## Unreleased
+## 0.1.13 (2026-11-19)
+
+Agents: start, follow and answer the Claude and Codex on your PC from your
+phone, with the PC's consent and supervision on every thread the phone starts.
 
 ### Added
 
@@ -19,6 +22,12 @@ change things that need a step from you, and its notes say so.
   Stop. Each phone needs your OK on the PC first: it asks once, and the
   switch is under that phone in Settings. Your phone sees folder names only,
   never their paths. G7 is not affiliated with Anthropic or OpenAI.
+
+### Fixed
+
+- **An empty chat prompt doesn't show as an empty line** in the typing box
+  (Claude, Slack, Gmail): the line break such a prompt keeps for its
+  placeholder isn't counted as text.
 
 ## 0.1.12 (2026-11-13)
 
@@ -99,8 +108,7 @@ goes, and a long pass over security and memory, especially on shared Wi-Fi.
   the laptop after an edit that didn't go through, or a read that failed
   while an app changed its field. A browser's address-bar suggestion stays out
   of the box, and what you type next replaces it on the laptop as typing there
-  would. Once you've typed, the keyboard stays open until you close it. An
-  empty chat prompt (Claude, Slack, Gmail) no longer shows up as an empty line.
+  would. Once you've typed, the keyboard stays open until you close it.
 - **The bubble over the typing box shows the app's icon,** with the field's
   name only when it adds something ("Claude · Claude" is gone), and no longer
   crowds the keys above it. It follows the window you're in, not another

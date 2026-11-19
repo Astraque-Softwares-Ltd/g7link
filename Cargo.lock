@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "g7-agents"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "clap",
  "dirs",
@@ -1359,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "g7link-adb"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "thiserror 2.0.21",
  "tokio",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "g7link-cli"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "clap",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "g7link-core"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "blake3",
  "bytes",
@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "g7link-desktop"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1459,7 +1459,7 @@ dependencies = [
 
 [[package]]
 name = "g7link-ffi"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "g7link-core",
  "jni-sys 0.4.1",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "g7link-protocol"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "ciborium",
  "data-encoding",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "g7link-vcam"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "ab_glyph",
  "libc",
@@ -5234,7 +5234,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "serde_json",
