@@ -84,9 +84,16 @@ only in windows: a connectable advertisement shows the PC's public address. A
 window (30 s when the PC has something for a phone, 45 s after a phone's
 session ends or at start, those two at most once a minute) carries `C` tags
 for the phones wanted; a phone that sees its tag connects. A window asked for
-while another is open joins it (at most three phones). The PC serves one link
-at a time. The link ends 10 s after the phone's session is back, unless the
-phone holds it (§4.5).
+while another is open joins it (at most three phones). A window closes when a
+link comes up. The PC serves one link at a time. The link ends 10 s after the
+phone's session is back, unless the phone holds it (§4.5).
+
+Ending a link ends only its LE connection. Where the phone's device object in
+BlueZ is its own (an LE address BlueZ can't resolve), the PC disconnects the
+device; where it also carries other connections (a paired phone, known over
+BR/EDR, whose classic audio may be up), it uses `Bearer.LE1.Disconnect` where
+BlueZ offers it, and otherwise sends the empty value (§4.2), never
+`Device1.Disconnect`.
 
 ### 4.2 Framing
 
@@ -94,7 +101,9 @@ Each value is one fragment: a header byte (bit 7 first, bit 6 last, bits 0-5
 a sequence number per direction), on the first fragment the record's length
 (2 bytes, big endian), then the record's bytes. Records are at most 4112
 bytes, 256 before the handshake ends. Anything out of sequence, too long or
-short ends the link. A message whose record wouldn't fit, or for which the
+short ends the link. An empty value ends it too, which a PC uses to have the
+phone hang up when it can't end only the LE connection itself (§4.1); a phone
+then disconnects. A message whose record wouldn't fit, or for which the
 sender has no room, is refused before it's sealed: a sealed record that isn't
 sent would leave the counters apart.
 
@@ -161,9 +170,15 @@ touchpad's path changes.
 
 ```
 t = "ble.use"  id = n  b = { on: bool, ask?: bool }        phone → PC, session or link
-t = "ble.use"  re = n  b = { state: text, lease?: u32 }    lease in seconds, with linked and open
+t = "ble.use"  re = n  b = { state: text, lease?: u32, window?: u32, retry?: u32 }
 state = "linked" | "open" | "asking" | "off" | "unavailable" | "busy"
 ```
+
+`lease` (with `linked` and `open`) is in seconds. With `open`, a PC from
+0.1.14 also says for how many seconds its connect window for the phone stays
+open (`window`, 0 when there's none now) and, with none, in how many seconds
+a renewal can open one again (`retry`). A PC that sends neither (0.1.13) may
+or may not have a window open; a phone then looks for one as before.
 
 While its touchpad shows and its route is Auto or Bluetooth, a phone asks the
 PC to keep a link with it, and renews that every 20 s; a hold that isn't
@@ -181,13 +196,26 @@ a PC answers:
   there), or the phone hasn't announced `ble.link` or has no link secret.
 - `busy` while another phone's link is up.
 - `linked` (held) when the phone's link is up, `open` (held) otherwise: the
-  PC opens a window (§4.1) for the phone.
+  PC opens a window (§4.1) for the phone, 30 s long, unless the one its hold
+  opened last is still open (the request joins it, and `window` says how long
+  it has left) or the hold has opened its four (`window: 0`, below).
 
 While a phone holds the link, it isn't closed when the phone's session comes
 back; the 10 s rule applies again once the hold ends. When a held link drops,
-the PC opens a window again, at most four in any five minutes per phone (two
-minutes of advertising in five at worst); past that, only a `ble.use` with
-`ask: true` (the phone's user asked) opens one.
+the PC opens a window again. A hold opens at most four windows in any five
+minutes per phone (two minutes of advertising in five at worst): renewing
+every 20 s with no link, that is a window every 40 s for two and a half
+minutes. Past that, only a `ble.use` with `ask: true` (the phone's user
+asked) opens one; the others are answered `open` with `window: 0` and
+`retry`, the seconds until the oldest of the four is five minutes old.
+
+A phone looks for the window only when there is one: not after `window: 0`.
+It says "out of range" only when the window was open (or the PC didn't say)
+and no advertisement with its tag was seen; when the PC was seen but the link
+didn't come up, it says it couldn't connect. While its touchpad shows it
+renews the hold every 20 s, but after link tries that came to nothing it
+looks for the window again only after 20 s, 40 s, 80 s and then every five
+minutes, until a link comes up or its user tries again.
 
 ### 4.6 The touchpad's path (phone)
 

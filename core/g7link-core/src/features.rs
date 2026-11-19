@@ -368,6 +368,8 @@ pub const DEVICE_TOGGLES: &[(&str, bool)] = &[
     ("remote_files", false),
     // Running coding agents on this PC from a phone is opt-in.
     ("agents", false),
+    // Reading sessions started on this PC from a phone is opt-in.
+    ("agent_sessions", false),
 ];
 
 /// The default for a toggle, or `None` if no such toggle exists.

@@ -26,7 +26,7 @@ capability is missing.
 | `link.open` | Opens web links sent to it ([actions](actions.md)) | app update |
 | `task.notify` | Sends or shows watched PC task notifications ([actions](actions.md)) | app update |
 | `clip.image` | Accepts images on its clipboard ([clipboard service](clipboard.md)) | app update |
-| `media.control` | Shares its media players for remote control ([media service](media.md); phone: needs notification access) | phone: notification access · desktop: app update |
+| `media.control` | Shares its media players for remote control, and serves their app icons and large artwork on request ([media service](media.md); phone: needs notification access) | phone: notification access · desktop: app update |
 | `media.remote` | Shows and controls other devices' media players | app update |
 | `ble.link` | Opens the Bluetooth channel with a paired phone or PC ([Bluetooth](bluetooth.md) §4) | phone: Nearby devices permission, Android 12+ · desktop: an adapter that serves GATT |
 | `ble.remote` | The Bluetooth channel also carries the typing box and holds (`ble.use`); a phone picks a path for its touchpad ([Bluetooth](bluetooth.md) §4.5-4.6). Offered with `ble.link` | as `ble.link`, app update |
@@ -82,6 +82,7 @@ capability is missing.
 | `media.watch` | Shows a PC's playback streamed to it (Play on phone, [media](media.md) §4) | app update |
 | `camera.capture` | Captures a photo or document scan on request ([Continuity Camera](v0.md#12-continuity-camera-cameracapture)) | camera permission |
 | `agent.remote` | Shows a PC's coding-agent threads, starts them and answers their requests ([agents](agents.md)) | app update |
+| `agent.follow` | Shows a PC's Claude and Codex sessions started outside G7 Link, read-only, and continues one as a thread ([agents](agents.md) §3) | app update |
 
 ## Desktop
 
@@ -109,5 +110,6 @@ capability is missing.
 | `addon.vcam` | The virtual camera add-on is installed ([webcam](webcam.md)) | installing the add-on |
 | `camera.continuity` | Requests and receives Continuity Camera photos and document scans ([Continuity Camera](v0.md#12-continuity-camera-cameracapture)) | app update |
 | `agent.host` | The agent host is installed: paired phones with the `agents` toggle can follow, start and answer coding-agent threads on this PC ([agents](agents.md)) | installing G7 Link with its agent host |
+| `agent.sessions` | Lists Claude and Codex sessions started on this PC outside G7 Link to paired phones with the `agents` and `agent_sessions` toggles ([agents](agents.md) §3) | installing G7 Link with its agent host |
 
 

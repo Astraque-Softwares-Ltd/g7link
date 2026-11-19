@@ -14,6 +14,8 @@ never sends a path, a command, a program name or a flag.
 |---|---|---|
 | `agent.host` | desktop | The agent host is installed on this PC (`agent.catalog` says which agents can run now) |
 | `agent.remote` | phone | Shows a PC's agent threads and answers their requests |
+| `agent.sessions` | desktop | Lists sessions started on this PC outside G7 Link (§3) |
+| `agent.follow` | phone | Shows a PC's sessions started outside G7 Link (§3) |
 
 Everything here is governed by the PC's per-device toggle `agents`, **off by
 default**. While it is off for a phone the PC sends that phone nothing from
@@ -28,7 +30,7 @@ whether or not it offers it.
 
 ## 2. Messages
 
-All on the control stream. None are carried over Bluetooth.
+All on the control stream, except §4's export. None are carried over Bluetooth.
 
 ```
 t = "agent.catalog"            b = AgentCatalog                    PC → phone, no reply
@@ -63,6 +65,9 @@ AgentThread = {
   asks: uint,                                 // requests waiting for an answer
   summary?: text, error?: text,
   error_code?: text,                          // why it failed: "usage_limit", "login", or the agent's own word
+  step?: text,                                // what a running turn is doing now
+  since?: uint,                               // Unix ms: when `state` began
+  plan?: [ { text: text, status: text } ],    // the agent's own plan; status: "pending" | "in_progress" | "completed"
 }
 AgentItem = {
   seq: uint, id: text, kind: text,            // "user" | "assistant" | "tool" | "notice"
@@ -92,6 +97,13 @@ An agent's `auth` says how it's signed in: `subscription`, `api_key` (show
 plan, email or account id. `agent.asked`'s `by_name` names the device that
 answered an `allowed` or `denied` ask: the phone's name, or the PC's when it
 was answered there.
+
+`step` is what a running turn is doing: the tool's own description when the
+agent gave one (Claude's `Bash` description), else its title (`Run command`,
+`Edit file`); absent while nothing runs. Show it as "Now: <step>" with the time
+since `since`, and don't build sentences around it. `plan` is the turn's plan
+as the agent wrote it (Claude's todo list, Codex's plan), absent when it made
+none. All three are optional; older PCs send none of them.
 
 `seq` is 1-based per thread and never reused. A delta's `offset` is the byte
 offset of its `text` in the item's text. `reason` is the agent's own words;
@@ -134,6 +146,8 @@ words), or another word from the agent.
 | `prompt`, `agent.send.text` | 1 to 8192 |
 | `label`, `name`, `folder`, `login_hint`, tool `name` | 64 |
 | `title`, `thread_title` | 80; ask and tool `title`: 200 |
+| `step` | 120 |
+| `plan` | 20 steps; a step's `text` 200 |
 | `summary` / `error` / `reason` | 280 / 200 / 300 |
 | `error_code` | 1 to 40, `[a-z0-9_]` |
 | `auth` | 1 to 32, `[a-z0-9_]` |
@@ -162,7 +176,125 @@ plain text.
 - `BUSY`: the thread is working, or too many threads are running.
 - `INTERNAL`: the host failed.
 
-## 3. Implementation notes
+## 3. Sessions started on the PC
+
+A phone can also follow the Claude and Codex sessions the PC's user started
+there without G7 Link: in a terminal, or in the agent's own desktop app. They
+are read-only from the phone: there is no message that types into, answers or
+stops a session. Once nothing has a session open, the phone may continue it as
+a thread of its own.
+
+The PC offers `agent.sessions`; a phone that shows them offers
+`agent.follow`. Everything here is governed by a second per-device toggle on
+the PC, `agent_sessions`, **off by default**, which counts only while
+`agents` is on. While either is off the PC sends that phone nothing from this
+section and answers each of its requests `DENIED`; with `agents` off that is
+§1's prompt, and with `agents` on and `agent_sessions` off the first such
+request makes the PC show its user a second one-time prompt for that phone.
+The PC sends `agent.session` and `agent.session.item` only to phones that
+offer `agent.follow`. Nothing here travels on Bluetooth.
+
+```
+t = "agent.sessions"          id = n  b = {}                                   phone → PC
+t = "agent.sessions"          re = n  b = { sessions: [AgentSession] }         at most 50
+t = "agent.session"                   b = { session?: AgentSession, removed?: text }   PC → phone, no reply
+t = "agent.session.read"      id = n  b = { session: text, before?: uint, limit?: uint }
+t = "agent.session.items"     re = n  b = { session: AgentSession, items: [AgentItem], more_before: bool }
+t = "agent.session.watch"     id = n  b = { session?: text }                   → ok
+t = "agent.session.item"              b = { session: text, item: AgentItem }   PC → phone, no reply
+t = "agent.session.continue"  id = n  b = { session: text }                    → agent.thread
+```
+
+```
+AgentSession = {
+  id: text, agent: text, folder: text,       // agent: its id; folder: a name, never a path
+  title: text, state: text,                  // "working" | "needs_you" | "may_need_you" | "idle" | "ended"
+  guess: bool,                               // the state is inferred, not reported by the agent
+  source: text,                              // "terminal" | "desktop_app" | "other"
+  updated: uint,                             // Unix ms: when its file last changed
+  since?: uint,                              // Unix ms: when `state` began
+  step?: text, summary?: text, waiting_for?: text,
+  can_continue: bool, blocked?: text,        // "open" | "folder" | "agent"
+}
+```
+
+- `needs_you` means the agent itself reported that it waits for an answer
+  (Claude's own status). `may_need_you` is a guess from the session's file (it
+  stopped with a tool call open): it can't tell a permission prompt from a
+  long-running command, so show it as "May need you" and never count it in a
+  badge, a chip or a summary. `may_need_you` always has `guess` set; a PC never
+  sends `needs_you` with `guess`, and a receiver reads one as `may_need_you`.
+  `ended`: no process has the session open any more. A receiver reads a
+  `source` it doesn't know as `other` and ignores a `blocked` it doesn't know.
+- `agent.session` says a session appeared or changed (`session`), or left the
+  list (`removed`, its id): it left the PC's window, its file went away, or it
+  became a thread. Exactly one of the two. It goes to every connected phone
+  with both toggles on, at most once per session every 2 s: a change within
+  2 s of the last one waits, and only the newest waiting one is sent. A
+  removal goes at once.
+- `agent.session.watch` names the one session whose items the phone shows;
+  without `session`, none. Only the watching phone gets `agent.session.item`,
+  and only for that session. A watch ends with the session (the connection),
+  when either toggle goes off, and when the session is removed. A PC may
+  refuse a watch with `BUSY` when it already serves as many watching phones as
+  it can (G7 Link desktop: two).
+- `agent.session.read` returns the newest `limit` items (default and most:
+  50) or those before `before`. A session's item `seq` comes from its place in
+  the session's file: it grows, may be 0, and isn't consecutive, so a phone
+  never looks for gaps; it reads again after it starts watching and after
+  reconnecting. Items are added or updated (a tool step finishing) as whole
+  blocks, never as streamed text.
+- `agent.session.continue` makes the session a supervised thread started by
+  that phone and answers it as `agent.start` does. The thread holds the
+  session's last 200 items and stays idle until the phone sends something.
+  The PC answers `BUSY` while anything has the session open, `DENIED` when its
+  folder isn't one of the PC's agent folders (a phone never adds one), and
+  `UNSUPPORTED` when the agent can't run. The session is then removed.
+- `can_continue` says whether `agent.session.continue` would be taken now;
+  when it isn't, `blocked` says why: `open` (still open in a terminal or the
+  app), `folder` (not in an agent folder) or `agent` (the agent can't run).
+
+Limits: `step` 120 bytes, `waiting_for` 80, the rest as §2.2; ids 1 to 40
+`[a-z0-9]`; `agent.session.items` as `agent.items` (50 items, 196608 bytes,
+the oldest left out); `folder` never contains `/` or `\` (a PC cuts a path
+to its last component). Errors as §2.3; `NOT_FOUND` for a session that isn't
+listed.
+
+## 4. Export
+
+A phone can ask for a thread, or a session it may follow, as Markdown to share
+or keep. The PC renders it: the title, the agent, the folder's name (never its
+path) and when it started; then each message (the user's quoted, with who sent
+it), each tool step with its command and the end of its output, each edit as a
+`diff` block, and each approval as "Allowed on <device>". Nothing is exported
+unless a phone asks; the PC keeps no copy.
+
+The text can be larger than a control message, so it comes on a bidirectional
+stream of its own, one export per stream:
+
+```
+stream header  { svc: "agent", op: "export", v: 1 }
+t = "agent.export"       id = 1  b = { thread?: text, session?: text }   // phone → PC, exactly one
+t = "agent.export.meta"  re = 1  b = { length: uint, truncated: bool, file_name: text }
+<length bytes of UTF-8 Markdown>
+```
+
+- An export of a thread needs the `agents` toggle; of a session, `agent_sessions`
+  as well, with §1's and §3's prompts and errors (`DENIED`, `UNSUPPORTED`,
+  `NOT_FOUND`, `BAD_MESSAGE`, `INTERNAL`), sent as an error reply on the stream
+  instead of the meta.
+- The text is at most 2 MiB (2097152 bytes). When the thread doesn't fit, the
+  PC leaves out the items that don't, ends the text saying so, and sets
+  `truncated`. It carries no control characters other than newline and tab and
+  no bidirectional formatting controls.
+- `file_name` is a suggested name to save it as (`claude-<title>-<yyyy-mm-dd>.md`):
+  1 to 128 bytes of `[A-Za-z0-9._-]`, not starting with `.`.
+- A phone refuses a meta over these limits before reading on, checks that the
+  bytes are UTF-8, keeps the text in memory only and treats it as plain text.
+  The PC gives up on a stream that doesn't ask within 20 s, and on one whose
+  text doesn't cross within 60 s; a phone waits 20 s for the meta.
+
+## 5. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -173,3 +305,18 @@ plain text.
 - On the phone, a `BUSY` reply reaches the app as the generic failure
   (`G7LinkError.Internal`, whose reason starts with `BUSY`), not as `Denied`,
   which means the toggle is off.
+- Sessions (§3) come from the agent host, which reads the agents' own session
+  files on the PC, read-only. Nothing of a session leaves the PC until a phone
+  with both toggles asks; its folder's path never does. The core answers
+  `agent.session.watch` for itself as well as telling the platform (G7 Link
+  desktop keeps one host connection per watching phone), paces
+  `agent.session`, and cuts a folder path to its name.
+- The core answers the `agent/export` stream itself, checking the toggles,
+  and asks the platform for the text (`AgentRequest::Export`); G7 Link
+  desktop gets it from the host's `thread.export`.
+- G7 Link desktop's second prompt, for `agent_sessions`: title "Let %1 see
+  sessions started on this PC?"; body "It will be able to list and read the
+  Claude and Codex sessions you start here in a terminal or the Claude app, in
+  any folder, including what you and the agent wrote. It can't type into them.
+  Once one ends, it can continue it as a thread in your agent folders. It sees
+  each folder's name, never its path."; buttons Not now, Allow.

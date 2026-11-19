@@ -15,8 +15,9 @@ use std::{
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, MAX_FRAME_LEN,
     messages::{
-        AudioBtMedia, MediaCommand, MediaFileMeta, MediaFileRead, MediaPlayer, MediaState, MediaWatch,
-        StreamHeader, WatchFile, media_actions, media_limits::PLAYERS, media_watch, types,
+        AudioBtMedia, MediaArtMeta, MediaCommand, MediaFileMeta, MediaFileRead, MediaIcon, MediaKey,
+        MediaPlayer, MediaState, MediaWatch, StreamHeader, WatchFile, is_media_art_key, is_media_icon_key,
+        media_actions, media_art, media_limits, media_limits::PLAYERS, media_watch, types,
     },
     read_frame, write_frame,
 };
@@ -46,6 +47,10 @@ pub enum MediaAction {
     Previous,
     /// To the position given with it.
     Seek,
+    /// On or off, by the value given with it (`on`, `off`).
+    Shuffle,
+    /// By the value given with it (`none`, `track`, `playlist`).
+    Loop,
 }
 
 impl MediaAction {
@@ -56,6 +61,8 @@ impl MediaAction {
             MediaAction::Next => media_actions::NEXT,
             MediaAction::Previous => media_actions::PREVIOUS,
             MediaAction::Seek => media_actions::SEEK,
+            MediaAction::Shuffle => media_actions::SHUFFLE,
+            MediaAction::Loop => media_actions::LOOP,
         }
     }
 
@@ -66,8 +73,45 @@ impl MediaAction {
             media_actions::NEXT => MediaAction::Next,
             media_actions::PREVIOUS => MediaAction::Previous,
             media_actions::SEEK => MediaAction::Seek,
+            media_actions::SHUFFLE => MediaAction::Shuffle,
+            media_actions::LOOP => MediaAction::Loop,
             _ => return None,
         })
+    }
+}
+
+/// The format of a large picture (`media.art`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtFormat {
+    Jpeg,
+    Png,
+}
+
+impl ArtFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArtFormat::Jpeg => media_art::JPEG,
+            ArtFormat::Png => media_art::PNG,
+        }
+    }
+
+    pub fn parse(format: &str) -> Option<ArtFormat> {
+        match format {
+            media_art::JPEG => Some(ArtFormat::Jpeg),
+            media_art::PNG => Some(ArtFormat::Png),
+            _ => None,
+        }
+    }
+
+    /// The format `bytes` start with, if either.
+    pub fn of(bytes: &[u8]) -> Option<ArtFormat> {
+        if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            Some(ArtFormat::Jpeg)
+        } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some(ArtFormat::Png)
+        } else {
+            None
+        }
     }
 }
 
@@ -95,6 +139,9 @@ struct PlayersState {
     active: bool,
     players: Vec<MediaPlayer>,
     art: HashMap<String, Vec<u8>>,
+    /// When the app reported them: a state sent later adds the time since to
+    /// each player's `age`.
+    reported: Option<std::time::Instant>,
 }
 
 impl Players {
@@ -105,6 +152,7 @@ impl Players {
     fn set(&self, players: Vec<MediaPlayer>) {
         let mut state = self.lock();
         state.active = true;
+        state.reported = Some(std::time::Instant::now());
         state.players.clear();
         let mut art = HashMap::new();
         for mut player in players.into_iter().filter_map(MediaPlayer::sanitized).take(PLAYERS) {
@@ -128,6 +176,13 @@ impl Players {
         let mut remaining = MAX_FRAME_LEN - 64 * 1024;
         let state = self.lock();
         let mut players = state.players.clone();
+        let waited =
+            state.reported.map_or(0, |at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX));
+        for player in players.iter_mut().filter(|p| p.position.is_some()) {
+            if waited > 0 || player.age.is_some() {
+                player.age = Some(player.age.unwrap_or(0).saturating_add(waited));
+            }
+        }
         // Prefer artwork for playing media if several players get new artwork at once.
         for playing in [true, false] {
             for player in players.iter_mut().filter(|p| p.playing == playing) {
@@ -142,6 +197,16 @@ impl Players {
             }
         }
         MediaState { players }
+    }
+
+    /// Whether a current player names `key` as its large picture.
+    fn has_art_full(&self, key: &str) -> bool {
+        self.lock().players.iter().any(|p| p.art_full.as_deref() == Some(key))
+    }
+
+    /// Whether a current player names `key` as its app's icon.
+    fn has_icon(&self, key: &str) -> bool {
+        self.lock().players.iter().any(|p| p.icon.as_deref() == Some(key))
     }
 
     /// Returns the title of the currently playing media item on this device, if any.
@@ -309,6 +374,12 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         types::MEDIA_COMMAND => {
             let command: MediaCommand = env.body()?;
             let reply = run_command(shared, &peer, command).await;
+            session.send(reply.reply_to(env.id)).await?;
+        }
+        // A reply that came after its request gave up.
+        types::MEDIA_ICON if env.re.is_some() => {}
+        types::MEDIA_ICON => {
+            let reply = serve_icon(shared, &peer, env).await;
             session.send(reply.reply_to(env.id)).await?;
         }
         _ => return Ok(false),
@@ -553,11 +624,16 @@ async fn run_command(shared: &Arc<Shared>, peer: &DeviceId, command: MediaComman
     if action == MediaAction::Seek && command.position.is_none() {
         return Envelope::error(ErrorCode::BadMessage, "seek needs a position");
     }
+    if !command.value_fits() {
+        return Envelope::error(ErrorCode::BadMessage, "shuffle and loop need a value they take");
+    }
     let platform = shared.platform.clone();
-    let MediaCommand { player, position, .. } = command;
-    let ran = tokio::task::spawn_blocking(move || platform.media_command(&player, action, position))
-        .await
-        .unwrap_or_else(|e| Err(MediaError::Failed(e.to_string())));
+    let MediaCommand { player, position, value, .. } = command;
+    let ran = tokio::task::spawn_blocking(move || {
+        platform.media_command(&player, action, position, value.as_deref())
+    })
+    .await
+    .unwrap_or_else(|e| Err(MediaError::Failed(e.to_string())));
     match ran {
         Ok(()) => Envelope::empty(types::OK),
         Err(MediaError::NotFound) => Envelope::error(ErrorCode::NotFound, "no such player"),
@@ -567,6 +643,160 @@ async fn run_command(shared: &Arc<Shared>, peer: &DeviceId, command: MediaComman
             Envelope::error(ErrorCode::Internal, "failed")
         }
     }
+}
+
+/// The PC's side of `media.icon`: the app icon one of its players names.
+async fn serve_icon(shared: &Arc<Shared>, peer: &DeviceId, env: &Envelope) -> Envelope {
+    if !shared.we_offer(SHARES) {
+        return Envelope::error(ErrorCode::Unsupported, "media control is not available");
+    }
+    if !shared.toggle_on(peer, TOGGLE) {
+        return Envelope::error(ErrorCode::Denied, "media is off for this device");
+    }
+    let Some(key) = env.body::<MediaKey>().ok().map(|k| k.key).filter(|k| is_media_icon_key(k)) else {
+        return Envelope::error(ErrorCode::BadMessage, "invalid media.icon");
+    };
+    if !shared.players.has_icon(&key) {
+        return Envelope::error(ErrorCode::NotFound, "no player has that icon");
+    }
+    let platform = shared.platform.clone();
+    let png = tokio::task::spawn_blocking(move || platform.media_icon(&key)).await.ok().flatten();
+    match png {
+        Some(png) if is_icon(&png) => Envelope::new(types::MEDIA_ICON, &MediaIcon { png })
+            .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "failed")),
+        Some(png) => {
+            tracing::warn!(bytes = png.len(), "a player's icon isn't a PNG that fits");
+            Envelope::error(ErrorCode::Internal, "can't send that icon")
+        }
+        None => Envelope::error(ErrorCode::NotFound, "no such icon"),
+    }
+}
+
+/// A PNG of at most [`media_limits::ICON_BYTES`].
+fn is_icon(png: &[u8]) -> bool {
+    png.len() <= media_limits::ICON_BYTES && ArtFormat::of(png) == Some(ArtFormat::Png)
+}
+
+/// The phone's side of `media.icon`: a PC player's app icon, PNG.
+pub(crate) async fn icon(shared: &Arc<Shared>, session: &Session, key: String) -> Result<Vec<u8>> {
+    if !is_media_icon_key(&key) {
+        return Err(Error::Protocol("invalid icon key".into()));
+    }
+    if !shared.store.get_peer(&session.peer)?.is_some_and(|p| p.caps.contains(SHARES)) {
+        return Err(Error::Unsupported);
+    }
+    let env = Envelope::new(types::MEDIA_ICON, &MediaKey { key })?;
+    let reply = session.request(env, crate::session::REQUEST_TIMEOUT).await?;
+    let MediaIcon { png } = reply.expect_body(types::MEDIA_ICON)?;
+    if !is_icon(&png) {
+        return Err(Error::Protocol("media.icon isn't a PNG that fits".into()));
+    }
+    Ok(png)
+}
+
+/// The large picture `key` names, if `peer` may have it: the error reply otherwise.
+async fn art_for(
+    shared: &Arc<Shared>,
+    peer: &DeviceId,
+    env: &Envelope,
+) -> std::result::Result<(Vec<u8>, ArtFormat), Envelope> {
+    if !shared.we_offer(SHARES) {
+        return Err(Envelope::error(ErrorCode::Unsupported, "media control is not available"));
+    }
+    if !shared.toggle_on(peer, TOGGLE) {
+        return Err(Envelope::error(ErrorCode::Denied, "media is off for this device"));
+    }
+    let key =
+        env.expect_body::<MediaKey>(types::MEDIA_ART).ok().map(|k| k.key).filter(|k| is_media_art_key(k));
+    let Some(key) = key else {
+        return Err(Envelope::error(ErrorCode::BadMessage, "invalid media.art"));
+    };
+    if !shared.players.has_art_full(&key) {
+        return Err(Envelope::error(ErrorCode::NotFound, "no player has that picture"));
+    }
+    let platform = shared.platform.clone();
+    let art = tokio::task::spawn_blocking(move || platform.media_art(&key)).await.ok().flatten();
+    let Some((bytes, format)) = art else {
+        return Err(Envelope::error(ErrorCode::NotFound, "no such picture"));
+    };
+    if bytes.is_empty() || bytes.len() > media_limits::ART_FULL_BYTES || ArtFormat::of(&bytes) != Some(format)
+    {
+        tracing::warn!(bytes = bytes.len(), "a player's large picture isn't one that can be sent");
+        return Err(Envelope::error(ErrorCode::Internal, "can't send that picture"));
+    }
+    Ok((bytes, format))
+}
+
+/// The PC's side of a `media/art` stream (its header already read): one
+/// large picture of a current player.
+pub(crate) async fn serve_art(
+    shared: Arc<Shared>,
+    peer: DeviceId,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) {
+    let Ok(Ok(Some(bytes))) = tokio::time::timeout(FILE_TIMEOUT, read_frame(&mut recv)).await else {
+        return;
+    };
+    let Ok(env) = Envelope::from_cbor(&bytes) else { return };
+    let (art, format) = match art_for(&shared, &peer, &env).await {
+        Ok(art) => art,
+        Err(reply) => {
+            let _ = write_frame(&mut send, &reply.reply_to(env.id).to_cbor()).await;
+            let _ = send.finish();
+            return;
+        }
+    };
+    let meta = MediaArtMeta { length: art.len() as u64, format: format.as_str().into() };
+    let Ok(reply) = Envelope::new(types::MEDIA_ART_META, &meta).map(|e| e.reply_to(env.id)) else { return };
+    let sent = tokio::time::timeout(FILE_TIMEOUT, async {
+        write_frame(&mut send, &reply.to_cbor()).await.is_ok() && send.write_all(&art).await.is_ok()
+    })
+    .await;
+    if sent == Ok(true) {
+        let _ = send.finish();
+    }
+}
+
+/// The phone's side: one large picture `key` of a player on `session`'s PC,
+/// refused before it's read when it's over [`media_limits::ART_FULL_BYTES`].
+pub(crate) async fn read_art(
+    shared: &Arc<Shared>,
+    session: &Session,
+    key: String,
+) -> Result<(Vec<u8>, ArtFormat)> {
+    if !is_media_art_key(&key) {
+        return Err(Error::Protocol("invalid art key".into()));
+    }
+    if !shared.store.get_peer(&session.peer)?.is_some_and(|p| p.caps.contains(SHARES)) {
+        return Err(Error::Unsupported);
+    }
+    let (mut send, mut recv) = session.open_bi().await?;
+    let header =
+        StreamHeader { svc: media_art::SERVICE.into(), op: media_art::OP.into(), v: media_art::VERSION };
+    write_frame(&mut send, &Envelope::new(types::STREAM, &header)?.to_cbor()).await?;
+    write_frame(&mut send, &Envelope::new(types::MEDIA_ART, &MediaKey { key })?.with_id(1).to_cbor()).await?;
+    let _ = send.finish();
+    let reply = match tokio::time::timeout(FILE_TIMEOUT, read_frame(&mut recv)).await {
+        Ok(Ok(Some(bytes))) => Envelope::from_cbor(&bytes)?,
+        Ok(Ok(None)) => return Err(Error::Offline),
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => return Err(Error::Timeout),
+    };
+    let meta: MediaArtMeta = reply.expect_body(types::MEDIA_ART_META)?;
+    let format = ArtFormat::parse(&meta.format).filter(|_| meta.is_valid());
+    let (Some(format), Ok(length)) = (format, usize::try_from(meta.length)) else {
+        return Err(Error::Protocol("media.art is too large or not a picture".into()));
+    };
+    let mut data = vec![0u8; length];
+    tokio::time::timeout(FILE_TIMEOUT, recv.read_exact(&mut data))
+        .await
+        .map_err(|_| Error::Timeout)?
+        .map_err(|e| Error::Network(e.to_string()))?;
+    if ArtFormat::of(&data) != Some(format) {
+        return Err(Error::Protocol("media.art isn't what it said".into()));
+    }
+    Ok((data, format))
 }
 
 #[cfg(test)]
@@ -581,9 +811,53 @@ mod tests {
             MediaAction::Next,
             MediaAction::Previous,
             MediaAction::Seek,
+            MediaAction::Shuffle,
+            MediaAction::Loop,
         ] {
             assert_eq!(MediaAction::parse(action.as_str()), Some(action));
         }
         assert_eq!(MediaAction::parse("rewind"), None);
+    }
+
+    #[test]
+    fn art_formats_are_told_by_their_bytes() {
+        assert_eq!(ArtFormat::of(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(ArtFormat::Jpeg));
+        assert_eq!(ArtFormat::of(b"\x89PNG\r\n\x1a\n\0\0"), Some(ArtFormat::Png));
+        assert_eq!(ArtFormat::of(b"GIF89a"), None);
+        assert_eq!(ArtFormat::of(&[]), None);
+        for format in [ArtFormat::Jpeg, ArtFormat::Png] {
+            assert_eq!(ArtFormat::parse(format.as_str()), Some(format));
+        }
+        assert_eq!(ArtFormat::parse("gif"), None);
+    }
+
+    #[test]
+    fn a_state_sent_later_says_how_old_its_position_is() {
+        let players = Players::default();
+        let player = |age: Option<u64>, position: Option<u64>| MediaPlayer {
+            id: "spotify".into(),
+            app: "Spotify".into(),
+            title: Some("Song".into()),
+            artist: None,
+            album: None,
+            playing: true,
+            duration: Some(100_000),
+            position,
+            actions: Vec::new(),
+            art_key: None,
+            art: None,
+            rate_milli: None,
+            age,
+            art_full: None,
+            icon: None,
+            shuffle: None,
+            repeat: None,
+        };
+        players.set(vec![player(Some(200), Some(5_000)), player(None, None)]);
+        players.lock().reported = Some(std::time::Instant::now() - std::time::Duration::from_millis(1_000));
+        let state = players.for_session(&mut HashSet::new());
+        let age = state.players[0].age.unwrap();
+        assert!((1_200..5_000).contains(&age), "{age}");
+        assert_eq!(state.players[1].age, None, "nothing to age without a position");
     }
 }

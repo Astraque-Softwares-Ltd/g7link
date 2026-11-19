@@ -415,4 +415,24 @@ pub enum NodeEvent {
         /// The device that answered, for `allowed` and `denied`.
         by_name: Option<String>,
     },
+    /// PC: a paired phone asked for sessions started on this PC while its
+    /// `agent_sessions` toggle is off (`agents` on). Once per phone per run,
+    /// for a one-time prompt.
+    AgentSessionsRequested {
+        device: DeviceId,
+    },
+    /// Phone: a session started on a PC outside G7 Link appeared or changed
+    /// (`session`), or left the list (`removed`, its id) (`agent.session`).
+    AgentSession {
+        device: DeviceId,
+        session: Option<crate::AgentSession>,
+        removed: Option<String>,
+    },
+    /// Phone: an item of the session this phone watches was added or
+    /// updated (`agent.session.item`).
+    AgentSessionItem {
+        device: DeviceId,
+        session: String,
+        item: crate::AgentItem,
+    },
 }

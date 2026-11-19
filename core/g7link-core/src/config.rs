@@ -499,14 +499,30 @@ pub trait Platform: Send + Sync + 'static {
     }
 
     /// Run a command on one of this device's media players (a paired device
-    /// asked); `position` is set for [`MediaAction::Seek`].
+    /// asked); `position` is set for [`MediaAction::Seek`], `value` for
+    /// [`MediaAction::Shuffle`] (`on`, `off`) and [`MediaAction::Loop`]
+    /// (`none`, `track`, `playlist`), checked. Ignore `value` for the rest.
     fn media_command(
         &self,
         _player: &str,
         _action: MediaAction,
         _position: Option<u64>,
+        _value: Option<&str>,
     ) -> Result<(), MediaError> {
         Err(MediaError::Unsupported)
+    }
+
+    /// The large picture a player of this device names as `art_full`
+    /// (`media.art`): JPEG or PNG, at most 2 MiB. The core checked that a
+    /// current player names `key` and that the asking device may have it.
+    fn media_art(&self, _key: &str) -> Option<(Vec<u8>, crate::media::ArtFormat)> {
+        None
+    }
+
+    /// The app icon a player of this device names as `icon` (`media.icon`):
+    /// PNG, at most 16 KiB. Checked as for [`media_art`](Self::media_art).
+    fn media_icon(&self, _key: &str) -> Option<Vec<u8>> {
+        None
     }
 
     /// Inject pointer, keyboard or presentation input from a paired phone

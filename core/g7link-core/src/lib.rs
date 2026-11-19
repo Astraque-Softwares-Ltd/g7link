@@ -55,13 +55,14 @@ pub mod webcam;
 
 pub use actions::{PC_WAKE, PowerAction};
 pub use agents::{
-    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentFailure,
-    AgentItem, AgentItems, AgentReply, AgentRequest, AgentStart, AgentThread, AgentTool,
+    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentExport,
+    AgentFailure, AgentItem, AgentItems, AgentPlanStep, AgentReply, AgentRequest, AgentSession,
+    AgentSessionItems, AgentStart, AgentThread, AgentTool, SESSIONS_TOGGLE as AGENT_SESSIONS_TOGGLE,
     TOGGLE as AGENTS_TOGGLE, agent, is_valid_agent_id,
 };
 pub use ble_link::{
-    BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BLE_REMOTE_CAPABILITY, BleEndpoint, RemotePath, RemoteRoute,
-    RouteState,
+    BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BLE_REMOTE_CAPABILITY, BleEndpoint,
+    CONNECT_WINDOW as BLE_CONNECT_WINDOW, RemotePath, RemoteRoute, RouteState,
 };
 pub use calls::CallCommand;
 pub use clip_kind::{
@@ -87,7 +88,10 @@ pub use g7link_protocol::ble;
 pub use g7link_protocol::messages::clip::{
     IMAGE_TYPES as CLIP_IMAGE_TYPES, MAX_IMAGE_BYTES as CLIP_MAX_IMAGE_BYTES,
 };
-pub use g7link_protocol::messages::{BleUseState, RemoteTextState, TextFieldKind, remote as remote_limits};
+pub use g7link_protocol::messages::{
+    BleUseReply, BleUseState, RemoteTextState, TextFieldKind, remote as remote_limits,
+};
+pub use g7link_protocol::messages::{media_actions, media_limits, media_loop, media_shuffle};
 pub use g7link_protocol::{
     DeviceId, PacketKind,
     messages::{
@@ -161,7 +165,7 @@ pub use localsend::{
     LOCALSEND_DEFAULT_PORT, LOCALSEND_MULTICAST_ADDR, LOCALSEND_PROTOCOL_VERSION, LocalSendPeer,
     peer_device_id as localsend_peer_device_id,
 };
-pub use media::{BT_MEDIA_TOGGLE, MediaAction, MediaError};
+pub use media::{ArtFormat, BT_MEDIA_TOGGLE, MediaAction, MediaError};
 pub use mic::{MicSink, TOGGLE as MIC_TOGGLE};
 pub use mirror::{MirrorSend, MirrorSink, MirrorStream, PC_MIRROR_TOGGLE};
 pub use node::{DataRetentionCounts, Node, PeerDiagnostics};

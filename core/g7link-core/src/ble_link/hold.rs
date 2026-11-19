@@ -17,7 +17,7 @@ use g7link_protocol::{
     messages::{BleUse, BleUseReply, BleUseState, types},
 };
 
-use super::{BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, lock, wire_code};
+use super::{BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, CONNECT_WINDOW, lock, wire_code};
 use crate::{Error, Result, events::NodeEvent, features::Role, node::Shared};
 
 /// How long a hold lasts unless renewed (the phone renews every 20 s).
@@ -30,8 +30,44 @@ const PROMPT_SHOWS_FOR: Duration = Duration::from_secs(60);
 /// phone: two minutes of advertising in five at worst.
 const WINDOWS: usize = 4;
 const WINDOWS_SPAN: Duration = Duration::from_secs(5 * 60);
-/// A window opened this recently is still open: asking again opens none.
-const WINDOW_STILL_OPEN: Duration = Duration::from_secs(20);
+
+/// A connect window a phone's hold opened: when, and until when it's open
+/// ([`CONNECT_WINDOW`] later, or sooner when a link came up and closed it).
+#[derive(Debug, Clone, Copy)]
+struct Opened {
+    at: Instant,
+    until: Instant,
+}
+
+/// What [`Holds::window`] decided for a phone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Window {
+    /// A window opens for the phone now.
+    Opened,
+    /// The window its hold opened is still open for `left`: it joins that one.
+    StillOpen { left: Duration },
+    /// None now: its hold opened [`WINDOWS`] in [`WINDOWS_SPAN`]. One may
+    /// open again in `retry_in`.
+    Spent { retry_in: Duration },
+}
+
+impl Window {
+    /// What the reply to `ble.use` says about it: how long the window stays
+    /// open (0: none), and when there's none, when a renewal can open one.
+    fn reply_fields(self) -> (u32, Option<u32>) {
+        match self {
+            Window::Opened => (whole_secs(CONNECT_WINDOW), None),
+            // 0 would say there's none: it is open, for under a second more.
+            Window::StillOpen { left } => (whole_secs(left).max(1), None),
+            Window::Spent { retry_in } => (0, Some(whole_secs(retry_in).max(1))),
+        }
+    }
+}
+
+/// `duration` in whole seconds, rounded down.
+fn whole_secs(duration: Duration) -> u32 {
+    u32::try_from(duration.as_secs()).unwrap_or(u32::MAX)
+}
 
 /// The phones holding a link with this PC, and who was asked what.
 #[derive(Debug, Default)]
@@ -45,7 +81,7 @@ pub(crate) struct Holds {
     /// Prompts showing, since when.
     showing: HashMap<DeviceId, Instant>,
     /// Windows each phone's holds opened, the oldest first.
-    windows: HashMap<DeviceId, VecDeque<Instant>>,
+    windows: HashMap<DeviceId, VecDeque<Opened>>,
 }
 
 impl Holds {
@@ -112,25 +148,38 @@ impl Holds {
         self.showing.remove(peer);
     }
 
-    /// Whether a window may open for `peer` now: not while one it opened is
-    /// still open, and past [`WINDOWS`] in [`WINDOWS_SPAN`] only for one the
-    /// phone's user asked for (`user`). Recorded when it may.
-    fn window(&mut self, peer: DeviceId, now: Instant, user: bool) -> bool {
+    /// Whether a window opens for `peer` now: not while one it opened is
+    /// still open (a renewal joins that one), and past [`WINDOWS`] in
+    /// [`WINDOWS_SPAN`] only for one the phone's user asked for (`user`).
+    /// Recorded when one opens.
+    fn window(&mut self, peer: DeviceId, now: Instant, user: bool) -> Window {
         let opened = self.windows.entry(peer).or_default();
-        while opened.front().is_some_and(|at| now.saturating_duration_since(*at) >= WINDOWS_SPAN) {
+        while opened.front().is_some_and(|w| now.saturating_duration_since(w.at) >= WINDOWS_SPAN) {
             opened.pop_front();
         }
-        if opened.back().is_some_and(|at| now.saturating_duration_since(*at) < WINDOW_STILL_OPEN) {
-            return false;
+        if let Some(last) = opened.back()
+            && last.until > now
+        {
+            return Window::StillOpen { left: last.until.saturating_duration_since(now) };
         }
         if !user && opened.len() >= WINDOWS {
-            return false;
+            let oldest = opened.front().map_or(now, |w| w.at);
+            return Window::Spent { retry_in: (oldest + WINDOWS_SPAN).saturating_duration_since(now) };
         }
         if opened.len() >= WINDOWS {
             opened.pop_front();
         }
-        opened.push_back(now);
-        true
+        opened.push_back(Opened { at: now, until: now + CONNECT_WINDOW });
+        Window::Opened
+    }
+
+    /// A link came up at `now`: the PC closes its window then, for every phone.
+    fn windows_closed(&mut self, now: Instant) {
+        for opened in self.windows.values_mut() {
+            if let Some(last) = opened.back_mut() {
+                last.until = last.until.min(now);
+            }
+        }
     }
 
     pub(crate) fn remove_peer(&mut self, peer: &DeviceId) {
@@ -153,8 +202,19 @@ impl Shared {
             return Envelope::error(ErrorCode::BadMessage, "invalid ble.use");
         };
         match self.answer_ble_use(peer, request, Instant::now()) {
-            Ok(reply) => Envelope::new(types::BLE_USE, &reply)
-                .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "ble.use")),
+            Ok(reply) => {
+                tracing::debug!(
+                    peer = %peer.short(),
+                    on = request.on,
+                    ask = request.ask,
+                    state = ?reply.state,
+                    window = ?reply.window,
+                    retry = ?reply.retry,
+                    "Bluetooth: answered a phone's ble.use"
+                );
+                Envelope::new(types::BLE_USE, &reply)
+                    .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "ble.use"))
+            }
             Err(error) => Envelope::error(wire_code(&error), error.to_string()),
         }
     }
@@ -169,7 +229,7 @@ impl Shared {
         if roles != (Some(Role::Desktop), Some(Role::Phone)) {
             return Err(Error::Unsupported);
         }
-        let reply = |state| BleUseReply { state, lease: None };
+        let reply = BleUseReply::new;
         if !request.on {
             if lock(&self.ble.holds).release(&peer) {
                 self.emit(NodeEvent::BleHoldChanged { device: peer, held: false });
@@ -203,14 +263,47 @@ impl Shared {
             self.watch_lease(peer, number);
             self.emit(NodeEvent::BleHoldChanged { device: peer, held: true });
         }
-        let lease = Some(u32::try_from(LEASE.as_secs()).unwrap_or(u32::MAX));
+        let lease = Some(whole_secs(LEASE));
         if self.ble_link(&peer).is_some() {
-            return Ok(BleUseReply { state: BleUseState::Linked, lease });
+            return Ok(BleUseReply { lease, ..BleUseReply::new(BleUseState::Linked) });
         }
-        if lock(&self.ble.holds).window(peer, now, request.ask) {
-            self.emit(NodeEvent::BleWanted { device: peer });
+        let window = lock(&self.ble.holds).window(peer, now, request.ask);
+        let why = if request.ask { "the phone's user asked" } else { "a phone holds its link" };
+        self.window_decided(peer, window, why);
+        let (open_for, retry) = window.reply_fields();
+        Ok(BleUseReply { lease, window: Some(open_for), retry, ..BleUseReply::new(BleUseState::Open) })
+    }
+
+    /// Opens the window `window` decided on for `peer`, and says what happened.
+    fn window_decided(&self, peer: DeviceId, window: Window, why: &'static str) {
+        match window {
+            Window::Opened => {
+                tracing::info!(
+                    peer = %peer.short(),
+                    secs = CONNECT_WINDOW.as_secs(),
+                    why,
+                    "Bluetooth: opening a connect window for a phone"
+                );
+                self.emit(NodeEvent::BleWanted { device: peer });
+            }
+            Window::StillOpen { left } => {
+                tracing::debug!(
+                    peer = %peer.short(),
+                    left_secs = left.as_secs(),
+                    why,
+                    "Bluetooth: the phone's connect window is still open"
+                );
+            }
+            Window::Spent { retry_in } => {
+                tracing::info!(
+                    peer = %peer.short(),
+                    retry_in_secs = retry_in.as_secs(),
+                    why,
+                    "Bluetooth: no connect window for a phone now: it had {WINDOWS} in the last {} minutes",
+                    WINDOWS_SPAN.as_secs() / 60
+                );
+            }
         }
-        Ok(BleUseReply { state: BleUseState::Open, lease })
     }
 
     /// Ends hold `number` of `peer` once its lease runs out, renewals and all.
@@ -238,13 +331,18 @@ impl Shared {
     /// PC: the link with `peer` went. A phone that holds it gets a window to
     /// connect again, a few times in five minutes at most.
     pub(crate) fn held_link_down(&self, peer: DeviceId) {
-        let reopen = {
+        let window = {
             let mut holds = lock(&self.ble.holds);
-            holds.is_held(&peer) && holds.window(peer, Instant::now(), false)
+            holds.is_held(&peer).then(|| holds.window(peer, Instant::now(), false))
         };
-        if reopen {
-            self.emit(NodeEvent::BleWanted { device: peer });
+        if let Some(window) = window {
+            self.window_decided(peer, window, "a held link dropped");
         }
+    }
+
+    /// PC: a link came up, and with it the PC's connect window closed.
+    pub(crate) fn held_link_up(&self) {
+        lock(&self.ble.holds).windows_closed(Instant::now());
     }
 
     /// PC: the prompt for `peer` closed without its toggle being turned on.
@@ -318,16 +416,74 @@ mod tests {
         let start = Instant::now();
         let mut holds = Holds::default();
         let at = |secs| start + Duration::from_secs(secs);
-        assert!(holds.window(PHONE, at(0), false));
-        assert!(!holds.window(PHONE, at(10), false), "still open");
-        assert!(!holds.window(PHONE, at(10), true), "still open, even when asked");
+        let still_open = |left| Window::StillOpen { left: Duration::from_secs(left) };
+        assert_eq!(holds.window(PHONE, at(0), false), Window::Opened);
+        assert_eq!(holds.window(PHONE, at(10), false), still_open(20));
+        assert_eq!(holds.window(PHONE, at(10), true), still_open(20), "still open, even when asked");
         for secs in [30, 60, 90] {
-            assert!(holds.window(PHONE, at(secs), false), "{secs} s");
+            assert_eq!(holds.window(PHONE, at(secs), false), Window::Opened, "{secs} s");
         }
-        assert!(!holds.window(PHONE, at(120), false), "the fifth in five minutes");
-        assert!(holds.window(OTHER, at(120), false), "each phone its own");
-        assert!(holds.window(PHONE, at(150), true), "the phone's user asked again");
-        assert!(!holds.window(PHONE, at(329), false));
-        assert!(holds.window(PHONE, at(330), false), "the one at 30 s has aged out");
+        assert_eq!(
+            holds.window(PHONE, at(120), false),
+            Window::Spent { retry_in: Duration::from_secs(180) },
+            "the fifth in five minutes"
+        );
+        assert_eq!(holds.window(OTHER, at(120), false), Window::Opened, "each phone its own");
+        assert_eq!(holds.window(PHONE, at(150), true), Window::Opened, "the phone's user asked again");
+        assert_eq!(holds.window(PHONE, at(329), false), Window::Spent { retry_in: Duration::from_secs(1) });
+        assert_eq!(holds.window(PHONE, at(330), false), Window::Opened, "the one at 30 s has aged out");
+    }
+
+    #[test]
+    fn a_renewal_joins_the_open_window_and_spends_nothing() {
+        let start = Instant::now();
+        let mut holds = Holds::default();
+        let at = |secs| start + Duration::from_secs(secs);
+        // Renewed every 20 s with no link: a window, then one renewal that
+        // joins it, then the next opens a new one once it has closed.
+        let renewals: Vec<Window> = (0..8).map(|n| holds.window(PHONE, at(n * 20), false)).collect();
+        assert_eq!(
+            renewals,
+            [
+                Window::Opened,
+                Window::StillOpen { left: Duration::from_secs(10) },
+                Window::Opened,
+                Window::StillOpen { left: Duration::from_secs(10) },
+                Window::Opened,
+                Window::StillOpen { left: Duration::from_secs(10) },
+                Window::Opened,
+                Window::StillOpen { left: Duration::from_secs(10) },
+            ]
+        );
+        // Four windows over 150 s, not 90: the fifth waits for the first to age out.
+        assert_eq!(holds.window(PHONE, at(160), false), Window::Spent { retry_in: Duration::from_secs(140) });
+        assert_eq!(holds.window(PHONE, at(300), false), Window::Opened);
+    }
+
+    #[test]
+    fn a_link_that_comes_up_closes_the_window() {
+        let start = Instant::now();
+        let mut holds = Holds::default();
+        let at = |secs| start + Duration::from_secs(secs);
+        assert_eq!(holds.window(PHONE, at(0), false), Window::Opened);
+        holds.windows_closed(at(5));
+        // The link dropped 10 s later: a new window, as the last one closed with the link.
+        assert_eq!(holds.window(PHONE, at(15), false), Window::Opened);
+        holds.windows_closed(at(16));
+        holds.windows_closed(at(40));
+        assert_eq!(holds.window(PHONE, at(41), false), Window::Opened, "a later close moves nothing back");
+    }
+
+    #[test]
+    fn a_reply_says_how_long_the_window_stays_open_and_when_one_can_open() {
+        assert_eq!(Window::Opened.reply_fields(), (30, None));
+        assert_eq!(Window::StillOpen { left: Duration::from_millis(10_900) }.reply_fields(), (10, None));
+        assert_eq!(
+            Window::StillOpen { left: Duration::from_millis(300) }.reply_fields(),
+            (1, None),
+            "never 0"
+        );
+        assert_eq!(Window::Spent { retry_in: Duration::from_secs(140) }.reply_fields(), (0, Some(140)));
+        assert_eq!(Window::Spent { retry_in: Duration::ZERO }.reply_fields(), (0, Some(1)));
     }
 }

@@ -1622,6 +1622,20 @@ pub(crate) async fn accept_stream(
             crate::media::serve_file(shared, session.peer, send, recv).await;
         }
         Some(h)
+            if h.svc == g7link_protocol::messages::media_art::SERVICE
+                && h.op == g7link_protocol::messages::media_art::OP
+                && h.v == g7link_protocol::messages::media_art::VERSION =>
+        {
+            crate::media::serve_art(shared, session.peer, send, recv).await;
+        }
+        Some(h)
+            if h.svc == g7link_protocol::messages::agent_export::SERVICE
+                && h.op == g7link_protocol::messages::agent_export::OP
+                && h.v == g7link_protocol::messages::agent_export::VERSION =>
+        {
+            crate::agents::serve_export(shared, session.peer, send, recv).await;
+        }
+        Some(h)
             if h.svc == g7link_protocol::messages::mic::SERVICE
                 && h.op == g7link_protocol::messages::mic::OP_PCM
                 && h.v == g7link_protocol::messages::mic::VERSION =>

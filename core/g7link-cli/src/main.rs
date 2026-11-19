@@ -2278,7 +2278,12 @@ impl Platform for TerminalPlatform {
         player: &str,
         action: MediaAction,
         position: Option<u64>,
+        _value: Option<&str>,
     ) -> Result<(), MediaError> {
+        // The test player has neither shuffle nor loop.
+        if matches!(action, MediaAction::Shuffle | MediaAction::Loop) {
+            return Err(MediaError::Unsupported);
+        }
         println!(
             "A paired device asked {player} to {}{}",
             action.as_str(),
@@ -4700,6 +4705,12 @@ async fn play(
         actions: ["play", "pause", "next", "previous", "seek"].map(String::from).to_vec(),
         art_key: art_key.clone(),
         art: art.clone(),
+        rate_milli: None,
+        age: None,
+        art_full: None,
+        icon: None,
+        shuffle: None,
+        repeat: None,
     };
     node.media_changed(vec![player(track, position, playing)]).await;
     println!("Playing \"{title}\". Paired devices can control it; Ctrl+C to stop.");
@@ -4720,6 +4731,7 @@ async fn play(
                     MediaAction::Next => { track += 1; position = 0; }
                     MediaAction::Previous => { track = track.saturating_sub(1).max(1); position = 0; }
                     MediaAction::Seek => position = to.unwrap_or(position).min(length),
+                    MediaAction::Shuffle | MediaAction::Loop => {}
                 }
                 node.media_changed(vec![player(track, position, playing)]).await;
             }

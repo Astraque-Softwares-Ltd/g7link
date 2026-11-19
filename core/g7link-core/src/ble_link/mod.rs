@@ -139,6 +139,10 @@ pub const BLE_REMOTE_CAPABILITY: &str = "ble.remote";
 /// How long the PC waits for a phone to connect over Bluetooth when it has
 /// something for it.
 const LINK_WAIT: Duration = Duration::from_secs(20);
+/// How long a connect window the PC opens for a phone that asks or holds a
+/// link stays open, unless a link comes up first: the platform's window and
+/// what `ble.use` replies say (docs/protocol/bluetooth.md §4.1, §4.5).
+pub const CONNECT_WINDOW: Duration = Duration::from_secs(30);
 /// How long a request over Bluetooth waits for its reply.
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a key or click over Bluetooth waits for its answer: the input
@@ -237,6 +241,8 @@ impl Shared {
             previous.close();
         }
         tracing::info!(peer = %peer.short(), "Bluetooth link up");
+        // The platform closes its connect window once a link is up.
+        self.held_link_up();
         self.ble.changed.notify_waiters();
         self.emit(NodeEvent::BleLinkChanged { device: peer, up: true });
         self.route_refresh(&peer);

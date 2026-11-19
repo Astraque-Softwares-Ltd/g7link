@@ -108,6 +108,15 @@ struct RecordingPlatform {
     agent_requests: Mutex<Vec<(g7link_core::DeviceId, g7link_core::AgentRequest)>>,
     /// Ask tokens already answered.
     agent_answered: Mutex<std::collections::HashSet<String>>,
+    /// The sessions this PC lists (`agent.sessions`).
+    agent_sessions: Mutex<Vec<g7link_core::AgentSession>>,
+    /// Values sent with media commands (shuffle, loop).
+    media_values: Mutex<Vec<(String, MediaAction, String)>>,
+    /// The large picture `media_art` serves, and how often it was asked.
+    media_art: Mutex<Option<(Vec<u8>, g7link_core::ArtFormat)>>,
+    media_art_asks: AtomicUsize,
+    /// The icon `media_icon` serves.
+    media_icon: Mutex<Option<Vec<u8>>>,
 }
 
 impl Platform for RecordingPlatform {
@@ -553,12 +562,23 @@ impl Platform for RecordingPlatform {
         player: &str,
         action: MediaAction,
         position: Option<u64>,
+        value: Option<&str>,
     ) -> Result<(), MediaError> {
         if player == "gone" {
             return Err(MediaError::NotFound);
         }
         self.media.lock().unwrap().push((player.to_owned(), action, position));
+        if let Some(value) = value {
+            self.media_values.lock().unwrap().push((player.to_owned(), action, value.to_owned()));
+        }
         Ok(())
+    }
+    fn media_art(&self, _key: &str) -> Option<(Vec<u8>, g7link_core::ArtFormat)> {
+        self.media_art_asks.fetch_add(1, Ordering::SeqCst);
+        self.media_art.lock().unwrap().clone()
+    }
+    fn media_icon(&self, _key: &str) -> Option<Vec<u8>> {
+        self.media_icon.lock().unwrap().clone()
     }
     fn remote_input(
         &self,
@@ -603,6 +623,46 @@ impl Platform for RecordingPlatform {
                     Err(AgentFailure::NotFound)
                 }
             }
+            AgentRequest::Sessions => Ok(AgentReply::Sessions(self.agent_sessions.lock().unwrap().clone())),
+            AgentRequest::SessionRead { session, .. } => {
+                let found = self.agent_sessions.lock().unwrap().iter().find(|s| s.id == session).cloned();
+                let session = found.ok_or(AgentFailure::NotFound)?;
+                Ok(AgentReply::SessionItems(g7link_core::AgentSessionItems {
+                    session,
+                    items: vec![agent_text_at(0, "Hello"), agent_text_at(5 << 6, "Working on it.")],
+                    more_before: false,
+                }))
+            }
+            AgentRequest::SessionWatch { .. } => Ok(AgentReply::Ok),
+            AgentRequest::SessionContinue { session } if session == OPEN_SESSION => Err(AgentFailure::Busy),
+            AgentRequest::SessionContinue { .. } => {
+                Ok(AgentReply::Thread(agent_thread(AGENT_THREAD, "done", true)))
+            }
+            AgentRequest::Export { thread: Some(thread), session: None } if thread == AGENT_THREAD => {
+                Ok(AgentReply::Export(g7link_core::AgentExport {
+                    text: big_export("List the files here."),
+                    truncated: false,
+                    file_name: "claude-list-the-files-here-2026-11-19.md".into(),
+                }))
+            }
+            AgentRequest::Export { thread: Some(thread), session: None } if thread == BUSY_THREAD => {
+                // Over the limit, with controls and a path for a name: the PC cuts and cleans it.
+                Ok(AgentReply::Export(g7link_core::AgentExport {
+                    text: format!("# Big\u{1b}\n{}", "y".repeat(g7link_core::agent::MAX_EXPORT_BYTES)),
+                    truncated: false,
+                    file_name: "/home/me/big.md".into(),
+                }))
+            }
+            AgentRequest::Export { thread: None, session: Some(session) } => {
+                let found = self.agent_sessions.lock().unwrap().iter().find(|s| s.id == session).cloned();
+                let session = found.ok_or(AgentFailure::NotFound)?;
+                Ok(AgentReply::Export(g7link_core::AgentExport {
+                    text: big_export(&session.title),
+                    truncated: false,
+                    file_name: "claude-fix-the-login-test-2026-11-19.md".into(),
+                }))
+            }
+            AgentRequest::Export { .. } => Err(AgentFailure::NotFound),
         }
     }
     fn set_pc_audio(
@@ -3016,6 +3076,12 @@ fn player(id: &str, title: &str, art: Option<(&str, Vec<u8>)>) -> MediaPlayer {
         actions: vec!["play".into(), "pause".into(), "next".into(), "seek".into(), "bogus".into()],
         art_key: art.as_ref().map(|(key, _)| (*key).into()),
         art: art.map(|(_, bytes)| bytes),
+        rate_milli: None,
+        age: None,
+        art_full: None,
+        icon: None,
+        shuffle: None,
+        repeat: None,
     }
 }
 
@@ -9129,6 +9195,9 @@ fn agent_thread(id: &str, state: &str, from_phone: bool) -> g7link_core::AgentTh
         summary: None,
         error: None,
         error_code: None,
+        step: None,
+        since: None,
+        plan: None,
     }
 }
 
@@ -9609,4 +9678,707 @@ async fn a_pc_without_the_host_says_unsupported() {
     pc.node.set_agent_catalog(Some(agent_catalog())).await.unwrap();
     assert_eq!(phone.node.agent_catalog(pc_id), None);
     assert!(pc.platform.agent_requests.lock().unwrap().is_empty());
+}
+
+// ---- Agents: sessions started on the PC (docs/protocol/agents.md §3) ----
+
+const FOLLOWED_SESSION: &str = "sc0123456789abcdef0123456789abcdef";
+const OPEN_SESSION: &str = "sxfedcba9876543210fedcba9876543210";
+const OTHER_SESSION: &str = "sc00000000000000000000000000000001";
+
+/// A session's item: its `seq` comes from the file and may be 0.
+fn agent_text_at(seq: u64, text: &str) -> g7link_core::AgentItem {
+    g7link_core::AgentItem { seq, id: format!("u-{seq}"), ..agent_text(1, text) }
+}
+
+fn agent_session(id: &str, title: &str) -> g7link_core::AgentSession {
+    g7link_core::AgentSession {
+        id: id.into(),
+        agent: "claude".into(),
+        folder: "app".into(),
+        title: title.into(),
+        state: "working".into(),
+        guess: false,
+        source: "terminal".into(),
+        updated: 1_795_000_100_000,
+        step: Some("Run command".into()),
+        summary: None,
+        waiting_for: None,
+        can_continue: false,
+        blocked: Some("open".into()),
+        since: Some(1_795_000_000_000),
+    }
+}
+
+/// An export bigger than a control message can carry (1 MiB).
+fn big_export(title: &str) -> String {
+    let mut text = format!("# {title}\n\n- Agent: Claude\n- Folder: app\n\n---\n\n");
+    while text.len() < 3 * 1024 * 1024 / 2 {
+        text.push_str("> **You on Pixel**\n>\n> Wie geht's? ✓\n\n```diff\n+fn main() {}\n```\n\n");
+    }
+    text
+}
+
+/// A phone that shows a PC's sessions.
+async fn follow_phone(name: &'static str) -> TestDevice {
+    device_with(name, DeviceKind::Phone, &[g7link_core::agent::FOLLOW]).await
+}
+
+/// A PC with the agent host that lists its sessions, paired with `phone`.
+async fn sessions_pc_with(phone: &mut TestDevice) -> TestDevice {
+    let mut pc = device_with(
+        "Desktop",
+        DeviceKind::Desktop,
+        &[g7link_core::agent::HOST, g7link_core::agent::SESSIONS],
+    )
+    .await;
+    pc.node.set_agent_catalog(Some(agent_catalog())).await.unwrap();
+    *pc.platform.agent_sessions.lock().unwrap() = vec![
+        agent_session(FOLLOWED_SESSION, "Fix the login test"),
+        agent_session(OPEN_SESSION, "Still open"),
+    ];
+    pair_qr(&mut pc, phone).await;
+    pc
+}
+
+/// Turns both `agents` and `agent_sessions` on for `phone`.
+async fn allow_sessions(pc: &TestDevice, phone: &mut TestDevice) {
+    allow_agents(pc, phone).await;
+    pc.node.set_device_toggle(phone.node.device_id(), "agent_sessions", true).unwrap();
+}
+
+/// What `dev` got of §3, as (session changed or removed, item) events.
+fn session_events(dev: &mut TestDevice) -> Vec<NodeEvent> {
+    drain(dev)
+        .into_iter()
+        .filter(|e| matches!(e, NodeEvent::AgentSession { .. } | NodeEvent::AgentSessionItem { .. }))
+        .collect()
+}
+
+fn session_requests(pc: &TestDevice) -> usize {
+    pc.platform
+        .agent_requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, r)| {
+            matches!(
+                r,
+                g7link_core::AgentRequest::Sessions
+                    | g7link_core::AgentRequest::SessionRead { .. }
+                    | g7link_core::AgentRequest::SessionContinue { .. }
+            )
+        })
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_need_both_switches() {
+    let mut phone = follow_phone("Pixel").await;
+    let mut pc = sessions_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    assert!(pc.node.device_toggles(phone_id).unwrap().contains(&("agent_sessions", false)), "off by default");
+
+    // `agents` off wins: its own prompt, not the sessions one.
+    assert!(matches!(phone.node.agent_sessions(pc_id).await, Err(Error::Denied)));
+    wait_for(&mut pc, "agents prompt", |e| match e {
+        NodeEvent::AgentsRequested { device } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(!drain(&mut pc).iter().any(|e| matches!(e, NodeEvent::AgentSessionsRequested { .. })));
+
+    // `agents` on, `agent_sessions` off: the second prompt, once.
+    allow_agents(&pc, &mut phone).await;
+    assert!(matches!(phone.node.agent_sessions(pc_id).await, Err(Error::Denied)));
+    wait_for(&mut pc, "sessions prompt", |e| match e {
+        NodeEvent::AgentSessionsRequested { device } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(matches!(
+        phone.node.agent_session_read(pc_id, FOLLOWED_SESSION.into(), None, 50).await,
+        Err(Error::Denied)
+    ));
+    assert!(matches!(
+        phone.node.agent_session_watch(pc_id, Some(FOLLOWED_SESSION.into())).await,
+        Err(Error::Denied)
+    ));
+    assert!(
+        !drain(&mut pc).iter().any(|e| matches!(e, NodeEvent::AgentSessionsRequested { .. })),
+        "the prompt shows once"
+    );
+    // Nothing is pushed to it meanwhile; threads still work.
+    pc.node.agent_session(Some(agent_session(FOLLOWED_SESSION, "Changed")), None).await.unwrap();
+    assert!(with_timeout("threads", phone.node.agent_threads(pc_id)).await.is_ok());
+    assert!(session_events(&mut phone).is_empty());
+    assert_eq!(session_requests(&pc), 0, "none reach the platform");
+
+    pc.node.set_device_toggle(phone_id, "agent_sessions", true).unwrap();
+    let sessions = with_timeout("sessions", phone.node.agent_sessions(pc_id)).await.unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].title, "Fix the login test");
+
+    // A PC that doesn't list sessions says so.
+    let mut plain = device_with("Laptop", DeviceKind::Desktop, &[g7link_core::agent::HOST]).await;
+    pair_qr(&mut plain, &mut phone).await;
+    plain.node.set_device_toggle(phone_id, "agents", true).unwrap();
+    plain.node.set_device_toggle(phone_id, "agent_sessions", true).unwrap();
+    let plain_id = plain.node.device_id();
+    assert!(matches!(phone.node.agent_sessions(plain_id).await, Err(Error::Unsupported)));
+    match phone
+        .node
+        .debug_agent_request(plain_id, "agent.sessions", &g7link_core::agents::AgentWatch::default())
+        .await
+    {
+        Err(Error::Unsupported) => {}
+        other => panic!("not unsupported: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_lists_follows_and_continues_a_session() {
+    let mut phone = follow_phone("Pixel").await;
+    let pc = sessions_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    allow_sessions(&pc, &mut phone).await;
+
+    let sessions = with_timeout("sessions", phone.node.agent_sessions(pc_id)).await.unwrap();
+    assert_eq!(sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), [FOLLOWED_SESSION, OPEN_SESSION]);
+    assert_eq!(sessions[0].since, Some(1_795_000_000_000));
+
+    with_timeout("watch", phone.node.agent_session_watch(pc_id, Some(FOLLOWED_SESSION.into())))
+        .await
+        .unwrap();
+    let page = with_timeout("read", phone.node.agent_session_read(pc_id, FOLLOWED_SESSION.into(), None, 50))
+        .await
+        .unwrap();
+    assert_eq!(page.session.id, FOLLOWED_SESSION);
+    assert_eq!(page.items.iter().map(|i| i.seq).collect::<Vec<_>>(), [0, 5 << 6], "seqs from the file");
+    assert!(pc.platform.agent_requests.lock().unwrap().iter().any(|(from, r)| *from == phone_id
+        && *r == g7link_core::AgentRequest::SessionWatch { session: Some(FOLLOWED_SESSION.into()) }));
+
+    // A finished step arrives, then the session changes and leaves.
+    pc.node.agent_session_item(FOLLOWED_SESSION.into(), agent_text_at(9 << 6, "Done.")).await.unwrap();
+    let (session, item) = wait_for(&mut phone, "session item", |e| match e {
+        NodeEvent::AgentSessionItem { device, session, item } if *device == pc_id => {
+            Some((session.clone(), item.clone()))
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!((session.as_str(), item.seq, item.text.as_deref()), (FOLLOWED_SESSION, 9 << 6, Some("Done.")));
+
+    // Continue: refused while open, a thread once it isn't.
+    match phone.node.agent_session_continue(pc_id, OPEN_SESSION.into()).await {
+        Err(Error::Protocol(reason)) => assert!(reason.starts_with("BUSY"), "{reason}"),
+        other => panic!("an open session is the generic failure, not {other:?}"),
+    }
+    let thread = with_timeout("continue", phone.node.agent_session_continue(pc_id, FOLLOWED_SESSION.into()))
+        .await
+        .unwrap();
+    assert_eq!(thread.id, AGENT_THREAD);
+    assert!(thread.from_phone);
+    assert!(pc.platform.agent_requests.lock().unwrap().iter().any(|(from, r)| *from == phone_id
+        && *r == g7link_core::AgentRequest::SessionContinue { session: FOLLOWED_SESSION.into() }));
+    pc.node.agent_session(None, Some(FOLLOWED_SESSION.into())).await.unwrap();
+    let removed = wait_for(&mut phone, "removed", |e| match e {
+        NodeEvent::AgentSession { session: None, removed: Some(id), .. } => Some(id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(removed, FOLLOWED_SESSION);
+    // The watch went with it: the platform is told, and no more items come.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !pc
+        .platform
+        .agent_requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(from, r)| *from == phone_id && *r == g7link_core::AgentRequest::SessionWatch { session: None })
+    {
+        assert!(tokio::time::Instant::now() < deadline, "the platform wasn't told the watch ended");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Bad ids never leave the phone, and the PC refuses them.
+    assert!(matches!(
+        phone.node.agent_session_continue(pc_id, "../etc".into()).await,
+        Err(Error::Protocol(_))
+    ));
+    let bad = g7link_core::agents::AgentSessionContinue { session: "/home/me".into() };
+    match phone.node.debug_agent_request(pc_id, "agent.session.continue", &bad).await {
+        Err(Error::Protocol(reason)) => assert!(reason.contains("BAD_MESSAGE"), "{reason}"),
+        other => panic!("a path is a bad message, not {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_watching_phone_gets_session_items() {
+    let mut watcher = follow_phone("Pixel").await;
+    let mut other = follow_phone("Galaxy").await;
+    let mut pc = sessions_pc_with(&mut watcher).await;
+    pair_qr(&mut pc, &mut other).await;
+    let pc_id = pc.node.device_id();
+    allow_sessions(&pc, &mut watcher).await;
+    allow_sessions(&pc, &mut other).await;
+
+    with_timeout("watch", watcher.node.agent_session_watch(pc_id, Some(FOLLOWED_SESSION.into())))
+        .await
+        .unwrap();
+    with_timeout("watch other", other.node.agent_session_watch(pc_id, Some(OTHER_SESSION.into())))
+        .await
+        .unwrap();
+    pc.node.agent_session_item(FOLLOWED_SESSION.into(), agent_text_at(0, "Hi")).await.unwrap();
+    pc.node.agent_session(Some(agent_session(FOLLOWED_SESSION, "Changed")), None).await.unwrap();
+
+    // The item went first, on the same stream: by the change, it's there or never comes.
+    assert_eq!(session_events_until_change(&mut watcher).await, ["item", "change"], "the watcher gets it");
+    assert_eq!(
+        session_events_until_change(&mut other).await,
+        ["change"],
+        "the other watches another session"
+    );
+}
+
+/// The §3 events `dev` gets up to and with the first session change.
+async fn session_events_until_change(dev: &mut TestDevice) -> Vec<&'static str> {
+    let mut seen = Vec::new();
+    loop {
+        let kind = wait_for(dev, "session event", |e| match e {
+            NodeEvent::AgentSessionItem { .. } => Some("item"),
+            NodeEvent::AgentSession { session: Some(_), .. } => Some("change"),
+            _ => None,
+        })
+        .await;
+        seen.push(kind);
+        if kind == "change" {
+            return seen;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_updates_are_limited_per_session() {
+    let mut phone = follow_phone("Pixel").await;
+    let pc = sessions_pc_with(&mut phone).await;
+    allow_sessions(&pc, &mut phone).await;
+
+    let started = tokio::time::Instant::now();
+    for i in 0..10 {
+        pc.node
+            .agent_session(Some(agent_session(FOLLOWED_SESSION, &format!("Step {i}"))), None)
+            .await
+            .unwrap();
+    }
+    pc.node.agent_session(Some(agent_session(OTHER_SESSION, "Elsewhere")), None).await.unwrap();
+
+    let mut followed = Vec::new();
+    let mut other = Vec::new();
+    while followed.last().map(String::as_str) != Some("Step 9") {
+        let (id, title) = wait_for(&mut phone, "session", |e| match e {
+            NodeEvent::AgentSession { session: Some(s), .. } => Some((s.id.clone(), s.title.clone())),
+            _ => None,
+        })
+        .await;
+        if id == FOLLOWED_SESSION { followed.push(title) } else { other.push(title) }
+    }
+    let waited = started.elapsed();
+    assert_eq!(followed, ["Step 0", "Step 9"], "the first at once, then only the newest");
+    assert!(waited >= Duration::from_millis(1_800), "the newest waited its turn ({waited:?})");
+    // Another session isn't held back by this one.
+    other.extend(session_events(&mut phone).into_iter().filter_map(|e| match e {
+        NodeEvent::AgentSession { session: Some(s), .. } => Some(s.title),
+        _ => None,
+    }));
+    assert_eq!(other, ["Elsewhere"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn turning_sessions_off_ends_the_watch() {
+    let mut phone = follow_phone("Pixel").await;
+    let pc = sessions_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    allow_sessions(&pc, &mut phone).await;
+    with_timeout("watch", phone.node.agent_session_watch(pc_id, Some(FOLLOWED_SESSION.into())))
+        .await
+        .unwrap();
+
+    pc.node.set_device_toggle(phone_id, "agent_sessions", false).unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !pc
+        .platform
+        .agent_requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(from, r)| *from == phone_id && *r == g7link_core::AgentRequest::SessionWatch { session: None })
+    {
+        assert!(tokio::time::Instant::now() < deadline, "the platform wasn't told the watch ended");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    pc.node.agent_session_item(FOLLOWED_SESSION.into(), agent_text_at(0, "Hi")).await.unwrap();
+    pc.node.agent_session(Some(agent_session(FOLLOWED_SESSION, "Changed")), None).await.unwrap();
+    assert!(matches!(phone.node.agent_sessions(pc_id).await, Err(Error::Denied)));
+    assert!(session_events(&mut phone).is_empty(), "nothing after the switch went off");
+
+    // Back on, the watch is gone: no items until the phone watches again.
+    pc.node.set_device_toggle(phone_id, "agent_sessions", true).unwrap();
+    pc.node.agent_session_item(FOLLOWED_SESSION.into(), agent_text_at(1 << 6, "Again")).await.unwrap();
+    assert!(with_timeout("sessions", phone.node.agent_sessions(pc_id)).await.is_ok());
+    assert!(!session_events(&mut phone).iter().any(|e| matches!(e, NodeEvent::AgentSessionItem { .. })));
+
+    // `agents` going off ends it too.
+    with_timeout("watch again", phone.node.agent_session_watch(pc_id, Some(FOLLOWED_SESSION.into())))
+        .await
+        .unwrap();
+    pc.node.set_device_toggle(phone_id, "agents", false).unwrap();
+    wait_for(&mut phone, "last, empty catalog", |e| match e {
+        NodeEvent::AgentCatalog { device, catalog: None } if *device == pc_id => Some(()),
+        _ => None,
+    })
+    .await;
+    pc.node.agent_session_item(FOLLOWED_SESSION.into(), agent_text_at(2 << 6, "More")).await.unwrap();
+    assert!(matches!(phone.node.agent_threads(pc_id).await, Err(Error::Denied)));
+    assert!(session_events(&mut phone).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_never_carries_a_path() {
+    let mut phone = follow_phone("Pixel").await;
+    let pc = sessions_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_sessions(&pc, &mut phone).await;
+
+    let pathed = g7link_core::AgentSession {
+        folder: "/home/me/code/secret-project".into(),
+        ..agent_session(FOLLOWED_SESSION, "Fix it")
+    };
+    *pc.platform.agent_sessions.lock().unwrap() = vec![pathed.clone()];
+    let listed = with_timeout("sessions", phone.node.agent_sessions(pc_id)).await.unwrap();
+    assert_eq!(listed[0].folder, "secret-project");
+    let page = with_timeout("read", phone.node.agent_session_read(pc_id, FOLLOWED_SESSION.into(), None, 10))
+        .await
+        .unwrap();
+    assert_eq!(page.session.folder, "secret-project");
+    pc.node.agent_session(Some(pathed), None).await.unwrap();
+    let pushed = wait_for(&mut phone, "session", |e| match e {
+        NodeEvent::AgentSession { session: Some(s), .. } => Some(s.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(pushed.folder, "secret-project");
+    assert!(!format!("{pushed:?}").contains("/home"));
+
+    // A guess is never the agent's own "needs you".
+    let guessed = g7link_core::AgentSession {
+        state: "needs_you".into(),
+        guess: true,
+        ..agent_session(OTHER_SESSION, "Maybe")
+    };
+    pc.node.agent_session(Some(guessed), None).await.unwrap();
+    let state = wait_for(&mut phone, "guessed", |e| match e {
+        NodeEvent::AgentSession { session: Some(s), .. } if s.id == OTHER_SESSION => Some(s.state.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(state, "may_need_you");
+}
+
+// ---- Media: large artwork, icons, rate and age (docs/protocol/media.md §2.1-2.3) ----
+
+/// A JPEG's first bytes, then filler, `len` bytes in all.
+fn jpeg(len: usize) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+    bytes.resize(len, 7);
+    bytes
+}
+
+fn png(len: usize) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.resize(len, 3);
+    bytes
+}
+
+const ICON_KEY: &str = "00112233aabbccdd";
+
+/// A PC and a phone that see its media, the PC playing `player`.
+async fn media_pair(playing: MediaPlayer) -> (TestDevice, TestDevice) {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let pc_id = pc.node.device_id();
+    pc.node.media_changed(vec![playing]).await;
+    wait_for(&mut phone, "pc media", |e| match e {
+        NodeEvent::MediaChanged { device, players } if *device == pc_id && !players.is_empty() => Some(()),
+        _ => None,
+    })
+    .await;
+    (pc, phone)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn media_art_is_fetched_once_and_bounded() {
+    let small = jpeg(2_000);
+    let shown = MediaPlayer {
+        art_full: Some("big1".into()),
+        ..player("spotify", "On the PC", Some(("small1", small)))
+    };
+    let (pc, mut phone) = media_pair(shown).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let large = jpeg(1_500_000);
+    *pc.platform.media_art.lock().unwrap() = Some((large.clone(), g7link_core::ArtFormat::Jpeg));
+
+    let (bytes, format) = with_timeout("art", phone.node.media_art(pc_id, "big1".into())).await.unwrap();
+    assert_eq!((bytes.len(), format), (large.len(), g7link_core::ArtFormat::Jpeg));
+    assert_eq!(bytes, large);
+    assert_eq!(pc.platform.media_art_asks.load(Ordering::SeqCst), 1, "one fetch, one ask");
+    // The state never carries it: only the small picture and the key.
+    pc.node
+        .media_changed(vec![MediaPlayer {
+            art_full: Some("big1".into()),
+            ..player("spotify", "Again", None)
+        }])
+        .await;
+    let players = wait_for(&mut phone, "state", |e| match e {
+        NodeEvent::MediaChanged { players, .. }
+            if players.first().is_some_and(|p| p.title.as_deref() == Some("Again")) =>
+        {
+            Some(players.clone())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(players[0].art_full.as_deref(), Some("big1"));
+    assert!(players[0].art.as_ref().is_none_or(|a| a.len() < 256 * 1024));
+
+    // A key no player names isn't asked of the platform.
+    assert!(matches!(phone.node.media_art(pc_id, "other".into()).await, Err(Error::NotFound)));
+    assert_eq!(pc.platform.media_art_asks.load(Ordering::SeqCst), 1);
+    // Over 2 MiB, or not what it says it is, is never sent.
+    *pc.platform.media_art.lock().unwrap() = Some((jpeg(3 * 1024 * 1024), g7link_core::ArtFormat::Jpeg));
+    assert!(matches!(phone.node.media_art(pc_id, "big1".into()).await, Err(Error::Protocol(_))));
+    *pc.platform.media_art.lock().unwrap() = Some((png(1_000), g7link_core::ArtFormat::Jpeg));
+    assert!(matches!(phone.node.media_art(pc_id, "big1".into()).await, Err(Error::Protocol(_))));
+    *pc.platform.media_art.lock().unwrap() = None;
+    assert!(matches!(phone.node.media_art(pc_id, "big1".into()).await, Err(Error::NotFound)));
+    // Media off for the phone: refused.
+    *pc.platform.media_art.lock().unwrap() = Some((large, g7link_core::ArtFormat::Jpeg));
+    pc.node.set_device_toggle(phone_id, "media", false).unwrap();
+    assert!(matches!(phone.node.media_art(pc_id, "big1".into()).await, Err(Error::Denied)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn media_icon_needs_the_media_toggle() {
+    let shown = MediaPlayer { icon: Some(ICON_KEY.into()), ..player("spotify", "On the PC", None) };
+    let (pc, phone) = media_pair(shown).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    let icon = png(900);
+    *pc.platform.media_icon.lock().unwrap() = Some(icon.clone());
+
+    assert_eq!(with_timeout("icon", phone.node.media_icon(pc_id, ICON_KEY.into())).await.unwrap(), icon);
+    assert!(matches!(phone.node.media_icon(pc_id, "ffffffffffffffff".into()).await, Err(Error::NotFound)));
+    assert!(matches!(phone.node.media_icon(pc_id, "NOT-HEX".into()).await, Err(Error::Protocol(_))));
+    // Too large, or not a PNG: not sent.
+    *pc.platform.media_icon.lock().unwrap() = Some(png(17 * 1024));
+    assert!(matches!(phone.node.media_icon(pc_id, ICON_KEY.into()).await, Err(Error::Protocol(_))));
+    *pc.platform.media_icon.lock().unwrap() = Some(icon.clone());
+
+    pc.node.set_device_toggle(phone_id, "media", false).unwrap();
+    assert!(matches!(phone.node.media_icon(pc_id, ICON_KEY.into()).await, Err(Error::Denied)));
+    pc.node.set_device_toggle(phone_id, "media", true).unwrap();
+    phone.node.set_device_toggle(pc_id, "media", false).unwrap();
+    assert!(matches!(phone.node.media_icon(pc_id, ICON_KEY.into()).await, Err(Error::Denied)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn position_uses_rate_and_age() {
+    let playing = MediaPlayer {
+        rate_milli: Some(1_500),
+        age: Some(200),
+        shuffle: Some(true),
+        repeat: Some("track".into()),
+        ..player("spotify", "Fast", None)
+    };
+    let (pc, mut phone) = media_pair(playing.clone()).await;
+    let pc_id = pc.node.device_id();
+    pc.node.media_changed(vec![MediaPlayer { title: Some("Faster".into()), ..playing }]).await;
+    let got = wait_for(&mut phone, "state", |e| match e {
+        NodeEvent::MediaChanged { device, players } if *device == pc_id => {
+            players.iter().find(|p| p.title.as_deref() == Some("Faster")).cloned()
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(got.rate_milli, Some(1_500));
+    assert_eq!((got.shuffle, got.repeat.as_deref()), (Some(true), Some("track")));
+    let age = got.age.unwrap();
+    assert!((200..5_000).contains(&age), "the sender's own age, and the wait before sending ({age})");
+    let expected = 12_000 + (age + 1_000) * 3 / 2;
+    assert_eq!(got.position_at(1_000), Some(expected));
+    assert_eq!(got.position_at(10_000_000), Some(200_000), "never past the end");
+
+    // A rate out of range is dropped before it's sent.
+    pc.node
+        .media_changed(vec![MediaPlayer { rate_milli: Some(9_000), ..player("spotify", "Silly", None) }])
+        .await;
+    let silly = wait_for(&mut phone, "state", |e| match e {
+        NodeEvent::MediaChanged { players, .. } => {
+            players.iter().find(|p| p.title.as_deref() == Some("Silly")).cloned()
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(silly.rate_milli, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shuffle_and_loop_need_a_value() {
+    let (pc, phone) = media_pair(player("spotify", "On the PC", None)).await;
+    let pc_id = pc.node.device_id();
+
+    with_timeout(
+        "loop",
+        phone.node.media_command_value(pc_id, "spotify".into(), MediaAction::Loop, "track".into()),
+    )
+    .await
+    .unwrap();
+    with_timeout(
+        "shuffle",
+        phone.node.media_command_value(pc_id, "spotify".into(), MediaAction::Shuffle, "off".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *pc.platform.media_values.lock().unwrap(),
+        [
+            ("spotify".to_owned(), MediaAction::Loop, "track".to_owned()),
+            ("spotify".to_owned(), MediaAction::Shuffle, "off".to_owned())
+        ]
+    );
+    // Without a value, the PC refuses it as a bad message.
+    match phone.node.media_command(pc_id, "spotify".into(), MediaAction::Shuffle, None).await {
+        Err(Error::Protocol(reason)) => assert!(reason.contains("BAD_MESSAGE"), "{reason}"),
+        other => panic!("not a bad message: {other:?}"),
+    }
+    // A value the action doesn't take never leaves the phone.
+    assert!(matches!(
+        phone.node.media_command_value(pc_id, "spotify".into(), MediaAction::Loop, "forever".into()).await,
+        Err(Error::Protocol(_))
+    ));
+    assert_eq!(pc.platform.media_values.lock().unwrap().len(), 2);
+    assert_eq!(pc.platform.media.lock().unwrap().len(), 2, "the refused ones never reached the player");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_exports_a_thread_bigger_than_a_control_message() {
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    let mut pc = agents_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+
+    // Off: refused, and the PC's user is asked once.
+    assert!(matches!(
+        phone.node.agent_export(pc_id, Some(AGENT_THREAD.into()), None).await,
+        Err(Error::Denied)
+    ));
+    wait_for(&mut pc, "agents prompt", |e| match e {
+        NodeEvent::AgentsRequested { device } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(pc.platform.agent_requests.lock().unwrap().is_empty());
+
+    allow_agents(&pc, &mut phone).await;
+    let export = with_timeout("export", phone.node.agent_export(pc_id, Some(AGENT_THREAD.into()), None))
+        .await
+        .unwrap();
+    assert_eq!(export.text, big_export("List the files here."));
+    assert!(export.text.len() > 1024 * 1024, "more than a control message carries");
+    assert!(!export.truncated);
+    assert_eq!(export.file_name, "claude-list-the-files-here-2026-11-19.md");
+    assert!(pc.platform.agent_requests.lock().unwrap().iter().any(|(from, r)| *from == phone_id
+        && *r == g7link_core::AgentRequest::Export { thread: Some(AGENT_THREAD.into()), session: None }));
+
+    // The PC keeps what it sends within the limits.
+    let big = with_timeout("big export", phone.node.agent_export(pc_id, Some(BUSY_THREAD.into()), None))
+        .await
+        .unwrap();
+    assert!(big.truncated && big.text.len() == g7link_core::agent::MAX_EXPORT_BYTES);
+    assert!(big.text.starts_with("# Big\n"), "no controls");
+    assert_eq!(big.file_name, "-home-me-big.md");
+
+    assert!(matches!(
+        phone.node.agent_export(pc_id, Some("00000000000000000000000000000000".into()), None).await,
+        Err(Error::NotFound)
+    ));
+    // One of the two, never neither: the phone doesn't send it, and the PC refuses it.
+    assert!(matches!(phone.node.agent_export(pc_id, None, None).await, Err(Error::Protocol(_))));
+    match phone.node.debug_agent_export(pc_id, g7link_core::agents::AgentExportRequest::default()).await {
+        Err(Error::Protocol(reason)) => assert!(reason.contains("BAD_MESSAGE"), "{reason}"),
+        other => panic!("neither is a bad message, not {other:?}"),
+    }
+    let pathed = g7link_core::agents::AgentExportRequest { thread: Some("../etc".into()), session: None };
+    match phone.node.debug_agent_export(pc_id, pathed).await {
+        Err(Error::Protocol(reason)) => assert!(reason.contains("BAD_MESSAGE"), "{reason}"),
+        other => panic!("a path is a bad message, not {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exporting_a_session_needs_both_switches() {
+    let mut phone = follow_phone("Pixel").await;
+    let mut pc = sessions_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    allow_agents(&pc, &mut phone).await;
+
+    assert!(matches!(
+        phone.node.agent_export(pc_id, None, Some(FOLLOWED_SESSION.into())).await,
+        Err(Error::Denied)
+    ));
+    wait_for(&mut pc, "sessions prompt", |e| match e {
+        NodeEvent::AgentSessionsRequested { device } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    // A thread needs only `agents`.
+    assert!(
+        with_timeout("thread export", phone.node.agent_export(pc_id, Some(AGENT_THREAD.into()), None))
+            .await
+            .is_ok()
+    );
+
+    pc.node.set_device_toggle(phone_id, "agent_sessions", true).unwrap();
+    let export =
+        with_timeout("session export", phone.node.agent_export(pc_id, None, Some(FOLLOWED_SESSION.into())))
+            .await
+            .unwrap();
+    assert!(export.text.starts_with("# Fix the login test\n"));
+    assert_eq!(export.text.len(), big_export("Fix the login test").len());
+    assert!(matches!(
+        phone.node.agent_export(pc_id, None, Some(OTHER_SESSION.into())).await,
+        Err(Error::NotFound)
+    ));
+    // Never both: the phone doesn't send it, and the PC refuses it.
+    assert!(matches!(
+        phone.node.agent_export(pc_id, Some(AGENT_THREAD.into()), Some(FOLLOWED_SESSION.into())).await,
+        Err(Error::Protocol(_))
+    ));
+    let both = g7link_core::agents::AgentExportRequest {
+        thread: Some(AGENT_THREAD.into()),
+        session: Some(FOLLOWED_SESSION.into()),
+    };
+    match phone.node.debug_agent_export(pc_id, both).await {
+        Err(Error::Protocol(reason)) => assert!(reason.contains("BAD_MESSAGE"), "{reason}"),
+        other => panic!("both is a bad message, not {other:?}"),
+    }
+
+    // A PC that doesn't list sessions doesn't export them.
+    let mut plain = device_with("Laptop", DeviceKind::Desktop, &[g7link_core::agent::HOST]).await;
+    pair_qr(&mut plain, &mut phone).await;
+    let plain_id = plain.node.device_id();
+    assert!(matches!(
+        phone.node.agent_export(plain_id, None, Some(FOLLOWED_SESSION.into())).await,
+        Err(Error::Unsupported)
+    ));
 }

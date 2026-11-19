@@ -28,8 +28,10 @@ All on the control stream.
 ```
 t = "media.state"    b = { players: [Player] }          // no reply
 t = "media.sync"     b = {}                             // no reply
-t = "media.command"  id = n  b = { player: text, action: text, position?: uint }
+t = "media.command"  id = n  b = { player: text, action: text, position?: uint, value?: text }
 t = "ok"             re = n
+t = "media.icon"     id = n  b = { key: text }          // §2.2
+t = "media.icon"     re = n  b = { png: bytes }
 ```
 
 **`media.state`** carries every player the sender shares, the most
@@ -45,10 +47,12 @@ keeps all player metadata and defers excess artwork until another snapshot.
 on the receiving side).
 
 **`media.command`** asks a player to `play`, `pause`, go to the `next` or
-`previous` item, or `seek` to `position` (milliseconds). Errors:
-`NOT_FOUND` when the player is gone, `UNSUPPORTED` when it can't do that,
-`DENIED` when the user turned media off for the sender, `BAD_MESSAGE` for a
-seek without a position.
+`previous` item, `seek` to `position` (milliseconds), turn `shuffle` `on` or
+`off` (`value`), or set `loop` to `none`, `track` or `playlist` (`value`).
+`value` is ignored for the other actions. Errors: `NOT_FOUND` when the player
+is gone, `UNSUPPORTED` when it can't do that, `DENIED` when the user turned
+media off for the sender, `BAD_MESSAGE` for a seek without a position, or a
+`shuffle` or `loop` without a `value` it takes.
 
 ```
 Player = {
@@ -60,18 +64,75 @@ Player = {
   playing:   bool,
   duration?: uint,       // milliseconds
   position?: uint,       // milliseconds, when sent
-  actions:   [text],     // what it takes: play, pause, next, previous, seek
+  actions:   [text],     // what it takes: play, pause, next, previous, seek, shuffle, loop
   art_key?:  text,       // 1 to 64 bytes; the same key means the same picture
   art?:      bytes,      // JPEG or PNG, up to 256 KiB
+  rate?:     float,      // playback rate, 0.25 to 4; absent means 1 (§2.1)
+  age?:      uint,       // ms between sampling `position` and sending this state; absent means 0
+  art_full?: text,       // key of a larger picture, 1 to 64 bytes (§2.3)
+  icon?:     text,       // key of the app's icon, 16 lowercase hex digits (§2.2)
+  shuffle?:  bool,       // whether it shuffles
+  loop?:     text,       // "none" | "track" | "playlist"
 }
 ```
-
-While `playing`, the position moves on in real time from when the state
-arrived; senders don't send updates just because time passes.
 
 Artwork goes once per `art_key` and session: later states carry the key
 alone, and receivers keep pictures by key. A device sends at most 8
 players. Receivers drop actions they don't know.
+
+A player offers `shuffle` and `loop` in `actions` only when it can do them,
+and then says where it stands in `shuffle` and `loop`. Receivers show those
+controls only for players that offer them. Every field after `art` is
+optional and ignored by older versions; a receiver drops a `rate`, `loop`,
+`icon` or `art_full` it can't use (out of range, unknown or malformed) and
+keeps the rest of the player.
+
+### 2.1 Position, rate and age
+
+While `playing`, the position moves on from when the state arrived. The
+receiver's position now is
+
+```
+position + (age + time since the state arrived) × rate
+```
+
+capped at `duration`; while paused it stays at `position`. `age` is the
+sender's own time between reading the position from its player and sending
+the state (a state sent later, to a device that connects, counts the wait
+too), so the two devices' clocks never need to agree. Senders still send only
+on a change, never because time passes; a change of rate is a change. A
+`rate` outside 0.25 to 4, or one that isn't a finite number, is treated as 1.
+
+### 2.2 App icons
+
+`icon` names the player app's icon. A receiver that shows it asks once per
+key with `media.icon` and keeps it by key; the reply is a PNG of at most
+16 KiB. The sender answers only for a key one of its current players names:
+`NOT_FOUND` for any other (or when it no longer has that icon), `DENIED` when
+media is off for the asking device, `UNSUPPORTED` when it doesn't offer
+`media.control`, `BAD_MESSAGE` for a key that isn't 16 lowercase hex digits.
+
+### 2.3 Large artwork
+
+`art` stays small, for lists, the mini player and the media notification. When
+a sender has a larger picture of the same artwork it names it in `art_full`,
+and a receiver that shows a large player fetches it then, on a bidirectional
+stream of its own, one picture per stream:
+
+```
+stream header  { svc: "media", op: "art", v: 1 }
+t = "media.art"       id = 1  b = { key: text }                     // receiver to sender
+t = "media.art.meta"  re = 1  b = { length: uint, format: text }    // "jpeg" | "png"
+<length bytes>
+```
+
+The picture is JPEG or PNG, at most 2 MiB (2097152 bytes), and at most 1200
+pixels on its longer side. A receiver refuses a `length` over 2 MiB, or a
+format it doesn't know, before reading on, checks that the bytes are the
+format given, and keeps large pictures in memory only (a few at a time). The
+sender answers only for a key one of its current players names, with the same
+errors as `media.icon`, and gives up on a stream that doesn't ask or read
+within 20 s. Pictures from either field are never logged.
 
 ## 3. Rules
 

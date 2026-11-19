@@ -47,6 +47,9 @@ pub mod types {
     pub const MEDIA_WATCH: &str = "media.watch";
     pub const MEDIA_FILE: &str = "media.file";
     pub const MEDIA_FILE_META: &str = "media.file.meta";
+    pub const MEDIA_ICON: &str = "media.icon";
+    pub const MEDIA_ART: &str = "media.art";
+    pub const MEDIA_ART_META: &str = "media.art.meta";
     pub const PC_POWER: &str = "pc.power";
     pub const PC_WAKE_INFO: &str = "pc.wake_info";
     pub const LINK_OPEN: &str = "link.open";
@@ -147,6 +150,15 @@ pub mod types {
     pub const AGENT_EVENT: &str = "agent.event";
     pub const AGENT_ASK: &str = "agent.ask";
     pub const AGENT_ASKED: &str = "agent.asked";
+    pub const AGENT_SESSIONS: &str = "agent.sessions";
+    pub const AGENT_SESSION: &str = "agent.session";
+    pub const AGENT_SESSION_READ: &str = "agent.session.read";
+    pub const AGENT_SESSION_ITEMS: &str = "agent.session.items";
+    pub const AGENT_SESSION_WATCH: &str = "agent.session.watch";
+    pub const AGENT_SESSION_ITEM: &str = "agent.session.item";
+    pub const AGENT_SESSION_CONTINUE: &str = "agent.session.continue";
+    pub const AGENT_EXPORT: &str = "agent.export";
+    pub const AGENT_EXPORT_META: &str = "agent.export.meta";
 }
 
 /// What kind of device this is.
@@ -1002,6 +1014,15 @@ pub mod media_limits {
     pub const TEXT_CHARS: usize = 256;
     pub const ART_KEY_BYTES: usize = 64;
     pub const ART_BYTES: usize = 256 * 1024;
+    /// A large picture fetched with `media.art` (§2.3).
+    pub const ART_FULL_BYTES: usize = 2 * 1024 * 1024;
+    /// An app icon fetched with `media.icon` (§2.2).
+    pub const ICON_BYTES: usize = 16 * 1024;
+    /// An icon key: this many lowercase hex digits.
+    pub const ICON_KEY_BYTES: usize = 16;
+    /// The playback rate, in thousandths: 0.25 to 4.
+    pub const RATE_MILLI_MIN: u32 = 250;
+    pub const RATE_MILLI_MAX: u32 = 4000;
 }
 
 /// What a player can be asked to do (`MediaPlayer::actions`,
@@ -1012,7 +1033,84 @@ pub mod media_actions {
     pub const NEXT: &str = "next";
     pub const PREVIOUS: &str = "previous";
     pub const SEEK: &str = "seek";
-    pub const ALL: &[&str] = &[PLAY, PAUSE, NEXT, PREVIOUS, SEEK];
+    /// With a `value` from [`media_shuffle`](super::media_shuffle).
+    pub const SHUFFLE: &str = "shuffle";
+    /// With a `value` from [`media_loop`](super::media_loop).
+    pub const LOOP: &str = "loop";
+    pub const ALL: &[&str] = &[PLAY, PAUSE, NEXT, PREVIOUS, SEEK, SHUFFLE, LOOP];
+}
+
+/// A player's `loop`, and the `value` of a `loop` command.
+pub mod media_loop {
+    pub const NONE: &str = "none";
+    pub const TRACK: &str = "track";
+    pub const PLAYLIST: &str = "playlist";
+    pub const ALL: &[&str] = &[NONE, TRACK, PLAYLIST];
+}
+
+/// The `value` of a `shuffle` command.
+pub mod media_shuffle {
+    pub const ON: &str = "on";
+    pub const OFF: &str = "off";
+    pub const ALL: &[&str] = &[ON, OFF];
+}
+
+/// The `media/art` stream: one large picture per stream (`docs/protocol/media.md` §2.3).
+pub mod media_art {
+    pub const SERVICE: &str = "media";
+    pub const OP: &str = "art";
+    pub const VERSION: u32 = 1;
+    pub const JPEG: &str = "jpeg";
+    pub const PNG: &str = "png";
+    pub const FORMATS: &[&str] = &[JPEG, PNG];
+}
+
+/// Whether `key` is an icon key: 16 lowercase hex digits.
+pub fn is_media_icon_key(key: &str) -> bool {
+    key.len() == media_limits::ICON_KEY_BYTES
+        && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Whether `key` is an artwork key: 1 to 64 bytes without control characters.
+pub fn is_media_art_key(key: &str) -> bool {
+    (1..=media_limits::ART_KEY_BYTES).contains(&key.len()) && !key.chars().any(char::is_control)
+}
+
+/// `rate` on the wire is a float; inside it's kept in thousandths so
+/// [`MediaPlayer`] stays `Eq`. A rate that isn't a finite number from 0.25 to
+/// 4 reads as none (1).
+mod rate_milli {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(milli: &Option<u32>, s: S) -> Result<S::Ok, S::Error> {
+        match milli {
+            Some(milli) => s.serialize_f64(f64::from(*milli) / 1000.0),
+            None => s.serialize_none(),
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Rate {
+        Number(f64),
+        Other(serde::de::IgnoredAny),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+        Ok(match Rate::deserialize(d)? {
+            Rate::Number(rate) => from_rate(rate),
+            Rate::Other(_) => None,
+        })
+    }
+
+    /// `rate` in thousandths, if it's a rate a player can have.
+    pub fn from_rate(rate: f64) -> Option<u32> {
+        let milli = (rate * 1000.0).round();
+        let range =
+            f64::from(super::media_limits::RATE_MILLI_MIN)..=f64::from(super::media_limits::RATE_MILLI_MAX);
+        // In range, so the cast is exact.
+        (rate.is_finite() && range.contains(&milli)).then_some(milli as u32)
+    }
 }
 
 /// Something playing (or paused) on a device.
@@ -1047,6 +1145,24 @@ pub struct MediaPlayer {
     /// The artwork (JPEG or PNG), sent once per key and session.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_bytes")]
     pub art: Option<Vec<u8>>,
+    /// Playback rate in thousandths (250 to 4000; none means 1000). The
+    /// wire's `rate` is a float.
+    #[serde(rename = "rate", default, skip_serializing_if = "Option::is_none", with = "rate_milli")]
+    pub rate_milli: Option<u32>,
+    /// Milliseconds between sampling `position` and sending this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age: Option<u64>,
+    /// Key of a larger picture, fetched with `media.art`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub art_full: Option<String>,
+    /// Key of the app's icon (16 lowercase hex), fetched with `media.icon`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shuffle: Option<bool>,
+    /// One of [`media_loop`] (the wire's `loop`).
+    #[serde(rename = "loop", default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<String>,
 }
 
 /// Never prints what's playing (protocol v0 §11).
@@ -1086,7 +1202,34 @@ impl MediaPlayer {
         if self.art_key.is_none() || self.art.as_ref().is_some_and(|a| a.is_empty() || a.len() > ART_BYTES) {
             self.art = None;
         }
+        if !self.rate_milli.is_some_and(|r| (RATE_MILLI_MIN..=RATE_MILLI_MAX).contains(&r)) {
+            self.rate_milli = None;
+        }
+        if !self.art_full.as_deref().is_some_and(is_media_art_key) {
+            self.art_full = None;
+        }
+        if !self.icon.as_deref().is_some_and(is_media_icon_key) {
+            self.icon = None;
+        }
+        if !self.repeat.as_deref().is_some_and(|r| media_loop::ALL.contains(&r)) {
+            self.repeat = None;
+        }
         Some(self)
+    }
+
+    /// The position `since_ms` after this state arrived: `position` moved on
+    /// by `age` and `since_ms` at `rate` while `playing`, capped at
+    /// `duration` (`docs/protocol/media.md` §2.1).
+    pub fn position_at(&self, since_ms: u64) -> Option<u64> {
+        let position = self.position?;
+        let now = if self.playing {
+            let elapsed = u128::from(self.age.unwrap_or(0)) + u128::from(since_ms);
+            let moved = elapsed * u128::from(self.rate_milli.unwrap_or(1000)) / 1000;
+            u64::try_from(u128::from(position) + moved).unwrap_or(u64::MAX)
+        } else {
+            position
+        };
+        Some(self.duration.map_or(now, |duration| now.min(duration)))
     }
 }
 
@@ -1104,6 +1247,59 @@ pub struct MediaCommand {
     /// For `seek`: where to, milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u64>,
+    /// For `shuffle` (one of [`media_shuffle`]) and `loop` (one of [`media_loop`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+impl MediaCommand {
+    /// Whether `value` is one the action takes: required for `shuffle` and
+    /// `loop`, ignored for the rest.
+    pub fn value_fits(&self) -> bool {
+        let value = self.value.as_deref();
+        match self.action.as_str() {
+            media_actions::SHUFFLE => value.is_some_and(|v| media_shuffle::ALL.contains(&v)),
+            media_actions::LOOP => value.is_some_and(|v| media_loop::ALL.contains(&v)),
+            _ => true,
+        }
+    }
+}
+
+/// Body of `media.icon` (the request) and of `media.art` (on its stream):
+/// which picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaKey {
+    pub key: String,
+}
+
+/// Body of `media.icon` (the reply): the app's icon.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaIcon {
+    /// PNG, at most [`media_limits::ICON_BYTES`].
+    #[serde(with = "serde_bytes")]
+    pub png: Vec<u8>,
+}
+
+impl std::fmt::Debug for MediaIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MediaIcon").field("bytes", &self.png.len()).finish()
+    }
+}
+
+/// Body of `media.art.meta`: how many bytes of which format follow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaArtMeta {
+    pub length: u64,
+    /// One of [`media_art::FORMATS`].
+    pub format: String,
+}
+
+impl MediaArtMeta {
+    pub fn is_valid(&self) -> bool {
+        self.length > 0
+            && self.length <= media_limits::ART_FULL_BYTES as u64
+            && media_art::FORMATS.contains(&self.format.as_str())
+    }
 }
 
 /// Play on phone (`docs/protocol/media.md` §4).
@@ -1486,12 +1682,33 @@ pub enum BleUseState {
 }
 
 /// Reply to `ble.use`: where it stands and, while held, for how many
-/// seconds the hold lasts unless renewed.
+/// seconds the hold lasts unless renewed. With `open`, a PC from 0.1.14 also
+/// says for how many seconds its connect window for the phone stays open
+/// (`window`; 0: there's none now) and, with none, in how many seconds a
+/// renewal can open one again (`retry`). An older PC sends neither, and a
+/// phone then looks for the window as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BleUseReply {
     pub state: BleUseState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<u32>,
+}
+
+impl BleUseReply {
+    /// A reply that says only `state`.
+    pub fn new(state: BleUseState) -> Self {
+        Self { state, lease: None, window: None, retry: None }
+    }
+
+    /// Whether the PC has a connect window open for the phone now: `None`
+    /// when it doesn't say (an older PC, or a state other than `open`).
+    pub fn window_open(&self) -> Option<bool> {
+        self.window.map(|secs| secs > 0)
+    }
 }
 
 // ---- Screen mirroring (docs/protocol/mirror.md) ----
@@ -5073,6 +5290,27 @@ pub mod agent {
     pub const REMOTE: &str = "agent.remote";
     /// The per-device toggle on the PC that governs the whole service (off by default).
     pub const TOGGLE: &str = "agents";
+    /// Desktop: this PC lists sessions started on it outside G7 Link (§3).
+    pub const SESSIONS: &str = "agent.sessions";
+    /// Phone: shows a PC's sessions started outside G7 Link (§3).
+    pub const FOLLOW: &str = "agent.follow";
+    /// The per-device toggle on the PC for §3 (off by default; counts only
+    /// while [`TOGGLE`] is on).
+    pub const SESSIONS_TOGGLE: &str = "agent_sessions";
+    /// Sessions in `agent.sessions`.
+    pub const MAX_SESSIONS: usize = 50;
+    /// A thread's or session's `step`.
+    pub const MAX_STEP_BYTES: usize = 120;
+    /// A session's `waiting_for`.
+    pub const MAX_WAITING_FOR_BYTES: usize = 80;
+    /// Steps in a thread's `plan`.
+    pub const MAX_PLAN_STEPS: usize = 20;
+    /// A plan step's `text`.
+    pub const MAX_PLAN_TEXT_BYTES: usize = 200;
+    /// An `agent.export` text (§4).
+    pub const MAX_EXPORT_BYTES: usize = 2 * 1024 * 1024;
+    /// An `agent.export.meta`'s `file_name`.
+    pub const MAX_EXPORT_NAME_BYTES: usize = 128;
 
     /// Bytes in an `agent`, `folder`, `thread` or `token` id (`[a-z0-9]`).
     pub const MAX_ID_BYTES: usize = 40;
@@ -5196,6 +5434,48 @@ pub mod agent {
     pub mod scope {
         pub const ONCE: &str = "once";
         pub const THREAD: &str = "thread";
+    }
+
+    /// A plan step's `status`.
+    pub mod plan_status {
+        pub const PENDING: &str = "pending";
+        pub const IN_PROGRESS: &str = "in_progress";
+        pub const COMPLETED: &str = "completed";
+        pub const ALL: &[&str] = &[PENDING, IN_PROGRESS, COMPLETED];
+    }
+
+    /// A session's `state` (§3).
+    pub mod session_state {
+        pub const WORKING: &str = "working";
+        /// Waiting for an answer in the app it runs in, as the agent reported.
+        pub const NEEDS_YOU: &str = "needs_you";
+        /// It looks like it waits for an answer, inferred from its file: never
+        /// counted with [`NEEDS_YOU`].
+        pub const MAY_NEED_YOU: &str = "may_need_you";
+        pub const IDLE: &str = "idle";
+        /// No process has it open.
+        pub const ENDED: &str = "ended";
+        pub const ALL: &[&str] = &[WORKING, NEEDS_YOU, MAY_NEED_YOU, IDLE, ENDED];
+    }
+
+    /// Where a session runs (§3). Receivers read a word they don't know as
+    /// [`OTHER`](session_source::OTHER).
+    pub mod session_source {
+        pub const TERMINAL: &str = "terminal";
+        pub const DESKTOP_APP: &str = "desktop_app";
+        pub const OTHER: &str = "other";
+        pub const ALL: &[&str] = &[TERMINAL, DESKTOP_APP, OTHER];
+    }
+
+    /// Why a session can't be continued here (§3).
+    pub mod session_blocked {
+        /// Something still has it open.
+        pub const OPEN: &str = "open";
+        /// Its folder isn't one of the PC's agent folders.
+        pub const FOLDER: &str = "folder";
+        /// The agent can't run now (not installed or signed out).
+        pub const AGENT: &str = "agent";
+        pub const ALL: &[&str] = &[OPEN, FOLDER, AGENT];
     }
 }
 
@@ -5387,6 +5667,55 @@ pub struct AgentThread {
     /// `|resets_ms=<Unix ms>`), `login`, or the agent's own code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    /// What a running turn is doing now (the tool's own description, else
+    /// its title, `Run command`); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// When `state` began, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
+    /// The agent's own plan for the turn, when it made one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Vec<AgentPlanStep>>,
+}
+
+/// One step of a thread's plan (`AgentThread.plan`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentPlanStep {
+    pub text: String,
+    /// One of [`agent::plan_status`].
+    pub status: String,
+}
+
+impl std::fmt::Debug for AgentPlanStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPlanStep").field("status", &self.status).finish_non_exhaustive()
+    }
+}
+
+impl AgentPlanStep {
+    fn is_valid(&self) -> bool {
+        self.text.len() <= agent::MAX_PLAN_TEXT_BYTES
+            && agent::plan_status::ALL.contains(&self.status.as_str())
+    }
+}
+
+/// Whether `plan` is within its limits.
+fn is_valid_plan(plan: &Option<Vec<AgentPlanStep>>) -> bool {
+    plan.as_ref()
+        .is_none_or(|steps| steps.len() <= agent::MAX_PLAN_STEPS && steps.iter().all(AgentPlanStep::is_valid))
+}
+
+/// `plan` within its limits: steps with an unknown status left out, the
+/// rest cut to [`agent::MAX_PLAN_STEPS`], their text cleaned and cut.
+fn clean_plan(plan: &mut Option<Vec<AgentPlanStep>>) {
+    if let Some(steps) = plan {
+        steps.retain(|step| agent::plan_status::ALL.contains(&step.status.as_str()));
+        steps.truncate(agent::MAX_PLAN_STEPS);
+        for step in steps.iter_mut() {
+            clean_line(&mut step.text, agent::MAX_PLAN_TEXT_BYTES);
+        }
+    }
 }
 
 /// Never prints the title, summary or error (protocol v0 §11).
@@ -5414,6 +5743,8 @@ impl AgentThread {
             && fits_opt(&self.summary, agent::MAX_SUMMARY_BYTES)
             && fits_opt(&self.error, agent::MAX_ERROR_BYTES)
             && self.error_code.as_deref().is_none_or(is_agent_code)
+            && fits_opt(&self.step, agent::MAX_STEP_BYTES)
+            && is_valid_plan(&self.plan)
     }
 
     /// The thread within its limits, or `None` when an id or a wire word is bad.
@@ -5432,6 +5763,8 @@ impl AgentThread {
         if !self.error_code.as_deref().is_none_or(is_agent_code) {
             self.error_code = None;
         }
+        clean_opt(&mut self.step, false, agent::MAX_STEP_BYTES);
+        clean_plan(&mut self.plan);
         Some(self)
     }
 
@@ -5512,9 +5845,14 @@ impl std::fmt::Debug for AgentItem {
 }
 
 impl AgentItem {
+    /// A thread's item: `seq` is 1-based.
     pub fn is_valid(&self) -> bool {
-        self.seq >= 1
-            && is_agent_item_id(&self.id)
+        self.seq >= 1 && self.is_valid_in_session()
+    }
+
+    /// A session's item (§3): its `seq` comes from the file and may be 0.
+    pub fn is_valid_in_session(&self) -> bool {
+        is_agent_item_id(&self.id)
             && agent::item::ALL.contains(&self.kind.as_str())
             && fits_opt(&self.text, agent::MAX_ITEM_TEXT_BYTES)
             && self.tool.as_ref().is_none_or(AgentTool::is_valid)
@@ -5522,8 +5860,16 @@ impl AgentItem {
 
     /// The item within its limits (text cut is flagged `truncated`), or
     /// `None` when its id, seq or kind is bad.
-    pub fn sanitized(mut self) -> Option<Self> {
-        if self.seq == 0 || !is_agent_item_id(&self.id) || !agent::item::ALL.contains(&self.kind.as_str()) {
+    pub fn sanitized(self) -> Option<Self> {
+        if self.seq == 0 {
+            return None;
+        }
+        self.sanitized_in_session()
+    }
+
+    /// [`sanitized`](Self::sanitized) for a session's item, whose `seq` may be 0.
+    pub fn sanitized_in_session(mut self) -> Option<Self> {
+        if !is_agent_item_id(&self.id) || !agent::item::ALL.contains(&self.kind.as_str()) {
             return None;
         }
         let text_cut = clean_opt(&mut self.text, true, agent::MAX_ITEM_TEXT_BYTES);
@@ -5626,6 +5972,24 @@ impl AgentAsk {
     }
 }
 
+/// Sorts `items` by `seq` and keeps the newest that fit in one page
+/// ([`agent::MAX_ITEMS`], [`agent::MAX_ITEMS_BYTES`]); whether any went.
+fn keep_newest_items(items: &mut Vec<AgentItem>) -> bool {
+    items.sort_by_key(|i| i.seq);
+    let mut keep = 0;
+    let mut bytes = 0;
+    for item in items.iter().rev() {
+        if keep == agent::MAX_ITEMS || bytes + item.size() > agent::MAX_ITEMS_BYTES {
+            break;
+        }
+        bytes += item.size();
+        keep += 1;
+    }
+    let dropped = keep < items.len();
+    items.drain(..items.len() - keep);
+    dropped
+}
+
 /// Body of `agent.items`: a page of a thread's transcript and its asks.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentItems {
@@ -5666,20 +6030,7 @@ impl AgentItems {
     pub fn sanitized(mut self) -> Option<Self> {
         self.thread = self.thread.sanitized()?;
         self.items = self.items.into_iter().filter_map(AgentItem::sanitized).collect();
-        self.items.sort_by_key(|i| i.seq);
-        let mut keep = 0;
-        let mut bytes = 0;
-        for item in self.items.iter().rev() {
-            if keep == agent::MAX_ITEMS || bytes + item.size() > agent::MAX_ITEMS_BYTES {
-                break;
-            }
-            bytes += item.size();
-            keep += 1;
-        }
-        if keep < self.items.len() {
-            self.items.drain(..self.items.len() - keep);
-            self.more_before = true;
-        }
+        self.more_before |= keep_newest_items(&mut self.items);
         self.asks = self.asks.into_iter().filter_map(AgentAsk::sanitized).collect();
         self.asks.truncate(agent::MAX_ASKS);
         Some(self)
@@ -6038,6 +6389,366 @@ impl AgentAsked {
         }
         Some(self)
     }
+}
+
+// ---- Agents: sessions started on the PC (docs/protocol/agents.md §3) ----
+
+/// A folder's name: the last component of `folder` if it looks like a path,
+/// so a session never carries one.
+fn folder_name(folder: &str) -> &str {
+    folder.rsplit(['/', '\\']).find(|part| !part.is_empty()).unwrap_or("")
+}
+
+/// A session started on the PC outside G7 Link, as a phone sees it
+/// (`AgentSession`, `docs/protocol/agents.md` §3). Its folder is a name,
+/// never a path.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSession {
+    pub id: String,
+    /// The agent's id (`claude`, `codex`).
+    pub agent: String,
+    /// The folder's name.
+    pub folder: String,
+    pub title: String,
+    /// One of [`agent::session_state`].
+    pub state: String,
+    /// The state is inferred from the session's file, not reported by the
+    /// agent. A guessed `needs_you` is always sent as `may_need_you`.
+    #[serde(default)]
+    pub guess: bool,
+    /// One of [`agent::session_source`].
+    pub source: String,
+    /// Unix milliseconds.
+    pub updated: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// What it waits for (`permission prompt`), while `needs_you`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<String>,
+    #[serde(default)]
+    pub can_continue: bool,
+    /// Why it can't be continued: one of [`agent::session_blocked`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
+    /// When `state` began, Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u64>,
+}
+
+/// Never prints the title, folder, step or summary (protocol v0 §11).
+impl std::fmt::Debug for AgentSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentSession")
+            .field("id", &self.id)
+            .field("agent", &self.agent)
+            .field("state", &self.state)
+            .field("guess", &self.guess)
+            .field("source", &self.source)
+            .field("can_continue", &self.can_continue)
+            .field("blocked", &self.blocked)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentSession {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.id)
+            && is_valid_agent_id(&self.agent)
+            && self.folder.len() <= agent::MAX_LABEL_BYTES
+            && !self.folder.contains(['/', '\\'])
+            && self.title.len() <= agent::MAX_TITLE_BYTES
+            && agent::session_state::ALL.contains(&self.state.as_str())
+            && is_agent_word(&self.source)
+            && fits_opt(&self.step, agent::MAX_STEP_BYTES)
+            && fits_opt(&self.summary, agent::MAX_SUMMARY_BYTES)
+            && fits_opt(&self.waiting_for, agent::MAX_WAITING_FOR_BYTES)
+            && self.blocked.as_deref().is_none_or(is_agent_word)
+            && !(self.guess && self.state == agent::session_state::NEEDS_YOU)
+    }
+
+    /// The session within its limits: a folder path cut to its last
+    /// component, a guessed `needs_you` made `may_need_you`, text cleaned and
+    /// cut, an unknown `source` read as `other` and an unknown `blocked` left
+    /// out. `None` when an id or the state is bad.
+    pub fn sanitized(mut self) -> Option<Self> {
+        use agent::{session_blocked, session_source, session_state};
+        if !is_valid_agent_id(&self.id)
+            || !is_valid_agent_id(&self.agent)
+            || !session_state::ALL.contains(&self.state.as_str())
+        {
+            return None;
+        }
+        if self.guess && self.state == session_state::NEEDS_YOU {
+            self.state = session_state::MAY_NEED_YOU.to_owned();
+        }
+        if self.state == session_state::MAY_NEED_YOU {
+            self.guess = true;
+        }
+        self.folder = folder_name(&self.folder).to_owned();
+        clean_line(&mut self.folder, agent::MAX_LABEL_BYTES);
+        clean_line(&mut self.title, agent::MAX_TITLE_BYTES);
+        if !session_source::ALL.contains(&self.source.as_str()) {
+            self.source = session_source::OTHER.to_owned();
+        }
+        clean_opt(&mut self.step, false, agent::MAX_STEP_BYTES);
+        clean_opt(&mut self.summary, false, agent::MAX_SUMMARY_BYTES);
+        clean_opt(&mut self.waiting_for, false, agent::MAX_WAITING_FOR_BYTES);
+        if !self.blocked.as_deref().is_some_and(|b| session_blocked::ALL.contains(&b)) {
+            self.blocked = None;
+        }
+        Some(self)
+    }
+}
+
+/// Body of `agent.sessions` (the reply): at most [`agent::MAX_SESSIONS`].
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentSessions {
+    #[serde(default)]
+    pub sessions: Vec<AgentSession>,
+}
+
+impl std::fmt::Debug for AgentSessions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentSessions").field("sessions", &self.sessions.len()).finish()
+    }
+}
+
+impl AgentSessions {
+    pub fn is_valid(&self) -> bool {
+        self.sessions.len() <= agent::MAX_SESSIONS && self.sessions.iter().all(AgentSession::is_valid)
+    }
+
+    pub fn sanitized(mut self) -> Self {
+        self.sessions = self.sessions.into_iter().filter_map(AgentSession::sanitized).collect();
+        self.sessions.truncate(agent::MAX_SESSIONS);
+        self
+    }
+}
+
+/// Body of `agent.session`: a session appeared or changed, or (`removed`)
+/// left. Exactly one of the two.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentSessionEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<AgentSession>,
+    /// The id of a session that left the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<String>,
+}
+
+impl AgentSessionEvent {
+    pub fn is_valid(&self) -> bool {
+        match (&self.session, &self.removed) {
+            (Some(session), None) => session.is_valid(),
+            (None, Some(removed)) => is_valid_agent_id(removed),
+            _ => false,
+        }
+    }
+
+    pub fn sanitized(self) -> Option<Self> {
+        match (self.session, self.removed) {
+            (Some(session), None) => Some(Self { session: Some(session.sanitized()?), removed: None }),
+            (None, Some(removed)) if is_valid_agent_id(&removed) => {
+                Some(Self { session: None, removed: Some(removed) })
+            }
+            _ => None,
+        }
+    }
+
+    /// The session's id, changed or removed.
+    pub fn id(&self) -> Option<&str> {
+        self.session.as_ref().map(|s| s.id.as_str()).or(self.removed.as_deref())
+    }
+}
+
+/// Body of `agent.session.read`: phone to PC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionRead {
+    pub session: String,
+    /// Items before this `seq`; the newest without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<u64>,
+    /// Default and most: [`agent::MAX_ITEMS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl AgentSessionRead {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.session) && self.limit != Some(0)
+    }
+
+    /// How many items to send: `limit`, at most [`agent::MAX_ITEMS`].
+    pub fn limit(&self) -> u32 {
+        self.limit.unwrap_or(agent::MAX_ITEMS as u32).clamp(1, agent::MAX_ITEMS as u32)
+    }
+}
+
+/// Body of `agent.session.items` (the reply): a page of a session's
+/// transcript. Its items' `seq`s grow but aren't consecutive.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionItems {
+    pub session: AgentSession,
+    #[serde(default)]
+    pub items: Vec<AgentItem>,
+    #[serde(default)]
+    pub more_before: bool,
+}
+
+impl std::fmt::Debug for AgentSessionItems {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentSessionItems")
+            .field("session", &self.session)
+            .field("items", &self.items.len())
+            .field("more_before", &self.more_before)
+            .finish()
+    }
+}
+
+impl AgentSessionItems {
+    pub fn is_valid(&self) -> bool {
+        self.session.is_valid()
+            && self.items.len() <= agent::MAX_ITEMS
+            && self.items.iter().all(AgentItem::is_valid_in_session)
+            && self.items.iter().map(AgentItem::size).sum::<usize>() <= agent::MAX_ITEMS_BYTES
+    }
+
+    /// The page within its limits: bad items left out, then the oldest until
+    /// the rest fit (`more_before` is then set). `None` when the session is bad.
+    pub fn sanitized(mut self) -> Option<Self> {
+        self.session = self.session.sanitized()?;
+        self.items = self.items.into_iter().filter_map(AgentItem::sanitized_in_session).collect();
+        self.more_before |= keep_newest_items(&mut self.items);
+        Some(self)
+    }
+}
+
+/// Body of `agent.session.watch`: the one session whose items the phone
+/// shows; none without `session`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentSessionWatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+impl AgentSessionWatch {
+    pub fn is_valid(&self) -> bool {
+        self.session.as_deref().is_none_or(is_valid_agent_id)
+    }
+}
+
+/// Body of `agent.session.item`: an item of the watched session was added
+/// or updated (PC to the watching phone).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionItem {
+    pub session: String,
+    pub item: AgentItem,
+}
+
+impl AgentSessionItem {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.session) && self.item.is_valid_in_session()
+    }
+
+    pub fn sanitized(self) -> Option<Self> {
+        if !is_valid_agent_id(&self.session) {
+            return None;
+        }
+        Some(Self { session: self.session, item: self.item.sanitized_in_session()? })
+    }
+}
+
+/// Body of `agent.session.continue`: make the session a thread started by
+/// this phone (answered `agent.thread`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionContinue {
+    pub session: String,
+}
+
+impl AgentSessionContinue {
+    pub fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.session)
+    }
+}
+
+/// The `agent/export` stream: one thread or session as Markdown per stream
+/// (`docs/protocol/agents.md` §4).
+pub mod agent_export {
+    pub const SERVICE: &str = "agent";
+    pub const OP: &str = "export";
+    pub const VERSION: u32 = 1;
+}
+
+/// Body of `agent.export`: the thread or the session to export, exactly one.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentExportRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+impl AgentExportRequest {
+    pub fn is_valid(&self) -> bool {
+        match (&self.thread, &self.session) {
+            (Some(id), None) | (None, Some(id)) => is_valid_agent_id(id),
+            _ => false,
+        }
+    }
+
+    /// It names a session (§3), which needs `agent_sessions` too.
+    pub fn is_session(&self) -> bool {
+        self.session.is_some()
+    }
+}
+
+/// Body of `agent.export.meta`: how many bytes of Markdown follow on the
+/// stream, whether items were left out to fit, and a name to save it as.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentExportMeta {
+    pub length: u64,
+    #[serde(default)]
+    pub truncated: bool,
+    pub file_name: String,
+}
+
+impl AgentExportMeta {
+    pub fn is_valid(&self) -> bool {
+        self.length <= agent::MAX_EXPORT_BYTES as u64 && is_export_file_name(&self.file_name)
+    }
+}
+
+/// Whether `name` can be an export's file name: 1 to 128 bytes of
+/// `[A-Za-z0-9._-]`, not starting with a dot.
+pub fn is_export_file_name(name: &str) -> bool {
+    (1..=agent::MAX_EXPORT_NAME_BYTES).contains(&name.len())
+        && !name.starts_with('.')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// `name` made an export file name: other characters become `-`, leading
+/// dots go, and it's cut to fit; `transcript.md` when nothing is left.
+pub fn clean_export_file_name(name: &str) -> String {
+    let mapped: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .collect();
+    let mut name = mapped.trim_start_matches('.').to_owned();
+    name.truncate(agent::MAX_EXPORT_NAME_BYTES);
+    if name.is_empty() { "transcript.md".to_owned() } else { name }
+}
+
+/// An export's Markdown without control characters other than newline and
+/// tab and without bidi controls, cut to [`agent::MAX_EXPORT_BYTES`]; and
+/// whether it was cut.
+pub fn clean_agent_export(text: String) -> (String, bool) {
+    let clean = !text.chars().any(|c| is_bidi_control(c) || (c.is_control() && !matches!(c, '\n' | '\t')));
+    if clean && text.len() <= agent::MAX_EXPORT_BYTES {
+        return (text, false);
+    }
+    clean_agent_text(&text, true, agent::MAX_EXPORT_BYTES)
 }
 
 #[cfg(test)]
@@ -8144,7 +8855,7 @@ mod tests {
             (BleUseState::Unavailable, "unavailable"),
             (BleUseState::Busy, "busy"),
         ] {
-            let reply = BleUseReply { state, lease: Some(45) };
+            let reply = BleUseReply { lease: Some(45), ..BleUseReply::new(state) };
             let env = Envelope::new(types::BLE_USE, &reply).unwrap();
             let body = env.body::<ciborium::Value>().unwrap();
             let sent = body.as_map().unwrap().iter().find(|(k, _)| k.as_text() == Some("state")).unwrap();
@@ -8156,7 +8867,54 @@ mod tests {
             ciborium::Value::Text("roaming".into()),
         )]);
         let reply: BleUseReply = newer.deserialized().unwrap();
-        assert_eq!(reply, BleUseReply { state: BleUseState::Off, lease: None });
+        assert_eq!(reply, BleUseReply::new(BleUseState::Off));
+    }
+
+    #[test]
+    fn ble_use_says_whether_the_window_is_open_and_older_devices_agree() {
+        let keys = |env: &Envelope| -> Vec<String> {
+            let body = env.body::<ciborium::Value>().unwrap();
+            body.as_map().unwrap().iter().filter_map(|(k, _)| k.as_text().map(str::to_owned)).collect()
+        };
+        let round_trip = |reply: &BleUseReply| {
+            let env = Envelope::new(types::BLE_USE, reply).unwrap();
+            Envelope::from_cbor(&env.to_cbor()).unwrap().body::<BleUseReply>().unwrap()
+        };
+        let open = BleUseReply { lease: Some(45), window: Some(30), ..BleUseReply::new(BleUseState::Open) };
+        assert_eq!(round_trip(&open), open);
+        assert_eq!(open.window_open(), Some(true));
+        let spent = BleUseReply {
+            lease: Some(45),
+            window: Some(0),
+            retry: Some(140),
+            ..BleUseReply::new(BleUseState::Open)
+        };
+        assert_eq!(round_trip(&spent), spent);
+        assert_eq!(spent.window_open(), Some(false));
+
+        // Without the new fields nothing new is sent: what a 0.1.13 PC sent, and reads.
+        let old = BleUseReply { lease: Some(45), ..BleUseReply::new(BleUseState::Open) };
+        let env = Envelope::new(types::BLE_USE, &old).unwrap();
+        assert_eq!(keys(&env), ["state", "lease"]);
+        assert_eq!(round_trip(&old), old);
+        assert_eq!(old.window_open(), None, "an older PC doesn't say");
+        let from_old_pc = ciborium::Value::Map(vec![
+            (ciborium::Value::Text("state".into()), ciborium::Value::Text("open".into())),
+            (ciborium::Value::Text("lease".into()), ciborium::Value::Integer(45.into())),
+        ]);
+        assert_eq!(from_old_pc.deserialized::<BleUseReply>().unwrap(), old);
+
+        // A 0.1.13 phone reads the new reply as the old one: it skips what it doesn't know.
+        #[derive(Debug, PartialEq, Deserialize)]
+        struct OldReply {
+            state: BleUseState,
+            #[serde(default)]
+            lease: Option<u32>,
+        }
+        let env = Envelope::new(types::BLE_USE, &spent).unwrap();
+        assert_eq!(keys(&env), ["state", "lease", "window", "retry"]);
+        let seen: OldReply = env.body().unwrap();
+        assert_eq!(seen, OldReply { state: BleUseState::Open, lease: Some(45) });
     }
     fn agent_thread(id: &str) -> super::AgentThread {
         super::AgentThread {
@@ -8172,6 +8930,12 @@ mod tests {
             summary: None,
             error: None,
             error_code: None,
+            step: Some("Run command".into()),
+            since: Some(1_794_999_990_000),
+            plan: Some(vec![super::AgentPlanStep {
+                text: "Read the tests".into(),
+                status: "completed".into(),
+            }]),
         }
     }
 
@@ -8403,5 +9167,353 @@ mod tests {
         assert!(!shown.contains("List the files"), "{shown}");
         let answer = AgentAnswer { token: ask.token.clone(), decision: "allow".into(), scope: None };
         assert!(!format!("{answer:?}").contains(&ask.token));
+    }
+    fn agent_session(id: &str) -> super::AgentSession {
+        super::AgentSession {
+            id: id.into(),
+            agent: "claude".into(),
+            folder: "app".into(),
+            title: "Fix the login test".into(),
+            state: super::agent::session_state::NEEDS_YOU.into(),
+            guess: false,
+            source: super::agent::session_source::DESKTOP_APP.into(),
+            updated: 1_795_000_100_000,
+            step: Some("Run command".into()),
+            summary: None,
+            waiting_for: Some("permission prompt".into()),
+            can_continue: false,
+            blocked: Some(super::agent::session_blocked::OPEN.into()),
+            since: Some(1_795_000_000_000),
+        }
+    }
+
+    #[test]
+    fn agent_session_bodies_round_trip() {
+        use super::{
+            AgentSessionContinue, AgentSessionEvent, AgentSessionItem, AgentSessionItems, AgentSessionRead,
+            AgentSessionWatch, AgentSessions, types,
+        };
+        let session = agent_session("sc0123456789abcdef0123456789abcdef");
+        assert!(session.is_valid());
+        round_trip(types::AGENT_SESSIONS, &AgentSessions { sessions: vec![session.clone()] });
+        let changed = AgentSessionEvent { session: Some(session.clone()), removed: None };
+        let removed = AgentSessionEvent { session: None, removed: Some(session.id.clone()) };
+        assert!(changed.is_valid() && removed.is_valid());
+        assert_eq!(changed.id(), Some(session.id.as_str()));
+        round_trip(types::AGENT_SESSION, &changed);
+        round_trip(types::AGENT_SESSION, &removed);
+        assert!(!AgentSessionEvent::default().is_valid(), "one of the two");
+        assert!(!AgentSessionEvent { session: Some(session.clone()), removed: Some("x".into()) }.is_valid());
+        let read = AgentSessionRead { session: session.id.clone(), before: Some(64 << 6), limit: Some(20) };
+        assert!(read.is_valid());
+        round_trip(types::AGENT_SESSION_READ, &read);
+        // A session's first item starts at byte 0 of its file: seq 0.
+        let items = AgentSessionItems {
+            session: session.clone(),
+            items: vec![agent_item(0, "First"), agent_item(1 << 6, "Second")],
+            more_before: false,
+        };
+        assert!(items.is_valid());
+        round_trip(types::AGENT_SESSION_ITEMS, &items);
+        assert_eq!(items.clone().sanitized().unwrap().items.len(), 2, "seq 0 is kept");
+        round_trip(types::AGENT_SESSION_WATCH, &AgentSessionWatch { session: Some(session.id.clone()) });
+        let item = AgentSessionItem { session: session.id.clone(), item: agent_item(0, "First") };
+        assert!(item.is_valid());
+        round_trip(types::AGENT_SESSION_ITEM, &item);
+        round_trip(types::AGENT_SESSION_CONTINUE, &AgentSessionContinue { session: session.id });
+        // A thread's items are 1-based, as before.
+        assert!(!agent_item(0, "x").is_valid() && agent_item(0, "x").sanitized().is_none());
+    }
+
+    #[test]
+    fn agent_exports_name_one_thing_and_keep_their_limits() {
+        use super::{
+            AgentExportMeta, AgentExportRequest, agent, clean_agent_export, clean_export_file_name,
+            is_export_file_name, types,
+        };
+        let thread = AgentExportRequest { thread: Some("0123456789abcdef".into()), session: None };
+        let session = AgentExportRequest { thread: None, session: Some("sc0123456789abcdef".into()) };
+        assert!(thread.is_valid() && !thread.is_session());
+        assert!(session.is_valid() && session.is_session());
+        round_trip(types::AGENT_EXPORT, &thread);
+        round_trip(types::AGENT_EXPORT, &session);
+        assert!(!AgentExportRequest::default().is_valid(), "one of the two");
+        assert!(
+            !AgentExportRequest { thread: thread.thread.clone(), session: session.session.clone() }
+                .is_valid()
+        );
+        assert!(!AgentExportRequest { thread: Some("../etc".into()), session: None }.is_valid());
+
+        let meta =
+            |length: u64, name: &str| AgentExportMeta { length, truncated: false, file_name: name.into() };
+        assert!(meta(agent::MAX_EXPORT_BYTES as u64, "claude-fix-the-login-test-2026-11-19.md").is_valid());
+        assert!(!meta(agent::MAX_EXPORT_BYTES as u64 + 1, "a.md").is_valid());
+        round_trip(types::AGENT_EXPORT_META, &AgentExportMeta { truncated: true, ..meta(10, "a.md") });
+        for bad in ["", ".hidden.md", "a/b.md", r"a\b.md", "a b.md", "é.md"] {
+            assert!(!is_export_file_name(bad), "{bad:?}");
+        }
+        assert!(!is_export_file_name(&"a".repeat(agent::MAX_EXPORT_NAME_BYTES + 1)));
+        assert_eq!(clean_export_file_name("../../etc/passwd"), "-..-etc-passwd");
+        assert_eq!(clean_export_file_name("..."), "transcript.md");
+        assert_eq!(clean_export_file_name("Fix é bug.md"), "Fix---bug.md");
+        assert!(is_export_file_name(&clean_export_file_name(&"x/".repeat(200))));
+
+        let (text, cut) = clean_agent_export("# Title\n\n```\ncode\t1\n```\n".into());
+        assert_eq!((text.as_str(), cut), ("# Title\n\n```\ncode\t1\n```\n", false));
+        let (text, cut) = clean_agent_export("a\u{1b}[31mb\u{202E}c\r\n".into());
+        assert_eq!((text.as_str(), cut), ("a[31mbc\n", false));
+        let (text, cut) = clean_agent_export("é".repeat(agent::MAX_EXPORT_BYTES));
+        assert!(cut && text.len() <= agent::MAX_EXPORT_BYTES && text.len() >= agent::MAX_EXPORT_BYTES - 1);
+    }
+
+    #[test]
+    fn agent_sessions_keep_their_limits_and_never_carry_a_path() {
+        use super::{AgentSessionItems, AgentSessionRead, AgentSessions, agent};
+        let mut session = agent_session("sx0123456789abcdef0123456789abcdef");
+        session.folder = "/home/me/code/app/".into();
+        assert!(!session.is_valid(), "a path is not a name");
+        let clean = session.clone().sanitized().unwrap();
+        assert_eq!(clean.folder, "app");
+        assert!(clean.is_valid());
+        session.folder = r"C:\Users\me\app".into();
+        assert_eq!(session.clone().sanitized().unwrap().folder, "app");
+
+        let mut long = agent_session("sx0123456789abcdef0123456789abcdef");
+        long.step = Some("s".repeat(agent::MAX_STEP_BYTES + 1));
+        long.waiting_for = Some("w\u{202E}".repeat(agent::MAX_WAITING_FOR_BYTES));
+        assert!(!long.is_valid());
+        let long = long.sanitized().unwrap();
+        assert!(long.is_valid());
+        assert_eq!(long.step.as_ref().unwrap().len(), agent::MAX_STEP_BYTES);
+        assert_eq!(long.waiting_for.as_ref().unwrap().len(), agent::MAX_WAITING_FOR_BYTES);
+        assert!(!long.waiting_for.as_ref().unwrap().contains('\u{202E}'));
+
+        // A guess is never sent as the agent's own "needs you".
+        let mut guessed = agent_session("sx0123456789abcdef0123456789abcdef");
+        guessed.guess = true;
+        assert!(!guessed.is_valid());
+        let guessed = guessed.sanitized().unwrap();
+        assert_eq!(guessed.state, agent::session_state::MAY_NEED_YOU);
+        assert!(guessed.is_valid());
+        let mut may = agent_session("sx0123456789abcdef0123456789abcdef");
+        may.state = agent::session_state::MAY_NEED_YOU.into();
+        assert!(may.sanitized().unwrap().guess, "may_need_you is always a guess");
+
+        let mut odd = agent_session("sx0123456789abcdef0123456789abcdef");
+        odd.source = "ide".into();
+        odd.blocked = Some("moon".into());
+        assert!(odd.is_valid(), "newer words still parse");
+        let odd = odd.sanitized().unwrap();
+        assert_eq!((odd.source.as_str(), odd.blocked), (agent::session_source::OTHER, None));
+
+        let mut bad = agent_session("sx0123456789abcdef0123456789abcdef");
+        bad.state = "sleeping".into();
+        assert!(!bad.is_valid() && bad.sanitized().is_none());
+        assert!(agent_session("S-1").sanitized().is_none());
+
+        let many = AgentSessions { sessions: (0..60).map(|i| agent_session(&format!("s{i}"))).collect() };
+        assert!(!many.is_valid());
+        let many = many.sanitized();
+        assert!(many.is_valid() && many.sessions.len() == agent::MAX_SESSIONS);
+
+        let big = "z".repeat(10_000);
+        let page = AgentSessionItems {
+            session: agent_session("s1"),
+            items: (0..60).map(|i| agent_item(i << 6, &big)).collect(),
+            more_before: false,
+        }
+        .sanitized()
+        .unwrap();
+        assert!(page.is_valid() && page.more_before);
+        assert_eq!(page.items.last().unwrap().seq, 59 << 6);
+        assert!(!AgentSessionRead { session: "s1".into(), before: None, limit: Some(0) }.is_valid());
+        assert_eq!(AgentSessionRead { session: "s1".into(), before: None, limit: Some(500) }.limit(), 50);
+    }
+
+    #[test]
+    fn a_threads_plan_is_cleaned_and_bounded() {
+        use super::{AgentPlanStep, agent};
+        let step = |text: &str, status: &str| AgentPlanStep { text: text.into(), status: status.into() };
+        let mut thread = agent_thread("abc");
+        thread.plan = Some(
+            (0..25)
+                .map(|i| step(&format!("Step {i}\u{1b}"), if i == 3 { "skipped" } else { "pending" }))
+                .collect(),
+        );
+        assert!(!thread.is_valid());
+        let thread = thread.sanitized().unwrap();
+        assert!(thread.is_valid());
+        let plan = thread.plan.as_ref().unwrap();
+        assert_eq!(plan.len(), agent::MAX_PLAN_STEPS);
+        assert!(plan.iter().all(|s| s.status == "pending" && !s.text.contains('\u{1b}')));
+        assert!(!plan.iter().any(|s| s.text == "Step 3"), "an unknown status is left out");
+        let mut long = agent_thread("abc");
+        long.plan = Some(vec![step(&"p".repeat(agent::MAX_PLAN_TEXT_BYTES + 9), "in_progress")]);
+        assert_eq!(long.sanitized().unwrap().plan.unwrap()[0].text.len(), agent::MAX_PLAN_TEXT_BYTES);
+        assert!(!format!("{:?}", step("secret plan", "pending")).contains("secret"));
+    }
+
+    #[test]
+    fn a_threads_step_is_cut_and_its_start_kept() {
+        use super::agent;
+        let mut thread = agent_thread("abc");
+        thread.step = Some(format!("Run\ncommand{}", "x".repeat(agent::MAX_STEP_BYTES)));
+        assert!(!thread.is_valid());
+        let thread = thread.sanitized().unwrap();
+        assert!(thread.is_valid());
+        assert!(thread.step.as_ref().unwrap().starts_with("Runcommand"));
+        assert_eq!(thread.since, Some(1_794_999_990_000));
+        // Older PCs send neither.
+        let mut old = agent_thread("abc");
+        (old.step, old.since, old.plan) = (None, None, None);
+        let env = crate::Envelope::new(super::types::AGENT_THREAD, &old).unwrap();
+        let map = env.b.as_ref().unwrap().as_map().unwrap();
+        assert!(!map.iter().any(|(k, _)| matches!(k.as_text(), Some("step" | "since" | "plan"))));
+    }
+
+    #[test]
+    fn agent_session_debug_never_shows_text() {
+        let mut session = agent_session("s1");
+        session.title = "secret title".into();
+        session.folder = "secretfolder".into();
+        session.summary = Some("secret summary".into());
+        let shown = format!("{session:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+    }
+
+    fn media_player() -> super::MediaPlayer {
+        super::MediaPlayer {
+            id: "spotify".into(),
+            app: "Spotify".into(),
+            title: Some("Song".into()),
+            artist: None,
+            album: None,
+            playing: true,
+            duration: Some(200_000),
+            position: Some(10_000),
+            actions: vec!["play".into(), "shuffle".into(), "loop".into()],
+            art_key: Some("0123456789abcdef".into()),
+            art: None,
+            rate_milli: Some(1500),
+            age: Some(300),
+            art_full: Some("fedcba9876543210".into()),
+            icon: Some("00112233aabbccdd".into()),
+            shuffle: Some(true),
+            repeat: Some(super::media_loop::PLAYLIST.into()),
+        }
+    }
+
+    #[test]
+    fn media_players_carry_rate_age_art_icon_shuffle_and_loop() {
+        use super::{MediaState, types};
+        let player = media_player();
+        let state = MediaState { players: vec![player.clone()] };
+        round_trip(types::MEDIA_STATE, &state);
+        // On the wire: `rate` is a float and `loop` is the name.
+        let env = crate::Envelope::new(types::MEDIA_STATE, &state).unwrap();
+        let players = env.b.as_ref().unwrap().as_map().unwrap()[0].1.as_array().unwrap();
+        let fields = players[0].as_map().unwrap();
+        let field =
+            |name: &str| fields.iter().find(|(k, _)| k.as_text() == Some(name)).map(|(_, v)| v.clone());
+        assert_eq!(field("rate").and_then(|v| v.as_float()), Some(1.5));
+        assert_eq!(field("loop").and_then(|v| v.as_text().map(str::to_owned)).as_deref(), Some("playlist"));
+        assert!(field("rate_milli").is_none() && field("repeat").is_none());
+        assert_eq!(player.clone().sanitized(), Some(player.clone()));
+
+        // A player from an older version has none of them.
+        let mut old = player.clone();
+        (old.rate_milli, old.age, old.art_full, old.icon, old.shuffle, old.repeat) =
+            (None, None, None, None, None, None);
+        let env =
+            crate::Envelope::new(types::MEDIA_STATE, &MediaState { players: vec![old.clone()] }).unwrap();
+        let body = env.b.as_ref().unwrap();
+        let fields = body.as_map().unwrap()[0].1.as_array().unwrap()[0].as_map().unwrap().len();
+        assert_eq!(fields, 8, "only what was there before");
+        round_trip(types::MEDIA_STATE, &MediaState { players: vec![old] });
+    }
+
+    #[test]
+    fn a_bad_rate_is_dropped_and_other_fields_cleaned() {
+        use super::{MediaState, media_limits, types};
+        let with_rate = |rate: ciborium::Value| {
+            let state = MediaState { players: vec![media_player()] };
+            let mut value = crate::Envelope::new(types::MEDIA_STATE, &state).unwrap().b.unwrap();
+            let ciborium::Value::Map(top) = &mut value else { unreachable!() };
+            let ciborium::Value::Array(players) = &mut top[0].1 else { unreachable!() };
+            let ciborium::Value::Map(fields) = &mut players[0] else { unreachable!() };
+            for (k, v) in fields.iter_mut() {
+                if k.as_text() == Some("rate") {
+                    *v = rate.clone();
+                }
+            }
+            let state: MediaState = value.deserialized().unwrap();
+            state.players[0].rate_milli
+        };
+        assert_eq!(with_rate(ciborium::Value::Float(0.25)), Some(250));
+        assert_eq!(with_rate(ciborium::Value::Float(4.0)), Some(4000));
+        assert_eq!(with_rate(ciborium::Value::Integer(2.into())), Some(2000), "an integer is a rate too");
+        assert_eq!(with_rate(ciborium::Value::Float(0.2)), None);
+        assert_eq!(with_rate(ciborium::Value::Float(4.5)), None);
+        assert_eq!(with_rate(ciborium::Value::Float(f64::NAN)), None);
+        assert_eq!(with_rate(ciborium::Value::Float(f64::INFINITY)), None);
+        assert_eq!(with_rate(ciborium::Value::Integer((-1).into())), None);
+        assert_eq!(with_rate(ciborium::Value::Text("fast".into())), None, "not a number: no rate");
+
+        let mut player = media_player();
+        player.rate_milli = Some(5000);
+        player.icon = Some("NOTHEX0123456789".into());
+        player.art_full = Some("k".repeat(media_limits::ART_KEY_BYTES + 1));
+        player.repeat = Some("forever".into());
+        player.actions.push("bogus".into());
+        let clean = player.sanitized().unwrap();
+        assert_eq!((clean.rate_milli, clean.icon, clean.art_full, clean.repeat), (None, None, None, None));
+        assert_eq!(clean.actions, ["play", "shuffle", "loop"]);
+    }
+
+    #[test]
+    fn position_moves_on_with_rate_and_age() {
+        let mut player = media_player();
+        // 10 s, sampled 300 ms before sending, 1 s since it arrived, at 1.5×.
+        assert_eq!(player.position_at(1_000), Some(10_000 + 1_950));
+        player.rate_milli = None;
+        assert_eq!(player.position_at(1_000), Some(11_300), "no rate is 1");
+        player.age = None;
+        assert_eq!(player.position_at(0), Some(10_000));
+        assert_eq!(player.position_at(500_000), Some(200_000), "never past the end");
+        player.playing = false;
+        assert_eq!(player.position_at(5_000), Some(10_000), "paused stays put");
+        player.position = None;
+        assert_eq!(player.position_at(5_000), None);
+    }
+
+    #[test]
+    fn shuffle_and_loop_commands_need_a_value() {
+        use super::{
+            MediaArtMeta, MediaCommand, MediaIcon, MediaKey, is_media_icon_key, media_limits, types,
+        };
+        let command = |action: &str, value: Option<&str>| MediaCommand {
+            player: "spotify".into(),
+            action: action.into(),
+            position: None,
+            value: value.map(str::to_owned),
+        };
+        assert!(command("shuffle", Some("on")).value_fits() && command("shuffle", Some("off")).value_fits());
+        assert!(!command("shuffle", None).value_fits() && !command("shuffle", Some("yes")).value_fits());
+        assert!(command("loop", Some("track")).value_fits() && !command("loop", Some("all")).value_fits());
+        assert!(!command("loop", None).value_fits());
+        assert!(command("play", None).value_fits() && command("play", Some("x")).value_fits());
+        round_trip(types::MEDIA_COMMAND, &command("loop", Some("none")));
+
+        round_trip(types::MEDIA_ICON, &MediaKey { key: "00112233aabbccdd".into() });
+        round_trip(types::MEDIA_ICON, &MediaIcon { png: vec![0x89, b'P', b'N', b'G'] });
+        assert!(is_media_icon_key("00112233aabbccdd"));
+        assert!(
+            !is_media_icon_key("00112233AABBCCDD") && !is_media_icon_key("0011") && !is_media_icon_key("")
+        );
+        let meta = |length: u64, format: &str| MediaArtMeta { length, format: format.into() };
+        assert!(meta(1, "jpeg").is_valid() && meta(media_limits::ART_FULL_BYTES as u64, "png").is_valid());
+        assert!(!meta(media_limits::ART_FULL_BYTES as u64 + 1, "png").is_valid());
+        assert!(!meta(0, "png").is_valid() && !meta(10, "gif").is_valid());
+        round_trip(types::MEDIA_ART_META, &meta(10, "png"));
     }
 }

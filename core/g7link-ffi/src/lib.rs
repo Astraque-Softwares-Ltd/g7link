@@ -186,6 +186,23 @@ pub enum BleUseState {
     Busy,
 }
 
+/// A PC's whole answer to `ble_use`: with `Open`, a PC from 0.1.14 also says
+/// for how many seconds its connect window stays open (`window_secs`, 0: none
+/// now) and, with none, in how many a renewal can open one (`retry_secs`).
+/// Both are `None` from an older PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct BleUseReply {
+    pub state: BleUseState,
+    pub window_secs: Option<u32>,
+    pub retry_secs: Option<u32>,
+}
+
+impl From<core::BleUseReply> for BleUseReply {
+    fn from(reply: core::BleUseReply) -> Self {
+        Self { state: reply.state.into(), window_secs: reply.window, retry_secs: reply.retry }
+    }
+}
+
 impl From<core::BleUseState> for BleUseState {
     fn from(state: core::BleUseState) -> Self {
         match state {
@@ -650,6 +667,55 @@ pub struct MediaPlayer {
     /// JPEG or PNG. Pass it every time; the core sends it once per device
     /// and connection. Arrives the same way: keep it by `art_key`.
     pub art: Option<Vec<u8>>,
+    /// Playback rate in thousandths (250 to 4000); null means 1000. The
+    /// fields from here on are last, with defaults, so positional callers
+    /// keep working (0.1.14 contract §A6.3).
+    #[uniffi(default = None)]
+    pub rate_milli: Option<u32>,
+    /// Milliseconds between sampling `position` and sending this state: the
+    /// position now is `position + (age_ms + time since it arrived) × rate`
+    /// while `playing`, capped at `duration`.
+    #[uniffi(default = None)]
+    pub age_ms: Option<u64>,
+    /// Key of a larger picture, fetched with `media_art`.
+    #[uniffi(default = None)]
+    pub art_full: Option<String>,
+    /// Key of the app's icon, fetched with `media_icon`.
+    #[uniffi(default = None)]
+    pub icon: Option<String>,
+    #[uniffi(default = None)]
+    pub shuffle: Option<bool>,
+    #[uniffi(default = None)]
+    pub repeat: Option<MediaRepeat>,
+}
+
+/// A player's repeat mode (the wire's `loop`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MediaRepeat {
+    None,
+    Track,
+    Playlist,
+}
+
+impl MediaRepeat {
+    fn wire(self) -> &'static str {
+        use core::media_loop;
+        match self {
+            MediaRepeat::None => media_loop::NONE,
+            MediaRepeat::Track => media_loop::TRACK,
+            MediaRepeat::Playlist => media_loop::PLAYLIST,
+        }
+    }
+
+    fn from_wire(repeat: &str) -> Option<Self> {
+        use core::media_loop;
+        match repeat {
+            media_loop::NONE => Some(MediaRepeat::None),
+            media_loop::TRACK => Some(MediaRepeat::Track),
+            media_loop::PLAYLIST => Some(MediaRepeat::Playlist),
+            _ => None,
+        }
+    }
 }
 
 /// Never prints what's playing (protocol v0 §11).
@@ -666,6 +732,10 @@ pub enum MediaAction {
     Next,
     Previous,
     Seek,
+    /// With `media_command_value`: `on` or `off`.
+    Shuffle,
+    /// With `media_command_value`: `none`, `track` or `playlist` (the wire's `loop`).
+    Repeat,
 }
 
 impl From<MediaAction> for core::MediaAction {
@@ -676,6 +746,8 @@ impl From<MediaAction> for core::MediaAction {
             MediaAction::Next => core::MediaAction::Next,
             MediaAction::Previous => core::MediaAction::Previous,
             MediaAction::Seek => core::MediaAction::Seek,
+            MediaAction::Shuffle => core::MediaAction::Shuffle,
+            MediaAction::Repeat => core::MediaAction::Loop,
         }
     }
 }
@@ -688,6 +760,8 @@ impl From<core::MediaAction> for MediaAction {
             core::MediaAction::Next => MediaAction::Next,
             core::MediaAction::Previous => MediaAction::Previous,
             core::MediaAction::Seek => MediaAction::Seek,
+            core::MediaAction::Shuffle => MediaAction::Shuffle,
+            core::MediaAction::Loop => MediaAction::Repeat,
         }
     }
 }
@@ -706,6 +780,12 @@ impl From<MediaPlayer> for core::MediaPlayer {
             actions: p.actions.into_iter().map(|a| core::MediaAction::from(a).as_str().to_owned()).collect(),
             art_key: p.art_key,
             art: p.art,
+            rate_milli: p.rate_milli,
+            age: p.age_ms,
+            art_full: p.art_full,
+            icon: p.icon,
+            shuffle: p.shuffle,
+            repeat: p.repeat.map(|r| r.wire().to_owned()),
         }
     }
 }
@@ -724,6 +804,12 @@ impl From<core::MediaPlayer> for MediaPlayer {
             actions: p.actions.iter().filter_map(|a| core::MediaAction::parse(a)).map(Into::into).collect(),
             art_key: p.art_key,
             art: p.art,
+            rate_milli: p.rate_milli,
+            age_ms: p.age,
+            art_full: p.art_full,
+            icon: p.icon,
+            shuffle: p.shuffle,
+            repeat: p.repeat.as_deref().and_then(MediaRepeat::from_wire),
         }
     }
 }
@@ -1161,6 +1247,23 @@ pub enum Event {
         #[uniffi(default = None)]
         by_name: Option<String>,
     },
+    /// A session started on a PC outside G7 Link appeared or changed.
+    AgentSessionChanged {
+        id: String,
+        session: AgentSession,
+    },
+    /// A session left a PC's list: it left the 7 days, its file went, or it
+    /// became a thread.
+    AgentSessionRemoved {
+        id: String,
+        session: String,
+    },
+    /// An item of the session this phone watches was added or updated.
+    AgentSessionItem {
+        id: String,
+        session: String,
+        item: AgentItem,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -1549,6 +1652,48 @@ pub struct AgentThread {
     /// the agent's own code. Added after contract §6.3; defaults to null.
     #[uniffi(default = None)]
     pub error_code: Option<String>,
+    /// What a running turn is doing ("Now: <step>"); null otherwise. 0.1.14.
+    #[uniffi(default = None)]
+    pub step: Option<String>,
+    /// When `state` began, Unix milliseconds (for "Working for 4 min"). 0.1.14.
+    #[uniffi(default = None)]
+    pub since_ms: Option<i64>,
+    /// The agent's own plan for the turn; null when it made none. 0.1.14.
+    #[uniffi(default = None)]
+    pub plan: Option<Vec<AgentPlanStep>>,
+}
+
+/// A plan step's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentPlanStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl AgentPlanStatus {
+    fn from_wire(status: &str) -> Option<Self> {
+        use core::agent::plan_status;
+        Some(match status {
+            plan_status::PENDING => Self::Pending,
+            plan_status::IN_PROGRESS => Self::InProgress,
+            plan_status::COMPLETED => Self::Completed,
+            _ => return None,
+        })
+    }
+}
+
+/// One step of a thread's plan, in the agent's own words.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentPlanStep {
+    pub text: String,
+    pub status: AgentPlanStatus,
+}
+
+impl std::fmt::Debug for AgentPlanStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPlanStep").field("status", &self.status).finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for AgentThread {
@@ -1577,6 +1722,16 @@ impl AgentThread {
             summary: t.summary,
             error: t.error,
             error_code: t.error_code,
+            step: t.step,
+            since_ms: t.since.map(ms),
+            plan: t.plan.map(|steps| {
+                steps
+                    .into_iter()
+                    .filter_map(|s| {
+                        Some(AgentPlanStep { status: AgentPlanStatus::from_wire(&s.status)?, text: s.text })
+                    })
+                    .collect()
+            }),
         })
     }
 }
@@ -1711,6 +1866,187 @@ impl AgentPage {
             more_before: p.more_before,
             asks: p.asks.into_iter().filter_map(AgentAsk::from_core).collect(),
         })
+    }
+}
+
+/// A session's state on a PC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentSessionState {
+    Working,
+    /// Waiting for an answer, as the agent reported: "Needs you".
+    NeedsYou,
+    /// It looks like it waits, guessed from its file: "May need you". Never
+    /// counted in a badge, a chip or Home.
+    MayNeedYou,
+    Idle,
+    /// No process has it open any more: "Ended".
+    Ended,
+}
+
+impl AgentSessionState {
+    fn from_wire(state: &str, guess: bool) -> Option<Self> {
+        use core::agent::session_state;
+        Some(match state {
+            session_state::WORKING => Self::Working,
+            session_state::NEEDS_YOU if guess => Self::MayNeedYou,
+            session_state::NEEDS_YOU => Self::NeedsYou,
+            session_state::MAY_NEED_YOU => Self::MayNeedYou,
+            session_state::IDLE => Self::Idle,
+            session_state::ENDED => Self::Ended,
+            _ => return None,
+        })
+    }
+}
+
+/// Where a session runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentSessionSource {
+    /// "Terminal".
+    Terminal,
+    /// "Claude app" (or the agent's own desktop app).
+    DesktopApp,
+    Other,
+}
+
+impl AgentSessionSource {
+    fn from_wire(source: &str) -> Self {
+        use core::agent::session_source;
+        match source {
+            session_source::TERMINAL => Self::Terminal,
+            session_source::DESKTOP_APP => Self::DesktopApp,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Why a session can't be continued here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentContinueBlock {
+    /// Something still has it open.
+    Open,
+    /// Its folder isn't one of the PC's agent folders.
+    Folder,
+    /// The agent can't run now (not installed or signed out).
+    Agent,
+}
+
+impl AgentContinueBlock {
+    fn from_wire(blocked: &str) -> Option<Self> {
+        use core::agent::session_blocked;
+        Some(match blocked {
+            session_blocked::OPEN => Self::Open,
+            session_blocked::FOLDER => Self::Folder,
+            session_blocked::AGENT => Self::Agent,
+            _ => return None,
+        })
+    }
+}
+
+/// A session started on a PC outside G7 Link (in a terminal or the
+/// agent's own app). Read-only: it can't be typed into or answered from
+/// here. `folder` is the folder's name, never its path.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentSession {
+    pub id: String,
+    /// The agent's id (`claude`, `codex`).
+    pub agent: String,
+    pub folder: String,
+    pub title: String,
+    pub state: AgentSessionState,
+    /// The state is inferred from its file, not reported by the agent.
+    pub guess: bool,
+    pub source: AgentSessionSource,
+    /// Unix milliseconds.
+    pub updated_ms: i64,
+    pub step: Option<String>,
+    pub summary: Option<String>,
+    /// What it waits for (`permission prompt`), while it needs you.
+    pub waiting_for: Option<String>,
+    /// "Continue here" can make it a thread now.
+    pub can_continue: bool,
+    pub blocked: Option<AgentContinueBlock>,
+    /// When `state` began, Unix milliseconds.
+    #[uniffi(default = None)]
+    pub since_ms: Option<i64>,
+}
+
+impl std::fmt::Debug for AgentSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentSession")
+            .field("id", &self.id)
+            .field("agent", &self.agent)
+            .field("state", &self.state)
+            .field("can_continue", &self.can_continue)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AgentSession {
+    fn from_core(s: core::AgentSession) -> Option<Self> {
+        Some(AgentSession {
+            state: AgentSessionState::from_wire(&s.state, s.guess)?,
+            guess: s.guess || s.state == core::agent::session_state::MAY_NEED_YOU,
+            source: AgentSessionSource::from_wire(&s.source),
+            blocked: s.blocked.as_deref().and_then(AgentContinueBlock::from_wire),
+            id: s.id,
+            agent: s.agent,
+            folder: s.folder,
+            title: s.title,
+            updated_ms: ms(s.updated),
+            step: s.step,
+            summary: s.summary,
+            waiting_for: s.waiting_for,
+            can_continue: s.can_continue,
+            since_ms: s.since.map(ms),
+        })
+    }
+}
+
+/// A page of a session (`agent_session_read`): its items in `seq` order.
+/// The `seq`s grow but aren't consecutive: read again after reconnecting
+/// rather than looking for gaps.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentSessionPage {
+    pub session: AgentSession,
+    pub items: Vec<AgentItem>,
+    pub more_before: bool,
+}
+
+impl AgentSessionPage {
+    fn from_core(p: core::AgentSessionItems) -> Option<Self> {
+        Some(AgentSessionPage {
+            session: AgentSession::from_core(p.session)?,
+            items: p.items.into_iter().filter_map(AgentItem::from_core).collect(),
+            more_before: p.more_before,
+        })
+    }
+}
+
+/// A thread or a session as Markdown (`agent_export`), to share or save.
+/// Kept in memory only.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentExport {
+    /// At most 2 MiB, plain text: newlines and tabs, no other controls.
+    pub text: String,
+    /// Items were left out to fit; the text says so at its end.
+    pub truncated: bool,
+    /// A name to save it as (`claude-<title>-<date>.md`): `[A-Za-z0-9._-]`,
+    /// not starting with a dot.
+    pub file_name: String,
+}
+
+impl std::fmt::Debug for AgentExport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentExport")
+            .field("bytes", &self.text.len())
+            .field("truncated", &self.truncated)
+            .finish_non_exhaustive()
+    }
+}
+
+impl From<core::AgentExport> for AgentExport {
+    fn from(e: core::AgentExport) -> Self {
+        AgentExport { text: e.text, truncated: e.truncated, file_name: e.file_name }
     }
 }
 
@@ -3452,8 +3788,18 @@ impl Event {
                 outcome: AgentAskOutcome::from_wire(&outcome)?,
                 by_name,
             },
+            NodeEvent::AgentSession { device, session: Some(session), .. } => Event::AgentSessionChanged {
+                id: device.to_string(),
+                session: AgentSession::from_core(session)?,
+            },
+            NodeEvent::AgentSession { device, session: None, removed } => {
+                Event::AgentSessionRemoved { id: device.to_string(), session: removed? }
+            }
+            NodeEvent::AgentSessionItem { device, session, item } => {
+                Event::AgentSessionItem { id: device.to_string(), session, item: AgentItem::from_core(item)? }
+            }
             // Shown on PCs only.
-            NodeEvent::AgentsRequested { .. } => return None,
+            NodeEvent::AgentsRequested { .. } | NodeEvent::AgentSessionsRequested { .. } => return None,
             // Asked for by PCs only, and codes go to PCs.
             NodeEvent::BleWanted { .. }
             | NodeEvent::OneTimeCode { .. }
@@ -3843,7 +4189,12 @@ impl core::Platform for PlatformAdapter {
         player: &str,
         action: core::MediaAction,
         position: Option<u64>,
+        _value: Option<&str>,
     ) -> Result<(), core::MediaError> {
+        // A phone shares no player with shuffle or repeat (it doesn't offer them).
+        if matches!(action, core::MediaAction::Shuffle | core::MediaAction::Loop) {
+            return Err(core::MediaError::Unsupported);
+        }
         Ok(self.0.media_command(player.to_owned(), action.into(), position)?)
     }
     fn open_link(&self, from: &DeviceId, url: &str, _user_shared: bool) -> Result<(), String> {
@@ -4922,6 +5273,36 @@ impl G7LinkNode {
         self.run(async move { Ok(node.media_command(id, player, action.into(), position).await?) }).await
     }
 
+    /// Runs a command that takes a value on a paired device's media player:
+    /// `Shuffle` with `on` or `off`, `Repeat` with `none`, `track` or
+    /// `playlist`. Any other pair is `Internal` (a bad message).
+    pub async fn media_command_value(
+        &self,
+        id: String,
+        player: String,
+        action: MediaAction,
+        value: String,
+    ) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.media_command_value(id, player, action.into(), value).await?) }).await
+    }
+
+    /// The large picture a PC's player names as `art_full`: JPEG or PNG (tell
+    /// by the bytes), at most 2 MiB. Keep it in memory by key.
+    pub async fn media_art(&self, id: String, key: String) -> Result<Vec<u8>> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.media_art(id, key).await?.0) }).await
+    }
+
+    /// The app icon a PC's player names as `icon`: PNG, at most 16 KiB.
+    pub async fn media_icon(&self, id: String, key: String) -> Result<Vec<u8>> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.media_icon(id, key).await?) }).await
+    }
+
     // ---- Notifications ----
 
     /// A notification appeared or changed on this phone.
@@ -5227,6 +5608,13 @@ impl G7LinkNode {
         self.run(async move { Ok(node.ble_use(id, on, ask).await?.into()) }).await
     }
 
+    /// [`ble_use`](Self::ble_use), with what the PC says about its connect window.
+    pub async fn ble_use_reply(&self, id: String, on: bool, ask: bool) -> Result<BleUseReply> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.ble_use_reply(id, on, ask).await?.into()) }).await
+    }
+
     /// The app icon `key` that a `TextFieldState.icon` from PC `id` named, as
     /// a PNG of at most 16 KiB (untrusted: decode it with bounds).
     pub async fn remote_app_icon(&self, id: String, key: String) -> Result<Vec<u8>> {
@@ -5449,6 +5837,72 @@ impl G7LinkNode {
         let id = parse_id(&id)?;
         let node = self.node.clone();
         self.run(async move { Ok(node.agent_answer(id, token, allow).await?) }).await
+    }
+
+    // Sessions started on a PC outside G7 Link (docs/protocol/agents.md §3).
+    // `Denied`: the PC's `agents` or `agent_sessions` toggle is off for this
+    // phone (it shows its user a prompt); remember it and don't retry until
+    // the next catalog. `Unsupported`: the PC doesn't list sessions.
+
+    /// A PC's sessions started outside G7 Link (at most 50), in its order.
+    pub async fn agent_sessions(&self, id: String) -> Result<Vec<AgentSession>> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let sessions = self.run(async move { node.agent_sessions(id).await }).await?;
+        Ok(sessions.into_iter().filter_map(AgentSession::from_core).collect())
+    }
+
+    /// A page of a session: the newest `limit` items (at most 50), or the
+    /// ones before `before` (a `seq`).
+    pub async fn agent_session_read(
+        &self,
+        id: String,
+        session: String,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<AgentSessionPage> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let page = self.run(async move { node.agent_session_read(id, session, before, limit).await }).await?;
+        AgentSessionPage::from_core(page)
+            .ok_or_else(|| G7LinkError::Internal { reason: "unknown session state".into() })
+    }
+
+    /// The one session whose items this phone shows (`None`: none). Only it
+    /// gets `AgentSessionItem`; the watch ends with the connection. A PC
+    /// already serving two watching phones answers a third with a `BUSY`
+    /// `Internal`.
+    pub async fn agent_session_watch(&self, id: String, session: Option<String>) -> Result<()> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        self.run(async move { Ok(node.agent_session_watch(id, session).await?) }).await
+    }
+
+    /// "Continue here": makes the session a supervised thread started by
+    /// this phone, idle until you send something. Refused while it's open
+    /// anywhere (`BUSY`), or when its folder isn't an agent folder (`Denied`).
+    pub async fn agent_session_continue(&self, id: String, session: String) -> Result<AgentThread> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let thread = self.run(async move { node.agent_session_continue(id, session).await }).await?;
+        AgentThread::from_core(thread)
+            .ok_or_else(|| G7LinkError::Internal { reason: "unknown thread state".into() })
+    }
+
+    /// A thread (`thread`) or a followed session (`session`) as Markdown, to
+    /// share or save: exactly one of the two. A session needs the PC's
+    /// `agent_sessions` toggle too (`Denied` otherwise); `NotFound` when it's
+    /// gone.
+    pub async fn agent_export(
+        &self,
+        id: String,
+        thread: Option<String>,
+        session: Option<String>,
+    ) -> Result<AgentExport> {
+        let id = parse_id(&id)?;
+        let node = self.node.clone();
+        let export = self.run(async move { node.agent_export(id, thread, session).await }).await?;
+        Ok(export.into())
     }
 
     /// The context chip suggestion for the most recently received text clip, if any.
@@ -6097,7 +6551,137 @@ mod tests {
             summary: None,
             error: None,
             error_code: None,
+            step: Some("Run command".into()),
+            since: Some(1_794_999_000_000),
+            plan: Some(vec![
+                core::AgentPlanStep { text: "Read it".into(), status: "completed".into() },
+                core::AgentPlanStep { text: "Fix it".into(), status: "in_progress".into() },
+                core::AgentPlanStep { text: "Later".into(), status: "someday".into() },
+            ]),
         }
+    }
+
+    fn core_session(state: &str, guess: bool) -> core::AgentSession {
+        core::AgentSession {
+            id: "sc0123456789abcdef0123456789abcdef".into(),
+            agent: "claude".into(),
+            folder: "app".into(),
+            title: "Fix the login test".into(),
+            state: state.into(),
+            guess,
+            source: "desktop_app".into(),
+            updated: 1_795_000_100_000,
+            step: None,
+            summary: None,
+            waiting_for: Some("permission prompt".into()),
+            can_continue: false,
+            blocked: Some("open".into()),
+            since: Some(1_795_000_000_000),
+        }
+    }
+
+    #[test]
+    fn a_threads_step_since_and_plan_reach_kotlin() {
+        let thread = AgentThread::from_core(core_thread("working")).unwrap();
+        assert_eq!(thread.step.as_deref(), Some("Run command"));
+        assert_eq!(thread.since_ms, Some(1_794_999_000_000));
+        let plan = thread.plan.unwrap();
+        assert_eq!(
+            plan.iter().map(|s| s.status).collect::<Vec<_>>(),
+            [AgentPlanStatus::Completed, AgentPlanStatus::InProgress],
+            "a status this build doesn't know drops that step"
+        );
+        let older = core::AgentThread { step: None, since: None, plan: None, ..core_thread("done") };
+        let older = AgentThread::from_core(older).unwrap();
+        assert_eq!((older.step, older.since_ms, older.plan), (None, None, None));
+    }
+
+    #[test]
+    fn sessions_become_their_own_events_and_a_guess_stays_a_guess() {
+        let pc = core::DeviceId([3; 32]);
+        let changed = |session: core::AgentSession| {
+            Event::from_node(NodeEvent::AgentSession { device: pc, session: Some(session), removed: None })
+        };
+        match changed(core_session("needs_you", false)) {
+            Some(Event::AgentSessionChanged { session, .. }) => {
+                assert_eq!(session.state, AgentSessionState::NeedsYou);
+                assert_eq!(session.source, AgentSessionSource::DesktopApp);
+                assert_eq!(session.blocked, Some(AgentContinueBlock::Open));
+                assert_eq!(
+                    (session.updated_ms, session.since_ms),
+                    (1_795_000_100_000, Some(1_795_000_000_000))
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        for (state, guess) in [("needs_you", true), ("may_need_you", false), ("may_need_you", true)] {
+            match changed(core_session(state, guess)) {
+                Some(Event::AgentSessionChanged { session, .. }) => {
+                    assert_eq!(session.state, AgentSessionState::MayNeedYou, "{state} {guess}");
+                    assert!(session.guess);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        match changed(core::AgentSession {
+            source: "ide".into(),
+            blocked: Some("moon".into()),
+            ..core_session("idle", false)
+        }) {
+            Some(Event::AgentSessionChanged { session, .. }) => {
+                assert_eq!((session.source, session.blocked), (AgentSessionSource::Other, None));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(changed(core_session("sleeping", false)), None, "unknown words drop the event");
+        assert!(matches!(
+            Event::from_node(NodeEvent::AgentSession { device: pc, session: None, removed: Some("s1".into()) }),
+            Some(Event::AgentSessionRemoved { session, .. }) if session == "s1"
+        ));
+        let item = core::AgentItem {
+            seq: 0,
+            id: "u-0".into(),
+            kind: "user".into(),
+            when: 1_795_000_000_000,
+            text: Some("Hi".into()),
+            truncated: false,
+            tool: None,
+        };
+        assert!(matches!(
+            Event::from_node(NodeEvent::AgentSessionItem { device: pc, session: "s1".into(), item }),
+            Some(Event::AgentSessionItem { item, .. }) if item.seq == 0
+        ));
+        assert_eq!(Event::from_node(NodeEvent::AgentSessionsRequested { device: pc }), None);
+    }
+
+    #[test]
+    fn a_media_player_keeps_rate_age_art_icon_shuffle_and_repeat() {
+        let player = MediaPlayer {
+            id: "spotify".into(),
+            app: "Spotify".into(),
+            title: Some("Song".into()),
+            artist: None,
+            album: None,
+            playing: true,
+            duration: Some(200_000),
+            position: Some(1_000),
+            actions: vec![MediaAction::Play, MediaAction::Shuffle, MediaAction::Repeat],
+            art_key: None,
+            art: None,
+            rate_milli: Some(1_250),
+            age_ms: Some(40),
+            art_full: Some("big".into()),
+            icon: Some("00112233aabbccdd".into()),
+            shuffle: Some(false),
+            repeat: Some(MediaRepeat::Playlist),
+        };
+        let core: core::MediaPlayer = player.clone().into();
+        assert_eq!(core.actions, ["play", "shuffle", "loop"]);
+        assert_eq!((core.repeat.as_deref(), core.age), (Some("playlist"), Some(40)));
+        assert_eq!(MediaPlayer::from(core.clone()), player);
+        let unknown = core::MediaPlayer { repeat: Some("forever".into()), ..core };
+        assert_eq!(MediaPlayer::from(unknown).repeat, None);
+        assert_eq!(core::MediaAction::from(MediaAction::Repeat), core::MediaAction::Loop);
     }
 
     #[test]

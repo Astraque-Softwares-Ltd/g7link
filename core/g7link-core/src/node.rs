@@ -1423,7 +1423,9 @@ impl Shared {
         lock(&self.storage).remove_peer(peer);
         self.toggles.remove_peer(peer);
         self.deck.remove_peer(peer);
-        self.agents.remove_peer(peer);
+        if self.agents.remove_peer(peer) {
+            crate::agents::unwatch_on_platform(self, *peer);
+        }
         self.clear_remote_ring(*peer, None);
         let peer_id = *peer;
         self.stop_local_ring_if(move |ring| ring.peer == peer_id).await;
@@ -1614,7 +1616,9 @@ impl Shared {
             lock(&self.storage).remove_peer(&ended.peer);
             self.toggles.remove_peer(&ended.peer);
             self.deck.remove_peer(&ended.peer);
-            self.agents.session_ended(&ended.peer);
+            if self.agents.session_ended(&ended.peer) {
+                crate::agents::unwatch_on_platform(self, ended.peer);
+            }
             if paired {
                 // Why, as QUIC tells it: timed out, closed by the other side...
                 let reason = ended.conn.close_reason().map(|r| r.to_string()).unwrap_or_default();
@@ -2653,6 +2657,14 @@ impl Node {
     /// renewed ends after 45 s. `Error::Unsupported` for a PC without
     /// `ble.remote`.
     pub async fn ble_use(&self, peer: DeviceId, on: bool, ask: bool) -> Result<crate::BleUseState> {
+        Ok(self.ble_use_reply(peer, on, ask).await?.state)
+    }
+
+    /// Phone: [`ble_use`](Self::ble_use), with all the PC said: with `open`,
+    /// a PC from 0.1.14 also says how long its connect window stays open
+    /// (`window`, 0: none now) and, with none, when a renewal can open one
+    /// (`retry`).
+    pub async fn ble_use_reply(&self, peer: DeviceId, on: bool, ask: bool) -> Result<crate::BleUseReply> {
         if !self.shared.store.is_paired(&peer)? {
             return Err(Error::NotPaired);
         }
@@ -2667,8 +2679,7 @@ impl Node {
         } else {
             return Err(Error::Offline);
         };
-        let reply: g7link_protocol::messages::BleUseReply = reply.expect_body(types::BLE_USE)?;
-        Ok(reply.state)
+        Ok(reply.expect_body(types::BLE_USE)?)
     }
 
     /// Whether this device can reach `peer` for touchpad input and the
@@ -2788,6 +2799,9 @@ impl Node {
         }
         if toggle == crate::agents::TOGGLE {
             crate::agents::toggled(&self.shared, peer, enabled);
+        }
+        if toggle == crate::agents::SESSIONS_TOGGLE {
+            crate::agents::sessions_toggled(&self.shared, peer, enabled);
         }
         if toggle == crate::storage::TOGGLE {
             let mut st = self.shared.storage.lock().unwrap_or_else(|e| e.into_inner());
@@ -4318,10 +4332,55 @@ impl Node {
         if !self.shared.toggle_on(&peer, crate::media::TOGGLE) {
             return Err(Error::Denied);
         }
-        let command = MediaCommand { player, action: action.as_str().into(), position };
+        let command = MediaCommand { player, action: action.as_str().into(), position, value: None };
         let env = Envelope::new(types::MEDIA_COMMAND, &command)?;
         self.request(peer, env).await?.expect(types::OK)?;
         Ok(())
+    }
+
+    /// Runs a command that takes a value on a paired device's media player:
+    /// [`MediaAction::Shuffle`](crate::MediaAction::Shuffle) with `on` or
+    /// `off`, [`MediaAction::Loop`](crate::MediaAction::Loop) with `none`,
+    /// `track` or `playlist`.
+    pub async fn media_command_value(
+        &self,
+        peer: DeviceId,
+        player: String,
+        action: crate::MediaAction,
+        value: String,
+    ) -> Result<()> {
+        if !self.shared.toggle_on(&peer, crate::media::TOGGLE) {
+            return Err(Error::Denied);
+        }
+        let command =
+            MediaCommand { player, action: action.as_str().into(), position: None, value: Some(value) };
+        if !command.value_fits() {
+            return Err(Error::Protocol("that action doesn't take that value".into()));
+        }
+        let env = Envelope::new(types::MEDIA_COMMAND, &command)?;
+        self.request(peer, env).await?.expect(types::OK)?;
+        Ok(())
+    }
+
+    /// The large picture a paired device's player names as `art_full`
+    /// (`docs/protocol/media.md` §2.3): its bytes (at most 2 MiB) and format.
+    /// Fetch it when it's shown, and keep it in memory by key.
+    pub async fn media_art(&self, peer: DeviceId, key: String) -> Result<(Vec<u8>, crate::ArtFormat)> {
+        if !self.shared.toggle_on(&peer, crate::media::TOGGLE) {
+            return Err(Error::Denied);
+        }
+        let session = self.connected(&peer)?;
+        crate::media::read_art(&self.shared, &session, key).await
+    }
+
+    /// The app icon (PNG, at most 16 KiB) a paired device's player names as
+    /// `icon` (`docs/protocol/media.md` §2.2).
+    pub async fn media_icon(&self, peer: DeviceId, key: String) -> Result<Vec<u8>> {
+        if !self.shared.toggle_on(&peer, crate::media::TOGGLE) {
+            return Err(Error::Denied);
+        }
+        let session = self.connected(&peer)?;
+        crate::media::icon(&self.shared, &session, key).await
     }
 
     // ---- Notifications (docs/protocol/notifications.md) ----
@@ -4560,6 +4619,81 @@ impl Node {
     /// Phone: answers an ask, this time only.
     pub async fn agent_answer(&self, peer: DeviceId, token: String, allow: bool) -> Result<()> {
         crate::agents::answer_ask(&self.shared, peer, token, allow).await
+    }
+
+    /// PC: a session started on this PC outside G7 Link appeared or changed
+    /// (`session`), or left the list (`removed`, its id), for the phones with
+    /// both `agents` and `agent_sessions` on (`docs/protocol/agents.md` §3).
+    /// A session's changes go at most once per 2 s (the newest is kept); its
+    /// folder goes as a name, never a path.
+    pub async fn agent_session(
+        &self,
+        session: Option<crate::AgentSession>,
+        removed: Option<String>,
+    ) -> Result<()> {
+        crate::agents::send_session(&self.shared, crate::agents::AgentSessionEvent { session, removed })
+    }
+
+    /// PC: an item of a session was added or updated; only a phone watching
+    /// that session gets it.
+    pub async fn agent_session_item(&self, session: String, item: crate::AgentItem) -> Result<()> {
+        crate::agents::send_session_item(&self.shared, session, item)
+    }
+
+    /// Phone: the sessions started on `peer` outside G7 Link (at most 50).
+    /// `Denied` while either toggle is off there.
+    pub async fn agent_sessions(&self, peer: DeviceId) -> Result<Vec<crate::AgentSession>> {
+        crate::agents::sessions(&self.shared, peer).await
+    }
+
+    /// Phone: a page of a session's items, the newest `limit` (at most 50) or
+    /// the ones before `before`. Their `seq`s grow but aren't consecutive.
+    pub async fn agent_session_read(
+        &self,
+        peer: DeviceId,
+        session: String,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<crate::AgentSessionItems> {
+        crate::agents::session_read(&self.shared, peer, session, before, limit).await
+    }
+
+    /// Phone: the one session whose items this phone shows (`None`: none).
+    pub async fn agent_session_watch(&self, peer: DeviceId, session: Option<String>) -> Result<()> {
+        crate::agents::session_watch(&self.shared, peer, session).await
+    }
+
+    /// Phone: makes a session a supervised thread started by this phone.
+    pub async fn agent_session_continue(
+        &self,
+        peer: DeviceId,
+        session: String,
+    ) -> Result<crate::AgentThread> {
+        crate::agents::session_continue(&self.shared, peer, session).await
+    }
+
+    /// Phone: a thread (`thread`) or a session (`session`) of `peer` as
+    /// Markdown to share or save, at most 2 MiB, on a stream of its own
+    /// (`docs/protocol/agents.md` §4). Exactly one of the two; a session
+    /// needs `agent_sessions` on there too. Kept in memory only.
+    pub async fn agent_export(
+        &self,
+        peer: DeviceId,
+        thread: Option<String>,
+        session: Option<String>,
+    ) -> Result<crate::AgentExport> {
+        crate::agents::export(&self.shared, peer, crate::agents::AgentExportRequest { thread, session }).await
+    }
+
+    /// [`agent_export`](Self::agent_export) without checking the request
+    /// here, so tests can see what a PC refuses.
+    #[doc(hidden)]
+    pub async fn debug_agent_export(
+        &self,
+        peer: DeviceId,
+        request: crate::agents::AgentExportRequest,
+    ) -> Result<crate::AgentExport> {
+        crate::agents::export_unchecked(&self.shared, peer, request).await
     }
 
     /// Sends an `agent.*` request as is, without the checks the methods
