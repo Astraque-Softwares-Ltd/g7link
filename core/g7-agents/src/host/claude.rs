@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 
 use crate::api::{self, ApprovalKind, Mode, ToolStatus};
 use crate::host::agents::{
-    AgentProcess, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path, prefixed_lines,
+    AgentProcess, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path, plan_of,
+    prefixed_lines,
 };
 
 /// The MCP server name and our tool, as Claude sees them.
@@ -113,6 +114,7 @@ pub fn tool_spec(name: &str, input: &Value, cwd: &Path) -> ToolSpec {
                 command: Some(command),
                 diff: None,
                 path: None,
+                description: s("description").map(str::to_owned),
             }
         }
         "Write" => {
@@ -160,8 +162,23 @@ pub fn tool_spec(name: &str, input: &Value, cwd: &Path) -> ToolSpec {
             command: None,
             diff: None,
             path: None,
+            description: None,
         },
     }
+}
+
+/// The plan in a `TodoWrite` call's input.
+pub fn todo_plan(name: &str, input: &Value) -> Option<Vec<api::PlanStep>> {
+    if name != "TodoWrite" {
+        return None;
+    }
+    let todos = input.get("todos")?.as_array()?;
+    Some(plan_of(todos.iter().map(|t| {
+        (
+            t.get("content").and_then(Value::as_str).unwrap_or_default(),
+            t.get("status").and_then(Value::as_str).unwrap_or_default(),
+        )
+    })))
 }
 
 fn edit_spec(name: &str, path: String, diff: String) -> ToolSpec {
@@ -174,6 +191,7 @@ fn edit_spec(name: &str, path: String, diff: String) -> ToolSpec {
         command: None,
         diff: Some(diff),
         path: Some(path),
+        description: None,
     }
 }
 
@@ -382,6 +400,9 @@ impl ClaudeMapper {
                     let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                     let input = block.get("input").unwrap_or(&Value::Null);
                     self.tool_names.insert(key.to_owned(), name.to_owned());
+                    if let Some(plan) = todo_plan(name, input) {
+                        steps.push(Step::Plan(plan));
+                    }
                     steps.push(Step::ToolStart {
                         key: key.to_owned(),
                         tool: tool_spec(name, input, &self.cwd),
@@ -771,6 +792,22 @@ pub(crate) mod tests {
         let Step::TurnEnded(end) = &steps[0] else { panic!() };
         assert_eq!(end.error.as_ref().unwrap().code, code::AGENT_EXITED);
         assert_eq!(end.error.as_ref().unwrap().message, "exit 3");
+    }
+
+    #[test]
+    fn a_todo_list_is_the_plan() {
+        let mut mapper = ClaudeMapper::new(PathBuf::from("/w"), None);
+        mapper.turn_started();
+        let line = json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"toolu_t","name":"TodoWrite",
+            "input":{"todos":[{"content":"Read the code","status":"completed","activeForm":"Reading"},
+                              {"content":"Fix the test","status":"in_progress","activeForm":"Fixing"}]}}]}});
+        let steps = mapper.feed(&line);
+        let Step::Plan(plan) = &steps[0] else { panic!("{steps:?}") };
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[1].status, api::PlanStatus::InProgress);
+        assert!(matches!(&steps[1], Step::ToolStart { .. }));
+        let bash = tool_spec("Bash", &json!({"command":"ls","description":"List files"}), Path::new("/w"));
+        assert_eq!(bash.step(), "List files");
     }
 
     #[test]

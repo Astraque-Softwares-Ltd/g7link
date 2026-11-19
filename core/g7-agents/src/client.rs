@@ -298,7 +298,12 @@ pub mod calls {
     }
 
     pub fn subscribe(threads: ThreadSelection, deltas: bool) -> Call<()> {
-        Call::new(method::SUBSCRIBE, &SubscribeParams { threads, deltas }, unit)
+        Call::new(method::SUBSCRIBE, &SubscribeParams { threads, deltas, sessions: false }, unit)
+    }
+
+    /// `subscribe` with every field, `sessions` included.
+    pub fn subscribe_with(params: SubscribeParams) -> Call<()> {
+        Call::new(method::SUBSCRIBE, &params, unit)
     }
 
     pub fn unsubscribe() -> Call<()> {
@@ -306,7 +311,43 @@ pub mod calls {
     }
 
     pub fn ui_viewing(thread_id: Option<String>) -> Call<()> {
-        Call::new(method::UI_VIEWING, &UiViewingParams { thread_id }, unit)
+        Call::new(method::UI_VIEWING, &UiViewingParams { thread_id, session_id: None }, unit)
+    }
+
+    /// `ui.viewing` with every field, `session_id` included.
+    pub fn ui_viewing_with(params: UiViewingParams) -> Call<()> {
+        Call::new(method::UI_VIEWING, &params, unit)
+    }
+
+    pub fn sessions_list(limit: Option<u32>) -> Call<Vec<Session>> {
+        Call::new(method::SESSIONS_LIST, &SessionsListParams { limit }, |v| {
+            parse_as::<SessionsListResult>(v).map(|r| r.sessions)
+        })
+    }
+
+    pub fn session_read(params: SessionReadParams) -> Call<SessionReadResult> {
+        Call::new(method::SESSION_READ, &params, parse_as)
+    }
+
+    pub fn session_watch(session_id: Option<String>) -> Call<()> {
+        Call::new(method::SESSION_WATCH, &SessionWatchParams { session_id }, unit)
+    }
+
+    pub fn session_continue(params: SessionContinueParams) -> Call<ThreadInfo> {
+        Call::new(method::SESSION_CONTINUE, &params, |v| parse_as::<ThreadResult>(v).map(|r| r.thread))
+    }
+
+    pub fn thread_export(params: ThreadExportParams) -> Call<ThreadExportResult> {
+        Call::new(method::THREAD_EXPORT, &params, parse_as)
+    }
+
+    pub fn settings_get() -> Call<HostSettings> {
+        Call::new(method::SETTINGS_GET, &Empty {}, parse_as)
+    }
+
+    /// Turns following sessions started outside G7 on or off; the new settings.
+    pub fn sessions_set_following(on: bool) -> Call<HostSettings> {
+        Call::new(method::SESSIONS_SET_FOLLOWING, &SessionsSetFollowingParams { on }, parse_as)
     }
 }
 
@@ -327,8 +368,17 @@ macro_rules! with_calls {
             thread_terminal_command(thread_id: String) -> TerminalCommandResult;
             approval_answer(token: String, decision: Decision, by: By) -> ();
             subscribe(threads: ThreadSelection, deltas: bool) -> ();
+            subscribe_with(params: SubscribeParams) -> ();
             unsubscribe() -> ();
             ui_viewing(thread_id: Option<String>) -> ();
+            ui_viewing_with(params: UiViewingParams) -> ();
+            sessions_list(limit: Option<u32>) -> Vec<Session>;
+            session_read(params: SessionReadParams) -> SessionReadResult;
+            session_watch(session_id: Option<String>) -> ();
+            session_continue(params: SessionContinueParams) -> ThreadInfo;
+            thread_export(params: ThreadExportParams) -> ThreadExportResult;
+            settings_get() -> HostSettings;
+            sessions_set_following(on: bool) -> HostSettings;
         }
     };
 }
@@ -543,7 +593,7 @@ async fn read_loop(
 ) {
     let mut buf = Vec::new();
     loop {
-        match lines::read_line(&mut reader, &mut buf, MAX_LINE).await {
+        match lines::read_line(&mut reader, &mut buf, MAX_REPLY_LINE).await {
             Ok(LineRead::Line) => {}
             Ok(LineRead::Eof | LineRead::TooLong) | Err(_) => break,
         }
@@ -659,7 +709,7 @@ impl BlockingClient {
     fn read_incoming(&mut self, timeout: Option<Duration>) -> Result<Incoming, ClientError> {
         self.reader.get_ref().set_read_timeout(timeout)?;
         loop {
-            match lines::read_line_blocking(&mut self.reader, &mut self.partial, MAX_LINE) {
+            match lines::read_line_blocking(&mut self.reader, &mut self.partial, MAX_REPLY_LINE) {
                 Ok(LineRead::Line) => {}
                 Ok(LineRead::Eof) => return Err(ClientError::Closed),
                 Ok(LineRead::TooLong) => {
@@ -858,6 +908,53 @@ mod tests {
         let second = client.next_event(Some(Duration::from_secs(1))).unwrap().unwrap();
         assert_eq!(second.thread_id(), Some("a1"));
         assert!(matches!(client.next_event(Some(Duration::from_millis(50))), Err(ClientError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn a_full_size_export_reaches_the_client() {
+        let dir = private_tempdir();
+        let path = dir.path().join("host.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        // The longest a reply gets: every byte of the text escaped.
+        let text = "\"".repeat(MAX_EXPORT);
+        let sent = text.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut lines = tokio::io::BufReader::new(read).lines();
+            let hello: Request = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let reply = format!(
+                "{{\"id\":{},\"result\":{{\"version\":1,\"host_version\":\"x\",\"pid\":3}}}}\n",
+                hello.id
+            );
+            write.write_all(reply.as_bytes()).await.unwrap();
+            let req: Request = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(req.method, "thread.export");
+            let result = ThreadExportResult {
+                text: sent,
+                truncated: false,
+                file_name: "claude-x-1970-01-01.md".into(),
+            };
+            let line = serde_json::json!({ "id": req.id, "result": result }).to_string();
+            assert!(line.len() > MAX_LINE && line.len() <= MAX_REPLY_LINE, "{}", line.len());
+            write.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+            let _ = lines.next_line().await;
+        });
+        let (client, _events) =
+            Client::connect(&path, HelloParams { client: ClientKind::Test, version: 1, bridge_token: None })
+                .await
+                .unwrap();
+        let export = client
+            .thread_export(ThreadExportParams {
+                thread_id: Some("0123456789abcdef0123456789abcdef".into()),
+                session_id: None,
+                format: ExportFormat::Markdown,
+            })
+            .await
+            .unwrap();
+        assert_eq!(export.text, text);
+        drop(client);
+        server.await.unwrap();
     }
 
     #[test]

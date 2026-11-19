@@ -1806,6 +1806,58 @@
      "type": "object"
     }
    ]
+  },
+  "TurnPlanStep": {
+   "properties": {
+    "status": {
+     "$ref": "#/definitions/TurnPlanStepStatus"
+    },
+    "step": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "status",
+    "step"
+   ],
+   "type": "object"
+  },
+  "TurnPlanStepStatus": {
+   "enum": [
+    "pending",
+    "inProgress",
+    "completed"
+   ],
+   "type": "string"
+  },
+  "TurnPlanUpdatedNotification": {
+   "properties": {
+    "explanation": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "plan": {
+     "items": {
+      "$ref": "#/definitions/TurnPlanStep"
+     },
+     "type": "array"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "plan",
+    "threadId",
+    "turnId"
+   ],
+   "title": "TurnPlanUpdatedNotification",
+   "type": "object"
   }
  }
 }

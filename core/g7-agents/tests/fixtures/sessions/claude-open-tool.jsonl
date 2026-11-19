@@ -1,0 +1,8 @@
+{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/home/me/code/app","sessionId":"a0000000-0000-4000-8000-0000000000aa","version":"2.1.325","type":"user","uuid":"a0000000-0000-4000-8000-000000000001","timestamp":"2026-11-18T11:06:50.000Z","message":{"role":"user","content":"Write a short note."}}
+{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/home/me/code/app","sessionId":"a0000000-0000-4000-8000-0000000000aa","version":"2.1.325","type":"assistant","uuid":"a0000000-0000-4000-8000-000000000002","timestamp":"2026-11-18T11:06:51.000Z","message":{"id":"msg_10","type":"message","role":"assistant","content":[{"type":"text","text":"I'll write it now."}],"stop_reason":null},"apiBlockIndex":0}
+{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"/home/me/code/app","sessionId":"a0000000-0000-4000-8000-0000000000aa","version":"2.1.325","type":"assistant","uuid":"a0000000-0000-4000-8000-000000000003","timestamp":"2026-11-18T11:06:52.000Z","message":{"id":"msg_10","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_10","name":"Write","input":{"file_path":"/home/me/code/app/notes.txt","content":"hello"}}],"stop_reason":"tool_use"},"apiBlockIndex":1}
+{"type":"attachment","attachment":{"type":"todo","content":[]},"sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"queue-operation","operation":"enqueue","sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"file-history-delta","sessionId":"a0000000-0000-4000-8000-0000000000aa","delta":{}}
+{"type":"api-request","requestId":"req_2","sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"mode","mode":"default","sessionId":"a0000000-0000-4000-8000-0000000000aa"}

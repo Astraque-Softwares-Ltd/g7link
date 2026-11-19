@@ -8,7 +8,9 @@ pub mod bridge;
 pub mod claude;
 pub mod codex;
 pub mod env;
+pub mod export;
 pub mod notify;
+pub mod sessions;
 pub mod store;
 pub mod threads;
 
@@ -60,6 +62,30 @@ pub struct Config {
     pub idle_exit: Duration,
     pub agent_idle: Duration,
     pub approval_lifetime_ms: u64,
+    /// `$CLAUDE_CONFIG_DIR`, else `~/.claude`: read for sessions started elsewhere.
+    pub claude_home: PathBuf,
+    /// `$CODEX_HOME`, else `~/.codex`.
+    pub codex_home: PathBuf,
+    /// `/proc`, or a fake tree in tests.
+    pub proc_root: PathBuf,
+    /// Follow sessions started outside G7 (off with `G7_AGENTS_NO_SESSIONS=1`).
+    pub sessions: bool,
+}
+
+impl Config {
+    /// Where the session reader looks.
+    pub fn session_roots(&self) -> sessions::paths::Roots {
+        let config = env::lookup(&self.env, "XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| env::lookup(&self.env, "HOME").map(|h| PathBuf::from(h).join(".config")));
+        sessions::paths::Roots {
+            claude_home: self.claude_home.clone(),
+            codex_home: self.codex_home.clone(),
+            proc_root: self.proc_root.clone(),
+            claude_app_dir: config.map(|c| c.join("Claude")),
+        }
+    }
 }
 
 impl Config {
@@ -75,6 +101,15 @@ impl Config {
             Some(dir) => dir,
             None => dirs::data_dir().ok_or_else(|| io::Error::other("no data directory"))?.join("g7-agents"),
         };
+        let env: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let roots = sessions::paths::Roots::from_env(&env);
+        let sessions = roots.is_some() && std::env::var("G7_AGENTS_NO_SESSIONS").map_or(true, |v| v != "1");
+        let roots = roots.unwrap_or(sessions::paths::Roots {
+            claude_home: PathBuf::from("/nonexistent/.claude"),
+            codex_home: PathBuf::from("/nonexistent/.codex"),
+            proc_root: PathBuf::from("/proc"),
+            claude_app_dir: None,
+        });
         Ok(Config {
             socket,
             runtime_dir,
@@ -83,10 +118,14 @@ impl Config {
             codex_bin: abs("G7_AGENTS_CODEX_BIN"),
             bridge_exe: std::env::current_exe()?,
             notify: std::env::var("G7_AGENTS_NO_NOTIFY").map_or(true, |v| v != "1"),
-            env: std::env::vars_os().collect(),
+            env,
             idle_exit: IDLE_EXIT,
             agent_idle: Duration::from_millis(AGENT_IDLE_MS),
             approval_lifetime_ms: APPROVAL_LIFETIME_MS,
+            claude_home: roots.claude_home,
+            codex_home: roots.codex_home,
+            proc_root: roots.proc_root,
+            sessions,
         })
     }
 }
@@ -195,6 +234,7 @@ async fn write_loop(outbox: Arc<Outbox>, mut writer: tokio::net::unix::OwnedWrit
 struct Subscription {
     threads: ThreadSelection,
     deltas: bool,
+    sessions: bool,
 }
 
 struct ClientSlot {
@@ -202,6 +242,20 @@ struct ClientSlot {
     outbox: Arc<Outbox>,
     subscription: Option<Subscription>,
     viewing: Option<String>,
+    viewing_session: Option<String>,
+    /// The one session whose items this connection gets.
+    watching: Option<String>,
+}
+
+impl ClientSlot {
+    fn new(kind: ClientKind, outbox: Arc<Outbox>) -> Self {
+        Self { kind, outbox, subscription: None, viewing: None, viewing_session: None, watching: None }
+    }
+
+    /// A launcher or G7 Link: a client that shows threads to a person.
+    fn shows_threads(&self) -> bool {
+        matches!(self.kind, ClientKind::Launcher | ClientKind::Link)
+    }
 }
 
 /// Connected clients and what each wants to hear.
@@ -221,9 +275,26 @@ impl Hub {
         self.clients.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Sends `event` to every subscribed client it concerns.
+    /// Sends `event` to every subscribed client it concerns. Session events
+    /// go only to clients that asked for them: `session.state` and
+    /// `session.removed` to subscriptions with `sessions`, `session.item` to
+    /// the connections watching that session.
     pub fn broadcast(&self, event: &Event) {
         let line = event.to_line();
+        if let Some(session) = event.session_id() {
+            let item = matches!(event, Event::SessionItem(_));
+            for slot in self.lock().values() {
+                let wants = if item {
+                    slot.watching.as_deref() == Some(session)
+                } else {
+                    slot.subscription.as_ref().is_some_and(|s| s.sessions)
+                };
+                if wants {
+                    slot.outbox.push(line.clone(), false);
+                }
+            }
+            return;
+        }
         let delta = matches!(event, Event::ThreadDelta(_));
         let thread = event.thread_id();
         for slot in self.lock().values() {
@@ -240,22 +311,59 @@ impl Hub {
         }
     }
 
-    /// Sends `ui.open` to every launcher; how many got it.
+    /// Sends `ui.open` to every launcher and G7 Link; how many got it.
     pub fn ui_open(&self, thread_id: &str) -> usize {
         let line = Event::UiOpen(ThreadIdParams { thread_id: thread_id.to_owned() }).to_line();
         let mut sent = 0;
-        for slot in self.lock().values().filter(|s| s.kind == ClientKind::Launcher) {
+        for slot in self.lock().values().filter(|s| s.shows_threads()) {
             slot.outbox.push(line.clone(), false);
             sent += 1;
         }
         sent
     }
 
-    /// A launcher says its window shows this thread.
+    /// A launcher or G7 Link says its window shows this thread.
     pub fn launcher_viewing(&self, thread_id: &str) -> bool {
+        self.lock().values().any(|s| s.shows_threads() && s.viewing.as_deref() == Some(thread_id))
+    }
+
+    /// Some connection subscribed with `sessions` or watches a session.
+    pub fn wants_sessions(&self) -> bool {
         self.lock()
             .values()
-            .any(|s| s.kind == ClientKind::Launcher && s.viewing.as_deref() == Some(thread_id))
+            .any(|s| s.watching.is_some() || s.subscription.as_ref().is_some_and(|sub| sub.sessions))
+    }
+
+    /// The sessions some connection watches.
+    pub fn watched_sessions(&self) -> std::collections::HashSet<String> {
+        self.lock().values().filter_map(|s| s.watching.clone()).collect()
+    }
+
+    /// No connection watches a session any more.
+    fn clear_watches(&self) {
+        for slot in self.lock().values_mut() {
+            slot.watching = None;
+        }
+    }
+
+    /// Sets what `client` watches, unless that would make more than
+    /// [`MAX_WATCHED_SESSIONS`] sessions watched.
+    fn set_watch(&self, client: u64, session: Option<String>) -> bool {
+        let mut clients = self.lock();
+        if let Some(wanted) = &session {
+            let others: std::collections::HashSet<&String> = clients
+                .iter()
+                .filter(|(id, _)| **id != client)
+                .filter_map(|(_, s)| s.watching.as_ref())
+                .collect();
+            if !others.contains(wanted) && others.len() >= MAX_WATCHED_SESSIONS {
+                return false;
+            }
+        }
+        if let Some(slot) = clients.get_mut(&client) {
+            slot.watching = session;
+        }
+        true
     }
 
     fn set(&self, client: u64, f: impl FnOnce(&mut ClientSlot)) {
@@ -287,6 +395,7 @@ pub struct Host {
     pub events: EventTx,
     pub notifier: Option<Notifier>,
     pub hostname: String,
+    pub sessions: sessions::Sessions,
     clients: AtomicUsize,
     next_client: AtomicU64,
     idle_since: Mutex<Instant>,
@@ -351,6 +460,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
 
     let mut store = Store::open(config.data_dir.clone())?;
     let registry = Registry::load(&mut store, config.approval_lifetime_ms);
+    let settings = store.load_settings();
     let store = StoreHandle::spawn(store)?;
     let (events_tx, mut events_rx) = mpsc::unbounded_channel::<(String, u64, AgentEvent)>();
     let (actions_tx, mut actions_rx) = mpsc::unbounded_channel::<NoteAction>();
@@ -364,12 +474,14 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         events: events_tx,
         notifier,
         hostname: hostname(),
+        sessions: sessions::Sessions::new(&config),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
         shutdown: Notify::new(),
         config,
     });
+    host.sessions.set_following_loaded(settings.follow_sessions);
     tracing::info!(pid = std::process::id(), "agent host serving");
 
     // Agent events, in order, one at a time.
@@ -442,6 +554,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
     };
     accept.abort();
     let _ = std::fs::remove_file(&host.config.socket);
+    host.sessions.stop();
     host.shutdown_threads().await;
     host.store.flush().await;
     pump.abort();
@@ -539,11 +652,23 @@ impl Host {
                         {
                             return Err(RpcError::new(ErrorCode::BadRequest, "bad thread list"));
                         }
+                        let sessions = p.sessions && self.config.sessions;
                         self.hub.set(client_id, |slot| {
-                            slot.subscription = Some(Subscription { threads: p.threads, deltas: p.deltas });
+                            slot.subscription =
+                                Some(Subscription { threads: p.threads, deltas: p.deltas, sessions });
                         });
+                        if sessions {
+                            self.sessions_wake();
+                        }
                         Ok(json!({}))
                     });
+                    Self::reply(&outbox, request.id, result);
+                }
+                (Role::Client(_), method::SESSION_WATCH) => {
+                    let result = match parse::<SessionWatchParams>(request.params) {
+                        Ok(p) => self.session_watch(client_id, p.session_id).await.map(|()| json!({})),
+                        Err(e) => Err(e),
+                    };
                     Self::reply(&outbox, request.id, result);
                 }
                 (Role::Client(_), method::UNSUBSCRIBE) => {
@@ -552,7 +677,10 @@ impl Host {
                 }
                 (Role::Client(_), method::UI_VIEWING) => {
                     let result = parse::<UiViewingParams>(request.params).map(|p| {
-                        self.hub.set(client_id, |slot| slot.viewing = p.thread_id);
+                        self.hub.set(client_id, |slot| {
+                            slot.viewing = p.thread_id;
+                            slot.viewing_session = p.session_id.filter(|id| is_valid_session_id(id));
+                        });
                         json!({})
                     });
                     Self::reply(&outbox, request.id, result);
@@ -626,10 +754,7 @@ impl Host {
             Role::Client(kind) => *kind,
             Role::Bridge { .. } => ClientKind::Bridge,
         };
-        self.hub.lock().insert(
-            client_id,
-            ClientSlot { kind, outbox: outbox.clone(), subscription: None, viewing: None },
-        );
+        self.hub.lock().insert(client_id, ClientSlot::new(kind, outbox.clone()));
         let result = HelloResult {
             version: API_VERSION,
             host_version: env!("CARGO_PKG_VERSION").into(),
@@ -719,6 +844,29 @@ impl Host {
                 self.approval_answer(&p.token, p.decision, p.by)?;
                 Ok(json!({}))
             }
+            method::SESSIONS_LIST => {
+                let p: SessionsListParams = parse(params)?;
+                let limit = p.limit.map_or(MAX_SESSIONS, |l| (l as usize).clamp(1, MAX_SESSIONS));
+                to_value(&SessionsListResult { sessions: self.sessions_list(limit).await })
+            }
+            method::SESSION_READ => {
+                let p: SessionReadParams = parse(params)?;
+                to_value(&self.session_read(p).await?)
+            }
+            method::SESSION_CONTINUE => {
+                let p: SessionContinueParams = parse(params)?;
+                let thread = self.session_continue(p).await?;
+                to_value(&ThreadResult { thread })
+            }
+            method::SETTINGS_GET => to_value(&self.settings()),
+            method::THREAD_EXPORT => {
+                let p: ThreadExportParams = parse(params)?;
+                to_value(&self.thread_export(p).await?)
+            }
+            method::SESSIONS_SET_FOLLOWING => {
+                let p: SessionsSetFollowingParams = parse(params)?;
+                to_value(&self.sessions_set_following(p.on).await?)
+            }
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
             _ => Err(RpcError::new(ErrorCode::BadRequest, "unknown method")),
         }
@@ -803,6 +951,10 @@ pub(crate) fn test_host(dir: &std::path::Path, approval_lifetime_ms: u64) -> Arc
         idle_exit: IDLE_EXIT,
         agent_idle: Duration::from_millis(AGENT_IDLE_MS),
         approval_lifetime_ms,
+        claude_home: dir.join("claude"),
+        codex_home: dir.join("codex"),
+        proc_root: dir.join("proc"),
+        sessions: true,
     };
     let mut store = Store::open(config.data_dir.clone()).unwrap();
     let registry = Registry::load(&mut store, approval_lifetime_ms);
@@ -816,6 +968,7 @@ pub(crate) fn test_host(dir: &std::path::Path, approval_lifetime_ms: u64) -> Arc
         events,
         notifier: None,
         hostname: "test-pc".into(),
+        sessions: sessions::Sessions::new(&config),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),

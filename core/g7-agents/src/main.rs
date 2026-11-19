@@ -44,6 +44,9 @@ enum Command {
     },
     /// List threads, newest first.
     Threads,
+    /// List sessions started outside G7 (a terminal, the Claude or Codex
+    /// app): ids and states only.
+    Sessions,
 }
 
 #[derive(Subcommand)]
@@ -178,6 +181,25 @@ fn client_command(command: Command) -> Result<(), ClientError> {
                     state.unwrap_or_default(),
                     thread.folder_label,
                     thread.title
+                );
+            }
+        }
+        Command::Sessions => {
+            for session in client.sessions_list(None)? {
+                let word = |v: serde_json::Result<serde_json::Value>| {
+                    v.ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+                };
+                let continuing = match session.blocked {
+                    None => "can continue".to_owned(),
+                    Some(block) => format!("blocked: {}", word(serde_json::to_value(block))),
+                };
+                println!(
+                    "{}  {}  {}  {}  {}  {continuing}",
+                    session.id,
+                    session.agent.display_name(),
+                    word(serde_json::to_value(session.state)),
+                    word(serde_json::to_value(session.source)),
+                    if session.open { "open" } else { "closed" },
                 );
             }
         }

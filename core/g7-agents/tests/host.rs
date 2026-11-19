@@ -98,6 +98,10 @@ impl TestHost {
             idle_exit: host::IDLE_EXIT,
             agent_idle: opts.agent_idle.unwrap_or(Duration::from_secs(600)),
             approval_lifetime_ms: opts.approval_lifetime_ms.unwrap_or(APPROVAL_LIFETIME_MS),
+            claude_home: dir.join("home/.claude"),
+            codex_home: dir.join("home/.codex"),
+            proc_root: dir.join("proc"),
+            sessions: false,
         }
     }
 

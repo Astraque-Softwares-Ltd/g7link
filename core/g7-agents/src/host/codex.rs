@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::api::{ApprovalKind, Mode, ToolStatus};
 use crate::host::agents::{
     Answer, ApprovalSpec, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path,
-    parse_codex_account,
+    parse_codex_account, plan_of,
 };
 use crate::host::claude::usage_limit_message;
 
@@ -62,6 +62,7 @@ fn command_tool(item: &Value) -> ToolSpec {
         command: Some(command),
         diff: None,
         path: None,
+        description: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn file_tool(item: &Value, cwd: &Path) -> ToolSpec {
         command: None,
         diff: Some(detail),
         path,
+        description: None,
     }
 }
 
@@ -189,6 +191,7 @@ impl CodexMapper {
                                 command: None,
                                 diff: None,
                                 path: None,
+                                description: None,
                             },
                         });
                     }
@@ -256,6 +259,15 @@ impl CodexMapper {
                 }
             }
             "account/rateLimits/updated" => self.rate_limits = params.get("rateLimits").cloned(),
+            "turn/plan/updated" => {
+                if let Some(entries) = params.get("plan").and_then(Value::as_array) {
+                    steps.push(Step::Plan(plan_of(
+                        entries
+                            .iter()
+                            .map(|e| (s(e, "step").unwrap_or_default(), s(e, "status").unwrap_or_default())),
+                    )));
+                }
+            }
             "turn/completed" => {
                 if !self.turn_running {
                     return steps;
@@ -330,6 +342,7 @@ impl CodexMapper {
                         command: None,
                         diff: None,
                         path: None,
+                        description: None,
                     });
                 let mut spec = ApprovalSpec::from_tool(&tool, item_id);
                 if let Some(path) = &tool.path {
@@ -742,6 +755,24 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_plan() {
+        let mut mapper = CodexMapper::new(PathBuf::from("/w"));
+        mapper.turn_started();
+        let steps = mapper.notification(&json!({"method":"turn/plan/updated","params":{"threadId":"t","turnId":"u",
+            "plan":[{"step":"Look","status":"completed"},{"step":"Change","status":"inProgress"},{"step":"Test","status":"pending"}]}}));
+        let [Step::Plan(plan)] = &steps[..] else { panic!("{steps:?}") };
+        let statuses: Vec<_> = plan.iter().map(|p| p.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                crate::api::PlanStatus::Completed,
+                crate::api::PlanStatus::InProgress,
+                crate::api::PlanStatus::Pending
+            ]
+        );
+    }
+
+    #[test]
     fn decisions() {
         assert_eq!(CodexDriver::decision(Answer::Allow, false), "accept");
         assert_eq!(
@@ -784,6 +815,15 @@ mod tests {
                 assert!(have.iter().any(|h| h == field), "{name}.{field}");
             }
         }
+        // What we read from `turn/plan/updated`.
+        assert!(props("TurnPlanUpdatedNotification").iter().any(|h| h == "plan"));
+        for field in ["step", "status"] {
+            assert!(props("TurnPlanStep").iter().any(|h| h == field), "{field}");
+        }
+        assert_eq!(
+            v2["definitions"]["TurnPlanStepStatus"]["enum"],
+            json!(["pending", "inProgress", "completed"])
+        );
         let text = v2.to_string();
         for value in [approval_policy(Mode::Supervised), approval_policy(Mode::AutoEdit), SANDBOX] {
             assert!(text.contains(&format!("\"{value}\"")), "{value}");

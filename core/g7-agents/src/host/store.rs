@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use crate::api::{self, Folder, Item, ThreadInfo};
+use crate::api::{self, ApprovalOutcome, Folder, HostSettings, Item, Origin, ThreadInfo};
 
 /// Store format version.
 const VERSION: u32 = 1;
@@ -43,11 +43,38 @@ struct StoredFolder {
 }
 
 #[derive(Serialize, Deserialize)]
+struct SettingsFile {
+    version: u32,
+    #[serde(default = "yes")]
+    follow_sessions: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize)]
 struct MetaFile {
     version: u32,
     thread: ThreadInfo,
     next_seq: u64,
 }
+
+/// An answered approval, kept beside the thread's items so an export can say
+/// who allowed or denied each step. Never the token or the request itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRecord {
+    /// The tool step it was about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_seq: Option<u64>,
+    pub outcome: ApprovalOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+    pub ts_ms: u64,
+}
+
+/// `approvals.jsonl` is read up to this, from its end.
+const MAX_APPROVALS_READ: u64 = 1 << 20;
 
 /// A thread read back at start.
 #[derive(Debug, Clone)]
@@ -173,6 +200,18 @@ impl Store {
         atomic_write(&self.root.join("folders.json"), &bytes)
     }
 
+    /// The host's own settings (`settings.json`); the defaults when there are none.
+    pub fn load_settings(&self) -> HostSettings {
+        read_json::<SettingsFile>(&self.root.join("settings.json"))
+            .map_or_else(HostSettings::default, |f| HostSettings { follow_sessions: f.follow_sessions })
+    }
+
+    pub fn save_settings(&self, settings: &HostSettings) -> io::Result<()> {
+        let file = SettingsFile { version: VERSION, follow_sessions: settings.follow_sessions };
+        let bytes = serde_json::to_vec(&file).map_err(io::Error::other)?;
+        atomic_write(&self.root.join("settings.json"), &bytes)
+    }
+
     /// Every stored thread whose directory name and meta are valid.
     pub fn load_threads(&self) -> Vec<StoredThread> {
         let Ok(entries) = fs::read_dir(self.root.join("threads")) else { return Vec::new() };
@@ -273,6 +312,37 @@ impl Store {
         Ok(items)
     }
 
+    pub fn append_approval(&mut self, thread_id: &str, record: &ApprovalRecord) -> io::Result<()> {
+        let dir = self.thread_dir(thread_id)?;
+        create_private_dir(&dir)?;
+        let mut line = serde_json::to_vec(record).map_err(io::Error::other)?;
+        line.push(b'\n');
+        let mut file =
+            OpenOptions::new().create(true).append(true).mode(0o600).open(dir.join("approvals.jsonl"))?;
+        file.write_all(&line)
+    }
+
+    /// The thread's answered approvals, oldest first (the newest 1 MiB of them).
+    pub fn read_approvals(&self, thread_id: &str) -> io::Result<Vec<ApprovalRecord>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let path = self.thread_dir(thread_id)?.join("approvals.jsonl");
+        let mut file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let size = file.metadata()?.len();
+        let from = size.saturating_sub(MAX_APPROVALS_READ);
+        file.seek(SeekFrom::Start(from))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_APPROVALS_READ).read_to_end(&mut bytes)?;
+        let mut lines = bytes.split(|&b| b == b'\n');
+        if from > 0 {
+            lines.next();
+        }
+        Ok(lines.filter_map(|l| serde_json::from_slice(l).ok()).collect())
+    }
+
     pub fn delete_thread(&mut self, thread_id: &str) -> io::Result<()> {
         let dir = self.thread_dir(thread_id)?;
         self.lines.remove(thread_id);
@@ -294,8 +364,11 @@ fn count_lines(path: &Path) -> usize {
 
 enum Op {
     SaveFolders(Vec<Folder>, oneshot::Sender<io::Result<()>>),
+    SaveSettings(HostSettings, oneshot::Sender<io::Result<()>>),
     SaveMeta(Box<ThreadInfo>, u64),
     AppendItem(String, Box<Item>),
+    AppendApproval(String, ApprovalRecord),
+    ReadApprovals(String, oneshot::Sender<io::Result<Vec<ApprovalRecord>>>),
     ReadItems(String, oneshot::Sender<io::Result<BTreeMap<u64, Item>>>),
     Delete(String),
     Flush(oneshot::Sender<()>),
@@ -322,6 +395,9 @@ impl StoreHandle {
                     Op::SaveFolders(folders, reply) => {
                         let _ = reply.send(store.save_folders(&folders));
                     }
+                    Op::SaveSettings(settings, reply) => {
+                        let _ = reply.send(store.save_settings(&settings));
+                    }
                     Op::SaveMeta(info, next_seq) => {
                         if let Err(e) = store.save_meta(&info, next_seq) {
                             tracing::warn!("couldn't save a thread: {e}");
@@ -334,6 +410,14 @@ impl StoreHandle {
                     }
                     Op::ReadItems(thread_id, reply) => {
                         let _ = reply.send(store.read_items(&thread_id));
+                    }
+                    Op::AppendApproval(thread_id, record) => {
+                        if let Err(e) = store.append_approval(&thread_id, &record) {
+                            tracing::warn!("couldn't save an answered approval: {e}");
+                        }
+                    }
+                    Op::ReadApprovals(thread_id, reply) => {
+                        let _ = reply.send(store.read_approvals(&thread_id));
                     }
                     Op::Delete(thread_id) => {
                         if let Err(e) = store.delete_thread(&thread_id) {
@@ -361,6 +445,12 @@ impl StoreHandle {
         rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
     }
 
+    pub async fn save_settings(&self, settings: HostSettings) -> io::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Op::SaveSettings(settings, tx));
+        rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
+    }
+
     pub fn save_meta(&self, info: &ThreadInfo, next_seq: u64) {
         self.send(Op::SaveMeta(Box::new(info.clone()), next_seq));
     }
@@ -372,6 +462,16 @@ impl StoreHandle {
     pub async fn read_items(&self, thread_id: &str) -> io::Result<BTreeMap<u64, Item>> {
         let (tx, rx) = oneshot::channel();
         self.send(Op::ReadItems(thread_id.to_owned(), tx));
+        rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
+    }
+
+    pub fn append_approval(&self, thread_id: &str, record: ApprovalRecord) {
+        self.send(Op::AppendApproval(thread_id.to_owned(), record));
+    }
+
+    pub async fn read_approvals(&self, thread_id: &str) -> io::Result<Vec<ApprovalRecord>> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Op::ReadApprovals(thread_id.to_owned(), tx));
         rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
     }
 
@@ -410,6 +510,11 @@ mod tests {
             summary: None,
             error: None,
             native_id: None,
+            step: None,
+            plan: None,
+            state_since_ms: 0,
+            subdir: None,
+            continued: false,
         }
     }
 
@@ -483,6 +588,41 @@ mod tests {
         assert_eq!(threads[0].next_seq, 3, "next_seq follows the items when they're ahead");
         store.delete_thread(&id).unwrap();
         assert!(store.load_threads().is_empty());
+    }
+
+    #[test]
+    fn answered_approvals_are_kept_and_go_with_the_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_owned()).unwrap();
+        let id = "ef".repeat(16);
+        assert!(store.read_approvals(&id).unwrap().is_empty());
+        let record = ApprovalRecord {
+            tool_seq: Some(3),
+            outcome: ApprovalOutcome::Allowed,
+            by: Some(Origin::phone("p", "Pixel")),
+            ts_ms: 9,
+        };
+        store.append_approval(&id, &record).unwrap();
+        store
+            .append_approval(&id, &ApprovalRecord { outcome: ApprovalOutcome::Denied, ..record.clone() })
+            .unwrap();
+        let read = store.read_approvals(&id).unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0], record);
+        assert!(store.append_approval("../x", &record).is_err());
+        store.delete_thread(&id).unwrap();
+        assert!(store.read_approvals(&id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn settings_default_on_and_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_owned()).unwrap();
+        assert!(store.load_settings().follow_sessions, "on by default");
+        store.save_settings(&HostSettings { follow_sessions: false }).unwrap();
+        assert!(!store.load_settings().follow_sessions);
+        fs::write(dir.path().join("settings.json"), br#"{"version":1}"#).unwrap();
+        assert!(store.load_settings().follow_sessions);
     }
 
     #[test]

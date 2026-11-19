@@ -1,0 +1,5 @@
+{"timestamp":"2026-11-18T11:06:40.000Z","ordinal":0,"type":"session_meta","payload":{"id":"b0000000-0000-4000-8000-0000000000bb","session_id":"b0000000-0000-4000-8000-0000000000bb","timestamp":"2026-11-18T11:06:40.000Z","cwd":"/home/me/code/app","originator":"Codex Desktop","cli_version":"0.170.0","source":"cli","creator_user_id":"invented-user","creator_account_id":"invented-account","base_instructions":{"text":"invented instructions"}}}
+{"timestamp":"2026-11-18T11:06:41.000Z","ordinal":0,"type":"event_msg","payload":{"type":"task_started","turn_id":"t2","started_at":1795000001}}
+{"timestamp":"2026-11-18T11:06:41.000Z","ordinal":0,"type":"event_msg","payload":{"type":"item_completed","thread_id":"b0000000-0000-4000-8000-0000000000bb","turn_id":"t1","item":{"type":"UserMessage","id":"u-2","content":[{"type":"text","text":"Run the tests."}]}}}
+{"timestamp":"2026-11-18T11:06:42.000Z","ordinal":0,"type":"response_item","payload":{"type":"function_call","call_id":"c9","name":"exec","status":"in_progress"}}
+{"timestamp":"2026-11-18T11:06:42.000Z","ordinal":0,"type":"event_msg","payload":{"type":"token_count","info":null}}

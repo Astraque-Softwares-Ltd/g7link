@@ -42,8 +42,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "sync", "time", "rt"] }
-# The client checks the socket directory belongs to its own effective uid.
-rustix = { version = "1.1", features = ["process"] }
+# The client checks the socket directory belongs to its own effective uid;
+# the session reader opens files without following links or blocking.
+rustix = { version = "1.1", features = ["process", "fs"] }
 
 clap = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }

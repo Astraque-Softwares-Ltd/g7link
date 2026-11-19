@@ -42,6 +42,8 @@ pub enum Note {
     },
     PhoneStarted {
         thread: ThreadInfo,
+        /// Made by continuing a session started elsewhere.
+        continued: bool,
     },
     Removed {
         thread_id: String,
@@ -143,11 +145,16 @@ pub fn render(note: &Note) -> Option<Rendered> {
             critical: false,
             token: None,
         }),
-        Note::PhoneStarted { thread } => {
+        Note::PhoneStarted { thread, continued } => {
             let device = thread.origin.device_name.as_deref().unwrap_or("A phone");
+            let body = if *continued {
+                format!("continued a session in {}\n{}", thread.folder_label, thread.title)
+            } else {
+                format!("in {}\n{}", thread.folder_label, thread.title)
+            };
             Some(Rendered {
                 summary: format!("{device} started a {} thread", agent_name(thread)),
-                body: format!("in {}\n{}", thread.folder_label, thread.title),
+                body,
                 actions: vec![("default", "Open"), ("stop", "Stop")],
                 critical: false,
                 token: None,
@@ -254,7 +261,7 @@ async fn handle_note(
         Note::Approval { thread, .. }
         | Note::Done { thread, .. }
         | Note::Failed { thread, .. }
-        | Note::PhoneStarted { thread } => thread.id.clone(),
+        | Note::PhoneStarted { thread, .. } => thread.id.clone(),
         Note::ApprovalGone { thread_id, .. } | Note::Removed { thread_id } => thread_id.clone(),
     };
     let Some(rendered) = render(&note) else {
@@ -364,6 +371,11 @@ mod tests {
             summary: None,
             error: None,
             native_id: None,
+            step: None,
+            plan: None,
+            state_since_ms: 0,
+            subdir: None,
+            continued: false,
         }
     }
 
@@ -428,9 +440,13 @@ mod tests {
         })
         .unwrap();
         assert_eq!((r.summary.as_str(), r.body.as_str()), ("Codex stopped", "Usage limit reached."));
-        let r = render(&Note::PhoneStarted { thread: thread(Origin::phone("p", "Pixel")) }).unwrap();
+        let r = render(&Note::PhoneStarted { thread: thread(Origin::phone("p", "Pixel")), continued: false })
+            .unwrap();
         assert_eq!(r.summary, "Pixel started a Codex thread");
         assert_eq!(r.body, "in g7linux\nFix the build");
         assert!(r.actions.contains(&("stop", "Stop")));
+        let r = render(&Note::PhoneStarted { thread: thread(Origin::phone("p", "Pixel")), continued: true })
+            .unwrap();
+        assert_eq!(r.body, "continued a session in g7linux\nFix the build");
     }
 }

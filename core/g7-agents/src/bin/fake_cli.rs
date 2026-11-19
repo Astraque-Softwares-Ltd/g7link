@@ -5,8 +5,9 @@
 //! bridge where Claude did.
 //!
 //! `g7-agents-fake-cli claude <args…>` and `g7-agents-fake-cli codex <args…>`.
-//! `$FAKE_CLI_LOG`, when set, gets a line per run with the arguments, and
-//! for Codex a line per request method and approval decision received.
+//! `$FAKE_CLI_LOG`, when set, gets a line per run with the arguments and
+//! the working directory, and for Codex a line per request method, resumed
+//! thread and approval decision received.
 //! `$FAKE_CLI_RESUME_SCRIPT` is the Claude fixture for `--resume` runs.
 
 use std::collections::{HashMap, VecDeque};
@@ -96,6 +97,9 @@ fn log_line(line: &str) {
 
 fn log_args(args: &[String]) {
     log_line(&format!("args {}", args.join(" ")));
+    if let Ok(dir) = std::env::current_dir() {
+        log_line(&format!("cwd {}", dir.display()));
+    }
 }
 
 // ---- Claude ----
@@ -290,6 +294,11 @@ fn codex(args: &[String]) -> ExitCode {
                     };
                     let got_method = got.get("method").and_then(Value::as_str).unwrap_or_default();
                     log_line(&format!("method {got_method}"));
+                    if got_method == "thread/resume"
+                        && let Some(id) = got.pointer("/params/threadId").and_then(Value::as_str)
+                    {
+                        log_line(&format!("resume {id}"));
+                    }
                     // thread/start and thread/resume answer alike: a script
                     // that started a thread also serves a resume.
                     if !same(method, got_method) {

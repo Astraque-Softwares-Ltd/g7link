@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -20,7 +20,7 @@ use crate::host::agents::{
     TurnEnd, code,
 };
 use crate::host::notify::Note;
-use crate::host::store::{Store, now_ms};
+use crate::host::store::{ApprovalRecord, Store, now_ms};
 use crate::host::{Answered, Host, claude, codex, env};
 
 /// Whether Codex may run `auto_edit`. With `approvalPolicy: "on-request"`
@@ -30,6 +30,10 @@ use crate::host::{Answered, Host, claude, codex, env};
 pub const CODEX_AUTO_EDIT: bool = false;
 
 const RESTART_NOTICE: &str = "Stopped: the agent host restarted.";
+/// A tool step copied from a session that never finished.
+pub const UNFINISHED_OUTPUT: &str = "Stopped before it finished.";
+/// `thread.state` for a change of `step` alone is sent at most this often.
+const STEP_EVERY: Duration = Duration::from_secs(1);
 
 fn random_hex(bytes: usize) -> String {
     let mut out = String::with_capacity(bytes * 2);
@@ -64,6 +68,8 @@ struct Turn {
     tools: HashMap<u64, Item>,
     /// Tool steps whose approval was denied, expired or cancelled.
     refused_tools: HashSet<u64>,
+    /// How each running tool step is shown as the thread's `step`.
+    tool_steps: HashMap<u64, String>,
     flush_scheduled: bool,
     last_text: Option<String>,
     final_text: Option<String>,
@@ -79,11 +85,18 @@ pub struct Entry {
     turn_no: u64,
     allow_edits: bool,
     allow_commands: HashSet<String>,
+    /// When this thread's last agent process exited (Unix ms).
+    process_ended_ms: u64,
+    /// The `step` clients last heard, and when.
+    step_announced: Option<String>,
+    step_sent: Option<Instant>,
+    step_timer: bool,
 }
 
 impl Entry {
     fn new(info: ThreadInfo, next_seq: u64, cwd: Option<PathBuf>) -> Self {
         Self {
+            step_announced: info.step.clone(),
             info,
             next_seq: next_seq.max(1),
             cwd,
@@ -92,7 +105,31 @@ impl Entry {
             turn_no: 0,
             allow_edits: false,
             allow_commands: HashSet::new(),
+            process_ended_ms: 0,
+            step_sent: None,
+            step_timer: false,
         }
+    }
+
+    /// Changes `state`, and `state_since_ms` with it.
+    fn set_state(&mut self, state: State) {
+        if self.info.state != state {
+            self.info.state = state;
+            self.info.state_since_ms = now_ms();
+        }
+    }
+
+    /// What the running turn is doing: the newest tool step still running.
+    fn current_step(&self) -> Option<String> {
+        if !self.info.state.is_running() {
+            return None;
+        }
+        let (seq, item) = self.turn.tools.iter().max_by_key(|(seq, _)| **seq)?;
+        self.turn
+            .tool_steps
+            .get(seq)
+            .cloned()
+            .or_else(|| item.tool.as_ref().map(|t| clean_cut(&t.title, MAX_STEP).0))
     }
 
     fn alloc(&mut self) -> u64 {
@@ -102,6 +139,22 @@ impl Entry {
         self.info.updated_ms = now_ms();
         seq
     }
+}
+
+/// What `session.continue` hands the registry.
+#[derive(Debug)]
+pub(crate) struct Continued {
+    pub agent: AgentId,
+    pub folder_id: String,
+    pub subdir: Option<String>,
+    pub title: String,
+    pub mode: Mode,
+    pub origin: Origin,
+    /// The session's UUID: Claude's session id, Codex's thread id.
+    pub native_id: String,
+    /// Oldest first.
+    pub items: Vec<Item>,
+    pub notice: String,
 }
 
 pub struct PendingApproval {
@@ -166,7 +219,8 @@ fn notice_item(seq: u64, text: &str) -> Item {
     }
 }
 
-fn tool_item(seq: u64, key: &str, spec: &ToolSpec) -> Item {
+/// A running tool step for `spec`.
+pub(crate) fn tool_item(seq: u64, key: &str, spec: &ToolSpec) -> Item {
     let (detail, was_cut) = match &spec.detail {
         Some(d) => {
             let (d, was_cut) = clean_cut(d, MAX_TOOL_DETAIL);
@@ -218,9 +272,38 @@ fn emit_item(host: &Host, thread_id: &str, item: &Item) {
     }));
 }
 
-fn emit_state(host: &Host, entry: &Entry) {
+fn emit_state(host: &Host, entry: &mut Entry) {
+    entry.info.step = entry.current_step();
+    entry.step_announced = entry.info.step.clone();
+    entry.step_sent = Some(Instant::now());
     host.store.save_meta(&entry.info, entry.next_seq);
     host.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
+}
+
+/// The working directory of a thread in `folder`: the folder itself, or
+/// `subdir` inside it, which must still be inside it once links are resolved.
+pub(crate) fn thread_dir(folder: &Path, subdir: Option<&str>) -> Option<PathBuf> {
+    let Some(subdir) = subdir.filter(|s| !s.is_empty()) else { return Some(folder.to_owned()) };
+    let rel = Path::new(subdir);
+    if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    let base = std::fs::canonicalize(folder).ok()?;
+    let dir = std::fs::canonicalize(base.join(rel)).ok()?;
+    (dir.starts_with(&base) && dir.is_dir()).then_some(dir)
+}
+
+/// `subdir` for a working directory inside a folder: `None` when they are
+/// the same, an error for anything but plain components.
+pub(crate) fn subdir_of(dir: &Path, folder: &Path) -> Result<Option<String>, ()> {
+    let rel = dir.strip_prefix(folder).map_err(|_| ())?;
+    if rel.as_os_str().is_empty() {
+        return Ok(None);
+    }
+    if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return Err(());
+    }
+    rel.to_str().map(|s| Some(s.to_owned())).ok_or(())
 }
 
 fn notify(host: &Host, note: Note) {
@@ -243,8 +326,13 @@ impl Registry {
             let mut info = stored.info;
             let mut next_seq = stored.next_seq;
             info.pending = 0;
+            info.step = None;
+            if info.state_since_ms == 0 {
+                info.state_since_ms = info.updated_ms;
+            }
             if info.state.is_running() {
                 info.state = State::Interrupted;
+                info.state_since_ms = now_ms();
                 let item = notice_item(next_seq, RESTART_NOTICE);
                 next_seq += 1;
                 info.last_seq = item.seq;
@@ -255,7 +343,10 @@ impl Registry {
                     tracing::warn!("couldn't save a thread: {e}");
                 }
             }
-            let cwd = folders.iter().find(|f| f.id == info.folder_id).map(|f| PathBuf::from(&f.path));
+            let cwd = folders
+                .iter()
+                .find(|f| f.id == info.folder_id)
+                .and_then(|f| thread_dir(Path::new(&f.path), info.subdir.as_deref()));
             threads.insert(info.id.clone(), Entry::new(info, next_seq, cwd));
         }
         let mut registry = Registry {
@@ -516,7 +607,7 @@ impl Host {
         threads
     }
 
-    fn unavailable(probe: &Probe) -> RpcError {
+    pub(crate) fn unavailable(probe: &Probe) -> RpcError {
         let info = &probe.info;
         let message = if !info.installed {
             format!("{} isn't installed.", info.name)
@@ -587,16 +678,21 @@ impl Host {
             summary: None,
             error: None,
             native_id: None,
+            step: None,
+            plan: None,
+            state_since_ms: now,
+            subdir: None,
+            continued: false,
         };
         let mut entry = Entry::new(info, 1, Some(cwd));
         entry.turn_no = 1;
         let user = self.user_item(&mut entry, &p.prompt, &p.origin);
-        emit_state(self, &entry);
+        emit_state(self, &mut entry);
         emit_item(self, &id, &user);
         reg.threads.insert(id.clone(), entry);
         self.start_session(&mut reg, &id, p.prompt, &bin);
         if p.origin.kind == OriginKind::Phone {
-            notify(self, Note::PhoneStarted { thread: reg.threads[&id].info.clone() });
+            notify(self, Note::PhoneStarted { thread: reg.threads[&id].info.clone(), continued: false });
         }
         for old in reg.prunable() {
             self.remove_thread(&mut reg, &old);
@@ -703,13 +799,22 @@ impl Host {
         if !p.origin.is_valid() {
             return Err(err(ErrorCode::BadRequest, "Bad origin."));
         }
-        let agent = {
+        let (agent, resume) = {
             let reg = self.lock_reg();
-            reg.threads
-                .get(&p.thread_id)
-                .map(|e| e.info.agent)
-                .ok_or_else(|| err(ErrorCode::NotFound, "No such thread."))?
+            let entry =
+                reg.threads.get(&p.thread_id).ok_or_else(|| err(ErrorCode::NotFound, "No such thread."))?;
+            let alive = entry.session.as_ref().is_some_and(|s| !s.cmds.is_closed());
+            let ours_until = entry.info.updated_ms.max(entry.process_ended_ms);
+            let resume = entry.info.native_id.clone().filter(|_| !alive && !entry.info.state.is_running());
+            (entry.info.agent, resume.map(|native| (native, ours_until)))
         };
+        // A new process would resume the agent's session: refuse while
+        // something else (a terminal, the agent's app) has it open.
+        if let Some((native, ours_until)) = resume
+            && let Some(source) = self.open_elsewhere(agent, &native, ours_until).await
+        {
+            return Err(err(ErrorCode::Busy, crate::host::sessions::still_open_message(agent, source)));
+        }
         let probe = self.probe(false).await[agent as usize].clone();
         let mut guard = self.lock_reg();
         let reg = &mut *guard;
@@ -728,7 +833,7 @@ impl Host {
             reg.folders
                 .iter()
                 .find(|f| f.id == entry.info.folder_id)
-                .map(|f| PathBuf::from(&f.path))
+                .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
                 .filter(|path| path.is_dir())
         };
         if let Some(message) = self.busy_message(agent, total, &per) {
@@ -752,7 +857,7 @@ impl Host {
         entry.cwd = Some(cwd);
         entry.turn = Turn::default();
         entry.turn_no += 1;
-        entry.info.state = State::Working;
+        entry.set_state(State::Working);
         entry.info.error = None;
         let user = self.user_item(entry, &p.text, &p.origin);
         emit_state(self, entry);
@@ -909,14 +1014,98 @@ impl Host {
             .folders
             .iter()
             .find(|f| f.id == entry.info.folder_id)
-            .map(|f| f.path.clone())
-            .or_else(|| entry.cwd.as_ref().map(|c| c.to_string_lossy().into_owned()))
+            .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
+            .or_else(|| entry.cwd.clone())
+            .map(|c| c.to_string_lossy().into_owned())
             .ok_or_else(|| err(ErrorCode::Unavailable, "The folder was removed."))?;
         let argv = match entry.info.agent {
             AgentId::Claude => vec!["claude".to_owned(), "--resume".to_owned(), native],
             AgentId::Codex => vec!["codex".to_owned(), "resume".to_owned(), native],
         };
         Ok(TerminalCommandResult { argv, cwd })
+    }
+
+    // ---- Continued sessions ----
+
+    /// Makes a thread from a session started elsewhere (`session.continue`
+    /// step 6): `done`, with the session's newest items renumbered from 1, a
+    /// notice, and no process. The next `thread.send` resumes the session.
+    pub(crate) fn insert_continued(self: &Arc<Self>, c: Continued) -> Result<ThreadInfo, RpcError> {
+        let mut reg = self.lock_reg();
+        let Some(folder) = reg.folders.iter().find(|f| f.id == c.folder_id).cloned() else {
+            return Err(err(ErrorCode::Denied, "The folder was removed."));
+        };
+        let Some(cwd) = thread_dir(Path::new(&folder.path), c.subdir.as_deref()) else {
+            return Err(err(ErrorCode::Denied, "The folder is gone."));
+        };
+        if reg
+            .threads
+            .values()
+            .any(|e| e.info.agent == c.agent && e.info.native_id.as_deref() == Some(c.native_id.as_str()))
+        {
+            return Err(err(ErrorCode::NotFound, "That session is already a thread here."));
+        }
+        let mut id = random_hex(16);
+        while reg.threads.contains_key(&id) {
+            id = random_hex(16);
+        }
+        let now = now_ms();
+        let mut items: Vec<Item> = Vec::with_capacity(c.items.len() + 1);
+        for (n, mut item) in c.items.into_iter().enumerate() {
+            item.seq = n as u64 + 1;
+            item.rev = 0;
+            if let Some(tool) = item.tool.as_mut()
+                && tool.status == ToolStatus::Running
+            {
+                tool.status = ToolStatus::Error;
+                tool.output = Some(UNFINISHED_OUTPUT.to_owned());
+            }
+            items.push(item);
+        }
+        let notice_seq = items.len() as u64 + 1;
+        items.push(notice_item(notice_seq, &c.notice));
+        let info = ThreadInfo {
+            id: id.clone(),
+            agent: c.agent,
+            folder_id: folder.id.clone(),
+            folder_label: folder.label.clone(),
+            title: c.title,
+            state: State::Done,
+            mode: c.mode,
+            origin: c.origin.clone(),
+            created_ms: now,
+            updated_ms: now,
+            last_seq: notice_seq,
+            pending: 0,
+            summary: None,
+            error: None,
+            native_id: Some(c.native_id),
+            step: None,
+            plan: None,
+            state_since_ms: now,
+            subdir: c.subdir,
+            continued: true,
+        };
+        for item in &items {
+            self.store.append_item(&id, item);
+        }
+        let mut entry = Entry::new(info, notice_seq + 1, Some(cwd));
+        emit_state(self, &mut entry);
+        let info = entry.info.clone();
+        reg.threads.insert(id.clone(), entry);
+        if c.origin.kind == OriginKind::Phone {
+            notify(self, Note::PhoneStarted { thread: info.clone(), continued: true });
+        }
+        for old in reg.prunable() {
+            self.remove_thread(&mut reg, &old);
+        }
+        Ok(info)
+    }
+
+    /// The agent's own ids of every thread: their sessions aren't listed as
+    /// started elsewhere.
+    pub(crate) fn native_ids(&self) -> HashSet<String> {
+        self.lock_reg().threads.values().filter_map(|e| e.info.native_id.clone()).collect()
     }
 
     // ---- Agent events ----
@@ -933,6 +1122,7 @@ impl Host {
                     return;
                 }
                 let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+                entry.process_ended_ms = now_ms();
                 let token = entry.session.take().and_then(|s| s.bridge_token);
                 let interrupted = entry.turn.interrupt_requested;
                 let running = entry.info.state.is_running();
@@ -966,6 +1156,51 @@ impl Host {
             return;
         }
         let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+        if let Step::Plan(plan) = step {
+            let plan = (!plan.is_empty()).then_some(plan);
+            if entry.info.plan != plan {
+                entry.info.plan = plan;
+                emit_state(self, entry);
+            }
+            return;
+        }
+        self.apply_item_step(entry, thread_id, step);
+        self.refresh_step(entry, thread_id);
+    }
+
+    /// Sends `thread.state` when the running step changed: at once when the
+    /// last one went out over a second ago, else once that second is up.
+    fn refresh_step(self: &Arc<Self>, entry: &mut Entry, thread_id: &str) {
+        let step = entry.current_step();
+        entry.info.step = step;
+        if entry.info.step == entry.step_announced {
+            return;
+        }
+        let wait = entry.step_sent.map_or(Duration::ZERO, |at| STEP_EVERY.saturating_sub(at.elapsed()));
+        if wait.is_zero() {
+            entry.step_announced = entry.info.step.clone();
+            entry.step_sent = Some(Instant::now());
+            self.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
+            return;
+        }
+        if entry.step_timer {
+            return;
+        }
+        entry.step_timer = true;
+        let host = Arc::downgrade(self);
+        let thread = thread_id.to_owned();
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            let Some(host) = host.upgrade() else { return };
+            let mut reg = host.lock_reg();
+            if let Some(entry) = reg.threads.get_mut(&thread) {
+                entry.step_timer = false;
+                host.refresh_step(entry, &thread);
+            }
+        });
+    }
+
+    fn apply_item_step(self: &Arc<Self>, entry: &mut Entry, thread_id: &str, step: Step) {
         match step {
             Step::NativeId(id) => {
                 entry.info.native_id = Some(cut(&id, MAX_NATIVE_ID).to_owned());
@@ -1063,11 +1298,13 @@ impl Host {
                 entry.turn.keys.insert(key.clone(), seq);
                 let item = tool_item(seq, &key, &tool);
                 entry.turn.tools.insert(seq, item.clone());
+                entry.turn.tool_steps.insert(seq, tool.step());
                 emit_item(self, thread_id, &item);
             }
             Step::ToolEnd { key, status, output } => {
                 let Some(&seq) = entry.turn.keys.get(&key) else { return };
                 let Some(mut item) = entry.turn.tools.remove(&seq) else { return };
+                entry.turn.tool_steps.remove(&seq);
                 item.rev += 1;
                 if let Some(tool) = item.tool.as_mut() {
                     tool.status = status;
@@ -1085,7 +1322,7 @@ impl Host {
                 let item = notice_item(seq, &clean_cut(&text, MAX_ITEM_TEXT).0);
                 emit_item(self, thread_id, &item);
             }
-            Step::TurnEnded(_) => {}
+            Step::Plan(_) | Step::TurnEnded(_) => {}
         }
     }
 
@@ -1144,7 +1381,7 @@ impl Host {
             .or(turn.last_text.as_deref())
             .map(summary_of)
             .unwrap_or_default();
-        entry.info.state = end.outcome.state();
+        entry.set_state(end.outcome.state());
         entry.info.pending = 0;
         entry.info.updated_ms = now_ms();
         entry.info.error = end.error.as_ref().filter(|_| end.outcome == Outcome::Failed).map(clean_error);
@@ -1238,6 +1475,7 @@ impl Host {
             entry.turn.keys.insert(key.clone(), seq);
             let item = tool_item(seq, key, tool);
             entry.turn.tools.insert(seq, item.clone());
+            entry.turn.tool_steps.insert(seq, tool.step());
             emit_item(self, thread_id, &item);
         }
         let tool_seq = spec.tool_key.as_ref().and_then(|k| entry.turn.keys.get(k).copied());
@@ -1287,7 +1525,7 @@ impl Host {
             expires_ms: now + lifetime,
         };
         entry.info.pending = u32::try_from(pending_count + 1).unwrap_or(u32::MAX);
-        entry.info.state = State::Waiting;
+        entry.set_state(State::Waiting);
         entry.info.updated_ms = now;
         emit_state(self, entry);
         self.hub.broadcast(&Event::ApprovalRequested(ApprovalRequestedEvent { approval: approval.clone() }));
@@ -1341,6 +1579,12 @@ impl Host {
         let Some(mut pending) = reg.approvals.remove(token) else { return };
         reg.answered.insert(token.to_owned());
         let thread_id = pending.approval.thread_id.clone();
+        if outcome != ApprovalOutcome::Cancelled {
+            self.store.append_approval(
+                &thread_id,
+                ApprovalRecord { tool_seq: pending.tool_seq, outcome, by: by.clone(), ts_ms: now_ms() },
+            );
+        }
         if let Some(reply) = pending.reply.take() {
             let _ = reply.send(answer);
         }
@@ -1360,7 +1604,7 @@ impl Host {
         }
         entry.info.pending = u32::try_from(remaining).unwrap_or(u32::MAX);
         if remaining == 0 && entry.info.state == State::Waiting {
-            entry.info.state = State::Working;
+            entry.set_state(State::Working);
         }
         if announce_state {
             entry.info.updated_ms = now_ms();
@@ -1620,6 +1864,11 @@ impl Host {
             summary: None,
             error: None,
             native_id: None,
+            step: None,
+            plan: None,
+            state_since_ms: 0,
+            subdir: None,
+            continued: false,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut entry = Entry::new(info, 1, Some(PathBuf::from("/tmp")));
@@ -1676,6 +1925,7 @@ mod tests {
                 command: Some(text.into()),
                 diff: None,
                 path: None,
+                description: None,
             }),
         }
     }

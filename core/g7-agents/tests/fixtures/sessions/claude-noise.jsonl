@@ -1,0 +1,8 @@
+{"type":"api-request-shape","sessionId":"a0000000-0000-4000-8000-0000000000aa","shape":{"messages":3}}
+{"type":"api-request-blob","requestId":"req_3","messages":[{"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"a copy"}]}}]}
+{"type":"atis-latch","sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"agent-name","name":"invented","sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"pr-link","url":"https://example.org/pr/1","sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"relocated","from":"/old","sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"tools-used","tools":["Bash"],"sessionId":"a0000000-0000-4000-8000-0000000000aa"}
+{"type":"artifact-autoreact-ledger","sessionId":"a0000000-0000-4000-8000-0000000000aa"}

@@ -85,6 +85,47 @@ pub const PROBE_CACHE_MS: u64 = 60_000;
 /// An error message from the host.
 pub const MAX_RPC_ERROR_MESSAGE: usize = 200;
 
+// ---- Sessions started elsewhere (0.1.14) ----
+
+/// Sessions listed at most.
+pub const MAX_SESSIONS: usize = 50;
+/// Only sessions whose file changed this recently are listed (7 days).
+pub const SESSION_WINDOW_MS: u64 = 604_800_000;
+/// Distinct sessions watched at once, all connections together.
+pub const MAX_WATCHED_SESSIONS: usize = 4;
+/// The bytes read from the end of a session file.
+pub const SESSION_TAIL: u64 = 262_144;
+/// A window is doubled up to this when it holds no whole line; a longer line is skipped.
+pub const SESSION_TAIL_MAX: u64 = 4_194_304;
+/// A watched file is read at most this much per tick.
+pub const SESSION_READ_STEP: u64 = 1_048_576;
+/// Items kept in memory per watched session.
+pub const SESSION_ITEMS_KEPT: usize = 400;
+pub const SESSION_LIST_POLL_MS: u64 = 5000;
+pub const SESSION_WATCH_POLL_MS: u64 = 500;
+/// An open tool call this quiet is a guessed "needs you".
+pub const SESSION_QUIET_MS: u64 = 15_000;
+/// A thread's or a session's `step`.
+pub const MAX_STEP: usize = 120;
+/// A session's `waiting_for`.
+pub const MAX_WAITING_FOR: usize = 80;
+/// Entries in a thread's plan.
+pub const MAX_PLAN_STEPS: usize = 20;
+/// One plan entry's text.
+pub const MAX_PLAN_TEXT: usize = 200;
+/// A `thread.export` text.
+pub const MAX_EXPORT: usize = 2 * 1024 * 1024;
+/// A line a client reads from the host: a reply to `thread.export` can be
+/// longer than [`MAX_LINE`], its text up to twice as long as JSON (`"`, `\`,
+/// newline and tab are escaped; other controls never reach it).
+pub const MAX_REPLY_LINE: usize = MAX_LINE + 2 * MAX_EXPORT;
+/// Items copied into a thread by `session.continue`.
+pub const CONTINUE_ITEMS: usize = 200;
+/// A Claude status file is read up to this size.
+pub const MAX_STATUS_FILE: u64 = 16_384;
+/// Process entries looked at per scan.
+pub const MAX_PROC_SCAN: usize = 4096;
+
 // ---- Method and event names ----
 
 pub mod method {
@@ -106,6 +147,13 @@ pub mod method {
     pub const UI_VIEWING: &str = "ui.viewing";
     pub const BRIDGE_ASK: &str = "bridge.ask";
     pub const BRIDGE_CANCEL: &str = "bridge.cancel";
+    pub const SESSIONS_LIST: &str = "sessions.list";
+    pub const SESSION_READ: &str = "session.read";
+    pub const SESSION_WATCH: &str = "session.watch";
+    pub const SESSION_CONTINUE: &str = "session.continue";
+    pub const SESSIONS_SET_FOLLOWING: &str = "sessions.set_following";
+    pub const SETTINGS_GET: &str = "settings.get";
+    pub const THREAD_EXPORT: &str = "thread.export";
 }
 
 pub mod event {
@@ -119,6 +167,10 @@ pub mod event {
     pub const AGENTS_CHANGED: &str = "agents.changed";
     pub const FOLDERS_CHANGED: &str = "folders.changed";
     pub const UI_OPEN: &str = "ui.open";
+    pub const SESSION_STATE: &str = "session.state";
+    pub const SESSION_REMOVED: &str = "session.removed";
+    pub const SESSION_ITEM: &str = "session.item";
+    pub const SETTINGS_CHANGED: &str = "settings.changed";
 }
 
 // ---- Error codes ----
@@ -356,6 +408,57 @@ pub enum BridgeBehavior {
     Deny,
 }
 
+/// What a session started outside G7 is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    Working,
+    /// The agent reported it waits for the user (Claude's status file).
+    NeedsYou,
+    /// Inferred from the file: it may be waiting, or running a long command.
+    /// Never counted with `needs_you`.
+    NeedsYouGuess,
+    Idle,
+    /// No process has it.
+    Ended,
+}
+
+/// One entry of a thread's plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanStep {
+    pub text: String,
+    pub status: PlanStatus,
+}
+
+/// Where a session was started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSource {
+    Terminal,
+    DesktopApp,
+    Other,
+}
+
+/// Why a session can't be continued here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinueBlock {
+    /// Something still has it open.
+    Open,
+    /// Its folder isn't one of the agent folders.
+    Folder,
+    /// The agent isn't installed or signed in.
+    Agent,
+}
+
 // ---- Records ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,6 +582,74 @@ pub struct ThreadInfo {
     /// The Claude session uuid or the Codex thread id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_id: Option<String>,
+    /// What the running turn is doing: the tool's own description, else its
+    /// title. Absent when no turn runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// The agent's plan (Claude's todo list, Codex's turn plan); absent when it made none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Vec<PlanStep>>,
+    /// When `state` last changed.
+    #[serde(default)]
+    pub state_since_ms: u64,
+    /// The working directory relative to the folder; set only by `session.continue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
+    /// Made by `session.continue`.
+    #[serde(default)]
+    pub continued: bool,
+}
+
+/// A session started outside G7 (a terminal, the Claude or Codex app),
+/// followed read-only from its own files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    /// `"sc"` (Claude) or `"sx"` (Codex) and the agent's UUID without dashes.
+    pub id: String,
+    pub agent: AgentId,
+    pub title: String,
+    /// Never leaves the PC.
+    pub cwd: String,
+    /// Set when `cwd` is inside an agent folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    /// That folder's label, else the last component of `cwd`.
+    pub folder_label: String,
+    pub state: SessionState,
+    /// The state was inferred from the file, not reported by the agent.
+    #[serde(default)]
+    pub state_guess: bool,
+    /// When `state` began (as far as the host saw).
+    #[serde(default)]
+    pub state_since_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<String>,
+    pub source: SessionSource,
+    /// Some process has the session now.
+    pub open: bool,
+    pub updated_ms: u64,
+    pub last_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub can_continue: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<ContinueBlock>,
+}
+
+impl Session {
+    /// The order `sessions.list` uses: exact "needs you", working, guessed
+    /// "needs you", idle, ended.
+    pub fn rank(&self) -> u8 {
+        match self.state {
+            SessionState::NeedsYou if !self.state_guess => 0,
+            SessionState::Working => 1,
+            SessionState::NeedsYou | SessionState::NeedsYouGuess => 2,
+            SessionState::Idle => 3,
+            SessionState::Ended => 4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -765,12 +936,103 @@ pub struct SubscribeParams {
     pub threads: ThreadSelection,
     #[serde(default)]
     pub deltas: bool,
+    /// Also `session.state` and `session.removed`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sessions: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiViewingParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsListResult {
+    pub sessions: Vec<Session>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionReadParams {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionReadResult {
+    pub session: Session,
+    /// Ascending `seq`. Session seqs are not consecutive.
+    pub items: Vec<Item>,
+    pub more_before: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionWatchParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// What `thread.export` writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFormat {
+    Markdown,
+}
+
+/// `thread.export`: one of `thread_id` and `session_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadExportParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub format: ExportFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadExportResult {
+    /// At most [`MAX_EXPORT`] bytes.
+    pub text: String,
+    /// Items were left out to stay under the limit.
+    pub truncated: bool,
+    /// A suggested name: `claude-<title>-<yyyy-mm-dd>.md`.
+    pub file_name: String,
+}
+
+/// Host-wide settings (`settings.get`, `settings.changed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSettings {
+    /// Follow sessions started outside G7 (on by default).
+    pub follow_sessions: bool,
+}
+
+impl Default for HostSettings {
+    fn default() -> Self {
+        Self { follow_sessions: true }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsSetFollowingParams {
+    pub on: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionContinueParams {
+    pub session_id: String,
+    pub mode: Mode,
+    pub origin: Origin,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -839,6 +1101,25 @@ pub struct ThreadRemovedEvent {
     pub thread_id: String,
 }
 
+/// `session.state`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResult {
+    pub session: Session,
+}
+
+/// `session.removed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRemovedEvent {
+    pub session_id: String,
+}
+
+/// `session.item`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionItemEvent {
+    pub session_id: String,
+    pub item: Item,
+}
+
 /// An event from the host, typed. Parse an [`EventLine`] with
 /// [`Event::from_line`]; an unknown event name gives `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -864,6 +1145,14 @@ pub enum Event {
     FoldersChanged(FoldersListResult),
     #[serde(rename = "ui.open")]
     UiOpen(ThreadIdParams),
+    #[serde(rename = "session.state")]
+    SessionState(SessionResult),
+    #[serde(rename = "session.removed")]
+    SessionRemoved(SessionRemovedEvent),
+    #[serde(rename = "session.item")]
+    SessionItem(SessionItemEvent),
+    #[serde(rename = "settings.changed")]
+    SettingsChanged(HostSettings),
 }
 
 impl Event {
@@ -887,6 +1176,10 @@ impl Event {
             Self::AgentsChanged(_) => event::AGENTS_CHANGED,
             Self::FoldersChanged(_) => event::FOLDERS_CHANGED,
             Self::UiOpen(_) => event::UI_OPEN,
+            Self::SessionState(_) => event::SESSION_STATE,
+            Self::SessionRemoved(_) => event::SESSION_REMOVED,
+            Self::SessionItem(_) => event::SESSION_ITEM,
+            Self::SettingsChanged(_) => event::SETTINGS_CHANGED,
         }
     }
 
@@ -901,7 +1194,22 @@ impl Event {
             Self::ThreadDone(e) => Some(&e.thread_id),
             Self::ThreadRemoved(e) => Some(&e.thread_id),
             Self::UiOpen(e) => Some(&e.thread_id),
-            Self::AgentsChanged(_) | Self::FoldersChanged(_) => None,
+            Self::AgentsChanged(_)
+            | Self::FoldersChanged(_)
+            | Self::SessionState(_)
+            | Self::SessionRemoved(_)
+            | Self::SessionItem(_)
+            | Self::SettingsChanged(_) => None,
+        }
+    }
+
+    /// The session the event is about, if any.
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::SessionState(e) => Some(&e.session.id),
+            Self::SessionRemoved(e) => Some(&e.session_id),
+            Self::SessionItem(e) => Some(&e.session_id),
+            _ => None,
         }
     }
 
@@ -928,6 +1236,13 @@ pub fn is_valid_folder_id(id: &str) -> bool {
 /// A thread id or an approval token: 32 lowercase hex digits.
 pub fn is_valid_thread_id(id: &str) -> bool {
     id.len() == 32 && is_valid_id(id)
+}
+
+/// A session id: `^s[cx][a-f0-9]{32}$`.
+pub fn is_valid_session_id(id: &str) -> bool {
+    id.len() == 34
+        && (id.starts_with("sc") || id.starts_with("sx"))
+        && id[2..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 // ---- Text ----
@@ -1023,6 +1338,37 @@ mod tests {
             summary: Some("done".into()),
             error: Some(ThreadError { code: "usage_limit".into(), message: "Usage limit reached".into() }),
             native_id: Some("x".into()),
+            step: Some("Run command".into()),
+            plan: Some(vec![
+                PlanStep { text: "Read the code".into(), status: PlanStatus::Completed },
+                PlanStep { text: "Fix it".into(), status: PlanStatus::InProgress },
+            ]),
+            state_since_ms: 2,
+            subdir: Some("app/src".into()),
+            continued: true,
+        }
+    }
+
+    fn session() -> Session {
+        Session {
+            id: format!("sc{}", "ab".repeat(16)),
+            agent: AgentId::Claude,
+            title: "Fix the login test".into(),
+            cwd: "/home/me/code/app".into(),
+            folder_id: Some("f0123456789ab".into()),
+            folder_label: "app".into(),
+            state: SessionState::NeedsYou,
+            state_guess: false,
+            state_since_ms: 8,
+            waiting_for: Some("permission prompt".into()),
+            source: SessionSource::DesktopApp,
+            open: true,
+            updated_ms: 9,
+            last_seq: 64,
+            step: Some("Run command".into()),
+            summary: None,
+            can_continue: false,
+            blocked: Some(ContinueBlock::Open),
         }
     }
 
@@ -1105,8 +1451,33 @@ mod tests {
             decision: Decision::AllowThread,
             by: Origin::cli(),
         });
-        round_trip(&SubscribeParams { threads: ThreadSelection::All, deltas: true });
-        round_trip(&SubscribeParams { threads: ThreadSelection::Ids(vec!["a".into()]), deltas: false });
+        round_trip(&SubscribeParams { threads: ThreadSelection::All, deltas: true, sessions: true });
+        round_trip(&SubscribeParams {
+            threads: ThreadSelection::Ids(vec!["a".into()]),
+            deltas: false,
+            sessions: false,
+        });
+        round_trip(&session());
+        round_trip(&SessionsListResult { sessions: vec![session()] });
+        round_trip(&SessionReadParams { session_id: session().id, before_seq: Some(640), limit: Some(5) });
+        round_trip(&SessionReadResult { session: session(), items: vec![], more_before: true });
+        round_trip(&SessionWatchParams { session_id: None });
+        round_trip(&SessionContinueParams {
+            session_id: session().id,
+            mode: Mode::Supervised,
+            origin: Origin::phone("p", "Pixel"),
+        });
+        round_trip(&UiViewingParams { thread_id: None, session_id: Some(session().id) });
+        round_trip(&ThreadExportParams {
+            thread_id: Some("a".into()),
+            session_id: None,
+            format: ExportFormat::Markdown,
+        });
+        round_trip(&ThreadExportResult {
+            text: "# t".into(),
+            truncated: false,
+            file_name: "claude-t-2026-11-19.md".into(),
+        });
         round_trip(&TerminalCommandResult { argv: vec!["codex".into(), "resume".into()], cwd: "/a".into() });
         round_trip(&BridgeAskResult {
             behavior: BridgeBehavior::Deny,
@@ -1137,6 +1508,23 @@ mod tests {
                 error: None,
             }),
             Event::UiOpen(ThreadIdParams { thread_id: "a".into() }),
+            Event::SessionState(SessionResult { session: session() }),
+            Event::SessionRemoved(SessionRemovedEvent { session_id: session().id }),
+            Event::SettingsChanged(HostSettings { follow_sessions: false }),
+            Event::SessionItem(SessionItemEvent {
+                session_id: session().id,
+                item: Item {
+                    seq: 65,
+                    id: "u-1".into(),
+                    kind: ItemKind::User,
+                    ts_ms: 1,
+                    rev: 0,
+                    text: Some("hi".into()),
+                    truncated: false,
+                    origin: None,
+                    tool: None,
+                },
+            }),
         ] {
             round_trip(&ev);
             let line = ev.to_line();
@@ -1175,6 +1563,61 @@ mod tests {
             serde_json::to_value(&ev).unwrap(),
             json!({"event": "ui.open", "params": {"thread_id": "a"}})
         );
+        assert_eq!(serde_json::to_value(SessionState::NeedsYou).unwrap(), json!("needs_you"));
+        assert_eq!(serde_json::to_value(SessionState::NeedsYouGuess).unwrap(), json!("needs_you_guess"));
+        assert_eq!(serde_json::to_value(PlanStatus::InProgress).unwrap(), json!("in_progress"));
+        assert!(HostSettings::default().follow_sessions);
+        assert_eq!(serde_json::to_value(SessionSource::DesktopApp).unwrap(), json!("desktop_app"));
+        assert_eq!(serde_json::to_value(ContinueBlock::Folder).unwrap(), json!("folder"));
+        let ev = Event::SessionRemoved(SessionRemovedEvent { session_id: "sx1".into() });
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            json!({"event": "session.removed", "params": {"session_id": "sx1"}})
+        );
+        assert_eq!(ev.session_id(), Some("sx1"));
+        assert_eq!(ev.thread_id(), None);
+        // An old client's subscribe has no `sessions`; ours omits it when false.
+        let sub: SubscribeParams = serde_json::from_value(json!({"threads": "all", "deltas": true})).unwrap();
+        assert!(!sub.sessions);
+        assert_eq!(
+            serde_json::to_value(SubscribeParams {
+                threads: ThreadSelection::All,
+                deltas: false,
+                sessions: false
+            })
+            .unwrap(),
+            json!({"threads": "all", "deltas": false})
+        );
+    }
+
+    #[test]
+    fn a_stored_thread_from_0_1_13_still_reads() {
+        let info: ThreadInfo = serde_json::from_value(json!({
+            "id": "0123456789abcdef0123456789abcdef", "agent": "claude", "folder_id": "f0123456789ab",
+            "folder_label": "w", "title": "t", "state": "done", "mode": "supervised",
+            "origin": {"kind": "launcher"}, "created_ms": 1, "updated_ms": 2, "last_seq": 3, "pending": 0
+        }))
+        .unwrap();
+        assert_eq!((info.step, info.state_since_ms, info.subdir, info.continued), (None, 0, None, false));
+        assert_eq!(info.plan, None);
+    }
+
+    #[test]
+    fn sessions_sort_exact_needs_you_first() {
+        let with = |state, state_guess| Session { state, state_guess, ..session() };
+        let mut ranks: Vec<u8> = [
+            with(SessionState::Ended, false),
+            with(SessionState::Idle, true),
+            with(SessionState::NeedsYouGuess, true),
+            with(SessionState::Working, true),
+            with(SessionState::NeedsYou, false),
+        ]
+        .iter()
+        .map(Session::rank)
+        .collect();
+        assert_eq!(ranks, [4, 3, 2, 1, 0]);
+        ranks.sort();
+        assert_eq!(ranks, [0, 1, 2, 3, 4]);
     }
 
     #[test]
@@ -1215,6 +1658,12 @@ mod tests {
         assert!(!is_valid_folder_id("f0123456789a/"));
         assert!(is_valid_thread_id(&"a".repeat(32)));
         assert!(!is_valid_thread_id(&"a".repeat(31)));
+        assert!(is_valid_session_id(&format!("sc{}", "0a".repeat(16))));
+        assert!(is_valid_session_id(&format!("sx{}", "0a".repeat(16))));
+        assert!(!is_valid_session_id(&format!("sy{}", "0a".repeat(16))));
+        assert!(!is_valid_session_id(&format!("sc{}", "0A".repeat(16))));
+        assert!(!is_valid_session_id(&format!("sc{}", "0a".repeat(15))));
+        assert!(!is_valid_session_id("sc../../etc/passwd/000000000000000"));
     }
 
     #[test]

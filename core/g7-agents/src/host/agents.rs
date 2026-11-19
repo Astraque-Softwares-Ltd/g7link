@@ -44,6 +44,18 @@ pub struct ToolSpec {
     pub command: Option<String>,
     pub diff: Option<String>,
     pub path: Option<String>,
+    /// The agent's own words for what the call does (Claude's `Bash.description`).
+    pub description: Option<String>,
+}
+
+impl ToolSpec {
+    /// What a running step is shown as: the agent's description, else the title.
+    pub fn step(&self) -> String {
+        let text =
+            self.description.as_deref().map(str::trim).filter(|d| !d.is_empty()).unwrap_or(&self.title);
+        let line = text.lines().next().unwrap_or_default().trim();
+        api::clean_cut(line, api::MAX_STEP).0
+    }
 }
 
 /// An approval an agent asks for.
@@ -140,7 +152,27 @@ pub enum Step {
         output: Option<String>,
     },
     Notice(String),
+    /// The agent's plan, replacing the one before.
+    Plan(Vec<api::PlanStep>),
     TurnEnded(TurnEnd),
+}
+
+/// A plan from the agent's `(text, status)` pairs: at most
+/// [`api::MAX_PLAN_STEPS`] entries, each text cleaned and cut, empty ones dropped.
+pub fn plan_of<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<api::PlanStep> {
+    entries
+        .into_iter()
+        .filter(|(text, _)| !text.trim().is_empty())
+        .take(api::MAX_PLAN_STEPS)
+        .map(|(text, status)| api::PlanStep {
+            text: api::clean_cut(text.trim(), api::MAX_PLAN_TEXT).0,
+            status: match status {
+                "completed" => api::PlanStatus::Completed,
+                "in_progress" | "inProgress" => api::PlanStatus::InProgress,
+                _ => api::PlanStatus::Pending,
+            },
+        })
+        .collect()
 }
 
 /// The user's answer to an approval, as the agent gets it.
@@ -767,6 +799,41 @@ mod tests {
         let key =
             parse_codex_account(&serde_json::json!({"account":{"type":"apiKey"},"requiresOpenaiAuth":true}));
         assert_eq!(key.auth, Some(AuthKind::ApiKey));
+    }
+
+    #[test]
+    fn plans_are_bounded_and_cleaned() {
+        let long = "x".repeat(300);
+        let entries: Vec<(&str, &str)> =
+            [("Read\u{1b}[0m it", "completed"), ("  ", "pending"), (long.as_str(), "inProgress")]
+                .into_iter()
+                .chain(std::iter::repeat_n(("more", "odd"), 30))
+                .collect();
+        let plan = plan_of(entries);
+        assert_eq!(plan.len(), api::MAX_PLAN_STEPS);
+        assert_eq!(plan[0], api::PlanStep { text: "Read[0m it".into(), status: api::PlanStatus::Completed });
+        assert_eq!(plan[1].text.len(), api::MAX_PLAN_TEXT);
+        assert_eq!(plan[1].status, api::PlanStatus::InProgress);
+        assert_eq!(plan[2].status, api::PlanStatus::Pending);
+    }
+
+    #[test]
+    fn a_step_is_the_description_else_the_title() {
+        let mut spec = ToolSpec {
+            name: "Bash".into(),
+            title: "Run command".into(),
+            detail: None,
+            kind: ApprovalKind::Command,
+            command: None,
+            diff: None,
+            path: None,
+            description: Some("List the files\nand more".into()),
+        };
+        assert_eq!(spec.step(), "List the files");
+        spec.description = Some("  ".into());
+        assert_eq!(spec.step(), "Run command");
+        spec.description = Some("d".repeat(500));
+        assert_eq!(spec.step().len(), api::MAX_STEP);
     }
 
     #[test]
