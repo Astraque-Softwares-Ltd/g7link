@@ -88,7 +88,19 @@ fun PlayerLayer(bottomBarHeight: Dp, modifier: Modifier = Modifier) {
     val timelines by media.timelines.collectAsStateWithLifecycle()
     val reducedMotion = LocalReducedMotion.current
     var pick by remember { mutableStateOf<PlayerModel.Pick?>(null) }
-    val track = PlayerModel.shown(players, pick)
+    // A player changing tracks can drop out of the PC's list for a moment (next, previous): keep
+    // showing the last track through that gap instead of closing the full player.
+    val live = PlayerModel.shown(players, pick)
+    var held by remember { mutableStateOf(live) }
+    LaunchedEffect(live) {
+        if (live != null) {
+            held = live
+        } else {
+            delay(PlayerModel.GONE_GRACE_MS)
+            held = null
+        }
+    }
+    val track = live ?: held
 
     val state = remember { SeekableTransitionState(false) }
     val transition = rememberTransition(state, label = "player")

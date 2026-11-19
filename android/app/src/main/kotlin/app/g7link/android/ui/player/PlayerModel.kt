@@ -17,6 +17,9 @@ object PlayerModel {
      * has started playing since; else the one that most recently started playing; else the latest
      * to appear or change. Ties go to the PCs' order. Null when nothing is there.
      */
+    /** How long a player may vanish (a track change) before the players close. */
+    const val GONE_GRACE_MS = 3_000L
+
     fun shown(players: List<PcMedia.Summary>, pick: Pick?): PcMedia.Summary? {
         if (players.isEmpty()) return null
         if (pick != null) {
