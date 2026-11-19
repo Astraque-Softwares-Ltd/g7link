@@ -42,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -357,7 +358,7 @@ private fun NewThreadSheet(
     onStarted: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val ready = catalog.agents.filter { it.installed && it.signedIn }
     var agentId by rememberSaveable { mutableStateOf(ready.firstOrNull()?.id) }
@@ -379,17 +380,17 @@ private fun NewThreadSheet(
             when (val result = core.agentStart(device.id, agent.id, folder.id, prompt.trim())) {
                 is AgentCall.Ok -> onStarted(result.value.id)
                 is AgentCall.Failed -> error = when (result.failure) {
-                    AgentFailure.DENIED -> context.getString(R.string.agents_access_title, device.name)
-                    AgentFailure.UNSUPPORTED -> context.getString(R.string.agents_unavailable, device.name)
-                    AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> context.getString(R.string.agents_unreachable_title, device.name)
+                    AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
+                    AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
+                    AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> resources.getString(R.string.agents_unreachable_title, device.name)
                     AgentFailure.NOT_FOUND, AgentFailure.OTHER -> {
                         // The PC's BUSY reaches the phone as a plain failure: the caps (4 in all, 3 per agent) say which.
                         val running = threads.filter { AgentsModel.running(it) }
                         when {
-                            running.size >= MAX_RUNNING -> context.getString(R.string.agents_start_busy, device.name)
+                            running.size >= MAX_RUNNING -> resources.getString(R.string.agents_start_busy, device.name)
                             running.count { it.agent == agent.id } >= MAX_RUNNING_PER_AGENT ->
-                                context.getString(R.string.agents_start_busy_agent, device.name, agent.name)
-                            else -> context.getString(R.string.agents_failed_generic)
+                                resources.getString(R.string.agents_start_busy_agent, device.name, agent.name)
+                            else -> resources.getString(R.string.agents_failed_generic)
                         }
                     }
                 }

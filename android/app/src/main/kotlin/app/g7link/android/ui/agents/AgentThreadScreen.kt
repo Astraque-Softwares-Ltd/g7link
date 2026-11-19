@@ -50,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
@@ -103,7 +104,7 @@ fun AgentThreadScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
+    val resources = LocalResources.current
     val all by core.agents.collectAsStateWithLifecycle()
     val agents = all[device.id] ?: AgentsState()
     val thread = agents.thread(threadId)
@@ -160,7 +161,7 @@ fun AgentThreadScreen(
         scope.launch {
             if (core.agentCancel(device.id, threadId) is AgentCall.Failed) {
                 stopping = false
-                core.say(context.getString(R.string.agents_failed_generic))
+                core.say(resources.getString(R.string.agents_failed_generic))
             }
         }
     }
@@ -170,7 +171,7 @@ fun AgentThreadScreen(
             if (result is AgentCall.Failed) {
                 // Gone: someone answered first, or it lapsed.
                 val message = if (result.failure == AgentFailure.NOT_FOUND) R.string.agents_answered_elsewhere else R.string.agents_failed_generic
-                core.say(context.getString(message))
+                core.say(resources.getString(message))
             }
         }
     }
@@ -183,15 +184,15 @@ fun AgentThreadScreen(
                     is AgentCall.Ok -> draft = ""
                     is AgentCall.Failed -> core.say(
                         when (result.failure) {
-                            AgentFailure.DENIED -> context.getString(R.string.agents_access_title, device.name)
-                            AgentFailure.UNSUPPORTED -> context.getString(R.string.agents_unavailable, device.name)
-                            AgentFailure.NOT_FOUND -> context.getString(R.string.agents_thread_gone)
-                            AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> context.getString(R.string.agents_unreachable_title, device.name)
+                            AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
+                            AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
+                            AgentFailure.NOT_FOUND -> resources.getString(R.string.agents_thread_gone)
+                            AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> resources.getString(R.string.agents_unreachable_title, device.name)
                             // The PC's BUSY: it started working again (from the PC) before this reached it.
                             AgentFailure.OTHER -> if (running) {
-                                context.getString(R.string.agents_reply_when_stops, agentName)
+                                resources.getString(R.string.agents_reply_when_stops, agentName)
                             } else {
-                                context.getString(R.string.agents_failed_generic)
+                                resources.getString(R.string.agents_failed_generic)
                             }
                         },
                     )
