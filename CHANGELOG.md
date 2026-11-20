@@ -4,6 +4,105 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## Unreleased
+
+You steer the agents now: pick the model, plan before anything changes, send
+a message while one works, answer its questions, and show it a picture, from
+the PC, the launcher or the phone.
+
+### Added
+
+- **Pick the model and how hard it thinks.** The model and effort lists are
+  the ones Claude and Codex themselves report on your PC, short names first
+  and the rest under "More models"; G7 ships no list of its own and fetches
+  none. Until an agent has said, the choice is "Default", or type a model
+  name with "Other…". A choice applies to the thread's next message, never
+  to a turn that's running, and is kept per agent and folder. When another
+  model answered, the thread says so ("Answered by …").
+- **Plan first.** In Plan mode the agent changes nothing: it reads, then
+  writes a plan you see as a card. Implement it (on the PC and in the
+  launcher you choose how much it asks first; from the phone it asks before
+  edits and commands) or say what to change and get a new plan; the old
+  one is marked "Replaced by a newer plan". Codex needs a version that offers
+  it; otherwise Plan is hidden for Codex with a line saying so. There are
+  still only three modes: asks before edits and commands, asks before
+  commands (PC and launcher), and Plan.
+- **Send while it works.** A message sent while a turn runs either steers it
+  or waits its turn, as your setting says ("While it works, a new message:
+  steers it / waits its turn"); Alt+Enter does the other one, and on the
+  phone a long press. Codex reads a steer at once; Claude at its next step,
+  after the tool it's running, never mid-sentence. Up to five messages wait
+  above the box, each with Send now, edit and remove. When a turn fails or
+  you stop it, they wait for you ("Waiting: the last turn didn't finish.");
+  after a usage limit nothing is sent by itself.
+- **The agent can ask you.** When Claude or Codex asks a question, it waits
+  in the dock like a request: pick an option, several where it allows, or
+  "Something else" in your own words, then Send answers; or dismiss it, and
+  the agent hears you didn't answer. Answer it on the PC, in the launcher or
+  on the phone; the first answer wins. A question Codex marks secret is
+  answered on the PC only, and the answer is never kept, logged or sent to a
+  phone.
+- **Show it a picture.** Add up to four PNG, JPEG, WebP or GIF images to a
+  message: pick, paste or drop them on the PC, take one from the gallery or
+  the camera on the phone, or attach the clipboard's image in the launcher.
+  G7 decodes each one itself and sends the agent a fresh copy, which drops a
+  photo's location and camera details. Other files you name with `@`.
+- **`@` for files, `/` for commands.** Type `@` for files of the thread's
+  folder, best match first, honouring `.gitignore`; G7 inserts the path and
+  the agent opens the file itself, under its own rules. Type `/` at the start
+  for the agent's own commands and skills, and G7's `/model`, `/effort` and
+  `/plan`. Commands that need a terminal or change your account or settings
+  aren't offered.
+- **Your MCP servers work in G7 threads.** The MCP servers you set up for
+  Claude and Codex load in G7's threads too. For Claude there's a switch per
+  folder ("Use my MCP servers here"), on by default; Codex loads its servers
+  as it always does, since it has no way to leave them out. Each of their tools still asks
+  first, and "Always allow" isn't offered for them. G7 never opens the files
+  they're set up in: the PC names a folder's servers once a thread has run
+  there, the phone only counts them. A server that asks for a sign-in or a
+  value mid-turn is turned down with a note; do that in a terminal.
+- **Context and limits.** A thread's details show how full its context is
+  ("Context 12% of 1M") after each turn, and Agents setup shows each agent's
+  usage windows with when they reset, as the agents report them. A thread
+  shows one amber line when a limit is nearly used. G7 never asks a vendor
+  for these and never shows a cost.
+- **Drafts follow you.** What you've typed but not sent is kept on the PC, so
+  you can start a message on the phone and finish it on the PC; a box you're
+  typing in offers "Use the draft from …" instead of replacing your text. On
+  the PC, Up in an empty box goes back through what you sent from this PC.
+- **The PC stays awake while an agent works.** On by default ("Keep this PC
+  awake while an agent works"); it lets the PC sleep again a minute after
+  the last turn ends, and never while a thread only waits for you. Closing
+  the lid does what your system says, as before.
+- **Kotlin, TypeScript and TSX code is coloured** in answers and edits.
+
+### Changed
+
+- **Claude is asked one more question when it starts.** To list its models
+  and commands, G7 asks Claude's own CLI on the channel Stop already uses,
+  before anything is sent, at no usage cost. Its answer also holds your
+  account's email and organisation: G7 drops that part unread. A change of
+  model, effort or mode restarts the idle CLI with its documented flags.
+- **Codex's experimental switch, for Plan only.** Plan mode in Codex needs
+  OpenAI's documented "experimental API" opt-in; G7 turns it on and uses it
+  for that one field.
+- **Adding a folder says the MCP servers come too,** and that you can turn
+  that off for Claude in that folder.
+- **Older phones and PCs keep working.** A phone with 0.1.16 or earlier still
+  follows threads from an updated PC: a thread in Plan mode shows as asking
+  before edits and commands, a plan as an answer and a question as a step to
+  answer on the PC. An updated phone works with a PC that isn't updated yet,
+  and offers what that PC can do; models, Plan, the queue, questions,
+  pictures, `@`, `/` and drafts wait for the PC's update.
+
+### Fixed
+
+- **Browsing the PC's agent sessions from the phone no longer holds up the
+  link.** Listing, reading and continuing a session used to wait in line with
+  everything else the phone sent, so a slow read could delay a key press, a
+  call action or the connection check by up to 15 seconds. They now run on
+  their own.
+
 ## 0.1.16 (2026-11-20)
 
 Agent threads read like a conversation: what each turn did folds away behind
