@@ -610,6 +610,14 @@ impl Platform for RecordingPlatform {
             AgentRequest::Start { .. } => Ok(AgentReply::Thread(agent_thread(AGENT_THREAD, "working", true))),
             AgentRequest::Send { thread, .. } if thread == BUSY_THREAD => Err(AgentFailure::Busy),
             AgentRequest::Send { .. } | AgentRequest::Cancel { .. } => Ok(AgentReply::Ok),
+            AgentRequest::Read { thread, .. } if thread == THINKING_THREAD => {
+                Ok(AgentReply::Items(g7link_core::AgentItems {
+                    thread: agent_thread(&thread, "working", false),
+                    items: thinking_turn(),
+                    more_before: false,
+                    asks: Vec::new(),
+                }))
+            }
             AgentRequest::Read { thread, .. } => Ok(AgentReply::Items(g7link_core::AgentItems {
                 thread: agent_thread(&thread, "done", false),
                 items: vec![agent_text(1, "Hello")],
@@ -9180,6 +9188,8 @@ const AGENT_THREAD: &str = "0123456789abcdef0123456789abcdef";
 const BUSY_THREAD: &str = "fedcba9876543210fedcba9876543210";
 const AGENT_FOLDER: &str = "f0123456789ab";
 const AGENT_TOKEN: &str = "aaaabbbbccccddddeeeeffff00001111";
+/// A thread whose turn has the agent thinking, with every field added for `agent.items2`.
+const THINKING_THREAD: &str = "00001111222233334444555566667777";
 
 fn agent_thread(id: &str, state: &str, from_phone: bool) -> g7link_core::AgentThread {
     g7link_core::AgentThread {
@@ -9210,6 +9220,7 @@ fn agent_text(seq: u64, text: &str) -> g7link_core::AgentItem {
         text: Some(text.into()),
         truncated: false,
         tool: None,
+        ..Default::default()
     }
 }
 
@@ -9242,6 +9253,7 @@ fn agent_ask_for(thread: &str) -> g7link_core::AgentAsk {
         reason: None,
         truncated: false,
         expires: 1_795_007_200_000,
+        item: None,
     }
 }
 
@@ -9267,7 +9279,7 @@ async fn allow_agents(pc: &TestDevice, phone: &mut TestDevice) {
     let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
     pc.node.set_device_toggle(phone_id, "agents", true).unwrap();
     wait_for(phone, "agent catalog", |e| match e {
-        NodeEvent::AgentCatalog { device, catalog: Some(_) } if *device == pc_id => Some(()),
+        NodeEvent::AgentCatalog { device, catalog: Some(_), .. } if *device == pc_id => Some(()),
         _ => None,
     })
     .await;
@@ -9319,7 +9331,7 @@ async fn agents_are_refused_until_the_pc_allows_the_phone() {
     // The host going away is an empty catalog.
     pc.node.set_agent_catalog(None).await.unwrap();
     wait_for(&mut phone, "empty catalog", |e| match e {
-        NodeEvent::AgentCatalog { device, catalog: None } if *device == pc_id => Some(()),
+        NodeEvent::AgentCatalog { device, catalog: None, .. } if *device == pc_id => Some(()),
         _ => None,
     })
     .await;
@@ -9513,13 +9525,19 @@ async fn an_ask_reaches_every_phone_and_one_answer_closes_it() {
         .await;
         assert_eq!(ask.command.as_deref(), Some("touch a.txt"));
     }
-    with_timeout("answer", first.node.agent_answer(pc_id, AGENT_TOKEN.into(), true)).await.unwrap();
+    with_timeout("answer", first.node.agent_answer(pc_id, AGENT_TOKEN.into(), true, None)).await.unwrap();
     assert!(pc.platform.agent_requests.lock().unwrap().iter().any(|(_, r)| matches!(
         r,
-        g7link_core::AgentRequest::Answer { token, allow: true } if token == AGENT_TOKEN
+        g7link_core::AgentRequest::Answer { token, allow: true, message: None } if token == AGENT_TOKEN
     )));
     pc.node
-        .agent_asked(AGENT_TOKEN.into(), AGENT_THREAD.into(), "allowed".into(), Some("Pixel".into()))
+        .agent_asked(g7link_core::AgentAsked {
+            token: AGENT_TOKEN.into(),
+            thread: AGENT_THREAD.into(),
+            outcome: "allowed".into(),
+            by_name: Some("Pixel".into()),
+            ..Default::default()
+        })
         .await
         .unwrap();
     for dev in [&mut first, &mut second] {
@@ -9532,7 +9550,10 @@ async fn an_ask_reaches_every_phone_and_one_answer_closes_it() {
         .await;
         assert_eq!(outcome, ("allowed".to_owned(), Some("Pixel".to_owned())));
     }
-    assert!(matches!(second.node.agent_answer(pc_id, AGENT_TOKEN.into(), false).await, Err(Error::NotFound)));
+    assert!(matches!(
+        second.node.agent_answer(pc_id, AGENT_TOKEN.into(), false, None).await,
+        Err(Error::NotFound)
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -9547,8 +9568,12 @@ async fn a_phone_cant_pick_a_mode_a_scope_or_a_path() {
         phone.node.agent_start(pc_id, agent_start("hi", "auto_edit")).await,
         Err(Error::Denied)
     ));
-    let scoped =
-        AgentAnswer { token: AGENT_TOKEN.into(), decision: "allow".into(), scope: Some("thread".into()) };
+    let scoped = AgentAnswer {
+        token: AGENT_TOKEN.into(),
+        decision: "allow".into(),
+        scope: Some("thread".into()),
+        message: None,
+    };
     assert!(matches!(
         phone.node.debug_agent_request(pc_id, "agent.answer", &scoped).await,
         Err(Error::Denied)
@@ -9614,7 +9639,7 @@ async fn turning_agents_off_stops_everything() {
 
     pc.node.set_device_toggle(phone_id, "agents", false).unwrap();
     wait_for(&mut phone, "last, empty catalog", |e| match e {
-        NodeEvent::AgentCatalog { device, catalog: None } if *device == pc_id => Some(()),
+        NodeEvent::AgentCatalog { device, catalog: None, .. } if *device == pc_id => Some(()),
         _ => None,
     })
     .await;
@@ -9678,6 +9703,304 @@ async fn a_pc_without_the_host_says_unsupported() {
     pc.node.set_agent_catalog(Some(agent_catalog())).await.unwrap();
     assert_eq!(phone.node.agent_catalog(pc_id), None);
     assert!(pc.platform.agent_requests.lock().unwrap().is_empty());
+}
+
+/// A turn as a PC that keeps turns sends it: the prompt, the agent thinking
+/// (still), an edit with its class and path that was denied, the words the
+/// user denied it with, thinking that ended, and the answer.
+fn thinking_turn() -> Vec<g7link_core::AgentItem> {
+    use g7link_core::{AgentItem, AgentTool, agent};
+    let end = Some(1_795_000_000_500);
+    vec![
+        AgentItem { kind: agent::item::USER.into(), turn: Some(1), ..agent_text(1, "Fix the failing test.") },
+        AgentItem {
+            kind: agent::item::REASONING.into(),
+            turn: Some(1),
+            ..agent_text(2, "**Reading the tests** to see what fails.")
+        },
+        AgentItem {
+            kind: agent::item::TOOL.into(),
+            text: None,
+            tool: Some(AgentTool {
+                name: "Edit".into(),
+                title: "Edit file".into(),
+                detail: Some("-old\n+new".into()),
+                status: agent::tool::DENIED.into(),
+                output: None,
+                class: Some(agent::tool_class::EDIT.into()),
+                path: Some("src/lib.rs".into()),
+                by_rule: false,
+            }),
+            turn: Some(1),
+            end,
+            group: Some("msg_01:0".into()),
+            ..agent_text(3, "")
+        },
+        AgentItem {
+            kind: agent::item::USER.into(),
+            turn: Some(1),
+            deny_of: Some("msg_01:3".into()),
+            ..agent_text(4, "Use the test runner instead.")
+        },
+        AgentItem {
+            kind: agent::item::REASONING.into(),
+            text: None,
+            turn: Some(1),
+            end,
+            ..agent_text(5, "")
+        },
+        AgentItem { turn: Some(1), phase: Some(agent::phase::FINAL.into()), end, ..agent_text(6, "Fixed.") },
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_that_reads_turns_gets_every_new_field_and_the_thinking() {
+    use g7link_core::{AgentEvent, agent};
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[agent::ITEMS2]).await;
+    let pc = agents_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+
+    let page =
+        with_timeout("read", phone.node.agent_read(pc_id, THINKING_THREAD.into(), None, 50)).await.unwrap();
+    assert_eq!(page.items, thinking_turn(), "every field arrives as it was sent");
+
+    with_timeout("watch", phone.node.agent_watch(pc_id, Some(THINKING_THREAD.into()))).await.unwrap();
+    for item in thinking_turn() {
+        pc.node.agent_event(AgentEvent::item(THINKING_THREAD.into(), item), None).await.unwrap();
+    }
+    let thinking = &thinking_turn()[1];
+    let offset = thinking.text.as_ref().unwrap().len() as u32;
+    let more =
+        AgentEvent::delta(THINKING_THREAD.into(), 2, thinking.id.clone(), offset, " Then fix it.".into());
+    pc.node.agent_event(more, None).await.unwrap();
+    pc.node
+        .agent_event(AgentEvent::state(agent_thread(THINKING_THREAD, "working", false)), None)
+        .await
+        .unwrap();
+    let seen = agent_events_until_state(&mut phone).await;
+    let items: Vec<_> = seen.iter().filter_map(|e| e.item.clone()).collect();
+    assert_eq!(items, thinking_turn());
+    let deltas: Vec<_> = seen.iter().filter(|e| e.kind == "delta").map(|e| e.item_id.clone()).collect();
+    assert_eq!(deltas, [Some(thinking.id.clone())], "the thinking's text streams");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_phone_gets_thinking_as_a_tool_step_and_none_of_its_text() {
+    use g7link_core::{AgentEvent, agent};
+    let mut old = device("Galaxy", DeviceKind::Phone).await;
+    let mut new = device_with("Pixel", DeviceKind::Phone, &[agent::ITEMS2]).await;
+    let mut pc = agents_pc_with(&mut old).await;
+    pair_qr(&mut pc, &mut new).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut old).await;
+    allow_agents(&pc, &mut new).await;
+
+    // A page: the thinking is a tool step and no seq is missing, so a
+    // 0.1.15 phone takes the page and never reads again for a gap.
+    let page =
+        with_timeout("read", old.node.agent_read(pc_id, THINKING_THREAD.into(), None, 50)).await.unwrap();
+    let seqs: Vec<u64> = page.items.iter().map(|i| i.seq).collect();
+    assert_eq!(seqs, [1, 2, 3, 4, 5, 6]);
+    assert!(page.items.iter().all(|i| agent::item::LEGACY.contains(&i.kind.as_str())));
+    let thinking = &page.items[1];
+    assert_eq!((thinking.kind.as_str(), thinking.text.as_deref()), ("tool", None));
+    let tool = thinking.tool.as_ref().unwrap();
+    assert_eq!(
+        (tool.name.as_str(), tool.title.as_str(), tool.status.as_str()),
+        ("reasoning", "Thinking", "running")
+    );
+    assert_eq!(page.items[4].tool.as_ref().unwrap().status, "ok", "thinking that ended");
+    assert_eq!(page.items[5..], thinking_turn()[5..], "the rest as it was");
+    let page =
+        with_timeout("read", new.node.agent_read(pc_id, THINKING_THREAD.into(), None, 50)).await.unwrap();
+    assert_eq!(page.items, thinking_turn(), "per phone");
+
+    // Live: the item as a tool step, and none of its text.
+    for dev in [&old, &new] {
+        with_timeout("watch", dev.node.agent_watch(pc_id, Some(THINKING_THREAD.into()))).await.unwrap();
+    }
+    let thinking = thinking_turn()[1].clone();
+    let offset = thinking.text.as_ref().unwrap().len() as u32;
+    pc.node.agent_event(AgentEvent::item(THINKING_THREAD.into(), thinking.clone()), None).await.unwrap();
+    let more =
+        AgentEvent::delta(THINKING_THREAD.into(), 2, thinking.id.clone(), offset, " Then fix it.".into());
+    pc.node.agent_event(more, None).await.unwrap();
+    let answer = AgentEvent::delta(THINKING_THREAD.into(), 6, "msg_01:6".into(), 0, "Fixed".into());
+    pc.node.agent_event(answer, None).await.unwrap();
+    pc.node
+        .agent_event(AgentEvent::state(agent_thread(THINKING_THREAD, "working", false)), None)
+        .await
+        .unwrap();
+
+    let kinds = |seen: &[AgentEvent]| -> Vec<(String, Option<String>)> {
+        seen.iter().map(|e| (e.kind.clone(), e.item_id.clone())).collect()
+    };
+    let seen = agent_events_until_state(&mut old).await;
+    assert_eq!(
+        kinds(&seen),
+        [("item".into(), None), ("delta".into(), Some("msg_01:6".into())), ("state".into(), None)]
+    );
+    assert_eq!(seen[0].item.as_ref(), Some(&thinking.clone().for_legacy()));
+    let seen = agent_events_until_state(&mut new).await;
+    assert_eq!(
+        kinds(&seen),
+        [
+            ("item".into(), None),
+            ("delta".into(), Some(thinking.id.clone())),
+            ("delta".into(), Some("msg_01:6".into())),
+            ("state".into(), None)
+        ]
+    );
+    assert_eq!(seen[0].item.as_ref(), Some(&thinking));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denial_carries_the_users_words_to_a_pc_that_takes_them() {
+    use g7link_core::{AgentRequest, agent, agents::AgentAnswer};
+    let mut first = device_with("Pixel", DeviceKind::Phone, &[agent::ITEMS2]).await;
+    let mut second = device("Galaxy", DeviceKind::Phone).await;
+    let mut pc = agents_pc_with(&mut first).await;
+    pair_qr(&mut pc, &mut second).await;
+    let (pc_id, first_id) = (pc.node.device_id(), first.node.device_id());
+    allow_agents(&pc, &mut first).await;
+    allow_agents(&pc, &mut second).await;
+    assert!(!first.node.agent_can_say_why(pc_id));
+
+    // A PC that can't pass them on: the phone doesn't send them, and the PC refuses them.
+    let words = "Use the test runner instead.";
+    assert!(matches!(
+        first.node.agent_answer(pc_id, AGENT_TOKEN.into(), false, Some(words.into())).await,
+        Err(Error::Unsupported)
+    ));
+    let deny = AgentAnswer {
+        token: AGENT_TOKEN.into(),
+        decision: agent::decision::DENY.into(),
+        scope: None,
+        message: Some(words.into()),
+    };
+    assert!(matches!(
+        first.node.debug_agent_request(pc_id, "agent.answer", &deny).await,
+        Err(Error::Unsupported)
+    ));
+    assert!(pc.platform.agent_requests.lock().unwrap().is_empty(), "the request still waits");
+
+    // Its host learns to: the phones hear it without a new catalog.
+    let caps = [agent::HOST, agent::SAY_WHY, "media.control"].map(String::from).to_vec();
+    pc.node.update_power(PowerLevel::NotApplicable, caps).await;
+    for dev in [&mut first, &mut second] {
+        wait_for(dev, "a catalog that takes words", |e| match e {
+            NodeEvent::AgentCatalog { device, catalog: Some(_), can_say_why: true } if *device == pc_id => {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+    }
+    assert!(first.node.agent_can_say_why(pc_id));
+
+    // Words go with a denial only, within their limit, and say something.
+    let refused = |result: Result<(), Error>| match result {
+        Err(Error::Protocol(reason)) => assert!(reason.contains("BAD_MESSAGE"), "{reason}"),
+        other => panic!("not refused as a bad message: {other:?}"),
+    };
+    let allow = AgentAnswer { decision: agent::decision::ALLOW.into(), ..deny.clone() };
+    refused(first.node.debug_agent_request(pc_id, "agent.answer", &allow).await);
+    let long = AgentAnswer { message: Some("x".repeat(agent::MAX_DENY_MESSAGE_BYTES + 1)), ..deny.clone() };
+    refused(first.node.debug_agent_request(pc_id, "agent.answer", &long).await);
+    let blank = AgentAnswer { message: Some(" \u{202E}\n".into()), ..deny.clone() };
+    refused(first.node.debug_agent_request(pc_id, "agent.answer", &blank).await);
+    for (allow, message) in [(true, words.to_owned()), (false, "x".repeat(2001)), (false, " ".into())] {
+        assert!(matches!(
+            first.node.agent_answer(pc_id, AGENT_TOKEN.into(), allow, Some(message)).await,
+            Err(Error::Protocol(_))
+        ));
+    }
+    assert!(pc.platform.agent_requests.lock().unwrap().is_empty());
+
+    // A denial with words reaches the PC's host cleaned, from the API and as sent.
+    let typed = format!("{words}\u{202E}");
+    with_timeout("deny", first.node.agent_answer(pc_id, AGENT_TOKEN.into(), false, Some(typed.clone())))
+        .await
+        .unwrap();
+    let other_token = "0000aaaa1111bbbb2222cccc3333dddd";
+    let raw = AgentAnswer { token: other_token.into(), message: Some(typed), ..deny.clone() };
+    with_timeout("raw deny", first.node.debug_agent_request(pc_id, "agent.answer", &raw)).await.unwrap();
+    let requests = pc.platform.agent_requests.lock().unwrap().clone();
+    let answers: Vec<_> = requests
+        .into_iter()
+        .filter_map(|(from, r)| match r {
+            AgentRequest::Answer { token, allow, message } => Some((from, token, allow, message)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        answers,
+        [
+            (first_id, AGENT_TOKEN.to_owned(), false, Some(words.to_owned())),
+            (first_id, other_token.to_owned(), false, Some(words.to_owned())),
+        ]
+    );
+
+    // Every phone hears how it ended, with the words, an older one too.
+    pc.node
+        .agent_asked(g7link_core::AgentAsked {
+            token: AGENT_TOKEN.into(),
+            thread: AGENT_THREAD.into(),
+            outcome: agent::asked::DENIED.into(),
+            by_name: Some("Pixel".into()),
+            message: Some(words.into()),
+        })
+        .await
+        .unwrap();
+    for dev in [&mut first, &mut second] {
+        let heard = wait_for(dev, "asked", |e| match e {
+            NodeEvent::AgentAsked { token, outcome, by_name, message, .. } if token == AGENT_TOKEN => {
+                Some((outcome.clone(), by_name.clone(), message.clone()))
+            }
+            _ => None,
+        })
+        .await;
+        assert_eq!(heard, ("denied".to_owned(), Some("Pixel".to_owned()), Some(words.to_owned())));
+    }
+}
+
+/// The same test also carries a step the PC's rule allowed, flagged as such.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_never_receives_an_absolute_path() {
+    use g7link_core::{AgentEvent, agent};
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[agent::ITEMS2]).await;
+    let pc = agents_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+    with_timeout("watch", phone.node.agent_watch(pc_id, Some(AGENT_THREAD.into()))).await.unwrap();
+
+    let outside = "/home/me/Code/app/src/lib.rs";
+    let mut edit = thinking_turn()[2].clone();
+    let tool = edit.tool.as_mut().unwrap();
+    tool.path = Some(outside.into());
+    tool.status = agent::tool::OK.into();
+    tool.by_rule = true;
+    pc.node.agent_event(AgentEvent::item(AGENT_THREAD.into(), edit.clone()), None).await.unwrap();
+    let ask = g7link_core::AgentAsk {
+        path: Some(outside.into()),
+        item: Some(edit.id.clone()),
+        ..agent_ask_for(AGENT_THREAD)
+    };
+    pc.node.agent_ask(ask).await.unwrap();
+    let item = wait_for(&mut phone, "item", |e| match e {
+        NodeEvent::AgentEvent { event, .. } if event.kind == "item" => event.item.clone(),
+        _ => None,
+    })
+    .await;
+    let tool = item.tool.unwrap();
+    assert_eq!((tool.path.as_deref(), tool.by_rule), (Some("lib.rs"), true));
+    let ask = wait_for(&mut phone, "ask", |e| match e {
+        NodeEvent::AgentAsk { ask, .. } => Some(ask.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!((ask.path.as_deref(), ask.item.as_deref()), (Some("lib.rs"), Some(edit.id.as_str())));
 }
 
 // ---- Agents: sessions started on the PC (docs/protocol/agents.md §3) ----
@@ -10035,7 +10358,7 @@ async fn turning_sessions_off_ends_the_watch() {
         .unwrap();
     pc.node.set_device_toggle(phone_id, "agents", false).unwrap();
     wait_for(&mut phone, "last, empty catalog", |e| match e {
-        NodeEvent::AgentCatalog { device, catalog: None } if *device == pc_id => Some(()),
+        NodeEvent::AgentCatalog { device, catalog: None, .. } if *device == pc_id => Some(()),
         _ => None,
     })
     .await;

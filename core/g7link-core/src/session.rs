@@ -649,6 +649,7 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             shared.refresh_capabilities(&peer);
             if had_caps {
                 shared.send_toggles_state(session).await;
+                crate::agents::peer_caps_changed(shared, &peer);
             }
         }
         types::DEVICE_RING => {

@@ -83,6 +83,7 @@ capability is missing.
 | `camera.capture` | Captures a photo or document scan on request ([Continuity Camera](v0.md#12-continuity-camera-cameracapture)) | camera permission |
 | `agent.remote` | Shows a PC's coding-agent threads, starts them and answers their requests ([agents](agents.md)) | app update |
 | `agent.follow` | Shows a PC's Claude and Codex sessions started outside G7 Link, read-only, and continues one as a thread ([agents](agents.md) §3) | app update |
+| `agent.items2` | Understands an agent thread's turns, answers and thinking: item kind `reasoning` and the fields of [agents](agents.md) §2.4. Without it a PC sends thinking as a tool step | app update |
 
 ## Desktop
 
@@ -111,5 +112,6 @@ capability is missing.
 | `camera.continuity` | Requests and receives Continuity Camera photos and document scans ([Continuity Camera](v0.md#12-continuity-camera-cameracapture)) | app update |
 | `agent.host` | The agent host is installed: paired phones with the `agents` toggle can follow, start and answer coding-agent threads on this PC ([agents](agents.md)) | installing G7 Link with its agent host |
 | `agent.sessions` | Lists Claude and Codex sessions started on this PC outside G7 Link to paired phones with the `agents` and `agent_sessions` toggles ([agents](agents.md) §3) | installing G7 Link with its agent host |
+| `agent.say_why` | Takes a denial with the user's words for the agent (`agent.answer`'s `message`, [agents](agents.md) §2.4) | an agent host that can pass the words on |
 
 

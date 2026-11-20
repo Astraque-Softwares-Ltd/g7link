@@ -18,7 +18,7 @@
 //! stream of its own, checked the same way.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -28,7 +28,7 @@ pub use g7link_protocol::messages::{
     AgentEvent, AgentExportMeta, AgentExportRequest, AgentItem, AgentItems, AgentPlanStep, AgentRead,
     AgentSend, AgentSession, AgentSessionContinue, AgentSessionEvent, AgentSessionItem, AgentSessionItems,
     AgentSessionRead, AgentSessionWatch, AgentSessions, AgentStart, AgentThread, AgentThreads, AgentTool,
-    AgentWatch, agent, is_valid_agent_id,
+    AgentWatch, agent, clean_deny_message, is_valid_agent_id,
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, ProtocolError,
@@ -62,6 +62,9 @@ const SESSION_GATES_KEPT: usize = 128;
 const EXPORT_WAIT: Duration = Duration::from_secs(20);
 /// How long an export's text may take to cross.
 const EXPORT_SEND: Duration = Duration::from_secs(60);
+/// Reasoning items remembered (thread, item id), so their deltas can be
+/// kept from phones without `agent.items2`. The oldest go first.
+const REASONING_KEPT: usize = 256;
 
 /// A phone's request, after the core checked the toggle, the limits and the
 /// mode. Answered by [`Platform::agent_request`](crate::Platform::agent_request).
@@ -77,8 +80,11 @@ pub enum AgentRequest {
     Cancel { thread: String },
     /// `agent.read`: the newest `limit` items, or the ones before `before`.
     Read { thread: String, before: Option<u64>, limit: u32 },
-    /// `agent.answer`, for this time only.
-    Answer { token: String, allow: bool },
+    /// `agent.answer`, for this time only. `message`: what the user said
+    /// when denying (never with `allow`), cleaned, 1 to
+    /// [`agent::MAX_DENY_MESSAGE_BYTES`]; only while this PC offers
+    /// [`agent::SAY_WHY`].
+    Answer { token: String, allow: bool, message: Option<String> },
     /// `agent.sessions`: sessions started on this PC outside G7 Link, at
     /// most [`agent::MAX_SESSIONS`], in the host's order.
     Sessions,
@@ -117,9 +123,11 @@ impl std::fmt::Debug for AgentRequest {
                 .field("before", before)
                 .field("limit", limit)
                 .finish(),
-            Self::Answer { allow, .. } => {
-                f.debug_struct("Answer").field("allow", allow).finish_non_exhaustive()
-            }
+            Self::Answer { allow, message, .. } => f
+                .debug_struct("Answer")
+                .field("allow", allow)
+                .field("message_bytes", &message.as_ref().map(String::len))
+                .finish_non_exhaustive(),
             Self::Sessions => f.write_str("Sessions"),
             Self::SessionRead { session, before, limit } => f
                 .debug_struct("SessionRead")
@@ -253,8 +261,28 @@ struct Inner {
     prompted_sessions: HashSet<DeviceId>,
     /// PC: `agent.session` pacing per session id.
     session_gates: HashMap<String, SessionGate>,
-    /// Phone: the last catalog each PC sent, if it had agents.
-    peer_catalogs: HashMap<DeviceId, AgentCatalog>,
+    /// Phone: the last catalog each PC sent, if it had agents, and whether
+    /// that PC offered `agent.say_why` when it was last told.
+    peer_catalogs: HashMap<DeviceId, (AgentCatalog, bool)>,
+    /// PC: reasoning items seen lately, as (thread, item id).
+    reasoning: VecDeque<(String, String)>,
+}
+
+impl Inner {
+    /// Remembers that `item` of `thread` is a reasoning item.
+    fn note_reasoning(&mut self, thread: &str, item: &AgentItem) {
+        if !item.is_reasoning() || self.is_reasoning(thread, &item.id) {
+            return;
+        }
+        if self.reasoning.len() == REASONING_KEPT {
+            self.reasoning.pop_front();
+        }
+        self.reasoning.push_back((thread.to_owned(), item.id.clone()));
+    }
+
+    fn is_reasoning(&self, thread: &str, item_id: &str) -> bool {
+        self.reasoning.iter().any(|(t, i)| t == thread && i == item_id)
+    }
 }
 
 /// Per-node agents state, on both sides.
@@ -315,7 +343,7 @@ impl Agents {
 
     /// The last catalog `peer` sent, if it had agents.
     pub fn peer_catalog(&self, peer: &DeviceId) -> Option<AgentCatalog> {
-        self.lock().peer_catalogs.get(peer).cloned()
+        self.lock().peer_catalogs.get(peer).map(|(catalog, _)| catalog.clone())
     }
 }
 
@@ -326,38 +354,62 @@ impl Shared {
 
     /// Whether this PC sends `peer` anything from the service.
     fn agents_reach(&self, peer: &DeviceId) -> bool {
-        self.toggle_on(peer, TOGGLE)
-            && self.store.get_peer(peer).ok().flatten().is_some_and(|p| p.caps.contains(agent::REMOTE))
+        self.toggle_on(peer, TOGGLE) && self.peer_offers(peer, agent::REMOTE)
+    }
+
+    /// Whether the paired `peer` offers `cap`, as it last said.
+    fn peer_offers(&self, peer: &DeviceId, cap: &str) -> bool {
+        self.store.get_peer(peer).ok().flatten().is_some_and(|p| p.caps.contains(cap))
     }
 
     /// The live sessions this PC sends agent pushes to.
     fn agent_recipients(&self) -> Vec<Arc<Session>> {
+        self.agent_recipients_items2().into_iter().map(|(session, _)| session).collect()
+    }
+
+    /// [`agent_recipients`](Self::agent_recipients), each with whether that
+    /// phone takes reasoning items (`agent.items2`).
+    fn agent_recipients_items2(&self) -> Vec<(Arc<Session>, bool)> {
         if !self.offers_agents() {
             return Vec::new();
         }
-        self.live_sessions().into_iter().filter(|s| self.agents_reach(&s.peer)).collect()
+        self.live_sessions()
+            .into_iter()
+            .filter(|s| self.toggle_on(&s.peer, TOGGLE))
+            .filter_map(|s| {
+                let caps = self.store.get_peer(&s.peer).ok().flatten()?.caps;
+                caps.contains(agent::REMOTE).then(|| (s, caps.contains(agent::ITEMS2)))
+            })
+            .collect()
     }
 
     /// The live sessions this PC sends §3's pushes to: both toggles on, and
     /// the phone shows sessions.
     fn session_recipients(&self) -> Vec<Arc<Session>> {
+        self.session_recipients_items2().into_iter().map(|(session, _)| session).collect()
+    }
+
+    /// [`session_recipients`](Self::session_recipients), each with whether
+    /// that phone takes reasoning items (`agent.items2`).
+    fn session_recipients_items2(&self) -> Vec<(Arc<Session>, bool)> {
         if !self.we_offer(agent::SESSIONS) {
             return Vec::new();
         }
         self.live_sessions()
             .into_iter()
-            .filter(|s| {
-                self.toggle_on(&s.peer, TOGGLE)
-                    && self.toggle_on(&s.peer, SESSIONS_TOGGLE)
-                    && self
-                        .store
-                        .get_peer(&s.peer)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|p| p.caps.contains(agent::FOLLOW))
+            .filter(|s| self.toggle_on(&s.peer, TOGGLE) && self.toggle_on(&s.peer, SESSIONS_TOGGLE))
+            .filter_map(|s| {
+                let caps = self.store.get_peer(&s.peer).ok().flatten()?.caps;
+                caps.contains(agent::FOLLOW).then(|| (s, caps.contains(agent::ITEMS2)))
             })
             .collect()
     }
+}
+
+/// `item` as `peer` takes it: a reasoning item becomes a tool step for a
+/// phone without `agent.items2` (`docs/protocol/agents.md` §2.4).
+fn item_for(item: AgentItem, items2: bool) -> AgentItem {
+    if items2 { item } else { item.for_legacy() }
 }
 
 /// PC: tells the platform that `peer` watches no session any more (its
@@ -411,7 +463,7 @@ pub(crate) fn toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
             }
             // The last word: nothing can be started or followed from here now.
             if shared.offers_agents()
-                && shared.store.get_peer(&peer).ok().flatten().is_some_and(|p| p.caps.contains(agent::REMOTE))
+                && shared.peer_offers(&peer, agent::REMOTE)
                 && let Some(env) = catalog_env(None)
             {
                 let _ = session.send(env).await;
@@ -504,14 +556,21 @@ pub(crate) fn send_session_item(shared: &Arc<Shared>, session: String, item: Age
     let body = AgentSessionItem { session, item }
         .sanitized()
         .ok_or_else(|| Error::Protocol("invalid agent session item".into()))?;
-    let recipients = shared.session_recipients();
+    let recipients = shared.session_recipients_items2();
     if recipients.is_empty() {
         return Ok(());
     }
     let env = Envelope::new(types::AGENT_SESSION_ITEM, &body)?;
+    let legacy = if body.item.is_reasoning() {
+        let legacy = AgentSessionItem { session: body.session.clone(), item: body.item.clone().for_legacy() };
+        Some(Envelope::new(types::AGENT_SESSION_ITEM, &legacy)?)
+    } else {
+        None
+    };
     let inner = shared.agents.lock();
-    for session in recipients {
+    for (session, items2) in recipients {
         if inner.session_watching.get(&session.peer) == Some(&body.session) {
+            let env = if items2 { &env } else { legacy.as_ref().unwrap_or(&env) };
             let _ = session.send_now(env.clone());
         }
     }
@@ -538,12 +597,14 @@ pub(crate) fn set_catalog(shared: &Arc<Shared>, catalog: Option<AgentCatalog>) {
     }
 }
 
-/// `event` for one phone: `from_phone` says whether that phone started the thread.
-fn for_phone(event: &AgentEvent, peer: &DeviceId, started_by: Option<&DeviceId>) -> AgentEvent {
+/// `event` for one phone: `from_phone` says whether that phone started the
+/// thread, and a reasoning item is a tool step for a phone without `agent.items2`.
+fn for_phone(event: &AgentEvent, peer: &DeviceId, started_by: Option<&DeviceId>, items2: bool) -> AgentEvent {
     let mut event = event.clone();
     if let Some(state) = &mut event.state {
         state.from_phone = started_by == Some(peer);
     }
+    event.item = event.item.map(|item| item_for(item, items2));
     event
 }
 
@@ -584,19 +645,21 @@ pub(crate) fn send_event(
     started_by: Option<DeviceId>,
 ) -> Result<()> {
     let event = event.sanitized().ok_or_else(|| Error::Protocol("invalid agent event".into()))?;
-    let recipients = shared.agent_recipients();
-    if recipients.is_empty() {
-        return Ok(());
-    }
+    let recipients = shared.agent_recipients_items2();
     let mut schedule = Vec::new();
     {
         let mut inner = shared.agents.lock();
-        for session in &recipients {
-            let peer = session.peer;
+        if let Some(item) = &event.item {
+            inner.note_reasoning(&event.thread, item);
+        }
+        let reasoning_delta = event.kind == agent::event::DELTA
+            && event.item_id.as_deref().is_some_and(|id| inner.is_reasoning(&event.thread, id));
+        for (session, items2) in &recipients {
+            let (peer, items2) = (session.peer, *items2);
             let watches = inner.watching.get(&peer).is_some_and(|t| *t == event.thread);
             match event.kind.as_str() {
                 agent::event::DELTA => {
-                    if !watches {
+                    if !watches || (reasoning_delta && !items2) {
                         continue;
                     }
                     let now = Instant::now();
@@ -632,13 +695,13 @@ pub(crate) fn send_event(
                         continue;
                     }
                     flush_for(&mut inner, session, &event.thread);
-                    if let Some(env) = event_env(&event) {
+                    if let Some(env) = event_env(&for_phone(&event, &peer, None, items2)) {
                         let _ = session.send_now(env);
                     }
                 }
                 _ => {
                     flush_for(&mut inner, session, &event.thread);
-                    if let Some(env) = event_env(&for_phone(&event, &peer, started_by.as_ref())) {
+                    if let Some(env) = event_env(&for_phone(&event, &peer, started_by.as_ref(), items2)) {
                         let _ = session.send_now(env);
                     }
                 }
@@ -773,8 +836,18 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
             if answer.scope.as_deref().is_some_and(|s| s != agent::scope::ONCE) {
                 return Envelope::error(ErrorCode::Denied, "only this request can be answered from a phone");
             }
+            let message = match answer.message.as_deref() {
+                None => None,
+                Some(_) if !shared.we_offer(agent::SAY_WHY) => {
+                    return Envelope::error(ErrorCode::Unsupported, "this PC can't pass a message on");
+                }
+                Some(message) => match clean_deny_message(message) {
+                    Some(message) => Some(message),
+                    None => return bad(),
+                },
+            };
             let allow = answer.allow();
-            AgentRequest::Answer { token: answer.token, allow }
+            AgentRequest::Answer { token: answer.token, allow, message }
         }
         types::AGENT_WATCH => {
             let Some(watch) = decode::<AgentWatch>(env, AgentWatch::is_valid) else { return bad() };
@@ -815,6 +888,7 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
         AgentRequest::SessionWatch { session } => Some(session.clone()),
         _ => None,
     };
+    let items2 = shared.peer_offers(&peer, agent::ITEMS2);
     let platform = shared.platform.clone();
     let task = tokio::task::spawn_blocking(move || platform.agent_request(&peer, request));
     let reply = match tokio::time::timeout(PLATFORM_LIMIT, task).await {
@@ -833,14 +907,24 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
             Some(thread) => Envelope::new(types::AGENT_THREAD, &thread),
             None => return AgentFailure::Internal.reply("the host's answer was malformed"),
         },
-        Ok(AgentReply::Items(items)) if expects == types::AGENT_ITEMS => match items.sanitized() {
-            Some(items) => Envelope::new(types::AGENT_ITEMS, &items),
-            None => return AgentFailure::Internal.reply("the host's answer was malformed"),
-        },
+        Ok(AgentReply::Items(mut items)) if expects == types::AGENT_ITEMS => {
+            {
+                let mut inner = shared.agents.lock();
+                for item in &items.items {
+                    inner.note_reasoning(&items.thread.id, item);
+                }
+            }
+            items.items = items.items.into_iter().map(|item| item_for(item, items2)).collect();
+            match items.sanitized() {
+                Some(items) => Envelope::new(types::AGENT_ITEMS, &items),
+                None => return AgentFailure::Internal.reply("the host's answer was malformed"),
+            }
+        }
         Ok(AgentReply::Sessions(sessions)) if expects == types::AGENT_SESSIONS => {
             Envelope::new(types::AGENT_SESSIONS, &AgentSessions { sessions }.sanitized())
         }
-        Ok(AgentReply::SessionItems(items)) if expects == types::AGENT_SESSION_ITEMS => {
+        Ok(AgentReply::SessionItems(mut items)) if expects == types::AGENT_SESSION_ITEMS => {
+            items.items = items.items.into_iter().map(|item| item_for(item, items2)).collect();
             match items.sanitized() {
                 Some(items) => Envelope::new(types::AGENT_SESSION_ITEMS, &items),
                 None => return AgentFailure::Internal.reply("the host's answer was malformed"),
@@ -975,14 +1059,15 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             }
             let catalog = catalog.sanitized();
             let catalog = (!catalog.agents.is_empty()).then_some(catalog);
+            let can_say_why = shared.peer_offers(&peer, agent::SAY_WHY);
             {
                 let mut inner = shared.agents.lock();
                 match &catalog {
-                    Some(c) => inner.peer_catalogs.insert(peer, c.clone()),
+                    Some(c) => inner.peer_catalogs.insert(peer, (c.clone(), can_say_why)),
                     None => inner.peer_catalogs.remove(&peer),
                 };
             }
-            shared.emit(NodeEvent::AgentCatalog { device: peer, catalog });
+            shared.emit(NodeEvent::AgentCatalog { device: peer, catalog, can_say_why });
         }
         types::AGENT_EVENT if shared.we_offer(agent::REMOTE) => {
             if let Ok(event) = env.body::<AgentEvent>()
@@ -1011,6 +1096,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     thread: asked.thread,
                     outcome: asked.outcome,
                     by_name: asked.by_name,
+                    message: asked.message,
                 });
             }
         }
@@ -1158,18 +1244,54 @@ pub(crate) async fn watch(shared: &Arc<Shared>, peer: DeviceId, thread: Option<S
     request_ok(shared, peer, Envelope::new(types::AGENT_WATCH, &body)?).await
 }
 
+/// Phone: answers an ask. A `message` goes with a denial only, and only to
+/// a PC that offers `agent.say_why` (`Unsupported` otherwise, and nothing is
+/// sent: the request still waits).
 pub(crate) async fn answer_ask(
     shared: &Arc<Shared>,
     peer: DeviceId,
     token: String,
     allow: bool,
+    message: Option<String>,
 ) -> Result<()> {
     let decision = if allow { agent::decision::ALLOW } else { agent::decision::DENY };
-    let body = AgentAnswer { token, decision: decision.into(), scope: None };
+    let message = match message {
+        None => None,
+        Some(message) if allow || message.len() > agent::MAX_DENY_MESSAGE_BYTES => {
+            return Err(invalid("agent.answer"));
+        }
+        Some(message) => Some(clean_deny_message(&message).ok_or_else(|| invalid("agent.answer"))?),
+    };
+    if message.is_some() && !shared.peer_offers(&peer, agent::SAY_WHY) {
+        return Err(Error::Unsupported);
+    }
+    let body = AgentAnswer { token, decision: decision.into(), scope: None, message };
     if !body.is_valid() {
         return Err(invalid("agent.answer"));
     }
     request_ok(shared, peer, Envelope::new(types::AGENT_ANSWER, &body)?).await
+}
+
+/// Phone: whether `peer` takes a denial with a message (`agent.say_why`).
+pub(crate) fn can_say_why(shared: &Shared, peer: &DeviceId) -> bool {
+    shared.peer_offers(peer, agent::SAY_WHY)
+}
+
+/// Phone: `peer` said what it offers again. When whether it takes a
+/// denial with a message changed, its catalog is told again with the news.
+pub(crate) fn peer_caps_changed(shared: &Shared, peer: &DeviceId) {
+    let can_say_why = shared.peer_offers(peer, agent::SAY_WHY);
+    let catalog = {
+        let mut inner = shared.agents.lock();
+        match inner.peer_catalogs.get_mut(peer) {
+            Some((catalog, said)) if *said != can_say_why => {
+                *said = can_say_why;
+                catalog.clone()
+            }
+            _ => return,
+        }
+    };
+    shared.emit(NodeEvent::AgentCatalog { device: *peer, catalog: Some(catalog), can_say_why });
 }
 
 /// Phone: the sessions started on `peer` outside G7 Link.
@@ -1344,7 +1466,11 @@ mod tests {
             prompt: "secret plan".into(),
             mode: "supervised".into(),
         };
-        let answer = AgentRequest::Answer { token: "0123abcd".into(), allow: true };
+        let answer = AgentRequest::Answer {
+            token: "0123abcd".into(),
+            allow: false,
+            message: Some("secret instead".into()),
+        };
         let shown = format!("{start:?} {answer:?}");
         assert!(!shown.contains("secret") && !shown.contains("0123abcd"), "{shown}");
         let export = AgentExport {

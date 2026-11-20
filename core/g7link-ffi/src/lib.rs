@@ -18,6 +18,8 @@ use tokio::{runtime::Runtime, sync::broadcast::error::RecvError};
 
 uniffi::setup_scaffolding!();
 
+pub mod agent_rows;
+
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 // ---- Records and enums ----
@@ -1246,6 +1248,9 @@ pub enum Event {
         /// `Denied`. Added after contract §6.3.
         #[uniffi(default = None)]
         by_name: Option<String>,
+        /// `Denied`: what the user said when denying it, if they did.
+        #[uniffi(default = None)]
+        message: Option<String>,
     },
     /// A session started on a PC outside G7 Link appeared or changed.
     AgentSessionChanged {
@@ -1459,6 +1464,9 @@ pub enum AgentItemKind {
     Assistant,
     Tool,
     Notice,
+    /// The agent thinking: its `text` is what it showed of its thought,
+    /// often empty; `end_ms` is set when it stopped. Added with `agent.items2`.
+    Reasoning,
 }
 
 impl AgentItemKind {
@@ -1469,6 +1477,59 @@ impl AgentItemKind {
             item::ASSISTANT => Self::Assistant,
             item::TOOL => Self::Tool,
             item::NOTICE => Self::Notice,
+            item::REASONING => Self::Reasoning,
+            _ => return None,
+        })
+    }
+}
+
+/// An assistant item's place in its turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentItemPhase {
+    /// Said on the way: more work followed.
+    Interim,
+    /// The turn's answer.
+    Final,
+}
+
+impl AgentItemPhase {
+    fn from_wire(phase: &str) -> Option<Self> {
+        use core::agent::phase;
+        match phase {
+            phase::INTERIM => Some(Self::Interim),
+            phase::FINAL => Some(Self::Final),
+            _ => None,
+        }
+    }
+}
+
+/// What kind of step a tool item is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentToolClass {
+    Command,
+    Edit,
+    Read,
+    Search,
+    Web,
+    Mcp,
+    Agent,
+    Tasks,
+    Other,
+}
+
+impl AgentToolClass {
+    fn from_wire(class: &str) -> Option<Self> {
+        use core::agent::tool_class;
+        Some(match class {
+            tool_class::COMMAND => Self::Command,
+            tool_class::EDIT => Self::Edit,
+            tool_class::READ => Self::Read,
+            tool_class::SEARCH => Self::Search,
+            tool_class::WEB => Self::Web,
+            tool_class::MCP => Self::Mcp,
+            tool_class::AGENT => Self::Agent,
+            tool_class::TASKS => Self::Tasks,
+            tool_class::OTHER => Self::Other,
             _ => return None,
         })
     }
@@ -1556,6 +1617,16 @@ impl AgentAskOutcome {
     }
 }
 
+/// What this build offers on top of what the app passes: it shows PCs'
+/// screens, and its agent records carry turns and thinking (`agent.items2`).
+fn with_built_in_capabilities(caps: &mut Vec<String>) {
+    for cap in [core::MIRROR_VIEW, core::agent::ITEMS2] {
+        if !caps.iter().any(|c| c == cap) {
+            caps.push(cap.into());
+        }
+    }
+}
+
 fn ms(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -1605,6 +1676,17 @@ pub struct AgentCatalog {
     pub folders: Vec<AgentFolder>,
     /// The modes this phone may start: `[Supervised]`.
     pub modes: Vec<AgentMode>,
+    /// The PC takes a denial with the user's words (`agent_answer`'s
+    /// `message`): offer "deny and say why" only then. Comes again in
+    /// `Event.AgentCatalog` when only this changes.
+    #[uniffi(default = false)]
+    pub can_say_why: bool,
+}
+
+impl AgentCatalog {
+    fn from_core(c: core::AgentCatalog, can_say_why: bool) -> Self {
+        AgentCatalog { can_say_why, ..c.into() }
+    }
 }
 
 impl From<core::AgentCatalog> for AgentCatalog {
@@ -1625,6 +1707,7 @@ impl From<core::AgentCatalog> for AgentCatalog {
             folders: c.folders.into_iter().map(|f| AgentFolder { id: f.id, label: f.label }).collect(),
             // A mode this build doesn't know can't be started from here.
             modes: c.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
+            can_say_why: false,
         }
     }
 }
@@ -1745,6 +1828,19 @@ pub struct AgentTool {
     pub detail: Option<String>,
     pub status: AgentToolStatus,
     pub output: Option<String>,
+    /// What kind of step it is; null from an older PC or for a kind this
+    /// build doesn't know: show it as `Other`.
+    #[uniffi(default = None)]
+    pub tool_class: Option<AgentToolClass>,
+    /// The file an edit or read is about, relative to the thread's folder
+    /// (or the file's name alone); never an absolute path.
+    #[uniffi(default = None)]
+    pub path: Option<String>,
+    /// The PC allowed it from the thread's "Always allow" rule, without
+    /// asking: "Allowed by your rule for this thread" (`AgentTimeline.rows`
+    /// marks it so by itself).
+    #[uniffi(default = false)]
+    pub by_rule: bool,
 }
 
 impl std::fmt::Debug for AgentTool {
@@ -1763,14 +1859,35 @@ pub struct AgentItem {
     pub text: Option<String>,
     pub truncated: bool,
     pub tool: Option<AgentTool>,
+    /// The turn it belongs to, from 1; 0 for an item from before turns were
+    /// kept (an older PC, or an older thread): count turns from the user's
+    /// messages then.
+    #[uniffi(default = 0)]
+    pub turn: u32,
+    /// An assistant item: whether it's the turn's answer; null when not known.
+    #[uniffi(default = None)]
+    pub phase: Option<AgentItemPhase>,
+    /// When it finished, Unix milliseconds (an answer done, a tool ended,
+    /// thinking stopped); null while it runs or when not known.
+    #[uniffi(default = None)]
+    pub end_ms: Option<i64>,
+    /// The id of the tool item it was produced inside (a sub-agent's work).
+    #[uniffi(default = None)]
+    pub group: Option<String>,
+    /// A user item: the id of the tool step this message denied.
+    #[uniffi(default = None)]
+    pub deny_of: Option<String>,
 }
 
+/// Never prints the text or the ids it names (protocol v0 §11).
 impl std::fmt::Debug for AgentItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentItem")
             .field("seq", &self.seq)
             .field("kind", &self.kind)
             .field("tool", &self.tool)
+            .field("turn", &self.turn)
+            .field("phase", &self.phase)
             .finish_non_exhaustive()
     }
 }
@@ -1780,10 +1897,13 @@ impl AgentItem {
         let tool = match i.tool {
             Some(t) => Some(AgentTool {
                 status: AgentToolStatus::from_wire(&t.status)?,
+                tool_class: t.class.as_deref().and_then(AgentToolClass::from_wire),
                 name: t.name,
                 title: t.title,
                 detail: t.detail,
                 output: t.output,
+                path: t.path,
+                by_rule: t.by_rule,
             }),
             None => None,
         };
@@ -1795,6 +1915,11 @@ impl AgentItem {
             text: i.text,
             truncated: i.truncated,
             tool,
+            turn: i.turn.unwrap_or(0),
+            phase: i.phase.as_deref().and_then(AgentItemPhase::from_wire),
+            end_ms: i.end.map(ms),
+            group: i.group,
+            deny_of: i.deny_of,
         })
     }
 }
@@ -1817,6 +1942,9 @@ pub struct AgentAsk {
     /// The PC cut the command or diff: the rest is on the PC.
     pub truncated: bool,
     pub expires_ms: i64,
+    /// The id of the tool item the request belongs to; null from an older PC.
+    #[uniffi(default = None)]
+    pub item: Option<String>,
 }
 
 impl std::fmt::Debug for AgentAsk {
@@ -1844,6 +1972,7 @@ impl AgentAsk {
             reason: a.reason,
             truncated: a.truncated,
             expires_ms: ms(a.expires),
+            item: a.item,
         })
     }
 }
@@ -3774,19 +3903,21 @@ impl Event {
             NodeEvent::RemoteRouteChanged { device, state } => {
                 Event::RemoteRouteChanged { id: device.to_string(), state: state.into() }
             }
-            NodeEvent::AgentCatalog { device, catalog } => {
-                Event::AgentCatalog { id: device.to_string(), catalog: catalog.map(Into::into) }
-            }
+            NodeEvent::AgentCatalog { device, catalog, can_say_why } => Event::AgentCatalog {
+                id: device.to_string(),
+                catalog: catalog.map(|c| AgentCatalog::from_core(c, can_say_why)),
+            },
             NodeEvent::AgentEvent { device, event } => return agent_event(device.to_string(), *event),
             NodeEvent::AgentAsk { device, ask } => {
                 Event::AgentAsk { id: device.to_string(), ask: AgentAsk::from_core(ask)? }
             }
-            NodeEvent::AgentAsked { device, token, thread, outcome, by_name } => Event::AgentAsked {
+            NodeEvent::AgentAsked { device, token, thread, outcome, by_name, message } => Event::AgentAsked {
                 id: device.to_string(),
                 token,
                 thread,
                 outcome: AgentAskOutcome::from_wire(&outcome)?,
                 by_name,
+                message,
             },
             NodeEvent::AgentSession { device, session: Some(session), .. } => Event::AgentSessionChanged {
                 id: device.to_string(),
@@ -4707,9 +4838,7 @@ impl G7LinkNode {
         config.downloads_dir = Some(PathBuf::from(options.downloads_dir));
         config.usb_port = options.usb_port;
         config.key_protector = Some(Arc::new(KeyProtectorAdapter(key_protector)));
-        if !config.capabilities.iter().any(|c| c == core::MIRROR_VIEW) {
-            config.capabilities.push(core::MIRROR_VIEW.into());
-        }
+        with_built_in_capabilities(&mut config.capabilities);
         let node =
             runtime.block_on(Node::start(config, Arc::new(PlatformAdapter(platform, listener.clone()))))?;
 
@@ -5353,9 +5482,7 @@ impl G7LinkNode {
     /// Updates this phone's power level and the capabilities it offers on
     /// top of the built-in ones (they depend on permissions and power).
     pub async fn update_power(&self, power: PowerLevel, mut capabilities: Vec<String>) {
-        if !capabilities.iter().any(|c| c == core::MIRROR_VIEW) {
-            capabilities.push(core::MIRROR_VIEW.into());
-        }
+        with_built_in_capabilities(&mut capabilities);
         let node = self.node.clone();
         self.run(async move { node.update_power(power.into(), capabilities).await }).await;
     }
@@ -5766,7 +5893,8 @@ impl G7LinkNode {
     /// The last catalog a connected PC sent, if it has agents.
     pub fn agent_catalog(&self, id: String) -> Result<Option<AgentCatalog>> {
         let id = parse_id(&id)?;
-        Ok(self.node.agent_catalog(id).map(Into::into))
+        let can_say_why = self.node.agent_can_say_why(id);
+        Ok(self.node.agent_catalog(id).map(|c| AgentCatalog::from_core(c, can_say_why)))
     }
 
     /// A PC's threads, newest first (at most 50).
@@ -5832,11 +5960,21 @@ impl G7LinkNode {
         self.run(async move { Ok(node.agent_watch(id, thread).await?) }).await
     }
 
-    /// Answers an ask, this time only.
-    pub async fn agent_answer(&self, id: String, token: String, allow: bool) -> Result<()> {
+    /// Answers an ask, this time only. `message`, with a denial only: what
+    /// the user wants the agent to do instead, 1 to 2000 bytes, to a PC
+    /// whose catalog has `can_say_why` (`Unsupported` otherwise, and the ask
+    /// still waits; `Protocol` with `allow` or over the limit).
+    #[uniffi::method(default(message = None))]
+    pub async fn agent_answer(
+        &self,
+        id: String,
+        token: String,
+        allow: bool,
+        message: Option<String>,
+    ) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
-        self.run(async move { Ok(node.agent_answer(id, token, allow).await?) }).await
+        self.run(async move { Ok(node.agent_answer(id, token, allow, message).await?) }).await
     }
 
     // Sessions started on a PC outside G7 Link (docs/protocol/agents.md §3).
@@ -6646,6 +6784,7 @@ mod tests {
             text: Some("Hi".into()),
             truncated: false,
             tool: None,
+            ..Default::default()
         };
         assert!(matches!(
             Event::from_node(NodeEvent::AgentSessionItem { device: pc, session: "s1".into(), item }),
@@ -6728,11 +6867,120 @@ mod tests {
             thread: "abc".into(),
             outcome: "expired".into(),
             by_name: None,
+            message: None,
         };
         assert!(matches!(
             Event::from_node(asked),
             Some(Event::AgentAsked { outcome: AgentAskOutcome::Expired, .. })
         ));
+        let denied = NodeEvent::AgentAsked {
+            device: pc,
+            token: "t1".into(),
+            thread: "abc".into(),
+            outcome: "denied".into(),
+            by_name: Some("Pixel".into()),
+            message: Some("Use the runner.".into()),
+        };
+        assert!(matches!(
+            Event::from_node(denied),
+            Some(Event::AgentAsked { outcome: AgentAskOutcome::Denied, message: Some(m), .. })
+                if m == "Use the runner."
+        ));
+    }
+
+    #[test]
+    fn agent_items_carry_turns_phases_and_thinking() {
+        use g7link_core::agent;
+        let pc = core::DeviceId([3; 32]);
+        let core_item = core::AgentItem {
+            seq: 3,
+            id: "toolu_01:3".into(),
+            kind: agent::item::TOOL.into(),
+            when: 1_795_000_000_000,
+            tool: Some(core::AgentTool {
+                name: "Edit".into(),
+                title: "Edit file".into(),
+                status: agent::tool::DENIED.into(),
+                class: Some(agent::tool_class::EDIT.into()),
+                path: Some("src/lib.rs".into()),
+                by_rule: true,
+                ..Default::default()
+            }),
+            turn: Some(2),
+            end: Some(1_795_000_000_900),
+            group: Some("toolu_01:1".into()),
+            ..Default::default()
+        };
+        let item = AgentItem::from_core(core_item).unwrap();
+        assert_eq!(
+            (item.turn, item.end_ms, item.group.as_deref()),
+            (2, Some(1_795_000_000_900), Some("toolu_01:1"))
+        );
+        let tool = item.tool.unwrap();
+        assert_eq!((tool.tool_class, tool.path.as_deref()), (Some(AgentToolClass::Edit), Some("src/lib.rs")));
+        assert!(tool.by_rule);
+
+        let answer = core::AgentItem {
+            seq: 4,
+            id: "msg_01:4".into(),
+            kind: agent::item::ASSISTANT.into(),
+            text: Some("Done.".into()),
+            phase: Some(agent::phase::FINAL.into()),
+            ..Default::default()
+        };
+        let answer = AgentItem::from_core(answer).unwrap();
+        assert_eq!((answer.phase, answer.turn, answer.end_ms), (Some(AgentItemPhase::Final), 0, None));
+        let later = core::AgentItem { phase: Some("summing_up".into()), ..Default::default() };
+        let later = core::AgentItem { kind: agent::item::ASSISTANT.into(), id: "m".into(), seq: 5, ..later };
+        assert_eq!(AgentItem::from_core(later).unwrap().phase, None, "a later word reads as unknown");
+
+        let thinking = core::AgentItem {
+            seq: 5,
+            id: "rs_01".into(),
+            kind: agent::item::REASONING.into(),
+            text: Some(String::new()),
+            ..Default::default()
+        };
+        let event = core::AgentEvent::item("abc".into(), thinking);
+        match Event::from_node(NodeEvent::AgentEvent { device: pc, event: Box::new(event) }) {
+            Some(Event::AgentItemChanged { item, .. }) => assert_eq!(item.kind, AgentItemKind::Reasoning),
+            other => panic!("{other:?}"),
+        }
+        let denial = core::AgentItem {
+            seq: 6,
+            id: "u-6".into(),
+            kind: agent::item::USER.into(),
+            deny_of: Some("toolu_01:3".into()),
+            ..Default::default()
+        };
+        assert_eq!(AgentItem::from_core(denial).unwrap().deny_of.as_deref(), Some("toolu_01:3"));
+        let ask = core::AgentAsk {
+            token: "t".into(),
+            thread: "abc".into(),
+            agent: "claude".into(),
+            kind: agent::ask::COMMAND.into(),
+            item: Some("toolu_01:3".into()),
+            ..Default::default()
+        };
+        assert_eq!(AgentAsk::from_core(ask).unwrap().item.as_deref(), Some("toolu_01:3"));
+    }
+
+    #[test]
+    fn a_catalog_says_whether_the_pc_takes_words_with_a_denial() {
+        let pc = core::DeviceId([3; 32]);
+        let catalog = core::AgentCatalog { agents: vec![], folders: vec![], modes: vec![] };
+        for can_say_why in [false, true] {
+            let event = NodeEvent::AgentCatalog { device: pc, catalog: Some(catalog.clone()), can_say_why };
+            match Event::from_node(event) {
+                Some(Event::AgentCatalog { catalog: Some(c), .. }) => assert_eq!(c.can_say_why, can_say_why),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(!AgentCatalog::from(catalog).can_say_why);
+        let mut caps = vec!["agent.remote".to_owned(), core::MIRROR_VIEW.to_owned()];
+        with_built_in_capabilities(&mut caps);
+        with_built_in_capabilities(&mut caps);
+        assert_eq!(caps, ["agent.remote", core::MIRROR_VIEW, core::agent::ITEMS2], "once each");
     }
 
     #[test]

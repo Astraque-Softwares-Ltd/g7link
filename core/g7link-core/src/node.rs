@@ -4563,20 +4563,21 @@ impl Node {
     }
 
     /// PC: an ask ended (`outcome`: `allowed`, `denied`, `expired` or
-    /// `cancelled`); `by_name` names the device that answered.
-    pub async fn agent_asked(
-        &self,
-        token: String,
-        thread: String,
-        outcome: String,
-        by_name: Option<String>,
-    ) -> Result<()> {
-        crate::agents::send_asked(&self.shared, crate::AgentAsked { token, thread, outcome, by_name })
+    /// `cancelled`); `by_name` names the device that answered, and `message`
+    /// is what the user said when denying it (`denied` only).
+    pub async fn agent_asked(&self, asked: crate::AgentAsked) -> Result<()> {
+        crate::agents::send_asked(&self.shared, asked)
     }
 
     /// Phone: the last catalog `peer` sent this session, if it had agents.
     pub fn agent_catalog(&self, peer: DeviceId) -> Option<crate::AgentCatalog> {
         self.shared.agents.peer_catalog(&peer)
+    }
+
+    /// Phone: whether `peer` takes a denial with the user's words
+    /// (`agent.say_why`), as it last said.
+    pub fn agent_can_say_why(&self, peer: DeviceId) -> bool {
+        crate::agents::can_say_why(&self.shared, &peer)
     }
 
     /// Phone: `peer`'s threads, newest first.
@@ -4616,9 +4617,17 @@ impl Node {
         crate::agents::watch(&self.shared, peer, thread).await
     }
 
-    /// Phone: answers an ask, this time only.
-    pub async fn agent_answer(&self, peer: DeviceId, token: String, allow: bool) -> Result<()> {
-        crate::agents::answer_ask(&self.shared, peer, token, allow).await
+    /// Phone: answers an ask, this time only. `message` goes with a denial
+    /// only, to a PC that offers `agent.say_why` ([`agent_can_say_why`](Self::agent_can_say_why)):
+    /// `Unsupported` otherwise, and the ask still waits.
+    pub async fn agent_answer(
+        &self,
+        peer: DeviceId,
+        token: String,
+        allow: bool,
+        message: Option<String>,
+    ) -> Result<()> {
+        crate::agents::answer_ask(&self.shared, peer, token, allow, message).await
     }
 
     /// PC: a session started on this PC outside G7 Link appeared or changed

@@ -4940,7 +4940,7 @@ fn print_event(node: &Node, event: &NodeEvent) {
             name(device),
             device.short()
         ),
-        NodeEvent::AgentCatalog { device, catalog } => println!(
+        NodeEvent::AgentCatalog { device, catalog, .. } => println!(
             "{}: Agents: {}",
             name(device),
             catalog

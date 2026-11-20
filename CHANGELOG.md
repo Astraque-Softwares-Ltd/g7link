@@ -4,6 +4,64 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## Unreleased
+
+Agent threads read like a conversation: what each turn did folds away behind
+its answer, answers show as formatted text, and you can deny a request and
+tell the agent what to do instead.
+
+### Added
+
+- **Each turn folds behind its answer.** Once a turn ends with an answer, you
+  see your message, "Worked for 2m 14s", the answer, and the files it changed
+  with lines added and removed; open a file to see that turn's edits to it.
+  Open the fold to see every step it took. A turn that was stopped or failed
+  stays open, so you can see where it got to. On the PC's Agents page, on the
+  phone and in the launcher.
+- **Steps say what they did.** "Ran cargo test", "Edited src/lib.rs" with
+  the lines it added and removed, "Read README.md"; a command that took a
+  while says how long. A run of steps shows as one line, "Ran 3 commands and
+  changed 2 files", that opens to the steps, and is marked when one of them
+  failed. Open a step to see its command, its output, or its edit as a diff
+  with the changed words marked.
+- **The agent's task list stays in one line.** "Tasks 3/5" and the current
+  task sit just above where you type and open to the whole list, instead of
+  scrolling away with the thread. On a wide PC window it's in the details
+  panel.
+- **Answers are formatted.** Headings, lists, checklists, tables, quotes and
+  code blocks with colours, a wrap switch and Copy. A link whose text isn't
+  its address shows where it goes before it opens. Nothing an agent writes
+  can load anything: images and HTML show as text, and math and diagrams show
+  as code.
+- **Thinking shows as it happens.** While the agent thinks, the last line of
+  the thread says "Thinking". Neither Claude nor Codex sends the text of its
+  thinking today, so that's all it says for now; when one does, its thoughts
+  show there and in the turn.
+- **Deny and say why.** When an agent asks to run a command or change a file,
+  type what it should do instead and send it: the request is denied and your
+  words go to the agent. Claude carries on in the same turn; Codex stops and
+  reads your words next. While there's text in the box, Ctrl+Enter doesn't
+  allow; click Allow if that's what you want. It needs the PC to be updated
+  too; until then the phone offers plain Deny only.
+- **A request waits while you type.** One that arrives while you're typing a
+  reply shows "Arrived while you were typing" and doesn't take the buttons
+  until you pause, so a keystroke never answers it.
+
+### Changed
+
+- **A request shows where it belongs.** The step it's about says "Wants to
+  run cargo test" and "Waiting for you"; once it's answered on another
+  device, "Allowed on Pixel" or "Denied on Pixel", and "Allowed by your rule
+  for this thread" when an Always allow rule answered it. Requests come one
+  at a time, the oldest first, "1 of 3", and Stop stays in reach while one
+  waits.
+- **Older phones and PCs keep working.** A phone with 0.1.15 or earlier still
+  follows threads from an updated PC; thinking shows there as a step. An
+  updated phone works with a PC that isn't updated yet; "deny and say why"
+  waits for the PC's update.
+- **If you go back to an older G7 Link on the PC,** threads with thinking in
+  them may not open there.
+
 ## 0.1.15 (2026-11-20)
 
 Fixes from the first day with Agents and the player.

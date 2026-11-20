@@ -16,6 +16,8 @@ never sends a path, a command, a program name or a flag.
 | `agent.remote` | phone | Shows a PC's agent threads and answers their requests |
 | `agent.sessions` | desktop | Lists sessions started on this PC outside G7 Link (§3) |
 | `agent.follow` | phone | Shows a PC's sessions started outside G7 Link (§3) |
+| `agent.items2` | phone | Understands item kind `reasoning` and the item fields of §2.4 |
+| `agent.say_why` | desktop | `agent.answer` may carry `message`: deny and say why (§2.4) |
 
 Everything here is governed by the PC's per-device toggle `agents`, **off by
 default**. While it is off for a phone the PC sends that phone nothing from
@@ -43,10 +45,10 @@ t = "agent.cancel"   id = n    b = { thread: text }                phone → PC,
 t = "agent.read"     id = n    b = { thread: text, before?: uint, limit?: uint }   phone → PC
 t = "agent.items"    re = n    b = AgentItems
 t = "agent.watch"    id = n    b = { thread?: text }               phone → PC, → ok
-t = "agent.answer"   id = n    b = { token: text, decision: text, scope?: text }   phone → PC, → ok
+t = "agent.answer"   id = n    b = { token: text, decision: text, scope?: text, message?: text }   phone → PC, → ok
 t = "agent.event"              b = AgentEvent                      PC → phone, no reply
 t = "agent.ask"                b = AgentAsk                        PC → phone, no reply
-t = "agent.asked"              b = { token: text, thread: text, outcome: text, by_name?: text }   PC → phone, no reply
+t = "agent.asked"              b = { token: text, thread: text, outcome: text, by_name?: text, message?: text }   PC → phone, no reply
 ```
 
 ```
@@ -70,10 +72,13 @@ AgentThread = {
   plan?: [ { text: text, status: text } ],    // the agent's own plan; status: "pending" | "in_progress" | "completed"
 }
 AgentItem = {
-  seq: uint, id: text, kind: text,            // "user" | "assistant" | "tool" | "notice"
+  seq: uint, id: text, kind: text,            // "user" | "assistant" | "tool" | "notice" | "reasoning" (§2.4)
   when: uint, text?: text, truncated?: bool,
-  tool?: { name: text, title: text, detail?: text, status: text, output?: text },
+  tool?: { name: text, title: text, detail?: text, status: text, output?: text,
                                               // status: "running" | "ok" | "error" | "denied"
+           class?: text, path?: text, by_rule?: bool },   // §2.4
+  turn?: uint, phase?: text, end?: uint,      // §2.4
+  group?: text, deny_of?: text,               // §2.4
 }
 AgentItems = { thread: AgentThread, items: [AgentItem], more_before: bool, asks: [AgentAsk] }
 AgentAsk = {
@@ -81,6 +86,7 @@ AgentAsk = {
   kind: text,                                 // "command" | "edit" | "other"
   title: text, command?: text, diff?: text, path?: text, reason?: text,
   truncated: bool, expires: uint,             // Unix ms
+  item?: text,                                // the tool item it belongs to (§2.4)
 }
 AgentEvent = {
   thread: text,
@@ -135,6 +141,7 @@ words), or another word from the agent.
   `agent.asked` with `outcome` `"allowed"`, `"denied"`, `"expired"` or
   `"cancelled"`.
 - The phone keeps threads, items and asks in memory only.
+- The rules of §2.4 apply to the fields added there.
 
 ### 2.2 Limits
 
@@ -154,8 +161,12 @@ words), or another word from the agent.
 | `by_name` | 64 |
 | item `text` / tool `detail` / tool `output` | 16384 / 4096 / 2048 |
 | ask `command` / `diff` / `path` | 2048 / 8192 / 512 |
+| tool `path` | 512; relative, never absolute (§2.4) |
+| `group`, `deny_of`, ask `item` | 1 to 96, no control characters (item ids) |
+| `phase`, tool `class` | 1 to 32 |
+| `agent.answer` / `agent.asked` `message` | 1 to 2000 / 2000 |
 | delta `text` | 4096; at most 10 `delta` events a second to one phone (later text is joined) |
-| `agent.items` | at most 50 items, 196608 bytes of their text (each item counts 64 plus its id and text fields) and 16 asks; the oldest items are left out |
+| `agent.items` | at most 50 items, 196608 bytes of their text (each item counts 64 plus its id and text fields, and from §2.4 its tool `path`, `group` and `deny_of`) and 16 asks; the oldest items are left out |
 | `agent.catalog` | 8 agents, 64 folders, 8 modes |
 
 A receiver drops a message that breaks a limit (a request is answered
@@ -167,14 +178,79 @@ plain text.
 ### 2.3 Errors
 
 - `UNSUPPORTED`: the PC doesn't offer `agent.host`, the host can't be
-  reached, or the agent isn't installed or signed in.
+  reached, or the agent isn't installed or signed in; `message` to a PC that
+  doesn't offer `agent.say_why`.
 - `DENIED`: the `agents` toggle is off for the phone; a `mode` outside
   `modes`; `scope` other than `"once"`; the folder was removed.
-- `BAD_MESSAGE`: a field is missing, malformed or over its limit.
+- `BAD_MESSAGE`: a field is missing, malformed or over its limit; `message`
+  with a decision other than `"deny"`.
 - `NOT_FOUND`: unknown agent, folder, thread or token, or a token already
   answered.
 - `BUSY`: the thread is working, or too many threads are running.
 - `INTERNAL`: the host failed.
+
+### 2.4 How a turn reads (`agent.items2`, `agent.say_why`)
+
+Added after G7 Link 0.1.15. Every field below is optional and every older
+receiver ignores it: a phone or PC from before reads the rest of the message
+as it always did.
+
+```
+AgentItem += turn?: uint,                      // 1-based per thread; absent on items from before turns were kept
+             phase?: text,                     // kind "assistant": "interim" | "final"
+             end?: uint,                       // Unix ms: when it finished (answer done, tool ended, thinking stopped)
+             group?: text,                     // the id of the tool item it was produced inside (a sub-agent's work)
+             deny_of?: text                    // kind "user": the id of the tool step this message denied
+AgentTool += class?: text,                     // "command" | "edit" | "read" | "search" | "web" | "mcp" | "agent" | "tasks" | "other"
+             path?: text,                      // the file an edit or read is about
+             by_rule?: bool                    // allowed by the thread's "Always allow" rule, without asking
+AgentAsk  += item?: text                       // the id of the tool item the request belongs to
+agent.answer += message?: text                 // 1 to 2000 bytes, with decision "deny" only
+agent.asked  += message?: text                 // with outcome "denied": what the user said
+```
+
+- **Turns.** A turn starts with a `user` item and holds what follows until
+  the next one. `turn` numbers them from 1; a `user` item with `deny_of` stays
+  in the turn it answers (Claude) or starts the next one (Codex: the turn was
+  stopped and the message sent as a follow-up). A receiver that gets items
+  without `turn` counts turns itself, advancing at every `user` item without
+  `deny_of`.
+- **Phase.** `final` marks the turn's answer, `interim` what the agent said on
+  the way. A turn whose items have no phase (an older PC, or a turn that was
+  stopped) has no known answer; a receiver may take its last `assistant` item
+  once the turn has ended.
+- **Reasoning.** An item of kind `reasoning` is the agent thinking. Its `text`
+  is what the agent showed of its thought, often empty (the agents don't send
+  it today); `end` is set when the thinking stopped. Its text streams as
+  `delta` events like an answer's. The PC sends a `reasoning` item only to a
+  phone that offers `agent.items2`. To any other phone it sends it as a tool
+  step, `{ seq, id, kind: "tool", when, tool: { name: "reasoning", title:
+  "Thinking", status: "running" until it ends, then "ok" } }`, with no text,
+  and sends no `delta` for it, so that phone sees no gap in `seq`.
+- **Words a receiver doesn't know.** A `phase` or `class` that isn't one of
+  the words above is read as absent, not refused, so a later word doesn't
+  break an older receiver. A `phase` on an item that isn't `assistant`, a
+  `deny_of` on one that isn't `user`, and `turn` 0 are read as absent too.
+- **Paths.** A tool's `path` and an ask's `path` are relative to the
+  thread's folder, or, for a file outside it, the file's name alone: the
+  phone never receives an absolute path. A receiver cuts one that looks
+  absolute (`/`, `\`, `~`, a drive letter), starts with `…` (cut from the
+  left) or climbs out with `..` to its last component.
+- **Rules.** A tool's `by_rule` says the PC allowed the step from an "Always
+  allow" rule its user set for the thread, without asking anyone; show
+  "Allowed by your rule for this thread" with it, in place of "Allowed on
+  <device>". It's absent otherwise.
+- **Ids.** `group`, `deny_of` and an ask's `item` are item ids (1 to 96 bytes,
+  no control characters). One that isn't is left out; it's never cut.
+- **Deny and say why.** A phone sends `message` only to a PC that offers
+  `agent.say_why`, and only with `"deny"`: the PC answers `BAD_MESSAGE` to a
+  `message` with any other decision, and `UNSUPPORTED` to one it can't pass
+  on. The message is the user's own words to the agent about what to do
+  instead; the PC strips control characters other than newline and tab, and
+  bidi controls, before passing it on. The request is denied either way. Every
+  device then gets `agent.asked` with `outcome: "denied"`, `by_name` and the
+  same `message`, and the thread gets a `user` item with the message and
+  `deny_of` naming the denied tool step.
 
 ## 3. Sessions started on the PC
 
@@ -302,6 +378,12 @@ t = "agent.export.meta"  re = 1  b = { length: uint, truncated: bool, file_name:
 - The core answers `agent.watch` itself and limits deltas per phone; the
   other requests go to the platform (`Platform::agent_request`) on a blocking
   thread.
+- The core turns a `reasoning` item into §2.4's tool step for each phone that
+  doesn't offer `agent.items2`, in events and in `agent.items` alike, and
+  drops the deltas of such items for that phone; the platform always hands it
+  the full form. On a phone it refuses to send a `message` to a PC that
+  doesn't offer `agent.say_why`, and the G7 Link FFI announces
+  `agent.items2` for the app.
 - On the phone, a `BUSY` reply reaches the app as the generic failure
   (`G7LinkError.Internal`, whose reason starts with `BUSY`), not as `Denied`,
   which means the toggle is off.

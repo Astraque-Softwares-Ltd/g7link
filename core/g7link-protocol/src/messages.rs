@@ -5297,6 +5297,20 @@ pub mod agent {
     /// The per-device toggle on the PC for §3 (off by default; counts only
     /// while [`TOGGLE`] is on).
     pub const SESSIONS_TOGGLE: &str = "agent_sessions";
+    /// Phone: understands item kind `reasoning` and the item fields added
+    /// with it (§2.4). A phone without it gets a reasoning item as a tool
+    /// step ([`AgentItem::for_legacy`](super::AgentItem::for_legacy)).
+    pub const ITEMS2: &str = "agent.items2";
+    /// Desktop: `agent.answer` may carry `message` ("deny and say why").
+    pub const SAY_WHY: &str = "agent.say_why";
+    /// What the user said when denying (`agent.answer`'s and `agent.asked`'s `message`).
+    pub const MAX_DENY_MESSAGE_BYTES: usize = 2000;
+    /// A tool step's `path`.
+    pub const MAX_TOOL_PATH_BYTES: usize = 512;
+    /// The tool step a reasoning item becomes for a phone without [`ITEMS2`]: its name.
+    pub const REASONING_TOOL_NAME: &str = "reasoning";
+    /// The tool step a reasoning item becomes for a phone without [`ITEMS2`]: its title.
+    pub const REASONING_TOOL_TITLE: &str = "Thinking";
     /// Sessions in `agent.sessions`.
     pub const MAX_SESSIONS: usize = 50;
     /// A thread's or session's `step`.
@@ -5376,7 +5390,35 @@ pub mod agent {
         pub const ASSISTANT: &str = "assistant";
         pub const TOOL: &str = "tool";
         pub const NOTICE: &str = "notice";
-        pub const ALL: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE];
+        /// The agent thinking; sent only to phones that offer
+        /// [`ITEMS2`](super::ITEMS2).
+        pub const REASONING: &str = "reasoning";
+        pub const ALL: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE, REASONING];
+        /// The kinds a phone without [`ITEMS2`](super::ITEMS2) takes.
+        pub const LEGACY: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE];
+    }
+
+    /// An assistant item's `phase`. Receivers read a word they don't know as absent.
+    pub mod phase {
+        /// Said on the way: more work follows in the turn.
+        pub const INTERIM: &str = "interim";
+        /// The turn's answer.
+        pub const FINAL: &str = "final";
+        pub const ALL: &[&str] = &[INTERIM, FINAL];
+    }
+
+    /// A tool step's `class`. Receivers read a word they don't know as absent.
+    pub mod tool_class {
+        pub const COMMAND: &str = "command";
+        pub const EDIT: &str = "edit";
+        pub const READ: &str = "read";
+        pub const SEARCH: &str = "search";
+        pub const WEB: &str = "web";
+        pub const MCP: &str = "mcp";
+        pub const AGENT: &str = "agent";
+        pub const TASKS: &str = "tasks";
+        pub const OTHER: &str = "other";
+        pub const ALL: &[&str] = &[COMMAND, EDIT, READ, SEARCH, WEB, MCP, AGENT, TASKS, OTHER];
     }
 
     /// A tool step's `status`.
@@ -5536,6 +5578,52 @@ fn clean_opt(text: &mut Option<String>, multiline: bool, max: usize) -> bool {
         }
         None => false,
     }
+}
+
+/// An item id that names another item (`group`, `deny_of`, an ask's
+/// `item`): cleaned, and kept only while it's still a whole item id. A cut
+/// id would name nothing.
+fn clean_item_ref(id: &mut Option<String>) {
+    if let Some(raw) = id.as_deref() {
+        let clean = clean_agent_text(raw, false, raw.len()).0;
+        *id = is_agent_item_id(&clean).then_some(clean);
+    }
+}
+
+/// A word (`phase`, `class`) kept only when it's one of `known`: a later
+/// word reads as absent rather than failing the message.
+fn known_word(word: &mut Option<String>, known: &[&str]) {
+    if !word.as_deref().is_some_and(|w| known.contains(&w)) {
+        *word = None;
+    }
+}
+
+/// Whether a wire word this build may not know is still a word: absent, or
+/// at most [`agent::MAX_WORD_BYTES`].
+fn fits_word(word: &Option<String>) -> bool {
+    fits_opt(word, agent::MAX_WORD_BYTES)
+}
+
+/// A tool step's `path` as a phone may see it: one line, relative to the
+/// thread's folder, or only the file's name when it looks absolute, was cut
+/// from the left (`…/me/x.rs`, the agent host's form of a long absolute
+/// path) or climbs out with `..`; at most [`agent::MAX_TOOL_PATH_BYTES`],
+/// keeping its end. Whether it was cut.
+fn clean_tool_path(path: &mut Option<String>) -> bool {
+    let Some(raw) = path.as_deref() else { return false };
+    let clean = clean_agent_text(raw, false, raw.len()).0;
+    let bytes = clean.as_bytes();
+    let outside = clean.starts_with(['/', '\\', '~', '…'])
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        || clean.split(['/', '\\']).any(|part| part == "..");
+    let mut clean = if outside { folder_name(&clean).to_owned() } else { clean };
+    let cut = clean.len() > agent::MAX_TOOL_PATH_BYTES;
+    if cut {
+        let (tail, _) = cut_text_front(&clean, agent::MAX_TOOL_PATH_BYTES - '…'.len_utf8());
+        clean = format!("…{tail}");
+    }
+    *path = (!clean.is_empty()).then_some(clean);
+    cut
 }
 
 /// One agent in an [`AgentCatalog`].
@@ -5775,7 +5863,7 @@ impl AgentThread {
 }
 
 /// A tool step in an [`AgentItem`].
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentTool {
     pub name: String,
     pub title: String,
@@ -5787,11 +5875,28 @@ pub struct AgentTool {
     /// The tail of what it printed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// What kind of step it is: one of [`agent::tool_class`]. Absent from
+    /// older PCs, and when the word isn't known here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// The file an edit or a read is about: relative to the thread's folder,
+    /// or the file's name alone outside it. Never an absolute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The PC allowed it from the thread's "Always allow" rule, without
+    /// asking anyone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_rule: bool,
 }
 
+/// Never prints the detail, output or path (protocol v0 §11).
 impl std::fmt::Debug for AgentTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentTool").field("status", &self.status).finish_non_exhaustive()
+        f.debug_struct("AgentTool")
+            .field("status", &self.status)
+            .field("class", &self.class)
+            .field("by_rule", &self.by_rule)
+            .finish_non_exhaustive()
     }
 }
 
@@ -5802,6 +5907,8 @@ impl AgentTool {
             && fits_opt(&self.detail, agent::MAX_TOOL_DETAIL_BYTES)
             && agent::tool::ALL.contains(&self.status.as_str())
             && fits_opt(&self.output, agent::MAX_TOOL_OUTPUT_BYTES)
+            && fits_word(&self.class)
+            && fits_opt(&self.path, agent::MAX_TOOL_PATH_BYTES)
     }
 
     /// Cleans and cuts the text; whether anything was cut.
@@ -5810,12 +5917,14 @@ impl AgentTool {
         clean_line(&mut self.title, agent::MAX_ASK_TITLE_BYTES);
         let detail = clean_opt(&mut self.detail, true, agent::MAX_TOOL_DETAIL_BYTES);
         let output = clean_opt(&mut self.output, true, agent::MAX_TOOL_OUTPUT_BYTES);
-        detail || output
+        known_word(&mut self.class, agent::tool_class::ALL);
+        let path = clean_tool_path(&mut self.path);
+        detail || output || path
     }
 }
 
 /// One entry of a thread's transcript (`AgentItem`, `docs/protocol/agents.md` §2).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentItem {
     /// 1-based, per thread, never reused.
     pub seq: u64,
@@ -5830,9 +5939,26 @@ pub struct AgentItem {
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<AgentTool>,
+    /// The turn it belongs to, 1-based per thread; absent on items from
+    /// before turns were kept, and from older PCs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    /// An assistant item's place in its turn: one of [`agent::phase`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// When it finished, Unix milliseconds: an answer done, a tool ended,
+    /// thinking stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<u64>,
+    /// The id of the tool item it was produced inside (a sub-agent's work).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// A user item: the id of the tool step this message denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_of: Option<String>,
 }
 
-/// Never prints the text (protocol v0 §11).
+/// Never prints the text or the ids it names (protocol v0 §11).
 impl std::fmt::Debug for AgentItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentItem")
@@ -5840,6 +5966,8 @@ impl std::fmt::Debug for AgentItem {
             .field("kind", &self.kind)
             .field("bytes", &self.text.as_ref().map_or(0, String::len))
             .field("tool", &self.tool)
+            .field("turn", &self.turn)
+            .field("phase", &self.phase)
             .finish_non_exhaustive()
     }
 }
@@ -5850,12 +5978,17 @@ impl AgentItem {
         self.seq >= 1 && self.is_valid_in_session()
     }
 
-    /// A session's item (§3): its `seq` comes from the file and may be 0.
+    /// A session's item (§3): its `seq` comes from the file and may be 0. A
+    /// `phase` or a tool's `class` this build doesn't know is fine: it
+    /// reads as absent.
     pub fn is_valid_in_session(&self) -> bool {
         is_agent_item_id(&self.id)
             && agent::item::ALL.contains(&self.kind.as_str())
             && fits_opt(&self.text, agent::MAX_ITEM_TEXT_BYTES)
             && self.tool.as_ref().is_none_or(AgentTool::is_valid)
+            && fits_word(&self.phase)
+            && self.group.as_deref().is_none_or(is_agent_item_id)
+            && self.deny_of.as_deref().is_none_or(is_agent_item_id)
     }
 
     /// The item within its limits (text cut is flagged `truncated`), or
@@ -5867,7 +6000,9 @@ impl AgentItem {
         self.sanitized_in_session()
     }
 
-    /// [`sanitized`](Self::sanitized) for a session's item, whose `seq` may be 0.
+    /// [`sanitized`](Self::sanitized) for a session's item, whose `seq` may
+    /// be 0. A `phase` other than an assistant's, a `deny_of` other than a
+    /// user's, an unknown word, turn 0 and an id that isn't one are left out.
     pub fn sanitized_in_session(mut self) -> Option<Self> {
         if !is_agent_item_id(&self.id) || !agent::item::ALL.contains(&self.kind.as_str()) {
             return None;
@@ -5881,26 +6016,66 @@ impl AgentItem {
             tool_cut = tool.clean();
         }
         self.truncated |= text_cut || tool_cut;
+        if self.turn == Some(0) {
+            self.turn = None;
+        }
+        if self.kind == agent::item::ASSISTANT {
+            known_word(&mut self.phase, agent::phase::ALL);
+        } else {
+            self.phase = None;
+        }
+        clean_item_ref(&mut self.group);
+        if self.kind == agent::item::USER {
+            clean_item_ref(&mut self.deny_of);
+        } else {
+            self.deny_of = None;
+        }
         Some(self)
+    }
+
+    /// The item as a phone without [`agent::ITEMS2`] takes it (§2.4): a
+    /// `reasoning` item becomes a tool step named `reasoning`, titled
+    /// "Thinking", running until it ends, with no text, so its `seq` still
+    /// counts. Any other item is unchanged; such a phone ignores the fields
+    /// it doesn't know.
+    pub fn for_legacy(mut self) -> Self {
+        if self.kind != agent::item::REASONING {
+            return self;
+        }
+        let status = if self.end.is_some() { agent::tool::OK } else { agent::tool::RUNNING };
+        self.kind = agent::item::TOOL.to_owned();
+        self.text = None;
+        self.truncated = false;
+        self.phase = None;
+        self.deny_of = None;
+        self.tool = Some(AgentTool {
+            name: agent::REASONING_TOOL_NAME.to_owned(),
+            title: agent::REASONING_TOOL_TITLE.to_owned(),
+            status: status.to_owned(),
+            ..AgentTool::default()
+        });
+        self
+    }
+
+    /// Whether it's the agent thinking (`reasoning`).
+    pub fn is_reasoning(&self) -> bool {
+        self.kind == agent::item::REASONING
     }
 
     /// What the item counts toward [`agent::MAX_ITEMS_BYTES`]: the bytes of
     /// its text fields and a little for the rest.
     pub fn size(&self) -> usize {
         const OVERHEAD: usize = 64;
+        let len = |text: &Option<String>| text.as_ref().map_or(0, String::len);
         let tool = self.tool.as_ref().map_or(0, |t| {
-            t.name.len()
-                + t.title.len()
-                + t.status.len()
-                + t.detail.as_ref().map_or(0, String::len)
-                + t.output.as_ref().map_or(0, String::len)
+            t.name.len() + t.title.len() + t.status.len() + len(&t.detail) + len(&t.output) + len(&t.path)
         });
-        OVERHEAD + self.id.len() + self.text.as_ref().map_or(0, String::len) + tool
+        OVERHEAD + self.id.len() + len(&self.text) + tool + len(&self.group) + len(&self.deny_of)
     }
 }
 
 /// A request waiting for an answer (`AgentAsk`, `docs/protocol/agents.md` §2).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentAsk {
     /// Single use.
     pub token: String,
@@ -5923,6 +6098,9 @@ pub struct AgentAsk {
     pub truncated: bool,
     /// Unix milliseconds.
     pub expires: u64,
+    /// The id of the tool item the request belongs to; absent from older PCs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 /// Never prints the token, command, diff, path or reason (protocol v0 §11).
@@ -5949,10 +6127,12 @@ impl AgentAsk {
             && fits_opt(&self.diff, agent::MAX_DIFF_BYTES)
             && fits_opt(&self.path, agent::MAX_PATH_BYTES)
             && fits_opt(&self.reason, agent::MAX_REASON_BYTES)
+            && self.item.as_deref().is_none_or(is_agent_item_id)
     }
 
     /// The ask within its limits (a command or diff cut is flagged
-    /// `truncated`), or `None` when an id or its kind is bad.
+    /// `truncated`), or `None` when an id or its kind is bad. An `item`
+    /// that isn't an item id is left out; a `path` is never absolute (§2.4).
     pub fn sanitized(mut self) -> Option<Self> {
         if !is_valid_agent_id(&self.token)
             || !is_valid_agent_id(&self.thread)
@@ -5965,11 +6145,21 @@ impl AgentAsk {
         clean_line(&mut self.title, agent::MAX_ASK_TITLE_BYTES);
         let command = clean_opt(&mut self.command, true, agent::MAX_COMMAND_BYTES);
         let diff = clean_opt(&mut self.diff, true, agent::MAX_DIFF_BYTES);
-        let path = clean_opt(&mut self.path, false, agent::MAX_PATH_BYTES);
+        let path = clean_tool_path(&mut self.path);
         clean_opt(&mut self.reason, true, agent::MAX_REASON_BYTES);
+        clean_item_ref(&mut self.item);
         self.truncated |= command || diff || path;
         Some(self)
     }
+}
+
+/// What the user said when denying (`agent.answer`, `agent.asked`): one or
+/// more lines without control characters other than newline and tab and
+/// without bidi controls, at most [`agent::MAX_DENY_MESSAGE_BYTES`]; `None`
+/// when nothing but space is left.
+pub fn clean_deny_message(message: &str) -> Option<String> {
+    let clean = clean_agent_text(message, true, agent::MAX_DENY_MESSAGE_BYTES).0;
+    (!clean.trim().is_empty()).then_some(clean)
 }
 
 /// Sorts `items` by `seq` and keeps the newest that fit in one page
@@ -6320,23 +6510,33 @@ pub struct AgentAnswer {
     /// Reserved: only [`agent::scope::ONCE`] is answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// With `deny` only, to a PC that offers [`agent::SAY_WHY`]: what the
+    /// user wants instead, 1 to [`agent::MAX_DENY_MESSAGE_BYTES`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
-/// Never prints the token (protocol v0 §11).
+/// Never prints the token or the message (protocol v0 §11).
 impl std::fmt::Debug for AgentAnswer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentAnswer")
             .field("decision", &self.decision)
             .field("scope", &self.scope)
+            .field("message_bytes", &self.message.as_ref().map(String::len))
             .finish_non_exhaustive()
     }
 }
 
 impl AgentAnswer {
+    /// A known decision, and a `message` only with `deny` and within its limit.
     pub fn is_valid(&self) -> bool {
         is_valid_agent_id(&self.token)
             && agent::decision::ALL.contains(&self.decision.as_str())
             && self.scope.as_deref().is_none_or(is_agent_word)
+            && self.message.as_ref().is_none_or(|m| {
+                self.decision == agent::decision::DENY
+                    && (1..=agent::MAX_DENY_MESSAGE_BYTES).contains(&m.len())
+            })
     }
 
     pub fn allow(&self) -> bool {
@@ -6345,7 +6545,7 @@ impl AgentAnswer {
 }
 
 /// Body of `agent.asked`: an ask ended (first answer from any device, expiry, or the turn ended).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentAsked {
     pub token: String,
     pub thread: String,
@@ -6354,14 +6554,18 @@ pub struct AgentAsked {
     /// The name of the device that answered (`allowed`, `denied`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by_name: Option<String>,
+    /// `denied`: what the user said when denying it, if they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
-/// Never prints the token (protocol v0 §11).
+/// Never prints the token or the message (protocol v0 §11).
 impl std::fmt::Debug for AgentAsked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentAsked")
             .field("thread", &self.thread)
             .field("outcome", &self.outcome)
+            .field("message_bytes", &self.message.as_ref().map(String::len))
             .finish_non_exhaustive()
     }
 }
@@ -6372,10 +6576,11 @@ impl AgentAsked {
             && is_valid_agent_id(&self.thread)
             && agent::asked::ALL.contains(&self.outcome.as_str())
             && fits_opt(&self.by_name, agent::MAX_LABEL_BYTES)
+            && fits_opt(&self.message, agent::MAX_DENY_MESSAGE_BYTES)
     }
 
-    /// The resolution with its device name cleaned and cut, or `None` when
-    /// it isn't valid otherwise.
+    /// The resolution with its device name and message cleaned and cut, or
+    /// `None` when it isn't valid otherwise. A message goes with `denied` only.
     pub fn sanitized(mut self) -> Option<Self> {
         if !is_valid_agent_id(&self.token)
             || !is_valid_agent_id(&self.thread)
@@ -6387,6 +6592,10 @@ impl AgentAsked {
         if self.by_name.as_deref().is_some_and(|n| n.trim().is_empty()) {
             self.by_name = None;
         }
+        self.message = match self.message.as_deref() {
+            Some(m) if self.outcome == agent::asked::DENIED => clean_deny_message(m),
+            _ => None,
+        };
         Some(self)
     }
 }
@@ -8948,6 +9157,7 @@ mod tests {
             text: Some(text.into()),
             truncated: false,
             tool: None,
+            ..Default::default()
         }
     }
 
@@ -8965,6 +9175,7 @@ mod tests {
             reason: Some("To check the fix.".into()),
             truncated: false,
             expires: 1_795_007_200_000,
+            item: None,
         }
     }
 
@@ -9011,6 +9222,7 @@ mod tests {
             detail: Some("ls -A".into()),
             status: agent::tool::OK.into(),
             output: Some("Cargo.toml\nsrc".into()),
+            ..AgentTool::default()
         });
         let items = AgentItems {
             thread: thread.clone(),
@@ -9047,7 +9259,12 @@ mod tests {
         round_trip(types::AGENT_WATCH, &AgentWatch { thread: None });
         round_trip(
             types::AGENT_ANSWER,
-            &AgentAnswer { token: "c".repeat(32), decision: agent::decision::ALLOW.into(), scope: None },
+            &AgentAnswer {
+                token: "c".repeat(32),
+                decision: agent::decision::ALLOW.into(),
+                scope: None,
+                message: None,
+            },
         );
         round_trip(types::AGENT_ASK, &agent_ask());
         round_trip(
@@ -9057,6 +9274,7 @@ mod tests {
                 thread: thread.id,
                 outcome: agent::asked::ALLOWED.into(),
                 by_name: Some("guchu".into()),
+                message: None,
             },
         );
     }
@@ -9093,8 +9311,12 @@ mod tests {
         assert_eq!(AgentRead { thread: "a".into(), before: None, limit: Some(500) }.limit(), 50);
         assert_eq!(AgentRead { thread: "a".into(), before: None, limit: None }.limit(), 50);
         assert!(!AgentWatch { thread: Some("A".into()) }.is_valid());
-        let answer =
-            |decision: &str| AgentAnswer { token: "a".repeat(32), decision: decision.into(), scope: None };
+        let answer = |decision: &str| AgentAnswer {
+            token: "a".repeat(32),
+            decision: decision.into(),
+            scope: None,
+            message: None,
+        };
         assert!(answer("allow").is_valid() && answer("deny").is_valid());
         assert!(!answer("allow_thread").is_valid());
     }
@@ -9165,9 +9387,316 @@ mod tests {
             "{shown}"
         );
         assert!(!shown.contains("List the files"), "{shown}");
-        let answer = AgentAnswer { token: ask.token.clone(), decision: "allow".into(), scope: None };
+        let answer =
+            AgentAnswer { token: ask.token.clone(), decision: "allow".into(), scope: None, message: None };
         assert!(!format!("{answer:?}").contains(&ask.token));
     }
+
+    /// An item with every field added with `agent.items2`.
+    fn agent_item2(seq: u64) -> super::AgentItem {
+        use super::{AgentTool, agent};
+        super::AgentItem {
+            kind: agent::item::TOOL.into(),
+            text: None,
+            tool: Some(AgentTool {
+                name: "Edit".into(),
+                title: "Edit file".into(),
+                detail: Some("-a\n+b".into()),
+                status: agent::tool::OK.into(),
+                output: None,
+                class: Some(agent::tool_class::EDIT.into()),
+                path: Some("src/main.rs".into()),
+                by_rule: true,
+            }),
+            turn: Some(2),
+            end: Some(1_795_000_000_900),
+            group: Some("toolu_01Parent".into()),
+            ..agent_item(seq, "")
+        }
+    }
+
+    /// Re-reads `body` as another type, as a receiver built from other code would.
+    fn read_as<A: serde::Serialize, B: serde::de::DeserializeOwned>(body: &A) -> B {
+        let env = crate::Envelope::new(super::types::AGENT_EVENT, body).unwrap();
+        crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body::<B>().unwrap()
+    }
+
+    #[test]
+    fn agent_items2_fields_round_trip_and_keep_their_limits() {
+        use super::{AgentAsk, AgentEvent, AgentItems, agent, types};
+        let tool = agent_item2(2);
+        let mut answer = agent_item(3, "Done.");
+        answer.turn = Some(2);
+        answer.phase = Some(agent::phase::FINAL.into());
+        answer.end = Some(1_795_000_001_000);
+        let mut denial = agent_item(4, "Use the test runner instead.");
+        denial.kind = agent::item::USER.into();
+        denial.deny_of = Some("toolu_01Edit".into());
+        let mut thinking = agent_item(5, "**Reading the tests**");
+        thinking.kind = agent::item::REASONING.into();
+        let ask = AgentAsk { item: Some("toolu_01Edit".into()), ..agent_ask() };
+        let page = AgentItems {
+            thread: agent_thread(&"b".repeat(32)),
+            items: vec![tool.clone(), answer.clone(), denial.clone(), thinking.clone()],
+            more_before: false,
+            asks: vec![ask.clone()],
+        };
+        assert!(page.is_valid());
+        assert_eq!(page.clone().sanitized().unwrap(), page, "nothing to clean");
+        round_trip(types::AGENT_ITEMS, &page);
+        let event = AgentEvent::item("b".repeat(32), tool.clone());
+        assert!(event.is_valid());
+        round_trip(types::AGENT_EVENT, &event);
+
+        // A later word is absent here, not a reason to drop the item.
+        let mut later = answer.clone();
+        later.phase = Some("closing_remarks".into());
+        let mut later_tool = tool.clone();
+        later_tool.tool.as_mut().unwrap().class = Some("notebook".into());
+        assert!(later.is_valid() && later_tool.is_valid());
+        assert_eq!(later.sanitized().unwrap().phase, None);
+        assert_eq!(later_tool.sanitized().unwrap().tool.unwrap().class, None);
+        let mut long_word = answer.clone();
+        long_word.phase = Some("x".repeat(agent::MAX_WORD_BYTES + 1));
+        assert!(!long_word.is_valid());
+
+        // Fields that don't belong to the kind go; turn 0 is no turn.
+        let mut odd = tool.clone();
+        odd.phase = Some(agent::phase::FINAL.into());
+        odd.deny_of = Some("toolu_01Edit".into());
+        odd.turn = Some(0);
+        let odd = odd.sanitized().unwrap();
+        assert_eq!((odd.phase, odd.deny_of, odd.turn), (None, None, None));
+
+        // An id that names another item is whole or absent: never cut.
+        let mut long_ref = denial.clone();
+        long_ref.deny_of = Some("d".repeat(agent::MAX_ITEM_ID_BYTES + 1));
+        long_ref.group = Some("g\u{202E}1".into());
+        assert!(!long_ref.is_valid());
+        let long_ref = long_ref.sanitized().unwrap();
+        assert_eq!(long_ref.deny_of, None);
+        assert_eq!(long_ref.group.as_deref(), Some("g1"));
+        let mut bad_ask = ask.clone();
+        bad_ask.item = Some("x".repeat(97));
+        assert!(!bad_ask.is_valid());
+        assert_eq!(bad_ask.sanitized().unwrap().item, None);
+    }
+
+    #[test]
+    fn a_tool_path_never_leaves_the_folder() {
+        use super::agent;
+        let path_of = |path: &str| {
+            let mut item = agent_item2(2);
+            item.tool.as_mut().unwrap().path = Some(path.into());
+            let item = item.sanitized().unwrap();
+            (item.tool.unwrap().path, item.truncated)
+        };
+        assert_eq!(path_of("src/main.rs"), (Some("src/main.rs".into()), false));
+        assert_eq!(path_of("/home/me/.ssh/config"), (Some("config".into()), false));
+        assert_eq!(path_of("~/notes/plan.md"), (Some("plan.md".into()), false));
+        assert_eq!(path_of("C:\\Users\\me\\a.txt"), (Some("a.txt".into()), false));
+        assert_eq!(path_of("../../etc/passwd"), (Some("passwd".into()), false));
+        assert_eq!(path_of("…/me/Code/other/notes.md"), (Some("notes.md".into()), false));
+        assert_eq!(path_of("src/\u{202E}gnp.rs\n"), (Some("src/gnp.rs".into()), false));
+        assert_eq!(path_of("/"), (None, false));
+        let deep = format!("{}/last.rs", "d".repeat(agent::MAX_TOOL_PATH_BYTES));
+        let (cut, truncated) = path_of(&deep);
+        let cut = cut.unwrap();
+        assert!(truncated && cut.len() <= agent::MAX_TOOL_PATH_BYTES, "{}", cut.len());
+        assert!(cut.starts_with('…') && cut.ends_with("/last.rs"));
+        let mut over = agent_item2(2);
+        over.tool.as_mut().unwrap().path = Some(deep);
+        assert!(!over.is_valid());
+        // A request's path too.
+        let ask = super::AgentAsk { path: Some("/home/me/app/src/lib.rs".into()), ..agent_ask() };
+        let ask = ask.sanitized().unwrap();
+        assert_eq!((ask.path.as_deref(), ask.truncated), (Some("lib.rs"), false));
+    }
+
+    #[test]
+    fn a_reasoning_item_is_a_tool_step_for_an_older_phone() {
+        use super::{AgentItem, AgentItems, agent};
+        let mut thinking = agent_item(5, "**Reading the tests** first.");
+        thinking.kind = agent::item::REASONING.into();
+        thinking.turn = Some(1);
+        let open = thinking.clone().for_legacy();
+        assert_eq!(open.kind, agent::item::TOOL);
+        assert_eq!((open.seq, open.id.as_str(), open.text.as_deref()), (5, thinking.id.as_str(), None));
+        let tool = open.tool.as_ref().unwrap();
+        assert_eq!((tool.name.as_str(), tool.title.as_str()), ("reasoning", "Thinking"));
+        assert_eq!(tool.status, agent::tool::RUNNING);
+        let ended = AgentItem { end: Some(1_795_000_000_100), ..thinking.clone() }.for_legacy();
+        assert_eq!(ended.tool.unwrap().status, agent::tool::OK);
+        let answer = agent_item(6, "Done.");
+        assert_eq!(answer.clone().for_legacy(), answer, "other kinds are unchanged");
+
+        // A 0.1.15 phone takes the page, which it wouldn't with the reasoning item in it.
+        let page = |items: Vec<AgentItem>| AgentItems {
+            thread: agent_thread(&"b".repeat(32)),
+            items,
+            more_before: false,
+            asks: vec![],
+        };
+        let old: old::Items = read_as(&page(vec![thinking.clone(), agent_item2(6)]));
+        assert!(!old.is_valid(), "a kind it doesn't know fails the whole page");
+        let old: old::Items = read_as(&page(vec![thinking.for_legacy(), agent_item2(6)]));
+        assert!(old.is_valid());
+        assert_eq!(old.items[0].kind, "tool");
+        assert_eq!(old.items[1].tool.as_ref().unwrap().status, "ok");
+    }
+
+    #[test]
+    fn older_peers_read_the_new_fields_as_nothing_and_the_other_way_round() {
+        use super::{AgentAnswer, AgentAsk, AgentAsked, AgentItem, agent};
+        // A 0.1.15 phone decodes every new field away.
+        let item = agent_item2(2);
+        let seen: old::Item = read_as(&item);
+        assert!(seen.is_valid());
+        assert_eq!(seen.tool.unwrap().name, "Edit");
+        let seen: old::Ask = read_as(&AgentAsk { item: Some("toolu_01".into()), ..agent_ask() });
+        assert_eq!(seen.token, agent_ask().token);
+        let asked = AgentAsked {
+            token: "c".repeat(32),
+            thread: "a".repeat(32),
+            outcome: agent::asked::DENIED.into(),
+            by_name: Some("Pixel".into()),
+            message: Some("Use the test runner.".into()),
+        };
+        let seen: old::Asked = read_as(&asked);
+        assert_eq!(seen.outcome, "denied");
+        // A 0.1.15 PC reads a denial with a message as a plain denial.
+        let answer = AgentAnswer {
+            token: "c".repeat(32),
+            decision: agent::decision::DENY.into(),
+            scope: None,
+            message: Some("Not that one.".into()),
+        };
+        let seen: old::Answer = read_as(&answer);
+        assert_eq!(seen.decision, "deny");
+
+        // What an older PC sends reads here with the new fields absent.
+        let from_old: AgentItem = read_as(&old::Item {
+            seq: 3,
+            id: "msg_01:3".into(),
+            kind: "assistant".into(),
+            when: 1,
+            text: Some("Hi".into()),
+            truncated: false,
+            tool: None,
+        });
+        assert!(from_old.is_valid());
+        assert_eq!((from_old.turn, from_old.phase, from_old.end), (None, None, None));
+        assert_eq!((from_old.group, from_old.deny_of), (None, None));
+    }
+
+    #[test]
+    fn deny_messages_go_with_a_denial_only_and_within_their_limit() {
+        use super::{AgentAnswer, AgentAsked, agent, clean_deny_message, types};
+        let deny = |message: Option<String>| AgentAnswer {
+            token: "a".repeat(32),
+            decision: agent::decision::DENY.into(),
+            scope: None,
+            message,
+        };
+        assert!(deny(None).is_valid());
+        assert!(deny(Some("Run the tests first.".into())).is_valid());
+        assert!(deny(Some("x".repeat(agent::MAX_DENY_MESSAGE_BYTES))).is_valid());
+        assert!(!deny(Some("x".repeat(agent::MAX_DENY_MESSAGE_BYTES + 1))).is_valid());
+        assert!(!deny(Some(String::new())).is_valid());
+        let allow = AgentAnswer { decision: agent::decision::ALLOW.into(), ..deny(Some("why".into())) };
+        assert!(!allow.is_valid(), "a message goes with deny only");
+        round_trip(types::AGENT_ANSWER, &deny(Some("Line one\nline two".into())));
+
+        assert_eq!(clean_deny_message("a\u{202E}b\u{7}\nc\td").as_deref(), Some("ab\nc\td"));
+        assert_eq!(clean_deny_message(" \n\u{2066}\t"), None);
+        assert_eq!(clean_deny_message(&"é".repeat(1500)).unwrap().len(), 2000);
+
+        let asked = |outcome: &str, message: &str| AgentAsked {
+            token: "c".repeat(32),
+            thread: "a".repeat(32),
+            outcome: outcome.into(),
+            by_name: Some("Pixel".into()),
+            message: Some(message.into()),
+        };
+        let denied = asked(agent::asked::DENIED, "Use\u{202E} the runner.").sanitized().unwrap();
+        assert_eq!(denied.message.as_deref(), Some("Use the runner."));
+        round_trip(types::AGENT_ASKED, &denied);
+        assert_eq!(asked(agent::asked::ALLOWED, "why").sanitized().unwrap().message, None);
+        assert_eq!(asked(agent::asked::DENIED, " ").sanitized().unwrap().message, None);
+        assert!(!asked(agent::asked::DENIED, &"x".repeat(2001)).is_valid());
+        let shown = format!("{:?} {:?}", deny(Some("secret words".into())), denied);
+        assert!(!shown.contains("secret") && !shown.contains("runner"), "{shown}");
+    }
+
+    /// The agent bodies as G7 Link 0.1.14 and 0.1.15 read them.
+    mod old {
+        use serde::{Deserialize, Serialize};
+
+        const KINDS: &[&str] = &["user", "assistant", "tool", "notice"];
+
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct Tool {
+            pub name: String,
+            pub title: String,
+            #[serde(default)]
+            pub detail: Option<String>,
+            pub status: String,
+            #[serde(default)]
+            pub output: Option<String>,
+        }
+
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct Item {
+            pub seq: u64,
+            pub id: String,
+            pub kind: String,
+            pub when: u64,
+            #[serde(default)]
+            pub text: Option<String>,
+            #[serde(default)]
+            pub truncated: bool,
+            #[serde(default)]
+            pub tool: Option<Tool>,
+        }
+
+        impl Item {
+            pub fn is_valid(&self) -> bool {
+                self.seq >= 1
+                    && KINDS.contains(&self.kind.as_str())
+                    && self
+                        .tool
+                        .as_ref()
+                        .is_none_or(|t| ["running", "ok", "error", "denied"].contains(&t.status.as_str()))
+            }
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Items {
+            pub items: Vec<Item>,
+        }
+
+        impl Items {
+            pub fn is_valid(&self) -> bool {
+                self.items.iter().all(Item::is_valid)
+            }
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Ask {
+            pub token: String,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Answer {
+            pub decision: String,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Asked {
+            pub outcome: String,
+        }
+    }
+
     fn agent_session(id: &str) -> super::AgentSession {
         super::AgentSession {
             id: id.into(),

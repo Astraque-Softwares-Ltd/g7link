@@ -390,10 +390,13 @@ pub enum NodeEvent {
         device: DeviceId,
     },
     /// Phone: what a PC lets this phone start (`agent.catalog`); `None` when
-    /// nothing can run there or access is off.
+    /// nothing can run there or access is off. Sent again when only
+    /// `can_say_why` changed.
     AgentCatalog {
         device: DeviceId,
         catalog: Option<crate::AgentCatalog>,
+        /// The PC takes a denial with the user's words (`agent.say_why`).
+        can_say_why: bool,
     },
     /// Phone: a PC's agent thread changed (`agent.event`).
     AgentEvent {
@@ -414,6 +417,8 @@ pub enum NodeEvent {
         outcome: String,
         /// The device that answered, for `allowed` and `denied`.
         by_name: Option<String>,
+        /// `denied`: what the user said when denying it, if they did.
+        message: Option<String>,
     },
     /// PC: a paired phone asked for sessions started on this PC while its
     /// `agent_sessions` toggle is off (`agents` on). Once per phone per run,

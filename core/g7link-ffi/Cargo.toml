@@ -22,6 +22,7 @@ required-features = ["bindgen"]
 bindgen = ["uniffi/cli"]
 
 [dependencies]
+g7-agents-render.workspace = true
 g7link-core.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
