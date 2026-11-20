@@ -88,14 +88,6 @@ Item {
             contentHeight: input.contentHeight
             clip: true
             boundsBehavior: Flickable.StopAtBounds
-            G7ScrollBar {
-                flickable: inputScroll
-                parent: inputScroll.parent
-                anchors.top: inputScroll.top
-                anchors.bottom: inputScroll.bottom
-                anchors.right: inputScroll.right
-                anchors.rightMargin: -10
-            }
             TextEdit {
                 id: input
                 width: inputScroll.width
@@ -147,6 +139,13 @@ Item {
                     elide: Text.ElideNone
                 }
             }
+        }
+        G7ScrollBar {
+            flickable: inputScroll
+            anchors.top: inputScroll.top
+            anchors.bottom: inputScroll.bottom
+            anchors.right: inputScroll.right
+            anchors.rightMargin: -10
         }
         Row {
             id: actions

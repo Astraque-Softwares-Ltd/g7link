@@ -124,13 +124,6 @@ Item {
             contentHeight: content.height
             boundsBehavior: Flickable.StopAtBounds
             clip: true
-            G7ScrollBar {
-                flickable: scroll
-                parent: scroll.parent
-                anchors.top: scroll.top
-                anchors.bottom: scroll.bottom
-                anchors.right: scroll.right
-            }
             Column {
                 id: content
                 width: scroll.width
@@ -212,6 +205,12 @@ Item {
                     wrapMode: Text.WordWrap
                 }
             }
+        }
+        G7ScrollBar {
+            flickable: scroll
+            anchors.top: scroll.top
+            anchors.bottom: scroll.bottom
+            anchors.right: scroll.right
         }
 
         // Deny then Allow; a held request says why its buttons wait.
