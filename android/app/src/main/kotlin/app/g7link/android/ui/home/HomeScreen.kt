@@ -1069,6 +1069,7 @@ private fun pcStatusLine(pc: Device): String {
     val link = when {
         !pc.online && pc.wakeState == WakeState.Waking -> stringResource(R.string.wake_waking, pc.name)
         !pc.online && !pc.reconnect -> stringResource(R.string.link_not_reconnecting)
+        !pc.online && pc.needsUpdate -> stringResource(R.string.link_needs_update, pc.name)
         else -> linkText(pc.link)
     }
     val battery = pc.battery?.let {

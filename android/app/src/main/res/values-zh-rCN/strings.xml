@@ -33,6 +33,7 @@
     <string name="link_offline_now">离线 · 刚刚还在线</string>
     <string name="link_never">尚未连接</string>
     <string name="link_not_reconnecting">不自动重连</string>
+    <string name="link_needs_update">请更新 %1$s 上的 G7 Link</string>
     <string name="battery_level">%1$d%%</string>
     <string name="battery_charging">%1$d%% · 充电中</string>
     <string name="ringing_title">%1$s 正在让手机响铃</string>
@@ -586,6 +587,7 @@
     <string name="error_not_paired">该电脑已不再配对。</string>
     <string name="error_timed_out">电脑未及时响应。</string>
     <string name="error_unsupported">电脑端应用尚不支持此操作。</string>
+    <string name="error_busy">电脑正忙，请稍后重试。</string>
     <string name="error_generic">出了点问题。</string>
     <string name="deck_tile_with_badge">%1$s，%2$s</string>
     <string name="deck_default_page_main">主页面</string>
@@ -668,6 +670,7 @@
     <string name="pc_files_update">请更新 %1$s 上的 G7 Link 以浏览其文件。</string>
     <string name="pc_files_not_found">此文件夹已不在 %1$s 上。</string>
     <string name="pc_files_error">无法列出 %1$s 上的此文件夹，请重试。</string>
+    <string name="pc_files_busy">%1$s 正忙，请稍后重试。</string>
     <string name="pc_files_folder_downloads">下载</string>
     <string name="pc_files_folder_documents">文档</string>
     <string name="pc_files_folder_desktop">桌面</string>

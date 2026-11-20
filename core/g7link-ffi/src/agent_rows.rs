@@ -4,7 +4,7 @@
 //!
 //! The rows carry no sentences: labels, statuses and times are data the app
 //! turns into its own translated words. No `Debug` here prints agent text
-//! (protocol v0 §11).
+//! (protocol v1 §11).
 
 use std::{
     collections::HashMap,

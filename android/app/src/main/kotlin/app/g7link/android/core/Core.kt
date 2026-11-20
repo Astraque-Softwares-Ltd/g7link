@@ -955,6 +955,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             return
         }
         val removedName = if (event is Event.DeviceRemoved) _state.value.nameOf(event.id) else null
+        // Said once until the PC connects again: it keeps trying, and the core says so once a minute.
+        val newlyNeedsUpdate = event is Event.PeerNeedsUpdate &&
+            _state.value.device(event.id)?.let { !it.online && !it.needsUpdate } == true
         if (event.affectsCoreState()) {
             _state.update { it.reduce(event) }
         }
@@ -978,6 +981,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             is Event.PcAudioFrame -> pcSpeakerPlayer.playFrame(
                 event.sampleRate.toInt(),
                 event.channels.toInt(),
+                event.seq.toInt(),
+                event.tsMs.toLong(),
                 event.pcm,
                 event.device,
             )
@@ -1041,6 +1046,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             // A PC heard of a new build: the updater checks the feed if it's for this phone.
             is Event.UpdateHint -> (context.applicationContext as? app.g7link.android.G7LinkApplication)
                 ?.updater?.onHint(event.channel, event.version)
+            // A paired PC has an older G7 Link: its card says so too, until it connects.
+            is Event.PeerNeedsUpdate -> if (newlyNeedsUpdate) {
+                val name = _state.value.nameOf(event.id).orEmpty().ifEmpty { context.getString(R.string.your_pc) }
+                _messages.tryEmit(context.getString(R.string.link_needs_update, name))
+            }
             is Event.DeviceRemoved -> {
                 wakeTimers.remove(event.id)?.cancel()
                 // Paired again later, it asks again until chosen again.
@@ -2303,7 +2313,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             (if (PhoneSms.canRead(context)) listOf("sms.read") else emptyList()) +
             (if (PhoneSms.canSend(context)) listOf("sms.send") else emptyList()) +
             PhoneStorage.capabilities(context) +
-            (if (WebcamService.hasPermission(context)) listOf("camera.stream") else emptyList()) +
+            (if (WebcamService.hasPermission(context)) listOf("webcam.stream") else emptyList()) +
             (if (context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) listOf("camera.capture") else emptyList()) +
             (if (InputService.running || Elevated.running) listOf("mirror.input") else emptyList()) +
             (if (Elevated.running) listOf("clip.read.auto") else emptyList()) +
@@ -2926,16 +2936,22 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     suspend fun remoteCheck(id: String): RemoteAccess {
         startJob?.join()
         val node = node ?: return RemoteAccess.Offline
-        return try {
-            node.remoteCheck(id)
-            RemoteAccess.Allowed
-        } catch (e: G7LinkException) {
-            when (e) {
-                is G7LinkException.Denied -> RemoteAccess.Denied
-                is G7LinkException.Unsupported -> RemoteAccess.Unsupported
-                else -> RemoteAccess.Offline
+        repeat(REMOTE_CHECK_BUSY_TRIES) { attempt ->
+            try {
+                node.remoteCheck(id)
+                return RemoteAccess.Allowed
+            } catch (e: G7LinkException) {
+                when (e) {
+                    is G7LinkException.Denied -> return RemoteAccess.Denied
+                    is G7LinkException.Unsupported -> return RemoteAccess.Unsupported
+                    // Too much in flight on the PC, which says nothing about access: ask again shortly.
+                    is G7LinkException.Busy -> {}
+                    else -> return RemoteAccess.Offline
+                }
             }
+            if (attempt < REMOTE_CHECK_BUSY_TRIES - 1) delay(REMOTE_CHECK_BUSY_WAIT_MS)
         }
+        return RemoteAccess.Offline
     }
 
     private val pendingMoves = DeltaCoalescer(limit = MAX_MOVE_DELTA)
@@ -3189,9 +3205,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 val status = when (e) {
                     is G7LinkException.Denied -> RemoteAccess.Denied
                     is G7LinkException.Unsupported -> RemoteAccess.Unsupported
+                    // Too much in flight on the PC says nothing about access or the link.
+                    is G7LinkException.Busy -> null
                     else -> RemoteAccess.Offline
                 }
-                onStatus?.invoke(status)
+                if (status != null) onStatus?.invoke(status)
             }
         }
     }
@@ -3735,7 +3753,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    /** Sets the PC's master volume (`0..=100` or `200`/`201` for phone speaker relay) and/or mute state (`pc.audio.set`). */
+    /** Sets the PC's master volume (`0..=100` or `200`/`201` for phone speaker relay) and/or mute state (`deck.audio.set`). */
     fun setPcAudio(id: String, volume: Int? = null, muted: Boolean? = null) {
         val isSpeakerRelayToggle = volume == 200 || volume == 201
         val wireVol = if (isSpeakerRelayToggle) {
@@ -3817,7 +3835,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    /** Makes [output], one of the PC's audio outputs, its default (`pc.audio.set { output }`). */
+    /** Makes [output], one of the PC's audio outputs, its default (`deck.audio.set { output }`). */
     fun setPcAudioOutput(id: String, output: String) {
         // Shown at once; the PC's next state confirms it or puts it back.
         _state.update { s ->
@@ -3915,6 +3933,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                         is G7LinkException.Offline, is G7LinkException.NotPaired -> R.string.pc_files_offline
                         is G7LinkException.Unsupported -> R.string.pc_files_update
                         is G7LinkException.NotFound -> R.string.pc_files_not_found
+                        is G7LinkException.Busy -> R.string.pc_files_busy
                         else -> R.string.pc_files_error
                     },
                 )
@@ -3957,7 +3976,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         }
     }
 
-    /** Asks an online relay peer to broadcast a Wake-on-LAN magic packet (`wake.relay`). */
+    /** Asks an online relay peer to broadcast a Wake-on-LAN magic packet (`pc.wake.relay`). */
     fun wakeViaRelay(relayPeerId: String, mac: String, broadcast: String? = null) {
         command { it.wakeViaRelay(relayPeerId, mac, broadcast) }
     }
@@ -4007,6 +4026,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         is G7LinkException.NotPaired -> context.getString(R.string.error_not_paired)
         is G7LinkException.Timeout -> context.getString(R.string.error_timed_out)
         is G7LinkException.Unsupported -> context.getString(R.string.error_unsupported)
+        // Too much in flight on the PC: worth trying again shortly.
+        is G7LinkException.Busy -> context.getString(R.string.error_busy)
         is G7LinkException.QueueFull -> e.reason.ifBlank { context.getString(R.string.send_queue_full) }
         else -> context.getString(R.string.error_generic)
     }
@@ -4040,6 +4061,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         const val BLE_HOLD_LINK_MS = 12_000L
         /** An attempt that found the PC is waited for this long past the look, at most: its own limit is 20 s. */
         const val BLE_LINK_FINISH_MS = 21_000L
+        /** A PC with too much in flight is asked whether it takes input this many times, this far apart. */
+        const val REMOTE_CHECK_BUSY_TRIES = 3
+        const val REMOTE_CHECK_BUSY_WAIT_MS = 500L
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */

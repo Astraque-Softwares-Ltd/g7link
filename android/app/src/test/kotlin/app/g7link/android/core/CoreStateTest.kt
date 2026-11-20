@@ -63,6 +63,22 @@ class CoreStateTest {
     }
 
     @Test
+    fun aPcWithAnOlderAppIsShownAsNeedingAnUpdateUntilItConnects() {
+        var state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
+        assertFalse(state.device("a")!!.needsUpdate)
+        assertTrue(Event.PeerNeedsUpdate("a").affectsCoreState())
+        state = state.reduce(Event.PeerNeedsUpdate("a"))
+        assertTrue(state.device("a")!!.needsUpdate)
+        state = state.reduce(Event.LinkChanged("a", Link.Connecting))
+        assertTrue("still can't talk", state.device("a")!!.needsUpdate)
+        state = state.reduce(Event.LinkChanged("a", Link.Online(relayed = false, usb = false, rttMs = 5u)))
+        assertFalse("it was updated", state.device("a")!!.needsUpdate)
+        state = state.reduce(Event.PeerNeedsUpdate("a"))
+        assertFalse("a connected PC already speaks this version", state.device("a")!!.needsUpdate)
+        assertEquals(state, state.reduce(Event.PeerNeedsUpdate("unknown")))
+    }
+
+    @Test
     fun bluetoothMediaFollowsThePc() {
         var state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
         assertFalse("off by default", state.device("a")!!.btMedia)

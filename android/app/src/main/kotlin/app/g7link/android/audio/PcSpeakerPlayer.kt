@@ -8,29 +8,22 @@ import android.media.audiofx.LoudnessEnhancer
 import android.os.Build
 import android.os.Process
 import android.util.Log
-import java.util.concurrent.LinkedBlockingDeque
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Plays live PCM-16LE audio frames streamed from a paired PC (`pc.audio.relay`)
+ * Plays live PCM-16LE sound streamed from a paired PC (docs/protocol/v1.md §5)
  * on a low-latency output (`PERFORMANCE_MODE_LOW_LATENCY`), while a
- * dedicated `THREAD_PRIORITY_URGENT_AUDIO` worker maintains a tight ~35–45 ms
- * jitter cushion without ever calling `pause()`/`flush()` mid-stream.
+ * dedicated `THREAD_PRIORITY_URGENT_AUDIO` worker keeps a tight jitter
+ * cushion ([SoundJitterBuffer]) without ever calling `pause()`/`flush()`
+ * mid-stream. Pieces play in order; one older than the last played is dropped.
  */
 class PcSpeakerPlayer(
     private val activity: ActivityWindow = ActivityWindow(ACTIVE_WINDOW_MS),
 ) {
-    private class AudioChunk(
-        val sampleRate: Int,
-        val channels: Int,
-        val pcm: ByteArray,
-    )
-
-    private val queue = LinkedBlockingDeque<AudioChunk>(MAX_QUEUE_CHUNKS)
+    private val buffer = SoundJitterBuffer()
     private val workerRunning = AtomicBoolean(false)
     private val watchdogRunning = AtomicBoolean(false)
     @Volatile
@@ -42,15 +35,18 @@ class PcSpeakerPlayer(
     val playing: StateFlow<Boolean> = _playing.asStateFlow()
 
     @Volatile
-    private var queuedBytes: Int = 0
-
-    @Volatile
     var activePcId: String? = null
         private set
 
-    fun playFrame(sampleRate: Int, channels: Int, pcm: ByteArray, pcId: String? = null) {
+    /**
+     * Queues a piece of PC sound: [seq] counts up by one per piece and wraps at 2^16, [tsMs] is
+     * when its first sample was captured on the PC.
+     */
+    fun playFrame(sampleRate: Int, channels: Int, seq: Int, tsMs: Long, pcm: ByteArray, pcId: String? = null) {
         if (pcm.isEmpty() || sampleRate <= 0 || channels <= 0) return
         if (pcId != null) {
+            // Another PC's sound is numbered on its own.
+            if (activePcId != null && activePcId != pcId) buffer.restart()
             activePcId = pcId
         }
         activity.markActive()
@@ -61,20 +57,9 @@ class PcSpeakerPlayer(
 
         val safeRate = sampleRate.coerceIn(8_000, 96_000)
         val safeChannels = if (channels >= 2) 2 else 1
-        val frameBytes = safeChannels * 2
-        // Cap queued backlog at ~40 ms so Wi-Fi bursts never build up latency
-        // and we never need to flush the hardware AudioTrack.
-        val maxQueuedBytes = (safeRate * frameBytes * 40) / 1000
-
-        synchronized(queue) {
-            while (queuedBytes + pcm.size > maxQueuedBytes || queue.size >= MAX_QUEUE_CHUNKS - 1) {
-                val dropped = queue.pollFirst() ?: break
-                queuedBytes = (queuedBytes - dropped.pcm.size).coerceAtLeast(0)
-            }
-            if (queue.offerLast(AudioChunk(safeRate, safeChannels, pcm))) {
-                queuedBytes += pcm.size
-            }
-        }
+        // The buffer caps its backlog at ~40 ms so Wi-Fi bursts never build up
+        // latency and we never need to flush the hardware AudioTrack.
+        buffer.offer(SoundPiece(seq and 0xFFFF, tsMs, safeRate, safeChannels, pcm))
 
         if (workerRunning.compareAndSet(false, true)) {
             Thread(::runAudioLoop, "g7link-pc-speaker").apply {
@@ -95,12 +80,8 @@ class PcSpeakerPlayer(
         activity.reset()
         _playing.value = false
         watchdogThread?.interrupt()
-        synchronized(queue) {
-            queue.clear()
-            queuedBytes = 0
-            // Poison pill with rate = 0 signals immediate stop.
-            queue.offerFirst(AudioChunk(0, 0, ByteArray(0)))
-        }
+        // A waiting worker stops at once.
+        buffer.stop()
     }
 
     private fun ensureWatchdog() {
@@ -138,20 +119,6 @@ class PcSpeakerPlayer(
         }
     }
 
-    private fun pollChunk(timeoutMs: Long): AudioChunk? {
-        val chunk = if (timeoutMs <= 0L) {
-            queue.pollFirst()
-        } else {
-            queue.pollFirst(timeoutMs, TimeUnit.MILLISECONDS)
-        }
-        if (chunk != null && chunk.pcm.isNotEmpty()) {
-            synchronized(queue) {
-                queuedBytes = (queuedBytes - chunk.pcm.size).coerceAtLeast(0)
-            }
-        }
-        return chunk
-    }
-
     private fun runAudioLoop() {
         runCatching {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -165,8 +132,8 @@ class PcSpeakerPlayer(
 
         try {
             while (true) {
-                val first = pollChunk(INACTIVITY_TIMEOUT_MS) ?: break
-                if (first.sampleRate == 0) break
+                val next = buffer.poll(INACTIVITY_TIMEOUT_MS) ?: break
+                val first = next.piece
 
                 if (track == null ||
                     track.state != AudioTrack.STATE_INITIALIZED ||
@@ -183,13 +150,14 @@ class PcSpeakerPlayer(
 
                 val activeTrack = track ?: continue
 
-                if (needsPrebuffer) {
-                    // Wait up to 8 ms to accumulate a ~10 ms pre-buffer cushion on stream start
-                    // so minor Wi-Fi jitter never causes an initial underrun while keeping latency minimal.
-                    val frameBytes = first.channels * 2
-                    val prebufferTarget = (first.sampleRate * frameBytes * 10) / 1000
-                    var waitedMs = 0
-                    while (queuedBytes + first.pcm.size < prebufferTarget && waitedMs < 8) {
+                if (needsPrebuffer || next.fresh) {
+                    // On a start, or after the sound stopped for a while, gather a cushion
+                    // (10–30 ms, twice the measured jitter) so Wi-Fi jitter doesn't cause an
+                    // underrun at once, while keeping latency minimal.
+                    val cushionUs = buffer.cushionUs()
+                    val maxWaitMs = cushionUs / 1_000L
+                    var waitedMs = 0L
+                    while (buffer.bufferedUs() + first.durationUs < cushionUs && waitedMs < maxWaitMs) {
                         Thread.sleep(2)
                         waitedMs += 2
                     }
@@ -208,7 +176,7 @@ class PcSpeakerPlayer(
                 }
                 val writeMs = (System.nanoTime() - startedWriteNs) / 1_000_000L
                 if (writeMs > 25L) {
-                    Log.d(TAG, "AudioTrack write blocked ${writeMs}ms (queuedBytes=$queuedBytes)")
+                    Log.d(TAG, "AudioTrack write blocked ${writeMs}ms (buffered=${buffer.bufferedUs() / 1_000L}ms)")
                 }
             }
         } catch (_: InterruptedException) {
@@ -216,10 +184,11 @@ class PcSpeakerPlayer(
         } finally {
             workerRunning.set(false)
             releaseTrack(track, enhancer)
-            // If new frames arrived just as the loop exited, restart the worker.
-            val hasPending = synchronized(queue) {
-                queue.peekFirst()?.let { it.sampleRate > 0 } == true
+            if (buffer.late > 0L || buffer.lost > 0L) {
+                Log.d(TAG, "PC sound: ${buffer.late} late, ${buffer.lost} lost")
             }
+            // If new frames arrived just as the loop exited, restart the worker.
+            val hasPending = !buffer.isEmpty()
             if (hasPending && workerRunning.compareAndSet(false, true)) {
                 Thread(::runAudioLoop, "g7link-pc-speaker").apply {
                     isDaemon = true
@@ -303,7 +272,6 @@ class PcSpeakerPlayer(
     companion object {
         private const val TAG = "PcSpeakerPlayer"
         private const val INACTIVITY_TIMEOUT_MS = 30_000L
-        private const val MAX_QUEUE_CHUNKS = 96
         const val ACTIVE_WINDOW_MS = 3_000L
         private const val WATCHDOG_CHECK_INTERVAL_MS = 1_000L
     }

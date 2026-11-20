@@ -170,7 +170,7 @@ class PhoneToggles(
         onChanged(current)
     }
 
-    /** Changes one quick setting on the phone (`phone.toggle.set`). */
+    /** Changes one quick setting on the phone (`toggles.set`). */
     fun set(id: String, value: PhoneToggleValue): Boolean {
         val ok = runCatching {
             when (id) {

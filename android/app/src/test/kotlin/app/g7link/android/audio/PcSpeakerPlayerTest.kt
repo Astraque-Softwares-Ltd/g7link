@@ -15,15 +15,15 @@ class PcSpeakerPlayerTest {
         assertFalse(player.playing.value)
 
         // Empty PCM
-        player.playFrame(44_100, 2, ByteArray(0))
+        player.playFrame(44_100, 2, 0, 0L, ByteArray(0))
         assertFalse(player.playing.value)
 
         // Invalid sample rate
-        player.playFrame(0, 2, ByteArray(16))
+        player.playFrame(0, 2, 0, 0L, ByteArray(16))
         assertFalse(player.playing.value)
 
         // Invalid channels
-        player.playFrame(44_100, 0, ByteArray(16))
+        player.playFrame(44_100, 0, 0, 0L, ByteArray(16))
         assertFalse(player.playing.value)
     }
 
@@ -35,7 +35,7 @@ class PcSpeakerPlayerTest {
 
         assertFalse(player.playing.value)
 
-        player.playFrame(44_100, 2, ByteArray(16), pcId = "pc-a")
+        player.playFrame(44_100, 2, 0, 0L, ByteArray(16), pcId = "pc-a")
         assertTrue(player.playing.value)
 
         // Another PC disconnecting does not stop playback for pc-a.

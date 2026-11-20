@@ -233,6 +233,8 @@ data class Device(
     val bleRemote: Boolean = false,
     /** How bringing up Bluetooth for the touchpad last went; null when it hasn't run. */
     val bleSetup: BleSetup? = null,
+    /** It tried to connect with an older G7 Link: it needs an update first. Cleared once it connects. */
+    val needsUpdate: Boolean = false,
 ) {
     /** A paired phone or tablet rather than a PC. */
     val isAndroid: Boolean
@@ -505,6 +507,7 @@ data class CoreState(
                         it.copy(
                             link = newLink,
                             wakeState = if (newLink is Link.Online) WakeState.Idle else it.wakeState,
+                            needsUpdate = it.needsUpdate && newLink !is Link.Online,
                             // With a network back there's something to ask the PC over again.
                             bleSetup = it.bleSetup.takeUnless { setup -> newLink is Link.Online && setup == BleSetup.NoPath },
                         )
@@ -566,6 +569,8 @@ data class CoreState(
         is Event.NotificationsReset, is Event.NotificationPosted, is Event.NotificationRemoved -> this
         // The updater acts on it (Core); nothing shows.
         is Event.UpdateHint -> this
+        // Shown on its card while it's offline (a connected one already speaks this version).
+        is Event.PeerNeedsUpdate -> update(event.id) { if (it.online) it else it.copy(needsUpdate = true) }
         // Android shows its own "copied" confirmation; Core refreshes clipboardHistory/timeline/LocalSend/sendQueue on change.
         is Event.ClipboardReceived,
         is Event.ClipboardHistoryChanged,

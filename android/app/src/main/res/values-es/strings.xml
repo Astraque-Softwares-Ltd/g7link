@@ -37,6 +37,7 @@
     <string name="link_offline_now">Desconectado · visto hace un momento</string>
     <string name="link_never">Aún no conectado</string>
     <string name="link_not_reconnecting">No se está reconectando</string>
+    <string name="link_needs_update">Actualiza G7 Link en %1$s</string>
     <string name="battery_level">%1$d%%</string>
     <string name="battery_charging">%1$d%% · cargando</string>
     <string name="ringing_title">%1$s está haciendo sonar tu teléfono</string>
@@ -587,6 +588,7 @@
     <string name="error_not_paired">Ese PC ya no está emparejado.</string>
     <string name="error_timed_out">El PC no respondió a tiempo.</string>
     <string name="error_unsupported">La aplicación para PC aún no lo admite.</string>
+    <string name="error_busy">El PC está ocupado. Inténtalo de nuevo en un momento.</string>
     <string name="error_generic">Algo salió mal.</string>
 
     <!-- Theme seed names -->
@@ -691,6 +693,7 @@
     <string name="pc_files_update">Actualiza G7 Link en %1$s para explorar sus archivos.</string>
     <string name="pc_files_not_found">Esta carpeta ya no está en %1$s.</string>
     <string name="pc_files_error">No se pudo mostrar el contenido de esta carpeta en %1$s. Inténtalo de nuevo.</string>
+    <string name="pc_files_busy">%1$s está ocupado. Inténtalo de nuevo en un momento.</string>
     <string name="pc_files_folder_downloads">Descargas</string>
     <string name="pc_files_folder_documents">Documentos</string>
     <string name="pc_files_folder_desktop">Escritorio</string>

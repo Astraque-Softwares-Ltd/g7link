@@ -144,7 +144,7 @@ class UtteranceJoiner {
 
         /**
          * Replaces control characters (newlines, tabs, etc.) with spaces and
-         * collapses whitespace runs so the result is valid for `remote.input`
+         * collapses whitespace runs so the result is valid for `input.event`
          * (`type = "text"`).
          */
         fun sanitizeUtterance(raw: String): String {

@@ -60,7 +60,7 @@ impl From<core::TextFieldKind> for TextFieldKind {
     }
 }
 
-/// The field that has the focus on a PC (`remote.text_state`). Offsets count
+/// The field that has the focus on a PC (`input.text_state`). Offsets count
 /// Unicode code points.
 #[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct TextFieldState {
@@ -369,7 +369,7 @@ pub struct DiscoveredDevice {
     pub name: Option<String>,
 }
 
-/// A LocalSend device discovered on the local network (`docs/protocol/v0.md`).
+/// A LocalSend device discovered on the local network (`docs/protocol/v1.md` §15).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct LocalSendPeer {
     pub id: String,
@@ -577,7 +577,7 @@ pub struct NotificationChatMessage {
     pub avatar: Option<Vec<u8>>,
 }
 
-/// Never prints message text or sender names (protocol v0 §11).
+/// Never prints message text or sender names (protocol v1 §11).
 impl std::fmt::Debug for NotificationChatMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationChatMessage")
@@ -605,7 +605,7 @@ pub struct NotificationConversation {
     pub messages: Vec<NotificationChatMessage>,
 }
 
-/// Never prints conversation title or messages (protocol v0 §11).
+/// Never prints conversation title or messages (protocol v1 §11).
 impl std::fmt::Debug for NotificationConversation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationConversation")
@@ -723,7 +723,7 @@ impl MediaRepeat {
     }
 }
 
-/// Never prints what's playing (protocol v0 §11).
+/// Never prints what's playing (protocol v1 §11).
 impl std::fmt::Debug for MediaPlayer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MediaPlayer").field("id", &self.id).finish_non_exhaustive()
@@ -819,7 +819,7 @@ impl From<core::MediaPlayer> for MediaPlayer {
     }
 }
 
-/// Never prints content (protocol v0 §11).
+/// Never prints content (protocol v1 §11).
 impl std::fmt::Debug for Notification {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Notification").field("app", &self.app).finish_non_exhaustive()
@@ -885,7 +885,7 @@ pub struct Transfer {
     pub open_on_arrival: bool,
 }
 
-/// Never prints file names (protocol v0 §11).
+/// Never prints file names (protocol v1 §11).
 impl std::fmt::Debug for Transfer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Transfer").field("id", &self.id).field("status", &self.status).finish_non_exhaustive()
@@ -962,6 +962,11 @@ pub enum Event {
         id: String,
         channel: String,
         version: String,
+    },
+    /// Paired device `id` tried to connect with an older G7 Link: it needs
+    /// an update before the two can talk. At most once a minute per device.
+    PeerNeedsUpdate {
+        id: String,
     },
     /// A device asked this one to start (or stop) ringing.
     Ring {
@@ -1130,11 +1135,16 @@ pub enum Event {
     TimelineChanged,
     /// The LocalSend compatibility setting or discovered LocalSend peers changed.
     LocalSendChanged,
-    /// A PCM audio frame arrived from a paired PC (`audio.pcm`).
+    /// A piece of PC sound arrived from a paired PC (`docs/protocol/v1.md`
+    /// §5). `seq` counts up by one per piece and wraps: a player drops one
+    /// that isn't after the last it played. `ts_ms` is when its first sample
+    /// was captured, in ms since the PC's sound began.
     PcAudioFrame {
         device: String,
         sample_rate: u32,
         channels: u8,
+        seq: u16,
+        ts_ms: u32,
         pcm: Vec<u8>,
     },
     /// A paired PC started streaming its screen to this phone (`mirror` video stream config).
@@ -1994,7 +2004,7 @@ pub struct AgentItem {
     pub question: Option<AgentItemQuestion>,
 }
 
-/// Never prints the text or the ids it names (protocol v0 §11).
+/// Never prints the text or the ids it names (protocol v1 §11).
 impl std::fmt::Debug for AgentItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentItem")
@@ -2376,7 +2386,7 @@ pub struct ClipSuggestion {
     pub target: String,
 }
 
-/// Never prints the target text (protocol v0 §11).
+/// Never prints the target text (protocol v1 §11).
 impl std::fmt::Debug for ClipSuggestion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClipSuggestion").field("kind", &self.kind).finish_non_exhaustive()
@@ -2437,7 +2447,7 @@ impl From<PhoneToggles> for core::PhoneToggles {
     }
 }
 
-/// The value to set for a phone quick setting (`phone.toggle.set`).
+/// The value to set for a phone quick setting (`toggles.set`).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum PhoneToggleValue {
     Bool { on: bool },
@@ -2492,7 +2502,7 @@ pub enum MirrorInputEvent {
 
 pub type MirrorInput = MirrorInputEvent;
 
-/// Never prints typed text (protocol v0 §11).
+/// Never prints typed text (protocol v1 §11).
 impl std::fmt::Debug for MirrorInputEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -2780,7 +2790,7 @@ pub struct SmsAttachment {
 
 macro_rules! private_debug {
     ($($t:ty),*) => {$(
-        /// Never prints numbers, names or text (protocol v0 §11).
+        /// Never prints numbers, names or text (protocol v1 §11).
         impl std::fmt::Debug for $t {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct(stringify!($t)).finish_non_exhaustive()
@@ -2867,7 +2877,7 @@ pub struct CallControls {
     pub can_hold: bool,
 }
 
-/// Never prints the number, name or photo (protocol v0 §11).
+/// Never prints the number, name or photo (protocol v1 §11).
 impl std::fmt::Debug for Call {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Call").field("id", &self.id).field("state", &self.state).finish_non_exhaustive()
@@ -2926,7 +2936,7 @@ pub struct Photo {
     pub thumb: Vec<u8>,
 }
 
-/// Never prints the name or picture (protocol v0 §11).
+/// Never prints the name or picture (protocol v1 §11).
 impl std::fmt::Debug for Photo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Photo").field("id", &self.id).finish_non_exhaustive()
@@ -3331,6 +3341,9 @@ pub enum G7LinkError {
     NotFound,
     #[error("too large to send")]
     TooLarge,
+    /// The other device has too much in flight: worth trying again shortly.
+    #[error("the other device is busy")]
+    Busy,
     #[error("send queue is full: {reason}")]
     QueueFull { reason: String },
     #[error("no pairing in progress")]
@@ -3361,6 +3374,7 @@ impl From<core::Error> for G7LinkError {
             core::Error::Unsupported => G7LinkError::Unsupported,
             core::Error::NotFound => G7LinkError::NotFound,
             core::Error::TooLarge => G7LinkError::TooLarge,
+            core::Error::Busy => G7LinkError::Busy,
             core::Error::QueueFull(reason) => G7LinkError::QueueFull { reason },
             core::Error::NotPairing => G7LinkError::NotPairing,
             core::Error::InvalidPairingLink(_) => G7LinkError::InvalidPairingLink,
@@ -3912,6 +3926,7 @@ impl Event {
             NodeEvent::UpdateHint { device, channel, version } => {
                 Event::UpdateHint { id: device.to_string(), channel, version }
             }
+            NodeEvent::PeerNeedsUpdate { device } => Event::PeerNeedsUpdate { id: device.to_string() },
             NodeEvent::Battery { device, battery } => {
                 Event::Battery { id: device.to_string(), battery: battery.into() }
             }
@@ -4018,8 +4033,8 @@ impl Event {
                     dropped_count,
                 }
             }
-            NodeEvent::PcAudioFrame { device, sample_rate, channels, pcm } => {
-                Event::PcAudioFrame { device: device.to_string(), sample_rate, channels, pcm }
+            NodeEvent::PcAudioFrame { device, sample_rate, channels, seq, ts_ms, pcm } => {
+                Event::PcAudioFrame { device: device.to_string(), sample_rate, channels, seq, ts_ms, pcm }
             }
             NodeEvent::BleKeysChanged => Event::BleKeysChanged,
             NodeEvent::BleOutbound { endpoint } => Event::BleOutbound { endpoint },
@@ -5772,7 +5787,7 @@ impl G7LinkNode {
     }
 
     /// Moves a paired PC's mouse cursor by `(dx, dy)` logical pixels over
-    /// QUIC datagrams (or the `remote/motion` stream fallback).
+    /// QUIC datagrams (or the `input/motion` stream fallback).
     pub async fn remote_move(&self, id: String, dx: f32, dy: f32) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
@@ -6003,7 +6018,7 @@ impl G7LinkNode {
         self.run(async move { Ok(node.deck_press(id, tile).await?) }).await
     }
 
-    /// Asks a paired PC to set its master volume (`0..=100`) and/or mute state (`pc.audio.set`).
+    /// Asks a paired PC to set its master volume (`0..=100`) and/or mute state (`deck.audio.set`).
     pub async fn set_pc_audio(&self, id: String, volume: Option<u8>, muted: Option<bool>) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
@@ -6011,7 +6026,7 @@ impl G7LinkNode {
     }
 
     /// Asks a paired PC to make one of its audio outputs (by its `id` in
-    /// `DeckState.output_devices`) the default (`pc.audio.set { output }`).
+    /// `DeckState.output_devices`) the default (`deck.audio.set { output }`).
     pub async fn set_pc_audio_output(&self, id: String, output: String) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
@@ -6025,7 +6040,8 @@ impl G7LinkNode {
     // agent host, can't reach it, or the agent isn't installed or signed in;
     // `NotFound` an unknown or removed thread, folder or agent, or an ask
     // already answered. A busy PC (the thread is working, or too many run)
-    // is `Internal` with a reason that starts with `BUSY`.
+    // is `Internal` with a reason that starts with `BUSY`; `Busy` when it has
+    // too many requests from this phone in flight.
 
     /// The last catalog a connected PC sent, if it has agents.
     pub fn agent_catalog(&self, id: String) -> Result<Option<AgentCatalog>> {
@@ -6629,7 +6645,7 @@ impl G7LinkNode {
     }
 
     /// Asks a connected paired peer on the target LAN to broadcast a Wake-on-LAN
-    /// magic packet for `mac` (`wake.relay`).
+    /// magic packet for `mac` (`pc.wake.relay`).
     pub fn wake_via_relay(&self, relay_peer: String, mac: String, broadcast: Option<String>) -> Result<()> {
         let peer_id = parse_id(&relay_peer)?;
         let mac_bytes = core::parse_mac(&mac)
@@ -7361,6 +7377,21 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_peer_is_busy_not_denied() {
+        assert_eq!(G7LinkError::from(core::Error::Busy), G7LinkError::Busy);
+        assert_eq!(G7LinkError::from(core::Error::Denied), G7LinkError::Denied);
+    }
+
+    #[test]
+    fn a_peer_that_needs_an_update_is_an_event() {
+        let id = DeviceId([9u8; 32]);
+        assert_eq!(
+            Event::from_node(NodeEvent::PeerNeedsUpdate { device: id }),
+            Some(Event::PeerNeedsUpdate { id: id.to_string() })
+        );
+    }
+
+    #[test]
     fn device_info_round_trips() {
         let info = DeviceInfo {
             name: "Pixel".into(),
@@ -7411,6 +7442,8 @@ mod tests {
             device: id,
             sample_rate: 48_000,
             channels: 2,
+            seq: u16::MAX,
+            ts_ms: 4_000_000_000,
             pcm: vec![1, 2, 3, 4],
         });
         assert_eq!(
@@ -7419,6 +7452,8 @@ mod tests {
                 device: id.to_string(),
                 sample_rate: 48_000,
                 channels: 2,
+                seq: u16::MAX,
+                ts_ms: 4_000_000_000,
                 pcm: vec![1, 2, 3, 4],
             })
         );

@@ -6,7 +6,7 @@
 //! Each method needs `agent.control` on both sides: a PC that doesn't offer
 //! it (`AgentCatalog.can_control` false) answers `Unsupported`, and nothing
 //! is sent. No `Debug` here prints text, answers, paths or names (protocol
-//! v0 §11).
+//! v1 §11).
 
 use g7link_core as core;
 

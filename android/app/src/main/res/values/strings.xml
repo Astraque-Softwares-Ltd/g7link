@@ -37,6 +37,7 @@
     <string name="link_offline_now">Offline · seen just now</string>
     <string name="link_never">Not connected yet</string>
     <string name="link_not_reconnecting">Not reconnecting</string>
+    <string name="link_needs_update">Update G7 Link on %1$s</string>
     <string name="battery_level">%1$d%%</string>
     <string name="battery_charging">%1$d%% · charging</string>
     <string name="ringing_title">%1$s is ringing your phone</string>
@@ -623,6 +624,7 @@
     <string name="error_not_paired">That PC isn\'t paired anymore.</string>
     <string name="error_timed_out">The PC didn\'t answer in time.</string>
     <string name="error_unsupported">The PC\'s app doesn\'t support that yet.</string>
+    <string name="error_busy">The PC is busy. Try again in a moment.</string>
     <string name="error_generic">Something went wrong.</string>
 
     <!-- Theme seed names -->
@@ -727,6 +729,7 @@
     <string name="pc_files_update">Update G7 Link on %1$s to browse its files.</string>
     <string name="pc_files_not_found">This folder isn’t on %1$s anymore.</string>
     <string name="pc_files_error">Couldn’t list this folder on %1$s. Try again.</string>
+    <string name="pc_files_busy">%1$s is busy. Try again in a moment.</string>
     <string name="pc_files_folder_downloads">Downloads</string>
     <string name="pc_files_folder_documents">Documents</string>
     <string name="pc_files_folder_desktop">Desktop</string>

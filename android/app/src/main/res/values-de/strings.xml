@@ -37,6 +37,7 @@
     <string name="link_offline_now">Offline · gerade eben gesehen</string>
     <string name="link_never">Noch nicht verbunden</string>
     <string name="link_not_reconnecting">Keine Neuverbindung</string>
+    <string name="link_needs_update">Aktualisiere G7 Link auf %1$s</string>
     <string name="battery_level">%1$d%%</string>
     <string name="battery_charging">%1$d%% · lädt</string>
     <string name="ringing_title">%1$s lässt dein Gerät klingeln</string>
@@ -620,6 +621,7 @@
     <string name="error_not_paired">Dieser PC ist nicht mehr gekoppelt.</string>
     <string name="error_timed_out">Der PC hat nicht rechtzeitig geantwortet.</string>
     <string name="error_unsupported">Die App auf dem PC unterstützt das noch nicht.</string>
+    <string name="error_busy">Der PC ist gerade ausgelastet. Versuche es gleich noch einmal.</string>
     <string name="error_generic">Etwas ist schiefgelaufen.</string>
 
     <!-- Theme seed names -->
@@ -724,6 +726,7 @@
     <string name="pc_files_update">Aktualisiere G7 Link auf %1$s, um dessen Dateien zu durchsuchen.</string>
     <string name="pc_files_not_found">Dieser Ordner ist auf %1$s nicht mehr vorhanden.</string>
     <string name="pc_files_error">Dieser Ordner auf %1$s konnte nicht aufgelistet werden. Versuche es erneut.</string>
+    <string name="pc_files_busy">%1$s ist gerade ausgelastet. Versuche es gleich noch einmal.</string>
     <string name="pc_files_folder_downloads">Downloads</string>
     <string name="pc_files_folder_documents">Dokumente</string>
     <string name="pc_files_folder_desktop">Desktop</string>

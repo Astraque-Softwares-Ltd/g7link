@@ -37,6 +37,7 @@
     <string name="link_offline_now">Çevrimdışı · az önce görüldü</string>
     <string name="link_never">Henüz bağlanılmadı</string>
     <string name="link_not_reconnecting">Yeniden bağlanmıyor</string>
+    <string name="link_needs_update">%1$s üzerindeki G7 Link\'i güncelleyin</string>
     <string name="battery_level">%%%1$d</string>
     <string name="battery_charging">%%%1$d · şarj oluyor</string>
     <string name="ringing_title">%1$s telefonunuzu çaldırıyor</string>
@@ -620,6 +621,7 @@
     <string name="error_not_paired">Bu bilgisayar artık eşleştirilmiş değil.</string>
     <string name="error_timed_out">Bilgisayar zamanında yanıt vermedi.</string>
     <string name="error_unsupported">Bilgisayardaki uygulama bunu henüz desteklemiyor.</string>
+    <string name="error_busy">Bilgisayar şu anda meşgul. Birazdan tekrar deneyin.</string>
     <string name="error_generic">Bir sorun oluştu.</string>
 
     <!-- Theme seed names -->
@@ -724,6 +726,7 @@
     <string name="pc_files_update">Dosyalarına göz atmak için %1$s üzerindeki G7 Link\'i güncelleyin.</string>
     <string name="pc_files_not_found">Bu klasör artık %1$s üzerinde değil.</string>
     <string name="pc_files_error">Bu klasör %1$s üzerinde listelenemedi. Tekrar deneyin.</string>
+    <string name="pc_files_busy">%1$s şu anda meşgul. Birazdan tekrar deneyin.</string>
     <string name="pc_files_folder_downloads">İndirilenler</string>
     <string name="pc_files_folder_documents">Belgeler</string>
     <string name="pc_files_folder_desktop">Masaüstü</string>

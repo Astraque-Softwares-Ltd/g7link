@@ -35,6 +35,7 @@
 <string name="link_offline_now">Ngoại tuyến · vừa thấy</string>
 <string name="link_never">Chưa kết nối bao giờ</string>
 <string name="link_not_reconnecting">Không tự kết nối lại</string>
+<string name="link_needs_update">Cập nhật G7 Link trên %1$s</string>
 <string name="battery_level">%1$d%%</string>
 <string name="battery_charging">%1$d%% · đang sạc</string>
 <string name="ringing_title">%1$s đang đổ chuông điện thoại của bạn</string>
@@ -608,6 +609,7 @@
 <string name="error_not_paired">PC đó không còn được ghép nối nữa.</string>
 <string name="error_timed_out">PC không phản hồi kịp thời.</string>
 <string name="error_unsupported">Ứng dụng trên PC vẫn chưa hỗ trợ tính năng đó.</string>
+<string name="error_busy">PC đang bận. Hãy thử lại sau giây lát.</string>
 <string name="error_generic">Đã xảy ra lỗi.</string>
 <!-- Theme seed names -->
 <!-- Deck defaults & accessibility -->
@@ -701,6 +703,7 @@
 <string name="pc_files_update">Cập nhật G7 Link trên %1$s để duyệt tệp trên đó.</string>
 <string name="pc_files_not_found">Thư mục này không còn trên %1$s nữa.</string>
 <string name="pc_files_error">Không liệt kê được thư mục này trên %1$s. Hãy thử lại.</string>
+<string name="pc_files_busy">%1$s đang bận. Hãy thử lại sau giây lát.</string>
 <string name="pc_files_folder_downloads">Tải xuống</string>
 <string name="pc_files_folder_documents">Tài liệu</string>
 <string name="pc_files_folder_desktop">Màn hình nền</string>
