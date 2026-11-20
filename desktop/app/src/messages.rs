@@ -1220,7 +1220,8 @@ pub fn clear_attachment() {
 /// Why a text to `to` wasn't sent, for the page.
 pub fn send_problem(error: &Error, to: &[String]) -> String {
     match error {
-        Error::Denied => "Messages are turned off for this phone.".into(),
+        // Busy: the phone's limit on texts a minute, which always read as off.
+        Error::Denied | Error::Busy => "Messages are turned off for this phone.".into(),
         Error::Unsupported => {
             "The phone doesn't send texts for this PC. Allow it in the G7 Link app on the phone.".into()
         }
@@ -1688,6 +1689,16 @@ mod tests {
         assert_eq!(thread_json(&thread(&["+254712345678"], &[]), None)["shortCode"], false);
         let refused = Error::Protocol("invalid text".into());
         assert!(send_problem(&refused, &["KCB".to_owned()]).contains("replies"));
+    }
+
+    #[test]
+    fn a_busy_phone_reads_as_before_when_sending_and_retryable_when_loading() {
+        let to = ["+254712345678".to_owned()];
+        // The phone's limit on texts a minute says what it always said.
+        assert_eq!(send_problem(&Error::Busy, &to), send_problem(&Error::Denied, &to));
+        // A list the phone was too busy to load is worth another try, not "off".
+        assert_eq!(Status::of(&Error::Busy), Status::Failed);
+        assert_eq!(Status::of(&Error::Denied), Status::Off);
     }
 
     #[test]

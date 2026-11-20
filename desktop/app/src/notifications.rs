@@ -913,7 +913,7 @@ pub fn on_toast(event: ToastEvent) {
         }
         ToastEvent::Dismissed { device, .. } if device == crate::calls::TOAST_GROUP => return,
         ToastEvent::Dismissed { device, .. } | ToastEvent::Action { device, .. }
-            if device == crate::battery::TOAST_GROUP =>
+            if device == crate::battery::TOAST_GROUP || device == crate::update_relay::TOAST_GROUP =>
         {
             return;
         }

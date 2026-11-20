@@ -646,6 +646,8 @@ impl AppState {
             | NodeEvent::CameraCaptureCancelled { .. }
             // The updater acts on it (update_relay); nothing shows.
             | NodeEvent::UpdateHint { .. }
+            // A desktop notification (update_relay).
+            | NodeEvent::PeerNeedsUpdate { .. }
             // The Bluetooth beacon and link follow these (sys::ble_beacon,
             // ble_link); nothing shows.
             | NodeEvent::BleKeysChanged

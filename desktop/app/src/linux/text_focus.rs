@@ -5,7 +5,7 @@
 //! - whether it takes text (a focused object with the `EDITABLE` state), so
 //!   the phone can open its keyboard, and whether it's a terminal, which
 //!   pastes with Ctrl+Shift+V;
-//! - while a phone watches, the focused field (`remote.text_state`): which
+//! - while a phone watches, the focused field (`input.text_state`): which
 //!   field it is, and for a field whose app shares its text, the text around
 //!   the caret, so the phone's box mirrors it.
 //!

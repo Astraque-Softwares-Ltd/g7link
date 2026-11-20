@@ -91,7 +91,7 @@ pub fn spawn(fut: impl Future<Output = ()> + Send + 'static) {
 /// Creates the runtime and starts the node in the background.
 pub fn start(data_dir: PathBuf, platform: Arc<dyn Platform>) -> std::io::Result<&'static CoreHost> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(4)
         .thread_name("g7link-core")
         .enable_all()
         .build()?;
@@ -442,7 +442,7 @@ fn this_device() -> DeviceInfo {
 }
 
 /// Re-reads physical network adapters and their Wake-on-LAN settings, updates
-/// the UI state, and sends updated `pc.wake_info` to connected phones if changed.
+/// the UI state, and sends updated `pc.wake.info` to connected phones if changed.
 pub async fn refresh_wake() {
     let wake = crate::sys::wol::query_wake_status();
     let info = wake.info.clone();

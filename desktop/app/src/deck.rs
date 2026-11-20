@@ -269,7 +269,7 @@ pub fn handle_set_audio(peer: &DeviceId, volume: Option<u8>, muted: Option<bool>
 }
 
 /// Makes `id`, one of this PC's real output devices, the default output, for a
-/// phone (`pc.audio.set { output }`). The phone speaker isn't a device to switch to.
+/// phone (`deck.audio.set { output }`). The phone speaker isn't a device to switch to.
 pub fn handle_set_output(id: &str) -> Result<(), String> {
     if !sys::audio::output_devices().iter().any(|d| d.id == id) {
         return Err("no such output device".into());

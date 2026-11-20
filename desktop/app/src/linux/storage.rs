@@ -1190,6 +1190,8 @@ fn storage_errno(error: &g7link_core::Error) -> i32 {
     let (errno, kind) = match error {
         Error::Offline | Error::NotPaired => (libc::ENOTCONN, "offline"),
         Error::Denied | Error::Declined => (libc::EACCES, "denied"),
+        // The phone has too many requests in flight: worth another try.
+        Error::Busy => (libc::EBUSY, "busy"),
         Error::NotFound => (libc::ENOENT, "not found"),
         Error::Timeout => (libc::ETIMEDOUT, "timed out"),
         Error::Unsupported => (libc::EOPNOTSUPP, "unsupported"),
@@ -2144,6 +2146,7 @@ mod tests {
         use g7link_core::Error;
         assert_eq!(storage_errno(&Error::Offline), -libc::ENOTCONN);
         assert_eq!(storage_errno(&Error::Denied), -libc::EACCES);
+        assert_eq!(storage_errno(&Error::Busy), -libc::EBUSY, "not a refusal");
         assert_eq!(storage_errno(&Error::NotFound), -libc::ENOENT);
         assert_eq!(storage_errno(&Error::Timeout), -libc::ETIMEDOUT);
         assert_eq!(storage_errno(&Error::Internal("x".into())), -libc::EIO);

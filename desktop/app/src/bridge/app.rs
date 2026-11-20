@@ -12,7 +12,7 @@ use cxx_qt::{CxxQtThread, CxxQtType, Threading};
 use cxx_qt_lib::{
     QHash, QHashPair_QString_QVariant, QList, QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant,
 };
-use g7link_core::{DeviceId, Error, FeatureState, LinkState, PhoneToggleValue, features::Upgrade};
+use g7link_core::{DeviceId, Error, FeatureState, LinkState, PhoneToggleValue, Side, features::Upgrade};
 
 use crate::{
     core_host,
@@ -877,6 +877,10 @@ pub(crate) fn describe(error: &Error) -> String {
         Error::Timeout => tr!("Errors", "The device didn't answer in time."),
         Error::Denied | Error::Declined => tr!("Errors", "The device declined."),
         Error::Unsupported => tr!("Errors", "The device's app doesn't support that yet."),
+        // The other device has too much in flight right now.
+        Error::Busy => tr!("Errors", "The device is busy. Try again in a moment."),
+        Error::VersionTooOld { side: Side::Remote } => tr!("Errors", "Update G7 Link on the device."),
+        Error::VersionTooOld { side: Side::Local } => tr!("Errors", "Update G7 Link on this PC."),
         Error::QueueFull(msg) => msg.clone(),
         other => tr!("Errors", "Something went wrong: %1", other),
     }
@@ -3822,6 +3826,14 @@ fn feature_state_map(state: Option<FeatureState>) -> QMap<QMapPair_QString_QVari
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_busy_device_is_worth_another_try_and_an_old_one_needs_updating() {
+        assert_eq!(describe(&Error::Busy), "The device is busy. Try again in a moment.");
+        assert_ne!(describe(&Error::Busy), describe(&Error::Denied), "busy isn't a refusal");
+        assert_eq!(describe(&Error::VersionTooOld { side: Side::Remote }), "Update G7 Link on the device.");
+        assert_eq!(describe(&Error::VersionTooOld { side: Side::Local }), "Update G7 Link on this PC.");
+    }
 
     #[test]
     fn one_job_runs_at_a_time_and_one_more_after_it() {

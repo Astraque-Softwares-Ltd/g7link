@@ -305,8 +305,11 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Errors", "That device isn't paired anymore."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Errors", "The device declined."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Errors", "The device didn't answer in time."), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("Errors", "The device is busy. Try again in a moment."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Errors", "The device isn't connected right now."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("Errors", "The device's app doesn't support that yet."), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("Errors", "Update G7 Link on the device."), // desktop/app/src/bridge/app.rs
+    QT_TRANSLATE_NOOP("Errors", "Update G7 Link on this PC."), // desktop/app/src/bridge/app.rs
     QT_TRANSLATE_NOOP("FolderSync", "Couldn't read the folder on the phone. Check that it's connected."), // desktop/app/src/folder_sync.rs
     QT_TRANSLATE_NOOP("FolderSync", "Folders are up to date."), // desktop/app/src/folder_sync.rs
     QT_TRANSLATE_NOOP("FolderSync", "Synced %1 file(s)."), // desktop/app/src/folder_sync.rs
@@ -556,6 +559,9 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Transfers", "Nearby device"), // desktop/app/src/transfers.rs
     QT_TRANSLATE_NOOP("Transfers", "That's too many files to send at once."), // desktop/app/src/transfers.rs
     QT_TRANSLATE_NOOP("Transfers", "There's nothing to send in there."), // desktop/app/src/transfers.rs
+    QT_TRANSLATE_NOOP("UpdateRelay", "Its version is too old to connect to this PC."), // desktop/app/src/update_relay.rs
+    QT_TRANSLATE_NOOP("UpdateRelay", "Update G7 Link on %1"), // desktop/app/src/update_relay.rs
+    QT_TRANSLATE_NOOP("UpdateRelay", "Update G7 Link on your phone"), // desktop/app/src/update_relay.rs
     QT_TRANSLATE_NOOP("Updater", "Couldn't check for updates. Check your internet connection."), // desktop/app/src/updater.rs
     QT_TRANSLATE_NOOP("Updater", "G7 Link %1 is available"), // desktop/app/src/updater.rs
     QT_TRANSLATE_NOOP("Updater", "G7 Link %1 is available."), // desktop/app/src/updater.rs
