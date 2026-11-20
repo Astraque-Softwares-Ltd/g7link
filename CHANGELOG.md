@@ -4,6 +4,26 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.15 (2026-11-20)
+
+Fixes from the first day with Agents and the player.
+
+### Fixed
+
+- **The full player stays open when the track changes.** Next and previous
+  closed it and dropped you on Home, because the PC's player can vanish from
+  its list for a moment while it changes tracks.
+- **Updating G7 Link now updates the agent host too.** The host from before
+  an update kept running, so sessions from your terminal, Continue here and
+  export didn't work until it stopped. G7 Link now replaces an older host by
+  itself when nothing is running in it, and otherwise offers Restart agents.
+- **No "needs you" pop-up for the thread you're looking at** on the PC.
+- **Agent requests come one at a time,** the oldest first, with how many more
+  are waiting, on the PC, the phone and in the launcher.
+- **Commands keep their spaces.** The code font drew `--` over the space
+  before it, so `tsc --noEmit` read `tsc--noEmit`; code is now shown without
+  ligatures.
+
 ## 0.1.14 (2026-11-19)
 
 Agents get a page of their own on the PC, the phone follows the sessions
