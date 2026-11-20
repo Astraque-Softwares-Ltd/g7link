@@ -64,6 +64,21 @@ sealed interface AgentNotice {
         val allowable: Boolean,
     ) : AgentNotice
 
+    /**
+     * A question waiting for an answer (contract §Q4.4): opened in the app,
+     * never answered from the notification. [count] questions wait in the thread.
+     */
+    data class Asking(
+        val pcId: String,
+        val threadId: String,
+        val token: String,
+        val agent: String,
+        val folder: String?,
+        val title: String,
+        val count: Int,
+        val expiresMs: Long,
+    ) : AgentNotice
+
     /** A turn that ended done, failed or paused at a usage limit. */
     data class Finished(
         val pcId: String,
@@ -74,6 +89,8 @@ sealed interface AgentNotice {
         /** Done: the summary. Failed: the CLI's message. */
         val text: String?,
         val resetsMs: Long? = null,
+        /** The folder's label: a plan names where it is ("Claude has a plan in g7linux"). */
+        val folder: String? = null,
     ) : AgentNotice
 
     data class Cancel(val pcId: String, val threadId: String) : AgentNotice
@@ -99,7 +116,8 @@ sealed interface AgentNotice {
     data class CancelSession(val pcId: String, val sessionId: String) : AgentNotice
 }
 
-enum class FinishKind { DONE, FAILED, PAUSED }
+/** How a turn ended; [PLAN]: a plan-mode turn, its plan waiting for Implement (opened in the app only). */
+enum class FinishKind { DONE, FAILED, PAUSED, PLAN }
 
 /** A notification's button, and whether Android must have the phone unlocked to send it. */
 data class NoticeAction(val kind: Kind, val authenticationRequired: Boolean) {
@@ -264,6 +282,8 @@ object AgentNotifications {
         is Event.AgentThreadRemoved -> listOf(AgentNotice.Cancel(pcId, event.thread))
         is Event.AgentAsk -> listOfNotNull(threadNotice(pcId, state, event.ask.thread, shown, followed))
         is Event.AgentAsked -> listOfNotNull(threadNotice(pcId, state, event.thread, shown, followed))
+        is Event.AgentQuestion -> listOfNotNull(threadNotice(pcId, state, event.question.thread, shown, followed))
+        is Event.AgentQuestioned -> listOfNotNull(threadNotice(pcId, state, event.thread, shown, followed))
         // A turn's end is AgentDone's; a change while it runs can bring the working one back.
         is Event.AgentThreadChanged ->
             if (AgentsModel.running(event.thread)) listOfNotNull(threadNotice(pcId, state, event.thread.id, shown, followed)) else emptyList()
@@ -296,6 +316,20 @@ object AgentNotifications {
                 agent = state.agentName(thread?.agent ?: ask.agent),
                 folder = thread?.folder?.takeIf { it.isNotBlank() },
                 allowable = AgentsModel.allowableInNotification(ask),
+            )
+        }
+        val questions = state.questionsFor(threadId)
+        val question = questions.firstOrNull()
+        if (question != null) {
+            return AgentNotice.Asking(
+                pcId = pcId,
+                threadId = threadId,
+                token = question.token,
+                agent = state.agentName(thread?.agent ?: question.agent),
+                folder = thread?.folder?.takeIf { it.isNotBlank() },
+                title = thread?.title.orEmpty(),
+                count = questions.size,
+                expiresMs = question.expiresMs,
             )
         }
         if (thread == null) return AgentNotice.Cancel(pcId, threadId)
@@ -365,8 +399,9 @@ object AgentNotifications {
                 thread.id,
                 agent,
                 thread.title,
-                FinishKind.DONE,
+                if (AgentsModel.status(thread) == ThreadStatus.PlanReady) FinishKind.PLAN else FinishKind.DONE,
                 event.summary.ifBlank { thread.summary.orEmpty() }.ifBlank { null },
+                folder = thread.folder.ifBlank { null },
             )
             AgentOutcome.FAILED -> when (val status = AgentsModel.failure(thread.error)) {
                 is ThreadStatus.Paused -> AgentNotice.Finished(pcId, thread.id, agent, thread.title, FinishKind.PAUSED, null, status.resetsMs)
@@ -393,15 +428,18 @@ object AgentNotifications {
 
     fun workingActions(): List<NoticeAction> = listOf(NoticeAction(NoticeAction.Kind.STOP, authenticationRequired = false))
 
+    /** A question is answered in the app only (contract §Q4.4): its one button opens the thread. */
+    fun askingActions(): List<NoticeAction> = listOf(NoticeAction(NoticeAction.Kind.REVIEW, authenticationRequired = false))
+
     /** A followed session can't be stopped from here, only no longer kept in the status bar. */
     fun sessionWorkingActions(): List<NoticeAction> = listOf(NoticeAction(NoticeAction.Kind.UNFOLLOW, authenticationRequired = false))
 
     /** A session waiting in a terminal is answered there: nothing to press here. */
     fun sessionWaitingActions(): List<NoticeAction> = emptyList()
 
-    /** A finished turn can be replied to from the notification, unlocked; a paused one can't yet. */
+    /** A finished turn can be replied to from the notification, unlocked; a paused one can't yet, a plan is opened in the app. */
     fun finishedActions(kind: FinishKind, sdkInt: Int): List<NoticeAction> =
-        if (kind != FinishKind.PAUSED && sdkInt >= AUTH_SDK) {
+        if (kind != FinishKind.PAUSED && kind != FinishKind.PLAN && sdkInt >= AUTH_SDK) {
             listOf(NoticeAction(NoticeAction.Kind.REPLY, authenticationRequired = true))
         } else {
             emptyList()
@@ -433,6 +471,14 @@ object AgentNotifications {
                     val again = shownAsk[tag] == notice.ask.token
                     shownAsk[tag] = notice.ask.token
                     post(context, tag, waiting(context, pcName, notice, again))
+                }
+                is AgentNotice.Asking -> {
+                    val tag = tag(notice.pcId, notice.threadId)
+                    pending.remove(tag)
+                    gate.replaced(tag)
+                    val again = shownAsk[tag] == notice.token
+                    shownAsk[tag] = notice.token
+                    post(context, tag, asking(context, pcName, notice, again))
                 }
                 is AgentNotice.Finished -> {
                     val tag = tag(notice.pcId, notice.threadId)
@@ -687,6 +733,40 @@ object AgentNotifications {
         return builder.build()
     }
 
+    /** A question waits: who asks and where; on the lock screen, only who. Opened in the app, never answered here. */
+    private fun asking(context: Context, pcName: String, notice: AgentNotice.Asking, again: Boolean): Notification {
+        val open = openIntent(context, notice.pcId, notice.threadId)
+        val publicTitle = context.getString(R.string.agents_notify_waiting_public, notice.agent, pcName)
+        val public = Notification.Builder(context, CHANNEL_WAITING)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(publicTitle)
+            .setContentIntent(open)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+        val title = if (notice.folder != null) {
+            context.getString(R.string.agents_notify_waiting_title, notice.agent, notice.folder)
+        } else {
+            publicTitle
+        }
+        val asks = context.resources.getQuantityString(R.plurals.agents_question_asked, notice.count, notice.count)
+        val now = System.currentTimeMillis()
+        val builder = Notification.Builder(context, CHANNEL_WAITING)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(asks)
+            .setStyle(Notification.BigTextStyle().bigText(listOfNotNull(notice.title.ifBlank { null }, asks).joinToString("\n")))
+            .setSubText(pcName)
+            .setContentIntent(open)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(public.build())
+            .setOnlyAlertOnce(again)
+            .setShowWhen(true)
+            .setWhen(now)
+        if (notice.expiresMs > now) builder.setTimeoutAfter(notice.expiresMs - now)
+        for (action in askingActions()) builder.addAction(action(context, action, notice.pcId, notice.threadId, null))
+        return builder.build()
+    }
+
     /** A kept session waits in its terminal or app on the PC: answered there, so nothing to press. */
     private fun sessionWaiting(context: Context, pcName: String, notice: AgentNotice.SessionWaiting, again: Boolean): Notification {
         val title = context.getString(R.string.agents_notify_waiting_public, notice.agent, pcName)
@@ -720,6 +800,8 @@ object AgentNotifications {
             FinishKind.DONE -> context.getString(R.string.agents_notify_done_title, notice.agent)
             FinishKind.FAILED -> context.getString(R.string.agents_notify_failed_title, notice.agent)
             FinishKind.PAUSED -> context.getString(R.string.agents_notify_paused_title, notice.agent)
+            FinishKind.PLAN -> notice.folder?.let { context.getString(R.string.agents_notify_plan_title, notice.agent, it) }
+                ?: context.getString(R.string.agents_notify_done_title, notice.agent)
         }
         val detail = when (notice.kind) {
             FinishKind.PAUSED -> notice.resetsMs?.let {
@@ -729,10 +811,10 @@ object AgentNotifications {
         }
         val expanded = listOfNotNull(notice.title.ifBlank { null }, detail?.ifBlank { null }).joinToString("\n")
         val open = openIntent(context, notice.pcId, notice.threadId)
-        // On the lock screen: who finished, never the thread, its summary or the error.
+        // On the lock screen: who finished, never the thread, its folder, its summary or the error.
         val public = Notification.Builder(context, CHANNEL_DONE)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
+            .setContentTitle(if (notice.kind == FinishKind.PLAN) context.getString(R.string.agents_notify_done_title, notice.agent) else title)
             .setContentIntent(open)
         val builder = Notification.Builder(context, CHANNEL_DONE)
             .setSmallIcon(R.drawable.ic_notification)
@@ -746,7 +828,7 @@ object AgentNotifications {
             .setAutoCancel(true)
             .setShowWhen(true)
             .setWhen(System.currentTimeMillis())
-            .setCategory(if (notice.kind == FinishKind.DONE) Notification.CATEGORY_STATUS else Notification.CATEGORY_ERROR)
+            .setCategory(if (notice.kind == FinishKind.DONE || notice.kind == FinishKind.PLAN) Notification.CATEGORY_STATUS else Notification.CATEGORY_ERROR)
         for (action in finishedActions(notice.kind, Build.VERSION.SDK_INT)) {
             builder.addAction(action(context, action, notice.pcId, notice.threadId, null))
         }

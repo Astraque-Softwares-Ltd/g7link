@@ -19,6 +19,27 @@ enum class ComposerHint {
 
     /** "You can reply when the limit resets." */
     AFTER_RESET,
+
+    /** "Or type your own answer": a question is shown that takes the user's own words. */
+    OTHER_ANSWER,
+
+    /** "Choose an answer above": a question is shown that doesn't. */
+    CHOOSE_ABOVE,
+
+    /** "Answer it on <PC>.": a secret question is shown. */
+    ANSWER_ON_PC,
+}
+
+/** The model control in the reply box (reconcile file: settings apply between turns). */
+enum class SettingsAccess {
+    /** Opens the sheet. */
+    OPEN,
+
+    /** The thread is working: a tap says it applies once it stops. */
+    LATER,
+
+    /** A question is shown: nothing happens. */
+    INERT,
 }
 
 /** The button at the end of the reply box. */
@@ -29,6 +50,9 @@ enum class ComposerAction {
 
     /** "Deny and send": denies the shown request with the words typed (reconcile file, the dock). */
     DENY_AND_SEND,
+
+    /** While it works: steers it or queues the message ([ComposerView.followUp]), the other on long-press. */
+    FOLLOW_UP,
 }
 
 /**
@@ -48,6 +72,14 @@ data class ComposerView(
     val allowPrimary: Boolean,
     /** "Codex stops and reads this next." under the box: Codex threads, while it would deny with the words. */
     val codexNote: Boolean,
+    /** The image button works (never while a question is shown: an answer takes no image). */
+    val attach: Boolean = false,
+    val settings: SettingsAccess = SettingsAccess.OPEN,
+    /** [ComposerAction.FOLLOW_UP]: what the button does, and what a long-press offers instead. */
+    val followUp: FollowUp? = null,
+    val otherFollowUp: FollowUp? = null,
+    /** What the line under the box says the message will do: "Codex reads it now.", "Sent when Claude finishes." */
+    val followNote: FollowUp? = null,
 )
 
 /** What the composer is made from: the thread, its shown request, and the draft. */
@@ -73,6 +105,19 @@ data class ComposerInput(
     val pausedUntilMs: Long? = null,
     /** The thread's agent is Codex: it stops the turn and reads the words next (contract §P8.3). */
     val codex: Boolean = false,
+    /** The turn waits for an answer (a request or a question): nothing can be sent to it. */
+    val waiting: Boolean = false,
+    /** What a message sent while it works does; null when the PC takes none (an older one). */
+    val followUp: FollowUp? = null,
+    /** Another can wait in the queue (fewer than 5 do). */
+    val queueRoom: Boolean = true,
+    /** The dock shows a question: the box is its "Something else" field, or closed (reconcile file). */
+    val question: QuestionField? = null,
+    /** Images ready to go with the message, and whether one is still on its way to the PC. */
+    val images: Int = 0,
+    val uploading: Boolean = false,
+    /** The agent takes images from the phone with the chosen model. */
+    val imagesAllowed: Boolean = false,
 )
 
 /** The pure rules of the reply box and the dock (contract §P8, reconcile file "Approvals dock"). */
@@ -89,6 +134,28 @@ object AgentDock {
         val hasText = input.draft.isNotBlank()
         val queue = input.queue
         val allowPrimary = !hasText
+        val question = input.question
+        if (question != null) {
+            // No Send while a question waits: the dock's Next or Send answers is the only way, Stop beside it.
+            return ComposerView(
+                enabled = question == QuestionField.OTHER && !input.sending,
+                hint = when (question) {
+                    QuestionField.OTHER -> ComposerHint.OTHER_ANSWER
+                    QuestionField.CHOOSE_ABOVE -> ComposerHint.CHOOSE_ABOVE
+                    QuestionField.SECRET -> ComposerHint.ANSWER_ON_PC
+                },
+                action = ComposerAction.NONE,
+                actionEnabled = false,
+                showStop = input.running,
+                allowPrimary = true,
+                codexNote = false,
+                attach = false,
+                settings = SettingsAccess.INERT,
+            )
+        }
+        // Images the chosen model can't take hold the message back (contract §Q8: "%1 can't take images with this model.").
+        val refused = input.images > 0 && !input.imagesAllowed
+        val sendable = (AgentsModel.fits(input.draft) || (input.draft.isBlank() && input.images > 0)) && !AgentsModel.tooLong(input.draft) && !refused
         if (queue != null && input.canSayWhy) {
             val busy = input.sending || input.answering
             val words = hasText && AgentsModel.fits(input.draft) && input.draftFor == queue.shown.token
@@ -100,6 +167,28 @@ object AgentDock {
                 showStop = input.running,
                 allowPrimary = allowPrimary,
                 codexNote = input.codex && hasText,
+                settings = if (input.running) SettingsAccess.LATER else SettingsAccess.OPEN,
+            )
+        }
+        val primary = input.followUp?.let { if (it == FollowUp.QUEUE && !input.queueRoom) null else it }
+        if (input.running && !input.waiting && primary != null) {
+            // While it works a message steers it or waits its turn (contract §Q3.4); empty, the button is Stop alone.
+            val busy = input.sending || input.uploading
+            val hasContent = hasText || input.images > 0
+            val other = AgentFollowUp.other(primary)?.takeIf { it != FollowUp.QUEUE || input.queueRoom }
+            return ComposerView(
+                enabled = !input.sending,
+                hint = ComposerHint.MESSAGE,
+                action = if (hasContent) ComposerAction.FOLLOW_UP else ComposerAction.NONE,
+                actionEnabled = hasContent && sendable && !busy,
+                showStop = true,
+                allowPrimary = true,
+                codexNote = false,
+                attach = input.imagesAllowed && !input.sending,
+                settings = SettingsAccess.LATER,
+                followUp = primary,
+                otherFollowUp = other,
+                followNote = if (hasContent) primary else null,
             )
         }
         if (input.running) {
@@ -111,6 +200,7 @@ object AgentDock {
                 showStop = true,
                 allowPrimary = true,
                 codexNote = false,
+                settings = SettingsAccess.LATER,
             )
         }
         val until = input.pausedUntilMs
@@ -124,10 +214,12 @@ object AgentDock {
             enabled = enabled,
             hint = hint,
             action = ComposerAction.SEND,
-            actionEnabled = enabled && AgentsModel.fits(input.draft),
+            actionEnabled = enabled && sendable && !input.uploading,
             showStop = false,
             allowPrimary = true,
             codexNote = false,
+            attach = enabled && input.imagesAllowed,
+            settings = if (input.hasThread) SettingsAccess.OPEN else SettingsAccess.INERT,
         )
     }
 

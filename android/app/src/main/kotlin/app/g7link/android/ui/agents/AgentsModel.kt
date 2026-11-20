@@ -12,6 +12,7 @@ import app.g7link.core.AgentItemKind
 import app.g7link.core.AgentMark
 import app.g7link.core.AgentMarkKind
 import app.g7link.core.AgentPage
+import app.g7link.core.AgentPlanState
 import app.g7link.core.AgentPlanStatus
 import app.g7link.core.AgentPlanStep
 import app.g7link.core.AgentSession
@@ -47,6 +48,10 @@ data class AgentsState(
     /** The PC said it doesn't list sessions (an older G7 Link): the section isn't shown. */
     val sessionsUnsupported: Boolean = false,
     val openSession: OpenSession? = null,
+    /** Questions waiting for an answer, by token (contract §Q4.4); a secret one without its asks. */
+    val questions: Map<String, QuestionInfo> = emptyMap(),
+    /** Questions this phone answered or dismissed and hasn't heard back about. */
+    val replying: Set<String> = emptySet(),
 ) {
     fun thread(id: String): AgentThread? = threads.firstOrNull { it.id == id }
 
@@ -69,6 +74,40 @@ data class AgentsState(
         val shown = asks[index]
         return AskQueue(shown = shown, more = asks.size - 1, position = index + 1, total = asks.size, held = held(shown.token))
     }
+
+    /** A thread's waiting questions, oldest first. */
+    fun questionsFor(threadId: String): List<QuestionInfo> =
+        questions.values.filter { it.threadId == threadId }.sortedWith(compareBy<QuestionInfo> { it.createdMs }.thenBy { it.token })
+
+    /** The question a thread shows and where it is among them, as [askQueue] does for requests; null when none waits. */
+    fun questionQueue(threadId: String, held: (String) -> Boolean = { false }): QuestionQueue? {
+        val waiting = questionsFor(threadId)
+        if (waiting.isEmpty()) return null
+        val index = waiting.indexOfFirst { !held(it.token) }.coerceAtLeast(0)
+        val shown = waiting[index]
+        return QuestionQueue(shown = shown, position = index + 1, total = waiting.size, held = held(shown.token))
+    }
+
+    /**
+     * What the dock shows: a request or a question, one at a time, the first
+     * one the typing guard doesn't hold, then the one asked first (they all
+     * last as long, so the one expiring first was asked first).
+     */
+    fun dockShown(threadId: String, held: (String) -> Boolean = { false }): DockShown? {
+        val asks = askQueue(threadId, held)
+        val questions = questionQueue(threadId, held)
+        return when {
+            asks == null -> questions?.let { DockShown.Question(it) }
+            questions == null -> DockShown.Approval(asks)
+            asks.held != questions.held -> if (asks.held) DockShown.Question(questions) else DockShown.Approval(asks)
+            questions.shown.expiresMs < asks.shown.expiresMs -> DockShown.Question(questions)
+            else -> DockShown.Approval(asks)
+        }
+    }
+
+    /** What an agent can do on this PC (models, plan, steering, images), from the catalog. */
+    fun abilities(agentId: String): AgentAbilities =
+        AgentControlFfi.abilities(catalog?.agents?.firstOrNull { it.id == agentId }, catalog?.canControl == true)
 
     /** The agents a thread can start with now. */
     val readyAgents: List<AgentInfo>
@@ -94,6 +133,8 @@ data class OpenThread(
     val resolved: List<ResolvedAsk> = emptyList(),
     /** Deleted on the PC while open. */
     val removed: Boolean = false,
+    /** Questions that ended while it was open: their rows say how (the FFI reads it from their marks). */
+    val resolvedQuestions: List<ResolvedQuestion> = emptyList(),
 ) {
     /** The highest `seq` seen, finished or streaming; 0 before any. */
     val lastSeq: ULong
@@ -148,6 +189,8 @@ data class TimelineInput(
     val stateSinceMs: Long,
     val marks: List<AgentMark>,
     val open: List<String>,
+    /** The questions waiting in it, for how many each asks. */
+    val questions: List<QuestionInfo> = emptyList(),
 )
 
 /**
@@ -181,6 +224,19 @@ data class StreamingText(
     /** A piece went missing: shown as it is until the finished item arrives. */
     val gap: Boolean = false,
     val kind: AgentItemKind = AgentItemKind.ASSISTANT,
+)
+
+/** A question that ended while its thread was open. */
+@Immutable
+data class ResolvedQuestion(
+    val token: String,
+    /** The `question` item it belongs to. */
+    val itemId: String,
+    val outcome: QuestionOutcome,
+    /** Answered from this phone. */
+    val here: Boolean,
+    /** The device that answered, when the PC says. */
+    val byName: String? = null,
 )
 
 @Immutable
@@ -221,6 +277,9 @@ sealed interface ThreadStatus {
     data object Done : ThreadStatus
     data object Stopped : ThreadStatus
 
+    /** A plan-mode turn ended: its plan waits for "Implement" (listed with what finished, teal). */
+    data object PlanReady : ThreadStatus
+
     /** Stopped by the agent's usage limit; [resetsMs] when the CLI said when it resets. */
     data class Paused(val resetsMs: Long?) : ThreadStatus
 
@@ -258,6 +317,9 @@ object AgentsModel {
     const val MAX_PROMPT_CHARS = 8000
     const val MAX_PROMPT_BYTES = 8192
 
+    /** The most questions a PC can make the phone keep. */
+    private const val MAX_QUESTIONS = 64
+
     /** Items read per page, and the most the phone keeps for the open thread. */
     const val PAGE = 50
     private const val MAX_ITEMS = 1000
@@ -292,6 +354,8 @@ object AgentsModel {
         is Event.AgentSessionChanged -> event.id
         is Event.AgentSessionRemoved -> event.id
         is Event.AgentSessionItem -> event.id
+        is Event.AgentQuestion -> event.id
+        is Event.AgentQuestioned -> event.id
         else -> null
     }
 
@@ -317,8 +381,82 @@ object AgentsModel {
         is Event.AgentSessionChanged -> AgentsUpdate(withSession(state, event.session))
         is Event.AgentSessionRemoved -> AgentsUpdate(sessionRemoved(state, event.session))
         is Event.AgentSessionItem -> AgentsUpdate(withSessionItem(state, event.session, event.item))
+        is Event.AgentQuestion -> AgentsUpdate(withQuestion(state, AgentControlFfi.question(event.question)))
+        is Event.AgentQuestioned -> AgentsUpdate(
+            questioned(state, event.token, event.thread, AgentControlFfi.outcome(event.outcome), event.byName),
+        )
         else -> AgentsUpdate(state)
     }
+
+    // ---- Questions (contract §Q4.4) ----
+
+    /** A question asked, or asked again: kept by token, the oldest dropped past a bound. */
+    fun withQuestion(state: AgentsState, question: QuestionInfo): AgentsState {
+        if (question.token.isEmpty() || question.threadId.isEmpty()) return state
+        // A question with nothing to answer can't be shown: a secret one has no asks by rule, any other must.
+        if (!question.secret && question.asks.isEmpty()) return state
+        val questions = state.questions + (question.token to question)
+        val kept = if (questions.size > MAX_QUESTIONS) {
+            questions.values.sortedBy { it.createdMs }.takeLast(MAX_QUESTIONS).associateBy { it.token }
+        } else {
+            questions
+        }
+        return state.copy(questions = kept)
+    }
+
+    /**
+     * A question ended: answered on some device, dismissed, expired, or its
+     * turn ended. While its thread is open, how it ended stays as its row's mark.
+     */
+    fun questioned(
+        state: AgentsState,
+        token: String,
+        threadId: String,
+        outcome: QuestionOutcome,
+        byName: String? = null,
+    ): AgentsState {
+        val question = state.questions[token]
+        val here = token in state.replying
+        val open = state.open
+        val nextOpen = if (open != null && open.threadId == threadId && question != null && question.itemId.isNotEmpty()) {
+            val resolved = ResolvedQuestion(
+                token = token,
+                itemId = question.itemId,
+                outcome = outcome,
+                here = here,
+                byName = byName?.takeIf { it.isNotBlank() },
+            )
+            open.copy(resolvedQuestions = (open.resolvedQuestions.filterNot { it.token == token } + resolved).takeLast(MAX_RESOLVED))
+        } else {
+            open
+        }
+        if (question == null && !here && nextOpen === open) return state
+        return state.copy(questions = state.questions - token, replying = state.replying - token, open = nextOpen)
+    }
+
+    /** A thread's waiting questions as a page lists them, replacing what was known. */
+    fun withQuestionsOf(state: AgentsState, threadId: String, questions: List<QuestionInfo>): AgentsState {
+        val others = state.questions.filterValues { it.threadId != threadId }
+        val fresh = questions
+            .filter { it.threadId == threadId && it.token.isNotEmpty() && (it.secret || it.asks.isNotEmpty()) }
+            .associateBy { it.token }
+        return state.copy(
+            questions = others + fresh,
+            replying = state.replying.filter { it in others || it in fresh }.toSet(),
+        )
+    }
+
+    /** This phone sent an answer to, or dismissed, [token]. */
+    fun replying(state: AgentsState, token: String): AgentsState =
+        if (token in state.questions) state.copy(replying = state.replying + token) else state
+
+    /** A reply that didn't go through: gone removes the question, anything else lets it be answered again. */
+    fun replyFailed(state: AgentsState, token: String, failure: AgentFailure): AgentsState =
+        if (failure == AgentFailure.NOT_FOUND) {
+            state.copy(questions = state.questions - token, replying = state.replying - token)
+        } else {
+            state.copy(replying = state.replying - token)
+        }
 
     // ---- Sessions started on the PC (§3) ----
 
@@ -421,6 +559,20 @@ object AgentsModel {
     fun runningTool(items: List<AgentItem>): AgentItem? =
         items.lastOrNull { it.kind == AgentItemKind.TOOL && it.tool?.status == AgentToolStatus.RUNNING }
 
+    /**
+     * The plan "Implement" and "Change the plan" act on: the thread's newest
+     * plan, while it's proposed (contract §Q6.1 "Plan"); null otherwise.
+     */
+    fun newestProposedPlan(items: List<AgentItem>): String? {
+        val newest = items.lastOrNull { it.kind == AgentItemKind.PLAN } ?: return null
+        // A plan without a state reads as proposed (the FFI's rule).
+        val proposed = when (newest.planState) {
+            AgentPlanState.PROPOSED, null -> true
+            AgentPlanState.IMPLEMENTED, AgentPlanState.REPLACED -> false
+        }
+        return newest.id.takeIf { proposed }
+    }
+
     /** How many of a plan's steps are done. */
     fun planDone(plan: List<AgentPlanStep>): Int = plan.count { it.status == AgentPlanStatus.COMPLETED }
 
@@ -461,12 +613,17 @@ object AgentsModel {
      * the thread that ran last; else Start.
      */
     fun homeLine(state: AgentsState): HomeLine {
-        val waitingThreads = state.threads.filter { it.state == AgentThreadState.WAITING || it.asks > 0u }
-        val threadRequests = maxOf(state.asks.size, state.threads.sumOf { it.asks.toInt() }, waitingThreads.size)
+        val waitingThreads = state.threads.filter { needsYou(it) }
+        val threadRequests = maxOf(
+            state.asks.size + state.questions.size,
+            state.threads.sumOf { it.asks.toInt() + it.asking.toInt() },
+            waitingThreads.size,
+        )
         val waitingSessions = state.sessions.filter { needsYouExactly(it) }
         val needs = threadRequests + waitingSessions.size
         if (needs > 0) {
             val asker = state.asks.values.minByOrNull { it.expiresMs }?.agent
+                ?: state.questions.values.minByOrNull { it.expiresMs }?.agent
                 ?: waitingThreads.maxByOrNull { it.updatedMs }?.agent
                 ?: waitingSessions.maxByOrNull { it.updatedMs }?.agent
                 ?: ""
@@ -497,7 +654,7 @@ object AgentsModel {
         val recent = ArrayList<AgentThread>()
         for (thread in state.threads) {
             when {
-                thread.state == AgentThreadState.WAITING || thread.asks > 0u -> needsYou += thread
+                needsYou(thread) -> needsYou += thread
                 thread.state == AgentThreadState.WORKING -> working += thread
                 else -> recent += thread
             }
@@ -519,7 +676,7 @@ object AgentsModel {
     /** Requests waiting first, then the most recently changed. */
     fun sorted(threads: List<AgentThread>): List<AgentThread> =
         threads.sortedWith(
-            compareByDescending<AgentThread> { it.state == AgentThreadState.WAITING || it.asks > 0u }
+            compareByDescending<AgentThread> { needsYou(it) }
                 .thenByDescending { it.updatedMs },
         )
 
@@ -534,7 +691,8 @@ object AgentsModel {
     /** The newest page of a thread (on open, on coming back, and after a gap). */
     fun withPage(state: AgentsState, page: AgentPage): AgentsState {
         val threadId = page.thread.id
-        val next = withAsksOf(withThread(state, page.thread), threadId, page.asks)
+        val withAsks = withAsksOf(withThread(state, page.thread), threadId, page.asks)
+        val next = withQuestionsOf(withAsks, threadId, page.questions.map(AgentControlFfi::question))
         val open = next.open?.takeIf { it.threadId == threadId } ?: return next
         val items = page.items.distinctBy { it.seq }.sortedBy { it.seq }
         val pageIds = items.mapTo(HashSet()) { it.id }
@@ -549,7 +707,7 @@ object AgentsModel {
             streaming[item.id] = if (kept != null && kept.text.length >= text.length) {
                 kept
             } else {
-                StreamingText(item.seq, text, utf8Length(text), kind = AgentItemKind.REASONING)
+                StreamingText(item.seq, text, utf8Length(text), kind = item.kind)
             }
         }
         return next.copy(
@@ -590,11 +748,15 @@ object AgentsModel {
             state.copy(answering = state.answering - token)
         }
 
-    /** The thread's state as words: usage limits read as Paused, other failures as Failed. */
+    /** A request or a question waits for an answer in it. */
+    fun needsYou(thread: AgentThread): Boolean =
+        thread.state == AgentThreadState.WAITING || thread.asks > 0u || thread.asking > 0u
+
+    /** The thread's state as words: usage limits read as Paused, other failures as Failed, a plan-mode turn that ended as Plan ready. */
     fun status(thread: AgentThread): ThreadStatus = when (thread.state) {
-        AgentThreadState.WORKING -> ThreadStatus.Working
+        AgentThreadState.WORKING -> if (thread.asking > 0u) ThreadStatus.NeedsYou else ThreadStatus.Working
         AgentThreadState.WAITING -> ThreadStatus.NeedsYou
-        AgentThreadState.DONE -> ThreadStatus.Done
+        AgentThreadState.DONE -> if (AgentControlFfi.mode(thread.mode) == ThreadMode.PLAN) ThreadStatus.PlanReady else ThreadStatus.Done
         AgentThreadState.INTERRUPTED -> ThreadStatus.Stopped
         AgentThreadState.FAILED -> failure(thread.error, thread.errorCode)
     }
@@ -703,11 +865,14 @@ object AgentsModel {
 
     private fun removed(state: AgentsState, threadId: String): AgentsState {
         val gone = state.asks.filterValues { it.thread == threadId }.keys
+        val goneQuestions = state.questions.filterValues { it.threadId == threadId }.keys
         val open = state.open
         return state.copy(
             threads = state.threads.filterNot { it.id == threadId },
             asks = state.asks - gone,
             answering = state.answering - gone,
+            questions = state.questions - goneQuestions,
+            replying = state.replying - goneQuestions,
             open = if (open != null && open.threadId == threadId) open.copy(removed = true) else open,
         )
     }
@@ -718,7 +883,7 @@ object AgentsModel {
         // when it starts, and its text arrives until it ends.
         val item = open.items.firstOrNull { it.id == event.itemId }
         if (item != null && !thinking(item)) return AgentsUpdate(state)
-        val kind = if (item != null) AgentItemKind.REASONING else AgentItemKind.ASSISTANT
+        val kind = item?.kind ?: AgentItemKind.ASSISTANT
         val current = open.streaming[event.itemId]
         val bytes = utf8Length(event.text)
         val offset = event.offset.toLong()
@@ -778,8 +943,15 @@ object AgentsModel {
         )
     }
 
-    /** A thought that hasn't ended: its text still arrives as deltas. */
-    private fun thinking(item: AgentItem): Boolean = item.kind == AgentItemKind.REASONING && item.endMs == null
+    /**
+     * An item whose text still arrives as deltas: a thought that hasn't ended,
+     * or a plan Codex is still writing (it opens empty, then its text streams).
+     */
+    private fun thinking(item: AgentItem): Boolean = when (item.kind) {
+        AgentItemKind.REASONING -> item.endMs == null
+        AgentItemKind.PLAN -> item.endMs == null && item.text.isNullOrEmpty()
+        AgentItemKind.USER, AgentItemKind.ASSISTANT, AgentItemKind.TOOL, AgentItemKind.NOTICE, AgentItemKind.QUESTION -> false
+    }
 
     // ---- The timeline's inputs (contract §P6.1) ----
 
@@ -804,6 +976,7 @@ object AgentsModel {
             stateSinceMs = thread.sinceMs ?: 0L,
             marks = marks(state, threadId, held),
             open = openKeys.sorted(),
+            questions = state.questionsFor(threadId),
         )
     }
 
@@ -838,6 +1011,9 @@ object AgentsModel {
         val waiting = state.asksFor(threadId).map { ask ->
             // item_id, kind, by (`by` is a soft keyword in Kotlin, so not named here).
             AgentMark(ask.item.orEmpty(), if (held(ask.token)) AgentMarkKind.HELD else AgentMarkKind.WAITING, "")
+        } + state.questionsFor(threadId).map { question ->
+            // A question's mark sits under its Question row, as a request's under its step (contract §Q2.3).
+            AgentMark(question.itemId, if (held(question.token)) AgentMarkKind.HELD else AgentMarkKind.WAITING, "")
         }
         val open = state.open?.takeIf { it.threadId == threadId } ?: return waiting
         val answered = open.resolved.mapNotNull { ask ->
@@ -849,9 +1025,19 @@ object AgentsModel {
             } ?: return@mapNotNull null
             AgentMark(ask.itemId.orEmpty(), kind, ask.byName.orEmpty())
         }
+        // A question that ended says how on its row: answered (here, or on another device), dismissed, not answered.
+        val questionsEnded = open.resolvedQuestions.map { question ->
+            val kind = when (question.outcome) {
+                QuestionOutcome.ANSWERED -> AgentMarkKind.ALLOWED
+                QuestionOutcome.DISMISSED -> AgentMarkKind.DENIED
+                QuestionOutcome.EXPIRED -> AgentMarkKind.EXPIRED
+                QuestionOutcome.CANCELLED -> AgentMarkKind.CANCELLED
+            }
+            AgentMark(question.itemId, kind, if (question.here) "" else question.byName.orEmpty())
+        }
         // One mark per step: a request asked again after an answer shows as waiting.
         val waitingAt = waiting.mapNotNullTo(HashSet()) { it.itemId.ifEmpty { null } }
-        return answered.filter { it.itemId.isEmpty() || it.itemId !in waitingAt } + waiting
+        return (answered + questionsEnded).filter { it.itemId.isEmpty() || it.itemId !in waitingAt } + waiting
     }
 
     /** A PC's device id is longer than the wire's ids (z-base-32 of 32 bytes). */

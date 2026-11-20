@@ -111,8 +111,17 @@ class FfiRows : AutoCloseable {
 
     /** Null when the timeline was closed while this was on its way (the screen left). */
     fun make(input: TimelineInput, nowMs: Long): List<AgentRow>? = runCatching {
-        // items, streaming, state, state_since_ms, now_ms, marks, open (contract §P4.3).
-        timeline.rows(input.items, input.streaming, input.state, input.stateSinceMs, nowMs, input.marks, input.open)
+        // items, streaming, state, state_since_ms, now_ms, marks, open (contract §P4.3), questions (§Q2.3).
+        timeline.rows(
+            input.items,
+            input.streaming,
+            input.state,
+            input.stateSinceMs,
+            nowMs,
+            input.marks,
+            input.open,
+            AgentControlFfi.timelineQuestions(input.questions),
+        )
     }.getOrNull()
 
     override fun close() = timeline.close()

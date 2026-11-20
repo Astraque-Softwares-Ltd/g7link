@@ -118,6 +118,7 @@ private fun homeLineText(resources: Resources, line: HomeLine, state: AgentsStat
         val ago = relativeTime(line.updatedMs, now)
         val how = when (line.status) {
             ThreadStatus.Done -> resources.getString(R.string.agents_home_done, ago)
+            ThreadStatus.PlanReady -> resources.getString(R.string.agents_home_plan_ready, ago)
             ThreadStatus.Stopped -> resources.getString(R.string.agents_home_stopped, ago)
             is ThreadStatus.Failed -> resources.getString(R.string.agents_home_failed, ago)
             is ThreadStatus.Paused -> resources.getString(R.string.agents_home_paused, ago)

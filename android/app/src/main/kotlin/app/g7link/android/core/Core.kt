@@ -88,6 +88,13 @@ import app.g7link.android.ui.agents.AgentCall
 import app.g7link.android.ui.agents.AgentFailure
 import app.g7link.android.ui.agents.AgentsModel
 import app.g7link.android.ui.agents.AgentsState
+import app.g7link.android.ui.agents.AgentChoices
+import app.g7link.android.ui.agents.AgentControlFfi
+import app.g7link.android.ui.agents.ConfigureChange
+import app.g7link.android.ui.agents.FollowUp
+import app.g7link.android.ui.agents.QuestionAnswer
+import app.g7link.android.ui.agents.ThreadSettings
+import app.g7link.core.AgentQueueOp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -469,6 +476,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     fun start() {
         val token = startGuard.beginStart()
         scope.launch(Dispatchers.IO) {
+            // Camera photos for an agent that a previous run never sent.
+            app.g7link.android.ui.agents.AgentImageIntake.sweepCamera(context)
             lifecycleMutex.withLock {
                 if (startGuard.isCancelled(token) || node != null || startJob?.isActive == true) return@withLock
                 activeStartSeq = token.startSeq
@@ -3302,6 +3311,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         agentRefreshes.remove(pcId)?.cancel()
         agentSessionRefreshes.remove(pcId)?.cancel()
         AgentNotifications.cancelPc(context, pcId)
+        AgentChoices.forgetPc(pcId)
     }
 
     private fun updateAgents(pcId: String, change: (AgentsState) -> AgentsState) {
@@ -3363,9 +3373,29 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     }
 
     /** Starts a thread on the PC; a phone only ever starts one that asks before each change. */
-    suspend fun agentStart(pcId: String, agent: String, folder: String, prompt: String): AgentCall<AgentThread> {
+    /** Starts a thread on the PC; a phone starts one that asks before each change, or plans first (contract §Q5). */
+    suspend fun agentStart(
+        pcId: String,
+        agent: String,
+        folder: String,
+        prompt: String,
+        settings: ThreadSettings = ThreadSettings(),
+        images: List<String> = emptyList(),
+    ): AgentCall<AgentThread> {
         if (!AgentsModel.fits(prompt)) return AgentCall.Failed(AgentFailure.OTHER)
-        val result = agentCall { it.agentStart(pcId, agent, folder, prompt, AgentMode.SUPERVISED) }
+        val result = agentCall {
+            it.agentStart(
+                pcId,
+                agent,
+                folder,
+                prompt,
+                AgentControlFfi.phoneMode(settings.mode),
+                settings.model,
+                settings.effort,
+                images,
+                settings.customModel && settings.model != null,
+            )
+        }
         if (result is AgentCall.Ok) {
             agentFollowed += "$pcId/${result.value.id}"
             updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
@@ -3373,9 +3403,17 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return result
     }
 
-    suspend fun agentSend(pcId: String, threadId: String, text: String): AgentCall<Unit> {
-        if (!AgentsModel.fits(text)) return AgentCall.Failed(AgentFailure.OTHER)
-        val result = agentCall { it.agentSend(pcId, threadId, text) }
+    /** A message: a turn when it's stopped; while it works, steered in or queued ([followUp]). Images by id (agentImageSend). */
+    suspend fun agentSend(
+        pcId: String,
+        threadId: String,
+        text: String,
+        followUp: FollowUp? = null,
+        images: List<String> = emptyList(),
+    ): AgentCall<Unit> {
+        val sendable = AgentsModel.fits(text) || (text.isBlank() && images.isNotEmpty())
+        if (!sendable || AgentsModel.tooLong(text)) return AgentCall.Failed(AgentFailure.OTHER)
+        val result = agentCall { it.agentSend(pcId, threadId, text, followUp?.let(AgentControlFfi::dispatch), images) }
         if (result is AgentCall.Ok) agentFollowed += "$pcId/$threadId"
         return result
     }
@@ -3401,6 +3439,54 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         if (result is AgentCall.Failed) updateAgents(pcId) { AgentsModel.answerFailed(it, token, result.failure) }
         return result
     }
+
+    /** Changes a thread's model, effort or mode for its next turn; the thread as the PC has it now. */
+    suspend fun agentConfigure(pcId: String, threadId: String, change: ConfigureChange): AgentCall<AgentThread> {
+        val result = agentCall {
+            it.agentConfigure(pcId, threadId, change.model, change.effort, change.mode?.let(AgentControlFfi::phoneMode), change.customModel)
+        }
+        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThread(it, result.value) }
+        return result
+    }
+
+    suspend fun agentQueueSendNow(pcId: String, threadId: String, queued: String): AgentCall<Unit> =
+        agentCall { it.agentQueue(pcId, threadId, queued, AgentQueueOp.SEND_NOW, null) }
+
+    suspend fun agentQueueEdit(pcId: String, threadId: String, queued: String, text: String): AgentCall<Unit> {
+        if (!AgentsModel.fits(text)) return AgentCall.Failed(AgentFailure.OTHER)
+        return agentCall { it.agentQueue(pcId, threadId, queued, AgentQueueOp.EDIT, text) }
+    }
+
+    suspend fun agentQueueRemove(pcId: String, threadId: String, queued: String): AgentCall<Unit> =
+        agentCall { it.agentQueue(pcId, threadId, queued, AgentQueueOp.REMOVE, null) }
+
+    /** Answers a question; it shows as answering until the PC says how it ended. */
+    suspend fun agentReply(pcId: String, token: String, answers: List<QuestionAnswer>): AgentCall<Unit> {
+        updateAgents(pcId) { AgentsModel.replying(it, token) }
+        val result = agentCall { it.agentReply(pcId, token, AgentControlFfi.answers(answers)) }
+        if (result is AgentCall.Failed) updateAgents(pcId) { AgentsModel.replyFailed(it, token, result.failure) }
+        return result
+    }
+
+    /** Dismisses a question: the agent is told the user didn't answer. */
+    suspend fun agentDismiss(pcId: String, token: String): AgentCall<Unit> {
+        updateAgents(pcId) { AgentsModel.replying(it, token) }
+        val result = agentCall { it.agentDismiss(pcId, token) }
+        if (result is AgentCall.Failed) updateAgents(pcId) { AgentsModel.replyFailed(it, token, result.failure) }
+        return result
+    }
+
+    /** Implements the thread's newest proposed plan, asking before edits and commands. */
+    suspend fun agentImplement(pcId: String, threadId: String, itemId: String): AgentCall<Unit> =
+        agentCall { it.agentImplement(pcId, threadId, itemId) }
+
+    /** Sends one picture for a message; its id goes with agentStart or agentSend. */
+    suspend fun agentImageSend(pcId: String, name: String, bytes: ByteArray): AgentCall<String> =
+        agentCall { it.agentImageSend(pcId, name, bytes).id }
+
+    /** A JPEG thumbnail of an image the PC holds (at most 150 KiB). */
+    suspend fun agentImageThumb(pcId: String, imageId: String): AgentCall<ByteArray> =
+        agentCall { it.agentImageThumb(pcId, imageId, null) }
 
     /** Asks the PC for the text of the thread this phone wants now ([agentWatchWanted]), in order. */
     private suspend fun agentSyncWatch(pcId: String): AgentCall<Unit> = agentWatchLock.withLock {

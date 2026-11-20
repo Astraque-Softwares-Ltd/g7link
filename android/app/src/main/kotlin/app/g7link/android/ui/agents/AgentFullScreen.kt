@@ -436,7 +436,7 @@ internal fun statusDotColor(status: ThreadStatus): Color {
     return when (status) {
         ThreadStatus.NeedsYou -> tints.amber
         ThreadStatus.Working -> tints.blue
-        ThreadStatus.Done -> tints.teal
+        ThreadStatus.Done, ThreadStatus.PlanReady -> tints.teal
         ThreadStatus.Stopped -> scheme.outline
         is ThreadStatus.Paused -> scheme.outline
         is ThreadStatus.Failed -> tints.red

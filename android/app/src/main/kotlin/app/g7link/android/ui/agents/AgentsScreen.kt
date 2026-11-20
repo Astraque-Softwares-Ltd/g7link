@@ -98,8 +98,8 @@ private enum class ThreadFilter {
 
     fun matches(thread: AgentThread): Boolean = when (this) {
         ALL -> true
-        NEEDS_YOU -> thread.state == AgentThreadState.WAITING || thread.asks > 0u
-        WORKING -> thread.state == AgentThreadState.WORKING && thread.asks == 0u
+        NEEDS_YOU -> AgentsModel.needsYou(thread)
+        WORKING -> thread.state == AgentThreadState.WORKING && !AgentsModel.needsYou(thread)
         RECENT -> !AgentsModel.running(thread)
     }
 }
@@ -324,6 +324,7 @@ private fun ThreadList(
                     thread = thread,
                     agentName = agents.agentName(thread.agent),
                     ask = agents.asksFor(thread.id).firstOrNull(),
+                    questions = maxOf(agents.questionsFor(thread.id).size, thread.asking.toInt()),
                     now = now,
                     onOpen = { onOpenThread(thread.id) },
                 )
@@ -535,7 +536,7 @@ internal fun ElapsedText(sinceMs: Long, style: TextStyle, color: Color, modifier
 }
 
 @Composable
-private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, now: Long, onOpen: () -> Unit) {
+private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, questions: Int, now: Long, onOpen: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
     val status = AgentsModel.status(thread)
     Column(
@@ -568,7 +569,14 @@ private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, no
         if (status is ThreadStatus.NeedsYou) {
             // A glance at what it asks; the whole of it is read in the thread before it can be allowed.
             val preview = ask?.let { AgentsModel.askBody(it) ?: it.title }?.lineSequence()?.firstOrNull()
-            if (!preview.isNullOrBlank()) {
+            if (ask == null && questions > 0) {
+                Text(
+                    pluralStringResource(R.plurals.agents_question_asks_you, questions, questions),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            } else if (!preview.isNullOrBlank()) {
                 Text(
                     preview,
                     style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
@@ -629,6 +637,12 @@ internal fun NewThreadSheet(
     val scope = rememberCoroutineScope()
     val agent = ready.firstOrNull { it.id == agentId }
     val folder = catalog.folders.firstOrNull { it.id == folderId }
+    // The model, effort and mode it starts with (contract §Q6.3): the last ones for this agent and folder, Plan chosen per task.
+    val abilities = remember(agent, catalog.canControl) { AgentControlFfi.abilities(agent, catalog.canControl) }
+    var chosen by remember(agentId, folderId) {
+        mutableStateOf(if (agent != null && folder != null) AgentChoices.get(device.id, agent.id, folder.label) else ThreadSettings())
+    }
+    var settingsOpen by remember { mutableStateOf(false) }
     val tooLong = AgentsModel.tooLong(prompt)
     val canStart = !busy && agent != null && folder != null && AgentsModel.fits(prompt)
 
@@ -637,9 +651,10 @@ internal fun NewThreadSheet(
         busy = true
         error = null
         scope.launch {
-            when (val result = core.agentStart(device.id, agent.id, folder.id, prompt.trim())) {
+            when (val result = core.agentStart(device.id, agent.id, folder.id, prompt.trim(), chosen)) {
                 is AgentCall.Ok -> {
                     Preferences.setAgentChoice(context, device.id, agent.id, folder.id)
+                    AgentChoices.set(device.id, agent.id, folder.label, chosen)
                     onStarted(result.value.id)
                 }
                 is AgentCall.Failed -> error = when (result.failure) {
@@ -712,8 +727,23 @@ internal fun NewThreadSheet(
                     )
                 }
             }
+            if (agent != null && abilities.control) {
+                val model = AgentSettings.modelName(abilities.models, chosen.model) ?: stringResource(R.string.agents_model_default)
+                val effort = AgentSettings.effectiveEffort(abilities.models, chosen)?.let(AgentSettings::effortLabel)
+                Column {
+                    G7SectionLabel(stringResource(R.string.agents_settings_model))
+                    G7Row(
+                        label = listOfNotNull(model, effort).joinToString(" · "),
+                        sublabel = modeLabel(chosen.mode),
+                        icon = G7Icons.sparkle,
+                        onClick = { settingsOpen = true },
+                    ) {
+                        Icon(G7Icons.chevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+                    }
+                }
+            }
             Text(
-                stringResource(R.string.agents_supervised_note),
+                stringResource(if (chosen.mode == ThreadMode.PLAN) R.string.agents_mode_plan else R.string.agents_supervised_note),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -726,6 +756,20 @@ internal fun NewThreadSheet(
                 G7PrimaryButton(label = stringResource(R.string.agents_start), enabled = canStart, onClick = ::start)
             }
         }
+    }
+    if (settingsOpen && agent != null) {
+        AgentSettingsSheet(
+            agentName = agent.name,
+            codex = agent.id == "codex",
+            abilities = abilities,
+            initial = chosen,
+            appliesLater = false,
+            onDone = { picked ->
+                chosen = picked
+                settingsOpen = false
+            },
+            onDismiss = { settingsOpen = false },
+        )
     }
 }
 
@@ -794,6 +838,7 @@ internal fun StatusLine(status: ThreadStatus, trailing: String?, modifier: Modif
         ThreadStatus.NeedsYou -> Triple(tints.amber, stringResource(R.string.agents_state_waiting), tints.amber)
         ThreadStatus.Working -> Triple(tints.blue, stringResource(R.string.agents_state_working), scheme.onSurfaceVariant)
         ThreadStatus.Done -> Triple(tints.teal, stringResource(R.string.agents_state_done), scheme.onSurfaceVariant)
+        ThreadStatus.PlanReady -> Triple(tints.teal, stringResource(R.string.agents_state_plan_ready), scheme.onSurfaceVariant)
         ThreadStatus.Stopped -> Triple(scheme.outline, stringResource(R.string.agents_state_interrupted), scheme.onSurfaceVariant)
         is ThreadStatus.Paused -> Triple(scheme.outline, stringResource(R.string.agents_state_paused), scheme.onSurfaceVariant)
         is ThreadStatus.Failed -> Triple(tints.red, stringResource(R.string.agents_state_failed), scheme.error)

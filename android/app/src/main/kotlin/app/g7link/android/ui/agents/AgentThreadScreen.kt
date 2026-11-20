@@ -26,7 +26,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -41,6 +40,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -56,7 +57,6 @@ import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -81,6 +81,7 @@ import app.g7link.core.AgentLink
 import app.g7link.core.AgentPlanStatus
 import app.g7link.core.AgentPlanStep
 import app.g7link.core.AgentThread
+import app.g7link.core.AgentThreadState
 import java.util.Date
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
@@ -156,7 +157,10 @@ fun AgentThreadScreen(
     val guard = remember(threadId) { FfiTypingGuard() }
     DisposableEffect(guard) { onDispose { guard.close() } }
     var guardTick by remember(threadId) { mutableIntStateOf(0) }
-    val pending = remember(agents.asks, threadId) { agents.asksFor(threadId).map { it.token } }
+    // Requests and questions alike: one that comes while you type waits for a pause.
+    val pending = remember(agents.asks, agents.questions, threadId) {
+        agents.asksFor(threadId).map { it.token } + agents.questionsFor(threadId).map { it.token }
+    }
     // Told before anything is drawn for them, so a new request is never shown unheld for a frame.
     val requested = remember(guard, pending) {
         guard.requests(pending, System.currentTimeMillis())
@@ -171,7 +175,10 @@ fun AgentThreadScreen(
         guard.idle()
         guardTick++
     }
-    val queue = remember(agents.asks, threadId, heldTokens) { agents.askQueue(threadId) { it in heldTokens } }
+    // One at a time in the dock: a request or a question, the one asked first (contract §Q6.1).
+    val dock = remember(agents.asks, agents.questions, threadId, heldTokens) { agents.dockShown(threadId) { it in heldTokens } }
+    val queue = (dock as? DockShown.Approval)?.queue
+    val questionQueue = (dock as? DockShown.Question)?.queue
 
     // ---- The rows (contract §P6.1): made off the main thread whenever their input changes ----
     var openKeys by rememberSaveable(threadId, stateSaver = OPEN_KEYS) { mutableStateOf(emptySet<String>()) }
@@ -189,6 +196,10 @@ fun AgentThreadScreen(
     val agentName = thread?.let { agents.agentName(it.agent) }.orEmpty()
     val status = thread?.let { AgentsModel.status(it) }
     val running = thread != null && AgentsModel.running(thread)
+    val codex = thread?.agent == "codex"
+    val abilities = remember(agents.catalog, thread?.agent) { thread?.let { agents.abilities(it.agent) } ?: AgentAbilities() }
+    val control = remember(thread) { thread?.let(AgentControlFfi::control) ?: ThreadControl() }
+    val settingsNow = remember(control) { AgentSettings.of(control) }
     var stopping by remember(threadId) { mutableStateOf(false) }
     LaunchedEffect(running) { if (!running) stopping = false }
     var draft by rememberSaveable(threadId) { mutableStateOf("") }
@@ -199,8 +210,31 @@ fun AgentThreadScreen(
     var full by remember(threadId) { mutableStateOf<FullView?>(null) }
     var link by remember(threadId) { mutableStateOf<PendingLink?>(null) }
     var sheetCollapsed by remember(threadId) { mutableStateOf(false) }
-    LaunchedEffect(queue?.shown?.token) { sheetCollapsed = false }
+    LaunchedEffect(queue?.shown?.token, questionQueue?.shown?.token) { sheetCollapsed = false }
     val retry: () -> Unit = { attempt++ }
+
+    // ---- A question in the dock: the answers chosen, the reply box its "Something else" field ----
+    val question = questionQueue?.shown
+    var answersState by remember(threadId) { mutableStateOf<QuestionAnswers?>(null) }
+    val answers = question?.let { QuestionDock.answersFor(it, answersState) }
+    // Words typed for a question don't outlive it: another question, or none, starts empty.
+    LaunchedEffect(question?.token) { if (answersState?.token != question?.token) answersState = null }
+    val questionField = if (question != null && answers != null) QuestionDock.field(question, answers) else null
+    val replyingShown = question != null && question.token in agents.replying
+
+    // ---- Images for the next message, and the sheets ----
+    var images by remember(threadId) { mutableStateOf(emptyList<PendingImage>()) }
+    val thumbs = remember(device.id) { ImageThumbs { id -> (core.agentImageThumb(device.id, id) as? AgentCall.Ok)?.value } }
+    var imageSheet by remember(threadId) { mutableStateOf(false) }
+    var settingsOpen by remember(threadId) { mutableStateOf(false) }
+    var details by remember(threadId) { mutableStateOf(false) }
+    var editing by remember(threadId) { mutableStateOf<QueuedLine?>(null) }
+    var queueBusy by remember(threadId) { mutableStateOf(emptySet<String>()) }
+    var implementing by remember(threadId) { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
+    val imagesAllowed = AgentSettings.takesImages(abilities, settingsNow)
+    val newestPlan = remember(open?.items) { AgentsModel.newestProposedPlan(open?.items.orEmpty()) }
+    val limit = AgentUsage.pinned(abilities.limits)
 
     val paused = status as? ThreadStatus.Paused
     val pausedUntil = paused?.resetsMs?.takeIf { it > now }
@@ -217,7 +251,14 @@ fun AgentThreadScreen(
             sending = sending,
             paused = paused != null,
             pausedUntilMs = pausedUntil,
-            codex = thread?.agent == "codex",
+            codex = codex,
+            waiting = thread?.state == AgentThreadState.WAITING || dock != null,
+            followUp = AgentFollowUp.primary(abilities),
+            queueRoom = AgentQueue.hasRoom(control),
+            question = questionField,
+            images = AgentImages.readyIds(images).size,
+            uploading = AgentImages.uploading(images),
+            imagesAllowed = imagesAllowed,
         ),
     )
 
@@ -257,7 +298,7 @@ fun AgentThreadScreen(
             }
         }
     }
-    val send: () -> Unit = send@{
+    val send: (FollowUp?) -> Unit = send@{ chosen ->
         if (!composer.actionEnabled || sending) return@send
         val text = draft.trim()
         val shown = queue?.shown
@@ -281,10 +322,13 @@ fun AgentThreadScreen(
                     )
                 }
             } else {
-                when (val result = core.agentSend(device.id, threadId, text)) {
+                // While it works: steer it or queue the message (long-press chose the other); else a turn.
+                val followUp = if (composer.action == ComposerAction.FOLLOW_UP) chosen ?: composer.followUp else null
+                when (val result = core.agentSend(device.id, threadId, text, followUp, AgentImages.readyIds(images))) {
                     is AgentCall.Ok -> {
                         draft = ""
                         draftFor = null
+                        images = emptyList()
                         guard.sent()
                         guardChanged()
                     }
@@ -295,11 +339,127 @@ fun AgentThreadScreen(
         }
     }
     val typed: (String) -> Unit = { text ->
-        draft = text
-        draftFor = AgentDock.editedUnder(queue)
+        if (question != null && answers != null) {
+            // The reply box is the question's "Something else": its words are never a draft.
+            if (questionField == QuestionField.OTHER) answersState = QuestionDock.typeOther(question, answers, text)
+        } else {
+            draft = text
+            draftFor = AgentDock.editedUnder(queue)
+        }
         guard.typed(System.currentTimeMillis())
         guardChanged()
     }
+
+    // ---- Phase 2 actions (contract §Q3.2 through the phone's wire, §Q5) ----
+    val addImages: (List<android.net.Uri>, String?) -> Unit = { uris, cameraPath ->
+        val room = AgentImages.room(images)
+        if (room <= 0) AgentImageIntake.deleteCameraFile(cameraPath)
+        uris.take(room).forEachIndexed { index, uri ->
+            val key = java.util.UUID.randomUUID().toString()
+            images = AgentImages.adding(images, key)
+            val path = if (index == 0) cameraPath else null
+            scope.launch {
+                val problem = when (val read = AgentImageIntake.read(context, uri)) {
+                    is ImageRead.Problem -> read.problem
+                    is ImageRead.Bytes -> when (val sent = core.agentImageSend(device.id, read.name, read.bytes)) {
+                        is AgentCall.Ok -> {
+                            images = AgentImages.uploaded(images, key, sent.value)
+                            null
+                        }
+                        is AgentCall.Failed -> ImageProblem.FAILED
+                    }
+                }
+                // A photo taken for it lives only until it's sent to the PC.
+                AgentImageIntake.deleteCameraFile(path)
+                if (problem != null) {
+                    images = AgentImages.removed(images, key)
+                    core.say(
+                        resources.getString(
+                            when (problem) {
+                                ImageProblem.NOT_AN_IMAGE -> R.string.agents_image_not_supported
+                                ImageProblem.TOO_LARGE -> R.string.agents_image_too_large
+                                ImageProblem.FAILED -> R.string.agents_image_failed
+                            },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+    val pickers = rememberImagePickers(onPicked = addImages, onCameraFailed = { core.say(resources.getString(R.string.agents_image_failed)) })
+    val openSettings: () -> Unit = {
+        when (composer.settings) {
+            SettingsAccess.OPEN -> settingsOpen = true
+            SettingsAccess.LATER -> core.say(resources.getString(R.string.agents_settings_later, agentName))
+            SettingsAccess.INERT -> Unit
+        }
+    }
+    val configure: (ThreadSettings) -> Unit = { chosen ->
+        settingsOpen = false
+        val shown = thread
+        val change = AgentSettings.change(settingsNow, chosen)
+        if (shown != null) AgentChoices.set(device.id, shown.agent, shown.folder, chosen)
+        if (change != null) {
+            scope.launch {
+                when (val result = core.agentConfigure(device.id, threadId, change)) {
+                    is AgentCall.Ok -> Unit
+                    is AgentCall.Failed -> core.say(
+                        if (result.failure == AgentFailure.OTHER) resources.getString(R.string.agents_settings_later, agentName) else failedSay(result.failure),
+                    )
+                }
+            }
+        }
+    }
+    val queueOp: (String, suspend () -> AgentCall<Unit>) -> Unit = { id, op ->
+        queueBusy = queueBusy + id
+        scope.launch {
+            val result = op()
+            queueBusy = queueBusy - id
+            if (result is AgentCall.Failed) {
+                core.say(if (result.failure == AgentFailure.NOT_FOUND) resources.getString(R.string.agents_queue_already_sent) else failedSay(result.failure))
+            }
+        }
+    }
+    val sendQuestion: () -> Unit = sendQuestion@{
+        val shown = question ?: return@sendQuestion
+        val chosen = answers ?: return@sendQuestion
+        val out = QuestionDock.answersOut(shown, chosen) ?: return@sendQuestion
+        scope.launch {
+            when (val result = core.agentReply(device.id, shown.token, out)) {
+                is AgentCall.Ok -> {
+                    answersState = null
+                    guard.sent()
+                    guardChanged()
+                }
+                is AgentCall.Failed -> core.say(
+                    resources.getString(if (result.failure == AgentFailure.NOT_FOUND) R.string.agents_answered_elsewhere else R.string.agents_failed_generic),
+                )
+            }
+        }
+    }
+    val dismissQuestion: () -> Unit = dismissQuestion@{
+        val shown = question ?: return@dismissQuestion
+        scope.launch {
+            when (val result = core.agentDismiss(device.id, shown.token)) {
+                is AgentCall.Ok -> answersState = null
+                is AgentCall.Failed -> core.say(
+                    resources.getString(if (result.failure == AgentFailure.NOT_FOUND) R.string.agents_answered_elsewhere else R.string.agents_failed_generic),
+                )
+            }
+        }
+    }
+    val implement: (String) -> Unit = { itemId ->
+        if (!implementing) {
+            implementing = true
+            scope.launch {
+                val result = core.agentImplement(device.id, threadId, itemId)
+                implementing = false
+                if (result is AgentCall.Failed) core.say(failedSay(result.failure))
+            }
+        }
+    }
+    val implementLatest by rememberUpdatedState(implement)
+    val changePlan: () -> Unit = { runCatching { focus.requestFocus() } }
     val focused: (Boolean) -> Unit = { on ->
         if (on) guard.focus() else guard.blur()
         guardChanged()
@@ -337,7 +497,7 @@ fun AgentThreadScreen(
             }
         }
     }
-    val actions = remember(copy) {
+    val actions = remember(copy, focus) {
         RowActions(
             toggle = { key -> openKeys = if (key in openKeys) openKeys - key else openKeys + key },
             link = { span, text ->
@@ -350,6 +510,8 @@ fun AgentThreadScreen(
             output = { itemId -> full = FullView.Output(itemId) },
             diff = { title, doc -> full = FullView.Diff(title, doc) },
             mark = { sheetCollapsed = false },
+            implement = { itemId -> implementLatest(itemId) },
+            changePlan = changePlan,
         )
     }
 
@@ -405,6 +567,7 @@ fun AgentThreadScreen(
                 onBack = onBack,
                 canShare = thread != null && load == ThreadLoad.READY && !sharing,
                 onShare = share,
+                onDetails = { details = true },
                 drawer = drawer,
             )
             when {
@@ -441,7 +604,9 @@ fun AgentThreadScreen(
                     Column(Modifier.fillMaxSize()) {
                         AgentRowsList(
                             rows = rows,
-                            context = remember(itemsById, folder) { RowsContext(itemsById, folder) },
+                            context = remember(itemsById, folder, newestPlan, running, implementing, thumbs) {
+                                RowsContext(itemsById, folder, newestPlan, running, implementing, thumbs)
+                            },
                             actions = actions,
                             earlier = open.moreBefore && open.items.isNotEmpty(),
                             loadingEarlier = loadingEarlier,
@@ -453,6 +618,41 @@ fun AgentThreadScreen(
                         Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
                             val plan = thread?.plan
                             if (!plan.isNullOrEmpty()) TasksLine(plan, key = threadId)
+                            // Pinned, never a row: the limit line above the queue, the dock and the reply box.
+                            if (limit != null) LimitLine(limit)
+                            if (control.queued.isNotEmpty()) {
+                                QueueBox(
+                                    control = control,
+                                    agentName = agentName,
+                                    waiting = thread?.state == AgentThreadState.WAITING || dock != null,
+                                    busy = queueBusy,
+                                    onSendNow = { id -> queueOp(id) { core.agentQueueSendNow(device.id, threadId, id) } },
+                                    onEdit = { line -> editing = line },
+                                    onRemove = { id -> queueOp(id) { core.agentQueueRemove(device.id, threadId, id) } },
+                                    key = threadId,
+                                )
+                            }
+                            if (questionQueue != null && answers != null) {
+                                QuestionDockSheet(
+                                    queue = questionQueue,
+                                    answers = answers,
+                                    agentName = agentName,
+                                    pcName = device.name,
+                                    replying = replyingShown,
+                                    collapsed = sheetCollapsed,
+                                    onToggle = { sheetCollapsed = !sheetCollapsed },
+                                    maxHeight = sheetMax,
+                                    onChoose = { label -> answersState = QuestionDock.choose(questionQueue.shown, answers, label) },
+                                    onChooseOther = {
+                                        answersState = QuestionDock.chooseOther(questionQueue.shown, answers)
+                                        runCatching { focus.requestFocus() }
+                                    },
+                                    onBack = { answersState = QuestionDock.back(answers) },
+                                    onNext = { answersState = QuestionDock.next(questionQueue.shown, answers) },
+                                    onSend = sendQuestion,
+                                    onDismiss = dismissQuestion,
+                                )
+                            }
                             if (queue != null) {
                                 RequestSheet(
                                     queue = queue,
@@ -467,24 +667,80 @@ fun AgentThreadScreen(
                                     onReview = { full = FullView.Edit(queue.shown.token) },
                                 )
                             }
-                            ReplyBox(
+                            AgentComposer(
                                 view = composer,
-                                hint = composerHint(composer.hint, agentName, pausedUntil),
-                                draft = draft,
-                                onDraft = typed,
+                                hint = composerHint(composer.hint, agentName, pausedUntil, device.name),
+                                text = if (question != null && answers != null) QuestionDock.otherText(question, answers) else draft,
+                                onText = typed,
                                 onFocus = focused,
+                                focus = focus,
                                 sending = sending,
                                 stopping = stopping,
                                 onStop = stop,
                                 onSend = send,
-                                joined = queue != null,
+                                joined = dock != null,
                                 place = stringResource(R.string.agents_folder_on, folder, device.name),
+                                agentName = agentName,
+                                codex = codex,
+                                settings = ComposerSettings(
+                                    shown = abilities.control,
+                                    model = AgentSettings.modelName(abilities.models, control.model),
+                                    effort = AgentSettings.effectiveEffort(abilities.models, settingsNow)?.let(AgentSettings::effortLabel),
+                                    plan = control.mode == ThreadMode.PLAN,
+                                ),
+                                onSettings = openSettings,
+                                attachShown = abilities.control && imagesAllowed,
+                                onAttach = { if (composer.attach) imageSheet = true },
+                                images = images,
+                                thumbs = thumbs,
+                                onRemoveImage = { key -> images = AgentImages.removed(images, key) },
+                                imagesRefused = questionField == null && images.isNotEmpty() && !imagesAllowed,
+                                tooLong = questionField == null && AgentsModel.tooLong(draft),
                             )
                         }
                     }
                 }
             }
         }
+    }
+    if (settingsOpen && thread != null) {
+        AgentSettingsSheet(
+            agentName = agentName,
+            codex = codex,
+            abilities = abilities,
+            initial = settingsNow,
+            appliesLater = true,
+            onDone = configure,
+            onDismiss = { settingsOpen = false },
+        )
+    }
+    if (details && thread != null) {
+        AgentDetailsSheet(thread = thread, control = control, abilities = abilities, pcName = device.name, now = now, onDismiss = { details = false })
+    }
+    if (imageSheet) {
+        ImageSourceSheet(
+            pcName = device.name,
+            agentName = agentName,
+            onCamera = {
+                imageSheet = false
+                pickers.camera()
+            },
+            onGallery = {
+                imageSheet = false
+                pickers.gallery(AgentImages.room(images))
+            },
+            onDismiss = { imageSheet = false },
+        )
+    }
+    editing?.let { line ->
+        QueueEditSheet(
+            line = line,
+            onSave = { text ->
+                editing = null
+                queueOp(line.id) { core.agentQueueEdit(device.id, threadId, line.id, text) }
+            },
+            onDismiss = { editing = null },
+        )
     }
     link?.let { shown ->
         LinkSheet(
@@ -495,22 +751,6 @@ fun AgentThreadScreen(
             },
             onDismiss = { link = null },
         )
-    }
-}
-
-/** What the reply box says while empty. */
-@Composable
-private fun composerHint(hint: ComposerHint, agentName: String, pausedUntil: Long?): String {
-    val context = LocalContext.current
-    return when (hint) {
-        ComposerHint.MESSAGE -> stringResource(R.string.agents_message_hint, agentName)
-        ComposerHint.REPLY_WHEN_STOPS -> stringResource(R.string.agents_reply_when_stops, agentName)
-        ComposerHint.SAY_WHY -> stringResource(R.string.agents_say_why_hint, agentName)
-        ComposerHint.AFTER_TIME -> stringResource(
-            R.string.agents_reply_after,
-            pausedUntil?.let { DateFormat.getTimeFormat(context).format(Date(it)) }.orEmpty(),
-        )
-        ComposerHint.AFTER_RESET -> stringResource(R.string.agents_reply_after_reset)
     }
 }
 
@@ -527,6 +767,7 @@ private fun ThreadHeader(
     onBack: () -> Unit,
     canShare: Boolean,
     onShare: () -> Unit,
+    onDetails: () -> Unit,
     drawer: AgentsDrawerControl,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -552,11 +793,19 @@ private fun ThreadHeader(
                     icon = AgentGlyphs.more,
                     contentDescription = stringResource(R.string.agents_more),
                     onClick = { menu = true },
-                    enabled = canShare,
+                    enabled = thread != null,
                 )
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
+                        text = { Text(stringResource(R.string.agents_details)) },
+                        onClick = {
+                            menu = false
+                            onDetails()
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text(stringResource(R.string.agents_share)) },
+                        enabled = canShare,
                         onClick = {
                             menu = false
                             onShare()
@@ -578,6 +827,7 @@ private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String) 
         ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting) to tints.amber
         ThreadStatus.Working -> stringResource(R.string.agents_state_working) to scheme.onSurfaceVariant
         ThreadStatus.Done -> stringResource(R.string.agents_state_done) to scheme.onSurfaceVariant
+        ThreadStatus.PlanReady -> stringResource(R.string.agents_state_plan_ready) to scheme.onSurfaceVariant
         ThreadStatus.Stopped -> stringResource(R.string.agents_state_interrupted) to scheme.onSurfaceVariant
         is ThreadStatus.Paused -> stringResource(R.string.agents_state_paused) to scheme.onSurfaceVariant
         is ThreadStatus.Failed -> stringResource(R.string.agents_state_failed) to scheme.error
@@ -858,127 +1108,5 @@ private fun RequestSheet(
                 )
             }
         }
-    }
-}
-
-/**
- * The reply box: the text, Stop beside the button whenever a turn runs or waits
- * (reconcile file, the dock, item 3), and the button: send, or "Deny and send"
- * when it has words and a request is shown; under it, for Codex, that it stops
- * and reads them next; and where it runs.
- */
-@Composable
-private fun ReplyBox(
-    view: ComposerView,
-    hint: String,
-    draft: String,
-    onDraft: (String) -> Unit,
-    onFocus: (Boolean) -> Unit,
-    sending: Boolean,
-    stopping: Boolean,
-    onStop: () -> Unit,
-    onSend: () -> Unit,
-    joined: Boolean,
-    place: String,
-) {
-    val scheme = MaterialTheme.colorScheme
-    val shape = if (joined) RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp) else RoundedCornerShape(12.dp)
-    val divider = scheme.outlineVariant
-    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-        if (AgentsModel.tooLong(draft)) {
-            Text(
-                stringResource(R.string.agents_too_long),
-                style = MaterialTheme.typography.bodySmall,
-                color = scheme.error,
-                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-            )
-        }
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(shape)
-                .background(scheme.surfaceContainer)
-                .then(if (joined) Modifier.drawBehind { drawLine(divider, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx()) } else Modifier)
-                .padding(end = 8.dp, bottom = 8.dp),
-        ) {
-            AgentTextField(
-                value = draft,
-                onValueChange = onDraft,
-                hint = hint,
-                enabled = view.enabled,
-                maxLines = 5,
-                background = Color.Transparent,
-                onFocus = onFocus,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            ) {
-                if (view.showStop) {
-                    ComposerPill(G7Icons.stop, stringResource(R.string.agents_stop), accent = false, enabled = !stopping, onClick = onStop)
-                }
-                if (sending) {
-                    Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    }
-                } else {
-                    when (view.action) {
-                        ComposerAction.NONE -> Unit
-                        ComposerAction.SEND -> G7IconButton(
-                            icon = G7Icons.send,
-                            contentDescription = stringResource(R.string.agents_send),
-                            onClick = onSend,
-                            enabled = view.actionEnabled,
-                            filled = true,
-                            tint = if (view.actionEnabled) scheme.primary else scheme.onSurfaceVariant,
-                        )
-                        ComposerAction.DENY_AND_SEND -> ComposerPill(
-                            G7Icons.send,
-                            stringResource(R.string.agents_deny_and_send),
-                            accent = true,
-                            enabled = view.actionEnabled,
-                            onClick = onSend,
-                        )
-                    }
-                }
-            }
-        }
-        if (view.codexNote) {
-            Text(
-                stringResource(R.string.agents_codex_reads_next),
-                style = MaterialTheme.typography.bodySmall,
-                color = scheme.onSurfaceVariant,
-                textAlign = TextAlign.End,
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp, end = 4.dp),
-            )
-        }
-        FolderLabel(place, Modifier.padding(start = 4.dp, top = 6.dp))
-    }
-}
-
-/** A button of the reply box with its glyph and word: Stop, or "Deny and send" in the accent. */
-@Composable
-private fun ComposerPill(icon: ImageVector, label: String, accent: Boolean, enabled: Boolean, onClick: () -> Unit) {
-    val scheme = MaterialTheme.colorScheme
-    val on = accent && enabled
-    val background = if (on) scheme.primary else scheme.surfaceContainerHigh
-    val content = when {
-        on -> scheme.onPrimary
-        enabled -> scheme.onSurface
-        else -> scheme.onSurfaceVariant
-    }
-    Row(
-        modifier = Modifier
-            .height(44.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(background)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(start = 12.dp, end = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(20.dp))
-        Text(label, style = MaterialTheme.typography.labelLarge.copy(fontWeight = if (accent) FontWeight.SemiBold else FontWeight.Medium), color = content, maxLines = 1)
     }
 }

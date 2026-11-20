@@ -111,6 +111,7 @@ import app.g7link.core.AgentLink
 import app.g7link.core.AgentLiveLabel
 import app.g7link.core.AgentMarkKind
 import app.g7link.core.AgentMarker
+import app.g7link.core.AgentQuestionState
 import app.g7link.core.AgentRow
 import app.g7link.core.AgentRowKind
 import app.g7link.core.AgentRowStatus
@@ -119,6 +120,7 @@ import app.g7link.core.AgentSummary
 import app.g7link.core.AgentTable
 import app.g7link.core.AgentToolClass
 import app.g7link.core.AgentToolLabel
+import app.g7link.core.AgentVia
 import kotlinx.coroutines.delay
 
 // The gutter of a step's line (the design's GUT and LABEL_X): disclosure, gap, glyph, gap.
@@ -133,9 +135,20 @@ private val NEST = 17.dp
 private const val INLINE_OUTPUT_LINES = 12
 private const val INLINE_DIFF_ROWS = 40
 
-/** What the rows need besides themselves: the items they came from (by id) and the folder's label. */
+/**
+ * What the rows need besides themselves: the items they came from (by id), the
+ * folder's label, and for a plan's card whether it's the newest proposed one and
+ * whether the thread runs; the thumbnails of images sent with messages.
+ */
 @Immutable
-internal class RowsContext(val items: Map<String, AgentItem>, val folder: String)
+internal class RowsContext(
+    val items: Map<String, AgentItem>,
+    val folder: String,
+    val newestPlan: String? = null,
+    val running: Boolean = false,
+    val implementing: Boolean = false,
+    val thumbs: ImageThumbs? = null,
+)
 
 /** What a tap on a row does. */
 @Immutable
@@ -152,6 +165,10 @@ internal class RowActions(
     val diff: (String, AgentDiffDoc) -> Unit,
     /** The "Waiting for you" line: bring the request into view. */
     val mark: () -> Unit,
+    /** "Implement" on a plan's card: the plan item's id. */
+    val implement: (String) -> Unit = {},
+    /** "Change the plan": the reply box, to say what to change. */
+    val changePlan: () -> Unit = {},
 )
 
 /**
@@ -202,13 +219,31 @@ internal fun AgentRowsList(
                 }
             }
         }
-        items(rows.size, key = { rows[it].key }, contentType = { kindName(rows[it].kind) }) { index ->
-            val row = rows[index]
-            val gap = topGap(rows.getOrNull(index - 1), row)
-            NestedRow(row.depth.toInt(), gap) { AgentRowView(row, context, actions) }
+        val units = AgentPlanCards.units(rows)
+        items(units.size, key = { units[it].key }, contentType = { unitType(units[it]) }) { index ->
+            when (val unit = units[index]) {
+                is RowUnit.One -> {
+                    val row = unit.row
+                    val gap = topGap(lastRow(units.getOrNull(index - 1)), row)
+                    NestedRow(row.depth.toInt(), gap) { AgentRowView(row, context, actions) }
+                }
+                is RowUnit.Plan -> NestedRow(unit.head.depth.toInt(), if (index > 0) 12.dp else 0.dp) { PlanCard(unit, context, actions) }
+            }
         }
         footer?.invoke(this)
     }
+}
+
+private fun unitType(unit: RowUnit): String = when (unit) {
+    is RowUnit.One -> kindName(unit.row.kind)
+    is RowUnit.Plan -> "plan"
+}
+
+/** The last row an entry shows: a plan's last block, or the row itself. */
+private fun lastRow(unit: RowUnit?): AgentRow? = when (unit) {
+    is RowUnit.One -> unit.row
+    is RowUnit.Plan -> unit.blocks.lastOrNull() ?: unit.head
+    null -> null
 }
 
 /** A row kind's name, its list content type. */
@@ -224,6 +259,8 @@ private fun kindName(kind: AgentRowKind): String = when (kind) {
     is AgentRowKind.Mark -> "mark"
     is AgentRowKind.Notice -> "notice"
     is AgentRowKind.Live -> "live"
+    is AgentRowKind.Plan -> "plan"
+    is AgentRowKind.Question -> "question"
 }
 
 /**
@@ -274,7 +311,7 @@ private fun NestedRow(depth: Int, gap: Dp, content: @Composable () -> Unit) {
 @Composable
 private fun AgentRowView(row: AgentRow, context: RowsContext, actions: RowActions) {
     when (val kind = row.kind) {
-        is AgentRowKind.User -> UserRow(kind, context.items[row.itemId])
+        is AgentRowKind.User -> UserRow(kind, context.items[row.itemId], context.thumbs)
         is AgentRowKind.Block -> BlockRow(row, kind, context.items[row.itemId], actions)
         is AgentRowKind.Tool -> ToolRow(row, kind, context.items[row.itemId], actions)
         is AgentRowKind.Detail -> DetailRow(row, kind, context, actions)
@@ -285,15 +322,38 @@ private fun AgentRowView(row: AgentRow, context: RowsContext, actions: RowAction
         is AgentRowKind.Mark -> MarkRow(kind, actions)
         is AgentRowKind.Notice -> NoticeRow(kind.text)
         is AgentRowKind.Live -> LiveRow(kind)
+        // A plan's rows are drawn as one card (AgentRowsList); one on its own is its header.
+        is AgentRowKind.Plan -> PlanCard(RowUnit.Plan(row, kind, emptyList()), context, actions)
+        is AgentRowKind.Question -> QuestionRow(row, kind, actions)
     }
 }
 
 // ---- Your messages ----
 
 @Composable
-private fun UserRow(kind: AgentRowKind.User, item: AgentItem?) {
+private fun UserRow(kind: AgentRowKind.User, item: AgentItem?, thumbs: ImageThumbs?) {
     val scheme = MaterialTheme.colorScheme
     Column(Modifier.fillMaxWidth().padding(start = 48.dp), horizontalAlignment = Alignment.End) {
+        val steered = when (kind.via) {
+            AgentVia.STEER -> true
+            AgentVia.QUEUE, null -> false
+        }
+        if (steered) {
+            Text(
+                stringResource(R.string.agents_sent_while_working),
+                style = MaterialTheme.typography.labelMedium,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
+        val images = item?.let { AgentControlFfi.imageIds(it) }.orEmpty()
+        if (images.isNotEmpty() && thumbs != null) {
+            Row(Modifier.padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (id in images) {
+                    ThumbImage(thumbs, id, Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)).background(scheme.surfaceContainerHigh))
+                }
+            }
+        }
         if (kind.denyOf) {
             // The wire doesn't say which device sent it, so it's said without a name.
             Text(
@@ -303,15 +363,17 @@ private fun UserRow(kind: AgentRowKind.User, item: AgentItem?) {
                 modifier = Modifier.padding(bottom = 4.dp),
             )
         }
-        SelectionContainer {
-            Text(
-                kind.text,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(scheme.surfaceContainerHigh)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-            )
+        if (kind.text.isNotEmpty() || images.isEmpty()) {
+            SelectionContainer {
+                Text(
+                    kind.text,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(scheme.surfaceContainerHigh)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                )
+            }
         }
         if (item?.truncated == true) {
             Text(
@@ -384,7 +446,7 @@ private fun StyledText(
 }
 
 @Composable
-private fun BlockRow(row: AgentRow, kind: AgentRowKind.Block, item: AgentItem?, actions: RowActions) {
+internal fun BlockRow(row: AgentRow, kind: AgentRowKind.Block, item: AgentItem?, actions: RowActions) {
     val block = kind.block
     Column(Modifier.fillMaxWidth()) {
         Quoted(block.quote.toInt()) {
@@ -676,6 +738,7 @@ internal fun classIcon(cls: AgentToolClass?): ImageVector = when (cls) {
     AgentToolClass.WEB -> G7Icons.globe
     AgentToolClass.AGENT -> G7Icons.sparkle
     AgentToolClass.TASKS -> G7Icons.clipboardList
+    AgentToolClass.PLAN -> G7Icons.clipboardList
     AgentToolClass.MCP, AgentToolClass.OTHER, null -> G7Icons.apps
 }
 
@@ -721,7 +784,7 @@ private fun toolTemplate(cls: AgentToolClass, status: AgentRowStatus): Int? = wh
         AgentRowStatus.STOPPED -> R.string.agents_tool_stopped
         AgentRowStatus.ASKING -> R.string.agents_tool_wants_use
     }
-    AgentToolClass.MCP, AgentToolClass.AGENT, AgentToolClass.TASKS, AgentToolClass.OTHER ->
+    AgentToolClass.MCP, AgentToolClass.AGENT, AgentToolClass.TASKS, AgentToolClass.OTHER, AgentToolClass.PLAN ->
         if (status == AgentRowStatus.ASKING) R.string.agents_tool_wants_use else null
 }
 
@@ -729,7 +792,7 @@ private fun toolTemplate(cls: AgentToolClass, status: AgentRowStatus): Int? = wh
 internal fun toolLabelText(resources: Resources, label: AgentToolLabel, status: AgentRowStatus, monoStyle: SpanStyle): AnnotatedString {
     val code = when (label.toolClass) {
         AgentToolClass.COMMAND, AgentToolClass.EDIT, AgentToolClass.READ, AgentToolClass.SEARCH, AgentToolClass.WEB -> true
-        AgentToolClass.MCP, AgentToolClass.AGENT, AgentToolClass.TASKS, AgentToolClass.OTHER -> false
+        AgentToolClass.MCP, AgentToolClass.AGENT, AgentToolClass.TASKS, AgentToolClass.OTHER, AgentToolClass.PLAN -> false
     }
     val target = if (code) AnnotatedString(label.target, monoStyle) else AnnotatedString(label.target)
     val more = label.more.toInt()
@@ -750,7 +813,7 @@ private fun clauseText(resources: Resources, clause: AgentClause, second: Boolea
         AgentToolClass.READ -> if (second) R.plurals.agents_clause_read_lower else R.plurals.agents_clause_read
         AgentToolClass.SEARCH -> if (second) R.plurals.agents_clause_searched_lower else R.plurals.agents_clause_searched
         AgentToolClass.WEB -> if (second) R.plurals.agents_clause_web_lower else R.plurals.agents_clause_web
-        AgentToolClass.MCP, AgentToolClass.AGENT, AgentToolClass.TASKS, AgentToolClass.OTHER ->
+        AgentToolClass.MCP, AgentToolClass.AGENT, AgentToolClass.TASKS, AgentToolClass.OTHER, AgentToolClass.PLAN ->
             if (second) R.plurals.agents_clause_tools_lower else R.plurals.agents_clause_tools
     }
     val count = clause.count.toInt()
@@ -1192,6 +1255,66 @@ private fun MarkRow(kind: AgentRowKind.Mark, actions: RowActions) {
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+/**
+ * A question at its place in the thread: "Asked you 2 questions", then how it
+ * ended ("You answered", "Answered on Pixel 8 Pro", "Not answered"); "Waiting
+ * for you" while it waits (tapping brings the dock up). It opens to what was
+ * asked and answered when the item has that (never for a secret one).
+ */
+@Composable
+private fun QuestionRow(row: AgentRow, kind: AgentRowKind.Question, actions: RowActions) {
+    val scheme = MaterialTheme.colorScheme
+    val count = kind.count.toInt().coerceAtLeast(1)
+    val asked = pluralStringResource(R.plurals.agents_question_asked, count, count)
+    val by = kind.by.takeIf { it.isNotBlank() }
+    val ended = when (kind.state) {
+        AgentQuestionState.ASKED -> null
+        AgentQuestionState.ANSWERED -> by?.let { stringResource(R.string.agents_question_answered_on, it) } ?: stringResource(R.string.agents_question_you_answered)
+        AgentQuestionState.DISMISSED, AgentQuestionState.EXPIRED -> stringResource(R.string.agents_question_not_answered)
+    }
+    val tints = g7Tints()
+    val waiting = kind.state == AgentQuestionState.ASKED
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 34.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(enabled = kind.hasText, role = Role.Button) { actions.toggle(row.key) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Gutter(open = if (kind.hasText) kind.open else null, icon = G7Icons.help, tint = scheme.onSurfaceVariant)
+            Text(
+                if (ended != null) "$asked · $ended" else asked,
+                style = MaterialTheme.typography.bodyMedium,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (waiting) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 28.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(role = Role.Button, onClick = actions.mark)
+                    .padding(start = LABEL_X),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(G7Icons.history, contentDescription = null, tint = tints.amber, modifier = Modifier.size(13.dp))
+                Text(
+                    stringResource(R.string.agents_mark_waiting),
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = tints.amber,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 

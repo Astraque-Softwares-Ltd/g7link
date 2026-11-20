@@ -57,6 +57,7 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -394,9 +395,16 @@ private fun LazyListScope.threadSection(
     }
     items(threads, key = { "thread:${it.id}" }, contentType = { "thread" }) { thread ->
         val status = AgentsModel.status(thread)
+        // A question waiting, or a plan ready, says so where the folder would (reconcile file, "Lists").
+        val asking = maxOf(agents.questionsFor(thread.id).size, thread.asking.toInt())
+        val what = when {
+            asking > 0 && thread.asks == 0u -> pluralStringResource(R.plurals.agents_question_asks_you, asking, asking)
+            status == ThreadStatus.PlanReady -> stringResource(R.string.agents_plan_ready_sub)
+            else -> thread.folder
+        }
         DrawerRow(
             label = thread.title,
-            sublabel = listOf(agents.agentName(thread.agent), thread.folder).filter { it.isNotBlank() }.joinToString(" · "),
+            sublabel = listOf(agents.agentName(thread.agent), what).filter { it.isNotBlank() }.joinToString(" · "),
             note = if (AgentsModel.running(thread)) null else relativeTime(thread.updatedMs, now),
             selected = selected == DrawerSelection.Thread(thread.id),
             onClick = { onThread(thread.id) },
