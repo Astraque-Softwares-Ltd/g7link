@@ -1,61 +1,86 @@
 // SPDX-License-Identifier: MPL-2.0
-//! The G7 Link wire protocol (version 0).
+//! The G7 Link wire protocol, version 1.
 //!
 //! This crate is pure protocol logic with no networking: device IDs, message
-//! types, the CBOR envelope, length-prefixed framing and the pairing
-//! primitives. It is specified in `docs/protocol/v0.md`.
+//! types and the lane each travels on, the CBOR envelope, length-prefixed
+//! framing, datagrams and the pairing primitives. It is specified in
+//! `docs/protocol/v1.md`.
 
 pub mod ble;
+mod datagram;
 mod envelope;
 mod error;
 mod frame;
 mod id;
+pub mod lanes;
 pub mod messages;
 pub mod pairing;
 mod video;
 
+pub use datagram::{
+    DATAGRAM_INPUT, DATAGRAM_SOUND, MAX_SOUND_PAYLOAD, SOUND_CODEC_PCM_S16LE, SOUND_HEADER_LEN, SoundDatagram,
+};
 pub use envelope::Envelope;
 pub use error::{ErrorCode, ProtocolError};
 pub use frame::{MAX_FRAME_LEN, decode_frame, encode_frame, read_frame, write_frame};
 pub use id::{DeviceId, ParseDeviceIdError};
 pub use video::{MAX_VIDEO_PACKET, PacketKind, VideoPacket, read_video_packet, video_packet_header};
 
-/// ALPN for normal sessions between paired devices.
-pub const ALPN_SESSION: &[u8] = b"g7link/0";
+/// ALPN for sessions between paired devices.
+pub const ALPN_SESSION: &[u8] = b"g7link/1";
+/// The ALPN of protocol v0. A device still accepts it, only to tell a paired
+/// peer that it needs an update: it reads nothing and closes the connection
+/// with `VERSION_TOO_OLD` (an unpaired one with `UNPAIRED`).
+pub const ALPN_SESSION_V0: &[u8] = b"g7link/0";
 /// ALPN for the pairing ceremony.
 pub const ALPN_PAIR: &[u8] = b"g7link-pair/0";
 
-/// Protocol version spoken by this implementation.
-pub const PROTOCOL_VERSION: u32 = 0;
-/// Oldest protocol version this implementation still accepts.
-pub const MIN_PROTOCOL_VERSION: u32 = 0;
-
-/// Negotiates the protocol version for a session.
-///
-/// Returns the version both sides will speak, or `None` if either side's
-/// minimum is above what the other speaks.
-pub fn negotiate_version(local: (u32, u32), remote: (u32, u32)) -> Option<u32> {
-    let (local_proto, local_min) = local;
-    let (remote_proto, remote_min) = remote;
-    let version = local_proto.min(remote_proto);
-    (version >= local_min && version >= remote_min).then_some(version)
-}
+/// Protocol version spoken by this implementation. A `hello` with any other
+/// `proto` is answered `error VERSION_TOO_OLD` and the connection closed.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::{DeviceInfo, DeviceKind, Hello, PowerLevel, types};
 
     #[test]
-    fn negotiates_lowest_common_version() {
-        assert_eq!(negotiate_version((3, 1), (2, 0)), Some(2));
-        assert_eq!(negotiate_version((0, 0), (0, 0)), Some(0));
+    fn the_session_speaks_v1_and_keeps_v0_only_to_turn_it_away() {
+        assert_eq!(ALPN_SESSION, b"g7link/1");
+        assert_eq!(ALPN_SESSION_V0, b"g7link/0");
+        assert_eq!(ALPN_PAIR, b"g7link-pair/0", "pairing keeps its own version");
+        assert_eq!(PROTOCOL_VERSION, 1);
     }
 
     #[test]
-    fn rejects_versions_below_minimum() {
-        // Local speaks 5 but needs at least 4; remote only speaks 3.
-        assert_eq!(negotiate_version((5, 4), (3, 0)), None);
-        // Remote requires at least 2; local only speaks 1.
-        assert_eq!(negotiate_version((1, 0), (4, 2)), None);
+    fn a_hello_carries_its_version_and_no_minimum() {
+        let hello = Hello {
+            proto: PROTOCOL_VERSION,
+            app: "0.1.18".into(),
+            device: DeviceInfo {
+                name: "Pixel".into(),
+                kind: DeviceKind::Phone,
+                os: "android".into(),
+                os_ver: "16".into(),
+                model: None,
+                accent: None,
+                screen: None,
+                install_id: None,
+            },
+            caps: vec!["core.ping".into()],
+            power: PowerLevel::Assist,
+            localsend: None,
+        };
+        let env = Envelope::new(types::HELLO, &hello).unwrap();
+        let ciborium::Value::Map(fields) = env.b.clone().unwrap() else { panic!("a map") };
+        let keys: Vec<&str> = fields.iter().filter_map(|(k, _)| k.as_text()).collect();
+        assert_eq!(keys, ["proto", "app", "device", "caps", "power"]);
+        let back: Hello = Envelope::from_cbor(&env.to_cbor()).unwrap().expect_body(types::HELLO).unwrap();
+        assert_eq!(back, hello);
+        // A body with a `min` (as v0 sent) still reads; the field means nothing.
+        let mut old = fields.clone();
+        old.push((ciborium::Value::Text("min".into()), ciborium::Value::Integer(0.into())));
+        let old = Envelope { b: Some(ciborium::Value::Map(old)), ..env };
+        assert_eq!(old.body::<Hello>().unwrap(), hello);
     }
 }

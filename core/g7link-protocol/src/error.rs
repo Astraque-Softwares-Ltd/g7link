@@ -3,7 +3,8 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Error codes carried in `error` messages (protocol §8).
+/// Error codes carried in `error` messages, and the QUIC application codes
+/// that close a connection or reset a stream with them (`docs/protocol/v1.md` §10).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorCode {
     Unsupported,
@@ -16,6 +17,9 @@ pub enum ErrorCode {
     Internal,
     /// The thing the request names no longer exists.
     NotFound,
+    /// The opener of an RPC stream gave up on it: it resets its send side and
+    /// stops its receive side with this code.
+    Cancelled,
     /// A code this implementation doesn't know yet (forward compatibility).
     Other(String),
 }
@@ -32,6 +36,7 @@ impl ErrorCode {
             ErrorCode::Busy => "BUSY",
             ErrorCode::Internal => "INTERNAL",
             ErrorCode::NotFound => "NOT_FOUND",
+            ErrorCode::Cancelled => "CANCELLED",
             ErrorCode::Other(code) => code,
         }
     }
@@ -47,6 +52,7 @@ impl ErrorCode {
             ErrorCode::Denied => 6,
             ErrorCode::Busy => 7,
             ErrorCode::NotFound => 9,
+            ErrorCode::Cancelled => 10,
             ErrorCode::Internal | ErrorCode::Other(_) => 8,
         }
     }
@@ -72,6 +78,7 @@ impl FromStr for ErrorCode {
             "BUSY" => ErrorCode::Busy,
             "INTERNAL" => ErrorCode::Internal,
             "NOT_FOUND" => ErrorCode::NotFound,
+            "CANCELLED" => ErrorCode::Cancelled,
             other => ErrorCode::Other(other.to_owned()),
         })
     }
@@ -129,9 +136,32 @@ mod tests {
 
     #[test]
     fn codes_round_trip_and_tolerate_unknown_values() {
-        for code in ["UNSUPPORTED", "UNPAIRED", "DENIED", "VERSION_TOO_OLD", "NOT_FOUND"] {
+        for code in ["UNSUPPORTED", "UNPAIRED", "DENIED", "VERSION_TOO_OLD", "NOT_FOUND", "BUSY", "CANCELLED"]
+        {
             assert_eq!(code.parse::<ErrorCode>().unwrap().as_str(), code);
         }
         assert_eq!("FUTURE_CODE".parse::<ErrorCode>().unwrap(), ErrorCode::Other("FUTURE_CODE".into()));
+    }
+
+    #[test]
+    fn close_codes_are_distinct_and_cancelled_is_ten() {
+        let codes = [
+            ErrorCode::Unsupported,
+            ErrorCode::Unpaired,
+            ErrorCode::VersionTooOld,
+            ErrorCode::FrameTooLarge,
+            ErrorCode::BadMessage,
+            ErrorCode::Denied,
+            ErrorCode::Busy,
+            ErrorCode::Internal,
+            ErrorCode::NotFound,
+            ErrorCode::Cancelled,
+        ];
+        let mut seen: Vec<u32> = codes.iter().map(ErrorCode::close_code).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), codes.len());
+        assert_eq!(ErrorCode::Cancelled.close_code(), 10);
+        assert_eq!(ErrorCode::VersionTooOld.close_code(), 3);
     }
 }

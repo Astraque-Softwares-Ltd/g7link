@@ -1,7 +1,6 @@
-# Messages service (protocol v0)
+# Messages service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A PC reads a phone's text messages (SMS and MMS) and sends texts through
 it. The phone keeps the messages; a PC asks for what it shows and keeps it
@@ -21,23 +20,24 @@ on each side.
 
 ## 2. Messages
 
-On the control stream. Each request is answered with the matching answer
-or `error`.
+The requests are RPCs (PC → phone, [protocol v1](v1.md) §4.3), each answered
+`ok` with the answer below, or `error`; `sms.changed` goes one way on the
+`sms` lane (phone → PC).
 
 ```
-t = "sms.threads"   id = n   b = { limit: uint }                          // 1 to 100
-t = "sms.threads"   re = n   b = { threads: [ thread ], ? app: text }    // newest first; app: the default SMS app's package
+RPC sms/threads    t = "sms.threads"    b = { limit: uint }                          // 1 to 100
+  answer (paged): { threads: [ thread ], ? app: text }   // newest first; app: the default SMS app's package, in every part
 
-t = "sms.messages"  id = n   b = { thread: text, ? before: int, limit: uint }
-t = "sms.messages"  re = n   b = { messages: [ message ] }               // newest first
+RPC sms/messages   t = "sms.messages"   b = { thread: text, ? before: int, limit: uint }
+  answer (paged): { messages: [ message ] }              // newest first
 
-t = "sms.send"      id = n   b = { to: [ text ], ? body: text, ? attachments: [ attachment ] }
-t = "ok"            re = n
+RPC sms/send       t = "sms.send"       b = { to: [ text ], ? body: text, ? attachments: [ attachment ] }
+  answer: ok
 
-t = "sms.part"      id = n   b = { id: text }
-t = "sms.part"      re = n   b = { mime: text, data: bytes }
+RPC sms/part       t = "sms.part"       b = { id: text }
+  answer: { mime: text, data: bytes }                    // one frame
 
-t = "sms.changed"            b = { ? thread: text }                       // phone → PC
+t = "sms.changed"   b = { ? thread: text }                                           // phone → PC
 
 attachment = {
   mime: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
@@ -71,8 +71,8 @@ message = {
 ### 2.1 Reading
 
 `sms.messages` pages back through a conversation: `before` is the oldest
-`date` already shown. A phone answers with fewer items than `limit` when
-the answer wouldn't fit in a frame (v0 §3), dropping the oldest.
+`date` already shown. A page larger than a frame comes in parts
+([protocol v1](v1.md) §4.4).
 
 `sms.part` fetches an attachment; parts larger than 900 KiB are refused
 with `BUSY`.
@@ -104,4 +104,4 @@ it knows it. PCs then ask again for what they show.
 
 ## 4. Privacy
 
-Numbers, names, text and pictures are never logged (v0 §11).
+Numbers, names, text and pictures are never logged ([protocol v1](v1.md) §11).

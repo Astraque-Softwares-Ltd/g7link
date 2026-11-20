@@ -1,16 +1,16 @@
-# Notifications service (protocol v0)
+# Notifications service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A phone mirrors its notifications to paired PCs, which show them (as desktop
 notifications and in a feed) and can dismiss them, reply to them and run their actions,
 and to paired phones and tablets that offer `notify.show`, which show them
 in their own notification shade and dismiss them there.
 
-All messages travel on the **control stream** (v0 §4). Notifications are
-small, latency matters more than throughput, and their order must be kept:
-a `notify.removed` must never overtake the `notify.posted` it removes.
+Events travel on the **`notify` lane** ([protocol v1](v1.md) §4.2), one
+each way, so their order is kept: a `notify.removed` never overtakes the
+`notify.posted` it removes. `notify.dismiss` and `notify.action` are RPCs
+(`notify/dismiss`, `notify/action`, §4.3 there).
 
 ## 1. Capabilities
 
@@ -23,7 +23,7 @@ a `notify.removed` must never overtake the `notify.posted` it removes.
 | `notify.show` | phone, tablet | Shows a paired phone's or tablet's notifications; a phone sends them to it as to a PC (PCs needn't offer it) |
 
 A PC that doesn't offer anything still receives these events; a peer that
-doesn't know them ignores them (v0 §3.1).
+doesn't know them ignores them ([protocol v1](v1.md) §3.1).
 
 ## 2. The notification
 
@@ -160,11 +160,12 @@ t = "notify.removed"    b = { key: text }
 ## 4. Requests (PC → phone)
 
 ```
-t = "notify.sync"                                    // one-way
-t = "notify.hold"      b = { held: bool }            // one-way
-t = "notify.dismiss"   id = n   b = { key: text }
-t = "notify.action"    id = n   b = { key: text, action: text, reply: text? }
-t = "ok"               re = n
+t = "notify.sync"                                    // one way, notify lane
+t = "notify.hold"      b = { held: bool }            // one way, notify lane
+
+RPC notify/dismiss   t = "notify.dismiss"   b = { key: text }
+RPC notify/action    t = "notify.action"    b = { key: text, action: text, reply: text? }
+  answer: ok
 ```
 
 - **`notify.sync`** asks for a fresh `notify.snapshot`, for example after the
@@ -173,9 +174,8 @@ t = "ok"               re = n
 - **`notify.hold`** with `held: true` asks the phone to send this PC no
   `notify.posted`, `notify.removed` or `notify.snapshot` until `held: false` or
   the session ends. A PC sends it when it's locked and the user chose that, again
-  on reconnecting, and follows `held: false` with `notify.sync`. A phone from
-  before this message answers `unsupported`, so a holding PC also drops what
-  still arrives.
+  on reconnecting, and follows `held: false` with `notify.sync`. A holding PC
+  also drops what still arrives.
 - **`notify.dismiss`** dismisses the notification on the phone. Dismissing
   one that's already gone succeeds. A PC **SHOULD NOT** send it for an `ongoing`
   notification, nor remove one from its list on a "clear all": Android
@@ -196,4 +196,4 @@ when the phone doesn't offer `notify.reply`.
   same toggle on the PC).
 - Apps that mark a notification as local-only (Android `FLAG_LOCAL_ONLY`) are
   respected: such notifications are never sent.
-- Implementations **MUST NOT** log notification content (v0 §11).
+- Implementations **MUST NOT** log notification content ([protocol v1](v1.md) §11).

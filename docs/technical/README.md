@@ -10,7 +10,6 @@ For end-user setup and feature guides, see [docs/guide/README.md](../guide/READM
 |---|---|
 | [Architecture](architecture.md) | Crate layout, runtime topology, discovery and transport (`Lan`, `Usb`, `Relay`), Android elevated helper, `v4l2loopback` virtual camera transport, and perceptual OKLab color engine |
 | [Security Model](security-model.md) | Ed25519 device identity, key protection at rest (AES-256-GCM under a Secret Service key on Linux, Android Keystore AES-256-GCM), QR and 6-digit pairing protocols, `CapabilityMatrix`, consent gates, update checks, and localhost HTTP API isolation |
-| [Protocol Overview](protocol-overview.md) | `g7link/0` wire framing (LEB128 + CBOR), QUIC stream taxonomy, control handshake, resumable BLAKE3 file transfers, real-time media framing, and index of the 18 specification files in [`docs/protocol/`](../protocol/v0.md) |
 | [Storage and Retention](storage-and-retention.md) | SQLite schema v8 (`core/g7link-core/src/store.rs`), timeline and `MessagingStyle` conversation caches, persistent FIFO send queue (`send_queue`), and `KeyProtector`-encrypted clipboard history |
 | [Performance Budgets](performance-budgets.md) | Startup, memory, CPU, transport, and latency targets from [`docs/PERFORMANCE.md`](../PERFORMANCE.md), measured benchmarks, and key root-cause engineering optimizations |
 | [Building and Testing](building-and-testing.md) | Pinned toolchains (`Rust 1.97+`, `Qt 6.12`, `Android compileSdk 37 / minSdk 26`, `JDK 17+`), `cargo xtask` automation, Linux packaging scripts, and the test suites CI runs |
@@ -50,7 +49,7 @@ g7link/
 
 ## Related Specification Directories
 
-- [`docs/protocol/`](../protocol/v0.md): Normative wire-level specifications for `g7link/0` and `g7link-pair/0`, plus per-capability message schemas.
+- [`docs/protocol/`](../protocol/v1.md): Normative wire-level specifications for `g7link/1` and `g7link-pair/0`, plus per-capability message schemas.
 - [`docs/adr/`](../adr/README.md): Architecture decision records covering the shared Rust core (`0002`), `iroh` QUIC transport (`0003`), CBOR wire framing (`0004`), the Qt Quick UI stack (`0005`), Kotlin + Jetpack Compose on Android (`0006`), licensing (`0007`), and platform distribution (`0008`).
 - [`docs/architecture/`](../architecture/capabilities.md): Capability matrix reference and core Rust API design notes.
 - [`docs/design/`](../design/README.md): Visual design system tokens, typography, and motion guidelines.

@@ -1,7 +1,6 @@
-# Actions service (protocol v0)
+# Actions service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 One-shot requests from one paired device to another: a phone locks its PC,
 puts it to sleep, or wakes it over the local network with Wake-on-LAN, and
@@ -12,7 +11,7 @@ either device opens a web link on the other.
 | ID | Offered by | Meaning |
 |---|---|---|
 | `pc.power` | PC | Locks or sleeps when a paired phone asks |
-| `pc.wake` | PC | Shares its network adapter MAC and subnet broadcast addresses (`pc.wake_info`) so a paired phone can wake it |
+| `pc.wake` | PC | Shares its network adapter MAC and subnet broadcast addresses (`pc.wake.info`) so a paired phone can wake it |
 | `link.open` | both | Opens web links a paired device sends |
 | `task.notify` | both | Sends or shows watched PC task notifications (`task.notify`) |
 
@@ -21,19 +20,23 @@ request it doesn't offer.
 
 ## 2. Messages
 
-All on the control stream. `pc.power`, `link.open` and `task.notify` are
-requests answered with `ok` or `error`; `pc.wake_info` is a one-way event (no
-`id`, no reply).
+| Message | Lane ([protocol v1](v1.md) §4) | Dir | Answer |
+|---|---|---|---|
+| `pc.power` | RPC `pc/power` | phone → PC | `ok` |
+| `pc.wake.relay` | RPC `pc/wake.relay` | either | `ok` |
+| `link.open` | RPC `link/open` | either | `ok` |
+| `task.notify` | `task` lane, with `id` | PC → phone | `ok` (with `re`) |
+| `pc.wake.info` | `pc` lane, one way | PC → phone | none |
 
 ```
-t = "pc.power"           id = n   b = { action: "lock" | "sleep" }
-t = "link.open"          id = n   b = { url: text, title?: text, user_shared?: bool }
-t = "task.notify"        id = n   b = { id: text, title: text, active: bool, elapsed_ms: uint, exit_code?: int }
-t = "wake.relay"         id = n   b = { mac: bytes(6), broadcast?: text }
-t = "elevated.usb"       id = n   b = { apk: text, token: text, grants?: [text] }
-t = "elevated.usb.ready" re = n   b = { port: uint }
-t = "ok"                 re = n
-t = "pc.wake_info"                b = { macs: [text, ...], broadcasts?: [text, ...] }
+RPC pc/power           t = "pc.power"        b = { action: "lock" | "sleep" }
+RPC pc/wake.relay      t = "pc.wake.relay"   b = { mac: bytes(6), broadcast?: text }
+RPC link/open          t = "link.open"       b = { url: text, title?: text, user_shared?: bool }
+  answer: ok, or error
+
+lane task              t = "task.notify"     id = n   b = { id: text, title: text, active: bool, elapsed_ms: uint, exit_code?: int }
+                       t = "ok"              re = n
+lane pc                t = "pc.wake.info"             b = { macs: [text, ...], broadcasts?: [text, ...] }
 ```
 
 ### 2.1 `pc.power`
@@ -85,7 +88,7 @@ HTTPS map URL if no Maps app handles `geo:`); when in the background, it posts
 a high-priority notification (`Open`, `Open in Maps`, or `Continue watching`)
 the user taps to open it. `INTERNAL` means it couldn't be opened or shown.
 
-### 2.3 `pc.wake_info` (Wake-on-LAN)
+### 2.3 `pc.wake.info` (Wake-on-LAN)
 
 Sent by a PC to a paired phone on session startup and whenever the PC's
 network adapters or IPv4 addresses change:
@@ -101,18 +104,18 @@ network adapters or IPv4 addresses change:
   `1..=30`).
 
 When the user turns the `pc_actions` device toggle off for a phone, the PC
-sends `pc.wake_info` with an empty `macs` list so the phone clears any
+sends `pc.wake.info` with an empty `macs` list so the phone clears any
 stored wake info for that PC.
 
-The phone persists the latest `pc.wake_info` per PC in its store so it
+The phone persists the latest `pc.wake.info` per PC in its store so it
 survives restarts. To wake an offline PC, the phone sends the standard
 102-byte Wake-on-LAN magic packet (`6 × 0xFF` followed by the 6-byte MAC
 repeated 16 times) over UDP to ports `9` and `7`, addressed to each stored
 subnet broadcast address and `255.255.255.255`, repeated a few times over
 ~2 seconds. When the phone is away from the LAN, it can also ask another
 online device on the PC's network to broadcast the magic packet on its
-behalf via `wake.relay { mac, broadcast? }`; the relay only honours `mac`
-and `broadcast` values that match a paired PC's stored `pc.wake_info`.
+behalf via `pc.wake.relay { mac, broadcast? }`; the relay only honours `mac`
+and `broadcast` values that match a paired PC's stored `pc.wake.info`.
 
 ### 2.4 `task.notify` ("Ping me when it's done")
 
@@ -137,19 +140,15 @@ becomes `false` with an `exit_code`, the phone replaces that notification in
 place with a high-importance completion alert (`"<title> finished"` or
 `"<title> failed (exit <code>)"`, body `"Took 4m 12s · <PC name>"`).
 
-### 2.5 `elevated.usb` (USB Elevated helper launch)
+### 2.5 Elevated over USB
 
-When a phone is connected to a paired PC over an authenticated USB ADB tunnel,
-it can send `elevated.usb { apk, token, grants? }` to ask the PC to grant the
-listed `android.permission.*` permissions via `pm grant` and start the phone
-app's `ElevatedHelperMain` entry point via `adb shell app_process`. Once the
-helper prints `G7LINK_ELEVATED_READY <port>`, the PC replies with
-`elevated.usb.ready { port }` and holds the ADB shell open until the USB
-tunnel disconnects.
+A phone plugged into a paired PC asks it to start the phone's Elevated helper
+over adb with the RPC `elevated/usb.start`, answered `ok { port }` once the
+helper listens. It is specified in [Elevated over USB](elevated-usb.md).
 
 ## 3. Rules
 
 - Implementations **MUST NOT** log links, task titles, or hardware/IP
-  addresses in `pc.wake_info` debug output (v0 §11).
+  addresses in `pc.wake.info` debug output ([protocol v1](v1.md) §11).
 
 

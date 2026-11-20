@@ -1,7 +1,6 @@
-# Contacts service (protocol v0)
+# Contacts service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A PC browses and searches a phone's contacts to call or text them from the
 PC. The phone keeps the contacts; a PC asks for them on demand and keeps
@@ -19,14 +18,15 @@ on each side.
 
 ## 2. Messages
 
-On the control stream. Each request is answered with the matching answer
-or `error`.
+`contacts.list` is the RPC `contacts/list` (PC → phone), paged
+([protocol v1](v1.md) §4.3-4.4); `contacts.changed` goes one way on the
+`contacts` lane (phone → PC).
 
 ```
-t = "contacts.list"     id = n   b = { ? query: text, ? offset: uint, limit: uint }   // limit 1 to 200
-t = "contacts.list"     re = n   b = { contacts: [ contact ] }
+RPC contacts/list    t = "contacts.list"   b = { ? query: text, ? offset: uint, limit: uint }   // limit 1 to 200
+  answer (paged): { contacts: [ contact ] }
 
-t = "contacts.changed"           b = {}                                               // phone → PC
+t = "contacts.changed"   b = {}                                                                  // phone → PC
 
 contact = {
   id:        text,
@@ -50,9 +50,8 @@ ordered with favorites (`starred: true`) first and then alphabetically by
   contacts for paging.
 - `limit` (`1..=200`): the most contacts to return in this page.
 
-A phone answers with fewer items than `limit` when the answer wouldn't fit
-in a frame (v0 §3), dropping from the end of the page. The PC advances
-`offset` by the number of contacts received to fetch the next page.
+A page larger than a frame comes in parts. The PC advances `offset` by the
+number of contacts received to fetch the next page.
 
 Errors: `DENIED` when contacts are off for the PC, `UNSUPPORTED` when the
 phone doesn't offer `contacts.read`.
@@ -65,4 +64,4 @@ again for what they show.
 
 ## 3. Privacy
 
-Names, numbers and photos are never logged (v0 §11).
+Names, numbers and photos are never logged ([protocol v1](v1.md) §11).

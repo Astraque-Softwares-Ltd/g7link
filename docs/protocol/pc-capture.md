@@ -1,7 +1,6 @@
-# Screenshots and recordings of a PC (protocol v0)
+# Screenshots and recordings of a PC (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A paired phone takes a screenshot of its PC's screen, or records it, and gets
 the file. The PC captures, saves and sends; the phone only asks. The files
@@ -25,24 +24,23 @@ earlier choice to restore), someone at the PC has to approve it.
 
 ## 2. Messages
 
-All on the control stream. Requests carry `id`; the PC answers with `re`.
+The three requests are RPCs (phone → PC, [protocol v1](v1.md) §4.3); the
+PC's events go one way on the `pc` lane.
 
 ```
-t = "pc.capture.shot"          id = n
-t = "pc.capture.record.start"  id = n
-t = "pc.capture.record.stop"   id = n
-t = "pc.capture.result"        re = n   b = { transfer: text, name: text }
-t = "ok"                       re = n
-t = "pc.capture.prompt"
-t = "pc.capture.record.ended"           b = { file?: { transfer: text, name: text } }
+RPC pc/capture.shot           t = "pc.capture.shot"           answer: ok { transfer: text, name: text }
+RPC pc/capture.record.start   t = "pc.capture.record.start"   answer: ok
+RPC pc/capture.record.stop    t = "pc.capture.record.stop"    answer: ok { transfer: text, name: text }
+
+t = "pc.capture.prompt"                                       // pc lane
+t = "pc.capture.record.ended"   b = { file?: { transfer: text, name: text } }   // pc lane
 ```
 
 ### 2.1 `pc.capture.shot`
 
 Asks the PC for a screenshot of the screen it shares (one monitor), at its
 full resolution, without the pointer, as a PNG. The PC also puts the picture
-on its own clipboard. It answers `pc.capture.result` once the file is on its
-way: `transfer` is the ID of the transfer that brings it (16 to 64 of
+on its own clipboard. It answers `ok` with the file once it is on its way: `transfer` is the ID of the transfer that brings it (16 to 64 of
 `[A-Za-z0-9_-]`) and `name` its file name (a plain name as the files service
 allows). The transfer is an ordinary one, so it waits and resumes as any other.
 
@@ -51,7 +49,7 @@ allows). The transfer is an ordinary one, so it waits and resumes as any other.
 `start` asks the PC to record its screen (with the pointer) and its sound
 into an MP4 file (H.264 and AAC); the PC answers `ok` once it records.
 `stop` ends the recording the phone started. The PC saves the video in its
-own Videos folder and answers `pc.capture.result` naming the transfer that
+own Videos folder and answers `ok` with the file, naming the transfer that
 brings it to the phone.
 
 The PC records one screen for one phone at a time, and for at most 30
@@ -65,8 +63,10 @@ the connection.
 ### 2.3 `pc.capture.prompt`
 
 Sent by the PC while a request waits for someone at the PC to approve sharing
-the screen. The phone tells its user. It may come more than once, and never
-after the answer.
+the screen. The phone tells its user. It may come more than once. It travels
+on the `pc` lane and the answer on the request's own stream, so a late
+prompt can arrive after the answer: a phone ignores one for a request it no
+longer waits on.
 
 A request can wait that long: phones allow 150 seconds for `shot` and
 `record.start`, and 120 for `record.stop` (saving the video).

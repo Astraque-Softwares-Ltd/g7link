@@ -1,7 +1,6 @@
 # Elevated over USB (and the PC's wireless adb)
 
-> Status: draft (v0). Part of [the protocol](v0.md). Breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 Elevated runs a small helper on the phone as Android's shell user
 (`app_process`, from the app's own APK). The phone normally starts it through
@@ -21,12 +20,14 @@ cable was the only way; the messages are the same over wireless adb.
 
 ## 2. Messages
 
+One RPC, `elevated/usb.start` (phone → PC, [protocol v1](v1.md) §4.3):
+
 ```
-t = "elevated.usb.start"   id = n   b = { apk: text, token: text, grants: [text], adb_port?: uint }
-t = "elevated.usb.ready"   id = n   b = { port: uint }
+RPC elevated/usb.start   t = "elevated.usb.start"   b = { apk: text, token: text, grants: [text], adb_port?: uint }
+  answer: ok { port: uint }
 ```
 
-The phone sends `elevated.usb.start`. The PC:
+The phone waits up to 95 seconds for the answer. The PC:
 
 1. Refuses unless the request is valid (§3) and it finds the phone in adb:
    connected over USB, through that phone's own adb serial, or else, when
@@ -35,7 +36,7 @@ The phone sends `elevated.usb.start`. The PC:
 3. Runs `CLASSPATH=<apk> app_process /system/bin
    app.g7link.android.elevated.InputServer <token>` and waits up to 15
    seconds for its first line, `ready <port>`.
-4. Answers `elevated.usb.ready` with that port, or an error.
+4. Answers `ok` with that port, or an error.
 
 The phone connects to the helper on `127.0.0.1:<port>` with the token, as when
 it starts the helper itself. The helper runs while the PC holds its adb shell:

@@ -1,7 +1,6 @@
-# Phone toggles service (protocol v0)
+# Phone toggles service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A phone shares its quick settings state with paired PCs, and a PC can
 change the settings the phone's Power Level and permissions allow. Settings
@@ -12,7 +11,7 @@ the capability matrix's reason for what unlocks them.
 
 | ID | Offered by | Needs | Meaning |
 |---|---|---|---|
-| `toggles.read` | phone | Basic | Shares its quick settings state (`phone.toggles`) |
+| `toggles.read` | phone | Basic | Shares its quick settings state (`toggles.state`) |
 | `toggles.ringer` | phone | Basic | Changes the ringer mode between `ring` and `vibrate` (`silent` also needs `toggles.dnd`) |
 | `toggles.volume` | phone | Basic | Changes the media volume (`0..=100`) |
 | `toggles.flashlight` | phone | Basic | Turns the flashlight on or off (only on phones with a flash unit) |
@@ -20,23 +19,25 @@ the capability matrix's reason for what unlocks them.
 | `toggles.brightness` | phone | Basic + Modify system settings (or Elevated) | Changes the screen brightness (`0..=100`) |
 | `toggles.wifi` | phone | Elevated | Turns Wi-Fi on or off |
 | `toggles.bluetooth` | phone | Elevated | Turns Bluetooth on or off |
-| `toggles.show` | desktop | None | Shows a phone's controls and sends `phone.toggle.set` requests |
+| `toggles.show` | desktop | None | Shows a phone's controls and sends `toggles.set` requests |
 
-A phone sends `phone.toggles` only to desktops that offer `toggles.show`,
+A phone sends `toggles.state` only to desktops that offer `toggles.show`,
 and only while both devices allow the `toggles` device toggle (on by
 default).
 
 ## 2. Messages
 
-All on the control stream.
+Both on the `toggles` lane ([protocol v1](v1.md) §4.2), so a state follows
+the changes before it. They also travel on the Bluetooth channel
+([Bluetooth](bluetooth.md) §4.4), where `toggles.set` carries only `hotspot`.
 
 ```
-t = "phone.toggles"     b = PhoneToggles                        // no reply
-t = "phone.toggle.set"  id = n  b = { id: text, value: Value }
-t = "ok"                re = n
+t = "toggles.state"  b = PhoneToggles                         // phone → PC, no answer
+t = "toggles.set"    id = n  b = { id: text, value: Value }   // PC → phone
+t = "ok"             re = n
 ```
 
-### 2.1 `phone.toggles`
+### 2.1 `toggles.state`
 
 Sent by the phone when a session starts, whenever any toggle changes on the
 phone (debounced), and when the `toggles` device toggle is turned back on.
@@ -54,7 +55,7 @@ PhoneToggles = {
 }
 ```
 
-### 2.2 `phone.toggle.set`
+### 2.2 `toggles.set`
 
 Asks the phone to change one toggle:
 
@@ -80,6 +81,6 @@ Errors:
 
 - **Confirm turning Wi-Fi off.** Turning Wi-Fi off from the PC can sever the
   LAN connection between the PC and the phone; the PC UI confirms with the
-  user before sending `phone.toggle.set { id: "wifi", value: false }`.
+  user before sending `toggles.set { id: "wifi", value: false }`.
 - **Debouncing.** Continuous sliders (`volume`, `brightness`) are debounced
-  by the sender so dragging a slider does not flood the control stream.
+  by the sender so dragging a slider does not flood the `toggles` lane.

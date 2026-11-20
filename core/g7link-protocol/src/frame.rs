@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::ProtocolError;
 
-/// Maximum payload length of a frame on control and RPC streams (1 MiB).
+/// Maximum payload length of a frame on control, lane and RPC streams (1 MiB).
 pub const MAX_FRAME_LEN: usize = 1 << 20;
 
 /// The longest LEB128 prefix we accept: 4 bytes encodes up to 2^28 - 1.

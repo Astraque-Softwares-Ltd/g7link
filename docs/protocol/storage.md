@@ -1,8 +1,7 @@
-# Storage service (protocol v0)
+# Storage service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md) and the
-> [files service](files.md); breaking changes are allowed until v1.
-> License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md) and the
+> [files service](files.md). License: CC BY 4.0.
 
 Lets a PC browse and mount a phone's shared storage in its file manager (a
 FUSE mount at `~/G7Link/<Phone name>` on Linux) or inspect it from the CLI:
@@ -43,15 +42,19 @@ phone's shared storage root:
   volume, with the same rules; the folder itself can't be renamed or deleted,
   and a rename between volumes is refused (`FAILED`), so the PC copies instead.
 
-## 3. Control-stream messages
+## 3. Requests and events
+
+The requests are RPCs (PC → phone, [protocol v1](v1.md) §4.3);
+`storage.changed` goes one way on the `storage` lane (phone → PC).
 
 ```
-t = "storage.list"      id = n   b = { path: text, offset?: uint }
-t = "storage.entries"   re = n   b = { entries: [ StorageEntry, ... ], more?: bool }
-t = "storage.mkdir"     id = n   b = { path: text }
-t = "storage.rename"    id = n   b = { from: text, to: text }
-t = "storage.delete"    id = n   b = { path: text, confirmed?: bool }
-t = "storage.changed"            b = { path: text }
+RPC storage/list     t = "storage.list"     b = { path: text, offset?: uint }
+  answer (paged): { entries: [ StorageEntry, ... ], more?: bool }
+RPC storage/mkdir    t = "storage.mkdir"    b = { path: text }                       answer: ok
+RPC storage/rename   t = "storage.rename"   b = { from: text, to: text }             answer: ok
+RPC storage/delete   t = "storage.delete"   b = { path: text, confirmed?: bool }     answer: ok
+
+t = "storage.changed"   b = { path: text }                                          // storage lane
 ```
 
 ```
@@ -69,12 +72,11 @@ Lists the immediate children of `path` (`""` for the root). Symlinks pointing
 outside the shared root and unreadable/private entries are omitted. Entries come
 directories first, then by name, ignoring case.
 
-A folder whose entries don't fit one frame (`MAX_FRAME_LEN`) comes in pages:
-an answer holds as many as fit, from `offset` (default 0), with `more: true`
-when entries follow. The requester asks again with `offset` past the ones it
-has, until `more` is absent or false. A device from before paging ignores
-`offset` and never sends `more`, so it answers with the first page only, as
-it always did; a requester from before paging reads the first page.
+A folder whose entries don't fit one frame comes in parts of one answer
+([protocol v1](v1.md) §4.4). `offset` (default 0) skips that many entries;
+`more: true`, in any part, says entries follow that this answer left out, and
+the requester asks again with `offset` past the ones it has, until `more` is
+absent or false.
 
 Errors: `NOT_FOUND` if `path` does not exist or is not a directory; `DENIED` if
 `storage` is off or permission is not granted; `INVALID` if `path` is malformed.
@@ -103,7 +105,8 @@ files or subfolders inside `path` change on the phone. Not answered.
 ## 4. Stream operations (`svc = "storage"`, `v = 1`)
 
 File reads and writes use dedicated bidirectional QUIC streams opened by the PC
-so large transfers and ranged hydrations never block the control stream.
+([protocol v1](v1.md) §4.7), so large transfers and ranged hydrations never
+hold up anything else.
 
 ### 4.1 `storage.read` (`op = "read"`)
 
@@ -142,4 +145,4 @@ sends `storage.write.done`.
 - Every path is validated before touching the filesystem, and canonical paths
   are checked to stay inside the shared storage root (or within the user's
   chosen SAF trees when full storage access is not granted).
-- Paths and file contents are never logged (protocol v0 §11).
+- Paths and file contents are never logged ([protocol v1](v1.md) §11).

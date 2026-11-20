@@ -1,20 +1,36 @@
-# Remote input service (protocol v0)
+# Input service (`input`, protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A phone acts as a touchpad, keyboard, and presentation remote for a paired PC.
+The service is `input`: its messages are `input.*`, its streams `input/*` and
+its capabilities `input.*`. (Its per-device toggle keeps the stored key
+`remote_input`.)
+
+| Message | Lane ([protocol v1](v1.md) §4) | Dir |
+|---|---|---|
+| pointer motion, scroll, laser | datagram `0x01` (§2.1), else the `input/motion` stream | phone → PC |
+| `input.event` → `ok` | `input` lane, with `id` | phone → PC |
+| `input.text_watch` | `input` lane, one way | phone → PC |
+| `input.text_state`, `input.text_focus` | `input` lane, one way | PC → phone |
+| `input.check` | RPC `input/check` | phone → PC |
+| `input.app_icon` | RPC `input/app_icon` | phone → PC |
+
+The Bluetooth channel carries most of these too ([Bluetooth](bluetooth.md)
+§4.4), each with `id`/`re` as on control.
 
 ## 1. Capability and permission
 
 | ID | Offered by | Meaning |
 |---|---|---|
 | `input.inject` | desktop | Accepts pointer, keyboard, and presentation input from a paired phone |
+| `input.text_mirror` | desktop | Takes `edit` and `caret` input and tells watching phones about its focused field (§2.4) |
+| `input.app_icon` | desktop | Names the focused app's icon in its text states and serves it (§2.4) |
 
 Input is governed by the `remote_input` per-device toggle on the PC, which is
 **off by default**. While `remote_input` is off for a phone:
 
-- The PC refuses every input from that phone (`DENIED` on control requests;
+- The PC refuses every input from that phone (`DENIED` on requests;
   datagrams are dropped without injecting anything).
 - The first time a phone asks while the toggle is off, the PC prompts the user
   once to allow or decline remote input for that phone. The user can also
@@ -25,8 +41,8 @@ Input is governed by the `remote_input` per-device toggle on the PC, which is
 ### 2.1 QUIC datagrams (channel tag `0x01`)
 
 Continuous, loss-tolerant motion travels in QUIC datagrams (`RFC 9221`,
-[protocol v0 §4](v0.md)) prefixed with the one-byte channel tag `0x01`,
-followed by at most 256 bytes of CBOR-encoded `Input`:
+[protocol v1](v1.md) §5) prefixed with the one-byte tag `0x01`, followed by
+at most 256 bytes of CBOR-encoded `Input`:
 
 ```
 +--------+-----------------------+
@@ -35,9 +51,12 @@ followed by at most 256 bytes of CBOR-encoded `Input`:
 ```
 
 If QUIC datagrams are unavailable on a connection, the sender opens a
-unidirectional stream with header `{ svc: "remote", op: "motion", v: 1 }` and
-sends length-prefixed CBOR `Input` frames there. Pointer motion (`type =
-"move"`) **MUST NOT** be sent on the control stream.
+stream with header `{ svc: "input", op: "motion", v: 1 }` and sends
+`input.event` frames there. Pointer motion (`type = "move"`) **MUST NOT** be
+sent in an `input.event` request.
+
+The PC adds up motion it can't inject at once: consecutive moves, and
+consecutive scrolls, waiting to be injected are summed, never dropped.
 
 Datagram-eligible `Input` variants:
 
@@ -47,26 +66,26 @@ Datagram-eligible `Input` variants:
 { type: "laser",  on: bool, x?: float32, y?: float32 }
 ```
 
-### 2.2 Control stream requests
+### 2.2 Requests
 
-Discrete actions that must arrive, and permission checks when opening the
-remote screen, use control-stream requests:
+Discrete actions that must arrive in order go on the `input` lane; the
+permission check when the remote screen opens is an RPC:
 
 ```
-t = "remote.check"  id = n  b = {}
-t = "ok"            re = n
+RPC input/check   t = "input.check"   b = {}
+  answer: ok
 
-t = "remote.input"  id = n  b = Input
-t = "ok"            re = n
+t = "input.event"  id = n  b = Input             // input lane
+t = "ok"           re = n
 ```
 
-**`remote.check`** verifies whether the PC currently accepts remote input from
-the sender. If `remote_input` is off, the PC replies with `DENIED` and shows
+**`input.check`** verifies whether the PC currently accepts remote input from
+the sender. If `remote_input` is off, the PC answers `DENIED` and shows
 its one-time prompt if it hasn't already asked for this phone.
 
-**`remote.input`** executes a discrete input action (`button`, `scroll`,
-`text`, `key`, `slide`, or `laser`). Sending `type = "move"` in `remote.input`
-is rejected with `BAD_MESSAGE`. Errors: `UNSUPPORTED` when the receiver does
+**`input.event`** executes a discrete input action (`button`, `scroll`,
+`text`, `key`, `slide`, `laser`, `edit` or `caret`). Sending `type = "move"`
+in `input.event` is rejected with `BAD_MESSAGE`. Errors: `UNSUPPORTED` when the receiver does
 not offer `input.inject`, `DENIED` when `remote_input` is off for the sender
 or rate-limited, `BAD_MESSAGE` when values are out of bounds or name an
 unknown key.
@@ -74,7 +93,7 @@ unknown key.
 ### 2.3 Text focus (PC → phone)
 
 ```
-t = "remote.text_focus"  b = { editable: bool }
+t = "input.text_focus"  b = { editable: bool }
 ```
 
 A PC that offers `input.inject` tells each connected phone with `remote_input`
@@ -87,8 +106,8 @@ aren't seen.
 ### 2.4 The focused field (`input.text_mirror`)
 
 ```
-t = "remote.text_watch"  b = { on: bool }                       (phone → PC)
-t = "remote.text_state"  b = TextState                          (PC → phone)
+t = "input.text_watch"  b = { on: bool }                        (phone → PC)
+t = "input.text_state"  b = TextState                           (PC → phone)
 
 TextState = { focus: u32, field?: u64, epoch?: u32, rev: u32, applied: u32,
               kind: "mirror" | "opaque" | "secret" | "none",
@@ -96,8 +115,8 @@ TextState = { focus: u32, field?: u64, epoch?: u32, rev: u32, applied: u32,
               start?: u32, before?: text, after?: text, anchor?: u32,
               more_before?: bool, more_after?: bool, icon?: text }
 
-t = "remote.app_icon"    b = { key: text }                       (phone → PC)
-  → t = "remote.app_icon"  b = { png: bytes }
+RPC input/app_icon   t = "input.app_icon"   b = { key: text }  (phone → PC)
+  answer: ok { png: bytes }
 ```
 
 A PC that offers `input.text_mirror` keeps a phone's typing box and its
@@ -135,7 +154,7 @@ after a newer one).
 - When a field is found in a window that stood for it until then (`window`),
   an `edit` carrying the window's `focus` still runs for 2 s.
 - `icon` (PCs that also offer `input.app_icon`): the focused app's icon, 16
-  lowercase hex characters. The phone fetches it with `remote.app_icon` and
+  lowercase hex characters. The phone fetches it with `input.app_icon` and
   caches it by that key; a changed icon has another key. The reply is a PNG of
   at most 16 KiB (`NOT_FOUND` for a key the PC no longer has), only for a
   phone that has `remote_input`. Without an icon, the phone shows `app`.
@@ -210,10 +229,10 @@ SlideAction  = "next" | "previous" | "start" | "stop" | "black"
 ## 4. Validation and rate limiting
 
 - The PC validates all bounds and key names before touching the OS input APIs.
-- Per-peer token buckets bound incoming rates (240 datagrams/s with burst 60;
-  500 control requests/s with burst 500, which voice typing's runs of
-  backspaces need).
-- Implementations **MUST NOT** log typed `text` (v0 §11).
+- Per-peer token buckets bound incoming rates (480 motion events/s with
+  burst 120; 500 `input.event` requests/s with burst 500, which voice
+  typing's runs of backspaces need).
+- Implementations **MUST NOT** log typed `text` ([protocol v1](v1.md) §11).
 - While the PC session is locked, the PC drops `text`, `key` and `slide`
   input, so a phone can't type into the unlock prompt. Pointer moves, button
   presses and scrolling still work, and so do the media and volume keys

@@ -1,25 +1,40 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Message bodies for protocol v0 (protocol §5, §7, §9).
+//! Message bodies for protocol v1 (`docs/protocol/v1.md` and the service specs).
 
 use serde::{Deserialize, Serialize};
 
 use crate::{DeviceId, ErrorCode};
 
-/// Message type names (the envelope's `t` field).
+/// Message type names (the envelope's `t` field). Every one travels on
+/// exactly one lane, which [`crate::lanes::lane_of`] gives
+/// (`docs/protocol/v1.md` §9).
+///
+/// An RPC request's `t` is `<svc>.<op>` of its stream header. Its answer is
+/// `part` frames and one `ok` or `error`; there are no typed reply names.
 pub mod types {
+    // ---- Control ----
     pub const HELLO: &str = "hello";
     pub const HELLO_UPDATE: &str = "hello.update";
     pub const PING: &str = "ping";
     pub const PONG: &str = "pong";
-    pub const OK: &str = "ok";
-    pub const ERROR: &str = "error";
-    pub const STREAM: &str = "stream";
-    pub const EVENT_BATTERY: &str = "event.battery";
-    pub const EVENT_DEVICE: &str = "event.device";
-    pub const EVENT_UPDATE: &str = "event.update";
+    pub const DEVICE_BATTERY: &str = "device.battery";
+    pub const DEVICE_INFO: &str = "device.info";
+    pub const DEVICE_UPDATE: &str = "device.update";
     pub const DEVICE_RING: &str = "device.ring";
     pub const DEVICE_RING_STOPPED: &str = "device.ring_stopped";
+    pub const PAIR_REVOKE: &str = "pair.revoke";
+    pub const BLE_KEY: &str = "ble.key";
+    /// Phone to PC: keep a Bluetooth link with me while I renew this.
+    pub const BLE_USE: &str = "ble.use";
 
+    // ---- Replies, on the stream of their request, and the stream header ----
+    pub const OK: &str = "ok";
+    pub const ERROR: &str = "error";
+    /// One page of a paged RPC answer; the last page comes as the `ok`.
+    pub const PART: &str = "part";
+    pub const STREAM: &str = "stream";
+
+    // ---- The pairing ceremony (`g7link-pair/0`), never in a session ----
     pub const PAIR_REQUEST: &str = "pair.request";
     pub const PAIR_ACCEPT: &str = "pair.accept";
     pub const PAIR_COMMIT: &str = "pair.commit";
@@ -27,81 +42,68 @@ pub mod types {
     pub const PAIR_REVEAL: &str = "pair.reveal";
     pub const PAIR_CONFIRM: &str = "pair.confirm";
     pub const PAIR_DONE: &str = "pair.done";
-    pub const PAIR_REVOKE: &str = "pair.revoke";
 
+    // ---- The Bluetooth channel only ----
+    pub const BLE_OTP: &str = "ble.otp";
+
+    // ---- notify ----
     pub const NOTIFY_SNAPSHOT: &str = "notify.snapshot";
     pub const NOTIFY_POSTED: &str = "notify.posted";
     pub const NOTIFY_REMOVED: &str = "notify.removed";
     pub const NOTIFY_SYNC: &str = "notify.sync";
     /// PC to phone: send nothing until told otherwise, or carry on.
     pub const NOTIFY_HOLD: &str = "notify.hold";
+    pub const NOTIFY_DISMISS: &str = "notify.dismiss";
+    pub const NOTIFY_ACTION: &str = "notify.action";
 
+    // ---- clip ----
     pub const CLIP_SET: &str = "clip.set";
     /// PC to phone: its clipboard got something new.
     pub const CLIP_CHANGED: &str = "clip.changed";
-    pub const NOTIFY_DISMISS: &str = "notify.dismiss";
-    pub const NOTIFY_ACTION: &str = "notify.action";
+
+    // ---- media ----
     pub const MEDIA_STATE: &str = "media.state";
     pub const MEDIA_SYNC: &str = "media.sync";
     pub const MEDIA_COMMAND: &str = "media.command";
     pub const MEDIA_WATCH: &str = "media.watch";
+    /// Whether a phone may play its media on a PC over Bluetooth.
+    pub const MEDIA_BT: &str = "media.bt";
+    pub const MEDIA_ICON: &str = "media.icon";
     pub const MEDIA_FILE: &str = "media.file";
     pub const MEDIA_FILE_META: &str = "media.file.meta";
-    pub const MEDIA_ICON: &str = "media.icon";
     pub const MEDIA_ART: &str = "media.art";
     pub const MEDIA_ART_META: &str = "media.art.meta";
-    pub const PC_POWER: &str = "pc.power";
-    pub const PC_WAKE_INFO: &str = "pc.wake_info";
-    pub const LINK_OPEN: &str = "link.open";
-    pub const TASK_NOTIFY: &str = "task.notify";
-    pub const PHOTOS_NEW: &str = "photos.new";
-    pub const PHOTOS_ALBUMS: &str = "photos.albums";
-    pub const PHOTOS_ALBUMS_LIST: &str = "photos.albums.list";
-    pub const PHOTOS_LIST: &str = "photos.list";
-    pub const PHOTOS_ITEMS: &str = "photos.items";
-    pub const PHOTOS_THUMBS: &str = "photos.thumbs";
-    pub const PHOTOS_THUMBS_LIST: &str = "photos.thumbs.list";
-    pub const PHOTOS_GET: &str = "photos.get";
-    pub const PHOTOS_SENDING: &str = "photos.sending";
-    pub const PHOTOS_CHANGED: &str = "photos.changed";
-    pub const PHOTOS_DELETE: &str = "photos.delete";
-    pub const PHOTOS_DELETED: &str = "photos.deleted";
+
+    // ---- call ----
     pub const CALL_STATE: &str = "call.state";
     pub const CALL_ACTION: &str = "call.action";
     pub const CALL_LOG: &str = "call.log";
     pub const CALL_LOG_CHANGED: &str = "call.log.changed";
     pub const CALL_DIAL: &str = "call.dial";
     pub const CALL_SIMS: &str = "call.sims";
+
+    // ---- contacts ----
     pub const CONTACTS_LIST: &str = "contacts.list";
     pub const CONTACTS_CHANGED: &str = "contacts.changed";
+
+    // ---- sms ----
     pub const SMS_THREADS: &str = "sms.threads";
     pub const SMS_MESSAGES: &str = "sms.messages";
     pub const SMS_SEND: &str = "sms.send";
     pub const SMS_PART: &str = "sms.part";
     pub const SMS_CHANGED: &str = "sms.changed";
-    pub const MIRROR_START: &str = "mirror.start";
-    pub const MIRROR_STOP: &str = "mirror.stop";
-    pub const MIRROR_POWER: &str = "mirror.power";
-    pub const MIRROR_SOUND: &str = "mirror.sound";
-    pub const MIRROR_KEYFRAME: &str = "mirror.keyframe";
-    pub const MIRROR_RESIZE: &str = "mirror.resize";
-    pub const MIRROR_INPUT: &str = "mirror.input";
-    pub const MIRROR_APPS: &str = "mirror.apps";
-    pub const MIRROR_NOTICE: &str = "mirror.notice";
-    pub const REMOTE_CHECK: &str = "remote.check";
-    pub const REMOTE_INPUT: &str = "remote.input";
-    pub const REMOTE_TEXT_FOCUS: &str = "remote.text_focus";
-    pub const REMOTE_TEXT_WATCH: &str = "remote.text_watch";
-    pub const REMOTE_TEXT_STATE: &str = "remote.text_state";
-    pub const REMOTE_APP_ICON: &str = "remote.app_icon";
-    pub const PHONE_TOGGLES: &str = "phone.toggles";
-    pub const PHONE_TOGGLE_SET: &str = "phone.toggle.set";
-    pub const DECK_LAYOUT: &str = "deck.layout";
-    pub const DECK_STATE: &str = "deck.state";
-    pub const DECK_PRESS: &str = "deck.press";
-    pub const PC_AUDIO_SET: &str = "pc.audio.set";
+
+    // ---- photos ----
+    pub const PHOTOS_NEW: &str = "photos.new";
+    pub const PHOTOS_ALBUMS: &str = "photos.albums";
+    pub const PHOTOS_LIST: &str = "photos.list";
+    pub const PHOTOS_THUMBS: &str = "photos.thumbs";
+    pub const PHOTOS_GET: &str = "photos.get";
+    pub const PHOTOS_CHANGED: &str = "photos.changed";
+    pub const PHOTOS_DELETE: &str = "photos.delete";
+
+    // ---- storage ----
     pub const STORAGE_LIST: &str = "storage.list";
-    pub const STORAGE_ENTRIES: &str = "storage.entries";
     pub const STORAGE_READ: &str = "storage.read";
     pub const STORAGE_READ_META: &str = "storage.read.meta";
     pub const STORAGE_WRITE: &str = "storage.write";
@@ -111,32 +113,69 @@ pub mod types {
     pub const STORAGE_RENAME: &str = "storage.rename";
     pub const STORAGE_DELETE: &str = "storage.delete";
     pub const STORAGE_CHANGED: &str = "storage.changed";
-    pub const ELEVATED_USB_START: &str = "elevated.usb.start";
-    pub const ELEVATED_USB_READY: &str = "elevated.usb.ready";
-    pub const MIC_START: &str = "mic.start";
-    pub const MIC_STOP: &str = "mic.stop";
-    pub const WEBCAM_START: &str = "webcam.start";
-    pub const WEBCAM_STOP: &str = "webcam.stop";
-    pub const WEBCAM_KEYFRAME: &str = "webcam.keyframe";
-    pub const WEBCAM_OK: &str = "webcam.ok";
-    pub const CAMERA_CAPTURE_REQUEST: &str = "camera.capture.request";
-    pub const CAMERA_CAPTURE_OK: &str = "camera.capture.ok";
-    pub const CAMERA_CAPTURE_CANCEL: &str = "camera.capture.cancel";
+
+    // ---- files ----
+    pub const FILES_RESUME: &str = "files.resume";
+    pub const FILES_CANCEL: &str = "files.cancel";
+
+    // ---- pc ----
+    pub const PC_POWER: &str = "pc.power";
+    pub const PC_WAKE_INFO: &str = "pc.wake.info";
+    pub const PC_WAKE_RELAY: &str = "pc.wake.relay";
     pub const PC_CAPTURE_SHOT: &str = "pc.capture.shot";
     pub const PC_CAPTURE_RECORD_START: &str = "pc.capture.record.start";
     pub const PC_CAPTURE_RECORD_STOP: &str = "pc.capture.record.stop";
-    pub const PC_CAPTURE_RESULT: &str = "pc.capture.result";
     pub const PC_CAPTURE_PROMPT: &str = "pc.capture.prompt";
     pub const PC_CAPTURE_RECORD_ENDED: &str = "pc.capture.record.ended";
-    pub const FILES_RESUME: &str = "files.resume";
-    pub const FILES_CANCEL: &str = "files.cancel";
-    pub const WAKE_RELAY: &str = "wake.relay";
-    pub const AUDIO_PCM: &str = "audio.pcm";
-    pub const AUDIO_BT_MEDIA: &str = "audio.bt_media";
-    pub const BLE_KEY: &str = "ble.key";
-    pub const BLE_OTP: &str = "ble.otp";
-    /// Phone to PC: keep a Bluetooth link with me while I renew this.
-    pub const BLE_USE: &str = "ble.use";
+
+    // ---- link, task ----
+    pub const LINK_OPEN: &str = "link.open";
+    pub const TASK_NOTIFY: &str = "task.notify";
+
+    // ---- toggles ----
+    pub const TOGGLES_STATE: &str = "toggles.state";
+    pub const TOGGLES_SET: &str = "toggles.set";
+
+    // ---- deck ----
+    pub const DECK_LAYOUT: &str = "deck.layout";
+    pub const DECK_STATE: &str = "deck.state";
+    pub const DECK_PRESS: &str = "deck.press";
+    pub const DECK_AUDIO_SET: &str = "deck.audio.set";
+
+    // ---- input ----
+    pub const INPUT_EVENT: &str = "input.event";
+    pub const INPUT_CHECK: &str = "input.check";
+    pub const INPUT_TEXT_FOCUS: &str = "input.text_focus";
+    pub const INPUT_TEXT_WATCH: &str = "input.text_watch";
+    pub const INPUT_TEXT_STATE: &str = "input.text_state";
+    pub const INPUT_APP_ICON: &str = "input.app_icon";
+
+    // ---- mirror ----
+    pub const MIRROR_START: &str = "mirror.start";
+    pub const MIRROR_STOP: &str = "mirror.stop";
+    pub const MIRROR_POWER: &str = "mirror.power";
+    pub const MIRROR_SOUND: &str = "mirror.sound";
+    pub const MIRROR_KEYFRAME: &str = "mirror.keyframe";
+    pub const MIRROR_RESIZE: &str = "mirror.resize";
+    pub const MIRROR_INPUT: &str = "mirror.input";
+    pub const MIRROR_APPS: &str = "mirror.apps";
+    pub const MIRROR_NOTICE: &str = "mirror.notice";
+
+    // ---- webcam, mic ----
+    pub const WEBCAM_START: &str = "webcam.start";
+    pub const WEBCAM_STOP: &str = "webcam.stop";
+    pub const WEBCAM_KEYFRAME: &str = "webcam.keyframe";
+    pub const MIC_START: &str = "mic.start";
+    pub const MIC_STOP: &str = "mic.stop";
+
+    // ---- camera (Continuity Camera) ----
+    pub const CAMERA_CAPTURE_REQUEST: &str = "camera.capture.request";
+    pub const CAMERA_CAPTURE_CANCEL: &str = "camera.capture.cancel";
+
+    // ---- elevated ----
+    pub const ELEVATED_USB_START: &str = "elevated.usb.start";
+
+    // ---- agent ----
     pub const AGENT_CATALOG: &str = "agent.catalog";
     pub const AGENT_THREADS: &str = "agent.threads";
     pub const AGENT_START: &str = "agent.start";
@@ -144,7 +183,6 @@ pub mod types {
     pub const AGENT_SEND: &str = "agent.send";
     pub const AGENT_CANCEL: &str = "agent.cancel";
     pub const AGENT_READ: &str = "agent.read";
-    pub const AGENT_ITEMS: &str = "agent.items";
     pub const AGENT_WATCH: &str = "agent.watch";
     pub const AGENT_ANSWER: &str = "agent.answer";
     pub const AGENT_EVENT: &str = "agent.event";
@@ -153,7 +191,6 @@ pub mod types {
     pub const AGENT_SESSIONS: &str = "agent.sessions";
     pub const AGENT_SESSION: &str = "agent.session";
     pub const AGENT_SESSION_READ: &str = "agent.session.read";
-    pub const AGENT_SESSION_ITEMS: &str = "agent.session.items";
     pub const AGENT_SESSION_WATCH: &str = "agent.session.watch";
     pub const AGENT_SESSION_ITEM: &str = "agent.session.item";
     pub const AGENT_SESSION_CONTINUE: &str = "agent.session.continue";
@@ -449,10 +486,11 @@ pub fn is_valid_install_id(id: &str) -> bool {
     id.len() == INSTALL_ID_LEN && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// Body of `hello` (`docs/protocol/v1.md` §6). `proto` must equal
+/// [`crate::PROTOCOL_VERSION`]: there is no negotiation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub proto: u32,
-    pub min: u32,
     pub app: String,
     pub device: DeviceInfo,
     #[serde(default)]
@@ -554,12 +592,24 @@ pub struct ErrorBody {
     pub msg: Option<String>,
 }
 
-/// First frame of every non-control stream.
+/// First frame of every non-control stream (`t = "stream"`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamHeader {
     pub svc: String,
     pub op: String,
     pub v: u32,
+}
+
+impl StreamHeader {
+    /// The header of `svc`'s lane.
+    pub fn lane(svc: &str) -> Self {
+        StreamHeader { svc: svc.to_owned(), op: crate::lanes::OP_LANE.to_owned(), v: crate::lanes::VERSION }
+    }
+
+    /// The header of an RPC stream for `svc/op`.
+    pub fn rpc(svc: &str, op: &str) -> Self {
+        StreamHeader { svc: svc.to_owned(), op: op.to_owned(), v: crate::lanes::VERSION }
+    }
 }
 
 /// An empty body (`{}`).
@@ -701,7 +751,7 @@ impl Default for NotificationLive {
     }
 }
 
-/// Never prints `chip` text in logs (protocol v0 §11).
+/// Never prints `chip` text in logs (protocol v1 §11).
 impl std::fmt::Debug for NotificationLive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationLive")
@@ -789,7 +839,7 @@ pub struct NotificationChatMessage {
     pub avatar: Option<Vec<u8>>,
 }
 
-/// Never prints sender names or message text (protocol v0 §11).
+/// Never prints sender names or message text (protocol v1 §11).
 impl std::fmt::Debug for NotificationChatMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationChatMessage")
@@ -819,7 +869,7 @@ pub struct NotificationConversation {
     pub messages: Vec<NotificationChatMessage>,
 }
 
-/// Never prints conversation title or messages (protocol v0 §11).
+/// Never prints conversation title or messages (protocol v1 §11).
 impl std::fmt::Debug for NotificationConversation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotificationConversation")
@@ -918,7 +968,7 @@ pub struct Notification {
 }
 
 /// Never prints content: notification text must not reach logs (protocol
-/// v0 §11).
+/// v1 §11).
 impl std::fmt::Debug for Notification {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Notification")
@@ -1180,7 +1230,7 @@ pub struct MediaPlayer {
     pub repeat: Option<String>,
 }
 
-/// Never prints what's playing (protocol v0 §11).
+/// Never prints what's playing (protocol v1 §11).
 impl std::fmt::Debug for MediaPlayer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MediaPlayer")
@@ -1331,6 +1381,17 @@ pub mod media_watch {
     pub const MAX_READ: u64 = 4 * 1024 * 1024;
 }
 
+/// PC sound (`docs/protocol/media.md` §6): [`crate::SoundDatagram`]s, or this
+/// stream when datagrams can't carry them. Each frame on the stream is a
+/// sound datagram without its tag byte.
+pub mod media_sound {
+    /// Offered by PCs that send their sound to a phone that plays it.
+    pub const CAP: &str = "media.sound";
+    pub const SERVICE: &str = "media";
+    pub const OP: &str = "sound";
+    pub const VERSION: u32 = 1;
+}
+
 /// A video file a PC player plays, offered with `media.watch` for the phone
 /// to play itself (`docs/protocol/media.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1403,11 +1464,11 @@ pub const LINK_MAX_BYTES: usize = 4096;
 
 /// Constants and limits for Wake-on-LAN (`docs/protocol/actions.md` §2.3).
 pub mod wake {
-    /// Offered by PCs that share their adapter addresses (`pc.wake_info`).
+    /// Offered by PCs that share their adapter addresses (`pc.wake.info`).
     pub const CAP: &str = "pc.wake";
-    /// Maximum hardware addresses in a `pc.wake_info` message.
+    /// Maximum hardware addresses in a `pc.wake.info` message.
     pub const MAX_ADAPTERS: usize = 8;
-    /// Maximum directed subnet broadcast addresses in a `pc.wake_info` message.
+    /// Maximum directed subnet broadcast addresses in a `pc.wake.info` message.
     pub const MAX_BROADCASTS: usize = 16;
     /// Size of a standard Wake-on-LAN magic packet (`6 + 16 * 6`).
     pub const MAGIC_PACKET_BYTES: usize = 102;
@@ -1480,7 +1541,7 @@ fn parse_wake_broadcast(s: &str) -> Option<std::net::Ipv4Addr> {
     Some(ip)
 }
 
-/// Body of `pc.wake_info` (`docs/protocol/actions.md` §2.3): the PC's
+/// Body of `pc.wake.info` (`docs/protocol/actions.md` §2.3): the PC's
 /// wake-capable adapter MAC addresses and directed subnet broadcast addresses.
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PcWakeInfo {
@@ -1493,7 +1554,7 @@ pub struct PcWakeInfo {
     pub broadcasts: Vec<String>,
 }
 
-/// Never prints hardware or IP addresses in logs (protocol v0 §11).
+/// Never prints hardware or IP addresses in logs (protocol v1 §11).
 impl std::fmt::Debug for PcWakeInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PcWakeInfo")
@@ -1571,7 +1632,7 @@ impl PcWakeInfo {
     }
 }
 
-/// Relayed Wake-on-LAN request (`wake.relay`): sent to an online paired peer on
+/// Relayed Wake-on-LAN request (`pc.wake.relay`): sent to an online paired peer on
 /// the target LAN asking it to broadcast a UDP magic packet for `mac`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WakeRelay {
@@ -1580,17 +1641,8 @@ pub struct WakeRelay {
     pub broadcast: Option<String>,
 }
 
-/// Low-latency PCM audio frame (`audio.pcm`) streamed from a PC to a phone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AudioPcmFrame {
-    pub sample_rate: u32,
-    pub channels: u8,
-    #[serde(with = "serde_bytes")]
-    pub pcm: Vec<u8>,
-}
-
 /// Whether a phone may play its media on a PC over Bluetooth
-/// (`audio.bt_media`, docs/protocol/media.md §5): the sender's `bt_media`
+/// (`media.bt`, docs/protocol/media.md §5): the sender's `bt_media`
 /// toggle for the receiver, which keeps the same unless its own changed at
 /// the same time or later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2026,7 +2078,7 @@ pub fn mirror_input_envelope(
     Ok(env)
 }
 
-/// Never prints typed text (protocol v0 §11).
+/// Never prints typed text (protocol v1 §11).
 impl std::fmt::Debug for MirrorInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -2166,7 +2218,7 @@ impl ElevatedUsbStart {
     }
 }
 
-/// Body of `elevated.usb.ready`: the helper listens on this loopback port.
+/// The answer to `elevated.usb.start`: the helper listens on this loopback port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElevatedUsbReady {
     pub port: u16,
@@ -2229,13 +2281,13 @@ pub mod mic {
 
 pub mod webcam {
     /// Offered by phones that stream their camera as a webcam.
-    pub const STREAM: &str = "camera.stream";
+    pub const STREAM: &str = "webcam.stream";
     /// Offered by PCs that receive and decode a phone's webcam stream.
-    pub const VIRTUAL: &str = "camera.virtual";
+    pub const VIEW: &str = "webcam.view";
     /// Receiver can decode HEVC webcam streams. Absence means H.264 only.
-    pub const HEVC: &str = "camera.virtual.hevc";
+    pub const HEVC: &str = "webcam.view.hevc";
     /// Offered by PCs whose virtual camera device (`v4l2loopback`) is available.
-    pub const ADDON_VCAM: &str = "addon.vcam";
+    pub const ADDON: &str = "webcam.addon";
     pub const SERVICE: &str = "webcam";
     pub const OP_VIDEO: &str = "video";
     pub const VERSION: u32 = 1;
@@ -2362,7 +2414,7 @@ pub mod pc_capture {
     pub const MAX_RECORD_SECS: u64 = 30 * 60;
 }
 
-/// `pc.capture.result`: the answer to `pc.capture.shot` and `pc.capture.record.stop`,
+/// The answer to `pc.capture.shot` and `pc.capture.record.stop`,
 /// and the file in `pc.capture.record.ended`. The file itself comes as an ordinary
 /// transfer (`docs/protocol/files.md`) with this ID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2387,7 +2439,7 @@ pub struct PcCaptureRecordEnded {
     pub file: Option<PcCaptureResult>,
 }
 
-// ---- Continuity Camera (docs/protocol/v0.md §Continuity Camera) ----
+// ---- Continuity Camera (docs/protocol/v1.md §14) ----
 
 pub mod continuity_camera {
     /// Offered by phones that can capture a still photo or scan a document on request.
@@ -2454,7 +2506,7 @@ pub struct CameraCaptureRequest {
     pub mode: CameraCaptureMode,
 }
 
-/// `camera.capture.ok`: Phone acknowledges that the capture UI was launched.
+/// The answer to `camera.capture.request`: the phone launched the capture UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraCaptureOk {
     pub request_id: String,
@@ -2566,7 +2618,7 @@ pub struct SmsThread {
     pub photo: Option<Vec<u8>>,
 }
 
-/// Never prints numbers, names or text (protocol v0 §11).
+/// Never prints numbers, names or text (protocol v1 §11).
 impl std::fmt::Debug for SmsThread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SmsThread")
@@ -2609,7 +2661,7 @@ pub struct SmsMessage {
     pub parts: Vec<SmsPart>,
 }
 
-/// Never prints numbers or text (protocol v0 §11).
+/// Never prints numbers or text (protocol v1 §11).
 impl std::fmt::Debug for SmsMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SmsMessage")
@@ -2699,7 +2751,7 @@ pub struct SmsSend {
     pub attachments: Vec<SmsAttachment>,
 }
 
-/// Never prints numbers or text (protocol v0 §11).
+/// Never prints numbers or text (protocol v1 §11).
 impl std::fmt::Debug for SmsSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SmsSend")
@@ -2854,7 +2906,7 @@ fn yes() -> bool {
     true
 }
 
-/// Never prints the number, name or photo (protocol v0 §11).
+/// Never prints the number, name or photo (protocol v1 §11).
 impl std::fmt::Debug for CallState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallState")
@@ -2914,7 +2966,7 @@ pub struct CallLogEntry {
     pub photo: Option<Vec<u8>>,
 }
 
-/// Never prints the number, name or photo (protocol v0 §11).
+/// Never prints the number, name or photo (protocol v1 §11).
 impl std::fmt::Debug for CallLogEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallLogEntry")
@@ -2954,7 +3006,7 @@ pub struct CallDial {
     pub sim: Option<String>,
 }
 
-/// Never prints the number (protocol v0 §11).
+/// Never prints the number (protocol v1 §11).
 impl std::fmt::Debug for CallDial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CallDial").field("bytes", &self.number.len()).field("sim", &self.sim).finish()
@@ -3029,7 +3081,7 @@ pub struct ContactNumber {
     pub label: Option<String>,
 }
 
-/// Never prints the number or label (protocol v0 §11).
+/// Never prints the number or label (protocol v1 §11).
 impl std::fmt::Debug for ContactNumber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ContactNumber").finish_non_exhaustive()
@@ -3050,7 +3102,7 @@ pub struct Contact {
     pub photo: Option<Vec<u8>>,
 }
 
-/// Never prints the name, numbers or photo (protocol v0 §11).
+/// Never prints the name, numbers or photo (protocol v1 §11).
 impl std::fmt::Debug for Contact {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Contact")
@@ -3075,7 +3127,7 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
-/// Never prints the search query (protocol v0 §11).
+/// Never prints the search query (protocol v1 §11).
 impl std::fmt::Debug for ContactsListGet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ContactsListGet")
@@ -3132,7 +3184,7 @@ pub struct PhotoNew {
     pub thumb: Vec<u8>,
 }
 
-/// Never prints the name or picture (protocol v0 §11).
+/// Never prints the name or picture (protocol v1 §11).
 impl std::fmt::Debug for PhotoNew {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PhotoNew")
@@ -3159,7 +3211,7 @@ pub fn is_valid_photo_id(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_graphic() && b != b'/' && b != b'\\')
 }
 
-/// One album on the phone (`photos.albums.list`).
+/// One album on the phone (in the `photos.albums` answer).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoAlbum {
     /// Album bucket identifier on the phone.
@@ -3173,7 +3225,7 @@ pub struct PhotoAlbum {
     pub cover: Option<String>,
 }
 
-/// Never prints the album's name (protocol v0 §11).
+/// Never prints the album's name (protocol v1 §11).
 impl std::fmt::Debug for PhotoAlbum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PhotoAlbum").field("id", &self.id).field("count", &self.count).finish_non_exhaustive()
@@ -3184,7 +3236,7 @@ impl std::fmt::Debug for PhotoAlbum {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoAlbumsGet {}
 
-/// Answer to `photos.albums` (`photos.albums.list`).
+/// Answer to `photos.albums` (paged).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoAlbumsList {
     #[serde(default)]
@@ -3219,7 +3271,7 @@ impl std::fmt::Debug for PhotoListGet {
     }
 }
 
-/// One photo or video in `photos.items`.
+/// One photo or video in the `photos.list` answer.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoItem {
     pub id: String,
@@ -3239,7 +3291,7 @@ pub struct PhotoItem {
     pub album: Option<String>,
 }
 
-/// Never prints the file name (protocol v0 §11).
+/// Never prints the file name (protocol v1 §11).
 impl std::fmt::Debug for PhotoItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PhotoItem")
@@ -3251,7 +3303,7 @@ impl std::fmt::Debug for PhotoItem {
     }
 }
 
-/// Answer to `photos.list` (`photos.items`).
+/// Answer to `photos.list` (paged).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoItems {
     #[serde(default)]
@@ -3270,13 +3322,13 @@ pub struct PhotoDelete {
     pub ids: Vec<String>,
 }
 
-/// Body of `photos.deleted`: how many of them went.
+/// The answer to `photos.delete`: how many of them went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotosDeleted {
     pub count: u32,
 }
 
-/// One thumbnail in `photos.thumbs.list`.
+/// One thumbnail in the `photos.thumbs` answer.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoThumb {
     pub id: String,
@@ -3284,14 +3336,14 @@ pub struct PhotoThumb {
     pub data: Vec<u8>,
 }
 
-/// Never prints thumbnail bytes (protocol v0 §11).
+/// Never prints thumbnail bytes (protocol v1 §11).
 impl std::fmt::Debug for PhotoThumb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PhotoThumb").field("id", &self.id).field("bytes", &self.data.len()).finish()
     }
 }
 
-/// Answer to `photos.thumbs` (`photos.thumbs.list`).
+/// Answer to `photos.thumbs` (paged).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoThumbsList {
     #[serde(default)]
@@ -3321,7 +3373,7 @@ impl PhotoGet {
     }
 }
 
-/// Body of `photos.sending`, the answer to `photos.get`: the files
+/// The answer to `photos.get`: the files
 /// transfer that brings it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotoSending {
@@ -3332,10 +3384,10 @@ pub struct PhotoSending {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhotosChanged {}
 
-/// Capability: tells and hears of new G7 Link builds (`event.update`).
+/// Capability: tells and hears of new G7 Link builds (`device.update`).
 pub const UPDATE_HINT: &str = "update.hint";
 
-/// Body of `event.update`: a new build of G7 Link is out on `channel`.
+/// Body of `device.update`: a new build of G7 Link is out on `channel`.
 /// A device that checks for updates (usually the PC, which is plugged in)
 /// tells its peers, so a phone needn't check on its own. Only a hint: the
 /// receiver checks the channel's feed itself before installing anything.
@@ -3371,7 +3423,7 @@ pub struct LinkOpen {
     pub user_shared: bool,
 }
 
-/// Never prints the link or title (protocol v0 §11).
+/// Never prints the link or title (protocol v1 §11).
 impl std::fmt::Debug for LinkOpen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LinkOpen")
@@ -3410,7 +3462,7 @@ pub struct TaskNotify {
     pub exit_code: Option<i32>,
 }
 
-/// Never prints the task title in logs (protocol v0 §11).
+/// Never prints the task title in logs (protocol v1 §11).
 impl std::fmt::Debug for TaskNotify {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskNotify")
@@ -3515,7 +3567,7 @@ pub struct RecordingMarker {
     pub label: Option<String>,
 }
 
-/// Never prints the marker's label (protocol v0 §11).
+/// Never prints the marker's label (protocol v1 §11).
 impl std::fmt::Debug for RecordingMarker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecordingMarker")
@@ -3549,7 +3601,7 @@ pub struct FileEntry {
     pub blake3: Option<String>,
 }
 
-/// Never prints the name (protocol v0 §11).
+/// Never prints the name (protocol v1 §11).
 impl std::fmt::Debug for FileEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileEntry").field("size", &self.size).finish_non_exhaustive()
@@ -3581,7 +3633,7 @@ pub struct FilesOffer {
     pub open_on_arrival: bool,
 }
 
-/// Never prints file names (protocol v0 §11).
+/// Never prints file names (protocol v1 §11).
 impl std::fmt::Debug for FilesOffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FilesOffer")
@@ -3689,7 +3741,7 @@ impl ClipSet {
     }
 }
 
-/// Never prints content (protocol v0 §11).
+/// Never prints content (protocol v1 §11).
 impl std::fmt::Debug for ClipSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClipSet")
@@ -3735,7 +3787,7 @@ impl ClipChanged {
     }
 }
 
-/// Never prints content (protocol v0 §11).
+/// Never prints content (protocol v1 §11).
 impl std::fmt::Debug for ClipChanged {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClipChanged")
@@ -3796,11 +3848,10 @@ pub struct PeerIdentity {
     pub device: DeviceInfo,
 }
 
-/// Limits and wire constants for `remote.*` (`docs/protocol/remote.md`).
-pub mod remote {
-    /// One-byte QUIC datagram channel tag (`docs/protocol/v0.md` §4).
-    pub const DATAGRAM_TAG: u8 = 0x01;
-    /// Largest datagram body accepted after [`DATAGRAM_TAG`].
+/// Limits and wire constants of the `input` service (`input.*`,
+/// `docs/protocol/remote.md`).
+pub mod input {
+    /// Largest datagram body accepted after the tag [`crate::DATAGRAM_INPUT`].
     pub const MAX_DATAGRAM_BYTES: usize = 256;
     /// Largest relative pointer step (`dx` or `dy`), in logical pixels.
     pub const MAX_MOVE_DELTA: f32 = 4000.0;
@@ -3840,8 +3891,9 @@ pub mod remote {
     pub const NOT_INJECTED: &str = "input not delivered";
     /// Most modifiers on a key press.
     pub const MAX_MODS: usize = 4;
-    /// Stream service and operation when falling back from datagrams.
-    pub const SERVICE: &str = "remote";
+    /// The service, and the operation of the stream that carries pointer
+    /// motion when datagrams can't.
+    pub const SERVICE: &str = "input";
     pub const OP_MOTION: &str = "motion";
     pub const VERSION: u32 = 1;
 }
@@ -3936,7 +3988,7 @@ pub mod remote_keys {
 
     /// Whether `key` and `mods` form a valid [`super::RemoteInput::Key`].
     pub fn is_valid(key: &str, mods: &[KeyMod]) -> bool {
-        if mods.len() > super::remote::MAX_MODS {
+        if mods.len() > super::input::MAX_MODS {
             return false;
         }
         // Reject duplicate modifiers.
@@ -3960,15 +4012,15 @@ pub mod remote_keys {
     }
 }
 
-/// Body of `remote.text_focus` (PC → phone): whether what has the keyboard
+/// Body of `input.text_focus` (PC → phone): whether what has the keyboard
 /// focus on the PC takes text, so the phone can open its keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteTextFocus {
     pub editable: bool,
 }
 
-/// Body of `remote.text_watch` (phone → PC, one way): the phone's typing field
-/// is open (`on`) or closed. A PC sends `remote.text_state` only to phones
+/// Body of `input.text_watch` (phone → PC, one way): the phone's typing field
+/// is open (`on`) or closed. A PC sends `input.text_state` only to phones
 /// that watch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteTextWatch {
@@ -3990,8 +4042,8 @@ pub enum TextFieldKind {
     None,
 }
 
-/// Body of `remote.text_state` (PC → phone, one way): the field that has the
-/// focus on the PC, sent to phones that watch (`remote.text_watch`) when it
+/// Body of `input.text_state` (PC → phone, one way): the field that has the
+/// focus on the PC, sent to phones that watch (`input.text_watch`) when it
 /// changes. Character offsets count Unicode scalar values.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteTextState {
@@ -4025,7 +4077,7 @@ pub struct RemoteTextState {
     pub multiline: bool,
     /// Only for [`TextFieldKind::Mirror`]: the offset of `before`'s first
     /// character in the field, the text before and after the caret (cut to
-    /// [`remote::MAX_STATE_BEFORE`] and [`remote::MAX_STATE_AFTER`] bytes),
+    /// [`input::MAX_STATE_BEFORE`] and [`input::MAX_STATE_AFTER`] bytes),
     /// and where the selection starts when there is one (the caret is its
     /// other end).
     #[serde(default)]
@@ -4041,13 +4093,13 @@ pub struct RemoteTextState {
     pub more_before: bool,
     #[serde(default)]
     pub more_after: bool,
-    /// The focused app's icon, to fetch with `remote.app_icon` (PCs that
+    /// The focused app's icon, to fetch with `input.app_icon` (PCs that
     /// offer `input.app_icon`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
 }
 
-/// Never prints the field's text (protocol v0 §11).
+/// Never prints the field's text (protocol v1 §11).
 impl std::fmt::Debug for RemoteTextState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteTextState")
@@ -4072,10 +4124,10 @@ impl RemoteTextState {
 
     pub fn is_valid(&self) -> bool {
         let mirrored = self.kind == TextFieldKind::Mirror;
-        self.before.len() <= remote::MAX_STATE_BEFORE
-            && self.after.len() <= remote::MAX_STATE_AFTER
-            && self.app.as_ref().is_none_or(|app| app.len() <= remote::MAX_STATE_APP)
-            && self.label.as_ref().is_none_or(|label| label.len() <= remote::MAX_STATE_LABEL)
+        self.before.len() <= input::MAX_STATE_BEFORE
+            && self.after.len() <= input::MAX_STATE_AFTER
+            && self.app.as_ref().is_none_or(|app| app.len() <= input::MAX_STATE_APP)
+            && self.label.as_ref().is_none_or(|label| label.len() <= input::MAX_STATE_LABEL)
             && (!self.window || matches!(self.kind, TextFieldKind::Opaque | TextFieldKind::None))
             && (mirrored || (self.before.is_empty() && self.after.is_empty() && self.anchor.is_none()))
             && !self.before.contains('\0')
@@ -4122,16 +4174,16 @@ pub fn cut_text_front(text: &str, max: usize) -> (&str, u32) {
 
 /// Whether `key` looks like an app icon's key in a text state.
 pub fn is_icon_key(key: &str) -> bool {
-    key.len() == remote::ICON_KEY_LEN && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    key.len() == input::ICON_KEY_LEN && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Body of `remote.app_icon` (phone → PC): the icon a text state named.
+/// Body of `input.app_icon` (phone → PC): the icon a text state named.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteAppIcon {
     pub key: String,
 }
 
-/// Reply to `remote.app_icon`: the icon as a PNG.
+/// Reply to `input.app_icon`: the icon as a PNG.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteAppIconData {
     #[serde(with = "serde_bytes")]
@@ -4146,7 +4198,7 @@ impl std::fmt::Debug for RemoteAppIconData {
 
 impl RemoteAppIconData {
     pub fn is_valid(&self) -> bool {
-        self.png.len() <= remote::MAX_ICON_BYTES && self.png.starts_with(b"\x89PNG\r\n\x1a\n")
+        self.png.len() <= input::MAX_ICON_BYTES && self.png.starts_with(b"\x89PNG\r\n\x1a\n")
     }
 }
 
@@ -4155,8 +4207,8 @@ impl RemoteAppIconData {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum RemoteInput {
     /// Relative pointer motion in logical pixels (`dx` right, `dy` down).
-    /// Travels in QUIC datagrams (or the `remote/motion` stream), never on the
-    /// control stream.
+    /// Travels in QUIC datagrams (or the `input/motion` stream), never in an
+    /// `input.event` request.
     Move { dx: f32, dy: f32 },
     /// Mouse button press, release or click.
     Button { button: MouseButton, action: ButtonAction },
@@ -4185,7 +4237,7 @@ pub enum RemoteInput {
     /// mirrored field with `text`, or the caret moves `moves` characters
     /// (negative: left), `backspaces` characters before it are deleted, and
     /// `text` is typed. A new line in `text` is Shift+Enter, as in a chat box.
-    /// Turned away with [`remote::STALE_FOCUS`] when `focus` isn't the PC's
+    /// Turned away with [`input::STALE_FOCUS`] when `focus` isn't the PC's
     /// focus any more (0 matches any).
     Edit {
         focus: u32,
@@ -4212,7 +4264,7 @@ fn is_zero_u16(value: &u16) -> bool {
     *value == 0
 }
 
-/// Never prints typed text (protocol v0 §11).
+/// Never prints typed text (protocol v1 §11).
 impl std::fmt::Debug for RemoteInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -4243,20 +4295,18 @@ impl RemoteInput {
             RemoteInput::Move { dx, dy } => {
                 dx.is_finite()
                     && dy.is_finite()
-                    && dx.abs() <= remote::MAX_MOVE_DELTA
-                    && dy.abs() <= remote::MAX_MOVE_DELTA
+                    && dx.abs() <= input::MAX_MOVE_DELTA
+                    && dy.abs() <= input::MAX_MOVE_DELTA
             }
             RemoteInput::Button { .. } => true,
             RemoteInput::Scroll { dx, dy } => {
                 dx.is_finite()
                     && dy.is_finite()
-                    && dx.abs() <= remote::MAX_SCROLL_DELTA
-                    && dy.abs() <= remote::MAX_SCROLL_DELTA
+                    && dx.abs() <= input::MAX_SCROLL_DELTA
+                    && dy.abs() <= input::MAX_SCROLL_DELTA
             }
             RemoteInput::Text { text } => {
-                !text.is_empty()
-                    && text.len() <= remote::MAX_TEXT_BYTES
-                    && !text.chars().any(char::is_control)
+                !text.is_empty() && text.len() <= input::MAX_TEXT_BYTES && !text.chars().any(char::is_control)
             }
             RemoteInput::Key { key, mods } => remote_keys::is_valid(key, mods),
             RemoteInput::Slide { .. } => true,
@@ -4266,19 +4316,19 @@ impl RemoteInput {
                     && (!*on || ((0.0..=1.0).contains(x) && (0.0..=1.0).contains(y)))
             }
             RemoteInput::Edit { range, moves, backspaces, text, .. } => {
-                let steps = i32::from(remote::MAX_EDIT_STEPS);
-                let text_ok = text.len() <= remote::MAX_EDIT_TEXT_BYTES
+                let steps = i32::from(input::MAX_EDIT_STEPS);
+                let text_ok = text.len() <= input::MAX_EDIT_TEXT_BYTES
                     && !text.chars().any(|c| c.is_control() && c != '\n' && c != '\t');
                 let change_ok = match range {
                     Some((start, end)) => {
                         start <= end
-                            && end - start <= remote::MAX_EDIT_RANGE
+                            && end - start <= input::MAX_EDIT_RANGE
                             && *moves == 0
                             && *backspaces == 0
                     }
                     None => {
                         (-steps..=steps).contains(moves)
-                            && *backspaces <= remote::MAX_EDIT_STEPS
+                            && *backspaces <= input::MAX_EDIT_STEPS
                             && (*moves != 0 || *backspaces != 0 || !text.is_empty())
                     }
                 };
@@ -4293,26 +4343,26 @@ impl RemoteInput {
         matches!(self, RemoteInput::Move { .. } | RemoteInput::Scroll { .. } | RemoteInput::Laser { .. })
     }
 
-    /// Whether this event may travel in a `remote.input` control request.
-    /// Pointer motion (`Move`) never uses the control stream.
-    pub fn is_control_allowed(&self) -> bool {
+    /// Whether this event may travel in an `input.event` request on the
+    /// input lane. Pointer motion (`Move`) never does.
+    pub fn is_lane_allowed(&self) -> bool {
         !matches!(self, RemoteInput::Move { .. })
     }
 
-    /// Encodes a datagram prefixed with [`remote::DATAGRAM_TAG`].
+    /// Encodes a datagram prefixed with [`crate::DATAGRAM_INPUT`].
     pub fn to_datagram(&self) -> Vec<u8> {
-        let mut out = vec![remote::DATAGRAM_TAG];
+        let mut out = vec![crate::DATAGRAM_INPUT];
         let _ = ciborium::into_writer(self, &mut out);
         out
     }
 
-    /// Decodes and validates a datagram prefixed with [`remote::DATAGRAM_TAG`].
+    /// Decodes and validates a datagram prefixed with [`crate::DATAGRAM_INPUT`].
     pub fn from_datagram(bytes: &[u8]) -> Result<Self, crate::ProtocolError> {
-        if bytes.first().copied() != Some(remote::DATAGRAM_TAG) {
+        if bytes.first().copied() != Some(crate::DATAGRAM_INPUT) {
             return Err(crate::ProtocolError::BadMessage("unknown datagram channel tag".into()));
         }
         let body = &bytes[1..];
-        if body.is_empty() || body.len() > remote::MAX_DATAGRAM_BYTES {
+        if body.is_empty() || body.len() > input::MAX_DATAGRAM_BYTES {
             return Err(crate::ProtocolError::FrameTooLarge(body.len()));
         }
         let input: Self =
@@ -4326,7 +4376,7 @@ impl RemoteInput {
 
 // ---- Phone toggles (docs/protocol/toggles.md) ----
 
-/// Capability IDs for `phone.toggles` and `phone.toggle.set`.
+/// Capability IDs of the `toggles` service (`toggles.state`, `toggles.set`).
 pub mod toggles {
     pub const READ: &str = "toggles.read";
     pub const RINGER: &str = "toggles.ringer";
@@ -4339,7 +4389,7 @@ pub mod toggles {
     pub const SHOW: &str = "toggles.show";
 }
 
-/// Toggle IDs in `phone.toggle.set`.
+/// Toggle IDs in `toggles.set`.
 pub mod toggle_ids {
     pub const DND: &str = "dnd";
     pub const RINGER: &str = "ringer";
@@ -4354,14 +4404,14 @@ pub mod toggle_ids {
         &[DND, RINGER, FLASHLIGHT, VOLUME, BRIGHTNESS, WIFI, BLUETOOTH, HOTSPOT, PC_ACTIVE];
 }
 
-/// Ringer modes for [`PhoneToggles::ringer`] and `phone.toggle.set` (`id = "ringer"`).
+/// Ringer modes for [`PhoneToggles::ringer`] and `toggles.set` (`id = "ringer"`).
 pub mod ringer_modes {
     pub const RING: &str = "ring";
     pub const VIBRATE: &str = "vibrate";
     pub const SILENT: &str = "silent";
 }
 
-/// Body of `phone.toggles` (`docs/protocol/toggles.md` §2.1): a phone's
+/// Body of `toggles.state` (`docs/protocol/toggles.md` §2.1): a phone's
 /// current quick settings state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhoneToggles {
@@ -4410,7 +4460,7 @@ pub enum PhoneToggleValue {
     Mode(String),
 }
 
-/// Body of `phone.toggle.set` (`docs/protocol/toggles.md` §2.2).
+/// Body of `toggles.set` (`docs/protocol/toggles.md` §2.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhoneToggleSet {
     pub id: String,
@@ -4445,8 +4495,8 @@ impl PhoneToggleSet {
 pub mod deck {
     /// Offered by PCs that share their Deck layout and live state and run Deck actions.
     pub const ACTIONS: &str = "deck.actions";
-    /// Offered by PCs that share their active audio output devices and accept `pc.audio.set`.
-    pub const PC_AUDIO: &str = "pc.audio";
+    /// Offered by PCs that share their active audio output devices and accept `deck.audio.set`.
+    pub const AUDIO: &str = "deck.audio";
     /// Maximum pages in a `DeckLayout`.
     pub const MAX_PAGES: usize = 8;
     /// Maximum tiles on a single `DeckPage`.
@@ -4665,7 +4715,7 @@ pub struct DeckTile {
     pub kind: String,
 }
 
-/// Never prints the user label (protocol v0 §11).
+/// Never prints the user label (protocol v1 §11).
 impl std::fmt::Debug for DeckTile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeckTile")
@@ -4728,7 +4778,7 @@ pub struct DeckPage {
     pub tiles: Vec<DeckTile>,
 }
 
-/// Never prints the page name (protocol v0 §11).
+/// Never prints the page name (protocol v1 §11).
 impl std::fmt::Debug for DeckPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeckPage")
@@ -4849,7 +4899,7 @@ pub struct AudioOutputDevice {
     pub is_default: bool,
 }
 
-/// Never prints the user's audio device name or system ID in logs (protocol v0 §11).
+/// Never prints the user's audio device name or system ID in logs (protocol v1 §11).
 impl std::fmt::Debug for AudioOutputDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioOutputDevice").field("is_default", &self.is_default).finish_non_exhaustive()
@@ -4969,7 +5019,7 @@ impl DeckPress {
     }
 }
 
-/// Body of `pc.audio.set`: asks the PC to change its master speaker volume
+/// Body of `deck.audio.set`: asks the PC to change its master speaker volume
 /// (`0..=100`), mute state, and/or default output device
 /// (`docs/protocol/deck.md` §2.4).
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -4983,7 +5033,7 @@ pub struct PcAudioSet {
     pub output: Option<String>,
 }
 
-/// Never prints the output device's system ID in logs (protocol v0 §11).
+/// Never prints the output device's system ID in logs (protocol v1 §11).
 impl std::fmt::Debug for PcAudioSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PcAudioSet")
@@ -5096,7 +5146,7 @@ impl StorageList {
     }
 }
 
-/// One directory entry in `storage.entries` (`docs/protocol/storage.md` §3).
+/// One directory entry in the `storage.list` answer (`docs/protocol/storage.md` §3).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageEntry {
     pub name: String,
@@ -5106,7 +5156,7 @@ pub struct StorageEntry {
     pub is_dir: bool,
 }
 
-/// Never prints entry names in logs (protocol v0 §11).
+/// Never prints entry names in logs (protocol v1 §11).
 impl std::fmt::Debug for StorageEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StorageEntry")
@@ -5134,7 +5184,7 @@ impl StorageEntry {
     }
 }
 
-/// Body of `storage.entries`: immediate children of a listed folder.
+/// The answer to `storage.list` (paged): immediate children of a listed folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageEntries {
     #[serde(default)]
@@ -5376,15 +5426,14 @@ pub mod agent {
     pub const MAX_MODES: usize = 8;
     /// Bytes in a mode or another short wire word.
     pub const MAX_WORD_BYTES: usize = 32;
-    /// Threads in `agent.threads`.
+    /// Threads in the `agent.threads` answer.
     pub const MAX_THREADS: usize = 50;
-    /// Items in `agent.items`, and the default and most `agent.read` asks for.
+    /// Items in an `agent.read` answer, and the default and most it asks for.
+    /// A page larger than a frame comes in parts (`docs/protocol/v1.md` §4.4).
     pub const MAX_ITEMS: usize = 50;
-    /// Bytes the items of one `agent.items` may take ([`AgentItem::size`]).
-    pub const MAX_ITEMS_BYTES: usize = 196_608;
-    /// Asks in one `agent.items`.
+    /// Asks in one `agent.read` answer.
     pub const MAX_ASKS: usize = 16;
-    /// Questions in one `agent.items` (a thread has at most 2 waiting).
+    /// Questions in one `agent.read` answer (a thread has at most 2 waiting).
     pub const MAX_PAGE_QUESTIONS: usize = 4;
 
     // ---- §5, `agent.control` ----
@@ -5411,11 +5460,6 @@ pub mod agent {
     pub const MAX_QUEUED: usize = 5;
     /// A queued message's `text`, and an `agent.queue` edit.
     pub const MAX_QUEUED_TEXT_BYTES: usize = 16384;
-    /// Queued text one `agent.threads` carries whole; past it, the rest of
-    /// the list's queued messages are cut to [`MAX_QUEUED_PREVIEW_BYTES`].
-    pub const MAX_THREADS_QUEUED_BYTES: usize = 262_144;
-    /// A queued message cut to fit an `agent.threads` (`truncated`).
-    pub const MAX_QUEUED_PREVIEW_BYTES: usize = 280;
     /// A queued message's id: 16 lowercase hex digits.
     pub const QUEUED_ID_BYTES: usize = 16;
     /// Images one message carries.
@@ -6132,7 +6176,7 @@ fn clean_plan(plan: &mut Option<Vec<AgentPlanStep>>) {
     }
 }
 
-/// Never prints the title, summary or error (protocol v0 §11).
+/// Never prints the title, summary or error (protocol v1 §11).
 impl std::fmt::Debug for AgentThread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentThread")
@@ -6220,22 +6264,6 @@ impl AgentThread {
         self
     }
 
-    /// Cuts the queued messages' text to [`agent::MAX_QUEUED_PREVIEW_BYTES`],
-    /// flagged `truncated`.
-    fn preview_queued(&mut self) {
-        for queued in &mut self.queued {
-            if queued.text.len() > agent::MAX_QUEUED_PREVIEW_BYTES {
-                let end = cut_text(&queued.text, agent::MAX_QUEUED_PREVIEW_BYTES).len();
-                queued.text.truncate(end);
-                queued.truncated = true;
-            }
-        }
-    }
-
-    fn queued_bytes(&self) -> usize {
-        self.queued.iter().map(|q| q.text.len()).sum()
-    }
-
     /// Whether a turn is running (`working` or `waiting`).
     pub fn is_running(&self) -> bool {
         matches!(self.state.as_str(), agent::state::WORKING | agent::state::WAITING)
@@ -6269,7 +6297,7 @@ pub struct AgentTool {
     pub by_rule: bool,
 }
 
-/// Never prints the detail, output or path (protocol v0 §11).
+/// Never prints the detail, output or path (protocol v1 §11).
 impl std::fmt::Debug for AgentTool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentTool")
@@ -6350,7 +6378,7 @@ pub struct AgentItem {
     pub question: Option<AgentItemQuestion>,
 }
 
-/// Never prints the text or the ids it names (protocol v0 §11).
+/// Never prints the text or the ids it names (protocol v1 §11).
 impl std::fmt::Debug for AgentItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentItem")
@@ -6545,26 +6573,6 @@ impl AgentItem {
     pub fn is_reasoning(&self) -> bool {
         self.kind == agent::item::REASONING
     }
-
-    /// What the item counts toward [`agent::MAX_ITEMS_BYTES`]: the bytes of
-    /// its text fields and a little for the rest.
-    pub fn size(&self) -> usize {
-        const OVERHEAD: usize = 64;
-        let len = |text: &Option<String>| text.as_ref().map_or(0, String::len);
-        let tool = self.tool.as_ref().map_or(0, |t| {
-            t.name.len() + t.title.len() + t.status.len() + len(&t.detail) + len(&t.output) + len(&t.path)
-        });
-        let images = self.images.iter().map(|i| OVERHEAD + i.name.len()).sum::<usize>();
-        let question = self.question.as_ref().map_or(0, |q| len(&q.by_name));
-        OVERHEAD
-            + self.id.len()
-            + len(&self.text)
-            + tool
-            + len(&self.group)
-            + len(&self.deny_of)
-            + images
-            + question
-    }
 }
 
 /// A request waiting for an answer (`AgentAsk`, `docs/protocol/agents.md` §2).
@@ -6596,7 +6604,7 @@ pub struct AgentAsk {
     pub item: Option<String>,
 }
 
-/// Never prints the token, command, diff, path or reason (protocol v0 §11).
+/// Never prints the token, command, diff, path or reason (protocol v1 §11).
 impl std::fmt::Debug for AgentAsk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentAsk")
@@ -6655,25 +6663,17 @@ pub fn clean_deny_message(message: &str) -> Option<String> {
     (!clean.trim().is_empty()).then_some(clean)
 }
 
-/// Sorts `items` by `seq` and keeps the newest that fit in one page
-/// ([`agent::MAX_ITEMS`], [`agent::MAX_ITEMS_BYTES`]); whether any went.
+/// Sorts `items` by `seq` and keeps the newest [`agent::MAX_ITEMS`]; whether
+/// any went. Their size is no limit: a page larger than a frame comes in
+/// parts (`docs/protocol/v1.md` §4.4).
 fn keep_newest_items(items: &mut Vec<AgentItem>) -> bool {
     items.sort_by_key(|i| i.seq);
-    let mut keep = 0;
-    let mut bytes = 0;
-    for item in items.iter().rev() {
-        if keep == agent::MAX_ITEMS || bytes + item.size() > agent::MAX_ITEMS_BYTES {
-            break;
-        }
-        bytes += item.size();
-        keep += 1;
-    }
-    let dropped = keep < items.len();
-    items.drain(..items.len() - keep);
-    dropped
+    let drop = items.len().saturating_sub(agent::MAX_ITEMS);
+    items.drain(..drop);
+    drop > 0
 }
 
-/// Body of `agent.items`: a page of a thread's transcript and its asks.
+/// The answer to `agent.read` (paged): a page of a thread's transcript and its asks.
 #[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentItems {
     pub thread: AgentThread,
@@ -6706,7 +6706,6 @@ impl AgentItems {
         self.thread.is_valid()
             && self.items.len() <= agent::MAX_ITEMS
             && self.items.iter().all(AgentItem::is_valid)
-            && self.items.iter().map(AgentItem::size).sum::<usize>() <= agent::MAX_ITEMS_BYTES
             && self.asks.len() <= agent::MAX_ASKS
             && self.asks.iter().all(AgentAsk::is_valid)
             && self.questions.len() <= agent::MAX_PAGE_QUESTIONS
@@ -6714,9 +6713,8 @@ impl AgentItems {
     }
 
     /// The page within its limits: bad items and asks left out, then the
-    /// oldest items until at most [`agent::MAX_ITEMS`] fit in
-    /// [`agent::MAX_ITEMS_BYTES`] (`more_before` is then set). `None` when the
-    /// thread is bad.
+    /// oldest items past [`agent::MAX_ITEMS`] (`more_before` is then set).
+    /// `None` when the thread is bad.
     pub fn sanitized(mut self) -> Option<Self> {
         self.thread = self.thread.sanitized()?;
         self.items = self.items.into_iter().filter_map(AgentItem::sanitized).collect();
@@ -6772,7 +6770,7 @@ pub struct AgentEvent {
     pub summary: Option<String>,
 }
 
-/// Never prints text or the summary (protocol v0 §11).
+/// Never prints text or the summary (protocol v1 §11).
 impl std::fmt::Debug for AgentEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentEvent")
@@ -6906,30 +6904,15 @@ impl std::fmt::Debug for AgentThreads {
 
 impl AgentThreads {
     pub fn is_valid(&self) -> bool {
-        self.threads.len() <= agent::MAX_THREADS
-            && self.threads.iter().all(AgentThread::is_valid)
-            && self.threads.iter().map(AgentThread::queued_bytes).sum::<usize>()
-                <= agent::MAX_THREADS_QUEUED_BYTES
-                    + agent::MAX_THREADS * agent::MAX_QUEUED * agent::MAX_QUEUED_PREVIEW_BYTES
+        self.threads.len() <= agent::MAX_THREADS && self.threads.iter().all(AgentThread::is_valid)
     }
 
-    /// The list within its limits. Its queued messages are whole while their
-    /// text fits in [`agent::MAX_THREADS_QUEUED_BYTES`], newest thread first;
-    /// past that they're cut to a preview and flagged `truncated` (the
-    /// thread's page and its events carry them whole).
+    /// The list within its limits: bad threads left out, then those past
+    /// [`agent::MAX_THREADS`]. Queued messages stay whole: a list larger
+    /// than a frame comes in parts (`docs/protocol/v1.md` §4.4).
     pub fn sanitized(mut self) -> Self {
         self.threads = self.threads.into_iter().filter_map(AgentThread::sanitized).collect();
         self.threads.truncate(agent::MAX_THREADS);
-        let mut budget = agent::MAX_THREADS_QUEUED_BYTES;
-        for thread in &mut self.threads {
-            let bytes = thread.queued_bytes();
-            if bytes <= budget {
-                budget -= bytes;
-            } else {
-                budget = 0;
-                thread.preview_queued();
-            }
-        }
         self
     }
 }
@@ -6956,7 +6939,7 @@ pub struct AgentStart {
     pub custom_model: bool,
 }
 
-/// Never prints the prompt (protocol v0 §11).
+/// Never prints the prompt (protocol v1 §11).
 impl std::fmt::Debug for AgentStart {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentStart")
@@ -7011,7 +6994,7 @@ pub struct AgentSend {
     pub images: Vec<String>,
 }
 
-/// Never prints the text (protocol v0 §11).
+/// Never prints the text (protocol v1 §11).
 impl std::fmt::Debug for AgentSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentSend")
@@ -7101,7 +7084,7 @@ pub struct AgentAnswer {
     pub message: Option<String>,
 }
 
-/// Never prints the token or the message (protocol v0 §11).
+/// Never prints the token or the message (protocol v1 §11).
 impl std::fmt::Debug for AgentAnswer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentAnswer")
@@ -7144,7 +7127,7 @@ pub struct AgentAsked {
     pub message: Option<String>,
 }
 
-/// Never prints the token or the message (protocol v0 §11).
+/// Never prints the token or the message (protocol v1 §11).
 impl std::fmt::Debug for AgentAsked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentAsked")
@@ -7231,7 +7214,7 @@ pub struct AgentSession {
     pub since: Option<u64>,
 }
 
-/// Never prints the title, folder, step or summary (protocol v0 §11).
+/// Never prints the title, folder, step or summary (protocol v1 §11).
 impl std::fmt::Debug for AgentSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentSession")
@@ -7380,7 +7363,7 @@ impl AgentSessionRead {
     }
 }
 
-/// Body of `agent.session.items` (the reply): a page of a session's
+/// The answer to `agent.session.read` (paged): a page of a session's
 /// transcript. Its items' `seq`s grow but aren't consecutive.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionItems {
@@ -7406,11 +7389,11 @@ impl AgentSessionItems {
         self.session.is_valid()
             && self.items.len() <= agent::MAX_ITEMS
             && self.items.iter().all(AgentItem::is_valid_in_session)
-            && self.items.iter().map(AgentItem::size).sum::<usize>() <= agent::MAX_ITEMS_BYTES
     }
 
-    /// The page within its limits: bad items left out, then the oldest until
-    /// the rest fit (`more_before` is then set). `None` when the session is bad.
+    /// The page within its limits: bad items left out, then the oldest past
+    /// [`agent::MAX_ITEMS`] (`more_before` is then set). `None` when the
+    /// session is bad.
     pub fn sanitized(mut self) -> Option<Self> {
         self.session = self.session.sanitized()?;
         self.items = self.items.into_iter().filter_map(AgentItem::sanitized_in_session).collect();
@@ -7771,7 +7754,7 @@ mod tests {
         };
         let mut dev = info();
         dev.screen = Some(screen.clone());
-        let env = Envelope::new(types::EVENT_DEVICE, &dev).unwrap();
+        let env = Envelope::new(types::DEVICE_INFO, &dev).unwrap();
         let back: DeviceInfo = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back.clone().sanitized(), dev);
 
@@ -7807,7 +7790,7 @@ mod tests {
             cell_type: None,
             wifi_bars: None,
         };
-        let env = Envelope::new(types::EVENT_BATTERY, &b).unwrap();
+        let env = Envelope::new(types::DEVICE_BATTERY, &b).unwrap();
         let back: Battery = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back.sanitized(), b);
         assert_eq!(
@@ -7844,7 +7827,7 @@ mod tests {
             cell_type: Some("5G".into()),
             wifi_bars: Some(3),
         };
-        let env = Envelope::new(types::EVENT_BATTERY, &valid).unwrap();
+        let env = Envelope::new(types::DEVICE_BATTERY, &valid).unwrap();
         let back: Battery = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back.sanitized(), valid);
 
@@ -7885,7 +7868,7 @@ mod tests {
             charging: bool,
         }
         let legacy_env =
-            Envelope::new(types::EVENT_BATTERY, &LegacyBattery { level: 77, charging: false }).unwrap();
+            Envelope::new(types::DEVICE_BATTERY, &LegacyBattery { level: 77, charging: false }).unwrap();
         let decoded: Battery = Envelope::from_cbor(&legacy_env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(
             decoded,
@@ -7900,7 +7883,7 @@ mod tests {
             }
         );
         // None signal fields are omitted on the wire.
-        let none_env = Envelope::new(types::EVENT_BATTERY, &decoded).unwrap();
+        let none_env = Envelope::new(types::DEVICE_BATTERY, &decoded).unwrap();
         let debug_b = format!("{:?}", none_env.b);
         assert!(
             !debug_b.contains("cell_bars")
@@ -7912,8 +7895,7 @@ mod tests {
     #[test]
     fn hello_round_trips() {
         let hello = Hello {
-            proto: 0,
-            min: 0,
+            proto: crate::PROTOCOL_VERSION,
             app: "0.0.1".into(),
             device: info(),
             caps: vec!["core.ping".into(), "device.battery".into()],
@@ -7929,8 +7911,7 @@ mod tests {
     #[test]
     fn hello_localsend_fingerprint_is_hex_or_nothing() {
         let with = |f: Option<&str>| Hello {
-            proto: 0,
-            min: 0,
+            proto: crate::PROTOCOL_VERSION,
             app: "0.0.1".into(),
             device: info(),
             caps: Vec::new(),
@@ -8402,8 +8383,7 @@ mod tests {
             cover: Some("p1".into()),
         };
         assert!(!format!("{album:?}").contains("Vacation"));
-        let env = Envelope::new(types::PHOTOS_ALBUMS_LIST, &PhotoAlbumsList { albums: vec![album.clone()] })
-            .unwrap();
+        let env = Envelope::new(types::OK, &PhotoAlbumsList { albums: vec![album.clone()] }).unwrap();
         let back: PhotoAlbumsList = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back.albums, vec![album]);
 
@@ -8418,13 +8398,12 @@ mod tests {
             album: Some("b1".into()),
         };
         assert!(!format!("{item:?}").contains("secret_photo"));
-        let env = Envelope::new(types::PHOTOS_ITEMS, &PhotoItems { items: vec![item.clone()] }).unwrap();
+        let env = Envelope::new(types::OK, &PhotoItems { items: vec![item.clone()] }).unwrap();
         let back: PhotoItems = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back.items, vec![item]);
 
         let thumb = PhotoThumb { id: "p1".into(), data: vec![0xff, 0xd8, 0xff] };
-        let env = Envelope::new(types::PHOTOS_THUMBS_LIST, &PhotoThumbsList { thumbs: vec![thumb.clone()] })
-            .unwrap();
+        let env = Envelope::new(types::OK, &PhotoThumbsList { thumbs: vec![thumb.clone()] }).unwrap();
         let back: PhotoThumbsList = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back.thumbs, vec![thumb]);
 
@@ -8438,9 +8417,9 @@ mod tests {
     fn remote_input_validates_and_round_trips() {
         // Datagram round-trip for move, scroll, and laser.
         let mv = RemoteInput::Move { dx: 12.5, dy: -8.0 };
-        assert!(mv.is_valid() && mv.is_datagram_allowed() && !mv.is_control_allowed());
+        assert!(mv.is_valid() && mv.is_datagram_allowed() && !mv.is_lane_allowed());
         let dgram = mv.to_datagram();
-        assert_eq!(dgram[0], remote::DATAGRAM_TAG);
+        assert_eq!(dgram[0], crate::DATAGRAM_INPUT);
         assert_eq!(RemoteInput::from_datagram(&dgram).unwrap(), mv);
 
         let scroll = RemoteInput::Scroll { dx: -0.25, dy: 1.375 };
@@ -8454,7 +8433,7 @@ mod tests {
 
         // Button or key in a datagram is rejected.
         let click = RemoteInput::Button { button: MouseButton::Left, action: ButtonAction::Click };
-        assert!(click.is_valid() && click.is_control_allowed() && !click.is_datagram_allowed());
+        assert!(click.is_valid() && click.is_lane_allowed() && !click.is_datagram_allowed());
         assert!(RemoteInput::from_datagram(&click.to_datagram()).is_err());
 
         // Bounds checks.
@@ -8470,7 +8449,7 @@ mod tests {
         assert!(!format!("{text:?}").contains("Hello"));
         assert!(!RemoteInput::Text { text: String::new() }.is_valid());
         assert!(!RemoteInput::Text { text: "bad\nnewline".into() }.is_valid());
-        assert!(!RemoteInput::Text { text: "x".repeat(remote::MAX_TEXT_BYTES + 1) }.is_valid());
+        assert!(!RemoteInput::Text { text: "x".repeat(input::MAX_TEXT_BYTES + 1) }.is_valid());
 
         for k in remote_keys::NAMED {
             assert!(RemoteInput::Key { key: (*k).into(), mods: vec![] }.is_valid(), "{k}");
@@ -8489,9 +8468,9 @@ mod tests {
         assert!(!RemoteInput::Key { key: "f13".into(), mods: vec![] }.is_valid());
         assert!(!RemoteInput::Key { key: "power".into(), mods: vec![] }.is_valid());
 
-        // Slide round-trip on the control stream.
+        // Slide round-trip on the input lane.
         let slide = RemoteInput::Slide { action: SlideAction::Next };
-        let env = Envelope::new(types::REMOTE_INPUT, &slide).unwrap();
+        let env = Envelope::new(types::INPUT_EVENT, &slide).unwrap();
         assert_eq!(env.body::<RemoteInput>().unwrap(), slide);
     }
 
@@ -8508,13 +8487,13 @@ mod tests {
             hotspot: Some(false),
         };
         assert!(state.is_valid());
-        let env = Envelope::new(types::PHONE_TOGGLES, &state).unwrap();
+        let env = Envelope::new(types::TOGGLES_STATE, &state).unwrap();
         let back: PhoneToggles = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back, state);
 
         // Without flash hardware, `flashlight` is omitted on the wire.
         let no_flash = PhoneToggles { flashlight: None, ..state.clone() };
-        let env = Envelope::new(types::PHONE_TOGGLES, &no_flash).unwrap();
+        let env = Envelope::new(types::TOGGLES_STATE, &no_flash).unwrap();
         assert!(!format!("{:?}", env.b).contains("flashlight"));
         let back: PhoneToggles = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back, no_flash);
@@ -8525,11 +8504,11 @@ mod tests {
         assert!(!PhoneToggles { volume: 120, ..state.clone() }.is_valid());
         assert_eq!(PhoneToggles { volume: 120, brightness: 200, ..state }.sanitized().unwrap().volume, 100);
 
-        // `phone.toggle.set` validation for every toggle ID and value kind.
+        // `toggles.set` validation for every toggle ID and value kind.
         for id in [toggle_ids::DND, toggle_ids::FLASHLIGHT, toggle_ids::WIFI, toggle_ids::BLUETOOTH] {
             let set = PhoneToggleSet { id: id.into(), value: PhoneToggleValue::Bool(true) };
             assert!(set.is_valid(), "{id}");
-            let env = Envelope::new(types::PHONE_TOGGLE_SET, &set).unwrap();
+            let env = Envelope::new(types::TOGGLES_SET, &set).unwrap();
             assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<PhoneToggleSet>().unwrap(), set);
             assert!(!PhoneToggleSet { id: id.into(), value: PhoneToggleValue::Level(1) }.is_valid());
             assert!(!PhoneToggleSet { id: id.into(), value: PhoneToggleValue::Mode("on".into()) }.is_valid());
@@ -8538,7 +8517,7 @@ mod tests {
             for level in [0, 50, 100] {
                 let set = PhoneToggleSet { id: id.into(), value: PhoneToggleValue::Level(level) };
                 assert!(set.is_valid());
-                let env = Envelope::new(types::PHONE_TOGGLE_SET, &set).unwrap();
+                let env = Envelope::new(types::TOGGLES_SET, &set).unwrap();
                 assert_eq!(
                     Envelope::from_cbor(&env.to_cbor()).unwrap().body::<PhoneToggleSet>().unwrap(),
                     set
@@ -8551,7 +8530,7 @@ mod tests {
             let set =
                 PhoneToggleSet { id: toggle_ids::RINGER.into(), value: PhoneToggleValue::Mode(mode.into()) };
             assert!(set.is_valid());
-            let env = Envelope::new(types::PHONE_TOGGLE_SET, &set).unwrap();
+            let env = Envelope::new(types::TOGGLES_SET, &set).unwrap();
             assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<PhoneToggleSet>().unwrap(), set);
         }
         assert!(
@@ -8727,7 +8706,7 @@ mod tests {
         // PC audio set validation and round-trip.
         let audio_set = PcAudioSet { volume: Some(65), muted: Some(false), output: None };
         assert!(audio_set.is_valid());
-        let env = Envelope::new(types::PC_AUDIO_SET, &audio_set).unwrap();
+        let env = Envelope::new(types::DECK_AUDIO_SET, &audio_set).unwrap();
         assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<PcAudioSet>().unwrap(), audio_set);
         assert!(!PcAudioSet::default().is_valid());
         assert!(!PcAudioSet { volume: Some(101), ..Default::default() }.is_valid());
@@ -8736,7 +8715,7 @@ mod tests {
         let switch =
             PcAudioSet { output: Some("{0.0.0.00000000}.{headphones}".into()), ..Default::default() };
         assert!(switch.is_valid());
-        let env = Envelope::new(types::PC_AUDIO_SET, &switch).unwrap();
+        let env = Envelope::new(types::DECK_AUDIO_SET, &switch).unwrap();
         assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<PcAudioSet>().unwrap(), switch);
         assert!(!format!("{switch:?}").contains("headphones"), "the device ID stays out of logs");
         for bad in [String::new(), "  ".into(), "a\nb".into(), "x".repeat(deck::MAX_DEVICE_ID_BYTES + 1)] {
@@ -8797,7 +8776,7 @@ mod tests {
         assert_eq!(dir_entry.modified, 0);
 
         let entries = StorageEntries { entries: vec![entry, dir_entry], more: false };
-        let env = Envelope::new(types::STORAGE_ENTRIES, &entries).unwrap();
+        let env = Envelope::new(types::OK, &entries).unwrap();
         let back: StorageEntries = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back, entries);
 
@@ -9052,7 +9031,7 @@ mod tests {
         assert_eq!(back, req);
 
         let ok = CameraCaptureOk { request_id: "req-1".into() };
-        let env_ok = Envelope::new(types::CAMERA_CAPTURE_OK, &ok).unwrap();
+        let env_ok = Envelope::new(types::OK, &ok).unwrap();
         let back_ok: CameraCaptureOk = Envelope::from_cbor(&env_ok.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back_ok, ok);
 
@@ -9369,17 +9348,12 @@ mod tests {
     }
 
     #[test]
-    fn wake_relay_and_audio_pcm_cbor_roundtrip() {
+    fn wake_relay_cbor_roundtrip() {
         let req =
             WakeRelay { mac: [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff], broadcast: Some("192.168.1.255".into()) };
-        let env = crate::Envelope::new(types::WAKE_RELAY, &req).unwrap();
+        let env = crate::Envelope::new(types::PC_WAKE_RELAY, &req).unwrap();
         let decoded: WakeRelay = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(decoded, req);
-
-        let frame = AudioPcmFrame { sample_rate: 48_000, channels: 2, pcm: vec![0x01, 0x02, 0x03, 0x04] };
-        let env = crate::Envelope::new(types::AUDIO_PCM, &frame).unwrap();
-        let decoded: AudioPcmFrame = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
-        assert_eq!(decoded, frame);
     }
 
     #[test]
@@ -9392,9 +9366,9 @@ mod tests {
             backspaces: 1,
             text: "é\nb".into(),
         };
-        assert!(relative.is_valid() && relative.is_control_allowed() && !relative.is_datagram_allowed());
+        assert!(relative.is_valid() && relative.is_lane_allowed() && !relative.is_datagram_allowed());
         assert!(!format!("{relative:?}").contains('é'));
-        let env = Envelope::new(types::REMOTE_INPUT, &relative).unwrap();
+        let env = Envelope::new(types::INPUT_EVENT, &relative).unwrap();
         assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<RemoteInput>().unwrap(), relative);
 
         let mirrored = RemoteInput::Edit {
@@ -9406,7 +9380,7 @@ mod tests {
             text: String::new(),
         };
         assert!(mirrored.is_valid());
-        let env = Envelope::new(types::REMOTE_INPUT, &mirrored).unwrap();
+        let env = Envelope::new(types::INPUT_EVENT, &mirrored).unwrap();
         assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<RemoteInput>().unwrap(), mirrored);
 
         let edit = |range, moves, backspaces, text: &str| RemoteInput::Edit {
@@ -9423,11 +9397,11 @@ mod tests {
         assert!(!edit(None, 600, 0, "").is_valid());
         assert!(!edit(None, 0, 513, "").is_valid());
         assert!(!edit(None, 0, 0, "bell\u{7}").is_valid());
-        assert!(!edit(None, 0, 0, &"x".repeat(remote::MAX_EDIT_TEXT_BYTES + 1)).is_valid());
+        assert!(!edit(None, 0, 0, &"x".repeat(input::MAX_EDIT_TEXT_BYTES + 1)).is_valid());
         assert!(edit(None, 0, 0, "tab\tand\nline").is_valid());
 
         let caret = RemoteInput::Caret { focus: 3, seq: 11, caret: 5, anchor: 2 };
-        let env = Envelope::new(types::REMOTE_INPUT, &caret).unwrap();
+        let env = Envelope::new(types::INPUT_EVENT, &caret).unwrap();
         assert_eq!(env.body::<RemoteInput>().unwrap(), caret);
     }
 
@@ -9460,7 +9434,7 @@ mod tests {
             !RemoteTextState { window: true, ..state.clone() }.is_valid(),
             "a window has no text to mirror"
         );
-        let env = Envelope::new(types::REMOTE_TEXT_STATE, &state).unwrap();
+        let env = Envelope::new(types::INPUT_TEXT_STATE, &state).unwrap();
         let back: RemoteTextState = Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(back, state);
 
@@ -9471,27 +9445,27 @@ mod tests {
         for icon in ["0123456789ABCDEF", "0123456789abcde", "../../etc/passwd"] {
             assert!(!RemoteTextState { icon: Some(icon.into()), ..state.clone() }.is_valid(), "{icon}");
         }
-        let long = RemoteTextState { before: "x".repeat(remote::MAX_STATE_BEFORE + 1), ..state };
+        let long = RemoteTextState { before: "x".repeat(input::MAX_STATE_BEFORE + 1), ..state };
         assert!(!long.is_valid());
 
         // No icon, as from an older PC: the key isn't sent at all.
         let plain = RemoteTextState { icon: None, ..opaque.clone() };
-        let env = Envelope::new(types::REMOTE_TEXT_STATE, &plain).unwrap();
+        let env = Envelope::new(types::INPUT_TEXT_STATE, &plain).unwrap();
         let map = env.body::<ciborium::Value>().unwrap();
         assert!(!map.as_map().unwrap().iter().any(|(k, _)| k.as_text() == Some("icon")));
         assert_eq!(env.body::<RemoteTextState>().unwrap(), plain);
 
         let ask = RemoteAppIcon { key: "0123456789abcdef".into() };
-        let env = Envelope::new(types::REMOTE_APP_ICON, &ask).unwrap();
+        let env = Envelope::new(types::INPUT_APP_ICON, &ask).unwrap();
         assert_eq!(Envelope::from_cbor(&env.to_cbor()).unwrap().body::<RemoteAppIcon>().unwrap(), ask);
         let icon = RemoteAppIconData { png: b"\x89PNG\r\n\x1a\nrest".to_vec() };
         assert!(icon.is_valid());
         assert!(!format!("{icon:?}").contains("PNG"));
         assert!(!RemoteAppIconData { png: b"GIF89a".to_vec() }.is_valid());
-        assert!(!RemoteAppIconData { png: vec![0x89; remote::MAX_ICON_BYTES + 1] }.is_valid());
+        assert!(!RemoteAppIconData { png: vec![0x89; input::MAX_ICON_BYTES + 1] }.is_valid());
 
         let watch = RemoteTextWatch { on: true };
-        let env = Envelope::new(types::REMOTE_TEXT_WATCH, &watch).unwrap();
+        let env = Envelope::new(types::INPUT_TEXT_WATCH, &watch).unwrap();
         assert_eq!(env.body::<RemoteTextWatch>().unwrap(), watch);
     }
 
@@ -9499,7 +9473,7 @@ mod tests {
     fn text_focus_says_whether_the_pc_takes_text() {
         for editable in [true, false] {
             let focus = RemoteTextFocus { editable };
-            let env = crate::Envelope::new(types::REMOTE_TEXT_FOCUS, &focus).unwrap();
+            let env = crate::Envelope::new(types::INPUT_TEXT_FOCUS, &focus).unwrap();
             let decoded: RemoteTextFocus =
                 crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
             assert_eq!(decoded, focus);
@@ -9525,7 +9499,7 @@ mod tests {
             name: "G7 Link screenshot 2026-11-12 14.03.22.png".into(),
         };
         assert!(file.is_valid());
-        let env = crate::Envelope::new(types::PC_CAPTURE_RESULT, &file).unwrap();
+        let env = crate::Envelope::new(types::OK, &file).unwrap();
         let decoded: PcCaptureResult = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
         assert_eq!(decoded, file);
         assert!(!PcCaptureResult { transfer: "short".into(), ..file.clone() }.is_valid());
@@ -9553,8 +9527,8 @@ mod tests {
             rev: u32::MAX,
             applied: u32::MAX,
             kind: TextFieldKind::Mirror,
-            app: Some("a".repeat(remote::MAX_STATE_APP)),
-            label: Some("l".repeat(remote::MAX_STATE_LABEL)),
+            app: Some("a".repeat(input::MAX_STATE_APP)),
+            label: Some("l".repeat(input::MAX_STATE_LABEL)),
             window: false,
             multiline: true,
             start: u32::MAX,
@@ -9572,22 +9546,22 @@ mod tests {
         // bluetooth.md §4.4: 345 bytes besides the text, so 2048 + 512 is 2905.
         const { assert!(2905 <= crate::ble::MAX_PLAIN) };
         for unit in ["x", "\u{1F600}"] {
-            let state = longest_state(unit, remote::MAX_BLE_STATE_BEFORE, remote::MAX_BLE_STATE_AFTER);
+            let state = longest_state(unit, input::MAX_BLE_STATE_BEFORE, input::MAX_BLE_STATE_AFTER);
             assert!(state.is_valid());
-            let len = Envelope::new(types::REMOTE_TEXT_STATE, &state).unwrap().to_cbor().len();
+            let len = Envelope::new(types::INPUT_TEXT_STATE, &state).unwrap().to_cbor().len();
             assert!(len <= 2905, "{len} bytes");
             let small =
-                longest_state(unit, remote::MAX_BLE_STATE_SMALL_BEFORE, remote::MAX_BLE_STATE_SMALL_AFTER);
-            let len = Envelope::new(types::REMOTE_TEXT_STATE, &small).unwrap().to_cbor().len();
+                longest_state(unit, input::MAX_BLE_STATE_SMALL_BEFORE, input::MAX_BLE_STATE_SMALL_AFTER);
+            let len = Envelope::new(types::INPUT_TEXT_STATE, &small).unwrap().to_cbor().len();
             assert!(len <= 985, "{len} bytes");
         }
         // The full window doesn't fit: it has to be trimmed.
-        let full = longest_state("x", remote::MAX_STATE_BEFORE, remote::MAX_STATE_AFTER);
+        let full = longest_state("x", input::MAX_STATE_BEFORE, input::MAX_STATE_AFTER);
         assert!(
-            Envelope::new(types::REMOTE_TEXT_STATE, &full).unwrap().to_cbor().len() > crate::ble::MAX_PLAIN
+            Envelope::new(types::INPUT_TEXT_STATE, &full).unwrap().to_cbor().len() > crate::ble::MAX_PLAIN
         );
-        let trimmed = full.trimmed(remote::MAX_BLE_STATE_BEFORE, remote::MAX_BLE_STATE_AFTER);
-        let len = Envelope::new(types::REMOTE_TEXT_STATE, &trimmed).unwrap().to_cbor().len();
+        let trimmed = full.trimmed(input::MAX_BLE_STATE_BEFORE, input::MAX_BLE_STATE_AFTER);
+        let len = Envelope::new(types::INPUT_TEXT_STATE, &trimmed).unwrap().to_cbor().len();
         assert!(len <= 2905, "{len} bytes");
     }
 
@@ -9822,7 +9796,7 @@ mod tests {
             ..Default::default()
         };
         assert!(items.is_valid());
-        round_trip(types::AGENT_ITEMS, &items);
+        round_trip(types::OK, &items);
         for event in [
             AgentEvent::state(thread.clone()),
             AgentEvent::delta(thread.id.clone(), 3, "msg_01Ab:0".into(), 12, "more".into()),
@@ -9939,14 +9913,15 @@ mod tests {
         bad.kind = "sudo".into();
         assert!(bad.sanitized().is_none());
 
-        // A page keeps the newest items that fit, and says there are more.
+        // A page keeps the newest items, however large, and says there are
+        // more: a page past a frame goes in parts.
         let big = "z".repeat(10_000);
         let items: Vec<_> = (1..=60).map(|seq| agent_item(seq, &big)).collect();
         let page =
             AgentItems { thread: agent_thread("abc"), items, ..Default::default() }.sanitized().unwrap();
         assert!(page.is_valid() && page.more_before);
         assert_eq!(page.items.last().unwrap().seq, 60);
-        assert!(page.items.len() < 20);
+        assert_eq!(page.items.len(), agent::MAX_ITEMS);
 
         // A delta is never cut: its offsets would no longer add up.
         let long = AgentEvent::delta("abc".into(), 1, "m".into(), 0, "y".repeat(agent::MAX_DELTA_BYTES + 1));
@@ -10040,7 +10015,7 @@ mod tests {
         };
         assert!(page.is_valid());
         assert_eq!(page.clone().sanitized().unwrap(), page, "nothing to clean");
-        round_trip(types::AGENT_ITEMS, &page);
+        round_trip(types::OK, &page);
         let event = AgentEvent::item("b".repeat(32), tool.clone());
         assert!(event.is_valid());
         round_trip(types::AGENT_EVENT, &event);
@@ -10339,7 +10314,7 @@ mod tests {
             more_before: false,
         };
         assert!(items.is_valid());
-        round_trip(types::AGENT_SESSION_ITEMS, &items);
+        round_trip(types::OK, &items);
         assert_eq!(items.clone().sanitized().unwrap().items.len(), 2, "seq 0 is kept");
         round_trip(types::AGENT_SESSION_WATCH, &AgentSessionWatch { session: Some(session.id.clone()) });
         let item = AgentSessionItem { session: session.id.clone(), item: agent_item(0, "First") };
@@ -10451,6 +10426,7 @@ mod tests {
         .unwrap();
         assert!(page.is_valid() && page.more_before);
         assert_eq!(page.items.last().unwrap().seq, 59 << 6);
+        assert_eq!(page.items.len(), agent::MAX_ITEMS);
         assert!(!AgentSessionRead { session: "s1".into(), before: None, limit: Some(0) }.is_valid());
         assert_eq!(AgentSessionRead { session: "s1".into(), before: None, limit: Some(500) }.limit(), 50);
     }

@@ -1,7 +1,6 @@
-# Agents service (protocol v0)
+# Agents service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A phone follows, answers and starts coding-agent threads that run on a paired
 PC. The agent always runs on the PC, as the PC's user, in a folder the PC's
@@ -16,7 +15,6 @@ never sends a path, a command, a program name or a flag.
 | `agent.remote` | phone | Shows a PC's agent threads and answers their requests |
 | `agent.sessions` | desktop | Lists sessions started on this PC outside G7 Link (§3) |
 | `agent.follow` | phone | Shows a PC's sessions started outside G7 Link (§3) |
-| `agent.items2` | phone | Understands item kind `reasoning` and the item fields of §2.4 |
 | `agent.say_why` | desktop | `agent.answer` may carry `message`: deny and say why (§2.4) |
 | `agent.control` | both | Models and effort, plan mode, steering and the queue, the agent's questions, images, `@` files, `/` commands and drafts (§5) |
 
@@ -33,24 +31,31 @@ whether or not it offers it.
 
 ## 2. Messages
 
-All on the control stream, except §4's export and §5.3's images. None are
-carried over Bluetooth.
+The PC's events (`agent.catalog`, `agent.thread`, `agent.event`,
+`agent.ask`, `agent.asked`, and §3's and §5's) go one way on the `agent`
+lane, in order ([protocol v1](v1.md) §4.2). Every phone request is an RPC
+`agent/<op>` (§4.3 there), answered `ok` with the body shown, or a plain
+`ok`; the lists are paged (§4.4 there). A phone waits up to 20 s for an
+answer, longer than the PC's own 15 s limit on the host. §4's export and
+§5.3's images have streams of their own. None of this is carried over
+Bluetooth.
+
+The agent host keeps the order of `agent/send`, `agent/queue` and
+`agent/cancel` for one thread; a phone doesn't rely on their arrival order.
 
 ```
-t = "agent.catalog"            b = AgentCatalog                    PC → phone, no reply
-t = "agent.threads"  id = n    b = {}                              phone → PC
-t = "agent.threads"  re = n    b = { threads: [AgentThread] }      newest first, at most 50
-t = "agent.start"    id = n    b = AgentStart                      phone → PC
-t = "agent.thread"   re = n    b = AgentThread
-t = "agent.send"     id = n    b = { thread: text, text: text }    phone → PC, → ok
-t = "agent.cancel"   id = n    b = { thread: text }                phone → PC, → ok
-t = "agent.read"     id = n    b = { thread: text, before?: uint, limit?: uint }   phone → PC
-t = "agent.items"    re = n    b = AgentItems
-t = "agent.watch"    id = n    b = { thread?: text }               phone → PC, → ok
-t = "agent.answer"   id = n    b = { token: text, decision: text, scope?: text, message?: text }   phone → PC, → ok
-t = "agent.event"              b = AgentEvent                      PC → phone, no reply
-t = "agent.ask"                b = AgentAsk                        PC → phone, no reply
-t = "agent.asked"              b = { token: text, thread: text, outcome: text, by_name?: text, message?: text }   PC → phone, no reply
+t = "agent.catalog"   b = AgentCatalog                                     PC → phone, agent lane
+t = "agent.event"     b = AgentEvent                                       PC → phone, agent lane
+t = "agent.ask"       b = AgentAsk                                         PC → phone, agent lane
+t = "agent.asked"     b = { token: text, thread: text, outcome: text, by_name?: text, message?: text }   PC → phone, agent lane
+
+RPC agent/threads   t = "agent.threads"   b = {}                                    → ok { threads: [AgentThread] }   paged; newest first, at most 50
+RPC agent/start     t = "agent.start"     b = AgentStart                            → ok AgentThread
+RPC agent/send      t = "agent.send"      b = { thread: text, text: text }          → ok
+RPC agent/cancel    t = "agent.cancel"    b = { thread: text }                      → ok
+RPC agent/read      t = "agent.read"      b = { thread: text, before?: uint, limit?: uint }   → ok AgentItems   paged
+RPC agent/watch     t = "agent.watch"     b = { thread?: text }                     → ok
+RPC agent/answer    t = "agent.answer"    b = { token: text, decision: text, scope?: text, message?: text }   → ok
 ```
 
 ```
@@ -83,6 +88,8 @@ AgentItem = {
   group?: text, deny_of?: text,               // §2.4
 }
 AgentItems = { thread: AgentThread, items: [AgentItem], more_before: bool, asks: [AgentAsk] }
+                                              // paged: `thread` and `more_before` in every part,
+                                              // `asks` (and §5's `questions`) in the first only
 AgentAsk = {
   token: text, thread: text, thread_title: text, agent: text,   // agent: its id
   kind: text,                                 // "command" | "edit" | "other"
@@ -111,7 +118,7 @@ agent gave one (Claude's `Bash` description), else its title (`Run command`,
 `Edit file`); absent while nothing runs. Show it as "Now: <step>" with the time
 since `since`, and don't build sentences around it. `plan` is the turn's plan
 as the agent wrote it (Claude's todo list, Codex's plan), absent when it made
-none. All three are optional; older PCs send none of them.
+none. All three are optional.
 
 `seq` is 1-based per thread and never reused. A delta's `offset` is the byte
 offset of its `text` in the item's text. `reason` is the agent's own words;
@@ -168,7 +175,7 @@ words), or another word from the agent.
 | `phase`, tool `class` | 1 to 32 |
 | `agent.answer` / `agent.asked` `message` | 1 to 2000 / 2000 |
 | delta `text` | 4096; at most 10 `delta` events a second to one phone (later text is joined) |
-| `agent.items` | at most 50 items, 196608 bytes of their text (each item counts 64 plus its id and text fields, and from §2.4 its tool `path`, `group` and `deny_of`) and 16 asks; the oldest items are left out |
+| `agent.read` answer | at most 50 items and 16 asks; the oldest items past 50 are left out. However large, it comes in parts ([protocol v1](v1.md) §4.4) |
 | `agent.catalog` | 8 agents, 64 folders, 8 modes |
 
 A receiver drops a message that breaks a limit (a request is answered
@@ -191,11 +198,10 @@ plain text.
 - `BUSY`: the thread is working, or too many threads are running.
 - `INTERNAL`: the host failed.
 
-### 2.4 How a turn reads (`agent.items2`, `agent.say_why`)
+### 2.4 How a turn reads (`agent.say_why`)
 
-Added after G7 Link 0.1.15. Every field below is optional and every older
-receiver ignores it: a phone or PC from before reads the rest of the message
-as it always did.
+Every field below is optional: a receiver reads the rest of the message
+without it.
 
 ```
 AgentItem += turn?: uint,                      // 1-based per thread; absent on items from before turns were kept
@@ -218,20 +224,16 @@ agent.asked  += message?: text                 // with outcome "denied": what th
   without `turn` counts turns itself, advancing at every `user` item without
   `deny_of`.
 - **Phase.** `final` marks the turn's answer, `interim` what the agent said on
-  the way. A turn whose items have no phase (an older PC, or a turn that was
+  the way. A turn whose items have no phase (a turn that was
   stopped) has no known answer; a receiver may take its last `assistant` item
   once the turn has ended.
 - **Reasoning.** An item of kind `reasoning` is the agent thinking. Its `text`
   is what the agent showed of its thought, often empty (the agents don't send
   it today); `end` is set when the thinking stopped. Its text streams as
-  `delta` events like an answer's. The PC sends a `reasoning` item only to a
-  phone that offers `agent.items2`. To any other phone it sends it as a tool
-  step, `{ seq, id, kind: "tool", when, tool: { name: "reasoning", title:
-  "Thinking", status: "running" until it ends, then "ok" } }`, with no text,
-  and sends no `delta` for it, so that phone sees no gap in `seq`.
+  `delta` events like an answer's.
 - **Words a receiver doesn't know.** A `phase` or `class` that isn't one of
   the words above is read as absent, not refused, so a later word doesn't
-  break an older receiver. A `phase` on an item that isn't `assistant`, a
+  break a receiver. A `phase` on an item that isn't `assistant`, a
   `deny_of` on one that isn't `user`, and `turn` 0 are read as absent too.
 - **Paths.** A tool's `path` and an ask's `path` are relative to the
   thread's folder, or, for a file outside it, the file's name alone: the
@@ -273,14 +275,14 @@ The PC sends `agent.session` and `agent.session.item` only to phones that
 offer `agent.follow`. Nothing here travels on Bluetooth.
 
 ```
-t = "agent.sessions"          id = n  b = {}                                   phone → PC
-t = "agent.sessions"          re = n  b = { sessions: [AgentSession] }         at most 50
-t = "agent.session"                   b = { session?: AgentSession, removed?: text }   PC → phone, no reply
-t = "agent.session.read"      id = n  b = { session: text, before?: uint, limit?: uint }
-t = "agent.session.items"     re = n  b = { session: AgentSession, items: [AgentItem], more_before: bool }
-t = "agent.session.watch"     id = n  b = { session?: text }                   → ok
-t = "agent.session.item"              b = { session: text, item: AgentItem }   PC → phone, no reply
-t = "agent.session.continue"  id = n  b = { session: text }                    → agent.thread
+t = "agent.session"        b = { session?: AgentSession, removed?: text }   PC → phone, agent lane
+t = "agent.session.item"   b = { session: text, item: AgentItem }           PC → phone, agent lane
+
+RPC agent/sessions           t = "agent.sessions"           b = {}                     → ok { sessions: [AgentSession] }   paged; at most 50
+RPC agent/session.read       t = "agent.session.read"       b = { session: text, before?: uint, limit?: uint }
+                                                                                       → ok { session: AgentSession, items: [AgentItem], more_before: bool }   paged
+RPC agent/session.watch      t = "agent.session.watch"      b = { session?: text }     → ok
+RPC agent/session.continue   t = "agent.session.continue"   b = { session: text }      → ok AgentThread
 ```
 
 ```
@@ -333,8 +335,8 @@ AgentSession = {
   app), `folder` (not in an agent folder) or `agent` (the agent can't run).
 
 Limits: `step` 120 bytes, `waiting_for` 80, the rest as §2.2; ids 1 to 40
-`[a-z0-9]`; `agent.session.items` as `agent.items` (50 items, 196608 bytes,
-the oldest left out); `folder` never contains `/` or `\` (a PC cuts a path
+`[a-z0-9]`; the `agent.session.read` answer as `agent.read`'s (50 items, the
+oldest left out, in parts when large); `folder` never contains `/` or `\` (a PC cuts a path
 to its last component). Errors as §2.3; `NOT_FOUND` for a session that isn't
 listed.
 
@@ -347,7 +349,7 @@ it), each tool step with its command and the end of its output, each edit as a
 `diff` block, and each approval as "Allowed on <device>". Nothing is exported
 unless a phone asks; the PC keeps no copy.
 
-The text can be larger than a control message, so it comes on a bidirectional
+The text can be larger than a frame, so it comes on a bidirectional bulk
 stream of its own, one export per stream:
 
 ```
@@ -392,21 +394,18 @@ its own.
 ### 5.1 Messages
 
 ```
-t = "agent.configure"   id = n  b = { thread, model?, effort?, mode?, custom_model? }    → agent.thread
-t = "agent.queue"       id = n  b = { thread, id, op, text? }                             → ok
-t = "agent.question"            b = AgentQuestion                                         PC → phone, no reply
-t = "agent.questioned"          b = { token, thread, outcome, by_name? }                  PC → phone, no reply
-t = "agent.reply"       id = n  b = { token, answers: [AgentAnswer] } | { token, dismiss: true }   → ok
-t = "agent.implement"   id = n  b = { thread, item }                                      → ok
-t = "agent.files"       id = n  b = { thread? | folder?, query, limit? }
-t = "agent.files"       re = n  b = { files: [{ path, dir? }], more }
-t = "agent.commands"    id = n  b = { agent, folder }
-t = "agent.commands"    re = n  b = { commands: [AgentCommand] }
-t = "agent.draft.get"   id = n  b = { key }
-t = "agent.draft.get"   re = n  b = { draft?: AgentDraft }
-t = "agent.draft.set"   id = n  b = { key, text, images?: [text], rev }
-t = "agent.draft.set"   re = n  b = { rev, conflict?: AgentDraft }
-t = "agent.draft"               b = { key, rev }                                          PC → phone, no reply
+t = "agent.question"     b = AgentQuestion                                PC → phone, agent lane
+t = "agent.questioned"   b = { token, thread, outcome, by_name? }         PC → phone, agent lane
+t = "agent.draft"        b = { key, rev }                                 PC → phone, agent lane
+
+RPC agent/configure   t = "agent.configure"   b = { thread, model?, effort?, mode?, custom_model? }    → ok AgentThread
+RPC agent/queue       t = "agent.queue"       b = { thread, id, op, text? }                             → ok
+RPC agent/reply       t = "agent.reply"       b = { token, answers: [AgentAnswer] } | { token, dismiss: true }   → ok
+RPC agent/implement   t = "agent.implement"   b = { thread, item }                                      → ok
+RPC agent/files       t = "agent.files"       b = { thread? | folder?, query, limit? }                 → ok { files: [{ path, dir? }], more }   paged
+RPC agent/commands    t = "agent.commands"    b = { agent, folder }                                     → ok { commands: [AgentCommand] }   paged
+RPC agent/draft.get   t = "agent.draft.get"   b = { key }                                               → ok { draft?: AgentDraft }
+RPC agent/draft.set   t = "agent.draft.set"   b = { key, text, images?: [text], rev }                   → ok { rev, conflict?: AgentDraft }
 ```
 
 What §2's bodies gain:
@@ -626,7 +625,7 @@ t = "agent.image.thumb.meta"  re = 1  b = { length: uint }          // a JPEG, a
 | `can` | 16 words of 1 to 32 |
 | `limits` | 4; `window` 1 to 32 |
 | `queued` | 5 per thread; `text` 16384; `id` 16 lowercase hex digits |
-| `agent.threads` | the queued messages' text carries whole up to 262144 bytes, newest thread first; past it each is cut to 280 and `truncated` (a thread's page and its events carry it whole) |
+| `agent.threads` answer | queued messages whole, as in a thread's page and its events; a list larger than a frame comes in parts |
 | `images` | 4 per message; `id` 32 lowercase hex digits; `name` 128 |
 | `agent.image.meta` `bytes` | 1 to 10485760 |
 | thumbnail | 153600; `max` 64 to 1024 px |
@@ -634,7 +633,7 @@ t = "agent.image.thumb.meta"  re = 1  b = { length: uint }          // a JPEG, a
 | ask `id` / `header` / `text` | 1 to 64 / 40 / 500 |
 | options | 6 per ask; `label` 1 to 80; `note` 200 |
 | answer | `labels` 6 of 1 to 80; `other` 1 to 500 |
-| `agent.items` `questions` | 4 |
+| `agent.read` answer `questions` | 4 |
 | `agent.files` | `query` 128; `limit` 1 to 50; `path` 1 to 512 |
 | `agent.commands` | 300; `name` 1 to 64, one word; `note` 200; `hint` 80 |
 | draft `key` | a thread id, or `new:` and a folder id (at most 64) |
@@ -678,12 +677,8 @@ what that PC's catalog says.
 - The core answers `agent.watch` itself and limits deltas per phone; the
   other requests go to the platform (`Platform::agent_request`) on a blocking
   thread.
-- The core turns a `reasoning` item into §2.4's tool step for each phone that
-  doesn't offer `agent.items2`, in events and in `agent.items` alike, and
-  drops the deltas of such items for that phone; the platform always hands it
-  the full form. On a phone it refuses to send a `message` to a PC that
-  doesn't offer `agent.say_why`, and the G7 Link FFI announces
-  `agent.items2` for the app.
+- On a phone the core refuses to send a `message` to a PC that doesn't offer
+  `agent.say_why`.
 - On the phone, a `BUSY` reply reaches the app as the generic failure
   (`G7LinkError.Internal`, whose reason starts with `BUSY`), not as `Denied`,
   which means the toggle is off.

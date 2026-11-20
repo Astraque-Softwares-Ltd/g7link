@@ -1,4 +1,7 @@
-# Voice recorder (`recorder`)
+# Voice recorder (`recorder`, protocol v1)
+
+> Status: **v1.** Builds on [protocol v1](v1.md) and the
+> [files service](files.md). License: CC BY 4.0.
 
 Records a voice note on the phone and sends it to a paired PC through the
 resumable `files` stream (`docs/protocol/files.md`), along with any markers
@@ -15,14 +18,13 @@ added during recording.
 
 ## 2. Wire format
 
-Voice recordings travel on the `files` stream (`g7link/1/files`,
-`op: "send"`, `v: 1`) as a single-file `files.offer` with `recording: true`
-and optional `markers`:
+Voice recordings travel on a `files/send` bulk stream (header
+`{ svc: "files", op: "send", v: 1 }`) as a single-file `files.offer` with
+`recording: true` and optional `markers`:
 
 ```json
 {
   "t": "files.offer",
-  "id": 1,
   "b": {
     "id": "AbCdEfGhIjKlMnOpQrStUv",
     "files": [
@@ -52,10 +54,10 @@ and optional `markers`:
 
 Before accepting a `files.offer` with `recording: true`, the receiver checks:
 
-1. **Capability:** If the receiver does not advertise `recorder`, it replies
-   with `err` (`code: "unsupported"`) and closes the stream.
+1. **Capability:** If the receiver does not advertise `recorder`, it answers
+   `error UNSUPPORTED` and finishes the stream.
 2. **Toggle:** If the `recordings` per-device toggle is off for this sender,
-   it replies with `err` (`code: "denied"`) and closes the stream.
+   it answers `error DENIED` and finishes the stream.
 
 ### Resumability & offline queueing
 

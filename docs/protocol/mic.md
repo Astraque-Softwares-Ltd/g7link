@@ -1,11 +1,10 @@
-# Phone as microphone (v1)
+# Phone as microphone (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
-Uses a paired phone's microphone on a PC. Control messages travel on the
-session's control stream ([protocol v0](v0.md) §4); the sound travels on a
-dedicated bidirectional QUIC stream (`{ svc: "mic", op: "pcm", v: 1 }`).
+Uses a paired phone's microphone on a PC. `mic.start` is the RPC
+`mic/start`, `mic.stop` travels on the `mic` lane ([protocol v1](v1.md) §4),
+and the sound on a media stream of its own (`{ svc: "mic", op: "pcm", v: 1 }`).
 
 The PC plays the sound into an output device. On Linux it offers its own
 virtual microphone (a PipeWire or PulseAudio `module-pipe-source`, in mono
@@ -33,10 +32,10 @@ start from the foreground, which the tap provides.
 ## 2. Starting and stopping
 
 ```
-t = "mic.start"  id = n            // PC to phone
-t = "ok"         re = n
-t = "mic.stop"   [id = n]          // either way
-t = "ok"         re = n            // when it had an id
+RPC mic/start   t = "mic.start"            // PC to phone
+  answer: ok
+t = "mic.stop"   [id = n]                  // either way, on the mic lane
+t = "ok"         re = n                    // when it had an id
 ```
 
 **`mic.start`** asks the phone to ask its user. The phone answers `ok` once

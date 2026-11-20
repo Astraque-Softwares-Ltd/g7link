@@ -1478,7 +1478,8 @@ mod tests {
     }
 
     #[test]
-    fn a_thread_list_keeps_its_queued_text_within_its_budget() {
+    fn a_thread_list_keeps_its_queued_text_whole_and_comes_in_parts() {
+        use crate::lanes::{Paged, RPC_PART_TARGET};
         let long = "q".repeat(agent::MAX_QUEUED_TEXT_BYTES);
         let mut thread = full_thread();
         thread.queued = (0..agent::MAX_QUEUED)
@@ -1489,22 +1490,22 @@ mod tests {
             .map(|i| AgentThread { id: format!("{i:032x}"), ..thread.clone() })
             .collect();
         let list = AgentThreads { threads }.sanitized();
-        let bytes: usize = list.threads.iter().map(AgentThread::queued_bytes).sum();
         assert!(list.is_valid());
         assert!(
-            bytes
-                <= agent::MAX_THREADS_QUEUED_BYTES
-                    + agent::MAX_THREADS * agent::MAX_QUEUED * agent::MAX_QUEUED_PREVIEW_BYTES,
-            "{bytes}"
+            list.threads.iter().flat_map(|t| &t.queued).all(|q| !q.truncated && q.text.len() == long.len())
         );
-        assert!(
-            list.threads[0].queued.iter().all(|q| !q.truncated && q.text.len() == long.len()),
-            "newest whole"
-        );
-        let last = list.threads.last().unwrap();
-        assert!(last.queued.iter().all(|q| q.truncated && q.text.len() == agent::MAX_QUEUED_PREVIEW_BYTES));
-        let env = Envelope::new(types::AGENT_THREADS, &list).unwrap();
-        assert!(env.to_cbor().len() < crate::MAX_FRAME_LEN, "{}", env.to_cbor().len());
+        // More than a frame holds: it goes in parts that each fit one.
+        assert!(Envelope::new(types::OK, &list).unwrap().to_cbor().len() > crate::MAX_FRAME_LEN);
+        let parts = list.clone().split(RPC_PART_TARGET);
+        assert!(parts.len() > 1);
+        for part in &parts {
+            assert!(part.is_valid());
+            assert!(Envelope::new(types::PART, part).unwrap().to_cbor().len() <= RPC_PART_TARGET);
+        }
+        let mut parts = parts.into_iter();
+        let mut whole = parts.next().unwrap();
+        parts.for_each(|part| whole.append(part));
+        assert_eq!(whole, list);
         // One thread's page or event carries its queue whole.
         assert!(thread.clone().sanitized().unwrap().queued.iter().all(|q| !q.truncated));
         let mut six = thread.clone();

@@ -1,8 +1,7 @@
-# Photos service (protocol v0)
+# Photos service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md) and the
-> [files service](files.md); breaking changes are allowed until v1.
-> License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md) and the
+> [files service](files.md). License: CC BY 4.0.
 
 A phone tells its PCs about each photo or screenshot it takes, with a small
 preview, so the PC can offer it right away, and lets a PC browse its albums,
@@ -22,7 +21,9 @@ toggle, on by default, on each side).
 
 ## 2. Messages
 
-On the control stream.
+`photos.new` and `photos.changed` go one way on the `photos` lane (phone →
+PC). The rest are RPCs (PC → phone, [protocol v1](v1.md) §4.3); the lists are
+paged (§4.4 there).
 
 ```
 t = "photos.new"                     b = {
@@ -33,15 +34,18 @@ t = "photos.new"                     b = {
   screenshot: bool,      // Optional, false when missing
   thumb:      bytes,     // A JPEG preview: at most 96 KiB, at most 512 pixels a side
 }
-t = "photos.albums"      id = n      b = {}
-t = "photos.albums.list" re = n      b = { albums: [ PhotoAlbum, ... ] }
-t = "photos.list"        id = n      b = { album?: text, before?: int, before_id?: text, limit: uint }
-t = "photos.items"       re = n      b = { items: [ PhotoItem, ... ] }
-t = "photos.thumbs"      id = n      b = { ids: [ text, ... ] }
-t = "photos.thumbs.list" re = n      b = { thumbs: [ PhotoThumb, ... ] }
-t = "photos.get"         id = n      b = { id?: text, ids?: [ text, ... ] }
-t = "photos.sending"     re = n      b = { transfer: text }
 t = "photos.changed"                 b = {}
+
+RPC photos/albums   t = "photos.albums"   b = {}
+  answer (paged): { albums: [ PhotoAlbum, ... ] }
+RPC photos/list     t = "photos.list"     b = { album?: text, before?: int, before_id?: text, limit: uint }
+  answer (paged): { items: [ PhotoItem, ... ] }
+RPC photos/thumbs   t = "photos.thumbs"   b = { ids: [ text, ... ] }
+  answer (paged): { thumbs: [ PhotoThumb, ... ] }
+RPC photos/get      t = "photos.get"      b = { id?: text, ids?: [ text, ... ] }
+  answer: ok { transfer: text }
+RPC photos/delete   t = "photos.delete"   b = { ids: [ text, ... ] }
+  answer: ok { count: uint }
 ```
 
 ```
@@ -89,9 +93,8 @@ first by `date`, then in an order of the phone's own that never changes
 the one before as `before` (its `date`) and `before_id` (its `id`); the
 phone answers with the items after it in that order, so items sharing a
 date are neither skipped nor repeated. With `before` alone, only items
-older than `before` come. `limit` is capped at 200, and the phone trims the
-page if needed so the frame fits within `MAX_FRAME_LEN`; fewer items than
-`limit` means there are no more.
+older than `before` come. `limit` is capped at 200; a page larger than a
+frame comes in parts. Fewer items than `limit` means there are no more.
 
 ### 2.4 `photos.thumbs`
 
@@ -118,7 +121,7 @@ connected PCs can refresh their album and item lists. It isn't answered.
 ### 2.7 `photos.delete`
 
 PC to phone: move these items to the phone's trash, where they can still be
-restored. `ids` holds up to 24 items, so a PC sends a larger selection in batches. The phone answers `photos.deleted` with
+restored. `ids` holds up to 24 items, so a PC sends a larger selection in batches. The phone answers `ok` with
 `count`, how many went. Items it couldn't move stay and aren't counted. Moving
 without a prompt needs Android 11 or newer and All files access, so otherwise
 `count` is 0.
@@ -131,5 +134,5 @@ Errors: `DENIED` when photos are off for the PC, `INTERNAL` when the phone could
   videos (including Android 14's "Select photos" access, where only the
   chosen items are visible), and only new photos taken from then on are
   announced with `photos.new`.
-- Previews, thumbnails and photos are never logged; names neither (v0 §11).
+- Previews, thumbnails and photos are never logged; names neither ([protocol v1](v1.md) §11).
 

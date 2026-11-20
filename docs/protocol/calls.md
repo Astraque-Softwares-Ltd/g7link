@@ -1,7 +1,6 @@
-# Calls service (protocol v0)
+# Calls service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A phone tells its PCs about its calls: who's calling, when it's answered,
 and when it ends. A PC can answer, decline or silence a ringing call,
@@ -28,7 +27,13 @@ toggle, on by default, on each side).
 
 ## 2. Messages
 
-On the control stream.
+| Message | Lane ([protocol v1](v1.md) §4) | Dir |
+|---|---|---|
+| `call.state`, `call.log.changed` | `call` lane, one way | phone → PC |
+| `call.action` → `ok` | `call` lane, with `id` | PC → phone |
+| `call.log` | RPC `call/log`, paged | PC → phone |
+| `call.dial` | RPC `call/dial` | PC → phone |
+| `call.sims` | RPC `call/sims` | PC → phone |
 
 ```
 t = "call.state"            b = {
@@ -56,16 +61,16 @@ t = "call.action"  id = n   b = {
 }
 t = "ok"           re = n
 
-t = "call.log"          id = n   b = { ? before: int, limit: uint }          // 1 to 100
-t = "call.log"          re = n   b = { entries: [ call_entry ] }             // newest first
-
 t = "call.log.changed"           b = {}                                      // phone → PC
 
-t = "call.dial"         id = n   b = { number: text, ? sim: text }       // sim: an id from call.sims
-t = "ok"                re = n
+RPC call/log    t = "call.log"    b = { ? before: int, limit: uint }       // 1 to 100
+  answer (paged): { entries: [ call_entry ] }                               // newest first
 
-t = "call.sims"         id = n   b = {}
-t = "call.sims"         re = n   b = { sims: [ { id: text, label: text } ], ? default: text }
+RPC call/dial   t = "call.dial"   b = { number: text, ? sim: text }        // sim: an id from call.sims
+  answer: ok
+
+RPC call/sims   t = "call.sims"   b = {}
+  answer: { sims: [ { id: text, label: text } ], ? default: text }
 
 call_entry = {
   id:        text,
@@ -111,9 +116,8 @@ when the phone doesn't offer the capability the action needs.
 ### 2.3 `call.log` and `call.log.changed`
 
 `call.log` pages back through the phone's recent calls, newest first:
-`before` is the oldest `date` already shown. A phone answers with fewer
-items than `limit` when the answer wouldn't fit in a frame (v0 §3),
-dropping the oldest.
+`before` is the oldest `date` already shown. The answer is paged
+([protocol v1](v1.md) §4.4): one larger than a frame comes in parts.
 
 The phone sends `call.log.changed` to connected PCs that offer `call.show`
 when its call log changes (debounced). PCs then ask again for what they
@@ -178,4 +182,4 @@ Not in this service:
 
 ## 3. Privacy
 
-Numbers, names and photos are never logged (v0 §11).
+Numbers, names and photos are never logged ([protocol v1](v1.md) §11).

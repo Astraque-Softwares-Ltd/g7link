@@ -26,7 +26,7 @@ or for application and CLI files:
 ```
 
 - Verified automatically by [`scripts/check-headers.ps1`](../../scripts/check-headers.ps1) (run with `pwsh`, as CI does).
-- Never log message text, phone numbers, contact names, file paths, or clipboard contents (see [`docs/protocol/v0.md`](../protocol/v0.md) section 11).
+- Never log message text, phone numbers, contact names, file paths, or clipboard contents (see [`docs/protocol/v1.md`](../protocol/v1.md) section 11).
 
 ## Code Style and Static Analysis
 
@@ -56,7 +56,7 @@ or for application and CLI files:
 
 When introducing a new cross-device capability or extending an existing wire message:
 
-1. **Specification First (`docs/protocol/`)**: Document the capability ID, stream framing, CBOR message schemas, and error handling in [`docs/protocol/`](../protocol/v0.md) and register the capability in [`docs/protocol/capabilities.md`](../protocol/capabilities.md).
+1. **Specification First (`docs/protocol/`)**: Document the capability ID, stream framing, CBOR message schemas, and error handling in [`docs/protocol/`](../protocol/v1.md) (give each message its lane in section 9) and register the capability in [`docs/protocol/capabilities.md`](../protocol/capabilities.md).
 2. **Protocol Constants & Types (`core/g7link-protocol`)**:
    - Add the capability's name next to its message types in `src/messages.rs`, and list it in [`docs/protocol/capabilities.md`](../protocol/capabilities.md).
    - Define the serde-serializable structs in `src/messages.rs` using `#[serde(default)]` / `#[serde(skip_serializing_if = "Option::is_none")]` so wire changes remain backward-compatible.

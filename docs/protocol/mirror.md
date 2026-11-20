@@ -1,7 +1,6 @@
-# Screen mirroring (protocol v0)
+# Screen mirroring (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 A PC shows a phone's screen. The phone's user agrees each time (Android
 asks); the phone then streams its screen as H.264 or, when both sides support
@@ -17,7 +16,6 @@ windows of their own (§6).
 | `mirror.capture` | phone | Shares its screen when its user agrees |
 | `mirror.view` | PC | Shows a phone's screen |
 | `mirror.decode.hevc` | PC or phone | Decodes H.265 screen-mirroring streams |
-| `mirror.pace` | PC or phone | Reports video packets as they arrive, and paces what it sends by those reports (§3) |
 | `mirror.input` | phone | Takes the PC's mouse and keyboard while mirrored (Assist: an accessibility service the user turns on; Elevated: injected input) |
 | `mirror.audio.playback` | phone | Shares the sound of apps that allow it while mirrored (Android 10+) |
 | `mirror.audio` | phone | Shares all its sound while mirrored (planned, Elevated) |
@@ -30,26 +28,31 @@ on each side.
 
 ## 2. Control messages
 
-On the control stream.
+`mirror.start` and `mirror.apps` are RPCs (`mirror/start`, `mirror/apps`,
+[protocol v1](v1.md) §4.3); the rest travel on the `mirror` lane, one each
+way, so they keep their order (§4.2 there).
 
 ```
-t = "mirror.start"     id = n   b = { max_size: uint, fps: uint, bitrate: uint, ? audio: bool,
-                                     ? session: uint, ? app: text,
-                                     ? stay_awake: bool, ? screen_off: bool, ? watch: text,
-                                     ? sound_only: bool }
-t = "mirror.stop"      id = n   b = { ? session: uint }
+RPC mirror/start   t = "mirror.start"   b = { max_size: uint, fps: uint, bitrate: uint, ? audio: bool,
+                                              ? session: uint, ? app: text,
+                                              ? stay_awake: bool, ? screen_off: bool, ? watch: text,
+                                              ? sound_only: bool }
+  answer: ok
+RPC mirror/apps    t = "mirror.apps"    b = {}
+  answer (paged): { apps: [{ pkg: text, label: text, ? icon: bytes }] }
+
+t = "mirror.stop"      id = n   b = { ? session: uint }              // mirror lane
+t = "ok"               re = n
 t = "mirror.power"              b = { ? stay_awake: bool, ? screen_off: bool }
 t = "mirror.keyframe"           b = { ? session: uint }
 t = "mirror.resize"             b = { session: uint, width: uint, height: uint }
 t = "mirror.notice"             b = { ? session: uint, code: text }
-t = "mirror.apps"      id = n
-t = "mirror.apps"      re = n   b = { apps: [{ pkg: text, label: text, ? icon: bytes }] }
-t = "ok"               re = n
+t = "mirror.sound"              b = { on: bool }
 ```
 
 Each mirroring is a **session** the PC numbers: 0 (the default) is the
 phone's screen; any other is an app window (§6). A missing `session`
-means 0, so PCs and phones that predate sessions work as before.
+means 0.
 
 - `mirror.start` (PC → phone): show me your screen, its longer side at most
   `max_size` pixels, at most `fps` frames a second, aiming for `bitrate`
@@ -67,16 +70,16 @@ means 0, so PCs and phones that predate sessions work as before.
 - `sound_only` (PC → phone, `session` 0 with `audio`, never with `app`,
   `watch`, `stay_awake` or `screen_off`): only the phone's sound, no video
   stream; the PC plays it without a window. Sent only to a phone that offers
-  `mirror.sound`; one that doesn't answers `UNSUPPORTED`, so an older phone
-  is never asked for its screen instead. `mirror.stop` (session 0) ends it.
+  `mirror.sound`; one that doesn't answers `UNSUPPORTED`, so a phone that
+  can't is never asked for its screen instead. `mirror.stop` (session 0)
+  ends it.
 - `watch` (phone → PC, `session` 0 only, never with `app`): Play on phone.
   Show what this PC player plays instead of the PC's screen, after the PC
   offered it with `media.watch` ([media.md](media.md) §4).
 - `mirror.stop` (either way): stop. The PC stops reading the video stream;
   the phone stops sharing, restores normal display power, and finishes it.
 - `mirror.sound` (PC → phone, `on`): stop sending the phone's sound to the PC
-  so the phone plays it again, or start again. A phone from before this
-  message answers `UNSUPPORTED`.
+  so the phone plays it again, or start again. Not answered.
 - `mirror.power` (PC → phone): update `stay_awake` and `screen_off` while
   mirroring the phone's screen (`session` 0). Not answered.
 - `mirror.keyframe` (PC → phone): the decoder lost its place; send a
@@ -89,20 +92,17 @@ means 0, so PCs and phones that predate sessions work as before.
   taps and keys (Xiaomi, Redmi and POCO phones do until **USB debugging
   (Security settings)** is on), and `locked` when the phone is locked: it
   drops the PC's taps and keys until it's unlocked, and says so once per
-  lock. Not answered; a PC ignores codes it doesn't
-  know, and a PC from before this message ignores it.
+  lock. Not answered; a PC ignores codes it doesn't know.
 
 ## 3. The video stream
 
-The phone opens a bidirectional stream with the header
-`{ svc: "mirror", op: "video", v: 1 }` (v0 §4), then writes packets until
-it stops. The PC finishes its side, or stops reading, to end the stream.
-It writes nothing else, unless both devices offer `mirror.pace`: then it
-writes one byte (any value) per packet it has read, config packets included,
-and the phone keeps its video from getting more than 250 ms ahead of those
-reports beyond a round trip. A device from before `mirror.pace` must not be
-sent reports: it reads at most 64 bytes back, then takes the stream as ended.
-A PC sharing its screen with a phone does the same, the other way round.
+The phone opens a bidirectional media stream with the header
+`{ svc: "mirror", op: "video", v: 1 }` ([protocol v1](v1.md) §4.7), then
+writes packets until it stops. The PC finishes its side, or stops reading, to
+end the stream. The only thing it writes is one byte (any value) per packet
+it has read, config packets included, and the phone keeps its video from
+getting more than 250 ms ahead of those reports beyond a round trip. A PC
+sharing its screen with a phone does the same, the other way round.
 
 Each packet is:
 
@@ -215,7 +215,7 @@ window of its own, beside whatever the phone's screen shows:
 
 - `mirror.apps` (PC → phone) lists the apps that can open: launchable ones,
   by name, each with its package name and a small PNG icon (at most 8 KiB;
-  at most 500 apps, and icons may be left out to keep the answer small).
+  at most 500 apps; the answer is paged, [protocol v1](v1.md) §4.4).
   Errors: `DENIED`, `UNSUPPORTED` (no `mirror.virtual_display`).
 - `mirror.start` with `app` (a package name) and a `session` other than 0
   runs that app on a display of its own and streams it like the screen,
@@ -251,8 +251,7 @@ only the newest picture when it's behind, and asks for a keyframe when a
 picture doesn't decode.
 
 That queue fills only once QUIC stops taking data, and QUIC takes many
-seconds of video on a slow link. So with `mirror.pace` (§3) the phone also
-stops writing when it gets too far ahead of the PC's reports, until all that's
+seconds of video on a slow link. So the phone also stops writing when it gets too far ahead of the PC's reports, until all that's
 on its way has arrived; that wait also measures what the link carries, which
 sets the encoder's bitrate. A frame with a keyframe queued behind it is
 skipped.

@@ -1,7 +1,6 @@
-# Files service (protocol v0)
+# Files service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 Sends files and folders between paired devices, in either direction, with
 progress, cancellation and resuming after a dropped connection.
@@ -14,8 +13,8 @@ progress, cancellation and resuming after a dropped connection.
 
 ## 2. A transfer
 
-Each transfer runs on its own bidirectional stream (v0 §4), so it never
-holds up the control stream. The sender opens it and writes the stream
+Each transfer runs on its own bidirectional stream, a bulk stream
+([protocol v1](v1.md) §4.7), so it never holds up anything else. The sender opens it and writes the stream
 header, then an offer:
 
 ```
@@ -57,7 +56,7 @@ safe document allowlist and never automatically execute binaries or scripts.
 
 Receivers **MUST** reject an offer that breaks these rules with
 `BAD_MESSAGE`, and still pick their own safe names for writing (see §4). The
-whole offer is one frame (v0 §3), which limits how many files with long
+whole offer is one frame ([protocol v1](v1.md) §3), which limits how many files with long
 names fit in it.
 
 The receiver answers on the same stream:
@@ -94,15 +93,15 @@ else (a reset, a closed connection, a missing `done`) means it didn't.
 
 - Either side cancels an active stream by resetting it (QUIC `RESET_STREAM`
   or `STOP_SENDING`, application code 10, "cancelled"). While a transfer is
-  paused (no active stream), either side cancels by sending a control message
-  `t = "files.cancel", b = { id: text }` so the receiver deletes its staged
+  paused (no active stream), either side cancels by sending
+  `t = "files.cancel", b = { id: text }` on the `files` lane so the receiver deletes its staged
   `.part` directory.
 - Either side manually pauses an active transfer by resetting the stream with
   application code 11 (`files::PAUSED`). Both sides keep the transfer in the
   `Paused` state and the receiver preserves all `.part` files on disk.
 - Either side resumes a paused transfer: the sender re-offers the transfer with
-  the same `id` on a new stream; if the receiver initiates resume, it sends a
-  control message `t = "files.resume", b = { id: text }` prompting the sender
+  the same `id` on a new stream; if the receiver initiates resume, it sends
+  `t = "files.resume", b = { id: text }` on the `files` lane, prompting the sender
   to immediately re-offer from the saved byte offset.
 - A transfer interrupted any other way (the connection dropped) is resumed
   by offering it again with the **same `id`** when the devices reconnect.
@@ -122,4 +121,4 @@ else (a reset, a closed connection, a missing `done`) means it didn't.
 - Names the receiving system can't store are changed to ones it can.
 - A device accepts files only from paired devices with the `files` toggle
   on. A receiver that runs out of space resets the stream.
-- Implementations **MUST NOT** log file names (v0 §11).
+- Implementations **MUST NOT** log file names ([protocol v1](v1.md) §11).

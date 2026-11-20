@@ -1,7 +1,6 @@
-# Media service (protocol v0)
+# Media service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 What plays on one device shows on the other, which can control it: a
 phone's music in the PC's app and in the desktop's media controls (MPRIS),
@@ -15,6 +14,7 @@ a PC's in the phone's media controls. Both directions use the same messages.
 | `media.remote` | both | Shows other devices' players and sends commands to them |
 | `media.watch` | phone | Shows a PC's playback streamed to it (Play on phone, §4) |
 | `media.stream` | PC | Streams a player's picture and sound on request (§4) |
+| `media.sound` | PC | Sends its sound to a phone that plays it (§6) |
 
 A device sends its players only to devices that offer `media.remote`, and
 only while the user allows media for that device (the `media` device
@@ -23,15 +23,26 @@ toggle, on by default). It takes commands only while it offers
 
 ## 2. Messages
 
-All on the control stream.
+| Message | Lane ([protocol v1](v1.md) §4) | Dir |
+|---|---|---|
+| `media.state`, `media.sync`, `media.bt` | `media` lane, one way | either |
+| `media.command` → `ok` | `media` lane, with `id` | either |
+| `media.watch` → `ok` | `media` lane, with `id` | PC → phone |
+| `media.icon` | RPC `media/icon` | either |
+| `media.art`, `media.file` | their own streams (§2.3, §4) | either |
+| PC sound | datagram `0x02`, else the `media/sound` stream (§6) | PC → phone |
+
+The `media` lane keeps a device's states and commands in order, and nothing
+else waits behind them.
 
 ```
-t = "media.state"    b = { players: [Player] }          // no reply
-t = "media.sync"     b = {}                             // no reply
+t = "media.state"    b = { players: [Player] }          // no answer
+t = "media.sync"     b = {}                             // no answer
 t = "media.command"  id = n  b = { player: text, action: text, position?: uint, value?: text }
 t = "ok"             re = n
-t = "media.icon"     id = n  b = { key: text }          // §2.2
-t = "media.icon"     re = n  b = { png: bytes }
+
+RPC media/icon   t = "media.icon"   b = { key: text }   // §2.2
+  answer: ok { png: bytes }
 ```
 
 **`media.state`** carries every player the sender shares, the most
@@ -106,7 +117,7 @@ on a change, never because time passes; a change of rate is a change. A
 ### 2.2 App icons
 
 `icon` names the player app's icon. A receiver that shows it asks once per
-key with `media.icon` and keeps it by key; the reply is a PNG of at most
+key with `media.icon` and keeps it by key; the answer is a PNG of at most
 16 KiB. The sender answers only for a key one of its current players names:
 `NOT_FOUND` for any other (or when it no longer has that icon), `DENIED` when
 media is off for the asking device, `UNSUPPORTED` when it doesn't offer
@@ -139,7 +150,7 @@ within 20 s. Pictures from either field are never logged.
 - **No echoes.** A device leaves its own stand-in for another device's
   player (its MPRIS player on Linux, its media session on Android) out of
   what it shares.
-- Implementations **MUST NOT** log titles, artists or albums (v0 §11).
+- Implementations **MUST NOT** log titles, artists or albums ([protocol v1](v1.md) §11).
 
 ## 4. Play on phone
 
@@ -224,7 +235,7 @@ touched); on a phone, the same for that PC. Unlike other toggles, both
 devices keep it the same:
 
 ```
-t = "audio.bt_media"  b = { on_pc: bool, changed_ms?: u64 }   // either way, no reply
+t = "media.bt"  b = { on_pc: bool, changed_ms?: u64 }   // either way, media lane, no answer
 ```
 
 `changed_ms` is when the toggle was changed, in Unix milliseconds. Each
@@ -233,7 +244,7 @@ stamped with the device's clock, or 1 ms after the stamp it already has if
 that's later (its clock was set back, or the other device's is ahead), so a
 change made after one the device knows of always wins.
 
-A device sends `audio.bt_media`:
+A device sends `media.bt`:
 
 - when its user changes `bt_media` for a connected device, in the order of
   the changes;
@@ -251,10 +262,36 @@ changed while apart, both end up with the later change: last writer wins by
 each device's clock, so with clocks far apart the change made on the device
 whose clock is ahead can win though it was made first.
 
-`changed_ms` is optional for older versions, which don't send it (and only
-send changes as they're made): without it, the change counts as made when
-it arrives. An older receiver ignores `changed_ms` and takes every
-`audio.bt_media`, including the one sent as a session starts. A body that
+Without `changed_ms`, the change counts as made when it arrives. A body that
 isn't `{ on_pc: bool, changed_ms?: u64 }`, or a `changed_ms` above 2^63 − 1,
 is ignored.
+
+## 6. PC sound
+
+A phone can be the PC's speaker ("Use phone as speaker": the PC starts it
+itself, or the phone asks with `deck.audio.set` volume `201`, [deck](deck.md)
+§2.4). The PC sends what it plays as 16-bit PCM in QUIC datagrams tagged
+`0x02` ([protocol v1](v1.md) §5):
+
+```
+0x02 · seq: u16 LE · ts_ms: u32 LE · codec: u8 · channels: u8 · rate: u32 LE · payload
+```
+
+`seq` counts up by one per datagram and wraps; `ts_ms` is when the first
+sample was captured, in ms since the PC started sending sound to this phone.
+`codec` is `0` (16-bit signed little-endian PCM, channels interleaved); a
+phone drops any other. The payload is whole frames, at most 960 bytes (5 ms
+of 48 kHz stereo).
+
+When a datagram can't carry a piece (the path's datagram size is too small,
+or sending fails), the PC opens a media stream with header
+`{ svc: "media", op: "sound", v: 1 }` the first time it needs one, and sends
+each such piece there as a frame: the datagram without its tag byte. It keeps
+at most 24 pieces waiting for that stream and drops the oldest past that.
+Sound never goes on control or a lane.
+
+The phone plays sound only while its `media` toggle is on for the PC. It
+drops a piece whose `seq` is not after the last it played (counting on
+modulo 2^16, less than 2^15 ahead), and uses `ts_ms` to keep its jitter
+buffer short.
 

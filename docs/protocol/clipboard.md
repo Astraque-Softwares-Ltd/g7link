@@ -1,7 +1,6 @@
-# Clipboard service (protocol v0)
+# Clipboard service (protocol v1)
 
-> Status: **draft.** Builds on [protocol v0](v0.md); breaking changes are
-> allowed until v1. License: CC BY 4.0.
+> Status: **v1.** Builds on [protocol v1](v1.md). License: CC BY 4.0.
 
 Copied text (plain and rich HTML/RTF) and images move between paired
 devices: a PC sends what the user copies (automatically, unless turned
@@ -23,6 +22,15 @@ A PC always accepts `clip.set` from a phone the user allows.
 
 ## 2. Messages
 
+| Message | Lane ([protocol v1](v1.md) §4) | Dir |
+|---|---|---|
+| `clip.set` → `ok` | `clip` lane, with `id` | either |
+| `clip.changed` | `clip` lane, one way | PC → phone |
+| `clip.image` | its own `clip/image` stream (§3) | either |
+
+`clip.set` also travels on the Bluetooth channel ([Bluetooth](bluetooth.md)
+§4.4), plain text of at most 2048 bytes.
+
 ```
 t = "clip.set"   id = n   b = { text: text, ?html: text, ?rtf: text, ?sensitive: bool }
 t = "ok"         re = n
@@ -40,8 +48,8 @@ couldn't be written.
 
 ## 3. Images
 
-An image travels on its own bidirectional stream (v0 §4), so a large
-screenshot never holds up the control stream. Only devices that offer
+An image travels on its own bidirectional stream ([protocol v1](v1.md)
+§4.7), so a large screenshot never holds up anything else. Only devices that offer
 `clip.image` are sent images. The sender opens the stream and writes:
 
 ```
@@ -109,6 +117,6 @@ the accessibility bus says a terminal has the focus.
   `"Call"`, `TrackingNumber` → `"Track"`, `Email` → `"Email"`). Both apps offer
   that single chip on the received-clip confirmation when `"Suggest actions for
   copied text"` is enabled (on by default).
-- Implementations **MUST NOT** log clipboard content (v0 §11); only the
+- Implementations **MUST NOT** log clipboard content ([protocol v1](v1.md) §11); only the
   classified `ClipKind` may be logged.
 

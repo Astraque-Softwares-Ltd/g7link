@@ -12,6 +12,8 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
+use crate::messages::types;
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// Bluetooth SIG company ID for testing, used by every G7 Link beacon.
@@ -159,6 +161,34 @@ pub enum LinkError {
 /// The bytes one value carries over a link with `att_mtu`.
 fn value_len(att_mtu: u16) -> usize {
     usize::from(att_mtu.clamp(MIN_ATT_MTU, MAX_ATT_MTU)) - 3
+}
+
+/// The message types the Bluetooth channel carries (`docs/protocol/bluetooth.md`
+/// §4.4); anything else is refused. There are no streams on the channel, so
+/// every request keeps its `id` and every answer its `re`: `input.check`, an
+/// RPC in a session, is an ordinary request here.
+pub const CARRIED_TYPES: &[&str] = &[
+    types::PING,
+    types::PONG,
+    types::OK,
+    types::ERROR,
+    types::DEVICE_RING,
+    types::DEVICE_RING_STOPPED,
+    types::CLIP_SET,
+    types::BLE_OTP,
+    types::TOGGLES_SET,
+    types::TOGGLES_STATE,
+    types::INPUT_CHECK,
+    types::INPUT_EVENT,
+    types::INPUT_TEXT_WATCH,
+    types::INPUT_TEXT_STATE,
+    types::INPUT_TEXT_FOCUS,
+    types::BLE_USE,
+];
+
+/// Whether the Bluetooth channel carries messages of type `t`.
+pub fn carries(t: &str) -> bool {
+    CARRIED_TYPES.contains(&t)
 }
 
 /// The fragments `record` goes in over a link with `att_mtu`, numbered on from
@@ -350,6 +380,20 @@ mod tests {
                 assert_eq!(out.unwrap(), record);
             }
         }
+    }
+
+    #[test]
+    fn the_channel_carries_the_v1_names_and_nothing_on_a_stream_only_lane() {
+        assert_eq!(CARRIED_TYPES.len(), 16);
+        for t in CARRIED_TYPES {
+            assert!(crate::lanes::lane_of(t).is_some(), "{t} is a known type");
+        }
+        assert!(carries("input.event") && carries("toggles.set") && carries("input.check"));
+        for old in ["remote.input", "remote.check", "phone.toggle.set", "phone.toggles"] {
+            assert!(!carries(old), "{old}");
+        }
+        assert!(!carries(types::PART), "no streams, so no parts");
+        assert!(!carries(types::MEDIA_COMMAND));
     }
 
     #[test]
