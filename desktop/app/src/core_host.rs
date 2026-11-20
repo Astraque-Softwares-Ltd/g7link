@@ -198,6 +198,10 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
     if crate::agents::host_installed() {
         caps.push(g7link_core::agent::HOST.into());
         caps.push(g7link_core::agent::SESSIONS.into());
+        // Only a host that takes words with a denial lets phones "deny and say why".
+        if crate::agents::says_why() {
+            caps.push(g7link_core::agent::SAY_WHY.into());
+        }
     }
     caps
 }

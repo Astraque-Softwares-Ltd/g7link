@@ -21,24 +21,30 @@ use std::{
 
 use g7_agents::{
     api::{
-        self, API_VERSION, AgentId, AgentInfo, Approval, ApprovalOutcome, ClientKind, Decision, ErrorCode,
-        Event, ExportFormat, Folder, HelloParams, Item, Mode, Origin, OriginKind, Session,
+        self, AgentId, AgentInfo, Approval, ApprovalAnswerParams, ApprovalOutcome, ClientKind, Decision,
+        ErrorCode, Event, ExportFormat, Folder, HelloParams, Item, Mode, Origin, OriginKind, Session,
         SessionContinueParams, SessionReadParams, SessionSource, SessionState, State, SubscribeParams,
         ThreadExportParams, ThreadExportResult, ThreadInfo, ThreadReadParams, ThreadSelection,
-        ThreadStartParams, UiViewingParams,
+        ThreadStartParams, UiViewingParams, cap,
     },
     client::{self, Client, ClientError, Events, Launch, When},
 };
+use g7_agents_render::{self as render, GuardEvent};
 use g7link_core::{
-    AgentAsk, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentExport, AgentFailure,
-    AgentItem, AgentItems, AgentPlanStep, AgentReply, AgentRequest, AgentSession, AgentSessionItems,
-    AgentThread, AgentTool, DeviceId, Node, agent,
+    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentExport,
+    AgentFailure, AgentItem, AgentItems, AgentPlanStep, AgentReply, AgentRequest, AgentSession,
+    AgentSessionItems, AgentThread, AgentTool, DeviceId, Node, agent,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, watch};
 
 use crate::{core_host, i18n::tr, state::Changes};
+
+mod rows;
+pub(crate) use rows::{CodePalette, LinkRef, ModelRow, Role, RoleValue, RowOp};
+#[cfg(test)]
+pub(crate) use rows::{Extra, model_row};
 
 /// Longest wait between attempts to start and reach the host while it's wanted.
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
@@ -54,22 +60,21 @@ const KNOWN_THREADS: usize = 200;
 const LISTED_THREADS: usize = 100;
 /// Items read at a time for the page.
 const READ_PAGE: u32 = 50;
-/// Rows the open view keeps; older ones are read again with "Load earlier".
-pub(crate) const OPEN_ROWS: usize = 400;
-/// A row's text, detail and output are cut to this many bytes.
+/// Items the open view keeps; older ones are read again with "Load earlier".
+pub(crate) const OPEN_ITEMS: usize = 400;
+/// An item's text, detail and output are cut to this many bytes.
 pub(crate) const ROW_TEXT: usize = 16_384;
-/// Updates waiting for the transcript model; past this they make way for one `Reset`.
+/// Updates waiting for the timeline model; past this they make way for one `Reset`.
 const UI_QUEUE: usize = 256;
-/// Streaming text reaches the transcript at most this often (10 a second).
+/// Streaming text reaches the timeline at most this often (10 a second).
 const DELTA_EVERY: Duration = Duration::from_millis(100);
+
 /// The lists are shown again at most this often.
 const LISTS_EVERY: Duration = Duration::from_millis(250);
 /// The open view's tool steps shown in its timeline.
 const STEPS_SHOWN: usize = 12;
 /// A step's detail (its command) as the "Now" card shows it.
 const STEP_DETAIL: usize = 400;
-/// Files listed under Changes.
-const CHANGES_SHOWN: usize = 50;
 /// Host connections kept for phones following a session (one each).
 const PHONE_WATCHES: usize = 2;
 
@@ -90,25 +95,31 @@ pub enum Status {
 
 // ---- The open view (pure) ----
 
-/// One transcript row, as `AgentItems` shows it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Row {
-    pub seq: u64,
-    pub rev: u32,
-    pub item_id: String,
-    pub kind: String,
-    pub text: String,
-    pub truncated: bool,
-    /// The phone a message came from ("" for this PC).
-    pub from: String,
-    pub tool_name: String,
-    pub tool_title: String,
-    pub tool_detail: String,
-    pub tool_status: String,
-    pub tool_output: String,
+/// One item of the open view, its text cut to [`ROW_TEXT`] bytes, with
+/// whether its text is still arriving and what the timeline reads of a tool.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Entry {
+    pub item: Item,
     /// Text is still arriving.
     pub streaming: bool,
-    pub when_ms: u64,
+    /// What the tool step does: the host's class, or one read from its name
+    /// for a step stored before classes.
+    class: render::ToolClass,
+    /// The file an edit or read is about: the host's path, or one read from
+    /// the title of a step stored before paths.
+    path: String,
+}
+
+/// Never prints the text.
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry")
+            .field("seq", &self.item.seq)
+            .field("rev", &self.item.rev)
+            .field("kind", &self.item.kind)
+            .field("streaming", &self.streaming)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `text` cut to [`ROW_TEXT`] bytes, and whether it was cut.
@@ -117,39 +128,135 @@ fn capped(text: &str) -> (String, bool) {
     (kept.to_owned(), kept.len() < text.len())
 }
 
-impl Row {
+/// A step's class from its tool's name, for steps stored before the host
+/// classed them (the same names the host classes).
+fn class_of_name(name: &str) -> render::ToolClass {
+    use render::ToolClass as C;
+    match name {
+        "Bash" | "shell" | "exec" | "local_shell" | "commandExecution" => C::Command,
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" | "apply_patch" | "fileChange" => C::Edit,
+        "Read" | "NotebookRead" => C::Read,
+        "Grep" | "Glob" | "LS" => C::Search,
+        "WebSearch" | "WebFetch" | "webSearch" => C::Web,
+        "Task" | "Agent" => C::Agent,
+        "TodoWrite" => C::Tasks,
+        n if n.starts_with("mcp__") => C::Mcp,
+        _ => C::Other,
+    }
+}
+
+fn render_class(class: api::ToolClass) -> render::ToolClass {
+    use render::ToolClass as C;
+    match class {
+        api::ToolClass::Command => C::Command,
+        api::ToolClass::Edit => C::Edit,
+        api::ToolClass::Read => C::Read,
+        api::ToolClass::Search => C::Search,
+        api::ToolClass::Web => C::Web,
+        api::ToolClass::Mcp => C::Mcp,
+        api::ToolClass::Agent => C::Agent,
+        api::ToolClass::Tasks => C::Tasks,
+        api::ToolClass::Other => C::Other,
+    }
+}
+
+impl Entry {
     pub(crate) fn from_item(item: &Item) -> Self {
-        let (text, cut) = capped(item.text.as_deref().unwrap_or_default());
-        let tool = item.tool.as_ref();
-        let field = |f: fn(&api::Tool) -> Option<&str>| capped(tool.and_then(f).unwrap_or_default()).0;
-        Self {
+        let mut item = item.clone();
+        if let Some(text) = item.text.as_mut() {
+            let (kept, cut) = capped(text);
+            *text = kept;
+            item.truncated |= cut;
+        }
+        if let Some(tool) = item.tool.as_mut() {
+            for field in [&mut tool.detail, &mut tool.output] {
+                if let Some(text) = field.as_mut() {
+                    *text = capped(text).0;
+                }
+            }
+        }
+        let (class, path) = match &item.tool {
+            Some(tool) => {
+                let class = tool.class.map_or_else(|| class_of_name(&tool.name), render_class);
+                let path = match &tool.path {
+                    Some(path) => path.clone(),
+                    // "Edit src/main.rs": the title of a step from before paths.
+                    None if tool.class.is_none()
+                        && matches!(class, render::ToolClass::Edit | render::ToolClass::Read) =>
+                    {
+                        tool.title.split_once(' ').map(|(_, p)| p.trim().to_owned()).unwrap_or_default()
+                    }
+                    None => String::new(),
+                };
+                (class, path)
+            }
+            None => (render::ToolClass::Other, String::new()),
+        };
+        Self { item, streaming: false, class, path }
+    }
+
+    fn text(&self) -> &str {
+        self.item.text.as_deref().unwrap_or_default()
+    }
+
+    /// What the timeline reads of it; `None` for a kind it doesn't know.
+    fn item_in(&self) -> Option<render::ItemIn<'_>> {
+        let item = &self.item;
+        let kind = match item.kind {
+            api::ItemKind::User => render::ItemKind::User,
+            api::ItemKind::Assistant => render::ItemKind::Assistant,
+            api::ItemKind::Tool => render::ItemKind::Tool,
+            api::ItemKind::Notice => render::ItemKind::Notice,
+            api::ItemKind::Reasoning => render::ItemKind::Reasoning,
+            api::ItemKind::Unknown => return None,
+        };
+        let tool = item.tool.as_ref().map(|t| render::ToolIn {
+            name: &t.name,
+            title: &t.title,
+            class: self.class,
+            detail: t.detail.as_deref().unwrap_or_default(),
+            path: &self.path,
+            status: match t.status {
+                api::ToolStatus::Running => render::ToolStatus::Running,
+                api::ToolStatus::Ok => render::ToolStatus::Ok,
+                api::ToolStatus::Error => render::ToolStatus::Error,
+                api::ToolStatus::Denied => render::ToolStatus::Denied,
+            },
+            output: t.output.as_deref().unwrap_or_default(),
+            by_rule: t.by_rule,
+        });
+        Some(render::ItemIn {
             seq: item.seq,
+            id: &item.id,
+            kind,
+            ts_ms: item.ts_ms,
+            end_ms: item.end_ms,
             rev: item.rev,
-            item_id: item.id.clone(),
-            kind: word(&item.kind),
-            text,
-            truncated: item.truncated || cut,
+            text: self.text(),
+            streaming: self.streaming,
+            turn: item.turn.unwrap_or(0),
+            group: item.group.as_deref(),
+            phase: item.phase.map(|p| match p {
+                api::Phase::Interim => render::Phase::Interim,
+                api::Phase::Final => render::Phase::Final,
+            }),
             from: item
                 .origin
                 .as_ref()
                 .filter(|o| o.kind == OriginKind::Phone)
-                .and_then(|o| o.device_name.clone())
+                .and_then(|o| o.device_name.as_deref())
                 .unwrap_or_default(),
-            tool_name: tool.map(|t| t.name.clone()).unwrap_or_default(),
-            tool_title: tool.map(|t| t.title.clone()).unwrap_or_default(),
-            tool_detail: field(|t| t.detail.as_deref()),
-            tool_status: tool.map(|t| word(&t.status)).unwrap_or_default(),
-            tool_output: field(|t| t.output.as_deref()),
-            streaming: false,
-            when_ms: item.ts_ms,
-        }
+            deny_of: item.deny_of.as_deref(),
+            tool,
+            truncated: item.truncated,
+        })
     }
 }
 
-/// Where a row goes among rows ordered by `seq`.
+/// Where an item goes among items ordered by `seq`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Place {
-    /// It replaces the row there.
+    /// It replaces the item there.
     Replace(usize),
     /// It is new and goes there.
     Insert(usize),
@@ -157,91 +264,72 @@ pub(crate) enum Place {
     Stale,
 }
 
-pub(crate) fn place(rows: &[Row], row: &Row) -> Place {
-    match rows.binary_search_by_key(&row.seq, |r| r.seq) {
-        Ok(i) if rows[i] == *row || (rows[i].rev > row.rev && !rows[i].streaming) => Place::Stale,
+pub(crate) fn place(entries: &[Arc<Entry>], entry: &Entry) -> Place {
+    match entries.binary_search_by_key(&entry.item.seq, |e| e.item.seq) {
+        Ok(i) if *entries[i] == *entry || (entries[i].item.rev > entry.item.rev && !entries[i].streaming) => {
+            Place::Stale
+        }
         Ok(i) => Place::Replace(i),
         Err(i) => Place::Insert(i),
     }
 }
 
-/// Rows to drop from the front after inserting at `at` (`len` rows before):
-/// only a row added at the end pushes the oldest out, so reading earlier
-/// rows keeps them until the next new one.
+/// Items to drop from the front after inserting at `at` (`len` items
+/// before): only an item added at the end pushes the oldest out, so reading
+/// earlier items keeps them until the next new one.
 pub(crate) fn overflow(len: usize, at: usize) -> usize {
-    if at == len { (len + 1).saturating_sub(OPEN_ROWS) } else { 0 }
+    if at == len { (len + 1).saturating_sub(OPEN_ITEMS) } else { 0 }
 }
 
-/// Adds the part of `text`, which starts at byte `offset` of the row's text,
-/// that the row doesn't have yet. Returns where the new part starts and the
-/// part, or `None` when it adds nothing or there's a gap before it.
-pub(crate) fn append(row: &mut Row, offset: usize, text: &str) -> Option<(usize, String)> {
-    let len = row.text.len();
+/// Adds the part of `text`, which starts at byte `offset` of the item's
+/// text, that the item doesn't have yet; true when it added some.
+pub(crate) fn append(entry: &mut Entry, offset: usize, text: &str) -> bool {
+    let current = entry.item.text.get_or_insert_default();
+    let len = current.len();
     if offset > len || offset + text.len() <= len || !text.is_char_boundary(len - offset) {
-        return None;
+        return false;
     }
     let new = &text[len - offset..];
     let kept = api::cut(new, ROW_TEXT.saturating_sub(len));
-    row.truncated |= kept.len() < new.len();
-    row.streaming = true;
+    entry.item.truncated |= kept.len() < new.len();
+    entry.streaming = true;
     if kept.is_empty() {
-        return None;
+        return false;
     }
-    row.text.push_str(kept);
-    Some((len, kept.to_owned()))
+    current.push_str(kept);
+    true
 }
 
-/// Text for one streaming row, joined until it is shown.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UiDelta {
-    pub seq: u64,
-    pub offset: usize,
-    pub text: String,
-}
-
-/// What the transcript model applies, in order, on the GUI thread. The page's
+/// What the timeline model applies, in order, on the GUI thread. The page's
 /// other properties are read again on [`Changes::AGENTS`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum UiUpdate {
-    /// A row is new or changed.
-    Item(Box<Row>),
-    /// More text for a streaming row.
-    Delta(UiDelta),
-    /// Read every row again ([`open_rows`]).
-    Reset,
+    /// The rows changed so.
+    Ops(Vec<RowOp>),
+    /// The rows are these now.
+    Reset(Vec<Arc<ModelRow>>),
 }
 
-/// Joins streaming text so the transcript changes at most 10 times a second.
+/// Lets streaming text reach the rows at most 10 times a second.
 #[derive(Debug, Default)]
-struct Joiner {
-    pending: Vec<UiDelta>,
+struct DeltaGate {
     last: Option<Instant>,
     scheduled: bool,
 }
 
-impl Joiner {
-    /// Adds text. Returns how long to wait before [`flush`](Self::flush)
+impl DeltaGate {
+    /// Text arrived. Returns how long to wait before [`flush`](Self::flush)
     /// when a flush must be scheduled now (none is pending).
-    fn push(&mut self, delta: UiDelta, now: Instant) -> Option<Duration> {
-        match self.pending.iter_mut().rev().find(|p| p.seq == delta.seq) {
-            Some(p) if p.offset + p.text.len() == delta.offset => p.text.push_str(&delta.text),
-            _ => self.pending.push(delta),
-        }
+    fn push(&mut self, now: Instant) -> Option<Duration> {
         if std::mem::replace(&mut self.scheduled, true) {
             return None;
         }
         Some(self.last.map_or(Duration::ZERO, |last| (last + DELTA_EVERY).saturating_duration_since(now)))
     }
 
-    fn flush(&mut self, now: Instant) -> Vec<UiDelta> {
+    fn flush(&mut self, now: Instant) {
         self.scheduled = false;
         self.last = Some(now);
-        std::mem::take(&mut self.pending)
-    }
-
-    /// The row's finished text arrived: its joined text is no longer needed.
-    fn forget(&mut self, seq: u64) {
-        self.pending.retain(|p| p.seq != seq);
     }
 }
 
@@ -254,29 +342,43 @@ enum OpenKind {
 /// What a delta did to the open view.
 #[derive(Debug, PartialEq, Eq)]
 enum DeltaOutcome {
-    /// A row began with it.
-    New(Box<Row>),
-    /// Text was added; it's joined for the transcript, and a flush is due
-    /// after the wait when one is given.
+    /// An item began with it.
+    New,
+    /// Text was added; the rows follow after the wait when one is given.
     Text(Option<Duration>),
     Ignored,
     /// Text before it is missing: read the thread again.
     Gap,
 }
 
-/// The thread or session the page shows, and its rows.
+/// Requests answered while the view is open that the transcript keeps a
+/// line for ("Allowed on Pixel 8 Pro", "Expired").
+const RESOLVED_MARKS: usize = 64;
+/// Rows the user opened or set to wrap, per view.
+const OPEN_KEYS: usize = 512;
+
+/// The thread or session the page shows: its items and what the page did
+/// with them.
 #[derive(Debug)]
 struct OpenView {
     generation: u64,
     kind: OpenKind,
     id: String,
-    rows: Vec<Row>,
+    entries: Vec<Arc<Entry>>,
     asks: Vec<Approval>,
+    /// Marks for requests answered while it was open.
+    resolved: Vec<render::Mark>,
     more: bool,
     loading: bool,
     /// A read to fill a gap in streaming text is running.
     mending: bool,
-    joiner: Joiner,
+    gate: DeltaGate,
+    /// Keys of the rows the user opened.
+    open_keys: Vec<String>,
+    /// Keys of the code blocks the user set to wrap.
+    wraps: Vec<String>,
+    /// Holds a request that arrives while the user types (§P8.2).
+    guard: render::TypingGuard,
 }
 
 impl OpenView {
@@ -285,12 +387,16 @@ impl OpenView {
             generation,
             kind,
             id,
-            rows: Vec::new(),
+            entries: Vec::new(),
             asks: Vec::new(),
+            resolved: Vec::new(),
             more: false,
             loading: true,
             mending: false,
-            joiner: Joiner::default(),
+            gate: DeltaGate::default(),
+            open_keys: Vec::new(),
+            wraps: Vec::new(),
+            guard: render::TypingGuard::new(),
         }
     }
 
@@ -298,22 +404,19 @@ impl OpenView {
         self.kind == kind && self.id == id
     }
 
-    /// Applies a row; true when it changed something.
-    fn apply(&mut self, row: Row) -> bool {
-        match place(&self.rows, &row) {
+    /// Applies an item; true when it changed something.
+    fn apply(&mut self, entry: Entry) -> bool {
+        match place(&self.entries, &entry) {
             Place::Stale => false,
             Place::Replace(i) => {
-                if !row.streaming {
-                    self.joiner.forget(row.seq);
-                }
-                self.rows[i] = row;
+                self.entries[i] = Arc::new(entry);
                 true
             }
             Place::Insert(i) => {
-                let drop = overflow(self.rows.len(), i);
-                self.rows.insert(i, row);
+                let drop = overflow(self.entries.len(), i);
+                self.entries.insert(i, Arc::new(entry));
                 if drop > 0 {
-                    self.rows.drain(..drop);
+                    self.entries.drain(..drop);
                     self.more = true;
                 }
                 true
@@ -322,32 +425,108 @@ impl OpenView {
     }
 
     fn delta(&mut self, seq: u64, item_id: &str, offset: usize, text: &str, now: Instant) -> DeltaOutcome {
-        match self.rows.binary_search_by_key(&seq, |r| r.seq) {
+        match self.entries.binary_search_by_key(&seq, |e| e.item.seq) {
             Ok(i) => {
-                if offset > self.rows[i].text.len() {
+                if offset > self.entries[i].text().len() {
                     return DeltaOutcome::Gap;
                 }
-                match append(&mut self.rows[i], offset, text) {
-                    Some((offset, text)) => {
-                        DeltaOutcome::Text(self.joiner.push(UiDelta { seq, offset, text }, now))
-                    }
-                    None => DeltaOutcome::Ignored,
+                if append(Arc::make_mut(&mut self.entries[i]), offset, text) {
+                    DeltaOutcome::Text(self.gate.push(now))
+                } else {
+                    DeltaOutcome::Ignored
                 }
             }
             Err(_) if offset == 0 => {
-                let mut row = Row {
-                    seq,
-                    item_id: item_id.to_owned(),
-                    kind: "assistant".to_owned(),
-                    when_ms: now_ms(),
-                    ..Row::default()
-                };
-                let _ = append(&mut row, 0, text);
-                row.streaming = true;
-                self.apply(row.clone());
-                DeltaOutcome::New(Box::new(row))
+                let mut entry =
+                    Entry::from_item(&Item::new(seq, item_id, api::ItemKind::Assistant, now_ms()));
+                append(&mut entry, 0, text);
+                entry.streaming = true;
+                self.apply(entry);
+                DeltaOutcome::New
             }
             Err(_) => DeltaOutcome::Gap,
+        }
+    }
+
+    /// Opens or closes a row.
+    fn toggle(&mut self, key: &str) {
+        toggle_key(&mut self.open_keys, key);
+    }
+
+    /// The marks the timeline puts under tools: requests waiting (held while
+    /// the user types), and answered elsewhere or ended. A step a rule
+    /// allowed gets the rule's line from the timeline, in place of who
+    /// answered.
+    fn marks(&self) -> Vec<render::Mark> {
+        let by_rule = |id: &str| {
+            self.entries.iter().any(|e| e.item.id == id && e.item.tool.as_ref().is_some_and(|t| t.by_rule))
+        };
+        let mut marks: Vec<render::Mark> = self
+            .asks
+            .iter()
+            .filter_map(|a| {
+                let kind = if self.guard.held(&a.token) {
+                    render::MarkKind::Held
+                } else {
+                    render::MarkKind::Waiting
+                };
+                Some(render::Mark { item_id: a.item_id.clone()?, kind, by: String::new() })
+            })
+            .collect();
+        for mark in &self.resolved {
+            if !by_rule(&mark.item_id) && !marks.iter().any(|m| m.item_id == mark.item_id) {
+                marks.push(mark.clone());
+            }
+        }
+        marks
+    }
+
+    /// A request ended: the line its tool keeps, if it says something. Not
+    /// for one this PC answered by hand (the tool's line already says it).
+    fn resolve(&mut self, token: &str, outcome: ApprovalOutcome, by: Option<&Origin>) -> bool {
+        let Some(at) = self.asks.iter().position(|a| a.token == token) else { return false };
+        let ask = self.asks.remove(at);
+        let phone = by.filter(|b| b.kind == OriginKind::Phone).and_then(|b| b.device_name.clone());
+        let kind = match (outcome, &phone) {
+            (ApprovalOutcome::Allowed, Some(_)) => Some(render::MarkKind::Allowed),
+            (ApprovalOutcome::Denied, Some(_)) => Some(render::MarkKind::Denied),
+            (ApprovalOutcome::Allowed | ApprovalOutcome::Denied, None) => None,
+            (ApprovalOutcome::Expired, _) => Some(render::MarkKind::Expired),
+            (ApprovalOutcome::Cancelled, _) => Some(render::MarkKind::Cancelled),
+        };
+        if let (Some(kind), Some(item_id)) = (kind, ask.item_id) {
+            if self.resolved.len() >= RESOLVED_MARKS {
+                self.resolved.remove(0);
+            }
+            self.resolved.push(render::Mark { item_id, kind, by: phone.unwrap_or_default() });
+        }
+        true
+    }
+
+    /// The guard heard of the requests now waiting.
+    fn guard_requests(&mut self, now_ms: u64) {
+        let ids: Vec<&str> = self.asks.iter().map(|a| a.token.as_str()).collect();
+        self.guard.on(GuardEvent::Requests { ids: &ids, now_ms });
+    }
+
+    /// Tokens the guard holds, in order.
+    fn held(&self) -> Vec<String> {
+        self.asks.iter().filter(|a| self.guard.held(&a.token)).map(|a| a.token.clone()).collect()
+    }
+}
+
+/// Adds `key` to `keys`, or removes it when it's there; at most
+/// [`OPEN_KEYS`], the oldest first out.
+fn toggle_key(keys: &mut Vec<String>, key: &str) {
+    match keys.iter().position(|k| k == key) {
+        Some(at) => {
+            keys.remove(at);
+        }
+        None => {
+            if keys.len() >= OPEN_KEYS {
+                keys.remove(0);
+            }
+            keys.push(key.to_owned());
         }
     }
 }
@@ -356,12 +535,215 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
-// ---- The transcript model's queue ----
+// ---- The timeline's rows ----
+
+/// What the rows are computed from, taken under the bridge's lock.
+#[derive(Debug, Clone)]
+struct Snapshot {
+    generation: u64,
+    entries: Vec<Arc<Entry>>,
+    state: render::ThreadState,
+    since_ms: u64,
+    marks: Vec<render::Mark>,
+    open: Vec<String>,
+    wraps: Vec<String>,
+}
+
+fn thread_state(state: State) -> render::ThreadState {
+    match state {
+        State::Working => render::ThreadState::Working,
+        State::Waiting => render::ThreadState::Waiting,
+        State::Done => render::ThreadState::Done,
+        State::Failed => render::ThreadState::Failed,
+        State::Interrupted => render::ThreadState::Interrupted,
+    }
+}
+
+/// A session as a thread's state: what it does now, for the live line and
+/// the folds.
+fn session_state(state: SessionState) -> render::ThreadState {
+    match state {
+        SessionState::Working => render::ThreadState::Working,
+        SessionState::NeedsYou | SessionState::NeedsYouGuess => render::ThreadState::Waiting,
+        SessionState::Idle | SessionState::Ended => render::ThreadState::Done,
+    }
+}
+
+fn snapshot(s: &BridgeState) -> Option<Snapshot> {
+    let open = s.open.as_ref()?;
+    let (state, since_ms) = match open.kind {
+        OpenKind::Thread => s
+            .threads
+            .get(&open.id)
+            .map_or((render::ThreadState::Done, 0), |t| (thread_state(t.state), t.state_since_ms)),
+        OpenKind::Session => s
+            .sessions
+            .iter()
+            .find(|x| x.id == open.id)
+            .map_or((render::ThreadState::Done, 0), |x| (session_state(x.state), x.state_since_ms)),
+    };
+    Some(Snapshot {
+        generation: open.generation,
+        entries: open.entries.clone(),
+        state,
+        since_ms,
+        marks: open.marks(),
+        open: open.open_keys.clone(),
+        wraps: open.wraps.clone(),
+    })
+}
+
+/// The rows on screen for the open view, and the timeline that makes them.
+#[derive(Default)]
+struct Render {
+    generation: u64,
+    timeline: render::Timeline,
+    shown: Vec<Arc<ModelRow>>,
+    /// Each row on screen with what it was built from, to reuse it unchanged.
+    built: HashMap<String, (render::Row, rows::Extra, Arc<ModelRow>)>,
+    palette: CodePalette,
+}
+
+impl std::fmt::Debug for Render {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Render")
+            .field("generation", &self.generation)
+            .field("shown", &self.shown.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Render {
+    /// Starts over for the view `generation` (none shown yet).
+    fn reset(&mut self, generation: u64) {
+        self.generation = generation;
+        self.timeline = render::Timeline::new();
+        self.shown.clear();
+        self.built.clear();
+    }
+
+    /// The rows for `snap`, and what changed from the ones shown; `None`
+    /// when `snap` is of another view than this one.
+    fn update(&mut self, snap: &Snapshot) -> Option<Vec<RowOp>> {
+        if snap.generation != self.generation {
+            return None;
+        }
+        let items: Vec<render::ItemIn<'_>> = snap.entries.iter().filter_map(|e| e.item_in()).collect();
+        let by_id: HashMap<&str, &Entry> = snap.entries.iter().map(|e| (e.item.id.as_str(), &**e)).collect();
+        let ctx = render::Ctx {
+            state: snap.state,
+            state_since_ms: snap.since_ms,
+            now_ms: now_ms(),
+            marks: &snap.marks,
+            open: &snap.open,
+        };
+        let rows = self.timeline.rows(&items, &ctx);
+        let mut built = HashMap::with_capacity(rows.len());
+        let mut shown = Vec::with_capacity(rows.len());
+        for row in rows {
+            let entry = by_id.get(row.item_id.as_str());
+            let extra = rows::Extra {
+                when_ms: entry.map_or(0, |e| e.item.end_ms.unwrap_or(e.item.ts_ms)),
+                truncated: entry.is_some_and(|e| e.item.truncated),
+                wrapped: snap.wraps.contains(&row.key),
+            };
+            let model = match self.built.remove(&row.key) {
+                Some((old, old_extra, model)) if old == row && old_extra == extra => model,
+                _ => {
+                    let source = entry
+                        .and_then(|e| e.item.tool.as_ref())
+                        .and_then(|t| t.detail.as_deref())
+                        .unwrap_or_default();
+                    Arc::new(rows::model_row(&row, extra, source, &self.palette))
+                }
+            };
+            shown.push(model.clone());
+            built.insert(row.key.clone(), (row, extra, model));
+        }
+        let ops = rows::row_ops(&self.shown, &shown);
+        self.shown = shown;
+        self.built = built;
+        Some(ops)
+    }
+
+    fn row(&self, key: &str) -> Option<&Arc<ModelRow>> {
+        self.shown.iter().find(|r| r.key() == key)
+    }
+}
+
+#[derive(Debug, Default)]
+struct RenderGate {
+    running: bool,
+    again: bool,
+}
+
+/// The rows of the open view are computed again, off the GUI thread: one
+/// run at a time, and once more after it when something changed meanwhile.
+fn rerender() {
+    {
+        let mut gate = bridge().render_gate();
+        if gate.running {
+            gate.again = true;
+            return;
+        }
+        gate.running = true;
+    }
+    if core_host::try_host().is_none() {
+        bridge().render_gate().running = false;
+        return;
+    }
+    core_host::spawn(async {
+        let _ = tokio::task::spawn_blocking(|| render_until_settled(bridge())).await;
+    });
+}
+
+fn render_until_settled(bridge: &Bridge) {
+    /// A run that ends by panicking lets the next one start.
+    struct Running<'a>(&'a Bridge);
+    impl Drop for Running<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.0.render_gate().running = false;
+            }
+        }
+    }
+    let _running = Running(bridge);
+    loop {
+        let snap = snapshot(&bridge.lock());
+        if let Some(snap) = snap {
+            render_once(bridge, &snap);
+        }
+        let mut gate = bridge.render_gate();
+        if !gate.again {
+            gate.running = false;
+            return;
+        }
+        gate.again = false;
+    }
+}
+
+fn render_once(bridge: &Bridge, snap: &Snapshot) {
+    let mut render = bridge.render();
+    let Some(ops) = render.update(snap) else { return };
+    if !ops.is_empty() {
+        bridge.send_ui(UiUpdate::Ops(ops), &render.shown);
+    }
+}
+
+/// The view `generation` starts with no rows (opened, closed, or its host
+/// went away); the model is told at once.
+fn reset_rows(bridge: &Bridge, generation: u64) {
+    let mut render = bridge.render();
+    render.reset(generation);
+    bridge.send_ui(UiUpdate::Reset(Vec::new()), &[]);
+}
+
+// ---- The timeline model's queue ----
 
 type Waker = Arc<dyn Fn() -> bool + Send + Sync>;
 
-/// Updates for `AgentItems`, applied on the GUI thread in order. When the GUI
-/// falls behind, what's queued gives way to one `Reset`.
+/// Updates for `AgentTimeline`, applied on the GUI thread in order. When the
+/// GUI falls behind, what's queued gives way to one `Reset`.
 #[derive(Default)]
 struct Feed {
     queue: VecDeque<UiUpdate>,
@@ -380,11 +762,12 @@ impl std::fmt::Debug for Feed {
 }
 
 impl Feed {
-    /// Queues `update`; true when the GUI must be woken to take it.
-    fn push(&mut self, update: UiUpdate) -> bool {
+    /// Queues `update`, after which the rows are `after`; true when the GUI
+    /// must be woken to take it.
+    fn push(&mut self, update: UiUpdate, after: &[Arc<ModelRow>]) -> bool {
         if self.queue.len() >= UI_QUEUE {
             self.queue.clear();
-            self.queue.push_back(UiUpdate::Reset);
+            self.queue.push_back(UiUpdate::Reset(after.to_vec()));
         } else {
             self.queue.push_back(update);
         }
@@ -504,6 +887,12 @@ struct BridgeState {
     outdated: bool,
     /// The host doesn't know `sessions.list` (it's older).
     sessions_unsupported: bool,
+    /// The host takes a denial with the user's words (`deny_message`).
+    says_why: bool,
+    /// The page's side panels the user closed.
+    panels: Panels,
+    /// The user changed them before the saved ones were read.
+    panels_set: bool,
     agents: Vec<AgentInfo>,
     folders: Vec<Folder>,
     threads: HashMap<String, ThreadInfo>,
@@ -562,6 +951,9 @@ struct ListsGate {
 #[derive(Debug)]
 struct Bridge {
     state: Mutex<BridgeState>,
+    /// The open view's rows; never locked while `state` is held.
+    render: Mutex<Render>,
+    render_gate: Mutex<RenderGate>,
     feed: Mutex<Feed>,
     lists: Mutex<ListsGate>,
     wake: Notify,
@@ -576,6 +968,8 @@ impl Bridge {
     fn new() -> Self {
         Self {
             state: Mutex::default(),
+            render: Mutex::default(),
+            render_gate: Mutex::default(),
             feed: Mutex::default(),
             lists: Mutex::default(),
             wake: Notify::new(),
@@ -591,6 +985,14 @@ impl Bridge {
 
     fn feed(&self) -> std::sync::MutexGuard<'_, Feed> {
         self.feed.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn render(&self) -> std::sync::MutexGuard<'_, Render> {
+        self.render.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn render_gate(&self) -> std::sync::MutexGuard<'_, RenderGate> {
+        self.render_gate.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn set_status(&self, status: Status) {
@@ -624,14 +1026,15 @@ impl Bridge {
         catalog(&s.agents, &s.folders)
     }
 
-    /// Sends an update to the transcript model, if one is on screen.
-    fn send_ui(&self, update: UiUpdate) {
+    /// Sends an update to the timeline model, if one is on screen; the rows
+    /// are `after` once it's applied.
+    fn send_ui(&self, update: UiUpdate, after: &[Arc<ModelRow>]) {
         let waker = {
             let mut feed = self.feed();
             if feed.waker.is_none() {
                 return;
             }
-            if !feed.push(update) {
+            if !feed.push(update, after) {
                 return;
             }
             feed.waker.clone()
@@ -697,6 +1100,62 @@ pub fn host_installed() -> bool {
 /// host when the page, the user or a phone needs it.
 pub fn start() {
     core_host::spawn(run());
+    core_host::spawn(async {
+        let read = tokio::task::spawn_blocking(|| {
+            core_host::try_data_dir()
+                .map(|dir| crate::atomic_file::read_json::<Panels>(&dir.join(PANELS_FILE)))
+        });
+        if let Ok(Some(panels)) = read.await {
+            let mut s = lock();
+            if !s.panels_set {
+                s.panels = panels;
+            }
+            drop(s);
+            changed();
+        }
+    });
+}
+
+/// The page's side panels the user closed: the thread list and the
+/// details beside the transcript. Remembered across restarts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Panels {
+    #[serde(default)]
+    list_hidden: bool,
+    #[serde(default)]
+    inspector_hidden: bool,
+}
+
+const PANELS_FILE: &str = "agents-panels.json";
+
+/// The user shows or hides the thread list or the details (`None` leaves
+/// one as it is). Saved at once, whole or not at all.
+pub fn set_panels(list_hidden: Option<bool>, inspector_hidden: Option<bool>) {
+    {
+        let mut s = lock();
+        let was = s.panels;
+        s.panels.list_hidden = list_hidden.unwrap_or(was.list_hidden);
+        s.panels.inspector_hidden = inspector_hidden.unwrap_or(was.inspector_hidden);
+        s.panels_set = true;
+        if s.panels == was {
+            return;
+        }
+    }
+    changed();
+    let Some(dir) = core_host::try_data_dir() else { return };
+    core_host::spawn(async move {
+        // One save at a time, each of the newest state, so the last is the latest.
+        static SAVING: Mutex<()> = Mutex::new(());
+        let written = tokio::task::spawn_blocking(move || {
+            let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+            let panels = lock().panels;
+            crate::atomic_file::write_json(&dir.join(PANELS_FILE), &panels)
+        })
+        .await;
+        if let Ok(Err(error)) = written {
+            tracing::warn!(%error, "the Agents page's panels weren't saved");
+        }
+    });
 }
 
 /// Something that decides whether the host is wanted changed (a toggle).
@@ -780,6 +1239,9 @@ pub(crate) fn thread(info: &ThreadInfo, phone: Option<&DeviceId>) -> AgentThread
     }
 }
 
+/// An item as phones get it, with every field. The core sends a phone
+/// without `agent.items2` a reasoning item as a tool step, and never sends
+/// a phone an absolute path (`docs/protocol/agents.md` §2.4).
 pub(crate) fn item(item: &Item) -> AgentItem {
     AgentItem {
         seq: item.seq,
@@ -794,7 +1256,15 @@ pub(crate) fn item(item: &Item) -> AgentItem {
             detail: t.detail.clone(),
             status: word(&t.status),
             output: t.output.clone(),
+            class: t.class.as_ref().map(word),
+            path: t.path.clone(),
+            by_rule: t.by_rule,
         }),
+        turn: item.turn,
+        phase: item.phase.as_ref().map(word),
+        end: item.end_ms,
+        group: item.group.clone(),
+        deny_of: item.deny_of.clone(),
     }
 }
 
@@ -841,6 +1311,7 @@ pub(crate) fn ask(approval: &Approval, info: Option<&ThreadInfo>) -> AgentAsk {
         reason: approval.reason.clone(),
         truncated: approval.truncated,
         expires: approval.expires_ms,
+        item: approval.item_id.clone(),
     }
 }
 
@@ -958,19 +1429,19 @@ fn session_row(s: &Session, home: Option<&std::path::Path>) -> Value {
 }
 
 /// The open view's newest tool steps, oldest first.
-fn steps_json(rows: &[Row]) -> Value {
-    let mut steps: Vec<Value> = rows
+fn steps_json(entries: &[Arc<Entry>]) -> Value {
+    let mut steps: Vec<Value> = entries
         .iter()
         .rev()
-        .filter(|r| r.kind == "tool")
+        .filter_map(|e| e.item.tool.as_ref().filter(|_| e.item.kind == api::ItemKind::Tool).map(|t| (e, t)))
         .take(STEPS_SHOWN)
-        .map(|r| {
+        .map(|(e, t)| {
             json!({
-                "seq": r.seq.to_string(),
-                "title": r.tool_title,
-                "status": r.tool_status,
-                "detail": api::cut(&r.tool_detail, STEP_DETAIL),
-                "when_ms": r.when_ms,
+                "seq": e.item.seq.to_string(),
+                "title": t.title,
+                "status": word(&t.status),
+                "detail": api::cut(t.detail.as_deref().unwrap_or_default(), STEP_DETAIL),
+                "when_ms": e.item.ts_ms,
             })
         })
         .collect();
@@ -979,92 +1450,54 @@ fn steps_json(rows: &[Row]) -> Value {
 }
 
 /// The files the open view's finished edits changed, with lines added and
-/// removed, in the order first changed.
-fn changes_json(rows: &[Row]) -> Value {
-    let mut files: Vec<(String, u32, u32)> = Vec::new();
-    let mut add = |path: &str, added: u32, removed: u32| {
-        if path.is_empty() {
-            return;
-        }
-        match files.iter().position(|f| f.0 == path) {
-            Some(at) => {
-                files[at].1 += added;
-                files[at].2 += removed;
-            }
-            None if files.len() < CHANGES_SHOWN => files.push((path.to_owned(), added, removed)),
-            None => {}
-        }
-    };
-    for row in rows.iter().filter(|r| r.kind == "tool" && r.tool_status == "ok") {
-        match row.tool_name.as_str() {
-            "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
-                let path = row.tool_title.split_once(' ').map_or("", |(_, p)| p);
-                let (added, removed) = count_lines(&row.tool_detail);
-                add(path, added, removed);
-            }
-            "apply_patch" => {
-                // Each file starts with a "<path> (<kind>)" line, then its diff.
-                let mut current: Option<(&str, u32, u32)> = None;
-                for line in row.tool_detail.lines() {
-                    let header = line
-                        .strip_suffix(')')
-                        .and_then(|l| l.rsplit_once(" ("))
-                        .filter(|(_, kind)| matches!(*kind, "add" | "delete" | "update"));
-                    if let Some((path, _)) = header {
-                        if let Some((p, a, r)) = current.take() {
-                            add(p, a, r);
-                        }
-                        current = Some((path, 0, 0));
-                    } else if let Some((_, a, r)) = current.as_mut() {
-                        let (da, dr) = count_lines(line);
-                        *a += da;
-                        *r += dr;
-                    }
-                }
-                if let Some((p, a, r)) = current {
-                    add(p, a, r);
-                }
-            }
-            _ => {}
-        }
-    }
+/// removed, by path.
+fn changes_json(entries: &[Arc<Entry>]) -> Value {
+    let items: Vec<render::ItemIn<'_>> = entries.iter().filter_map(|e| e.item_in()).collect();
+    let (files, _, _, _) = render::changed_files(&items);
     Value::Array(
         files
             .into_iter()
-            .map(|(path, added, removed)| json!({ "path": path, "added": added, "removed": removed }))
+            .filter(|f| !f.path.is_empty())
+            .map(|f| json!({ "path": f.path, "added": f.adds, "removed": f.dels }))
             .collect(),
     )
 }
 
-/// Lines added and removed in a diff (file headers aside).
-fn count_lines(diff: &str) -> (u32, u32) {
-    diff.lines().fold((0, 0), |(a, r), line| {
-        if line.starts_with('+') && !line.starts_with("+++") {
-            (a + 1, r)
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            (a, r + 1)
-        } else {
-            (a, r)
-        }
-    })
-}
+/// Diff rows the request dock shows; it scrolls inside.
+const ASK_DIFF_ROWS: usize = 2_000;
 
-/// The one request the page shows: the oldest still waiting (`{}` for
-/// none), and how many more wait behind it. Answering it shows the next.
-fn ask_json(asks: &[Approval]) -> (Value, i32) {
-    let Some(a) = asks.iter().min_by_key(|a| a.created_ms) else { return (json!({}), 0) };
-    let more = i32::try_from(asks.len() - 1).unwrap_or(i32::MAX);
+/// The request the dock shows (`{}` for none), and how many more wait.
+/// Oldest first; the shown one is the first the typing guard doesn't hold,
+/// or the first when it holds them all. Answering it shows the next.
+fn ask_json(asks: &[Approval], held: impl Fn(&str) -> bool) -> (Value, i32) {
+    let mut order: Vec<&Approval> = asks.iter().collect();
+    order.sort_by_key(|a| a.created_ms);
+    let Some(position) = order.iter().position(|a| !held(&a.token)).or((!order.is_empty()).then_some(0))
+    else {
+        return (json!({}), 0);
+    };
+    let a = order[position];
+    let total = order.len();
+    let more = i32::try_from(total - 1).unwrap_or(i32::MAX);
+    let diff =
+        a.diff.as_deref().filter(|d| !d.is_empty()).map(|d| rows::diff_json(&render::diff(d), ASK_DIFF_ROWS));
     let ask = json!({
         "token": a.token,
         "kind": word(&a.kind),
         "title": a.title,
         "command": a.command.clone().unwrap_or_default(),
+        "commandStyled": rows::escaped(a.command.as_deref().unwrap_or_default(), true),
         "diff": a.diff.clone().unwrap_or_default(),
+        "diffDoc": diff.map_or(String::new(), |d| d.to_string()),
         "path": a.path.clone().unwrap_or_default(),
         "reason": a.reason.clone().unwrap_or_default(),
         "truncated": a.truncated,
         "can_allow_thread": a.can_allow_thread,
         "created_ms": a.created_ms,
+        "position": position + 1,
+        "total": total,
+        "held": held(&a.token),
+        "itemId": a.item_id.clone().unwrap_or_default(),
     });
     (ask, more)
 }
@@ -1087,7 +1520,7 @@ trait Relay {
     async fn catalog(&self, catalog: Option<AgentCatalog>);
     async fn event(&self, event: AgentEvent, started_by: Option<DeviceId>);
     async fn ask(&self, ask: AgentAsk);
-    async fn asked(&self, token: String, thread: String, outcome: String, by_name: Option<String>);
+    async fn asked(&self, asked: AgentAsked);
     async fn session(&self, session: Option<AgentSession>, removed: Option<String>);
 }
 
@@ -1128,8 +1561,8 @@ impl Relay for NodeRelay {
         }
     }
 
-    async fn asked(&self, token: String, thread: String, outcome: String, by_name: Option<String>) {
-        let _ = self.0.agent_asked(token, thread, outcome, by_name).await;
+    async fn asked(&self, asked: AgentAsked) {
+        let _ = self.0.agent_asked(asked).await;
     }
 
     async fn session(&self, session: Option<AgentSession>, removed: Option<String>) {
@@ -1139,8 +1572,10 @@ impl Relay for NodeRelay {
     }
 }
 
+/// What G7 Link says to the host: it understands reasoning items and the
+/// fields added with them (phones that don't get them as the core makes them).
 fn hello() -> HelloParams {
-    HelloParams { client: ClientKind::Link, version: API_VERSION, bridge_token: None }
+    HelloParams::new(ClientKind::Link, &[cap::ITEMS2])
 }
 
 async fn run() {
@@ -1158,7 +1593,7 @@ async fn run() {
 /// no thread is replaced by the current one either way.
 async fn connect(launch: &Launch, want: Want) -> Result<(Client, Events), ClientError> {
     if want == Want::Run {
-        return Client::connect_or_spawn_with(launch, ClientKind::Link).await;
+        return Client::connect_or_spawn_as(launch, hello()).await;
     }
     let (client, events) = Client::connect(&launch.socket, hello()).await?;
     match client.replace(launch, When::Idle).await {
@@ -1256,6 +1691,7 @@ async fn serve<R: Relay>(
         }
     };
     let outdated = client.outdated(&launch.version).is_some();
+    let says_why = client.host().has(cap::DENY_MESSAGE);
     if outdated {
         tracing::info!(
             host = %client.host().host_version,
@@ -1270,6 +1706,7 @@ async fn serve<R: Relay>(
         s.viewing_sent = Some((s.conn, UiViewingParams::default()));
         s.status = Status::Connected;
         s.outdated = outdated;
+        s.says_why = says_why;
         s.sessions_unsupported = matches!(&sessions, Err(e) if e.is_unknown_method());
         s.agents = agents;
         s.folders = folders;
@@ -1280,6 +1717,7 @@ async fn serve<R: Relay>(
     };
     bridge.connected.send_replace(true);
     changed();
+    core_host::refresh_capabilities();
     relay.catalog(Some(bridge.catalog())).await;
     if let Some((generation, kind, id)) = reopen
         && core_host::try_host().is_some()
@@ -1317,22 +1755,28 @@ async fn serve<R: Relay>(
             }
         }
     };
-    {
+    let generation = {
         let mut s = bridge.lock();
         s.client = None;
         s.outdated = false;
+        s.says_why = false;
         s.sessions_unsupported = false;
         s.threads.clear();
         s.sessions.clear();
         s.following = None;
-        if let Some(open) = s.open.as_mut() {
-            open.rows.clear();
+        s.open.as_mut().map(|open| {
+            open.entries.clear();
             open.asks.clear();
+            open.resolved.clear();
             open.loading = true;
-            open.joiner = Joiner::default();
-        }
+            open.gate = DeltaGate::default();
+            open.generation
+        })
+    };
+    if let Some(generation) = generation {
+        reset_rows(bridge, generation);
     }
-    bridge.send_ui(UiUpdate::Reset);
+    core_host::refresh_capabilities();
     bridge.connected.send_replace(false);
     if successor.is_none() {
         bridge.set_status(Status::NotRunning);
@@ -1374,6 +1818,7 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             relay.event(AgentEvent::state(thread(&e.thread, None)), started_by(&e.thread)).await;
             if bridge.lock().open_is(OpenKind::Thread, &e.thread.id) {
                 changed();
+                rerender();
             }
             lists_changed();
         }
@@ -1398,14 +1843,14 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             let was_open = {
                 let mut s = bridge.lock();
                 s.threads.remove(&e.thread_id);
-                let open = s.open_is(OpenKind::Thread, &e.thread_id);
-                if open {
-                    s.open = None;
+                if s.open_is(OpenKind::Thread, &e.thread_id) {
+                    s.open.take().map(|o| o.generation)
+                } else {
+                    None
                 }
-                open
             };
-            if was_open {
-                bridge.send_ui(UiUpdate::Reset);
+            if let Some(generation) = was_open {
+                reset_rows(bridge, generation);
                 changed();
                 sync_viewing();
             }
@@ -1431,8 +1876,12 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
                     && !open.asks.iter().any(|a| a.token == e.approval.token)
                 {
                     open.asks.push(e.approval.clone());
+                    open.guard_requests(now_ms());
+                    let guard = guard_followup(open);
                     drop(s);
+                    guard.run();
                     changed();
+                    rerender();
                 }
             }
             relay.ask(ask(&e.approval, info.as_ref())).await;
@@ -1441,15 +1890,23 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             {
                 let mut s = bridge.lock();
                 if let Some(open) = s.open.as_mut()
-                    && let Some(at) = open.asks.iter().position(|a| a.token == e.token)
+                    && open.resolve(&e.token, e.outcome, e.by.as_ref())
                 {
-                    open.asks.remove(at);
+                    open.guard_requests(now_ms());
                     drop(s);
                     changed();
+                    rerender();
                 }
             }
-            let by_name = e.by.as_ref().and_then(|by| answered_by(by, this_pc_name));
-            relay.asked(e.token, e.thread_id, asked_outcome(e.outcome), by_name).await;
+            // Whether a rule allowed it reaches phones with its step (`by_rule`).
+            let asked = AgentAsked {
+                token: e.token,
+                thread: e.thread_id,
+                outcome: asked_outcome(e.outcome),
+                by_name: e.by.as_ref().and_then(|by| answered_by(by, this_pc_name)),
+                message: e.message.filter(|_| e.outcome == ApprovalOutcome::Denied),
+            };
+            relay.asked(asked).await;
         }
         Event::AgentsChanged(e) => {
             bridge.lock().agents = e.agents;
@@ -1507,27 +1964,30 @@ fn upsert_session(sessions: &mut Vec<Session>, session: Session) {
 
 /// An item of a thread or session: shown when it's the open one.
 fn open_item(bridge: &Bridge, kind: OpenKind, id: &str, item: &Item) {
-    let row = Row::from_item(item);
     let mut s = bridge.lock();
     let Some(open) = s.open.as_mut().filter(|o| o.is(kind, id)) else { return };
-    if open.apply(row.clone()) {
+    let tool_changed = item.tool.is_some();
+    if open.apply(Entry::from_item(item)) {
         drop(s);
-        bridge.send_ui(UiUpdate::Item(Box::new(row)));
-        changed();
+        rerender();
+        if tool_changed {
+            // The inspector's steps and changes.
+            changed();
+        }
     }
 }
 
-/// Streaming text of a thread: joined for the transcript, or the thread is
-/// read again when some went missing.
+/// Streaming text of a thread: the rows follow at most 10 times a second,
+/// or the thread is read again when some went missing.
 fn open_delta(bridge: &Bridge, thread_id: &str, seq: u64, item_id: &str, offset: usize, text: &str) {
     let now = Instant::now();
     let mut s = bridge.lock();
     let client = s.client.clone();
     let Some(open) = s.open.as_mut().filter(|o| o.is(OpenKind::Thread, thread_id)) else { return };
     match open.delta(seq, item_id, offset, text, now) {
-        DeltaOutcome::New(row) => {
+        DeltaOutcome::New => {
             drop(s);
-            bridge.send_ui(UiUpdate::Item(row));
+            rerender();
         }
         DeltaOutcome::Text(Some(wait)) => {
             let generation = open.generation;
@@ -1557,32 +2017,72 @@ fn open_delta(bridge: &Bridge, thread_id: &str, seq: u64, item_id: &str, offset:
                         ..Default::default()
                     };
                     let items = client.thread_read(params).await.map(|page| page.items).unwrap_or_default();
-                    let rows: Vec<Row> = {
+                    {
                         let mut s = lock();
                         let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else {
                             return;
                         };
                         open.mending = false;
-                        items.iter().map(Row::from_item).filter(|row| open.apply(row.clone())).collect()
-                    };
-                    for row in rows {
-                        self::bridge().send_ui(UiUpdate::Item(Box::new(row)));
+                        for item in &items {
+                            open.apply(Entry::from_item(item));
+                        }
                     }
+                    rerender();
                 });
             }
         }
     }
 }
 
+/// The streaming text joined since the last time reaches the rows.
 fn flush_deltas(generation: u64) {
-    let deltas = {
+    {
         let mut s = lock();
         let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
-        open.joiner.flush(Instant::now())
-    };
-    for delta in deltas {
-        bridge().send_ui(UiUpdate::Delta(delta));
+        open.gate.flush(Instant::now());
     }
+    rerender();
+}
+
+/// What follows a change to the typing guard once the lock is let go: a
+/// timer that lets held requests go when the user stops typing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GuardFollowup {
+    generation: u64,
+    idle_at: Option<u64>,
+}
+
+fn guard_followup(open: &OpenView) -> GuardFollowup {
+    GuardFollowup { generation: open.generation, idle_at: open.guard.idle_at() }
+}
+
+impl GuardFollowup {
+    fn run(self) {
+        let Some(at) = self.idle_at else { return };
+        if core_host::try_host().is_none() {
+            return;
+        }
+        let wait = Duration::from_millis(at.saturating_sub(now_ms()));
+        core_host::spawn(async move {
+            tokio::time::sleep(wait).await;
+            guard_idle(self.generation, at);
+        });
+    }
+}
+
+/// The user stopped typing at `at`: held requests take the dock. A later
+/// keystroke moved the time on, and its own timer comes later.
+fn guard_idle(generation: u64, at: u64) {
+    {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
+        if open.guard.idle_at() != Some(at) {
+            return;
+        }
+        open.guard.on(GuardEvent::Idle);
+    }
+    changed();
+    rerender();
 }
 
 /// The connected client, waiting a little for one when a request needs it.
@@ -1664,9 +2164,15 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
                 asks: page.pending.iter().map(|a| ask(a, Some(&page.thread))).collect(),
             })
         }
-        AgentRequest::Answer { token, allow } => {
+        AgentRequest::Answer { token, allow, message } => {
             let decision = if allow { Decision::Allow } else { Decision::Deny };
-            client.approval_answer(token, decision, origin()).await.map_err(fail)?;
+            // The core passes words only with a denial, only while this PC
+            // offers them; a host without them would drop them unsaid.
+            if message.is_some() && (allow || !says_why()) {
+                return Err(AgentFailure::Unsupported);
+            }
+            let params = ApprovalAnswerParams { token, decision, by: origin(), message };
+            client.approval_answer_with(params).await.map_err(fail)?;
             AgentReply::Ok
         }
         AgentRequest::Sessions => {
@@ -1779,6 +2285,12 @@ pub(crate) struct View {
     pub outdated: bool,
     /// The host can't list sessions started on this PC until it's updated.
     pub sessions_unsupported: bool,
+    /// A request can be denied with words for the agent.
+    pub can_say_why: bool,
+    /// The user hid the thread list.
+    pub list_hidden: bool,
+    /// The user hid the details beside the transcript.
+    pub inspector_hidden: bool,
 }
 
 pub(crate) fn view() -> View {
@@ -1796,7 +2308,10 @@ pub(crate) fn view() -> View {
         }),
         None => None,
     };
-    let (ask, asks_waiting) = ask_json(open.map_or(&[][..], |o| &o.asks));
+    let (ask, asks_waiting) = match open {
+        Some(o) => ask_json(&o.asks, |token| o.guard.held(token)),
+        None => ask_json(&[], |_| false),
+    };
     View {
         status: word(&s.status),
         setup: setup_json(&s, home.as_deref()),
@@ -1813,31 +2328,36 @@ pub(crate) fn view() -> View {
         open_info: open_info.unwrap_or_else(|| json!({})).to_string(),
         ask: ask.to_string(),
         asks_waiting,
-        steps: steps_json(open.map_or(&[][..], |o| &o.rows)).to_string(),
-        changes: changes_json(open.map_or(&[][..], |o| &o.rows)).to_string(),
+        steps: steps_json(open.map_or(&[][..], |o| &o.entries)).to_string(),
+        changes: changes_json(open.map_or(&[][..], |o| &o.entries)).to_string(),
         more: open.is_some_and(|o| o.more),
         loading: open.is_some_and(|o| o.loading),
         busy: s.busy > 0,
         export_path: s.export.as_ref().map(|e| e.path.to_string_lossy().into_owned()).unwrap_or_default(),
         outdated: s.outdated,
         sessions_unsupported: s.sessions_unsupported,
+        can_say_why: s.says_why && open.is_some_and(|o| o.kind == OpenKind::Thread),
+        list_hidden: s.panels.list_hidden,
+        inspector_hidden: s.panels.inspector_hidden,
     }
 }
 
-/// The open view's rows, for the transcript model after a `Reset`.
-pub(crate) fn open_rows() -> Vec<Row> {
-    lock().open.as_ref().map(|o| o.rows.clone()).unwrap_or_default()
+/// Whether the host takes a denial with the user's words: phones are then
+/// offered `agent.say_why`.
+pub fn says_why() -> bool {
+    lock().says_why
 }
 
-/// The transcript model is on screen: `waker` queues [`take_ui`] on the GUI
-/// thread (false when it's gone). It reads every row first.
+/// The timeline model is on screen: `waker` queues [`take_ui`] on the GUI
+/// thread (false when it's gone). It takes every row first.
 pub(crate) fn attach_ui(waker: impl Fn() -> bool + Send + Sync + 'static) {
     let bridge = bridge();
+    let render = bridge.render();
     *bridge.feed() = Feed { waker: Some(Arc::new(waker)), ..Feed::default() };
-    bridge.send_ui(UiUpdate::Reset);
+    bridge.send_ui(UiUpdate::Reset(render.shown.clone()), &render.shown);
 }
 
-/// What the transcript model applies now, in order.
+/// What the timeline model applies now, in order.
 pub(crate) fn take_ui() -> Vec<UiUpdate> {
     bridge().feed().take()
 }
@@ -2136,7 +2656,7 @@ fn open(kind: OpenKind, id: String) {
         let was = s.open.replace(OpenView::new(generation, kind, id.clone()));
         (generation, was.is_some_and(|o| o.kind == OpenKind::Session), s.client.clone())
     };
-    bridge().send_ui(UiUpdate::Reset);
+    reset_rows(bridge(), generation);
     changed();
     sync_viewing();
     // Without a host it's read once one is reached.
@@ -2182,11 +2702,12 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
         open.loading = false;
         match read {
             Ok((items, more, asks)) => {
-                for row in items.iter().map(Row::from_item) {
-                    open.apply(row);
+                for item in &items {
+                    open.apply(Entry::from_item(item));
                 }
                 open.more |= more;
                 open.asks = asks;
+                open.guard_requests(now_ms());
             }
             Err(e) => {
                 tracing::debug!(error = %e, "the open thread wasn't read");
@@ -2195,7 +2716,7 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
             }
         }
     }
-    bridge().send_ui(UiUpdate::Reset);
+    rerender();
     changed();
 }
 
@@ -2206,7 +2727,7 @@ pub fn close() {
         (s.open.take(), s.client.clone())
     };
     let Some(was) = was else { return };
-    bridge().send_ui(UiUpdate::Reset);
+    reset_rows(bridge(), 0);
     changed();
     sync_viewing();
     let Some(client) = client else { return };
@@ -2228,7 +2749,7 @@ pub fn load_earlier() {
         let mut s = lock();
         let client = s.client.clone();
         let Some(open) = s.open.as_mut().filter(|o| o.more && !o.loading) else { return };
-        let Some(before) = open.rows.first().map(|r| r.seq) else { return };
+        let Some(before) = open.entries.first().map(|e| e.item.seq) else { return };
         open.loading = true;
         (open.generation, open.kind, open.id.clone(), before, client)
     };
@@ -2251,21 +2772,18 @@ pub fn load_earlier() {
                 client.session_read(params).await.map(|page| (page.items, page.more_before))
             }
         };
-        let rows: Vec<Row> = {
+        {
             let mut s = lock();
             let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
             open.loading = false;
-            match read {
-                Ok((items, more)) => {
-                    open.more = more;
-                    items.iter().map(Row::from_item).filter(|row| open.apply(row.clone())).collect()
+            if let Ok((items, more)) = read {
+                open.more = more;
+                for item in &items {
+                    open.apply(Entry::from_item(item));
                 }
-                Err(_) => Vec::new(),
             }
-        };
-        for row in rows {
-            bridge().send_ui(UiUpdate::Item(Box::new(row)));
         }
+        rerender();
         changed();
     });
 }
@@ -2389,6 +2907,7 @@ pub fn send(text: String) {
     if text.trim().is_empty() {
         return;
     }
+    guard_event(GuardEvent::Sent);
     page_request(
         Request::Send,
         move |client| async move { client.thread_send(id, text, Origin::launcher()).await },
@@ -2413,15 +2932,140 @@ pub fn answer(token: String, decision: &str) {
     page_request(
         Request::Answer,
         move |client| async move { client.approval_answer(token, decision, Origin::launcher()).await },
-        move |()| {
-            let mut s = lock();
-            if let Some(open) = s.open.as_mut() {
-                open.asks.retain(|a| a.token != answered);
-            }
-            drop(s);
-            changed();
-        },
+        move |()| answered_here(&answered),
     );
+}
+
+/// This PC answered a request: it leaves the dock (with no line under its
+/// tool: the tool's own line says it).
+fn answered_here(token: &str) {
+    {
+        let mut s = lock();
+        if let Some(open) = s.open.as_mut() {
+            open.asks.retain(|a| a.token != token);
+            open.guard_requests(now_ms());
+        }
+    }
+    changed();
+    rerender();
+}
+
+/// Denies the shown request with the user's words for the agent (§P8.3):
+/// only while the host takes them, never with empty words.
+pub fn deny_with_message(token: String, text: String) {
+    let text = text.trim().to_owned();
+    if text.is_empty() || token.is_empty() || !lock().says_why {
+        return;
+    }
+    let message = api::cut(&text, api::MAX_DENY_MESSAGE).to_owned();
+    guard_event(GuardEvent::Sent);
+    let answered = token.clone();
+    page_request(
+        Request::Answer,
+        move |client| async move {
+            let params = ApprovalAnswerParams {
+                token,
+                decision: Decision::Deny,
+                by: Origin::launcher(),
+                message: Some(message),
+            };
+            client.approval_answer_with(params).await
+        },
+        move |()| answered_here(&answered),
+    );
+}
+
+/// The open view's typing guard heard `event`.
+fn guard_event(event: GuardEvent<'_>) {
+    let (before, after, followup) = {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut() else { return };
+        let before = open.held();
+        open.guard.on(event);
+        (before, open.held(), guard_followup(open))
+    };
+    followup.run();
+    if before != after {
+        changed();
+        rerender();
+    }
+}
+
+/// The user typed in the composer (not text set by the page).
+pub fn typed() {
+    guard_event(GuardEvent::Typed { now_ms: now_ms() });
+}
+
+/// The composer gained or lost the keyboard.
+pub fn composer_focus(focused: bool) {
+    guard_event(if focused { GuardEvent::Focus } else { GuardEvent::Blur });
+}
+
+/// Opens or closes a row of the open view.
+pub fn toggle(key: String) {
+    {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut() else { return };
+        open.toggle(&key);
+    }
+    rerender();
+}
+
+/// Wraps a code block's long lines, or stops.
+pub fn toggle_wrap(key: String) {
+    {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut() else { return };
+        toggle_key(&mut open.wraps, &key);
+    }
+    rerender();
+}
+
+/// What Copy takes from a row: a code block's source, a command, an output,
+/// a message. `i:<item id>` is that item's whole text (an answer's "Copy").
+pub fn copy_text(key: &str) -> Option<String> {
+    let text = bridge().render().row(key).map(|r| r.copy_text().to_owned()).filter(|t| !t.is_empty());
+    text.or_else(|| {
+        let id = key.strip_prefix("i:")?;
+        let s = lock();
+        let entry = s.open.as_ref()?.entries.iter().find(|e| e.item.id == id)?.clone();
+        Some(entry.text().to_owned()).filter(|t| !t.is_empty())
+    })
+}
+
+/// The link numbered `index` in a row's markup.
+pub fn link(key: &str, index: usize) -> Option<LinkRef> {
+    bridge().render().row(key)?.link(index).cloned()
+}
+
+/// Opens a link the render crate validated, after the page showed where it
+/// goes (or at once when its text is its target).
+pub fn open_link(url: String) {
+    let scheme = url.split(':').next().unwrap_or_default().to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https" | "mailto") {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Err(e) = crate::sys::shell::open_url(&url) {
+            tracing::debug!(error = %e, "a link didn't open");
+            crate::bridge::app::show_message(tr!("Agents", "Couldn't open the link"));
+        }
+    });
+}
+
+/// The page's colours for code changed (a theme): rows are coloured again.
+pub fn set_code_colors(json: &str) {
+    let palette = CodePalette::from_json(json);
+    {
+        let bridge = bridge();
+        let mut render = bridge.render();
+        if render.palette == palette {
+            return;
+        }
+        render.palette = palette;
+        render.built.clear();
+    }
+    rerender();
 }
 
 /// Deletes a thread (and closes it when it's open).
@@ -2694,37 +3338,32 @@ mod tests {
     }
 
     fn text_item(seq: u64, rev: u32, text: &str) -> Item {
-        Item {
-            seq,
-            id: format!("i{seq}"),
-            kind: ItemKind::Assistant,
-            ts_ms: 1,
-            rev,
-            text: Some(text.into()),
-            truncated: false,
-            origin: None,
-            tool: None,
+        Item { rev, text: Some(text.into()), ..Item::new(seq, format!("i{seq}"), ItemKind::Assistant, 1) }
+    }
+
+    fn a_tool(name: &str, title: &str, detail: &str, status: ToolStatus) -> Tool {
+        Tool {
+            name: name.into(),
+            title: title.into(),
+            detail: Some(detail.into()),
+            status,
+            output: None,
+            class: None,
+            path: None,
+            by_rule: false,
         }
     }
 
     fn tool_item(seq: u64, name: &str, title: &str, detail: &str) -> Item {
         Item {
-            seq,
-            id: format!("t{seq}"),
-            kind: ItemKind::Tool,
-            ts_ms: seq,
             rev: 1,
-            text: None,
-            truncated: false,
-            origin: None,
-            tool: Some(Tool {
-                name: name.into(),
-                title: title.into(),
-                detail: Some(detail.into()),
-                status: ToolStatus::Ok,
-                output: None,
-            }),
+            tool: Some(a_tool(name, title, detail, ToolStatus::Ok)),
+            ..Item::new(seq, format!("t{seq}"), ItemKind::Tool, seq)
         }
+    }
+
+    fn entry(item: &Item) -> Entry {
+        Entry::from_item(item)
     }
 
     #[test]
@@ -2839,26 +3478,37 @@ mod tests {
 
     #[test]
     fn items_and_asks_map_to_wire_words() {
+        let mut bash = a_tool("Bash", "Run command", "ls", ToolStatus::Denied);
+        bash.class = Some(api::ToolClass::Command);
         let tool = Item {
-            seq: 4,
-            id: "toolu_01".into(),
-            kind: ItemKind::Tool,
-            ts_ms: 9,
             rev: 1,
-            text: None,
-            truncated: false,
-            origin: None,
-            tool: Some(Tool {
-                name: "Bash".into(),
-                title: "Run command".into(),
-                detail: Some("ls".into()),
-                status: ToolStatus::Denied,
-                output: None,
-            }),
+            tool: Some(bash),
+            turn: Some(2),
+            end_ms: Some(12),
+            group: Some("toolu_00".into()),
+            ..Item::new(4, "toolu_01", ItemKind::Tool, 9)
         };
         let wire = item(&tool);
         assert_eq!((wire.kind.as_str(), wire.tool.as_ref().unwrap().status.as_str()), ("tool", "denied"));
+        assert_eq!(wire.tool.as_ref().unwrap().class.as_deref(), Some("command"));
+        assert_eq!((wire.turn, wire.end, wire.group.as_deref()), (Some(2), Some(12), Some("toolu_00")));
         assert!(wire.is_valid());
+        let answer = Item {
+            text: Some("Done.".into()),
+            phase: Some(api::Phase::Final),
+            ..Item::new(5, "msg_1:0", ItemKind::Assistant, 10)
+        };
+        assert_eq!(item(&answer).phase.as_deref(), Some("final"));
+        let denial = Item {
+            text: Some("Run only the unit tests".into()),
+            deny_of: Some("toolu_01".into()),
+            ..Item::new(6, "u6", ItemKind::User, 11)
+        };
+        assert_eq!(item(&denial).deny_of.as_deref(), Some("toolu_01"));
+        let thinking = Item { end_ms: Some(3), ..Item::new(7, "rs_1", ItemKind::Reasoning, 2) };
+        let wire = item(&thinking);
+        assert_eq!(wire.kind, "reasoning", "the core makes it a step for a phone without agent.items2");
+        assert_eq!(wire.clone().for_legacy().kind, "tool");
 
         let approval = Approval {
             token: "aaaabbbbccccddddeeeeffff00001111".into(),
@@ -2873,6 +3523,7 @@ mod tests {
             can_allow_thread: true,
             created_ms: 1,
             expires_ms: 7_200_001,
+            item_id: Some("toolu_02".into()),
         };
         let thread_info = info(Origin::launcher());
         let wire = ask(&approval, Some(&thread_info));
@@ -2881,14 +3532,21 @@ mod tests {
             ("edit", "codex", "Fix the build")
         );
         assert_eq!(wire.expires, 7_200_001);
+        assert_eq!(wire.item.as_deref(), Some("toolu_02"));
         assert!(wire.is_valid());
         assert_eq!(asked_outcome(ApprovalOutcome::Cancelled), "cancelled");
         let pc = || "guchu".to_owned();
         assert_eq!(answered_by(&Origin::phone("abc", "Pixel"), pc).as_deref(), Some("Pixel"));
         assert_eq!(answered_by(&Origin::launcher(), pc).as_deref(), Some("guchu"));
-        let (shown, more) = ask_json(&[approval]);
+        let (shown, more) = ask_json(&[approval], |_| false);
         assert_eq!(shown["can_allow_thread"], true);
         assert_eq!(shown["path"], "src/main.rs");
+        assert_eq!(
+            (shown["itemId"].as_str(), shown["position"].as_u64(), shown["total"].as_u64()),
+            (Some("toolu_02"), Some(1), Some(1))
+        );
+        let doc: Value = serde_json::from_str(shown["diffDoc"].as_str().unwrap()).unwrap();
+        assert_eq!((doc["adds"].as_u64(), doc["dels"].as_u64()), (Some(1), Some(1)));
         assert_eq!(more, 0);
     }
 
@@ -2906,25 +3564,102 @@ mod tests {
             can_allow_thread: true,
             created_ms,
             expires_ms: created_ms + 7_200_000,
+            item_id: Some(format!("toolu_{token}")),
         }
     }
 
     #[test]
     fn the_page_shows_one_request_at_a_time_the_oldest_first() {
-        let (none, more) = ask_json(&[]);
+        let (none, more) = ask_json(&[], |_| false);
         assert_eq!((none, more), (json!({}), 0));
         let asks = [
             command_ask("b", "rg --files", 20),
             command_ask("a", "pnpm exec tsc --noEmit", 10),
             command_ask("c", "cargo test", 30),
         ];
-        let (shown, more) = ask_json(&asks);
+        let (shown, more) = ask_json(&asks, |_| false);
         assert_eq!(shown["token"], "a");
         assert_eq!(shown["command"], "pnpm exec tsc --noEmit", "the command reaches the page as it is");
-        assert_eq!(more, 2, "\"2 more waiting\"");
+        assert_eq!(shown["commandStyled"], "pnpm&nbsp;exec&nbsp;tsc&nbsp;--noEmit");
+        assert_eq!((shown["position"].as_u64(), shown["total"].as_u64()), (Some(1), Some(3)), "\"1 of 3\"");
+        assert_eq!(more, 2);
         // Answering the first shows the next.
-        let (next, more) = ask_json(&asks[..1]);
+        let (next, more) = ask_json(&asks[..1], |_| false);
         assert_eq!((next["token"].as_str(), more), (Some("b"), 0));
+        // One the guard holds gives way to the next, which is "2 of 3".
+        let (shown, _) = ask_json(&asks, |t| t == "a");
+        assert_eq!((shown["token"].as_str(), shown["position"].as_u64()), (Some("b"), Some(2)));
+        assert_eq!(shown["held"], false);
+        // All held: the first, held.
+        let (shown, _) = ask_json(&asks, |_| true);
+        assert_eq!((shown["token"].as_str(), shown["held"].as_bool()), (Some("a"), Some(true)));
+    }
+
+    #[test]
+    fn a_request_that_arrives_while_typing_is_held_until_a_pause() {
+        let mut view = OpenView::new(1, OpenKind::Thread, "t".into());
+        view.asks.push(command_ask("a", "ls", 10));
+        view.guard_requests(1_000);
+        assert!(view.held().is_empty(), "nobody was typing");
+        assert_eq!(view.marks()[0].kind, render::MarkKind::Waiting);
+        view.guard.on(GuardEvent::Focus);
+        view.guard.on(GuardEvent::Typed { now_ms: 2_000 });
+        view.asks.push(command_ask("b", "rm -rf build", 20));
+        view.guard_requests(2_400);
+        assert_eq!(view.held(), ["b"]);
+        assert_eq!(guard_followup(&view).idle_at, Some(3_500), "it goes 1.5 s after the last keystroke");
+        let marks = view.marks();
+        let held = marks.iter().find(|m| m.item_id == "toolu_b").unwrap();
+        assert_eq!(held.kind, render::MarkKind::Held);
+        // The dock shows the one not held.
+        let (shown, _) = ask_json(&view.asks, |t| view.guard.held(t));
+        assert_eq!(shown["token"], "a");
+        // Typing goes on: the pause moves.
+        view.guard.on(GuardEvent::Typed { now_ms: 3_000 });
+        assert_eq!(guard_followup(&view).idle_at, Some(4_500));
+        view.guard.on(GuardEvent::Idle);
+        assert!(view.held().is_empty() && guard_followup(&view).idle_at.is_none());
+        // Sending lets go too, and the words were for the shown request.
+        view.guard.on(GuardEvent::Typed { now_ms: 5_000 });
+        view.asks.push(command_ask("c", "cargo test", 30));
+        view.guard_requests(5_100);
+        assert_eq!(view.held(), ["c"]);
+        view.guard.on(GuardEvent::Sent);
+        assert!(view.held().is_empty());
+        // Leaving the composer lets go as well.
+        view.guard.on(GuardEvent::Focus);
+        view.guard.on(GuardEvent::Typed { now_ms: 6_000 });
+        view.asks.push(command_ask("d", "make", 40));
+        view.guard_requests(6_100);
+        assert_eq!(view.held(), ["d"]);
+        view.guard.on(GuardEvent::Blur);
+        assert!(view.held().is_empty());
+    }
+
+    #[test]
+    fn a_request_answered_elsewhere_leaves_a_line_only_when_it_says_something() {
+        let mut view = OpenView::new(1, OpenKind::Thread, "t".into());
+        for (token, at) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+            view.asks.push(command_ask(token, "ls", at));
+        }
+        let phone = Origin::phone("abc", "Pixel 8 Pro");
+        assert!(view.resolve("a", ApprovalOutcome::Allowed, Some(&phone)));
+        assert!(view.resolve("b", ApprovalOutcome::Denied, Some(&Origin::launcher())));
+        assert!(view.resolve("c", ApprovalOutcome::Expired, None));
+        assert!(!view.resolve("zz", ApprovalOutcome::Allowed, None), "not one of this view's");
+        let marks = view.marks();
+        let find = |id: &str| marks.iter().find(|m| m.item_id == id).map(|m| (m.kind, m.by.clone()));
+        assert_eq!(find("toolu_a"), Some((render::MarkKind::Allowed, "Pixel 8 Pro".into())));
+        assert_eq!(find("toolu_b"), None, "answered here by hand: the tool's line says it");
+        assert_eq!(find("toolu_c"), Some((render::MarkKind::Expired, String::new())));
+        assert_eq!(find("toolu_d"), Some((render::MarkKind::Waiting, String::new())));
+        // A step a rule allowed: the timeline gives it the rule's line, in
+        // place of who answered.
+        let mut ruled = a_tool("Bash", "Run command", "ls", ToolStatus::Ok);
+        ruled.by_rule = true;
+        view.apply(entry(&Item { tool: Some(ruled), ..Item::new(9, "toolu_a", ItemKind::Tool, 5) }));
+        assert!(view.marks().iter().all(|m| m.item_id != "toolu_a"));
+        assert!(view.entries[0].item_in().unwrap().tool.unwrap().by_rule);
     }
 
     #[test]
@@ -2977,117 +3712,214 @@ mod tests {
     }
 
     #[test]
-    fn rows_stay_in_order_and_newer_revisions_win() {
+    fn items_stay_in_order_and_newer_revisions_win() {
         let mut view = OpenView::new(1, OpenKind::Thread, "t".into());
-        assert!(view.apply(Row::from_item(&text_item(5, 0, "five"))));
-        assert!(view.apply(Row::from_item(&text_item(3, 0, "three"))));
-        assert!(view.apply(Row::from_item(&text_item(5, 1, "five, done"))));
-        assert!(!view.apply(Row::from_item(&text_item(5, 0, "five"))), "an older revision is stale");
-        assert!(!view.apply(Row::from_item(&text_item(5, 1, "five, done"))), "the same row changes nothing");
-        let seqs: Vec<_> = view.rows.iter().map(|r| r.seq).collect();
+        assert!(view.apply(entry(&text_item(5, 0, "five"))));
+        assert!(view.apply(entry(&text_item(3, 0, "three"))));
+        assert!(view.apply(entry(&text_item(5, 1, "five, done"))));
+        assert!(!view.apply(entry(&text_item(5, 0, "five"))), "an older revision is stale");
+        assert!(!view.apply(entry(&text_item(5, 1, "five, done"))), "the same item changes nothing");
+        let seqs: Vec<_> = view.entries.iter().map(|e| e.item.seq).collect();
         assert_eq!(seqs, [3, 5]);
-        assert_eq!(view.rows[1].text, "five, done");
+        assert_eq!(view.entries[1].text(), "five, done");
     }
 
     #[test]
-    fn a_long_transcript_keeps_the_newest_rows() {
+    fn a_long_transcript_keeps_the_newest_items() {
         let mut view = OpenView::new(1, OpenKind::Thread, "t".into());
-        for seq in 1..=(OPEN_ROWS as u64 + 10) {
-            view.apply(Row::from_item(&text_item(seq, 0, "x")));
+        for seq in 1..=(OPEN_ITEMS as u64 + 10) {
+            view.apply(entry(&text_item(seq, 0, "x")));
         }
-        assert_eq!(view.rows.len(), OPEN_ROWS);
-        assert_eq!(view.rows[0].seq, 11);
+        assert_eq!(view.entries.len(), OPEN_ITEMS);
+        assert_eq!(view.entries[0].item.seq, 11);
         assert!(view.more);
-        // Earlier rows read again stay until the next new one.
-        view.apply(Row::from_item(&text_item(5, 0, "x")));
-        assert_eq!((view.rows.len(), view.rows[0].seq), (OPEN_ROWS + 1, 5));
-        view.apply(Row::from_item(&text_item(OPEN_ROWS as u64 + 11, 0, "x")));
-        assert_eq!(view.rows.len(), OPEN_ROWS);
+        // Earlier items read again stay until the next new one.
+        view.apply(entry(&text_item(5, 0, "x")));
+        assert_eq!((view.entries.len(), view.entries[0].item.seq), (OPEN_ITEMS + 1, 5));
+        view.apply(entry(&text_item(OPEN_ITEMS as u64 + 11, 0, "x")));
+        assert_eq!(view.entries.len(), OPEN_ITEMS);
         assert_eq!(overflow(3, 1), 0);
-        assert_eq!(overflow(OPEN_ROWS, OPEN_ROWS), 1);
+        assert_eq!(overflow(OPEN_ITEMS, OPEN_ITEMS), 1);
     }
 
     #[test]
-    fn a_rows_text_is_capped() {
+    fn an_items_text_is_capped() {
         let long = "é".repeat(ROW_TEXT);
-        let row = Row::from_item(&text_item(1, 0, &long));
-        assert!(row.text.len() <= ROW_TEXT && row.truncated);
-        let mut streaming = Row { text: "a".repeat(ROW_TEXT - 1), ..Row::default() };
-        assert_eq!(append(&mut streaming, ROW_TEXT - 1, "bcd"), Some((ROW_TEXT - 1, "b".into())));
-        assert!(streaming.truncated && streaming.text.len() == ROW_TEXT);
+        let capped = entry(&text_item(1, 0, &long));
+        assert!(capped.text().len() <= ROW_TEXT && capped.item.truncated);
+        let mut streaming = entry(&text_item(1, 0, &"a".repeat(ROW_TEXT - 1)));
+        assert!(append(&mut streaming, ROW_TEXT - 1, "bcd"));
+        assert!(streaming.item.truncated && streaming.text().len() == ROW_TEXT);
     }
 
     #[test]
-    fn deltas_join_and_reach_the_transcript_at_most_ten_times_a_second() {
+    fn deltas_reach_the_rows_at_most_ten_times_a_second() {
         let start = Instant::now();
         let mut view = OpenView::new(1, OpenKind::Thread, "t".into());
-        let new = view.delta(7, "m1", 0, "Hel", start);
-        assert!(matches!(new, DeltaOutcome::New(ref row) if row.text == "Hel" && row.streaming));
+        assert_eq!(view.delta(7, "m1", 0, "Hel", start), DeltaOutcome::New);
+        assert!(view.entries[0].streaming);
         assert_eq!(view.delta(7, "m1", 3, "lo", start), DeltaOutcome::Text(Some(Duration::ZERO)));
-        assert_eq!(
-            view.delta(7, "m1", 5, " there", start),
-            DeltaOutcome::Text(None),
-            "joined with the first"
-        );
+        assert_eq!(view.delta(7, "m1", 5, " there", start), DeltaOutcome::Text(None), "with the first");
         assert_eq!(view.delta(7, "m1", 2, "l", start), DeltaOutcome::Ignored, "text it already has");
         assert_eq!(view.delta(7, "m1", 40, "x", start), DeltaOutcome::Gap);
-        assert_eq!(view.delta(9, "m2", 4, "x", start), DeltaOutcome::Gap, "a row whose start is missing");
-        assert_eq!(view.rows[0].text, "Hello there");
-        // The two pieces after the first go out joined, once.
-        let flushed = view.joiner.flush(start);
-        assert_eq!(flushed, [UiDelta { seq: 7, offset: 3, text: "lo there".into() }]);
+        assert_eq!(view.delta(9, "m2", 4, "x", start), DeltaOutcome::Gap, "an item whose start is missing");
+        assert_eq!(view.entries[0].text(), "Hello there");
+        view.gate.flush(start);
         // Within 100 ms of a flush the next waits for the rest of it.
         let soon = start + Duration::from_millis(30);
-        let wait = view.joiner.push(UiDelta { seq: 7, offset: 11, text: "!".into() }, soon);
-        assert_eq!(wait, Some(Duration::from_millis(70)));
-        assert_eq!(view.joiner.push(UiDelta { seq: 7, offset: 12, text: "!".into() }, soon), None);
-        // The finished item replaces the text, and its pending text goes.
+        assert_eq!(view.delta(7, "m1", 11, "!", soon), DeltaOutcome::Text(Some(Duration::from_millis(70))));
+        assert_eq!(view.delta(7, "m1", 12, "!", soon), DeltaOutcome::Text(None));
+        // The finished item replaces the text.
         let mut finished = text_item(7, 1, "Hello there!!");
         finished.id = "m1".into();
-        assert!(view.apply(Row::from_item(&finished)));
-        assert!(view.joiner.pending.is_empty() && !view.rows[0].streaming);
+        assert!(view.apply(entry(&finished)));
+        assert!(!view.entries[0].streaming);
     }
 
     #[test]
     fn a_full_queue_gives_way_to_one_reset() {
         let mut feed = Feed::default();
-        assert!(feed.push(UiUpdate::Reset), "the first update wakes the GUI");
-        assert!(!feed.push(UiUpdate::Reset), "later ones wait for it");
+        assert!(feed.push(UiUpdate::Reset(Vec::new()), &[]), "the first update wakes the GUI");
+        assert!(!feed.push(UiUpdate::Reset(Vec::new()), &[]), "later ones wait for it");
         feed.take();
-        for seq in 0..(UI_QUEUE as u64 + 40) {
-            feed.push(UiUpdate::Item(Box::new(Row { seq, ..Row::default() })));
+        for _ in 0..(UI_QUEUE + 40) {
+            feed.push(UiUpdate::Ops(Vec::new()), &[]);
         }
         let updates = feed.take();
-        assert_eq!(updates.iter().filter(|u| **u == UiUpdate::Reset).count(), 1);
-        assert_eq!(updates[0], UiUpdate::Reset);
+        assert_eq!(updates.iter().filter(|u| matches!(u, UiUpdate::Reset(_))).count(), 1);
+        assert!(matches!(updates[0], UiUpdate::Reset(_)));
         assert_eq!(updates.len(), 40);
-        assert!(feed.push(UiUpdate::Reset), "after taking, the next update wakes it again");
+        assert!(feed.push(UiUpdate::Reset(Vec::new()), &[]), "after taking, the next update wakes it again");
     }
 
     #[test]
     fn steps_and_changes_come_from_the_finished_edits() {
-        let rows: Vec<Row> = [
+        let entries: Vec<Arc<Entry>> = [
             tool_item(1, "Bash", "Run command", "cargo test"),
             tool_item(2, "Edit", "Edit src/hold.rs", "-a\n+b\n+c"),
             tool_item(
                 3,
                 "apply_patch",
                 "Edit files",
-                "a.rs (update)\n--- a\n+++ b\n@@\n-x\n+y\nb.rs (add)\n+new",
+                "a.rs (update)\n@@ -1,1 +1,1 @@\n-x\n+y\nb.rs (add)\nnew\n",
             ),
             tool_item(4, "Write", "Write src/hold.rs", "+d"),
         ]
         .iter()
-        .map(Row::from_item)
+        .map(|i| Arc::new(entry(i)))
         .collect();
-        let changes = changes_json(&rows);
-        assert_eq!(changes[0], json!({ "path": "src/hold.rs", "added": 3, "removed": 1 }));
-        assert_eq!(changes[1], json!({ "path": "a.rs", "added": 1, "removed": 1 }));
-        assert_eq!(changes[2], json!({ "path": "b.rs", "added": 1, "removed": 0 }));
-        let steps = steps_json(&rows);
+        let changes = changes_json(&entries);
+        let find = |path: &str| changes.as_array().unwrap().iter().find(|c| c["path"] == path).cloned();
+        assert_eq!(find("src/hold.rs"), Some(json!({ "path": "src/hold.rs", "added": 3, "removed": 1 })));
+        assert_eq!(find("a.rs"), Some(json!({ "path": "a.rs", "added": 1, "removed": 1 })));
+        assert_eq!(find("b.rs"), Some(json!({ "path": "b.rs", "added": 1, "removed": 0 })));
+        let steps = steps_json(&entries);
         assert_eq!(steps.as_array().unwrap().len(), 4);
         assert_eq!(steps[0]["seq"], "1");
         assert_eq!(steps[3]["title"], "Write src/hold.rs");
+    }
+
+    fn snap(view: &OpenView, state: render::ThreadState) -> Snapshot {
+        Snapshot {
+            generation: view.generation,
+            entries: view.entries.clone(),
+            state,
+            since_ms: 1,
+            marks: view.marks(),
+            open: view.open_keys.clone(),
+            wraps: view.wraps.clone(),
+        }
+    }
+
+    #[test]
+    fn the_timeline_rows_follow_the_items_with_exact_changes() {
+        let mut view = OpenView::new(4, OpenKind::Thread, "t".into());
+        let mut render = Render::default();
+        render.reset(4);
+        let mut model: Vec<Arc<ModelRow>> = Vec::new();
+        let mut step = |render: &mut Render, view: &OpenView, state| {
+            let ops = render.update(&snap(view, state)).expect("its own view");
+            let count = ops.len();
+            rows::apply_ops(&mut model, ops);
+            let keys = |rows: &[Arc<ModelRow>]| rows.iter().map(|r| r.key().to_owned()).collect::<Vec<_>>();
+            assert_eq!(keys(&model), keys(&render.shown));
+            assert!(model.iter().zip(&render.shown).all(|(a, b)| **a == **b));
+            (count, keys(&model))
+        };
+        let user = Item {
+            text: Some("Fix it".into()),
+            turn: Some(1),
+            origin: Some(Origin::launcher()),
+            ..Item::new(1, "u1", ItemKind::User, 100)
+        };
+        view.apply(entry(&user));
+        let (_, keys) = step(&mut render, &view, render::ThreadState::Working);
+        assert_eq!(keys, ["i:u1", "live"], "\"Starting…\"");
+        // Text streams: the live line goes, the blocks come.
+        view.delta(2, "m1", 0, "First paragraph.\n\nSec", Instant::now());
+        let (_, keys) = step(&mut render, &view, render::ThreadState::Working);
+        assert_eq!(keys, ["i:u1", "b:m1:0", "b:m1:1"]);
+        let first = render.shown[1].clone();
+        view.delta(2, "m1", 21, "ond paragraph.", Instant::now());
+        let (count, _) = step(&mut render, &view, render::ThreadState::Working);
+        assert_eq!(count, 1, "only the last block changes");
+        assert!(Arc::ptr_eq(&first, &render.shown[1]), "the finished block is reused as it is");
+        // A command runs and ends; the turn ends with an answer.
+        let mut bash = a_tool("Bash", "Run command", "cargo test", ToolStatus::Ok);
+        bash.class = Some(api::ToolClass::Command);
+        view.apply(entry(&Item {
+            tool: Some(bash),
+            turn: Some(1),
+            end_ms: Some(4_000),
+            ..Item::new(3, "toolu_1", ItemKind::Tool, 1_000)
+        }));
+        view.apply(entry(&Item {
+            text: Some("Done: it **works**.".into()),
+            turn: Some(1),
+            phase: Some(api::Phase::Final),
+            end_ms: Some(5_000),
+            ..Item::new(4, "m2", ItemKind::Assistant, 4_500)
+        }));
+        let (_, keys) = step(&mut render, &view, render::ThreadState::Done);
+        assert_eq!(keys, ["i:u1", "f:1", "b:m2:0"], "the work folds behind \"Worked for\"");
+        let answer = &render.shown[2];
+        assert_eq!(answer.text(Role::Styled), "Done: it <b>works</b>.");
+        assert_eq!(answer.get(Role::WhenMs), &RoleValue::Real(5_000.0));
+        // Opening the fold puts the work back, at depth 1.
+        view.toggle("f:1");
+        let (_, keys) = step(&mut render, &view, render::ThreadState::Done);
+        assert_eq!(keys, ["i:u1", "f:1", "b:m1:0", "b:m1:1", "i:toolu_1", "b:m2:0"]);
+        assert_eq!(render.shown[4].get(Role::Depth), &RoleValue::Int(1));
+        assert_eq!(render.shown[4].copy_text(), "cargo test", "Copy on a tool line takes its command");
+        view.toggle("f:1");
+        let (_, keys) = step(&mut render, &view, render::ThreadState::Done);
+        assert_eq!(keys, ["i:u1", "f:1", "b:m2:0"]);
+        // Another view's snapshot is not applied.
+        let other = OpenView::new(5, OpenKind::Thread, "u".into());
+        assert!(render.update(&snap(&other, render::ThreadState::Done)).is_none());
+    }
+
+    #[test]
+    fn an_answer_is_copied_whole_and_its_link_by_number() {
+        let mut render = Render::default();
+        let mut view = OpenView::new(2, OpenKind::Thread, "t".into());
+        render.reset(2);
+        view.apply(entry(&Item {
+            text: Some("See [the checklist](https://example.com/c?x=1).\n\n```sh\nmake test\n```".into()),
+            phase: Some(api::Phase::Final),
+            turn: Some(1),
+            ..Item::new(1, "m1", ItemKind::Assistant, 1)
+        }));
+        render.update(&snap(&view, render::ThreadState::Done)).unwrap();
+        let text = render.row("b:m1:0").unwrap();
+        assert_eq!(text.text(Role::Styled), "See <a href=\"0\">the checklist</a>.");
+        let link = text.link(0).unwrap();
+        assert_eq!(
+            (link.href.as_str(), link.text.as_str(), link.shown),
+            ("https://example.com/c?x=1", "the checklist", false)
+        );
+        assert!(text.link(1).is_none());
+        assert_eq!(render.row("b:m1:1").unwrap().copy_text(), "make test");
     }
 
     #[test]
@@ -3235,7 +4067,9 @@ mod tests {
             self.log.lock().unwrap().push(format!("event {}", event.kind));
         }
         async fn ask(&self, _ask: AgentAsk) {}
-        async fn asked(&self, _token: String, _thread: String, _outcome: String, _by_name: Option<String>) {}
+        async fn asked(&self, asked: AgentAsked) {
+            self.log.lock().unwrap().push(format!("asked {}", asked.outcome));
+        }
         async fn session(&self, _session: Option<AgentSession>, _removed: Option<String>) {}
     }
 
@@ -3355,6 +4189,19 @@ mod tests {
         assert!(bridge.any_running(), "so it's kept until its thread finishes");
         follower.abort();
         server.abort();
+    }
+
+    #[test]
+    fn the_panels_are_remembered_as_the_user_left_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PANELS_FILE);
+        assert_eq!(crate::atomic_file::read_json::<Panels>(&path), Panels::default(), "both shown at first");
+        let panels = Panels { list_hidden: true, inspector_hidden: false };
+        crate::atomic_file::write_json(&path, &panels).unwrap();
+        assert_eq!(crate::atomic_file::read_json::<Panels>(&path), panels);
+        std::fs::write(&path, br#"{"inspector_hidden":true}"#).unwrap();
+        let read = crate::atomic_file::read_json::<Panels>(&path);
+        assert_eq!(read, Panels { list_hidden: false, inspector_hidden: true }, "a missing field is shown");
     }
 
     #[test]

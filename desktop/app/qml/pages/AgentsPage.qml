@@ -36,9 +36,17 @@ Item {
     readonly property var threads: parse(Agents.threads, [])
     readonly property var sessions: parse(Agents.sessions, [])
     readonly property var info: parse(Agents.openInfo, ({}))
-    // The open thread's oldest waiting request ({} for none).
+    // The request the dock shows ({} for none): the oldest the typing guard
+    // doesn't hold.
     readonly property var ask: parse(Agents.ask, ({}))
     readonly property bool asking: isThread && (ask.token || "").length > 0
+    // It arrived while the user was typing: its buttons wait for a pause.
+    readonly property bool askHeld: ask.held === true
+    readonly property bool canAllow: asking && !askHeld && !Agents.busy
+    function allowShown() {
+        if (canAllow)
+            Agents.answer(ask.token, "allow")
+    }
     readonly property var steps: parse(Agents.steps, [])
     readonly property var changes: parse(Agents.changes, [])
 
@@ -57,7 +65,50 @@ Item {
     readonly property bool listOnly: narrow && openKind.length === 0 && pane.length === 0
     // The details sit beside the transcript only while it keeps 480 px
     // (from about 1230 px of window); otherwise they fold into Details.
-    readonly property bool inspectorInline: width - 300 - 250 >= 480
+    // The thread list beside the rest, unless the user hid it (Ctrl+[). A
+    // narrow page shows the list or the thread, never both.
+    readonly property bool listShown: !narrow && !Agents.listHidden
+    // Its width, moving as it opens and closes.
+    property real listWidth: listShown ? 300 : 0
+    Behavior on listWidth {
+        enabled: !Theme.reduceMotion
+        NumberAnimation {
+            duration: page.listShown ? Theme.largeIn : Theme.largeOut
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: page.listShown ? Theme.easeEnter : Theme.easeExit
+        }
+    }
+    // The details fit beside the transcript while it keeps 480 px.
+    readonly property bool inspectorFits: width - (listShown ? 300 : 0) - 250 >= 480
+    // They sit beside it when they fit, unless the user hid them (Ctrl+]);
+    // otherwise they fold into Details, over the transcript.
+    readonly property bool inspectorInline: inspectorFits && !Agents.inspectorHidden
+    property real inspectorWidth: (isThread || isSession) && inspectorInline ? 250 : 0
+    Behavior on inspectorWidth {
+        enabled: !Theme.reduceMotion
+        NumberAnimation {
+            duration: page.inspectorInline ? Theme.largeIn : Theme.largeOut
+            easing.type: Easing.BezierSpline
+            easing.bezierCurve: page.inspectorInline ? Theme.easeEnter : Theme.easeExit
+        }
+    }
+    readonly property bool detailsShown: (isThread || isSession) && (inspectorInline || (detailsOpen && !inspectorFits))
+    function toggleList() {
+        if (narrow)
+            return
+        // The list's search field doesn't keep the keyboard once it's hidden.
+        if (listShown && search.input.activeFocus)
+            page.forceActiveFocus()
+        Agents.hideList(!Agents.listHidden)
+    }
+    function toggleDetails() {
+        if (inspectorFits)
+            Agents.hideInspector(!Agents.inspectorHidden)
+        else
+            detailsOpen = !detailsOpen
+    }
+    // Tabler's layout-sidebar (MIT, as Icons.qml credits).
+    readonly property string listIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 4v16"
 
     readonly property string phase: info.state || ""
     readonly property bool running: isThread && (phase === "working" || phase === "waiting")
@@ -261,7 +312,23 @@ Item {
     readonly property bool windowActive: Window.active
     onActiveChanged: Agents.pageVisible(active)
     onWindowActiveChanged: Agents.windowActive(windowActive)
+    // Code in answers is coloured with the theme's glyph tints: never the
+    // diff's green and red, the needs-you amber or the primary lavender.
+    readonly property string codeColors: JSON.stringify({
+        comment: String(Theme.surfaceContentVariant),
+        keyword: String(Theme.tintPink),
+        string: String(Theme.tintTeal),
+        number: String(Theme.tintCoral),
+        constant: String(Theme.tintCoral),
+        type: String(Theme.tintBlue),
+        function: String(Theme.tintBlue),
+        tag: String(Theme.tintPink),
+        attribute: String(Theme.tintBlue),
+        inline: String(Theme.tintCoral)
+    })
+    onCodeColorsChanged: Agents.setCodeColors(codeColors)
     Component.onCompleted: {
+        Agents.setCodeColors(codeColors)
         Agents.windowActive(windowActive)
         Agents.pageVisible(active)
     }
@@ -281,8 +348,13 @@ Item {
     readonly property var primaryAction: {
         if (shown === "setup")
             return { label: qsTr("Add folder…"), keys: "Ctrl O", run: () => folderPicker.open() }
+        // With words in the composer, Ctrl+Enter never allows.
+        if (canAllow && composer.sayWhy && composer.hasText)
+            return { label: qsTr("Deny and send"), keys: "Enter", run: () => composer.submit() }
+        if (canAllow && !composer.hasText)
+            return { label: qsTr("Allow"), keys: "Ctrl Enter", run: () => page.allowShown() }
         if (isThread && !running)
-            return { label: qsTr("Send"), keys: "Enter", run: () => composer.send() }
+            return { label: qsTr("Send"), keys: "Enter", run: () => composer.submit() }
         if (isSession && info.can_continue === true)
             return { label: qsTr("Continue here"), keys: "Ctrl Enter", run: () => continueSheet.open() }
         return { label: qsTr("New thread"), keys: "Ctrl N", run: () => page.startNew() }
@@ -302,9 +374,10 @@ Item {
           run: () => Agents.exportMarkdown() },
         { label: qsTr("Load earlier"), icon: Icons.history, enabled: Agents.more && !Agents.loading,
           run: () => Agents.loadEarlier() },
-        { label: qsTr("Details"), icon: Icons.info, checked: page.detailsOpen,
-          enabled: (page.isThread || page.isSession) && !page.inspectorInline,
-          run: () => { page.detailsOpen = !page.detailsOpen } },
+        { label: page.listShown ? qsTr("Hide the thread list") : qsTr("Show the thread list"), icon: page.listIcon,
+          keys: "Ctrl [", checked: page.listShown, enabled: !page.narrow, run: () => page.toggleList() },
+        { label: qsTr("Details"), icon: Icons.clipboardList, keys: "Ctrl ]", checked: page.detailsShown,
+          enabled: page.isThread || page.isSession, run: () => page.toggleDetails() },
         { label: qsTr("Delete thread"), icon: Icons.trash, tint: Theme.tintRed, enabled: page.isThread && !page.running,
           run: () => deleteSheet.open() },
         { label: qsTr("Setup"), icon: Icons.settings, checked: page.shown === "setup", run: () => page.openSetup() },
@@ -318,6 +391,16 @@ Item {
         sequences: [StandardKey.New]
         enabled: page.active
         onActivated: page.startNew()
+    }
+    Shortcut {
+        sequence: "Ctrl+["
+        enabled: page.active && !page.narrow
+        onActivated: page.toggleList()
+    }
+    Shortcut {
+        sequence: "Ctrl+]"
+        enabled: page.active && (page.isThread || page.isSession)
+        onActivated: page.toggleDetails()
     }
     Shortcut {
         sequences: [StandardKey.Find]
@@ -334,11 +417,19 @@ Item {
         enabled: page.active && page.isSession && page.info.can_continue === true && !continueSheet.opened
         onActivated: continueSheet.open()
     }
+    // Allow the shown request: only while the composer is empty, so a habit
+    // of Ctrl+Enter to send can never allow a command.
+    Shortcut {
+        sequences: ["Ctrl+Return", "Ctrl+Enter"]
+        enabled: page.active && page.canAllow && !composer.hasText && !linkSheet.opened && !dockMenu.opened
+                 && !AppController.commandPaletteOpen
+        onActivated: page.allowShown()
+    }
     Shortcut {
         sequence: "Esc"
         enabled: page.active && (page.openKind.length > 0 || page.pane.length > 0)
                  && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
-                 && !AppController.commandPaletteOpen
+                 && !linkSheet.opened && !dockMenu.opened && !AppController.commandPaletteOpen
         onActivated: page.back()
     }
 
@@ -419,8 +510,10 @@ Item {
     // ---- The list ----
     Item {
         id: listPane
-        visible: !page.narrow || page.listOnly
-        width: page.narrow ? page.width : 300
+        // Its content keeps its width while the pane opens and closes.
+        readonly property real contentWidth: page.narrow ? width : 300
+        visible: page.narrow ? page.listOnly : page.listWidth > 0
+        width: page.narrow ? page.width : page.listWidth
         height: page.height
         clip: true
 
@@ -428,7 +521,7 @@ Item {
             id: listTop
             x: 8
             y: 8
-            width: parent.width - 16
+            width: listPane.contentWidth - 16
             spacing: 8
             Rectangle {
                 width: parent.width
@@ -504,7 +597,7 @@ Item {
         Flickable {
             id: listFlick
             x: 8
-            width: parent.width - 16
+            width: listPane.contentWidth - 16
             anchors.top: listTop.bottom
             anchors.topMargin: 4
             anchors.bottom: setupRow.top
@@ -583,11 +676,18 @@ Item {
             }
             TouchpadGlide { view: listFlick }
         }
+        G7ScrollBar {
+            flickable: listFlick
+            anchors.top: listFlick.top
+            anchors.bottom: listFlick.bottom
+            anchors.right: listFlick.right
+            anchors.rightMargin: -6
+        }
 
         ActionRow {
             id: setupRow
             x: 8
-            width: parent.width - 16
+            width: listPane.contentWidth - 16
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 8
             iconPath: Icons.settings
@@ -600,7 +700,7 @@ Item {
 
         Rectangle {
             visible: !page.narrow
-            anchors.right: parent.right
+            x: page.listWidth - 1
             width: 1
             height: parent.height
             color: Theme.line
@@ -611,7 +711,7 @@ Item {
     Item {
         id: mainPane
         visible: !page.listOnly
-        x: page.narrow ? 0 : listPane.width
+        x: page.narrow ? 0 : page.listWidth
         width: page.width - x
         height: page.height
         clip: true
@@ -630,9 +730,20 @@ Item {
                 label: qsTr("Back to the list")
                 onClicked: page.back()
             }
+            // Hides or shows the thread list (Ctrl+[).
+            IconButton {
+                id: listToggle
+                visible: !page.narrow
+                x: 8
+                anchors.verticalCenter: parent.verticalCenter
+                iconPath: page.listIcon
+                checked: page.listShown
+                label: page.listShown ? qsTr("Hide the thread list") : qsTr("Show the thread list")
+                onClicked: page.toggleList()
+            }
             Column {
-                anchors.left: backButton.visible ? backButton.right : parent.left
-                anchors.leftMargin: backButton.visible ? 8 : 16
+                anchors.left: backButton.visible ? backButton.right : listToggle.right
+                anchors.leftMargin: 8
                 anchors.right: headButtons.left
                 anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
@@ -687,21 +798,12 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 8
                 Button {
-                    visible: (page.isThread || page.isSession) && !page.inspectorInline
-                    variant: page.detailsOpen ? "tonal" : "text"
+                    visible: page.isThread || page.isSession
+                    variant: page.detailsShown ? "tonal" : "text"
                     size: "sm"
                     iconPath: Icons.clipboardList
                     text: qsTr("Details")
-                    onClicked: page.detailsOpen = !page.detailsOpen
-                }
-                Button {
-                    visible: page.running
-                    variant: "tonal"
-                    size: "sm"
-                    iconPath: Icons.stopSquare
-                    text: qsTr("Stop")
-                    busy: Agents.busy
-                    onClicked: Agents.stop()
+                    onClicked: page.toggleDetails()
                 }
             }
         }
@@ -720,36 +822,24 @@ Item {
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             anchors.left: parent.left
-            anchors.right: page.inspectorInline ? inspector.left : parent.right
+            anchors.right: parent.right
+            anchors.rightMargin: page.inspectorWidth
             onVisibleChanged: transcript.follow = true
 
-            ListView {
+            AgentTimelineView {
                 id: transcript
-                // Keeps the newest in view until the user scrolls up.
-                property bool follow: true
                 anchors.top: parent.top
                 anchors.bottom: bottomBar.top
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.leftMargin: 16
                 anchors.rightMargin: 16
-                model: openView.visible ? AgentItems : null
-                clip: true
-                spacing: 2
-                boundsBehavior: Flickable.StopAtBounds
-                delegate: AgentItem {}
-                onMovementEnded: follow = atYEnd
-                onAtYEndChanged: if (atYEnd) follow = true
-                // Scrolling up to read stops following the end.
-                WheelHandler {
-                    target: null
-                    blocking: false
-                    onWheel: (event) => {
-                        if (event.angleDelta.y > 0 || event.pixelDelta.y > 0)
-                            transcript.follow = false
-                    }
-                }
-                onContentHeightChanged: if (follow) Qt.callLater(() => transcript.positionViewAtEnd())
+                model: openView.visible ? AgentTimeline : null
+                folder: page.info.folder || ""
+                now: page.now
+                animate: page.active && page.windowActive
+                onLinkActivated: (key, index) => linkSheet.ask(key, index)
+                onWaitingClicked: dock.pulse()
                 Connections {
                     target: Agents
                     function onOpenIdChanged() { transcript.follow = true }
@@ -795,10 +885,20 @@ Item {
                         iconPath: Icons.history
                         onClicked: Agents.loadEarlier()
                     }
-                    Spinner {
+                    Row {
                         visible: Agents.loading
-                        width: 18
-                        height: 18
+                        spacing: 8
+                        Spinner {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 16
+                            height: 16
+                        }
+                        Txt {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Loading…")
+                            role: "bodySmall"
+                            muted: true
+                        }
                     }
                 }
 
@@ -807,257 +907,42 @@ Item {
                     topPadding: 8
                     bottomPadding: 12
                     spacing: 10
-
-                    // What it is doing now.
-                    Rectangle {
-                        visible: page.running && (page.info.step || "").length > 0
+                    // A failed thread: "Failed" (or the usage limit) and the CLI's own
+                    // message as it came.
+                    Column {
+                        id: failure
+                        readonly property bool limit: page.info.error_code === "usage_limit"
+                        visible: page.isThread && page.phase === "failed"
                         width: parent.width
-                        height: visible ? nowColumn.height + 20 : 0
-                        radius: Theme.radiusMd
-                        color: Theme.surfaceContainerLow
-                        border.width: 1
-                        border.color: Theme.outlineVariant
-                        Column {
-                            id: nowColumn
-                            x: 12
-                            y: 10
-                            width: parent.width - 24
+                        spacing: 4
+                        Row {
+                            x: 20
                             spacing: 8
-                            Item {
-                                width: parent.width
-                                height: 22
-                                Spinner {
-                                    id: nowSpinner
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 14
-                                    height: 14
-                                }
-                                Txt {
-                                    anchors.left: nowSpinner.right
-                                    anchors.leftMargin: 8
-                                    anchors.right: nowTime.left
-                                    anchors.rightMargin: 8
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: qsTr("Now: %1").arg(page.info.step || "")
-                                    weight: 500
-                                    maximumLineCount: 1
-                                }
-                                Txt {
-                                    id: nowTime
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: page.elapsed(page.since)
-                                    role: "bodySmall"
-                                    muted: true
-                                }
-                            }
-                            Rectangle {
-                                visible: !!page.runningStep && (page.runningStep.detail || "").length > 0
-                                width: parent.width
-                                height: visible ? stepDetail.height + 30 : 0
-                                radius: Theme.radiusSm
-                                color: Theme.surfaceContainerHigh
-                                Row {
-                                    x: 10
-                                    y: 6
-                                    spacing: 6
-                                    Icon {
-                                        width: 13
-                                        height: 13
-                                        path: Icons.folder
-                                        color: Theme.surfaceContentVariant
-                                    }
-                                    Txt {
-                                        text: page.info.folder || ""
-                                        role: "caption"
-                                        muted: true
-                                    }
-                                }
-                                Txt {
-                                    id: stepDetail
-                                    x: 10
-                                    y: 24
-                                    width: parent.width - 20
-                                    text: page.runningStep ? (page.runningStep.detail || "") : ""
-                                    role: "code"
-                                    wrapMode: Text.WrapAnywhere
-                                    elide: Text.ElideNone
-                                    maximumLineCount: 6
-                                }
-                            }
-                        }
-                    }
-
-                    // What the thread asks: one request at a time, the oldest, with how
-                    // many more wait behind it. Answering it shows the next.
-                    Rectangle {
-                        id: askCard
-                        readonly property var ask: page.ask
-                        readonly property var diffLines: (ask.diff || "").split("\n").slice(0, 200)
-                        readonly property bool alwaysOffered: ask.can_allow_thread === true
-                            && page.info.mode !== "auto_edit" && (ask.kind === "command" || ask.kind === "edit")
-                        visible: page.asking
-                        width: transcript.width
-                        height: visible ? askColumn.height + 24 : 0
-                        radius: Theme.radiusMd
-                        color: Theme.surfaceContainerLow
-                        border.width: 1
-                        border.color: Theme.tintAmber
-                        Column {
-                            id: askColumn
-                            x: 12
-                            y: 12
-                            width: parent.width - 24
-                            spacing: 10
-                            Txt {
-                                width: parent.width
-                                text: askCard.ask.kind === "command"
-                                    ? qsTr("%1 wants to run a command").arg(page.agentName)
-                                    : askCard.ask.kind === "edit"
-                                        ? qsTr("%1 wants to change %2").arg(page.agentName).arg(askCard.ask.path || askCard.ask.title)
-                                        : (askCard.ask.title || "")
-                                weight: 500
-                                wrapMode: Text.WordWrap
-                                elide: Text.ElideNone
-                            }
-                            Rectangle {
-                                visible: (askCard.ask.command || "").length > 0
-                                width: parent.width
-                                height: visible ? askCommand.y + askCommand.height + 8 : 0
-                                radius: Theme.radiusSm
-                                color: Theme.surfaceContainerHigh
-                                // The folder it runs in, beside the command.
-                                Row {
-                                    x: 10
-                                    y: 6
-                                    spacing: 6
-                                    visible: (page.info.folder || "").length > 0
-                                    Icon {
-                                        width: 13
-                                        height: 13
-                                        path: Icons.folder
-                                        color: Theme.surfaceContentVariant
-                                    }
-                                    Txt {
-                                        text: page.info.folder || ""
-                                        role: "caption"
-                                        muted: true
-                                    }
-                                }
-                                Txt {
-                                    id: askCommand
-                                    x: 10
-                                    y: (page.info.folder || "").length > 0 ? 24 : 8
-                                    width: parent.width - 20
-                                    text: askCard.ask.command || ""
-                                    role: "code"
-                                    wrapMode: Text.WrapAnywhere
-                                    elide: Text.ElideNone
-                                }
-                            }
-                            Rectangle {
-                                visible: (askCard.ask.diff || "").length > 0
-                                width: parent.width
-                                height: visible ? askDiff.height + 12 : 0
-                                radius: Theme.radiusSm
-                                color: Theme.surfaceContainerHigh
-                                clip: true
-                                Column {
-                                    id: askDiff
-                                    y: 6
-                                    width: parent.width
-                                    Repeater {
-                                        model: askCard.diffLines
-                                        delegate: Rectangle {
-                                            id: askLine
-                                            required property string modelData
-                                            width: askDiff.width
-                                            height: diffLine.height
-                                            color: modelData.startsWith("+") ? Theme.wash(Theme.tintGreen)
-                                                : (modelData.startsWith("-") ? Theme.wash(Theme.error) : "transparent")
-                                            Txt {
-                                                id: diffLine
-                                                x: 10
-                                                width: parent.width - 20
-                                                text: askLine.modelData.length > 0 ? askLine.modelData : " "
-                                                role: "code"
-                                                wrapMode: Text.WrapAnywhere
-                                                elide: Text.ElideNone
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // The agent's own words, set apart from G7's.
-                            Row {
-                                visible: (askCard.ask.reason || "").length > 0
-                                width: parent.width
-                                spacing: 8
-                                Rectangle {
-                                    width: 2
-                                    height: askReason.height
-                                    color: Theme.outlineVariant
-                                }
-                                Txt {
-                                    id: askReason
-                                    width: parent.width - 10
-                                    text: qsTr("%1 says: %2").arg(page.agentName).arg(askCard.ask.reason || "")
-                                    role: "bodySmall"
-                                    muted: true
-                                    wrapMode: Text.WordWrap
-                                    elide: Text.ElideNone
-                                }
+                            Icon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 16
+                                height: 16
+                                path: failure.limit ? Icons.history : Icons.warning
+                                color: failure.limit ? Theme.tintAmber : Theme.error
                             }
                             Txt {
-                                visible: askCard.ask.truncated === true
-                                width: parent.width
-                                text: qsTr("It's too long to show in full here.")
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: failure.limit ? qsTr("Usage limit reached") : qsTr("Failed")
                                 role: "bodySmall"
-                                muted: true
-                                wrapMode: Text.WordWrap
-                            }
-                            Flow {
-                                width: parent.width
-                                spacing: 8
-                                layoutDirection: Qt.RightToLeft
-                                Button {
-                                    text: qsTr("Allow")
-                                    busy: Agents.busy
-                                    onClicked: Agents.answer(askCard.ask.token, "allow")
-                                }
-                                Button {
-                                    visible: askCard.alwaysOffered
-                                    variant: "tonal"
-                                    text: askCard.ask.kind === "command"
-                                        ? qsTr("Always allow this exact command in this thread")
-                                        : qsTr("Always allow edits in this thread")
-                                    enabled: !Agents.busy
-                                    onClicked: Agents.answer(askCard.ask.token, "allow_thread")
-                                }
-                                Button {
-                                    variant: "text"
-                                    text: qsTr("Deny")
-                                    enabled: !Agents.busy
-                                    onClicked: Agents.answer(askCard.ask.token, "deny")
-                                }
-                            }
-                            Txt {
-                                width: parent.width
-                                text: qsTr("If you deny, the agent carries on another way.")
-                                role: "caption"
-                                muted: true
-                                horizontalAlignment: Text.AlignRight
-                                wrapMode: Text.WordWrap
+                                weight: 600
+                                color: failure.limit ? Theme.tintAmber : Theme.error
                             }
                         }
-                    }
-                    Txt {
-                        visible: page.asking && Agents.asksWaiting > 0
-                        width: parent.width
-                        text: qsTr("%n more waiting", "", Agents.asksWaiting)
-                        role: "bodySmall"
-                        muted: true
-                        horizontalAlignment: Text.AlignRight
+                        Txt {
+                            visible: (page.info.error || "").length > 0
+                            x: 44
+                            width: parent.width - x
+                            text: page.info.error || ""
+                            role: "code"
+                            muted: true
+                            wrapMode: Text.WrapAnywhere
+                            elide: Text.ElideNone
+                        }
                     }
                     // A session that waits in the app it runs in.
                     Rectangle {
@@ -1123,105 +1008,165 @@ Item {
                         }
                     }
                 }
-                TouchpadGlide { view: transcript }
             }
 
-            // ---- Under the transcript: the reply box, or Continue here ----
-            Item {
+            // ---- Under the timeline: the plan, the request, the reply box; or Continue here ----
+            Column {
                 id: bottomBar
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                height: page.isThread ? composer.height + 20 : sessionBar.height + 16
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                bottomPadding: 6
+                spacing: 8
 
-                Item {
-                    id: composer
-                    visible: page.isThread
-                    x: 16
-                    y: 6
-                    width: parent.width - 32
-                    height: Math.min(Math.max(input.contentHeight + 18, 38), 150)
-                    readonly property bool canSend: !page.running && input.text.trim().length > 0 && !Agents.busy
-                    function send() {
-                        if (!composer.canSend)
-                            return
-                        Agents.send(input.text)
-                        input.text = ""
-                    }
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: sendButton.left
-                        anchors.rightMargin: 8
-                        height: parent.height
-                        radius: Theme.rowRadius
-                        color: Theme.raised
-                        border.width: input.activeFocus ? 1 : 0
-                        border.color: Theme.focusRing
-                        opacity: page.running ? 0.7 : 1
-                        Flickable {
-                            id: inputScroll
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            anchors.topMargin: 9
-                            anchors.bottomMargin: 9
-                            contentHeight: input.contentHeight
-                            clip: true
-                            boundsBehavior: Flickable.StopAtBounds
-                            TextEdit {
-                                id: input
-                                width: inputScroll.width
-                                wrapMode: TextEdit.Wrap
-                                readOnly: page.running
-                                textFormat: TextEdit.PlainText
-                                font.family: Theme.fontUi
-                                font.pixelSize: Theme.typography.body.size
-                                color: Theme.surfaceContent
-                                selectionColor: Theme.selection
-                                selectedTextColor: Theme.surfaceContent
-                                Accessible.name: qsTr("Message %1").arg(page.agentName)
-                                // Enter sends; Shift+Enter starts a new line.
-                                Keys.onPressed: (event) => {
-                                    if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                                        && !(event.modifiers & Qt.ShiftModifier)) {
-                                        composer.send()
-                                        event.accepted = true
-                                    }
-                                }
-                                onCursorRectangleChanged: {
-                                    if (cursorRectangle.y < inputScroll.contentY)
-                                        inputScroll.contentY = cursorRectangle.y
-                                    else if (cursorRectangle.y + cursorRectangle.height > inputScroll.contentY + inputScroll.height)
-                                        inputScroll.contentY = cursorRectangle.y + cursorRectangle.height - inputScroll.height
-                                }
-                                Txt {
-                                    visible: input.text.length === 0
-                                    width: input.width
-                                    text: page.running ? qsTr("You can reply when %1 stops.").arg(page.agentName)
-                                                       : qsTr("Message %1").arg(page.agentName)
-                                    muted: true
-                                }
+                // The agent's plan, pinned here while Details is closed.
+                Column {
+                    id: planLine
+                    readonly property var plan: page.info.plan || []
+                    readonly property int done: plan.filter((s) => s.status === "completed").length
+                    readonly property var current: plan.find((s) => s.status === "in_progress")
+                        || plan.find((s) => s.status !== "completed") || null
+                    property bool expanded: false
+                    visible: page.isThread && plan.length > 0 && !inspector.visible
+                    width: parent.width
+                    spacing: 2
+                    Repeater {
+                        model: planLine.expanded ? planLine.plan : []
+                        delegate: Item {
+                            id: pinnedStep
+                            required property var modelData
+                            width: planLine.width
+                            height: Math.max(22, pinnedText.height + 4)
+                            Icon {
+                                visible: pinnedStep.modelData.status === "completed"
+                                x: 4
+                                y: 4
+                                width: 14
+                                height: 14
+                                path: Icons.check
+                                color: Theme.tintGreen
+                            }
+                            Rectangle {
+                                visible: pinnedStep.modelData.status !== "completed"
+                                x: 7
+                                y: 7
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: pinnedStep.modelData.status === "in_progress" ? Theme.accent : "transparent"
+                                border.width: pinnedStep.modelData.status === "in_progress" ? 0 : 1.2
+                                border.color: Theme.outline
+                            }
+                            Txt {
+                                id: pinnedText
+                                x: 26
+                                y: 2
+                                width: parent.width - x
+                                text: pinnedStep.modelData.text
+                                role: "bodySmall"
+                                muted: pinnedStep.modelData.status === "completed"
+                                wrapMode: Text.WordWrap
+                                elide: Text.ElideNone
                             }
                         }
                     }
-                    IconButton {
-                        id: sendButton
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 4
-                        iconPath: Icons.send
-                        label: qsTr("Send")
-                        enabled: composer.canSend
-                        onClicked: composer.send()
+                    Item {
+                        width: parent.width
+                        height: 26
+                        Accessible.role: Accessible.Button
+                        Accessible.name: pinnedPlanText.text
+                        Accessible.onPressAction: planLine.expanded = !planLine.expanded
+                        Row {
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 6
+                            Icon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 14
+                                height: 14
+                                path: planLine.expanded ? Icons.chevronDown : Icons.chevronUp
+                                color: Theme.surfaceContentVariant
+                            }
+                            Icon {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 15
+                                height: 15
+                                path: Icons.clipboardList
+                                color: Theme.surfaceContentVariant
+                            }
+                        }
+                        Txt {
+                            id: pinnedPlanText
+                            x: 42
+                            width: parent.width - x
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: planLine.current
+                                ? qsTr("Tasks %1/%2 · %3").arg(planLine.done).arg(planLine.plan.length).arg(planLine.current.text)
+                                : qsTr("Tasks %1/%2").arg(planLine.done).arg(planLine.plan.length)
+                            role: "bodySmall"
+                            maximumLineCount: 1
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: planLine.expanded = !planLine.expanded
+                        }
                     }
                 }
 
+                // The request it waits on: one at a time, at most half the column.
+                AgentDock {
+                    id: dock
+                    function pulse() { pulseAnim.restart() }
+                    visible: page.asking
+                    width: parent.width
+                    height: visible ? Math.min(implicitHeight, openView.height / 2) : 0
+                    ask: page.ask
+                    agentName: page.agentName
+                    folder: page.info.folder || ""
+                    alwaysOffered: page.ask.can_allow_thread === true && page.info.mode !== "auto_edit"
+                        && (page.ask.kind === "command" || page.ask.kind === "edit")
+                    composerHasText: composer.hasText
+                    busy: Agents.busy
+                    now: page.now
+                    onAllow: Agents.answer(page.ask.token, "allow")
+                    onDeny: Agents.answer(page.ask.token, "deny")
+                    onAllowThread: Agents.answer(page.ask.token, "allow_thread")
+                    onStop: Agents.stop()
+                    onOverflowRequested: (x, y) => {
+                        const p = page.mapFromItem(null, x, y)
+                        dockMenu.openAt(p.x, p.y - 30, true, true)
+                    }
+                    SequentialAnimation on opacity {
+                        id: pulseAnim
+                        running: false
+                        NumberAnimation { to: 0.55; duration: Theme.reduceMotion ? 0 : 120 }
+                        NumberAnimation { to: 1; duration: Theme.reduceMotion ? 0 : 240 }
+                    }
+                }
+
+                AgentComposer {
+                    id: composer
+                    visible: page.isThread
+                    width: parent.width
+                    height: visible ? implicitHeight : 0
+                    ask: page.ask
+                    canSayWhy: Agents.canSayWhy
+                    running: page.running
+                    busy: Agents.busy
+                    agentName: page.agentName
+                    agentId: page.info.agent || ""
+                    folder: page.info.folder || ""
+                    onSend: (text) => Agents.send(text)
+                    onDenySend: (token, text) => Agents.denyWithMessage(token, text)
+                    onAllow: page.allowShown()
+                    onStop: Agents.stop()
+                }
                 Column {
                     id: sessionBar
                     visible: page.isSession
-                    x: 16
-                    y: 6
-                    width: parent.width - 32
+                    width: parent.width
                     spacing: 8
                     readonly property bool ended: page.phase === "ended"
                     readonly property string blocked: page.info.blocked || ""
@@ -1346,12 +1291,14 @@ Item {
         // ---- Details: the plan, the changes, where it runs ----
         Rectangle {
             id: inspector
-            visible: (page.isThread || page.isSession) && (page.inspectorInline || page.detailsOpen)
+            readonly property bool overlay: page.detailsOpen && !page.inspectorFits
+            visible: (page.isThread || page.isSession) && (page.inspectorWidth > 0 || overlay)
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             anchors.right: parent.right
-            width: page.inspectorInline ? 250 : Math.min(280, mainPane.width - 40)
+            width: overlay ? Math.min(280, mainPane.width - 40) : page.inspectorWidth
             color: Theme.surface
+            clip: true
             z: 2
             Rectangle {
                 width: 1
@@ -1360,8 +1307,10 @@ Item {
             }
             Flickable {
                 id: inspectorFlick
-                anchors.fill: parent
-                anchors.leftMargin: 1
+                // Its content keeps its width while the panel opens and closes.
+                x: 1
+                width: (inspector.overlay ? inspector.width : 250) - 1
+                height: parent.height
                 contentHeight: inspectorColumn.height + 16
                 boundsBehavior: Flickable.StopAtBounds
                 clip: true
@@ -1563,6 +1512,12 @@ Item {
                 }
                 TouchpadGlide { view: inspectorFlick }
             }
+            G7ScrollBar {
+                flickable: inspectorFlick
+                anchors.top: inspectorFlick.top
+                anchors.bottom: inspectorFlick.bottom
+                anchors.right: inspectorFlick.right
+            }
         }
 
         // ---- A new thread ----
@@ -1737,6 +1692,12 @@ Item {
             }
             TouchpadGlide { view: newView }
         }
+        G7ScrollBar {
+            flickable: newView
+            anchors.top: newView.top
+            anchors.bottom: newView.bottom
+            anchors.right: newView.right
+        }
 
         // ---- Setup ----
         Flickable {
@@ -1757,6 +1718,12 @@ Item {
                 onAddFolderRequested: page.addFolder("")
             }
             TouchpadGlide { view: setupView }
+        }
+        G7ScrollBar {
+            flickable: setupView
+            anchors.top: setupView.top
+            anchors.bottom: setupView.bottom
+            anchors.right: setupView.right
         }
     }
 
@@ -1948,6 +1915,90 @@ Item {
                 }
             }
         }
+    }
+
+    // A link in what the agent wrote: where it goes, before it opens.
+    Sheet {
+        id: linkSheet
+        cardWidth: 460
+        property string key: ""
+        property int index: -1
+        property var target: ({})
+        function ask(key, index) {
+            const json = Agents.linkTarget(key, index)
+            if (json.length === 0)
+                return
+            const target = page.parse(json, ({}))
+            if (target.shown === true) {
+                Agents.openLink(key, index)
+                return
+            }
+            linkSheet.key = key
+            linkSheet.index = index
+            linkSheet.target = target
+            open()
+        }
+        Column {
+            width: parent.width
+            spacing: 12
+            Txt {
+                width: parent.width
+                text: qsTr("Open this link?")
+                role: "headline"
+                wrapMode: Text.WordWrap
+            }
+            Rectangle {
+                width: parent.width
+                height: targetText.height + 20
+                radius: Theme.radiusSm
+                color: Theme.surfaceContainerHigh
+                Txt {
+                    id: targetText
+                    x: 10
+                    y: 10
+                    width: parent.width - 20
+                    text: linkSheet.target.href || ""
+                    role: "code"
+                    wrapMode: Text.WrapAnywhere
+                    elide: Text.ElideNone
+                }
+            }
+            Txt {
+                visible: (linkSheet.target.text || "").length > 0
+                width: parent.width
+                text: qsTr("Shown as “%1”.").arg(linkSheet.target.text || "")
+                role: "bodySmall"
+                muted: true
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 10
+                Button {
+                    variant: "text"
+                    text: qsTr("Cancel")
+                    onClicked: linkSheet.close()
+                }
+                Button {
+                    iconPath: Icons.openExternal
+                    text: qsTr("Open")
+                    onClicked: {
+                        Agents.openLink(linkSheet.key, linkSheet.index)
+                        linkSheet.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // The dock's "…": always allow (on this PC only) and Stop.
+    PopupMenu {
+        id: dockMenu
+        actions: dock.overflowActions
+        panelWidth: 360
+        wrapLabels: true
+        z: 20
     }
 
     // Deleting a thread: it can't be brought back.

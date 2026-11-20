@@ -11,6 +11,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "Couldn't delete it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't export it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't open a terminal"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't open the link"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't reach the agent host"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't restart agents"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't save it"), // desktop/app/src/agents.rs

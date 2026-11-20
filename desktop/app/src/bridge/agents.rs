@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `Agents` and `AgentItems`: the Agents page. `Agents` holds the lists, the
-//! open thread or session and the setup as properties (JSON QML reads) and
-//! takes the page's requests; `AgentItems` is the open view's transcript as
-//! a list model, changed row by row so streaming text doesn't rebuild it.
+//! `Agents` and `AgentTimeline`: the Agents page. `Agents` holds the lists,
+//! the open thread or session and the setup as properties (JSON QML reads)
+//! and takes the page's requests; `AgentTimeline` is the open view's rows as
+//! a list model. The rows are computed off the GUI thread
+//! (`agents::rerender`); the model applies the exact changes by key, so
+//! streaming text changes only its last block.
 
-use std::pin::Pin;
+use std::{pin::Pin, sync::Arc};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex, QString, QUrl, QVariant};
+use serde_json::json;
 
 use crate::{
-    agents::{self, Place, Row, UiDelta, UiUpdate},
+    agents::{self, ModelRow, Role, RoleValue, RowOp, UiUpdate},
     state::Changes,
 };
 
@@ -63,6 +66,12 @@ pub mod qobject {
         #[qproperty(bool, outdated)]
         /// The host can't list sessions started on this PC until it's updated.
         #[qproperty(bool, sessions_unsupported)]
+        /// The open thread's request can be denied with words for the agent.
+        #[qproperty(bool, can_say_why)]
+        /// The user hid the thread list (it stays hidden across restarts).
+        #[qproperty(bool, list_hidden)]
+        /// The user hid the details beside the transcript.
+        #[qproperty(bool, inspector_hidden)]
         type Agents = super::AgentsRust;
 
         /// The page is on screen (or left).
@@ -130,6 +139,42 @@ pub mod qobject {
         /// The save dialog closed without saving.
         #[qinvokable]
         fn drop_export(self: &Agents);
+        /// Opens or closes a row (a tool, a group, a thought, the fold, a file).
+        #[qinvokable]
+        fn toggle(self: &Agents, key: &QString);
+        /// Wraps a code block's long lines, or stops.
+        #[qinvokable]
+        fn toggle_wrap(self: &Agents, key: &QString);
+        /// Copies a row's source: a code block, a command, an output; with
+        /// `i:<item id>`, a whole message. False when there's nothing.
+        #[qinvokable]
+        fn copy_text(self: &Agents, key: &QString) -> bool;
+        /// The user typed in the composer (not text the page set).
+        #[qinvokable]
+        fn typed(self: &Agents);
+        /// The composer gained or lost the keyboard.
+        #[qinvokable]
+        fn composer_focus(self: &Agents, focused: bool);
+        /// Denies the request with the user's words for the agent.
+        #[qinvokable]
+        fn deny_with_message(self: &Agents, token: &QString, text: &QString);
+        /// Where a row's link `index` goes, as JSON `{ href, text, shown }`
+        /// ("" for none): `href` with its host in ASCII, `shown` when its
+        /// text is its target (it opens without asking).
+        #[qinvokable]
+        fn link_target(self: &Agents, key: &QString, index: i32) -> QString;
+        /// Opens a row's link `index` (after the page showed where it goes).
+        #[qinvokable]
+        fn open_link(self: &Agents, key: &QString, index: i32);
+        /// The theme's colours for code, as JSON `{ keyword: "#…", … }`.
+        #[qinvokable]
+        fn set_code_colors(self: &Agents, json: &QString);
+        /// Hides or shows the thread list; remembered.
+        #[qinvokable]
+        fn hide_list(self: &Agents, hidden: bool);
+        /// Hides or shows the details beside the transcript; remembered.
+        #[qinvokable]
+        fn hide_inspector(self: &Agents, hidden: bool);
     }
 
     impl cxx_qt::Threading for Agents {}
@@ -155,37 +200,47 @@ pub mod qobject {
         #[qml_element]
         #[qml_singleton]
         #[qproperty(i32, count)]
-        type AgentItems = super::AgentItemsRust;
+        type AgentTimeline = super::AgentTimelineRust;
     }
 
     // Inherited from QAbstractListModel.
     unsafe extern "RustQt" {
         #[inherit]
         #[cxx_name = "beginInsertRows"]
-        unsafe fn begin_insert_rows(self: Pin<&mut AgentItems>, parent: &QModelIndex, first: i32, last: i32);
+        unsafe fn begin_insert_rows(
+            self: Pin<&mut AgentTimeline>,
+            parent: &QModelIndex,
+            first: i32,
+            last: i32,
+        );
         #[inherit]
         #[cxx_name = "endInsertRows"]
-        unsafe fn end_insert_rows(self: Pin<&mut AgentItems>);
+        unsafe fn end_insert_rows(self: Pin<&mut AgentTimeline>);
         #[inherit]
         #[cxx_name = "beginRemoveRows"]
-        unsafe fn begin_remove_rows(self: Pin<&mut AgentItems>, parent: &QModelIndex, first: i32, last: i32);
+        unsafe fn begin_remove_rows(
+            self: Pin<&mut AgentTimeline>,
+            parent: &QModelIndex,
+            first: i32,
+            last: i32,
+        );
         #[inherit]
         #[cxx_name = "endRemoveRows"]
-        unsafe fn end_remove_rows(self: Pin<&mut AgentItems>);
+        unsafe fn end_remove_rows(self: Pin<&mut AgentTimeline>);
         #[inherit]
         #[cxx_name = "beginResetModel"]
-        unsafe fn begin_reset_model(self: Pin<&mut AgentItems>);
+        unsafe fn begin_reset_model(self: Pin<&mut AgentTimeline>);
         #[inherit]
         #[cxx_name = "endResetModel"]
-        unsafe fn end_reset_model(self: Pin<&mut AgentItems>);
+        unsafe fn end_reset_model(self: Pin<&mut AgentTimeline>);
         #[inherit]
-        fn index(self: &AgentItems, row: i32, column: i32, parent: &QModelIndex) -> QModelIndex;
+        fn index(self: &AgentTimeline, row: i32, column: i32, parent: &QModelIndex) -> QModelIndex;
 
         #[inherit]
         #[qsignal]
         #[cxx_name = "dataChanged"]
         fn data_changed(
-            self: Pin<&mut AgentItems>,
+            self: Pin<&mut AgentTimeline>,
             top_left: &QModelIndex,
             bottom_right: &QModelIndex,
             roles: &QList_i32,
@@ -195,23 +250,23 @@ pub mod qobject {
     unsafe extern "RustQt" {
         #[qinvokable]
         #[cxx_override]
-        fn data(self: &AgentItems, index: &QModelIndex, role: i32) -> QVariant;
+        fn data(self: &AgentTimeline, index: &QModelIndex, role: i32) -> QVariant;
         #[qinvokable]
         #[cxx_override]
         #[cxx_name = "roleNames"]
-        fn role_names(self: &AgentItems) -> QHash_i32_QByteArray;
+        fn role_names(self: &AgentTimeline) -> QHash_i32_QByteArray;
         #[qinvokable]
         #[cxx_override]
         #[cxx_name = "rowCount"]
-        fn row_count(self: &AgentItems, parent: &QModelIndex) -> i32;
-        /// The row of an item's `seq` (as text), or -1.
+        fn row_count(self: &AgentTimeline, parent: &QModelIndex) -> i32;
+        /// The row of a key, or -1.
         #[qinvokable]
-        #[cxx_name = "rowOfSeq"]
-        fn row_of_seq(self: &AgentItems, seq: &QString) -> i32;
+        #[cxx_name = "rowOfKey"]
+        fn row_of_key(self: &AgentTimeline, key: &QString) -> i32;
     }
 
-    impl cxx_qt::Threading for AgentItems {}
-    impl cxx_qt::Initialize for AgentItems {}
+    impl cxx_qt::Threading for AgentTimeline {}
+    impl cxx_qt::Initialize for AgentTimeline {}
 }
 
 #[derive(Default)]
@@ -234,6 +289,9 @@ pub struct AgentsRust {
     export_file: QString,
     outdated: bool,
     sessions_unsupported: bool,
+    can_say_why: bool,
+    list_hidden: bool,
+    inspector_hidden: bool,
     /// What was last shown, to set only what changed.
     last: Option<agents::View>,
 }
@@ -295,6 +353,9 @@ impl qobject::Agents {
         self.as_mut().set_asks_waiting(view.asks_waiting);
         self.as_mut().set_outdated(view.outdated);
         self.as_mut().set_sessions_unsupported(view.sessions_unsupported);
+        self.as_mut().set_can_say_why(view.can_say_why);
+        self.as_mut().set_list_hidden(view.list_hidden);
+        self.as_mut().set_inspector_hidden(view.inspector_hidden);
         self.as_mut().set_more(view.more);
         self.as_mut().set_loading(view.loading);
         self.as_mut().set_busy(view.busy);
@@ -414,80 +475,121 @@ impl qobject::Agents {
     pub fn drop_export(&self) {
         agents::drop_export();
     }
-}
 
-// ---- The transcript ----
+    pub fn toggle(&self, key: &QString) {
+        agents::toggle(String::from(key));
+    }
 
-#[derive(Default)]
-pub struct AgentItemsRust {
-    count: i32,
-    rows: Vec<Row>,
-}
+    pub fn toggle_wrap(&self, key: &QString) {
+        agents::toggle_wrap(String::from(key));
+    }
 
-/// Model roles (Qt::UserRole + n).
-const ROLES: &[&str] = &[
-    "seq",
-    "itemId",
-    "kind",
-    "text",
-    "truncated",
-    "from",
-    "toolName",
-    "toolTitle",
-    "toolDetail",
-    "toolStatus",
-    "toolOutput",
-    "streaming",
-    "whenMs",
-];
-const USER_ROLE: i32 = 0x0100;
+    pub fn copy_text(&self, key: &QString) -> bool {
+        match agents::copy_text(&String::from(key)) {
+            Some(text) => {
+                agents::copy(text);
+                true
+            }
+            None => false,
+        }
+    }
 
-fn role(name: &str) -> i32 {
-    USER_ROLE + ROLES.iter().position(|r| *r == name).map_or(0, |i| i as i32)
-}
+    pub fn typed(&self) {
+        agents::typed();
+    }
 
-fn role_value(row: &Row, role: &str) -> QVariant {
-    let text = |s: &str| QVariant::from(&QString::from(s));
-    match role {
-        // A session's seq doesn't fit a JS number safely.
-        "seq" => text(&row.seq.to_string()),
-        "itemId" => text(&row.item_id),
-        "kind" => text(&row.kind),
-        "text" => text(&row.text),
-        "truncated" => QVariant::from(&row.truncated),
-        "from" => text(&row.from),
-        "toolName" => text(&row.tool_name),
-        "toolTitle" => text(&row.tool_title),
-        "toolDetail" => text(&row.tool_detail),
-        "toolStatus" => text(&row.tool_status),
-        "toolOutput" => text(&row.tool_output),
-        "streaming" => QVariant::from(&row.streaming),
-        "whenMs" => QVariant::from(&(row.when_ms as f64)),
-        _ => QVariant::default(),
+    pub fn composer_focus(&self, focused: bool) {
+        agents::composer_focus(focused);
+    }
+
+    pub fn deny_with_message(&self, token: &QString, text: &QString) {
+        agents::deny_with_message(String::from(token), String::from(text));
+    }
+
+    pub fn link_target(&self, key: &QString, index: i32) -> QString {
+        let Some(link) = usize::try_from(index).ok().and_then(|i| agents::link(&String::from(key), i)) else {
+            return QString::default();
+        };
+        let json = json!({ "href": ascii_url(&link.href), "text": link.text, "shown": link.shown });
+        QString::from(&json.to_string())
+    }
+
+    pub fn open_link(&self, key: &QString, index: i32) {
+        if let Some(link) = usize::try_from(index).ok().and_then(|i| agents::link(&String::from(key), i)) {
+            agents::open_link(ascii_url(&link.href));
+        }
+    }
+
+    pub fn set_code_colors(&self, json: &QString) {
+        agents::set_code_colors(&String::from(json));
+    }
+
+    pub fn hide_list(&self, hidden: bool) {
+        agents::set_panels(Some(hidden), None);
+    }
+
+    pub fn hide_inspector(&self, hidden: bool) {
+        agents::set_panels(None, Some(hidden));
     }
 }
 
-impl cxx_qt::Initialize for qobject::AgentItems {
+/// `href` as the page shows and opens it: an internationalised host in its
+/// ASCII (punycode) form, everything else percent-encoded.
+fn ascii_url(href: &str) -> String {
+    let url = QUrl::from(&QString::from(href));
+    if !url.is_valid() {
+        return href.to_owned();
+    }
+    String::from_utf8_lossy(url.to_encoded().as_slice()).into_owned()
+}
+
+// ---- The timeline ----
+
+#[derive(Default)]
+pub struct AgentTimelineRust {
+    count: i32,
+    rows: Vec<Arc<ModelRow>>,
+}
+
+const USER_ROLE: i32 = 0x0100;
+
+fn role_id(role: Role) -> i32 {
+    USER_ROLE + role.index() as i32
+}
+
+fn role_value(row: &ModelRow, role: Role) -> QVariant {
+    match row.get(role) {
+        RoleValue::Text(t) => QVariant::from(&QString::from(t.as_str())),
+        RoleValue::Int(n) => QVariant::from(n),
+        RoleValue::Real(n) => QVariant::from(n),
+        RoleValue::Flag(b) => QVariant::from(b),
+    }
+}
+
+impl cxx_qt::Initialize for qobject::AgentTimeline {
     fn initialize(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
         agents::attach_ui(move || qt.queue(|object| object.apply_updates()).is_ok());
     }
 }
 
-impl qobject::AgentItems {
+impl qobject::AgentTimeline {
     fn apply_updates(mut self: Pin<&mut Self>) {
         for update in agents::take_ui() {
             match update {
-                UiUpdate::Item(row) => self.as_mut().apply_row(*row),
-                UiUpdate::Delta(delta) => self.as_mut().apply_delta(delta),
-                UiUpdate::Reset => self.as_mut().reset(agents::open_rows()),
+                UiUpdate::Ops(ops) => {
+                    for op in ops {
+                        self.as_mut().apply_op(op);
+                    }
+                }
+                UiUpdate::Reset(rows) => self.as_mut().reset(rows),
             }
         }
-        let count = self.rows.len() as i32;
+        let count = i32::try_from(self.rows.len()).unwrap_or(i32::MAX);
         self.set_count(count);
     }
 
-    fn reset(mut self: Pin<&mut Self>, rows: Vec<Row>) {
+    fn reset(mut self: Pin<&mut Self>, rows: Vec<Arc<ModelRow>>) {
         // SAFETY: begin/end are balanced and the rows change between them.
         unsafe {
             self.as_mut().begin_reset_model();
@@ -496,99 +598,125 @@ impl qobject::AgentItems {
         }
     }
 
-    /// The same rule as the bridge's own copy (`agents::place`, `agents::overflow`).
-    fn apply_row(mut self: Pin<&mut Self>, row: Row) {
+    /// One change, with paired begin/end notifications and the exact roles.
+    /// The changes were made against these rows; one out of range (which
+    /// can't happen) is skipped rather than break the model.
+    fn apply_op(mut self: Pin<&mut Self>, op: RowOp) {
         let root = QModelIndex::default();
-        match agents::place(&self.rows, &row) {
-            Place::Stale => {}
-            Place::Replace(i) => {
-                self.as_mut().rust_mut().rows[i] = row;
-                let index = self.index(i as i32, 0, &root);
-                self.as_mut().data_changed(&index, &index, &QList::default());
-            }
-            Place::Insert(i) => {
-                let drop = agents::overflow(self.rows.len(), i);
-                let r = i as i32;
-                // SAFETY: i <= len; begin/end are balanced.
+        let len = self.rows.len();
+        match op {
+            RowOp::Remove { at, count } => {
+                if count == 0 || at + count > len {
+                    return;
+                }
+                // SAFETY: rows at..at+count exist; begin/end are balanced.
                 unsafe {
-                    self.as_mut().begin_insert_rows(&root, r, r);
-                    self.as_mut().rust_mut().rows.insert(i, row);
+                    self.as_mut().begin_remove_rows(&root, at as i32, (at + count - 1) as i32);
+                    self.as_mut().rust_mut().rows.drain(at..at + count);
+                    self.as_mut().end_remove_rows();
+                }
+            }
+            RowOp::Insert { at, rows } => {
+                if rows.is_empty() || at > len {
+                    return;
+                }
+                let last = (at + rows.len() - 1) as i32;
+                // SAFETY: at <= len; begin/end are balanced.
+                unsafe {
+                    self.as_mut().begin_insert_rows(&root, at as i32, last);
+                    self.as_mut().rust_mut().rows.splice(at..at, rows);
                     self.as_mut().end_insert_rows();
                 }
-                if drop > 0 {
-                    // SAFETY: the first `drop` rows exist; begin/end are balanced.
-                    unsafe {
-                        self.as_mut().begin_remove_rows(&root, 0, drop as i32 - 1);
-                        self.as_mut().rust_mut().rows.drain(..drop);
-                        self.as_mut().end_remove_rows();
-                    }
+            }
+            RowOp::Change { at, row, roles } => {
+                if at >= len {
+                    return;
                 }
+                self.as_mut().rust_mut().rows[at] = row;
+                let index = self.index(at as i32, 0, &root);
+                let mut ids = QList::<i32>::default();
+                for role in roles {
+                    ids.append(role_id(role));
+                }
+                self.as_mut().data_changed(&index, &index, &ids);
             }
         }
-    }
-
-    /// More text for a streaming row: only its text and `streaming` change.
-    fn apply_delta(mut self: Pin<&mut Self>, delta: UiDelta) {
-        let Ok(i) = self.rows.binary_search_by_key(&delta.seq, |r| r.seq) else { return };
-        if agents::append(&mut self.as_mut().rust_mut().rows[i], delta.offset, &delta.text).is_none() {
-            return;
-        }
-        let root = QModelIndex::default();
-        let index = self.index(i as i32, 0, &root);
-        let mut roles = QList::<i32>::default();
-        roles.append(role("text"));
-        roles.append(role("streaming"));
-        roles.append(role("truncated"));
-        self.as_mut().data_changed(&index, &index, &roles);
     }
 
     pub fn data(&self, index: &QModelIndex, role: i32) -> QVariant {
-        let row = usize::try_from(index.row()).ok();
-        let role = usize::try_from(role - USER_ROLE).ok().and_then(|r| ROLES.get(r));
-        match (row.and_then(|r| self.rows.get(r)), role) {
-            (Some(row), Some(role)) => role_value(row, role),
+        let row = usize::try_from(index.row()).ok().and_then(|r| self.rows.get(r));
+        let role = usize::try_from(role - USER_ROLE).ok().and_then(|r| Role::ALL.get(r));
+        match (row, role) {
+            (Some(row), Some(role)) => role_value(row, *role),
             _ => QVariant::default(),
         }
     }
 
     pub fn role_names(&self) -> QHash<QHashPair_i32_QByteArray> {
         let mut roles = QHash::<QHashPair_i32_QByteArray>::default();
-        for (i, name) in ROLES.iter().enumerate() {
-            roles.insert(USER_ROLE + i as i32, QByteArray::from(*name));
+        for role in Role::ALL {
+            roles.insert(role_id(role), QByteArray::from(role.name()));
         }
         roles
     }
 
     pub fn row_count(&self, _parent: &QModelIndex) -> i32 {
-        self.rows.len() as i32
+        i32::try_from(self.rows.len()).unwrap_or(i32::MAX)
     }
 
-    pub fn row_of_seq(&self, seq: &QString) -> i32 {
-        let Ok(seq) = String::from(seq).parse::<u64>() else { return -1 };
-        self.rows.binary_search_by_key(&seq, |r| r.seq).map_or(-1, |i| i as i32)
+    pub fn row_of_key(&self, key: &QString) -> i32 {
+        let key = String::from(key);
+        self.rows.iter().position(|r| r.key() == key).map_or(-1, |i| i as i32)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use g7_agents_render::{Row, RowKind, RowStatus, ToolClass, ToolLabel};
+
     use super::*;
 
     #[test]
     fn roles_cover_the_row() {
         let row = Row {
+            key: "i:toolu_1".into(),
+            kind: RowKind::Tool {
+                label: ToolLabel { class: ToolClass::Command, object: "cargo test".into(), more: 0 },
+                status: RowStatus::Running,
+                has_detail: true,
+                has_output: false,
+                open: false,
+                adds: 0,
+                dels: 0,
+                ms: 0,
+            },
+            turn: 3,
+            depth: 1,
+            item_id: "toolu_1".into(),
             seq: (1 << 40) | 3,
-            kind: "tool".into(),
-            tool_status: "running".into(),
-            streaming: true,
-            when_ms: 1_795_000_000_000,
-            ..Row::default()
         };
-        let get = |name| role_value(&row, name);
-        assert_eq!(get("seq").value::<QString>().map(String::from), Some(((1u64 << 40) | 3).to_string()));
-        assert_eq!(get("toolStatus").value::<QString>().map(String::from).as_deref(), Some("running"));
-        assert_eq!(get("streaming").value::<bool>(), Some(true));
-        assert_eq!(get("whenMs").value::<f64>(), Some(1_795_000_000_000.0));
-        assert_eq!(role("seq"), USER_ROLE);
-        assert_eq!(role("text"), USER_ROLE + 3);
+        let row =
+            agents::model_row(&row, agents::Extra::default(), "cargo test", &agents::CodePalette::default());
+        let get = |role| role_value(&row, role);
+        assert_eq!(get(Role::Key).value::<QString>().map(String::from).as_deref(), Some("i:toolu_1"));
+        assert_eq!(get(Role::Status).value::<QString>().map(String::from).as_deref(), Some("running"));
+        assert_eq!(get(Role::HasDetail).value::<bool>(), Some(true));
+        assert_eq!(get(Role::Turn).value::<i32>(), Some(3));
+        assert_eq!(get(Role::Ms).value::<f64>(), Some(0.0));
+        assert_eq!(
+            get(Role::Styled).value::<QString>().map(String::from).as_deref(),
+            Some("cargo&nbsp;test")
+        );
+        assert_eq!(role_id(Role::Key), USER_ROLE);
+        assert_eq!(role_id(Role::Text), USER_ROLE + 6);
+        let names: std::collections::HashSet<_> = Role::ALL.iter().map(|r| r.name()).collect();
+        assert_eq!(names.len(), Role::ALL.len(), "every role has its own name");
+        assert!(Role::ALL.iter().enumerate().all(|(i, r)| r.index() == i));
+    }
+
+    #[test]
+    fn links_open_with_their_host_in_ascii() {
+        assert_eq!(ascii_url("https://bücher.example/a b"), "https://xn--bcher-kva.example/a%20b");
+        assert_eq!(ascii_url("mailto:someone@example.com"), "mailto:someone@example.com");
     }
 }
