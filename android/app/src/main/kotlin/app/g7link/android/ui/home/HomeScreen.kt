@@ -617,15 +617,14 @@ fun HomeScreen(
             }
         } else {
             val online = pc.online
-            // The PC's agents first: what needs you, what's working, or a box to start one.
+            // The PC's agents first, as one row: what matters most there now; the rest is a tap away.
             if (pc.offersAgents && core != null) {
                 g7Item(key = "pc_agents", contentType = "agents") {
                     AgentsHomeSection(
                         pc = pc,
                         core = core,
                         onOpenAgents = { onAgents(pc.id) },
-                        onOpenThread = { threadId -> onAgentThread(pc.id, threadId) },
-                        onOpenSession = { sessionId -> onAgentSession(pc.id, sessionId) },
+                        modifier = Modifier.padding(top = 8.dp),
                     )
                 }
             }

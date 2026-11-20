@@ -1402,7 +1402,6 @@
     <string name="agents_state_paused">Pausado</string>
     <string name="agents_usage_limit">Limite de uso atingido.</string>
     <string name="agents_usage_resets">Limite de uso atingido. Renova às %1$s.</string>
-    <string name="agents_failed_fix">Corrija em %1$s e responda para tentar de novo.</string>
     <string name="agents_login_failed">%1$s está desconectado. Execute %2$s em %3$s.</string>
     <string name="agents_message_hint">Mensagem para %1$s</string>
     <string name="agents_reply_when_stops">Você pode responder quando %1$s parar.</string>
@@ -1417,19 +1416,8 @@
     <string name="agents_allow">Permitir</string>
     <string name="agents_deny">Negar</string>
     <string name="agents_review">Revisar</string>
-    <string name="agents_ask_command">Executar este comando?</string>
-    <string name="agents_ask_edit">Fazer esta alteração?</string>
-    <string name="agents_ask_other">Permitir isto?</string>
-    <string name="agents_ask_where">Em %1$s em %2$s.</string>
     <string name="agents_ask_when">Perguntado %1$s.</string>
-    <string name="agents_ask_also_pc">Você também pode responder no PC.</string>
     <string name="agents_ask_says">%1$s diz: %2$s</string>
-    <string name="agents_ask_read_all">Leia o pedido inteiro para poder permitir.</string>
-    <string name="agents_ask_deny_note">Se você negar, o agente segue de outro jeito.</string>
-    <plurals name="agents_more_waiting">
-        <item quantity="one">Mais %1$d aguardando</item>
-        <item quantity="other">Mais %1$d aguardando</item>
-    </plurals>
     <string name="agents_ask_truncated">Longo demais para mostrar inteiro. Veja o resto no seu PC.</string>
     <string name="agents_truncated">Encurtado</string>
     <string name="agents_answered_elsewhere">Já respondido</string>
@@ -1437,12 +1425,9 @@
     <string name="agents_answered_denied">Negado</string>
     <string name="agents_answered_allowed_on">Permitido em %1$s</string>
     <string name="agents_answered_denied_on">Negado em %1$s</string>
-    <string name="agents_answered_expired">Sem resposta a tempo</string>
-    <string name="agents_answered_cancelled">Não é mais necessário</string>
     <string name="agents_failed_generic">Não foi possível conectar ao seu PC</string>
     <string name="agents_step_running">Em execução</string>
     <string name="agents_step_denied">Negado</string>
-    <string name="agents_step_failed">Falhou</string>
     <string name="agents_load_earlier">Anteriores</string>
     <string name="agents_thread_gone">Esta conversa foi excluída no PC.</string>
     <string name="channel_agents_working">Agentes trabalhando</string>
@@ -1459,21 +1444,13 @@
     <string name="agents_notify_reply_failed">Não foi possível enviar sua mensagem. Abra o G7 Link para tentar de novo.</string>
     <!-- Agents 0.1.14: Home, what a thread does now, sessions started on the PC. -->
     <string name="agents_home_title">Agentes em %1$s</string>
-    <string name="agents_home_all">Todas as conversas</string>
     <string name="agents_home_needs_you">%1$s precisa de você</string>
-    <string name="agents_home_asked">Perguntado %1$s</string>
-    <string name="agents_home_edit">Editar %1$s</string>
-    <string name="agents_home_prompt_hint">O que %1$s deve fazer em %2$s?</string>
-    <string name="agents_home_recent">%1$s · %2$s</string>
     <string name="agents_home_asks_first">Ele pergunta antes de alterar um arquivo ou executar um comando que possa mudar algo.</string>
     <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s está trabalhando em %2$s</string>
     <string name="agents_step_now">Agora: %1$s</string>
     <string name="agents_step_of">Etapa %1$d de %2$d</string>
-    <string name="agents_step_writing">Escrevendo</string>
     <string name="agents_step_thinking">Pensando</string>
-    <string name="agents_step_plan">Plano</string>
-    <string name="agents_step_plan_done">%1$d de %2$d concluídos</string>
     <string name="agents_session_section">Iniciadas em %1$s</string>
     <string name="agents_session_off_body">As sessões do Claude e do Codex que você inicia em %1$s, em um terminal ou no app do Claude, também podem aparecer aqui.</string>
     <string name="agents_session_ask">Pedir em %1$s</string>
@@ -1514,5 +1491,172 @@
     <plurals name="agents_step_working_for_hours">
         <item quantity="one">Trabalhando há %1$d h</item>
         <item quantity="other">Trabalhando há %1$d h</item>
+    </plurals>
+    <!-- Agents: a thread's rows, the request sheet and the reply box (phase 1) -->
+    <string name="agents_drawer_show">Mostrar conversas</string>
+    <string name="agents_live_starting">Começando…</string>
+    <string name="agents_tool_running">Executando %1$s</string>
+    <string name="agents_tool_ran">Executou %1$s</string>
+    <string name="agents_tool_failed">Falhou: %1$s</string>
+    <string name="agents_tool_denied">Negado: %1$s</string>
+    <string name="agents_tool_stopped">Parado: %1$s</string>
+    <string name="agents_tool_editing">Editando %1$s</string>
+    <string name="agents_tool_edited">Editou %1$s</string>
+    <string name="agents_tool_edit_failed">Não conseguiu editar %1$s</string>
+    <string name="agents_tool_edit_denied">Negado: editar %1$s</string>
+    <string name="agents_tool_edit_stopped">Parado: editar %1$s</string>
+    <string name="agents_tool_reading">Lendo %1$s</string>
+    <string name="agents_tool_read">Leu %1$s</string>
+    <string name="agents_tool_read_failed">Não conseguiu ler %1$s</string>
+    <string name="agents_tool_read_stopped">Parado: ler %1$s</string>
+    <string name="agents_tool_searching">Buscando %1$s</string>
+    <string name="agents_tool_searched">Buscou %1$s</string>
+    <string name="agents_tool_search_failed">A busca falhou: %1$s</string>
+    <string name="agents_tool_search_stopped">Parado: buscar %1$s</string>
+    <string name="agents_tool_web_searching">Buscando na web: %1$s</string>
+    <string name="agents_tool_web_searched">Buscou na web: %1$s</string>
+    <string name="agents_tool_web_failed">A busca na web falhou: %1$s</string>
+    <string name="agents_tool_wants_run">Quer executar %1$s</string>
+    <string name="agents_tool_wants_edit">Quer editar %1$s</string>
+    <string name="agents_tool_wants_read">Quer ler %1$s</string>
+    <string name="agents_tool_wants_use">Quer usar %1$s</string>
+    <string name="agents_summary_two">%1$s e %2$s</string>
+    <string name="agents_thought">Pensou</string>
+    <string name="agents_worked">Trabalhou por %1$s</string>
+    <string name="agents_dur_seconds">%1$d s</string>
+    <string name="agents_dur_minutes">%1$d min %2$02d s</string>
+    <string name="agents_dur_hours">%1$d h %2$02d min</string>
+    <string name="agents_edit_of">Edição %1$d de %2$d</string>
+    <string name="agents_mark_waiting">Esperando por você</string>
+    <string name="agents_mark_rule">Permitido pela sua regra para esta conversa</string>
+    <string name="agents_mark_expired">Expirou</string>
+    <string name="agents_mark_cancelled">Cancelado</string>
+    <string name="agents_dock_count">%1$d de %2$d</string>
+    <string name="agents_held">Chegou enquanto você digitava</string>
+    <string name="agents_say_why_hint">Diga por quê, para negar e dizer a %1$s o que fazer no lugar</string>
+    <string name="agents_deny_and_send">Negar e enviar</string>
+    <string name="agents_codex_reads_next">O Codex para e lê isto em seguida.</string>
+    <string name="agents_you_denied_said">Você negou e disse</string>
+    <string name="agents_link_title">Abrir este link?</string>
+    <string name="agents_link_shown_as">Exibido como “%1$s”.</string>
+    <string name="agents_link_open">Abrir</string>
+    <string name="agents_copy">Copiar</string>
+    <string name="agents_copied">Copiado</string>
+    <string name="agents_wrap">Quebrar linhas</string>
+    <string name="agents_scroll_to_allow">Role até o fim para permitir</string>
+    <string name="agents_loading">Carregando…</string>
+    <string name="agents_paused_resets">Limite de uso atingido · renova às %1$s</string>
+    <string name="agents_cut_short">Esta mensagem foi cortada.</string>
+    <string name="agents_output_last_lines">Mostrando as últimas linhas</string>
+    <string name="agents_output_title">Saída</string>
+    <string name="agents_tasks">Tarefas %1$d/%2$d</string>
+    <string name="agents_dock_wants_command">%1$s quer executar um comando</string>
+    <string name="agents_dock_wants_edit">%1$s quer editar um arquivo</string>
+    <string name="agents_dock_wants_other">%1$s quer usar uma ferramenta</string>
+    <string name="agents_diff_end">Fim da alteração</string>
+    <string name="agents_folder_on">%1$s em %2$s</string>
+    <string name="agents_more">Mais</string>
+    <string name="agents_close">Fechar</string>
+    <string name="agents_show_all">Mostrar tudo</string>
+    <string name="agents_alert_note">Nota</string>
+    <string name="agents_alert_tip">Dica</string>
+    <string name="agents_alert_important">Importante</string>
+    <string name="agents_alert_warning">Aviso</string>
+    <string name="agents_alert_caution">Cuidado</string>
+    <plurals name="agents_tool_and_more">
+        <item quantity="one">%1$s e mais %2$d</item>
+        <item quantity="other">%1$s e mais %2$d</item>
+    </plurals>
+    <plurals name="agents_clause_commands">
+        <item quantity="one">Executou %1$d comando</item>
+        <item quantity="other">Executou %1$d comandos</item>
+    </plurals>
+    <plurals name="agents_clause_changed">
+        <item quantity="one">Alterou %1$d arquivo</item>
+        <item quantity="other">Alterou %1$d arquivos</item>
+    </plurals>
+    <plurals name="agents_clause_read">
+        <item quantity="one">Leu %1$d arquivo</item>
+        <item quantity="other">Leu %1$d arquivos</item>
+    </plurals>
+    <plurals name="agents_clause_searched">
+        <item quantity="one">Buscou %1$d vez</item>
+        <item quantity="other">Buscou %1$d vezes</item>
+    </plurals>
+    <plurals name="agents_clause_web">
+        <item quantity="one">Buscou na web %1$d vez</item>
+        <item quantity="other">Buscou na web %1$d vezes</item>
+    </plurals>
+    <plurals name="agents_clause_tools">
+        <item quantity="one">Usou %1$d ferramenta</item>
+        <item quantity="other">Usou %1$d ferramentas</item>
+    </plurals>
+    <plurals name="agents_clause_commands_lower">
+        <item quantity="one">executou %1$d comando</item>
+        <item quantity="other">executou %1$d comandos</item>
+    </plurals>
+    <plurals name="agents_clause_changed_lower">
+        <item quantity="one">alterou %1$d arquivo</item>
+        <item quantity="other">alterou %1$d arquivos</item>
+    </plurals>
+    <plurals name="agents_clause_read_lower">
+        <item quantity="one">leu %1$d arquivo</item>
+        <item quantity="other">leu %1$d arquivos</item>
+    </plurals>
+    <plurals name="agents_clause_searched_lower">
+        <item quantity="one">buscou %1$d vez</item>
+        <item quantity="other">buscou %1$d vezes</item>
+    </plurals>
+    <plurals name="agents_clause_web_lower">
+        <item quantity="one">buscou na web %1$d vez</item>
+        <item quantity="other">buscou na web %1$d vezes</item>
+    </plurals>
+    <plurals name="agents_clause_tools_lower">
+        <item quantity="one">usou %1$d ferramenta</item>
+        <item quantity="other">usou %1$d ferramentas</item>
+    </plurals>
+    <plurals name="agents_summary_others">
+        <item quantity="one">%1$s, %2$s e mais %3$d ação</item>
+        <item quantity="other">%1$s, %2$s e mais %3$d ações</item>
+    </plurals>
+    <plurals name="agents_thought_times">
+        <item quantity="one">Pensou %1$d vez</item>
+        <item quantity="other">Pensou %1$d vezes</item>
+    </plurals>
+    <plurals name="agents_files_changed">
+        <item quantity="one">%1$d arquivo alterado</item>
+        <item quantity="other">%1$d arquivos alterados</item>
+    </plurals>
+    <plurals name="agents_table_more">
+        <item quantity="one">Mais %1$d linha</item>
+        <item quantity="other">Mais %1$d linhas</item>
+    </plurals>
+    <!-- Agents on Home: one row -->
+    <string name="agents_home_working_for">%1$s está trabalhando · %2$s</string>
+    <string name="agents_home_working">%1$s está trabalhando</string>
+    <string name="agents_home_done">concluído %1$s</string>
+    <string name="agents_home_stopped">parado %1$s</string>
+    <string name="agents_home_failed">falhou %1$s</string>
+    <string name="agents_home_paused">pausado %1$s</string>
+    <string name="agents_home_start">Começar uma conversa</string>
+    <plurals name="agents_home_requests">
+        <item quantity="one">%1$d pedido precisa de você</item>
+        <item quantity="other">%1$d pedidos precisam de você</item>
+    </plurals>
+    <plurals name="agents_home_threads_working">
+        <item quantity="one">%1$d conversa em andamento</item>
+        <item quantity="other">%1$d conversas em andamento</item>
+    </plurals>
+    <plurals name="agents_home_sessions_working">
+        <item quantity="one">%1$d sessão em andamento</item>
+        <item quantity="other">%1$d sessões em andamento</item>
+    </plurals>
+    <plurals name="agents_home_minutes">
+        <item quantity="one">%1$d min</item>
+        <item quantity="other">%1$d min</item>
+    </plurals>
+    <plurals name="agents_home_hours">
+        <item quantity="one">%1$d h</item>
+        <item quantity="other">%1$d h</item>
     </plurals>
 </resources>

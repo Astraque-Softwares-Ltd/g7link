@@ -9,12 +9,15 @@ import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentInfo
 import app.g7link.core.AgentItem
 import app.g7link.core.AgentItemKind
+import app.g7link.core.AgentMark
+import app.g7link.core.AgentMarkKind
 import app.g7link.core.AgentPage
 import app.g7link.core.AgentPlanStatus
 import app.g7link.core.AgentPlanStep
 import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionPage
 import app.g7link.core.AgentSessionState
+import app.g7link.core.AgentStreaming
 import app.g7link.core.AgentThread
 import app.g7link.core.AgentThreadState
 import app.g7link.core.AgentToolStatus
@@ -53,9 +56,19 @@ data class AgentsState(
     fun asksFor(threadId: String): List<AgentAsk> =
         asks.values.filter { it.thread == threadId }.sortedBy { it.expiresMs }
 
-    /** The one request a thread shows, its oldest, and how many wait behind it; null when none waits. */
-    fun askQueue(threadId: String): AskQueue? =
-        asksFor(threadId).let { asks -> asks.firstOrNull()?.let { AskQueue(it, asks.size - 1) } }
+    /**
+     * The one request a thread shows and how many wait with it; null when none
+     * waits. Oldest first (they all last as long, so the one expiring first was
+     * asked first); the first one the typing guard doesn't hold, or the first
+     * when it holds them all (contract §P8.1).
+     */
+    fun askQueue(threadId: String, held: (String) -> Boolean = { false }): AskQueue? {
+        val asks = asksFor(threadId)
+        if (asks.isEmpty()) return null
+        val index = asks.indexOfFirst { !held(it.token) }.coerceAtLeast(0)
+        val shown = asks[index]
+        return AskQueue(shown = shown, more = asks.size - 1, position = index + 1, total = asks.size, held = held(shown.token))
+    }
 
     /** The agents a thread can start with now. */
     val readyAgents: List<AgentInfo>
@@ -77,7 +90,7 @@ data class OpenThread(
     val moreBefore: Boolean = false,
     /** A page has been read since it opened. */
     val loaded: Boolean = false,
-    /** Requests answered while it was open, shown collapsed in the transcript. */
+    /** Requests answered while it was open: marks under their steps where they say something. */
     val resolved: List<ResolvedAsk> = emptyList(),
     /** Deleted on the PC while open. */
     val removed: Boolean = false,
@@ -107,59 +120,59 @@ data class OpenSession(
     val removed: Boolean = false,
 )
 
-/** A step of what a thread did lately, for its "Now" timeline: a tool, or what it does between tools. */
-@Immutable
-data class Step(
-    /** The tool item's `seq`; null for the step between tools. */
-    val seq: ULong?,
-    /** The tool's own title; null for the step between tools ([kind] says which). */
-    val title: String?,
-    val status: AgentToolStatus,
-    val whenMs: Long,
-    val kind: StepKind = StepKind.TOOL,
-)
-
-enum class StepKind { TOOL, WRITING, THINKING }
-
-/** A thread's requests are answered one at a time: [shown] in full, then the next of [more]. */
-@Immutable
-data class AskQueue(val shown: AgentAsk, val more: Int)
-
 /**
- * What Home shows of a PC's agents: what needs you first (a request, or a
- * session started on the PC that waits there), then what's working, or, with
- * nothing of either, a box to start a thread and the last one that ran.
+ * A thread's requests are answered one at a time: [shown] in full, "[position]
+ * of [total]", and [more] others waiting. [held]: it came while you were
+ * typing, so its buttons wait until you pause (contract §P8.2).
  */
 @Immutable
-data class HomeSummary(
-    val lead: HomeLead? = null,
-    val working: List<HomeWork> = emptyList(),
-    /** Nothing needs you or works, and a thread can be started. */
-    val start: Boolean = false,
-    /** Under the start box: the thread that ran last. */
-    val recent: AgentThread? = null,
+data class AskQueue(
+    val shown: AgentAsk,
+    val more: Int,
+    val position: Int = 1,
+    val total: Int = more + 1,
+    val held: Boolean = false,
 )
 
+/**
+ * What a thread's rows are made from ([AgentsModel.timelineInput]): handed to
+ * the FFI's `AgentTimeline.rows` off the main thread. [key] names the thread or
+ * session the rows are for; a result made for another key is never shown.
+ */
 @Immutable
-sealed interface HomeLead {
-    /**
-     * A thread that needs you; [ask] is the oldest request when the phone has
-     * it, and [more] how many others wait (in any thread), shown one at a time.
-     */
-    data class NeedsYou(val thread: AgentThread?, val ask: AgentAsk?, val more: Int = 0) : HomeLead
+data class TimelineInput(
+    val key: String,
+    val items: List<AgentItem>,
+    val streaming: List<AgentStreaming>,
+    val state: AgentThreadState,
+    val stateSinceMs: Long,
+    val marks: List<AgentMark>,
+    val open: List<String>,
+)
 
-    /** A session started on the PC that waits for an answer there (reported by the agent, never a guess). */
-    data class SessionNeedsYou(val session: AgentSession) : HomeLead
+/**
+ * Home's one Agents line under the row's title (the user's wish: Home stays
+ * brief, the rest is a tap away), by priority: what needs you, what's running,
+ * the last one that finished, or a nudge to start.
+ */
+@Immutable
+sealed interface HomeLine {
+    /** [count] requests wait (threads' and sessions' that wait on the PC); [agent] is the one asking when there's one. */
+    data class NeedsYou(val agent: String, val count: Int) : HomeLine
+
+    /** [count] threads (or, with none, sessions) at work; one alone says its agent and since when. */
+    data class Working(val agent: String, val sinceMs: Long?, val count: Int, val sessions: Boolean) : HomeLine
+
+    /** The thread that ran last, how it ended and when. */
+    data class Finished(val title: String, val status: ThreadStatus, val updatedMs: Long) : HomeLine
+
+    data object Start : HomeLine
 }
 
-@Immutable
-sealed interface HomeWork {
-    data class Thread(val thread: AgentThread) : HomeWork
-
-    data class Session(val session: AgentSession) : HomeWork
-}
-
-/** Streaming assistant text: [bytes] is its UTF-8 length, which delta offsets count in. */
+/**
+ * Text still arriving, an answer's or a thought's ([kind]): [bytes] is its
+ * UTF-8 length, which delta offsets count in.
+ */
 @Immutable
 data class StreamingText(
     val seq: ULong,
@@ -167,6 +180,7 @@ data class StreamingText(
     val bytes: Int,
     /** A piece went missing: shown as it is until the finished item arrives. */
     val gap: Boolean = false,
+    val kind: AgentItemKind = AgentItemKind.ASSISTANT,
 )
 
 @Immutable
@@ -180,27 +194,23 @@ data class ResolvedAsk(
     val afterSeq: ULong,
     /** The device that answered, when the PC says ("Allowed on guchu"). */
     val byName: String? = null,
+    /** The step it was about; null from an older PC (its mark goes at the end). */
+    val itemId: String? = null,
 )
 
-/** One row of the transcript, keyed by what it shows so a streaming item keeps its place when it finishes. */
+/**
+ * What the Agents drawer lists of a PC, grouped like the thread list: what
+ * needs you, what works, the rest; then the sessions started on the PC when it
+ * lists them to this phone.
+ */
 @Immutable
-sealed interface TranscriptEntry {
-    val key: String
-
-    @Immutable
-    data class Item(val item: AgentItem) : TranscriptEntry {
-        override val key: String get() = "seq:${item.seq}"
-    }
-
-    @Immutable
-    data class Streaming(val itemId: String, val seq: ULong, val text: String, val gap: Boolean) : TranscriptEntry {
-        override val key: String get() = "seq:$seq"
-    }
-
-    @Immutable
-    data class Resolved(val ask: ResolvedAsk) : TranscriptEntry {
-        override val key: String get() = "ask:${ask.token}"
-    }
+data class DrawerGroups(
+    val needsYou: List<AgentThread> = emptyList(),
+    val working: List<AgentThread> = emptyList(),
+    val recent: List<AgentThread> = emptyList(),
+    val sessions: List<AgentSession> = emptyList(),
+) {
+    val empty: Boolean get() = needsYou.isEmpty() && working.isEmpty() && recent.isEmpty() && sessions.isEmpty()
 }
 
 /** How a thread reads at a glance (the reconcile file's state words). */
@@ -258,12 +268,6 @@ object AgentsModel {
     /** The most sessions a PC lists (§3), and the most items kept for the followed one. */
     private const val MAX_SESSIONS = 50
     private const val MAX_SESSION_ITEMS = 400
-
-    /** Tool steps shown in a thread's "Now" timeline. */
-    private const val MAX_STEPS = 6
-
-    /** Rows Home shows of a PC's agents. */
-    private const val HOME_ROWS = 2
 
     /** Streaming text stops growing past this; the finished item replaces it anyway. */
     private const val MAX_STREAM_CHARS = 20_000
@@ -413,21 +417,6 @@ object AgentsModel {
 
     // ---- What a thread is doing now ----
 
-    /**
-     * The thread's newest tool steps, oldest first, and, while it works with no
-     * tool running, one last step for what it does between tools: Writing while
-     * its text streams in, else Thinking.
-     */
-    fun steps(open: OpenThread, thread: AgentThread): List<Step> {
-        val tools = open.items.filter { it.kind == AgentItemKind.TOOL && it.tool != null }.takeLast(MAX_STEPS)
-        val steps = tools.mapNotNull { item -> item.tool?.let { Step(item.seq, it.title, it.status, item.whenMs) } }
-        val toolRunning = steps.any { it.status == AgentToolStatus.RUNNING }
-        if (thread.state != AgentThreadState.WORKING || toolRunning) return steps
-        val kind = if (open.streaming.isNotEmpty()) StepKind.WRITING else StepKind.THINKING
-        val whenMs = maxOf(open.items.lastOrNull()?.whenMs ?: 0L, thread.sinceMs ?: 0L)
-        return steps + Step(null, null, AgentToolStatus.RUNNING, whenMs, kind)
-    }
-
     /** The tool still running last in the transcript: its command or change shows under "Now". */
     fun runningTool(items: List<AgentItem>): AgentItem? =
         items.lastOrNull { it.kind == AgentItemKind.TOOL && it.tool?.status == AgentToolStatus.RUNNING }
@@ -465,48 +454,56 @@ object AgentsModel {
     // ---- Home ----
 
     /**
-     * What Home shows of one PC's agents, or null when it shows only the row
-     * that opens them (nothing to show yet, or nothing can run there):
-     *
-     * 1. A thread that needs you (its oldest request), else a session started
-     *    on the PC that needs you there, as the agent reported it; a guess
-     *    ("May need you") never counts.
-     * 2. What works: threads, else sessions; at most two rows in all.
-     * 3. With neither, the start box when a thread can be started, and the
-     *    thread that ran last.
+     * Home's Agents line (see [HomeLine]): a request first, counting every one
+     * the phone knows of (the threads' own counts when it hasn't heard of them
+     * all) and sessions on the PC that wait for an answer as the agent reported
+     * it (a guess never counts); then what works, threads before sessions; then
+     * the thread that ran last; else Start.
      */
-    fun homeSummary(state: AgentsState): HomeSummary? {
-        val catalog = state.catalog ?: return null
-        val ask = state.asks.values.minByOrNull { it.expiresMs }
-        // The threads' own counts when the phone hasn't heard of every request.
-        val more = (maxOf(state.asks.size, state.threads.sumOf { it.asks.toInt() }) - 1).coerceAtLeast(0)
-        val lead: HomeLead? = when {
-            ask != null -> HomeLead.NeedsYou(state.thread(ask.thread), ask, more)
-            else -> state.threads
-                .filter { it.state == AgentThreadState.WAITING || it.asks > 0u }
-                .maxByOrNull { it.updatedMs }
-                ?.let { HomeLead.NeedsYou(it, null, more) }
-                ?: state.sessions.filter { needsYouExactly(it) }.maxByOrNull { it.updatedMs }?.let { HomeLead.SessionNeedsYou(it) }
+    fun homeLine(state: AgentsState): HomeLine {
+        val waitingThreads = state.threads.filter { it.state == AgentThreadState.WAITING || it.asks > 0u }
+        val threadRequests = maxOf(state.asks.size, state.threads.sumOf { it.asks.toInt() }, waitingThreads.size)
+        val waitingSessions = state.sessions.filter { needsYouExactly(it) }
+        val needs = threadRequests + waitingSessions.size
+        if (needs > 0) {
+            val asker = state.asks.values.minByOrNull { it.expiresMs }?.agent
+                ?: waitingThreads.maxByOrNull { it.updatedMs }?.agent
+                ?: waitingSessions.maxByOrNull { it.updatedMs }?.agent
+                ?: ""
+            return HomeLine.NeedsYou(asker, needs)
         }
-        val leadThread = (lead as? HomeLead.NeedsYou)?.let { it.thread?.id ?: it.ask?.thread }
-        val room = HOME_ROWS - if (lead != null) 1 else 0
-        val threads = state.threads
-            .filter { it.state == AgentThreadState.WORKING && it.id != leadThread }
-            .sortedByDescending { it.updatedMs }
-        val working: List<HomeWork> = if (threads.isNotEmpty()) {
-            threads.take(room).map { HomeWork.Thread(it) }
-        } else {
-            state.sessions
-                .filter { it.state == AgentSessionState.WORKING && (lead as? HomeLead.SessionNeedsYou)?.session?.id != it.id }
-                .sortedByDescending { it.updatedMs }
-                .take(room)
-                .map { HomeWork.Session(it) }
+        val working = state.threads.filter { it.state == AgentThreadState.WORKING }
+        if (working.isNotEmpty()) {
+            val one = working.maxBy { it.updatedMs }
+            return HomeLine.Working(one.agent, one.sinceMs?.takeIf { it > 0L }, working.size, sessions = false)
         }
-        if (lead != null || working.isNotEmpty()) return HomeSummary(lead = lead, working = working)
-        val canStart = state.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty()
-        if (!canStart) return null
-        val recent = state.threads.filterNot { running(it) }.maxByOrNull { it.updatedMs }
-        return HomeSummary(start = true, recent = recent)
+        val workingSessions = state.sessions.filter { it.state == AgentSessionState.WORKING }
+        if (workingSessions.isNotEmpty()) {
+            val one = workingSessions.maxBy { it.updatedMs }
+            return HomeLine.Working(one.agent, one.sinceMs?.takeIf { it > 0L }, workingSessions.size, sessions = true)
+        }
+        val last = state.threads.filterNot { running(it) }.maxByOrNull { it.updatedMs }
+        return if (last != null) HomeLine.Finished(last.title, status(last), last.updatedMs) else HomeLine.Start
+    }
+
+    /**
+     * The drawer's groups, in the list's order (requests first, then the newest):
+     * Needs you (a request waits), Working (no request), Recent (everything that
+     * stopped), and the sessions the PC lists.
+     */
+    fun drawerGroups(state: AgentsState): DrawerGroups {
+        val needsYou = ArrayList<AgentThread>()
+        val working = ArrayList<AgentThread>()
+        val recent = ArrayList<AgentThread>()
+        for (thread in state.threads) {
+            when {
+                thread.state == AgentThreadState.WAITING || thread.asks > 0u -> needsYou += thread
+                thread.state == AgentThreadState.WORKING -> working += thread
+                else -> recent += thread
+            }
+        }
+        val sessions = if (state.sessionsAllowed == true && !state.sessionsUnsupported) state.sessions else emptyList()
+        return DrawerGroups(needsYou, working, recent, sessions)
     }
 
     /** The thread list as the PC sent it. */
@@ -543,7 +540,18 @@ object AgentsModel {
         val pageIds = items.mapTo(HashSet()) { it.id }
         val newest = items.lastOrNull()?.seq ?: 0uL
         // Text still streaming past the page's end is an assistant message in progress: keep it.
-        val streaming = open.streaming.filter { (id, text) -> id !in pageIds && text.seq > newest }
+        val streaming = open.streaming.filter { (id, text) -> id !in pageIds && text.seq > newest }.toMutableMap()
+        // A thought still going on is in the page with its text so far, and its deltas carry on from there.
+        for (item in items) {
+            if (!thinking(item)) continue
+            val text = item.text.orEmpty().take(MAX_STREAM_CHARS)
+            val kept = open.streaming[item.id]
+            streaming[item.id] = if (kept != null && kept.text.length >= text.length) {
+                kept
+            } else {
+                StreamingText(item.seq, text, utf8Length(text), kind = AgentItemKind.REASONING)
+            }
+        }
         return next.copy(
             open = open.copy(
                 items = items,
@@ -581,22 +589,6 @@ object AgentsModel {
         } else {
             state.copy(answering = state.answering - token)
         }
-
-    /** What the thread's items, streaming text and answered requests show, in order. */
-    fun transcript(open: OpenThread): List<TranscriptEntry> {
-        val finishedIds = open.items.mapTo(HashSet()) { it.id }
-        val entries = ArrayList<Pair<Pair<ULong, Int>, TranscriptEntry>>(open.items.size + open.streaming.size + open.resolved.size)
-        for (item in open.items) entries += (item.seq to 0) to TranscriptEntry.Item(item)
-        for ((id, text) in open.streaming) {
-            if (id in finishedIds) continue
-            entries += (text.seq to 0) to TranscriptEntry.Streaming(id, text.seq, text.text, text.gap)
-        }
-        for (ask in open.resolved) entries += (ask.afterSeq to 1) to TranscriptEntry.Resolved(ask)
-        return entries
-            .sortedWith(compareBy<Pair<Pair<ULong, Int>, TranscriptEntry>> { it.first.first }.thenBy { it.first.second })
-            .map { it.second }
-            .distinctBy { it.key }
-    }
 
     /** The thread's state as words: usage limits read as Paused, other failures as Failed. */
     fun status(thread: AgentThread): ThreadStatus = when (thread.state) {
@@ -682,12 +674,26 @@ object AgentsModel {
         )
     }
 
-    private fun asked(state: AgentsState, token: String, threadId: String, outcome: AgentAskOutcome, byName: String? = null): AgentsState {
+    private fun asked(
+        state: AgentsState,
+        token: String,
+        threadId: String,
+        outcome: AgentAskOutcome,
+        byName: String? = null,
+    ): AgentsState {
         val ask = state.asks[token]
         val here = token in state.answering
         val open = state.open
         val nextOpen = if (open != null && open.threadId == threadId && ask != null) {
-            val resolved = ResolvedAsk(token, ask.title, outcome, here, open.lastSeq, byName?.takeIf { it.isNotBlank() })
+            val resolved = ResolvedAsk(
+                token = token,
+                title = ask.title,
+                outcome = outcome,
+                here = here,
+                afterSeq = open.lastSeq,
+                byName = byName?.takeIf { it.isNotBlank() },
+                itemId = ask.item?.takeIf { it.isNotBlank() },
+            )
             open.copy(resolved = (open.resolved.filterNot { it.token == token } + resolved).takeLast(MAX_RESOLVED))
         } else {
             open
@@ -708,8 +714,11 @@ object AgentsModel {
 
     private fun delta(state: AgentsState, event: Event.AgentDelta): AgentsUpdate {
         val open = state.open?.takeIf { it.threadId == event.thread } ?: return AgentsUpdate(state)
-        // Already finished: the delta is late.
-        if (open.items.any { it.id == event.itemId }) return AgentsUpdate(state)
+        // An answer's item comes when it's finished, so the delta is late; a thought's comes
+        // when it starts, and its text arrives until it ends.
+        val item = open.items.firstOrNull { it.id == event.itemId }
+        if (item != null && !thinking(item)) return AgentsUpdate(state)
+        val kind = if (item != null) AgentItemKind.REASONING else AgentItemKind.ASSISTANT
         val current = open.streaming[event.itemId]
         val bytes = utf8Length(event.text)
         val offset = event.offset.toLong()
@@ -720,10 +729,10 @@ object AgentsModel {
                 // A new message: a seq past the next one means items were missed.
                 if (open.loaded && event.seq > open.lastSeq + 1uL) reread = open.threadId
                 next = if (offset == 0L) {
-                    StreamingText(event.seq, event.text, bytes)
+                    StreamingText(event.seq, event.text, bytes, kind = kind)
                 } else {
                     // Joined part way (opened while it streamed): the finished item brings the rest.
-                    StreamingText(event.seq, "", 0, gap = true)
+                    StreamingText(event.seq, "", 0, gap = true, kind = kind)
                 }
             }
             current.gap -> return AgentsUpdate(state)
@@ -760,12 +769,89 @@ object AgentsModel {
             state.copy(
                 open = open.copy(
                     items = kept,
-                    streaming = open.streaming - item.id,
+                    // A thought that hasn't ended keeps the text that arrived for it.
+                    streaming = if (thinking(item)) open.streaming else open.streaming - item.id,
                     moreBefore = open.moreBefore || kept.size < items.size,
                 ),
             ),
             reread,
         )
+    }
+
+    /** A thought that hasn't ended: its text still arrives as deltas. */
+    private fun thinking(item: AgentItem): Boolean = item.kind == AgentItemKind.REASONING && item.endMs == null
+
+    // ---- The timeline's inputs (contract §P6.1) ----
+
+    /**
+     * What the open thread's rows are made from, or null before its first page:
+     * its items, the text still arriving, its state, the requests at their steps
+     * and the rows opened. Equal inputs make equal rows, so the rows are made
+     * again only when this changes (an item, a delta, the state, a request, a tap).
+     */
+    fun timelineInput(state: AgentsState, threadId: String, openKeys: Set<String>, held: (String) -> Boolean = { false }): TimelineInput? {
+        val open = state.open?.takeIf { it.threadId == threadId && it.loaded } ?: return null
+        val thread = state.thread(threadId) ?: return null
+        val streaming = open.streaming
+            .filter { (_, text) -> !text.gap || text.text.isNotEmpty() }
+            .map { (id, text) -> AgentStreaming(itemId = id, seq = text.seq, kind = text.kind, text = text.text) }
+            .sortedBy { it.seq }
+        return TimelineInput(
+            key = threadId,
+            items = open.items,
+            streaming = streaming,
+            state = thread.state,
+            stateSinceMs = thread.sinceMs ?: 0L,
+            marks = marks(state, threadId, held),
+            open = openKeys.sorted(),
+        )
+    }
+
+    /** A followed session's rows: its items as they are, no requests (they're answered on the PC). */
+    fun sessionTimelineInput(open: OpenSession, session: AgentSession, openKeys: Set<String>): TimelineInput? {
+        if (!open.loaded || open.sessionId != session.id) return null
+        val threadState = when (session.state) {
+            AgentSessionState.WORKING -> AgentThreadState.WORKING
+            AgentSessionState.NEEDS_YOU, AgentSessionState.MAY_NEED_YOU -> AgentThreadState.WAITING
+            AgentSessionState.IDLE, AgentSessionState.ENDED -> AgentThreadState.DONE
+        }
+        return TimelineInput(
+            key = "session:${session.id}",
+            items = open.items,
+            streaming = emptyList(),
+            state = threadState,
+            stateSinceMs = session.sinceMs ?: 0L,
+            marks = emptyList(),
+            open = openKeys.sorted(),
+        )
+    }
+
+    /**
+     * The requests of a thread at their steps: each waiting one ([AgentMarkKind.HELD]
+     * while the typing guard holds it), and those answered while it was open when
+     * the mark says something the step's own line doesn't (reconcile file, item 7):
+     * an answer from another device, one that expired or was cancelled. An answer
+     * given here shows only in the step's line; a step the PC's rule allowed
+     * (`AgentTool.byRule`) gets its "Allowed by your rule" mark from the FFI.
+     */
+    fun marks(state: AgentsState, threadId: String, held: (String) -> Boolean = { false }): List<AgentMark> {
+        val waiting = state.asksFor(threadId).map { ask ->
+            // item_id, kind, by (`by` is a soft keyword in Kotlin, so not named here).
+            AgentMark(ask.item.orEmpty(), if (held(ask.token)) AgentMarkKind.HELD else AgentMarkKind.WAITING, "")
+        }
+        val open = state.open?.takeIf { it.threadId == threadId } ?: return waiting
+        val answered = open.resolved.mapNotNull { ask ->
+            val kind = when (ask.outcome) {
+                AgentAskOutcome.ALLOWED -> if (ask.here) null else AgentMarkKind.ALLOWED
+                AgentAskOutcome.DENIED -> if (ask.here) null else AgentMarkKind.DENIED
+                AgentAskOutcome.EXPIRED -> AgentMarkKind.EXPIRED
+                AgentAskOutcome.CANCELLED -> AgentMarkKind.CANCELLED
+            } ?: return@mapNotNull null
+            AgentMark(ask.itemId.orEmpty(), kind, ask.byName.orEmpty())
+        }
+        // One mark per step: a request asked again after an answer shows as waiting.
+        val waitingAt = waiting.mapNotNullTo(HashSet()) { it.itemId.ifEmpty { null } }
+        return answered.filter { it.itemId.isEmpty() || it.itemId !in waitingAt } + waiting
     }
 
     /** A PC's device id is longer than the wire's ids (z-base-32 of 32 bytes). */

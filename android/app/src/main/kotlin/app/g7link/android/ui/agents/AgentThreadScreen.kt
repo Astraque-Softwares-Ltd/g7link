@@ -2,20 +2,16 @@
 package app.g7link.android.ui.agents
 
 import android.text.format.DateFormat
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.border
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,16 +20,15 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -46,25 +41,26 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -72,43 +68,38 @@ import androidx.lifecycle.repeatOnLifecycle
 import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
-import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
-import app.g7link.android.ui.theme.G7PrimaryButton
-import app.g7link.android.ui.theme.G7RaisedButton
-import app.g7link.android.ui.theme.G7Chevron
-import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.LocalAppFonts
-import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.g7Collapse
 import app.g7link.android.ui.theme.g7Expand
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.theme.mono
-import app.g7link.core.AgentAsk
 import app.g7link.core.AgentAskKind
-import app.g7link.core.AgentAskOutcome
-import app.g7link.core.AgentItem
-import app.g7link.core.AgentItemKind
+import app.g7link.core.AgentLink
 import app.g7link.core.AgentPlanStatus
 import app.g7link.core.AgentPlanStep
 import app.g7link.core.AgentThread
-import app.g7link.core.AgentThreadState
-import app.g7link.core.AgentTool
-import app.g7link.core.AgentToolStatus
 import java.util.Date
 import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** How far opening the thread got. */
 private enum class ThreadLoad { LOADING, READY, NOT_ALLOWED, UNAVAILABLE, UNREACHABLE, GONE, FAILED }
 
+/** The rows the user opened, kept across a rotation. */
+private val OPEN_KEYS = listSaver<Set<String>, String>(save = { it.toList() }, restore = { it.toSet() })
+
+/** Diff rows the request sheet shows; a longer change is reviewed full-screen. */
+private const val SHEET_DIFF_ROWS = 60
+
 /**
- * One thread on a PC: its transcript, the requests waiting for an answer
- * pinned above the reply box, and Stop while it works. Nothing is written to
- * disk; leaving drops the transcript.
+ * One thread on a PC (contract §P6, the phone board): its rows from the FFI,
+ * the request it waits on as a sheet over the reply box with Stop beside send,
+ * "Deny and send" when the box has words, the plan pinned above, and full-screen
+ * edits and output. Nothing is written to disk; leaving drops the transcript.
  */
 @Composable
 fun AgentThreadScreen(
@@ -124,8 +115,8 @@ fun AgentThreadScreen(
     val agents = all[device.id] ?: AgentsState()
     val thread = agents.thread(threadId)
     val open = agents.open?.takeIf { it.threadId == threadId }
-    val queue = remember(agents.asks, threadId) { agents.askQueue(threadId) }
     val hasCatalog = agents.catalog != null
+    val canSayWhy = agents.catalog?.canSayWhy == true
     var load by remember(threadId) { mutableStateOf(ThreadLoad.LOADING) }
     var attempt by remember(threadId) { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
@@ -161,17 +152,77 @@ fun AgentThreadScreen(
         }
     }
 
+    // ---- The typing guard (contract §P8.2): a request that comes while you type waits for a pause ----
+    val guard = remember(threadId) { FfiTypingGuard() }
+    DisposableEffect(guard) { onDispose { guard.close() } }
+    var guardTick by remember(threadId) { mutableIntStateOf(0) }
+    val pending = remember(agents.asks, threadId) { agents.asksFor(threadId).map { it.token } }
+    // Told before anything is drawn for them, so a new request is never shown unheld for a frame.
+    val requested = remember(guard, pending) {
+        guard.requests(pending, System.currentTimeMillis())
+        pending
+    }
+    val heldTokens = remember(guard, guardTick, requested) { requested.filterTo(HashSet()) { guard.held(it) } }
+    var idleAt by remember(threadId) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(guard, guardTick, requested) { idleAt = guard.idleAtMs() }
+    LaunchedEffect(guard, idleAt) {
+        val at = idleAt ?: return@LaunchedEffect
+        delay((at - System.currentTimeMillis()).coerceAtLeast(0L))
+        guard.idle()
+        guardTick++
+    }
+    val queue = remember(agents.asks, threadId, heldTokens) { agents.askQueue(threadId) { it in heldTokens } }
+
+    // ---- The rows (contract §P6.1): made off the main thread whenever their input changes ----
+    var openKeys by rememberSaveable(threadId, stateSaver = OPEN_KEYS) { mutableStateOf(emptySet<String>()) }
+    val ffiRows = remember(threadId) { FfiRows() }
+    DisposableEffect(ffiRows) { onDispose { ffiRows.close() } }
+    val feed = remember(ffiRows) { RowsFeed(threadId, ffiRows::make) }
+    LaunchedEffect(feed) { feed.start(this) }
+    val input = remember(agents, threadId, openKeys, heldTokens) { AgentsModel.timelineInput(agents, threadId, openKeys) { it in heldTokens } }
+    LaunchedEffect(feed, input) { input?.let(feed::submit) }
+    val made by feed.rows.collectAsStateWithLifecycle()
+    val rows = made?.takeIf { it.input.key == threadId }?.rows.orEmpty()
+    val itemsById = remember(open?.items) { open?.items.orEmpty().associateBy { it.id } }
+    val folder = thread?.folder.orEmpty()
+
     val agentName = thread?.let { agents.agentName(it.agent) }.orEmpty()
     val status = thread?.let { AgentsModel.status(it) }
     val running = thread != null && AgentsModel.running(thread)
     var stopping by remember(threadId) { mutableStateOf(false) }
     LaunchedEffect(running) { if (!running) stopping = false }
     var draft by rememberSaveable(threadId) { mutableStateOf("") }
+    var draftFor by rememberSaveable(threadId) { mutableStateOf<String?>(null) }
     var sending by remember(threadId) { mutableStateOf(false) }
     var loadingEarlier by remember(threadId) { mutableStateOf(false) }
     var sharing by remember(threadId) { mutableStateOf(false) }
+    var full by remember(threadId) { mutableStateOf<FullView?>(null) }
+    var link by remember(threadId) { mutableStateOf<PendingLink?>(null) }
+    var sheetCollapsed by remember(threadId) { mutableStateOf(false) }
+    LaunchedEffect(queue?.shown?.token) { sheetCollapsed = false }
     val retry: () -> Unit = { attempt++ }
 
+    val paused = status as? ThreadStatus.Paused
+    val pausedUntil = paused?.resetsMs?.takeIf { it > now }
+    val answeringShown = queue != null && queue.shown.token in agents.answering
+    val composer = AgentDock.composer(
+        ComposerInput(
+            running = running,
+            hasThread = thread != null,
+            queue = queue,
+            canSayWhy = canSayWhy,
+            draft = draft,
+            draftFor = draftFor,
+            answering = answeringShown,
+            sending = sending,
+            paused = paused != null,
+            pausedUntilMs = pausedUntil,
+            codex = thread?.agent == "codex",
+        ),
+    )
+
+    val copy = rememberCopy { core.say(resources.getString(R.string.agents_copied)) }
+    val guardChanged: () -> Unit = { guardTick++ }
     val stop: () -> Unit = {
         stopping = true
         scope.launch {
@@ -181,7 +232,8 @@ fun AgentThreadScreen(
             }
         }
     }
-    val answer: (AgentAsk, Boolean) -> Unit = { ask, allow ->
+    val answer: (Boolean) -> Unit = answer@{ allow ->
+        val ask = queue?.shown ?: return@answer
         scope.launch {
             val result = core.agentAnswer(device.id, ask.token, allow)
             if (result is AgentCall.Failed) {
@@ -191,31 +243,66 @@ fun AgentThreadScreen(
             }
         }
     }
-    val send: () -> Unit = {
+    val failedSay: (AgentFailure) -> String = { failure ->
+        when (failure) {
+            AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
+            AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
+            AgentFailure.NOT_FOUND -> resources.getString(R.string.agents_thread_gone)
+            AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> resources.getString(R.string.agents_unreachable_title, device.name)
+            // The PC's BUSY: it started working again (from the PC) before this reached it.
+            AgentFailure.OTHER -> if (running) {
+                resources.getString(R.string.agents_reply_when_stops, agentName)
+            } else {
+                resources.getString(R.string.agents_failed_generic)
+            }
+        }
+    }
+    val send: () -> Unit = send@{
+        if (!composer.actionEnabled || sending) return@send
         val text = draft.trim()
-        if (AgentsModel.fits(text) && !sending) {
-            sending = true
-            scope.launch {
-                when (val result = core.agentSend(device.id, threadId, text)) {
-                    is AgentCall.Ok -> draft = ""
+        val shown = queue?.shown
+        sending = true
+        scope.launch {
+            if (composer.action == ComposerAction.DENY_AND_SEND && shown != null) {
+                // The words go with a denial of the request they were typed under (contract §P8.3).
+                when (val result = core.agentAnswer(device.id, shown.token, false, text)) {
+                    is AgentCall.Ok -> {
+                        draft = ""
+                        draftFor = null
+                        guard.sent()
+                        guardChanged()
+                    }
                     is AgentCall.Failed -> core.say(
-                        when (result.failure) {
-                            AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
-                            AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
-                            AgentFailure.NOT_FOUND -> resources.getString(R.string.agents_thread_gone)
-                            AgentFailure.OFFLINE, AgentFailure.TIMEOUT -> resources.getString(R.string.agents_unreachable_title, device.name)
-                            // The PC's BUSY: it started working again (from the PC) before this reached it.
-                            AgentFailure.OTHER -> if (running) {
-                                resources.getString(R.string.agents_reply_when_stops, agentName)
-                            } else {
-                                resources.getString(R.string.agents_failed_generic)
-                            }
+                        if (result.failure == AgentFailure.NOT_FOUND) {
+                            resources.getString(R.string.agents_answered_elsewhere)
+                        } else {
+                            resources.getString(R.string.agents_failed_generic)
                         },
                     )
                 }
-                sending = false
+            } else {
+                when (val result = core.agentSend(device.id, threadId, text)) {
+                    is AgentCall.Ok -> {
+                        draft = ""
+                        draftFor = null
+                        guard.sent()
+                        guardChanged()
+                    }
+                    is AgentCall.Failed -> core.say(failedSay(result.failure))
+                }
             }
+            sending = false
         }
+    }
+    val typed: (String) -> Unit = { text ->
+        draft = text
+        draftFor = AgentDock.editedUnder(queue)
+        guard.typed(System.currentTimeMillis())
+        guardChanged()
+    }
+    val focused: (Boolean) -> Unit = { on ->
+        if (on) guard.focus() else guard.blur()
+        guardChanged()
     }
     val loadEarlier: () -> Unit = {
         val first = open?.items?.firstOrNull()?.seq
@@ -250,659 +337,378 @@ fun AgentThreadScreen(
             }
         }
     }
+    val actions = remember(copy) {
+        RowActions(
+            toggle = { key -> openKeys = if (key in openKeys) openKeys - key else openKeys + key },
+            link = { span, text ->
+                // A link whose text is its target opens at once; any other shows where it goes first.
+                val shown = span.style.link == AgentLink.SHOWN
+                if (shown) openLink(context, span.href)
+                if (!shown) link = PendingLink(span.href, text)
+            },
+            copy = copy,
+            output = { itemId -> full = FullView.Output(itemId) },
+            diff = { title, doc -> full = FullView.Diff(title, doc) },
+            mark = { sheetCollapsed = false },
+        )
+    }
 
     val listState = rememberLazyListState()
-    val reducedMotion = LocalReducedMotion.current
-    val entries = remember(open) { open?.let { AgentsModel.transcript(it) }.orEmpty() }
-    val earlier = open != null && open.moreBefore && open.items.isNotEmpty()
-    val scrollToSeq: (ULong) -> Unit = { seq ->
-        val index = entries.indexOfFirst { it.key == "seq:$seq" }
-        if (index >= 0) {
-            scope.launch {
-                val at = index + if (earlier) 1 else 0
-                if (reducedMotion) listState.scrollToItem(at) else listState.animateScrollToItem(at)
-            }
+    val drawer = rememberAgentsDrawer()
+    // A full-screen view closes with Back, and an edit request's when the request is no longer shown.
+    BackHandler(enabled = full != null) { full = null }
+    val fullEdit = full as? FullView.Edit
+    LaunchedEffect(fullEdit, queue?.shown?.token) {
+        if (fullEdit != null && queue?.shown?.token != fullEdit.token) full = null
+    }
+    when (val view = full) {
+        is FullView.Edit -> if (queue != null && queue.shown.token == view.token) {
+            EditFullScreen(
+                queue = queue,
+                agentName = agentName,
+                folder = folder,
+                answering = answeringShown,
+                onClose = { full = null },
+                onAnswer = { allow ->
+                    full = null
+                    answer(allow)
+                },
+            )
+            return
         }
+        is FullView.Output -> {
+            OutputFullScreen(item = itemsById[view.itemId], folder = folder, onClose = { full = null }, onCopy = copy)
+            return
+        }
+        is FullView.Diff -> {
+            DiffFullScreen(title = view.title, doc = view.doc, onClose = { full = null })
+            return
+        }
+        null -> Unit
     }
 
-    Column(modifier.fillMaxSize().imePadding()) {
-        G7Header(title = thread?.title.orEmpty(), onBack = onBack) {
-            if (running) {
-                G7RowAction(label = stringResource(R.string.agents_stop), enabled = !stopping, onClick = stop)
-            }
-            if (thread != null && load == ThreadLoad.READY) {
-                G7RowAction(label = stringResource(R.string.agents_share), enabled = !sharing, onClick = share)
-            }
-        }
-        if (thread != null && status != null) {
-            StatusLine(
-                status = status,
-                trailing = "$agentName · ${thread.folder}",
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-            )
-        }
-        val plan = thread?.plan
-        if (!plan.isNullOrEmpty() && load == ThreadLoad.READY) {
-            PlanCard(
-                plan = plan,
-                startOpen = queue == null,
-                key = threadId,
-                modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 6.dp),
-            )
-        }
-        when {
-            load == ThreadLoad.GONE || open?.removed == true -> AgentsEmptyState(title = stringResource(R.string.agents_thread_gone))
-            load == ThreadLoad.UNREACHABLE -> AgentsEmptyState(
-                title = stringResource(R.string.agents_unreachable_title, device.name),
-                body = stringResource(R.string.agents_unreachable_body),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            load == ThreadLoad.NOT_ALLOWED -> AgentsEmptyState(
-                title = stringResource(R.string.agents_access_title, device.name),
-                body = stringResource(R.string.agents_access_body),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            load == ThreadLoad.UNAVAILABLE -> AgentsEmptyState(
-                title = stringResource(R.string.agents_unavailable, device.name),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            load == ThreadLoad.FAILED -> AgentsEmptyState(
-                title = stringResource(R.string.agents_failed_generic),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            open == null || !open.loaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
-            }
-            open != null -> {
-                TranscriptList(
-                    entries = entries,
-                    earlier = earlier,
-                    loadingEarlier = loadingEarlier,
-                    onLoadEarlier = loadEarlier,
-                    listState = listState,
-                    modifier = Modifier.weight(1f),
-                )
-                if (thread != null && thread.state == AgentThreadState.WORKING && queue == null) {
-                    NowCard(
-                        step = thread.step,
-                        steps = remember(open, thread) { AgentsModel.steps(open, thread) },
-                        sinceMs = thread.sinceMs,
-                        running = remember(open.items) { AgentsModel.runningTool(open.items) },
-                        folder = thread.folder,
-                        onStep = scrollToSeq,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    )
-                }
-                if (thread != null && status != null) {
-                    EndNote(status, thread, agents, device.name)
-                }
-                if (queue != null) {
-                    AskCards(
-                        queue = queue,
-                        answering = agents.answering,
-                        agentName = agentName,
-                        folder = thread?.folder,
-                        pcName = device.name,
-                        now = now,
-                        onAnswer = answer,
-                    )
-                }
-                Composer(
-                    thread = thread,
-                    status = status,
-                    agentName = agentName,
-                    now = now,
-                    draft = draft,
-                    onDraft = { draft = it },
-                    sending = sending,
-                    onSend = send,
-                )
-            }
-        }
-    }
-}
-
-/**
- * A transcript, a thread's or a followed session's: items in order, an
- * Earlier row on top when there's more, following new items while the end is
- * in view.
- */
-@Composable
-internal fun TranscriptList(
-    entries: List<TranscriptEntry>,
-    earlier: Boolean,
-    loadingEarlier: Boolean,
-    onLoadEarlier: () -> Unit,
-    listState: LazyListState,
-    modifier: Modifier = Modifier,
-) {
-    // Follows new text while the end is in view; scrolling up stops that, scrolling back down resumes it.
-    var follow by remember { mutableStateOf(true) }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
-            .collect { scroll -> if (scroll.first) follow = !scroll.second }
-    }
-    val last = entries.lastOrNull()
-    val lastLength = (last as? TranscriptEntry.Streaming)?.text?.length ?: 0
-    LaunchedEffect(entries.size, last?.key, lastLength) {
-        if (follow && entries.isNotEmpty()) {
-            listState.scrollToItem(entries.size - 1 + if (earlier) 1 else 0)
-            listState.scrollBy(END_SCROLL)
-        }
-    }
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    AgentsDrawer(
+        device = device,
+        core = core,
+        control = drawer,
+        selected = DrawerSelection.Thread(threadId),
+        // Another thread or session replaces this one, as from its notification; Back still goes to the list.
+        onOpenThread = { id -> AgentsNavigation.open(context, device.id, threadId = id) },
+        onOpenSession = { id -> AgentsNavigation.open(context, device.id, sessionId = id) },
+        modifier = modifier,
     ) {
-        if (earlier) {
-            item(key = "earlier", contentType = "earlier") {
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    if (loadingEarlier) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        G7RowAction(label = stringResource(R.string.agents_load_earlier), onClick = onLoadEarlier)
+        Column(Modifier.fillMaxSize().imePadding()) {
+            ThreadHeader(
+                thread = thread,
+                status = status,
+                agentName = agentName,
+                onBack = onBack,
+                canShare = thread != null && load == ThreadLoad.READY && !sharing,
+                onShare = share,
+                drawer = drawer,
+            )
+            when {
+                load == ThreadLoad.GONE || open?.removed == true -> AgentsEmptyState(title = stringResource(R.string.agents_thread_gone))
+                load == ThreadLoad.UNREACHABLE -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_unreachable_title, device.name),
+                    body = stringResource(R.string.agents_unreachable_body),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                load == ThreadLoad.NOT_ALLOWED -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_access_title, device.name),
+                    body = stringResource(R.string.agents_access_body),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                load == ThreadLoad.UNAVAILABLE -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_unavailable, device.name),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                load == ThreadLoad.FAILED -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_failed_generic),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                // Loading: one line, no skeleton.
+                open == null || !open.loaded || made == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(stringResource(R.string.agents_loading), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                open != null -> BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                    // The request sheet rests at most at half the thread's height (reconcile file, the dock, item 4).
+                    val sheetMax = maxHeight / 2
+                    Column(Modifier.fillMaxSize()) {
+                        AgentRowsList(
+                            rows = rows,
+                            context = remember(itemsById, folder) { RowsContext(itemsById, folder) },
+                            actions = actions,
+                            earlier = open.moreBefore && open.items.isNotEmpty(),
+                            loadingEarlier = loadingEarlier,
+                            onLoadEarlier = loadEarlier,
+                            listState = listState,
+                            modifier = Modifier.weight(1f),
+                            footer = threadEnd(status, thread, agents, device.name),
+                        )
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
+                            val plan = thread?.plan
+                            if (!plan.isNullOrEmpty()) TasksLine(plan, key = threadId)
+                            if (queue != null) {
+                                RequestSheet(
+                                    queue = queue,
+                                    agentName = agentName,
+                                    folder = folder,
+                                    answering = answeringShown,
+                                    allowPrimary = composer.allowPrimary,
+                                    collapsed = sheetCollapsed,
+                                    onToggle = { sheetCollapsed = !sheetCollapsed },
+                                    maxHeight = sheetMax,
+                                    onAnswer = answer,
+                                    onReview = { full = FullView.Edit(queue.shown.token) },
+                                )
+                            }
+                            ReplyBox(
+                                view = composer,
+                                hint = composerHint(composer.hint, agentName, pausedUntil),
+                                draft = draft,
+                                onDraft = typed,
+                                onFocus = focused,
+                                sending = sending,
+                                stopping = stopping,
+                                onStop = stop,
+                                onSend = send,
+                                joined = queue != null,
+                                place = stringResource(R.string.agents_folder_on, folder, device.name),
+                            )
+                        }
                     }
                 }
             }
         }
-        items(entries, key = { it.key }, contentType = { contentTypeOf(it) }) { entry ->
-            Column(Modifier.fillMaxWidth()) {
-                when (entry) {
-                    is TranscriptEntry.Item -> ItemView(entry.item)
-                    is TranscriptEntry.Streaming -> AssistantText(entry.text, streaming = true)
-                    is TranscriptEntry.Resolved -> ResolvedRow(entry.ask)
-                }
-            }
-        }
+    }
+    link?.let { shown ->
+        LinkSheet(
+            link = shown,
+            onOpen = {
+                link = null
+                openLink(context, shown.href)
+            },
+            onDismiss = { link = null },
+        )
     }
 }
 
-private fun contentTypeOf(entry: TranscriptEntry): String = when (entry) {
-    is TranscriptEntry.Item -> "item_${entry.item.kind.name}"
-    // The same as the finished item that replaces it.
-    is TranscriptEntry.Streaming -> "item_${AgentItemKind.ASSISTANT.name}"
-    is TranscriptEntry.Resolved -> "resolved"
+/** What the reply box says while empty. */
+@Composable
+private fun composerHint(hint: ComposerHint, agentName: String, pausedUntil: Long?): String {
+    val context = LocalContext.current
+    return when (hint) {
+        ComposerHint.MESSAGE -> stringResource(R.string.agents_message_hint, agentName)
+        ComposerHint.REPLY_WHEN_STOPS -> stringResource(R.string.agents_reply_when_stops, agentName)
+        ComposerHint.SAY_WHY -> stringResource(R.string.agents_say_why_hint, agentName)
+        ComposerHint.AFTER_TIME -> stringResource(
+            R.string.agents_reply_after,
+            pausedUntil?.let { DateFormat.getTimeFormat(context).format(Date(it)) }.orEmpty(),
+        )
+        ComposerHint.AFTER_RESET -> stringResource(R.string.agents_reply_after_reset)
+    }
 }
 
+/**
+ * The header: Back, the title (two lines at most), its state in words with the
+ * agent and folder under it, the drawer of threads, and More (Share). Stop is
+ * in the reply box.
+ */
 @Composable
-internal fun ColumnScope.ItemView(item: AgentItem) {
+private fun ThreadHeader(
+    thread: AgentThread?,
+    status: ThreadStatus?,
+    agentName: String,
+    onBack: () -> Unit,
+    canShare: Boolean,
+    onShare: () -> Unit,
+    drawer: AgentsDrawerControl,
+) {
     val scheme = MaterialTheme.colorScheme
-    when (item.kind) {
-        AgentItemKind.USER -> Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 48.dp),
-            horizontalArrangement = Arrangement.End,
+    var menu by remember { mutableStateOf(false) }
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.Top,
         ) {
-            SelectionContainer {
+            G7IconButton(icon = G7Icons.back, contentDescription = stringResource(R.string.action_back), onClick = onBack)
+            Column(Modifier.weight(1f).padding(start = 4.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
-                    item.text.orEmpty(),
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(scheme.surfaceContainerHigh)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    thread?.title.orEmpty(),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                if (thread != null && status != null) ThreadMeta(status, agentName, thread.folder)
             }
-        }
-        AgentItemKind.ASSISTANT -> AssistantText(item.text.orEmpty(), streaming = false)
-        AgentItemKind.TOOL -> {
-            val tool = item.tool
-            if (tool != null) ToolRow(tool) else NoticeText(item.text.orEmpty())
-        }
-        AgentItemKind.NOTICE -> NoticeText(item.text.orEmpty())
-    }
-    if (item.truncated) {
-        Text(
-            stringResource(R.string.agents_truncated),
-            style = MaterialTheme.typography.labelSmall,
-            color = scheme.onSurfaceVariant,
-            modifier = Modifier.align(if (item.kind == AgentItemKind.USER) Alignment.End else Alignment.Start),
-        )
-    }
-}
-
-@Composable
-private fun AssistantText(text: String, streaming: Boolean) {
-    SelectionContainer {
-        Text(
-            // A caret while it's still coming.
-            if (streaming) "$text▍" else text,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
-
-@Composable
-private fun NoticeText(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-    )
-}
-
-/** A tool step: its state as a glyph, its title, and, opened, what it ran or changed and the end of its output. */
-@Composable
-private fun ToolRow(tool: AgentTool) {
-    val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    val detail = tool.detail?.takeIf { it.isNotBlank() }
-    val output = tool.output?.takeIf { it.isNotBlank() }
-    val hasMore = detail != null || output != null
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(enabled = hasMore, role = Role.Button) { expanded = !expanded }
-            .padding(horizontal = 4.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
-                when (tool.status) {
-                    AgentToolStatus.RUNNING -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = tints.blue)
-                    AgentToolStatus.OK -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(16.dp))
-                    AgentToolStatus.ERROR -> Icon(G7Icons.close, contentDescription = null, tint = tints.red, modifier = Modifier.size(16.dp))
-                    AgentToolStatus.DENIED -> Icon(G7Icons.close, contentDescription = null, tint = scheme.outline, modifier = Modifier.size(16.dp))
-                }
-            }
-            Column(Modifier.weight(1f)) {
-                Text(tool.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (detail != null && !expanded) {
-                    Text(
-                        detail.lineSequence().first(),
-                        style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
-                        color = scheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+            AgentsDrawerButton(drawer)
+            Box {
+                G7IconButton(
+                    icon = AgentGlyphs.more,
+                    contentDescription = stringResource(R.string.agents_more),
+                    onClick = { menu = true },
+                    enabled = canShare,
+                )
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.agents_share)) },
+                        onClick = {
+                            menu = false
+                            onShare()
+                        },
                     )
                 }
             }
-            val word = when (tool.status) {
-                AgentToolStatus.RUNNING -> stringResource(R.string.agents_step_running)
-                AgentToolStatus.DENIED -> stringResource(R.string.agents_step_denied)
-                AgentToolStatus.ERROR -> stringResource(R.string.agents_step_failed)
-                AgentToolStatus.OK -> null
-            }
-            if (word != null) {
-                Text(
-                    word,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (tool.status == AgentToolStatus.ERROR) scheme.error else scheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-            }
-            if (hasMore) {
-                Icon(
-                    if (expanded) G7Icons.chevronDown else G7Icons.chevronRight,
-                    contentDescription = null,
-                    tint = scheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
         }
-        if (expanded) {
-            if (detail != null) CodeBlock(detail, diff = tool.name in EDIT_TOOLS)
-            if (output != null) CodeBlock(output, diff = false)
-        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(scheme.outlineVariant))
     }
 }
 
-/** A request answered here or elsewhere, collapsed into the transcript. */
+/** "● Needs you · Claude · g7linux-phone": the state in its colour, then the agent and the folder's label. */
 @Composable
-private fun ResolvedRow(ask: ResolvedAsk) {
+private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
-    val word = when (ask.outcome) {
-        AgentAskOutcome.ALLOWED -> ask.byName?.let { stringResource(R.string.agents_answered_allowed_on, it) }
-            ?: stringResource(R.string.agents_answered_allowed)
-        AgentAskOutcome.DENIED -> ask.byName?.let { stringResource(R.string.agents_answered_denied_on, it) }
-            ?: stringResource(R.string.agents_answered_denied)
-        AgentAskOutcome.EXPIRED -> stringResource(R.string.agents_answered_expired)
-        AgentAskOutcome.CANCELLED -> stringResource(R.string.agents_answered_cancelled)
+    val (word, color) = when (status) {
+        ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting) to tints.amber
+        ThreadStatus.Working -> stringResource(R.string.agents_state_working) to scheme.onSurfaceVariant
+        ThreadStatus.Done -> stringResource(R.string.agents_state_done) to scheme.onSurfaceVariant
+        ThreadStatus.Stopped -> stringResource(R.string.agents_state_interrupted) to scheme.onSurfaceVariant
+        is ThreadStatus.Paused -> stringResource(R.string.agents_state_paused) to scheme.onSurfaceVariant
+        is ThreadStatus.Failed -> stringResource(R.string.agents_state_failed) to scheme.error
     }
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Icon(
-            if (ask.outcome == AgentAskOutcome.ALLOWED) G7Icons.check else G7Icons.close,
-            contentDescription = null,
-            tint = if (ask.outcome == AgentAskOutcome.ALLOWED) tints.teal else scheme.outline,
-            modifier = Modifier.size(16.dp),
-        )
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        G7StatusDot(statusDotColor(status))
+        Text(word, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = color, maxLines = 1)
         Text(
-            "$word · ${ask.title}",
-            style = MaterialTheme.typography.bodySmall,
+            listOf(agentName, folder).filter { it.isNotBlank() }.joinToString(" · ", prefix = "· "),
+            style = MaterialTheme.typography.labelMedium,
             color = scheme.onSurfaceVariant,
-            maxLines = 2,
+            maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
     }
 }
 
-/** Why a turn ended badly: the usage limit, or the CLI's own message (and the sign-in command when it's signed out). */
-@Composable
-private fun EndNote(status: ThreadStatus, thread: AgentThread, agents: AgentsState, pcName: String) {
-    val scheme = MaterialTheme.colorScheme
-    when (status) {
-        is ThreadStatus.Paused -> Text(
-            statusDetail(status).orEmpty(),
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-        is ThreadStatus.Failed -> Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            if (status.login) {
-                val hint = agents.catalog?.agents?.firstOrNull { it.id == thread.agent }?.loginHint?.takeIf { it.isNotBlank() }
-                    ?: if (thread.agent == "codex") "codex login" else "claude auth login"
-                Text(
-                    stringResource(R.string.agents_login_failed, agents.agentName(thread.agent), hint, pcName),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-            status.message?.let { CodeBlock(it, diff = false) }
-            Text(
-                stringResource(R.string.agents_failed_fix, pcName),
-                style = MaterialTheme.typography.bodySmall,
-                color = scheme.onSurfaceVariant,
-            )
-        }
-        else -> Unit
-    }
-}
-
 /**
- * What this thread waits on, above the reply box: one request at a time, the
- * oldest, with a quiet line saying how many more wait behind it. Answering it
- * shows the next.
+ * How the thread ended when it ended badly, after its rows: "Failed" and the
+ * CLI's own message as it is (with the sign-in command when it's signed out),
+ * or the usage limit and when it resets in amber.
  */
 @Composable
-private fun AskCards(
-    queue: AskQueue,
-    answering: Set<String>,
-    agentName: String,
-    folder: String?,
-    pcName: String,
-    now: Long,
-    onAnswer: (AgentAsk, Boolean) -> Unit,
-) {
-    val ask = queue.shown
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 460.dp)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // A new request is a new card: its own "read it all" before Allow.
-        key(ask.token) {
-            AskCard(
-                ask = ask,
-                answering = ask.token in answering,
-                agentName = agentName,
-                folder = folder,
-                pcName = pcName,
-                now = now,
-                onAnswer = { allow -> onAnswer(ask, allow) },
-            )
-        }
-        if (queue.more > 0) {
-            Text(
-                pluralStringResource(R.plurals.agents_more_waiting, queue.more, queue.more),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
-        }
-    }
-}
-
-/**
- * A request: what it is, the whole command or change (scrolling, never cut
- * short), the agent's own reason set apart as its words, where it runs, and
- * Deny then Allow. Allow waits until the command or change has been scrolled
- * to its end, and is never offered for one too long to show in full.
- */
-@Composable
-private fun AskCard(
-    ask: AgentAsk,
-    answering: Boolean,
-    agentName: String,
-    folder: String?,
-    pcName: String,
-    now: Long,
-    onAnswer: (Boolean) -> Unit,
-) {
+private fun threadEnd(status: ThreadStatus?, thread: AgentThread?, agents: AgentsState, pcName: String): (LazyListScope.() -> Unit)? {
+    if (thread == null) return null
+    val context = LocalContext.current
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
-    val body = remember(ask) { AgentsModel.askBody(ask) }
-    val scroll = rememberScrollState()
-    var seenAll by remember(ask.token) { mutableStateOf(body == null) }
-    LaunchedEffect(ask.token, body) {
-        if (body == null) return@LaunchedEffect
-        // Laid out (no longer MAX_VALUE) and at the end: everything has been on screen.
-        snapshotFlow { scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue }.first { it }
-        seenAll = true
-    }
-    val canAllow = seenAll && !ask.truncated
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(scheme.surfaceContainer)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Icon(
-                when (ask.kind) {
-                    AgentAskKind.COMMAND -> G7Icons.terminal
-                    AgentAskKind.EDIT -> G7Icons.edit
-                    AgentAskKind.OTHER -> G7Icons.help
-                },
-                contentDescription = null,
-                tint = tints.amber,
-                modifier = Modifier.size(20.dp),
-            )
-            Text(
-                stringResource(
-                    when (ask.kind) {
-                        AgentAskKind.COMMAND -> R.string.agents_ask_command
-                        AgentAskKind.EDIT -> R.string.agents_ask_edit
-                        AgentAskKind.OTHER -> R.string.agents_ask_other
-                    },
-                ),
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        if (ask.kind != AgentAskKind.COMMAND || body == null) {
-            Text(ask.title, style = MaterialTheme.typography.bodyMedium)
-        }
-        if (body != null) {
-            CodeBlock(
-                body,
-                diff = ask.kind == AgentAskKind.EDIT,
-                background = scheme.surface,
-                scroll = scroll,
-                modifier = Modifier.heightIn(max = 220.dp),
-            )
-        }
-        if (ask.truncated) {
-            Text(stringResource(R.string.agents_ask_truncated), style = MaterialTheme.typography.bodySmall, color = tints.amber)
-        }
-        val reason = ask.reason?.takeIf { it.isNotBlank() }
-        if (reason != null) {
-            // The agent's own words, set apart from G7's.
-            Row(Modifier.height(IntrinsicSize.Min)) {
-                Box(Modifier.width(2.dp).fillMaxHeight().background(scheme.outlineVariant))
-                Text(
-                    stringResource(R.string.agents_ask_says, agentName, reason),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = scheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
+    val fonts = LocalAppFonts.current
+    return when (status) {
+        is ThreadStatus.Failed -> {
+            val login = if (status.login) {
+                val hint = agents.catalog?.agents?.firstOrNull { it.id == thread.agent }?.loginHint?.takeIf { it.isNotBlank() }
+                    ?: if (thread.agent == "codex") "codex login" else "claude auth login"
+                stringResource(R.string.agents_login_failed, agents.agentName(thread.agent), hint, pcName)
+            } else {
+                null
             }
-        }
-        val asked = relativeTime(ask.expiresMs - APPROVAL_LIFETIME_MS, now)
-        Text(
-            listOfNotNull(
-                folder?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_ask_where, it, pcName) },
-                stringResource(R.string.agents_ask_when, asked),
-                stringResource(R.string.agents_ask_also_pc),
-            ).joinToString(" "),
-            style = MaterialTheme.typography.bodySmall,
-            color = scheme.onSurfaceVariant,
-        )
-        if (!seenAll && !ask.truncated) {
-            Text(stringResource(R.string.agents_ask_read_all), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            G7RaisedButton(
-                label = stringResource(R.string.agents_deny),
-                onClick = { onAnswer(false) },
-                enabled = !answering,
-                modifier = Modifier.weight(1f),
-            )
-            G7PrimaryButton(
-                label = stringResource(R.string.agents_allow),
-                onClick = { onAnswer(true) },
-                enabled = !answering && canAllow,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        if (answering) {
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            val word = stringResource(R.string.agents_state_failed)
+            val message = status.message
+            val style = MaterialTheme.typography.bodySmall.mono(fonts).copy(fontSize = 12.5.sp, lineHeight = 19.sp)
+            val loginStyle = MaterialTheme.typography.bodySmall
+            val end: LazyListScope.() -> Unit = {
+                item(key = "end", contentType = "end") {
+                    Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        EndLine(AgentGlyphs.warning, tints.red, word, scheme.error)
+                        if (message != null) Text(message, style = style, color = scheme.onSurfaceVariant, modifier = Modifier.padding(start = 42.dp))
+                        if (login != null) Text(login, style = loginStyle, modifier = Modifier.padding(start = 42.dp))
+                    }
+                }
             }
+            end
         }
-        Text(stringResource(R.string.agents_ask_deny_note), style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
+        is ThreadStatus.Paused -> {
+            val text = status.resetsMs?.let {
+                stringResource(R.string.agents_paused_resets, DateFormat.getTimeFormat(context).format(Date(it)))
+            } ?: stringResource(R.string.agents_usage_limit)
+            val end: LazyListScope.() -> Unit = {
+                item(key = "end", contentType = "end") {
+                    Box(Modifier.padding(top = 12.dp)) { EndLine(G7Icons.history, tints.amber, text, tints.amber) }
+                }
+            }
+            end
+        }
+        else -> null
     }
 }
 
-/** The reply box: off while the agent works (Stop is in the header) and while a usage limit hasn't reset. */
 @Composable
-private fun Composer(
-    thread: AgentThread?,
-    status: ThreadStatus?,
-    agentName: String,
-    now: Long,
-    draft: String,
-    onDraft: (String) -> Unit,
-    sending: Boolean,
-    onSend: () -> Unit,
-) {
-    val context = LocalContext.current
-    val running = thread != null && AgentsModel.running(thread)
-    val paused = status as? ThreadStatus.Paused
-    val pausedUntil = paused?.resetsMs?.takeIf { it > now }
-    val hint = when {
-        running -> stringResource(R.string.agents_reply_when_stops, agentName)
-        pausedUntil != null -> stringResource(R.string.agents_reply_after, DateFormat.getTimeFormat(context).format(Date(pausedUntil)))
-        paused != null -> stringResource(R.string.agents_reply_after_reset)
-        else -> stringResource(R.string.agents_message_hint, agentName)
-    }
-    val enabled = thread != null && !running && pausedUntil == null && !sending
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-        if (AgentsModel.tooLong(draft)) {
-            Text(
-                stringResource(R.string.agents_too_long),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-            )
-        }
-        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AgentTextField(
-                value = draft,
-                onValueChange = onDraft,
-                hint = hint,
-                enabled = enabled,
-                maxLines = 5,
-                modifier = Modifier.weight(1f),
-            )
-            if (sending) {
-                Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                }
-            } else {
-                G7IconButton(
-                    icon = G7Icons.arrowUp,
-                    contentDescription = stringResource(R.string.agents_send),
-                    onClick = onSend,
-                    enabled = enabled && AgentsModel.fits(draft),
-                    filled = true,
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
+private fun EndLine(icon: ImageVector, tint: Color, text: String, color: Color) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 34.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(18.dp))
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+            color = color,
+            modifier = Modifier.padding(start = 8.dp),
+        )
     }
 }
 
 /**
- * The agent's own plan for the turn, when it made one: how much is done, and
- * each step with a check when done, a dot for the one under way, a ring for
- * the rest. Opens and closes with a tap.
+ * The plan, pinned above the reply box (reconcile file, item 1): "Tasks 4/5 ·
+ * <the step under way>"; it opens upward into the checklist and never scrolls
+ * with the thread.
  */
 @Composable
-private fun PlanCard(plan: List<AgentPlanStep>, startOpen: Boolean, key: String, modifier: Modifier = Modifier) {
+private fun TasksLine(plan: List<AgentPlanStep>, key: String) {
     val scheme = MaterialTheme.colorScheme
-    var shown by rememberSaveable(key) { mutableStateOf(startOpen) }
+    var shown by rememberSaveable(key) { mutableStateOf(false) }
     val done = AgentsModel.planDone(plan)
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(scheme.surfaceContainer),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 44.dp)
-                .clickable(role = Role.Button) { shown = !shown }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Icon(G7Icons.clipboardList, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-            Text(stringResource(R.string.agents_step_plan), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(R.string.agents_step_plan_done, done, plan.size),
-                style = MaterialTheme.typography.labelMedium,
-                color = scheme.onSurfaceVariant,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
-            )
-            G7Chevron(shown)
-        }
+    val current = AgentsModel.planPosition(plan)?.let { plan.getOrNull(it - 1)?.text }.orEmpty()
+    Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
         AnimatedVisibility(visible = shown, enter = g7Expand(), exit = g7Collapse()) {
+            val line = scheme.outlineVariant
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 240.dp)
+                    .padding(start = 7.dp, bottom = 2.dp)
+                    .drawBehind { drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx()) }
                     .verticalScroll(rememberScrollState())
-                    .padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(start = 15.dp),
             ) {
                 for (step in plan) PlanStepRow(step)
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 38.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(role = Role.Button) { shown = !shown },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.width(14.dp), contentAlignment = Alignment.Center) {
+                Icon(if (shown) G7Icons.chevronDown else AgentGlyphs.chevronUp, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
+            }
+            Box(Modifier.width(4.dp))
+            Icon(G7Icons.clipboardList, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+            Text(
+                stringResource(R.string.agents_tasks, done, plan.size),
+                style = MaterialTheme.typography.bodyMedium,
+                color = scheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+            if (current.isNotBlank()) {
+                Text(" · ", style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant, maxLines = 1)
+                Text(current, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             }
         }
     }
@@ -912,191 +718,267 @@ private fun PlanCard(plan: List<AgentPlanStep>, startOpen: Boolean, key: String,
 private fun PlanStepRow(step: AgentPlanStep) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+    Row(Modifier.heightIn(min = 30.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
             when (step.status) {
-                AgentPlanStatus.COMPLETED -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(16.dp))
-                AgentPlanStatus.IN_PROGRESS -> Box(Modifier.size(10.dp).clip(CircleShape).background(tints.blue))
-                AgentPlanStatus.PENDING -> Box(Modifier.size(10.dp).border(1.5.dp, scheme.outline, CircleShape))
+                AgentPlanStatus.COMPLETED -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(14.dp))
+                AgentPlanStatus.IN_PROGRESS -> Box(Modifier.size(7.dp).clip(CircleShape).background(tints.blue))
+                AgentPlanStatus.PENDING -> Box(Modifier.size(6.dp).border(1.5.dp, scheme.outline, CircleShape))
             }
         }
         Text(
             step.text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (step.status == AgentPlanStatus.COMPLETED) scheme.onSurfaceVariant else scheme.onSurface,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (step.status == AgentPlanStatus.IN_PROGRESS) FontWeight.Medium else FontWeight.Normal),
+            color = if (step.status == AgentPlanStatus.IN_PROGRESS) scheme.onSurface else scheme.onSurfaceVariant,
         )
     }
 }
 
 /**
- * What a working thread does now, above the reply box: "Now: <step>" and how
- * long it has worked, the command or change still running, and, opened, its
- * last steps; a step scrolls the transcript to it.
+ * The request the thread waits on, as a sheet over the reply box (the phone
+ * board, 4C): who wants what and "1 of 2", the command with its folder or the
+ * change, the agent's reason as its own words, Deny and Allow. Allow waits until
+ * all of it has been on screen and isn't offered for one the PC cut. A held one
+ * shows with its buttons off. It never covers more than half the thread and
+ * doesn't block scrolling it; its handle folds it to its first line.
  */
 @Composable
-private fun NowCard(
-    step: String?,
-    steps: List<Step>,
-    sinceMs: Long?,
-    running: AgentItem?,
+private fun RequestSheet(
+    queue: AskQueue,
+    agentName: String,
     folder: String,
-    onStep: (ULong) -> Unit,
-    modifier: Modifier = Modifier,
+    answering: Boolean,
+    allowPrimary: Boolean,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    maxHeight: Dp,
+    onAnswer: (Boolean) -> Unit,
+    onReview: () -> Unit,
 ) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
-    var showSteps by rememberSaveable { mutableStateOf(false) }
-    val shownStep = step?.takeIf { it.isNotBlank() } ?: steps.lastOrNull()?.let { stepTitle(it) } ?: stringResource(R.string.agents_step_thinking)
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(scheme.surfaceContainer)
-            .clickable(enabled = steps.isNotEmpty(), role = Role.Button) { showSteps = !showSteps }
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            G7StatusDot(tints.blue)
-            Text(
-                stringResource(R.string.agents_step_now, shownStep),
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (sinceMs != null && sinceMs > 0L) {
-                ElapsedText(sinceMs, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
-            }
-            if (steps.isNotEmpty()) G7Chevron(showSteps)
-        }
-        val detail = running?.tool?.detail?.takeIf { it.isNotBlank() }
-        if (detail != null) {
-            Column(
-                modifier = Modifier
+    val fonts = LocalAppFonts.current
+    val ask = queue.shown
+    // A new request is a new sheet: its own "read it all" before Allow.
+    key(ask.token) {
+        val scroll = rememberScrollState()
+        val doc = rememberDiff(if (ask.kind == AgentAskKind.EDIT) ask.diff else null)
+        val body = remember(ask) { AgentsModel.askBody(ask) }
+        val fitsHere = ask.kind != AgentAskKind.EDIT || ask.diff.isNullOrBlank() || (doc != null && !doc.more && diffRows(doc) <= SHEET_DIFF_ROWS)
+        val ready = ask.kind != AgentAskKind.EDIT || ask.diff.isNullOrBlank() || doc != null
+        val seenHere = rememberSeenToEnd(ask.token, scroll, ready = ready && fitsHere)
+        val seenAll = body == null || (fitsHere && seenHere)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight)
+                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                .background(scheme.surfaceContainer)
+                .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(scheme.surface)
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                    .height(18.dp)
+                    .clickable(role = Role.Button, onClick = onToggle),
+                contentAlignment = Alignment.BottomCenter,
             ) {
-                if (folder.isNotBlank()) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Icon(G7Icons.folder, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
-                        Text(folder, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant, maxLines = 1)
-                    }
+                Box(Modifier.width(32.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(scheme.outline))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val (icon, title) = when (ask.kind) {
+                    AgentAskKind.COMMAND -> G7Icons.terminal to R.string.agents_dock_wants_command
+                    AgentAskKind.EDIT -> G7Icons.edit to R.string.agents_dock_wants_edit
+                    AgentAskKind.OTHER -> G7Icons.help to R.string.agents_dock_wants_other
                 }
+                Icon(icon, contentDescription = null, tint = tints.amber, modifier = Modifier.size(16.dp))
                 Text(
-                    detail,
-                    style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
-                    maxLines = 4,
+                    stringResource(title, agentName),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (queue.total > 1) {
+                    Text(
+                        stringResource(R.string.agents_dock_count, queue.position, queue.total),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = scheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+            if (!collapsed) {
+                Column(
+                    modifier = Modifier.weight(1f, fill = false).verticalScroll(scroll),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    when {
+                        ask.kind == AgentAskKind.EDIT && doc != null -> Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(scheme.surface)
+                                .clickable(role = Role.Button, onClick = onReview)
+                                .padding(vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                FolderLabel(listOfNotNull(folder.ifBlank { null }, ask.path?.takeIf { it.isNotBlank() }).joinToString(" · "), Modifier.weight(1f))
+                                Counts(doc.adds.toLong(), doc.dels.toLong())
+                            }
+                            DiffView(doc, wrap = true, maxRows = SHEET_DIFF_ROWS)
+                            if (!fitsHere) SmallTextButton(stringResource(R.string.agents_show_all), onClick = onReview)
+                        }
+                        body != null -> Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(scheme.surface)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            FolderLabel(folder)
+                            Text(body, style = MaterialTheme.typography.bodySmall.mono(fonts).copy(fontSize = 13.sp, lineHeight = 19.5.sp))
+                        }
+                        else -> Text(ask.title, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (ask.truncated) {
+                        Text(stringResource(R.string.agents_ask_truncated), style = MaterialTheme.typography.bodySmall, color = tints.amber)
+                    }
+                    ask.reason?.takeIf { it.isNotBlank() }?.let { AgentSays(agentName, it) }
+                }
+                AnswerButtons(
+                    queue = queue,
+                    answering = answering,
+                    seenAll = seenAll,
+                    allowPrimary = allowPrimary,
+                    onAnswer = onAnswer,
                 )
             }
         }
-        AnimatedVisibility(visible = showSteps, enter = g7Expand(), exit = g7Collapse()) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                for (each in steps) StepRow(each, onStep)
-            }
-        }
     }
 }
 
-/** One step of the timeline: its state, its title and when it ran. */
+/**
+ * The reply box: the text, Stop beside the button whenever a turn runs or waits
+ * (reconcile file, the dock, item 3), and the button: send, or "Deny and send"
+ * when it has words and a request is shown; under it, for Codex, that it stops
+ * and reads them next; and where it runs.
+ */
 @Composable
-private fun StepRow(step: Step, onStep: (ULong) -> Unit) {
+private fun ReplyBox(
+    view: ComposerView,
+    hint: String,
+    draft: String,
+    onDraft: (String) -> Unit,
+    onFocus: (Boolean) -> Unit,
+    sending: Boolean,
+    stopping: Boolean,
+    onStop: () -> Unit,
+    onSend: () -> Unit,
+    joined: Boolean,
+    place: String,
+) {
     val scheme = MaterialTheme.colorScheme
-    val tints = g7Tints()
-    val context = LocalContext.current
-    val seq = step.seq
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .then(if (seq != null) Modifier.clickable(role = Role.Button) { onStep(seq) } else Modifier)
-            .padding(horizontal = 4.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
-            when (step.status) {
-                AgentToolStatus.RUNNING -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = tints.blue)
-                AgentToolStatus.OK -> Icon(G7Icons.check, contentDescription = null, tint = tints.teal, modifier = Modifier.size(16.dp))
-                AgentToolStatus.ERROR -> Icon(G7Icons.close, contentDescription = null, tint = tints.red, modifier = Modifier.size(16.dp))
-                AgentToolStatus.DENIED -> Icon(G7Icons.close, contentDescription = null, tint = scheme.outline, modifier = Modifier.size(16.dp))
-            }
-        }
-        Text(
-            stepTitle(step),
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        if (step.whenMs > 0L) {
+    val shape = if (joined) RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp) else RoundedCornerShape(12.dp)
+    val divider = scheme.outlineVariant
+    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+        if (AgentsModel.tooLong(draft)) {
             Text(
-                remember(step.whenMs) { DateFormat.getTimeFormat(context).format(Date(step.whenMs)) },
-                style = MaterialTheme.typography.labelMedium,
-                color = scheme.onSurfaceVariant,
-                maxLines = 1,
+                stringResource(R.string.agents_too_long),
+                style = MaterialTheme.typography.bodySmall,
+                color = scheme.error,
+                modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
             )
         }
-    }
-}
-
-/** A step's title: the tool's own, or what the agent does between tools. */
-@Composable
-private fun stepTitle(step: Step): String = step.title?.takeIf { it.isNotBlank() } ?: when (step.kind) {
-    StepKind.WRITING -> stringResource(R.string.agents_step_writing)
-    StepKind.THINKING, StepKind.TOOL -> stringResource(R.string.agents_step_thinking)
-}
-
-/** Monospace text that wraps instead of hiding anything; a diff's added and removed lines in their colours. */
-@Composable
-internal fun CodeBlock(
-    text: String,
-    diff: Boolean,
-    modifier: Modifier = Modifier,
-    background: Color = MaterialTheme.colorScheme.surfaceContainer,
-    scroll: ScrollState? = null,
-) {
-    val tints = g7Tints()
-    val shown = remember(text, diff, tints) { if (diff) diffText(text, tints.green, tints.red) else AnnotatedString(text) }
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(background),
-    ) {
-        Text(
-            shown,
-            style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
-            color = MaterialTheme.colorScheme.onSurface,
-            softWrap = true,
-            modifier = Modifier
+        Column(
+            Modifier
                 .fillMaxWidth()
-                .then(if (scroll != null) Modifier.verticalScroll(scroll) else Modifier)
-                .padding(10.dp),
-        )
-    }
-}
-
-private fun diffText(text: String, added: Color, removed: Color): AnnotatedString = buildAnnotatedString {
-    text.lines().forEachIndexed { index, line ->
-        if (index > 0) append('\n')
-        when {
-            line.startsWith("+") && !line.startsWith("+++") -> withStyle(SpanStyle(color = added)) { append(line) }
-            line.startsWith("-") && !line.startsWith("---") -> withStyle(SpanStyle(color = removed)) { append(line) }
-            else -> append(line)
+                .clip(shape)
+                .background(scheme.surfaceContainer)
+                .then(if (joined) Modifier.drawBehind { drawLine(divider, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx()) } else Modifier)
+                .padding(end = 8.dp, bottom = 8.dp),
+        ) {
+            AgentTextField(
+                value = draft,
+                onValueChange = onDraft,
+                hint = hint,
+                enabled = view.enabled,
+                maxLines = 5,
+                background = Color.Transparent,
+                onFocus = onFocus,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            ) {
+                if (view.showStop) {
+                    ComposerPill(G7Icons.stop, stringResource(R.string.agents_stop), accent = false, enabled = !stopping, onClick = onStop)
+                }
+                if (sending) {
+                    Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                } else {
+                    when (view.action) {
+                        ComposerAction.NONE -> Unit
+                        ComposerAction.SEND -> G7IconButton(
+                            icon = G7Icons.send,
+                            contentDescription = stringResource(R.string.agents_send),
+                            onClick = onSend,
+                            enabled = view.actionEnabled,
+                            filled = true,
+                            tint = if (view.actionEnabled) scheme.primary else scheme.onSurfaceVariant,
+                        )
+                        ComposerAction.DENY_AND_SEND -> ComposerPill(
+                            G7Icons.send,
+                            stringResource(R.string.agents_deny_and_send),
+                            accent = true,
+                            enabled = view.actionEnabled,
+                            onClick = onSend,
+                        )
+                    }
+                }
+            }
         }
+        if (view.codexNote) {
+            Text(
+                stringResource(R.string.agents_codex_reads_next),
+                style = MaterialTheme.typography.bodySmall,
+                color = scheme.onSurfaceVariant,
+                textAlign = TextAlign.End,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp, end = 4.dp),
+            )
+        }
+        FolderLabel(place, Modifier.padding(start = 4.dp, top = 6.dp))
     }
 }
 
-/** Tools whose detail is a diff (contract §4.4 and §5.4). */
-private val EDIT_TOOLS = setOf("Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch")
-
-/** A request lasts two hours on the PC (contract §2.2), so it was asked this long before it expires. */
-private const val APPROVAL_LIFETIME_MS = 7_200_000L
-
-/** More than any item is tall: scrolls to the end of the last one. */
-private const val END_SCROLL = 100_000f
+/** A button of the reply box with its glyph and word: Stop, or "Deny and send" in the accent. */
+@Composable
+private fun ComposerPill(icon: ImageVector, label: String, accent: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val on = accent && enabled
+    val background = if (on) scheme.primary else scheme.surfaceContainerHigh
+    val content = when {
+        on -> scheme.onPrimary
+        enabled -> scheme.onSurface
+        else -> scheme.onSurfaceVariant
+    }
+    Row(
+        modifier = Modifier
+            .height(44.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(background)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(start = 12.dp, end = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(20.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge.copy(fontWeight = if (accent) FontWeight.SemiBold else FontWeight.Medium), color = content, maxLines = 1)
+    }
+}

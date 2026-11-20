@@ -165,15 +165,16 @@ class AgentsModelTest {
         assertNull(next.reread)
         assertEquals("Hello, wörld!", next.state.open!!.streaming["m3"]!!.text)
 
-        val entries = AgentsModel.transcript(next.state.open!!)
-        assertEquals(listOf("seq:1", "seq:2", "seq:3"), entries.map { it.key })
-        assertTrue(entries.last() is TranscriptEntry.Streaming)
+        // The timeline gets the text so far as an answer still arriving.
+        val arriving = AgentsModel.timelineInput(next.state, "t1", emptySet())!!.streaming.single()
+        assertEquals(Triple("m3", 3uL, "Hello, wörld!"), Triple(arriving.itemId, arriving.seq, arriving.text))
+        assertEquals(AgentItemKind.ASSISTANT, arriving.kind)
 
         val done = reduce(next.state, Event.AgentItemChanged(pc, "t1", item(3u, id = "m3", text = "Hello, wörld!"))).state
         assertTrue(done.open!!.streaming.isEmpty())
-        val finished = AgentsModel.transcript(done.open!!)
-        assertEquals(listOf("seq:1", "seq:2", "seq:3"), finished.map { it.key })
-        assertEquals("Hello, wörld!", (finished.last() as TranscriptEntry.Item).item.text)
+        assertEquals(listOf(1uL, 2uL, 3uL), done.open!!.items.map { it.seq })
+        assertEquals("Hello, wörld!", done.open!!.items.last().text)
+        assertTrue(AgentsModel.timelineInput(done, "t1", emptySet())!!.streaming.isEmpty())
 
         // A delta after the finished item changes nothing.
         val late = reduce(done, Event.AgentDelta(pc, "t1", "m3", 3u, 14u, "?"))
@@ -241,7 +242,7 @@ class AgentsModelTest {
     }
 
     @Test
-    fun `a request answered anywhere is removed and shown collapsed`() {
+    fun `a request answered anywhere is removed and kept for its mark`() {
         var state = opened()
         state = reduce(state, Event.AgentAsk(pc, ask("a1"))).state
         state = reduce(state, Event.AgentAsk(pc, ask("a2", expiresMs = 20_000L))).state
@@ -263,7 +264,7 @@ class AgentsModelTest {
         val elsewhere = state.open!!.resolved.last()
         assertFalse(elsewhere.here)
         assertEquals(AgentAskOutcome.DENIED, elsewhere.outcome)
-        assertEquals(listOf("seq:1", "seq:2", "ask:a1", "ask:a2"), AgentsModel.transcript(state.open!!).map { it.key })
+        assertEquals(listOf("a1", "a2"), state.open!!.resolved.map { it.token })
     }
 
     @Test
@@ -500,27 +501,13 @@ class AgentsModelTest {
     }
 
     @Test
-    fun `steps are the newest tools then what it does between them`() {
-        val items = (1..8).map { tool(it.toULong(), AgentToolStatus.OK, "Step $it") } + item(9u)
-        val open = AgentsModel.withPage(AgentsModel.opened(AgentsState(), "t1"), page(thread(), items)).open!!
-        val steps = AgentsModel.steps(open, thread())
-        // Six tools, oldest first, then Thinking: it works and no tool runs.
-        assertEquals(listOf("Step 3", "Step 4", "Step 5", "Step 6", "Step 7", "Step 8", null), steps.map { it.title })
-        assertEquals(StepKind.THINKING, steps.last().kind)
-        assertNull(steps.last().seq)
-
-        val running = AgentsModel.withPage(AgentsModel.opened(AgentsState(), "t1"), page(thread(), listOf(tool(1u, AgentToolStatus.RUNNING)))).open!!
-        val now = AgentsModel.steps(running, thread())
-        assertEquals(1, now.size)
-        assertEquals(AgentToolStatus.RUNNING, now.single().status)
-        assertEquals(1uL, AgentsModel.runningTool(running.items)?.seq)
-
-        // Text streaming in: Writing.
-        val streaming = reduce(opened(listOf(item(1u))), Event.AgentDelta(pc, "t1", "m2", 2u, 0u, "Hello")).state.open!!
-        assertEquals(StepKind.WRITING, AgentsModel.steps(streaming, thread()).last().kind)
-
-        // Not working: no step between tools.
-        assertTrue(AgentsModel.steps(open, thread(state = AgentThreadState.DONE)).none { it.seq == null })
+    fun `the tool still running is the last one that runs`() {
+        val running = AgentsModel.withPage(
+            AgentsModel.opened(AgentsState(), "t1"),
+            page(thread(), listOf(tool(1u, AgentToolStatus.OK), tool(2u, AgentToolStatus.RUNNING), item(3u))),
+        ).open!!
+        assertEquals(2uL, AgentsModel.runningTool(running.items)?.seq)
+        assertNull(AgentsModel.runningTool(listOf(tool(1u, AgentToolStatus.OK))))
     }
 
     @Test
@@ -549,48 +536,38 @@ class AgentsModelTest {
     }
 
     @Test
-    fun `home shows a request first, then a session that needs you, then what works, then start, then nothing`() {
+    fun `home's one line says a request first, then a session that needs you, then what works, then the last one, then start`() {
         val ready = AgentsState(catalog = catalog())
-        val working = thread("t2", AgentThreadState.WORKING, updatedMs = 5_000L)
+        val working = thread("t2", AgentThreadState.WORKING, updatedMs = 5_000L).copy(sinceMs = 4_000L)
         val waiting = thread("t1", AgentThreadState.WAITING, updatedMs = 2_000L)
 
-        // A request, with the thread working beside it.
+        // A request, with a thread working beside it: the request, and who asks.
         var state = AgentsModel.withThreads(ready, listOf(waiting, working))
         state = reduce(state, Event.AgentAsk(pc, ask())).state
-        var summary = AgentsModel.homeSummary(state)!!
-        val lead = summary.lead as HomeLead.NeedsYou
-        assertEquals("a1", lead.ask?.token)
-        assertEquals("t1", lead.thread?.id)
-        assertEquals(listOf("t2"), summary.working.map { (it as HomeWork.Thread).thread.id })
-        assertFalse(summary.start)
+        assertEquals(HomeLine.NeedsYou("claude", 1), AgentsModel.homeLine(state))
 
         // A session that needs you, as the agent reported, when no thread does.
         state = AgentsModel.withThreads(ready, listOf(working))
         state = AgentsModel.withSessions(state, listOf(session(idA, AgentSessionState.NEEDS_YOU)))
-        summary = AgentsModel.homeSummary(state)!!
-        assertEquals(idA, (summary.lead as HomeLead.SessionNeedsYou).session.id)
-        assertEquals(1, summary.working.size)
+        assertEquals(HomeLine.NeedsYou("claude", 1), AgentsModel.homeLine(state))
 
-        // Working only: up to two rows.
+        // Working: one says its agent and since when; more say how many.
+        assertEquals(HomeLine.Working("claude", 4_000L, 1, sessions = false), AgentsModel.homeLine(AgentsModel.withThreads(ready, listOf(working))))
         val three = listOf(working, thread("t3", updatedMs = 4_000L), thread("t4", updatedMs = 3_000L))
-        summary = AgentsModel.homeSummary(AgentsModel.withThreads(ready, three))!!
-        assertNull(summary.lead)
-        assertEquals(listOf("t2", "t3"), summary.working.map { (it as HomeWork.Thread).thread.id })
+        assertEquals(3, (AgentsModel.homeLine(AgentsModel.withThreads(ready, three)) as HomeLine.Working).count)
 
         // A session at work, when no thread works.
-        summary = AgentsModel.homeSummary(AgentsModel.withSessions(ready, listOf(session(idB, AgentSessionState.WORKING))))!!
-        assertEquals(idB, (summary.working.single() as HomeWork.Session).session.id)
+        val sessions = AgentsModel.homeLine(AgentsModel.withSessions(ready, listOf(session(idB, AgentSessionState.WORKING))))
+        assertEquals(HomeLine.Working("claude", null, 1, sessions = true), sessions)
 
-        // Nothing needs you or works: start, with the last thread that ran.
+        // Nothing needs you or works: the thread that ran last, and how it ended.
         val done = thread("t5", AgentThreadState.DONE, updatedMs = 9_000L)
-        summary = AgentsModel.homeSummary(AgentsModel.withThreads(ready, listOf(done)))!!
-        assertTrue(summary.start)
-        assertEquals("t5", summary.recent?.id)
+        val failed = thread("t6", AgentThreadState.FAILED, updatedMs = 1_000L, error = "boom")
+        assertEquals(HomeLine.Finished("Fix the test", ThreadStatus.Done, 9_000L), AgentsModel.homeLine(AgentsModel.withThreads(ready, listOf(failed, done))))
 
-        // Nothing can start (no folder, or no agent signed in), or no catalog: the plain row.
-        val noFolders = AgentsState(catalog = catalog().copy(folders = emptyList()))
-        assertNull(AgentsModel.homeSummary(noFolders))
-        assertNull(AgentsModel.homeSummary(AgentsState()))
+        // Nothing at all yet.
+        assertEquals(HomeLine.Start, AgentsModel.homeLine(ready))
+        assertEquals(HomeLine.Start, AgentsModel.homeLine(AgentsState()))
     }
 
     @Test
@@ -604,46 +581,46 @@ class AgentsModelTest {
         assertEquals("a1", queue.shown.token)
         assertEquals("pnpm exec tsc --noEmit", queue.shown.command)
         assertEquals(2, queue.more)
+        // "1 of 3".
+        assertEquals(1 to 3, queue.position to queue.total)
+        assertFalse(queue.held)
 
         // Answering it shows the next.
         state = reduce(state, Event.AgentAsked(pc, "a1", "t1", AgentAskOutcome.DENIED)).state
         queue = state.askQueue("t1")!!
         assertEquals("a2", queue.shown.token)
         assertEquals(1, queue.more)
+        assertEquals(1 to 2, queue.position to queue.total)
         assertNull(state.askQueue("other"))
     }
 
     @Test
-    fun `home says how many more requests wait behind the one it shows`() {
+    fun `home counts every request waiting, the threads' own counts when the phone hasn't heard of them all`() {
         val ready = AgentsState(catalog = catalog())
         var state = AgentsModel.withThreads(
             ready,
             listOf(thread("t1", AgentThreadState.WAITING, asks = 2u), thread("t2", AgentThreadState.WAITING, asks = 1u)),
         )
-        // The phone hasn't heard of the requests yet: the threads' own counts.
-        var lead = AgentsModel.homeSummary(state)!!.lead as HomeLead.NeedsYou
-        assertNull(lead.ask)
-        assertEquals(2, lead.more)
+        assertEquals(3, (AgentsModel.homeLine(state) as HomeLine.NeedsYou).count)
 
         state = reduce(state, Event.AgentAsk(pc, ask("a1", threadId = "t1", expiresMs = 10_000L))).state
-        lead = AgentsModel.homeSummary(state)!!.lead as HomeLead.NeedsYou
-        assertEquals("a1", lead.ask?.token)
-        assertEquals(2, lead.more)
+        assertEquals(HomeLine.NeedsYou("claude", 3), AgentsModel.homeLine(state))
 
-        // One waiting request alone: nothing more to say.
+        // A session waiting on the PC counts too.
+        state = AgentsModel.withSessions(state, listOf(session(idA, AgentSessionState.NEEDS_YOU)))
+        assertEquals(4, (AgentsModel.homeLine(state) as HomeLine.NeedsYou).count)
+
+        // One waiting request alone.
         state = AgentsModel.withThreads(ready, listOf(thread("t1", AgentThreadState.WAITING, asks = 1u)))
         state = reduce(state, Event.AgentAsk(pc, ask("a1", threadId = "t1"))).state
-        assertEquals(0, (AgentsModel.homeSummary(state)!!.lead as HomeLead.NeedsYou).more)
+        assertEquals(1, (AgentsModel.homeLine(state) as HomeLine.NeedsYou).count)
     }
 
     @Test
-    fun `a guessed needs-you is never the summary`() {
+    fun `a guessed needs-you is never home's line`() {
         val ready = AgentsState(catalog = catalog())
         for (guessed in listOf(session(idA, AgentSessionState.NEEDS_YOU, guess = true), session(idA, AgentSessionState.MAY_NEED_YOU))) {
-            val summary = AgentsModel.homeSummary(AgentsModel.withSessions(ready, listOf(guessed)))!!
-            assertNull(summary.lead)
-            assertTrue(summary.working.isEmpty())
-            assertTrue(summary.start)
+            assertEquals(HomeLine.Start, AgentsModel.homeLine(AgentsModel.withSessions(ready, listOf(guessed))))
         }
     }
 }

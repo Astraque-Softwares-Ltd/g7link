@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
@@ -60,6 +61,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
+import app.g7link.android.ui.Preferences
 import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
@@ -159,67 +161,79 @@ fun AgentsScreen(
 
     val canStart = catalog != null && agents.readyAgents.isNotEmpty() && catalog.folders.isNotEmpty()
     val retry: () -> Unit = { attempt++ }
-    Column(modifier.fillMaxSize()) {
-        G7Header(
-            title = stringResource(R.string.agents_title),
-            onBack = onBack,
-            note = device.name,
-            noteColor = if (device.online) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
-        ) {
-            if (load == ListLoad.READY && canStart) {
-                G7RowAction(
-                    label = stringResource(R.string.agents_new_thread),
-                    accent = true,
-                    onClick = { newThread = true },
+    val drawer = rememberAgentsDrawer()
+    AgentsDrawer(
+        device = device,
+        core = core,
+        control = drawer,
+        selected = null,
+        onOpenThread = onOpenThread,
+        onOpenSession = onOpenSession,
+        modifier = modifier,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            G7Header(
+                title = stringResource(R.string.agents_title),
+                onBack = onBack,
+                note = device.name,
+                noteColor = if (device.online) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            ) {
+                AgentsDrawerButton(drawer)
+                if (load == ListLoad.READY && canStart) {
+                    G7RowAction(
+                        label = stringResource(R.string.agents_new_thread),
+                        accent = true,
+                        onClick = { newThread = true },
+                    )
+                }
+            }
+            when (load) {
+                ListLoad.LOADING -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+                }
+                ListLoad.UNREACHABLE -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_unreachable_title, device.name),
+                    body = stringResource(R.string.agents_unreachable_body),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
                 )
-            }
-        }
-        when (load) {
-            ListLoad.LOADING -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
-            }
-            ListLoad.UNREACHABLE -> AgentsEmptyState(
-                title = stringResource(R.string.agents_unreachable_title, device.name),
-                body = stringResource(R.string.agents_unreachable_body),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            ListLoad.NOT_ALLOWED -> AgentsEmptyState(
-                title = stringResource(R.string.agents_access_title, device.name),
-                body = stringResource(R.string.agents_access_body),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            ListLoad.UNAVAILABLE -> AgentsEmptyState(
-                title = stringResource(R.string.agents_unavailable, device.name),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            ListLoad.FAILED -> AgentsEmptyState(
-                title = stringResource(R.string.agents_failed_generic),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            ListLoad.READY -> if (catalog == null) {
-                AgentsEmptyState(
+                ListLoad.NOT_ALLOWED -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_access_title, device.name),
+                    body = stringResource(R.string.agents_access_body),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                ListLoad.UNAVAILABLE -> AgentsEmptyState(
                     title = stringResource(R.string.agents_unavailable, device.name),
                     action = stringResource(R.string.agents_try_again),
                     onAction = retry,
                 )
-            } else {
-                ThreadList(
-                    pcName = device.name,
-                    agents = agents,
-                    catalog = catalog,
-                    filter = filter,
-                    onFilter = { filter = it },
-                    canStart = canStart,
-                    onNewThread = { newThread = true },
-                    onOpenThread = onOpenThread,
-                    onOpenSession = onOpenSession,
-                    askedSessions = askedSessions,
-                    onAskSessions = { askedSessions = true },
+                ListLoad.FAILED -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_failed_generic),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
                 )
+                ListLoad.READY -> if (catalog == null) {
+                    AgentsEmptyState(
+                        title = stringResource(R.string.agents_unavailable, device.name),
+                        action = stringResource(R.string.agents_try_again),
+                        onAction = retry,
+                    )
+                } else {
+                    ThreadList(
+                        pcName = device.name,
+                        agents = agents,
+                        catalog = catalog,
+                        filter = filter,
+                        onFilter = { filter = it },
+                        canStart = canStart,
+                        onNewThread = { newThread = true },
+                        onOpenThread = onOpenThread,
+                        onOpenSession = onOpenSession,
+                        askedSessions = askedSessions,
+                        onAskSessions = { askedSessions = true },
+                    )
+                }
             }
         }
     }
@@ -591,7 +605,7 @@ private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, no
 /** The new-thread sheet: the task, the agent (when there's a choice), the folder. Always asks before each change. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NewThreadSheet(
+internal fun NewThreadSheet(
     device: Device,
     core: Core,
     catalog: AgentCatalog,
@@ -600,10 +614,15 @@ private fun NewThreadSheet(
     onDismiss: () -> Unit,
 ) {
     val resources = LocalResources.current
+    val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val ready = catalog.agents.filter { it.installed && it.signedIn }
-    var agentId by rememberSaveable { mutableStateOf(ready.firstOrNull()?.id) }
-    var folderId by rememberSaveable { mutableStateOf(catalog.folders.firstOrNull()?.id) }
+    // The agent and folder picked last time on this PC, while they can still be picked.
+    val saved = remember(device.id) { Preferences.agentChoice(context, device.id) }
+    var agentId by rememberSaveable { mutableStateOf(saved.first?.takeIf { id -> ready.any { it.id == id } } ?: ready.firstOrNull()?.id) }
+    var folderId by rememberSaveable {
+        mutableStateOf(saved.second?.takeIf { id -> catalog.folders.any { it.id == id } } ?: catalog.folders.firstOrNull()?.id)
+    }
     var prompt by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -619,7 +638,10 @@ private fun NewThreadSheet(
         error = null
         scope.launch {
             when (val result = core.agentStart(device.id, agent.id, folder.id, prompt.trim())) {
-                is AgentCall.Ok -> onStarted(result.value.id)
+                is AgentCall.Ok -> {
+                    Preferences.setAgentChoice(context, device.id, agent.id, folder.id)
+                    onStarted(result.value.id)
+                }
                 is AgentCall.Failed -> error = when (result.failure) {
                     AgentFailure.DENIED -> resources.getString(R.string.agents_access_title, device.name)
                     AgentFailure.UNSUPPORTED -> resources.getString(R.string.agents_unavailable, device.name)
@@ -810,7 +832,7 @@ internal fun statusDetail(status: ThreadStatus): String? {
     }
 }
 
-/** The text box for a task or a reply. */
+/** The text box for a task or a reply; [onFocus] hears it gain and lose focus (the typing guard). */
 @Composable
 internal fun AgentTextField(
     value: String,
@@ -821,6 +843,7 @@ internal fun AgentTextField(
     minLines: Int = 1,
     maxLines: Int = 6,
     background: Color = MaterialTheme.colorScheme.surfaceContainer,
+    onFocus: ((Boolean) -> Unit)? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
     Box(
@@ -843,6 +866,7 @@ internal fun AgentTextField(
             maxLines = maxLines,
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (onFocus != null) Modifier.onFocusChanged { state -> onFocus(state.isFocused) } else Modifier)
                 .semantics { contentDescription = hint },
         )
     }

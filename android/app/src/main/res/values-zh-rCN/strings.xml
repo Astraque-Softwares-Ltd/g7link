@@ -1269,7 +1269,6 @@
     <string name="agents_state_paused">已暂停</string>
     <string name="agents_usage_limit">已达到用量上限。</string>
     <string name="agents_usage_resets">已达到用量上限。将在 %1$s 重置。</string>
-    <string name="agents_failed_fix">请在 %1$s 上解决，然后回复以重试。</string>
     <string name="agents_login_failed">%1$s 未登录。请在 %3$s 上运行 %2$s。</string>
     <string name="agents_message_hint">给 %1$s 发消息</string>
     <string name="agents_reply_when_stops">%1$s 停止后你才能回复。</string>
@@ -1284,18 +1283,8 @@
     <string name="agents_allow">允许</string>
     <string name="agents_deny">拒绝</string>
     <string name="agents_review">查看</string>
-    <string name="agents_ask_command">运行这个命令？</string>
-    <string name="agents_ask_edit">进行这项修改？</string>
-    <string name="agents_ask_other">允许这个操作？</string>
-    <string name="agents_ask_where">位于 %2$s 上的 %1$s。</string>
     <string name="agents_ask_when">%1$s询问。</string>
-    <string name="agents_ask_also_pc">你也可以在电脑上回答。</string>
     <string name="agents_ask_says">%1$s 说：%2$s</string>
-    <string name="agents_ask_read_all">看完整个请求后才能允许。</string>
-    <string name="agents_ask_deny_note">如果你拒绝，智能体会换一种方式继续。</string>
-    <plurals name="agents_more_waiting">
-        <item quantity="other">还有 %1$d 个请求在等待</item>
-    </plurals>
     <string name="agents_ask_truncated">内容太长，无法完整显示。请在电脑上查看其余部分。</string>
     <string name="agents_truncated">已缩短</string>
     <string name="agents_answered_elsewhere">已被回答</string>
@@ -1303,12 +1292,9 @@
     <string name="agents_answered_denied">已拒绝</string>
     <string name="agents_answered_allowed_on">已在 %1$s 上允许</string>
     <string name="agents_answered_denied_on">已在 %1$s 上拒绝</string>
-    <string name="agents_answered_expired">未及时回答</string>
-    <string name="agents_answered_cancelled">已不再需要</string>
     <string name="agents_failed_generic">无法连接你的电脑</string>
     <string name="agents_step_running">运行中</string>
     <string name="agents_step_denied">已拒绝</string>
-    <string name="agents_step_failed">失败</string>
     <string name="agents_load_earlier">更早</string>
     <string name="agents_thread_gone">这个会话已在电脑上删除。</string>
     <string name="channel_agents_working">工作中的智能体</string>
@@ -1325,21 +1311,13 @@
     <string name="agents_notify_reply_failed">无法发送你的消息。打开 G7 Link 重试。</string>
     <!-- Agents 0.1.14: Home, what a thread does now, sessions started on the PC. -->
     <string name="agents_home_title">%1$s 上的智能体</string>
-    <string name="agents_home_all">所有会话</string>
     <string name="agents_home_needs_you">%1$s 需要你</string>
-    <string name="agents_home_asked">%1$s询问</string>
-    <string name="agents_home_edit">编辑 %1$s</string>
-    <string name="agents_home_prompt_hint">要让 %1$s 在 %2$s 上做什么？</string>
-    <string name="agents_home_recent">%1$s · %2$s</string>
     <string name="agents_home_asks_first">它会在修改文件或运行可能改变内容的命令前先询问。</string>
     <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s 正在 %2$s 上工作</string>
     <string name="agents_step_now">现在：%1$s</string>
     <string name="agents_step_of">第 %1$d 步，共 %2$d 步</string>
-    <string name="agents_step_writing">正在撰写</string>
     <string name="agents_step_thinking">正在思考</string>
-    <string name="agents_step_plan">计划</string>
-    <string name="agents_step_plan_done">已完成 %1$d/%2$d</string>
     <string name="agents_session_section">在 %1$s 上启动</string>
     <string name="agents_session_off_body">你在 %1$s 上的终端或 Claude 应用中启动的 Claude 和 Codex 会话也可以显示在这里。</string>
     <string name="agents_session_ask">在 %1$s 上请求</string>
@@ -1380,5 +1358,150 @@
     <plurals name="agents_step_working_for_hours">
         <item quantity="one">已工作 %1$d 小时</item>
         <item quantity="other">已工作 %1$d 小时</item>
+    </plurals>
+    <!-- Agents: a thread's rows, the request sheet and the reply box (phase 1) -->
+    <string name="agents_drawer_show">显示会话</string>
+    <string name="agents_live_starting">正在开始…</string>
+    <string name="agents_tool_running">正在运行 %1$s</string>
+    <string name="agents_tool_ran">已运行 %1$s</string>
+    <string name="agents_tool_failed">失败：%1$s</string>
+    <string name="agents_tool_denied">已拒绝：%1$s</string>
+    <string name="agents_tool_stopped">已停止：%1$s</string>
+    <string name="agents_tool_editing">正在编辑 %1$s</string>
+    <string name="agents_tool_edited">已编辑 %1$s</string>
+    <string name="agents_tool_edit_failed">无法编辑 %1$s</string>
+    <string name="agents_tool_edit_denied">已拒绝：编辑 %1$s</string>
+    <string name="agents_tool_edit_stopped">已停止：编辑 %1$s</string>
+    <string name="agents_tool_reading">正在读取 %1$s</string>
+    <string name="agents_tool_read">已读取 %1$s</string>
+    <string name="agents_tool_read_failed">无法读取 %1$s</string>
+    <string name="agents_tool_read_stopped">已停止：读取 %1$s</string>
+    <string name="agents_tool_searching">正在搜索 %1$s</string>
+    <string name="agents_tool_searched">已搜索 %1$s</string>
+    <string name="agents_tool_search_failed">搜索失败：%1$s</string>
+    <string name="agents_tool_search_stopped">已停止：搜索 %1$s</string>
+    <string name="agents_tool_web_searching">正在网上搜索：%1$s</string>
+    <string name="agents_tool_web_searched">已在网上搜索：%1$s</string>
+    <string name="agents_tool_web_failed">网上搜索失败：%1$s</string>
+    <string name="agents_tool_wants_run">想要运行 %1$s</string>
+    <string name="agents_tool_wants_edit">想要编辑 %1$s</string>
+    <string name="agents_tool_wants_read">想要读取 %1$s</string>
+    <string name="agents_tool_wants_use">想要使用 %1$s</string>
+    <string name="agents_summary_two">%1$s，%2$s</string>
+    <string name="agents_thought">已思考</string>
+    <string name="agents_worked">工作了 %1$s</string>
+    <string name="agents_dur_seconds">%1$d 秒</string>
+    <string name="agents_dur_minutes">%1$d 分 %2$02d 秒</string>
+    <string name="agents_dur_hours">%1$d 小时 %2$02d 分</string>
+    <string name="agents_edit_of">第 %1$d 处修改，共 %2$d 处</string>
+    <string name="agents_mark_waiting">正在等你</string>
+    <string name="agents_mark_rule">已按你为此会话设置的规则允许</string>
+    <string name="agents_mark_expired">已过期</string>
+    <string name="agents_mark_cancelled">已取消</string>
+    <string name="agents_dock_count">%1$d / %2$d</string>
+    <string name="agents_held">在你输入时收到</string>
+    <string name="agents_say_why_hint">说明原因，即可拒绝并告诉 %1$s 改做什么</string>
+    <string name="agents_deny_and_send">拒绝并发送</string>
+    <string name="agents_codex_reads_next">Codex 会停下，然后读这段话。</string>
+    <string name="agents_you_denied_said">你拒绝了，并说</string>
+    <string name="agents_link_title">打开这个链接？</string>
+    <string name="agents_link_shown_as">显示为“%1$s”。</string>
+    <string name="agents_link_open">打开</string>
+    <string name="agents_copy">复制</string>
+    <string name="agents_copied">已复制</string>
+    <string name="agents_wrap">自动换行</string>
+    <string name="agents_scroll_to_allow">滚动到末尾才能允许</string>
+    <string name="agents_loading">正在加载…</string>
+    <string name="agents_paused_resets">已达到用量上限 · %1$s 重置</string>
+    <string name="agents_cut_short">这条消息被截断了。</string>
+    <string name="agents_output_last_lines">显示最后几行</string>
+    <string name="agents_output_title">输出</string>
+    <string name="agents_tasks">任务 %1$d/%2$d</string>
+    <string name="agents_dock_wants_command">%1$s 想要运行一个命令</string>
+    <string name="agents_dock_wants_edit">%1$s 想要编辑一个文件</string>
+    <string name="agents_dock_wants_other">%1$s 想要使用一个工具</string>
+    <string name="agents_diff_end">修改到此结束</string>
+    <string name="agents_folder_on">%2$s 上的 %1$s</string>
+    <string name="agents_more">更多</string>
+    <string name="agents_close">关闭</string>
+    <string name="agents_show_all">显示全部</string>
+    <string name="agents_alert_note">注意</string>
+    <string name="agents_alert_tip">提示</string>
+    <string name="agents_alert_important">重要</string>
+    <string name="agents_alert_warning">警告</string>
+    <string name="agents_alert_caution">小心</string>
+    <plurals name="agents_tool_and_more">
+        <item quantity="other">%1$s 和另外 %2$d 个</item>
+    </plurals>
+    <plurals name="agents_clause_commands">
+        <item quantity="other">运行了 %1$d 个命令</item>
+    </plurals>
+    <plurals name="agents_clause_changed">
+        <item quantity="other">修改了 %1$d 个文件</item>
+    </plurals>
+    <plurals name="agents_clause_read">
+        <item quantity="other">读取了 %1$d 个文件</item>
+    </plurals>
+    <plurals name="agents_clause_searched">
+        <item quantity="other">搜索了 %1$d 次</item>
+    </plurals>
+    <plurals name="agents_clause_web">
+        <item quantity="other">在网上搜索了 %1$d 次</item>
+    </plurals>
+    <plurals name="agents_clause_tools">
+        <item quantity="other">使用了 %1$d 个工具</item>
+    </plurals>
+    <plurals name="agents_clause_commands_lower">
+        <item quantity="other">运行了 %1$d 个命令</item>
+    </plurals>
+    <plurals name="agents_clause_changed_lower">
+        <item quantity="other">修改了 %1$d 个文件</item>
+    </plurals>
+    <plurals name="agents_clause_read_lower">
+        <item quantity="other">读取了 %1$d 个文件</item>
+    </plurals>
+    <plurals name="agents_clause_searched_lower">
+        <item quantity="other">搜索了 %1$d 次</item>
+    </plurals>
+    <plurals name="agents_clause_web_lower">
+        <item quantity="other">在网上搜索了 %1$d 次</item>
+    </plurals>
+    <plurals name="agents_clause_tools_lower">
+        <item quantity="other">使用了 %1$d 个工具</item>
+    </plurals>
+    <plurals name="agents_summary_others">
+        <item quantity="other">%1$s，%2$s，另有 %3$d 项操作</item>
+    </plurals>
+    <plurals name="agents_thought_times">
+        <item quantity="other">思考了 %1$d 次</item>
+    </plurals>
+    <plurals name="agents_files_changed">
+        <item quantity="other">%1$d 个文件已修改</item>
+    </plurals>
+    <plurals name="agents_table_more">
+        <item quantity="other">还有 %1$d 行</item>
+    </plurals>
+    <!-- Agents on Home: one row -->
+    <string name="agents_home_working_for">%1$s 正在工作 · %2$s</string>
+    <string name="agents_home_working">%1$s 正在工作</string>
+    <string name="agents_home_done">%1$s完成</string>
+    <string name="agents_home_stopped">%1$s停止</string>
+    <string name="agents_home_failed">%1$s失败</string>
+    <string name="agents_home_paused">%1$s暂停</string>
+    <string name="agents_home_start">开始一个会话</string>
+    <plurals name="agents_home_requests">
+        <item quantity="other">%1$d 个请求需要你</item>
+    </plurals>
+    <plurals name="agents_home_threads_working">
+        <item quantity="other">%1$d 个会话正在工作</item>
+    </plurals>
+    <plurals name="agents_home_sessions_working">
+        <item quantity="other">%1$d 个会话正在工作</item>
+    </plurals>
+    <plurals name="agents_home_minutes">
+        <item quantity="other">%1$d 分钟</item>
+    </plurals>
+    <plurals name="agents_home_hours">
+        <item quantity="other">%1$d 小时</item>
     </plurals>
 </resources>

@@ -1406,7 +1406,6 @@
     <string name="agents_state_paused">Paused</string>
     <string name="agents_usage_limit">Usage limit reached.</string>
     <string name="agents_usage_resets">Usage limit reached. Resets at %1$s.</string>
-    <string name="agents_failed_fix">Fix it on %1$s, then reply to try again.</string>
     <string name="agents_login_failed">%1$s is signed out. Run %2$s on %3$s.</string>
     <string name="agents_message_hint">Message %1$s</string>
     <string name="agents_reply_when_stops">You can reply when %1$s stops.</string>
@@ -1421,19 +1420,8 @@
     <string name="agents_allow">Allow</string>
     <string name="agents_deny">Deny</string>
     <string name="agents_review">Review</string>
-    <string name="agents_ask_command">Run this command?</string>
-    <string name="agents_ask_edit">Make this change?</string>
-    <string name="agents_ask_other">Allow this?</string>
-    <string name="agents_ask_where">In %1$s on %2$s.</string>
     <string name="agents_ask_when">Asked %1$s.</string>
-    <string name="agents_ask_also_pc">You can also answer on the PC.</string>
     <string name="agents_ask_says">%1$s says: %2$s</string>
-    <string name="agents_ask_read_all">Read the whole request to allow it.</string>
-    <string name="agents_ask_deny_note">If you deny, the agent carries on another way.</string>
-    <plurals name="agents_more_waiting">
-        <item quantity="one">%1$d more waiting</item>
-        <item quantity="other">%1$d more waiting</item>
-    </plurals>
     <string name="agents_ask_truncated">Too long to show in full. See the rest on your PC.</string>
     <string name="agents_truncated">Shortened</string>
     <string name="agents_answered_elsewhere">Already answered</string>
@@ -1441,12 +1429,9 @@
     <string name="agents_answered_denied">Denied</string>
     <string name="agents_answered_allowed_on">Allowed on %1$s</string>
     <string name="agents_answered_denied_on">Denied on %1$s</string>
-    <string name="agents_answered_expired">No answer in time</string>
-    <string name="agents_answered_cancelled">No longer needed</string>
     <string name="agents_failed_generic">Couldn\'t reach your PC</string>
     <string name="agents_step_running">Running</string>
     <string name="agents_step_denied">Denied</string>
-    <string name="agents_step_failed">Failed</string>
     <string name="agents_load_earlier">Earlier</string>
     <string name="agents_thread_gone">This thread was deleted on the PC.</string>
     <string name="channel_agents_working">Agents working</string>
@@ -1463,21 +1448,13 @@
     <string name="agents_notify_reply_failed">Couldn\'t send your reply. Open G7 Link to try again.</string>
     <!-- Agents 0.1.14: Home, what a thread does now, sessions started on the PC. -->
     <string name="agents_home_title">Agents on %1$s</string>
-    <string name="agents_home_all">All threads</string>
     <string name="agents_home_needs_you">%1$s needs you</string>
-    <string name="agents_home_asked">Asked %1$s</string>
-    <string name="agents_home_edit">Edit %1$s</string>
-    <string name="agents_home_prompt_hint">What should %1$s do on %2$s?</string>
-    <string name="agents_home_recent">%1$s · %2$s</string>
     <string name="agents_home_asks_first">It asks before it changes a file or runs a command that could change something.</string>
     <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s is working on %2$s</string>
     <string name="agents_step_now">Now: %1$s</string>
     <string name="agents_step_of">Step %1$d of %2$d</string>
-    <string name="agents_step_writing">Writing</string>
     <string name="agents_step_thinking">Thinking</string>
-    <string name="agents_step_plan">Plan</string>
-    <string name="agents_step_plan_done">%1$d of %2$d done</string>
     <string name="agents_session_section">Started on %1$s</string>
     <string name="agents_session_off_body">Claude and Codex sessions you start on %1$s, in a terminal or the Claude app, can show here too.</string>
     <string name="agents_session_ask">Ask on %1$s</string>
@@ -1518,5 +1495,172 @@
     <plurals name="agents_step_working_for_hours">
         <item quantity="one">Working for %1$d h</item>
         <item quantity="other">Working for %1$d h</item>
+    </plurals>
+    <!-- Agents: a thread's rows, the request sheet and the reply box (phase 1) -->
+    <string name="agents_drawer_show">Show threads</string>
+    <string name="agents_live_starting">Starting…</string>
+    <string name="agents_tool_running">Running %1$s</string>
+    <string name="agents_tool_ran">Ran %1$s</string>
+    <string name="agents_tool_failed">Failed: %1$s</string>
+    <string name="agents_tool_denied">Denied: %1$s</string>
+    <string name="agents_tool_stopped">Stopped: %1$s</string>
+    <string name="agents_tool_editing">Editing %1$s</string>
+    <string name="agents_tool_edited">Edited %1$s</string>
+    <string name="agents_tool_edit_failed">Couldn\'t edit %1$s</string>
+    <string name="agents_tool_edit_denied">Denied: edit %1$s</string>
+    <string name="agents_tool_edit_stopped">Stopped: edit %1$s</string>
+    <string name="agents_tool_reading">Reading %1$s</string>
+    <string name="agents_tool_read">Read %1$s</string>
+    <string name="agents_tool_read_failed">Couldn\'t read %1$s</string>
+    <string name="agents_tool_read_stopped">Stopped: read %1$s</string>
+    <string name="agents_tool_searching">Searching %1$s</string>
+    <string name="agents_tool_searched">Searched %1$s</string>
+    <string name="agents_tool_search_failed">Search failed: %1$s</string>
+    <string name="agents_tool_search_stopped">Stopped: search %1$s</string>
+    <string name="agents_tool_web_searching">Searching the web: %1$s</string>
+    <string name="agents_tool_web_searched">Searched the web: %1$s</string>
+    <string name="agents_tool_web_failed">Web search failed: %1$s</string>
+    <string name="agents_tool_wants_run">Wants to run %1$s</string>
+    <string name="agents_tool_wants_edit">Wants to edit %1$s</string>
+    <string name="agents_tool_wants_read">Wants to read %1$s</string>
+    <string name="agents_tool_wants_use">Wants to use %1$s</string>
+    <string name="agents_summary_two">%1$s and %2$s</string>
+    <string name="agents_thought">Thought</string>
+    <string name="agents_worked">Worked for %1$s</string>
+    <string name="agents_dur_seconds">%1$ds</string>
+    <string name="agents_dur_minutes">%1$dm %2$02ds</string>
+    <string name="agents_dur_hours">%1$dh %2$02dm</string>
+    <string name="agents_edit_of">Edit %1$d of %2$d</string>
+    <string name="agents_mark_waiting">Waiting for you</string>
+    <string name="agents_mark_rule">Allowed by your rule for this thread</string>
+    <string name="agents_mark_expired">Expired</string>
+    <string name="agents_mark_cancelled">Cancelled</string>
+    <string name="agents_dock_count">%1$d of %2$d</string>
+    <string name="agents_held">Arrived while you were typing</string>
+    <string name="agents_say_why_hint">Say why, to deny it and tell %1$s what to do instead</string>
+    <string name="agents_deny_and_send">Deny and send</string>
+    <string name="agents_codex_reads_next">Codex stops and reads this next.</string>
+    <string name="agents_you_denied_said">You denied it and said</string>
+    <string name="agents_link_title">Open this link?</string>
+    <string name="agents_link_shown_as">Shown as “%1$s”.</string>
+    <string name="agents_link_open">Open</string>
+    <string name="agents_copy">Copy</string>
+    <string name="agents_copied">Copied</string>
+    <string name="agents_wrap">Wrap</string>
+    <string name="agents_scroll_to_allow">Scroll to the end to allow</string>
+    <string name="agents_loading">Loading…</string>
+    <string name="agents_paused_resets">Usage limit reached · resets at %1$s</string>
+    <string name="agents_cut_short">This message was cut short.</string>
+    <string name="agents_output_last_lines">Showing the last lines</string>
+    <string name="agents_output_title">Output</string>
+    <string name="agents_tasks">Tasks %1$d/%2$d</string>
+    <string name="agents_dock_wants_command">%1$s wants to run a command</string>
+    <string name="agents_dock_wants_edit">%1$s wants to edit a file</string>
+    <string name="agents_dock_wants_other">%1$s wants to use a tool</string>
+    <string name="agents_diff_end">End of the change</string>
+    <string name="agents_folder_on">%1$s on %2$s</string>
+    <string name="agents_more">More</string>
+    <string name="agents_close">Close</string>
+    <string name="agents_show_all">Show all</string>
+    <string name="agents_alert_note">Note</string>
+    <string name="agents_alert_tip">Tip</string>
+    <string name="agents_alert_important">Important</string>
+    <string name="agents_alert_warning">Warning</string>
+    <string name="agents_alert_caution">Caution</string>
+    <plurals name="agents_tool_and_more">
+        <item quantity="one">%1$s and %2$d more</item>
+        <item quantity="other">%1$s and %2$d more</item>
+    </plurals>
+    <plurals name="agents_clause_commands">
+        <item quantity="one">Ran %1$d command</item>
+        <item quantity="other">Ran %1$d commands</item>
+    </plurals>
+    <plurals name="agents_clause_changed">
+        <item quantity="one">Changed %1$d file</item>
+        <item quantity="other">Changed %1$d files</item>
+    </plurals>
+    <plurals name="agents_clause_read">
+        <item quantity="one">Read %1$d file</item>
+        <item quantity="other">Read %1$d files</item>
+    </plurals>
+    <plurals name="agents_clause_searched">
+        <item quantity="one">Searched %1$d time</item>
+        <item quantity="other">Searched %1$d times</item>
+    </plurals>
+    <plurals name="agents_clause_web">
+        <item quantity="one">Searched the web %1$d time</item>
+        <item quantity="other">Searched the web %1$d times</item>
+    </plurals>
+    <plurals name="agents_clause_tools">
+        <item quantity="one">Used %1$d tool</item>
+        <item quantity="other">Used %1$d tools</item>
+    </plurals>
+    <plurals name="agents_clause_commands_lower">
+        <item quantity="one">ran %1$d command</item>
+        <item quantity="other">ran %1$d commands</item>
+    </plurals>
+    <plurals name="agents_clause_changed_lower">
+        <item quantity="one">changed %1$d file</item>
+        <item quantity="other">changed %1$d files</item>
+    </plurals>
+    <plurals name="agents_clause_read_lower">
+        <item quantity="one">read %1$d file</item>
+        <item quantity="other">read %1$d files</item>
+    </plurals>
+    <plurals name="agents_clause_searched_lower">
+        <item quantity="one">searched %1$d time</item>
+        <item quantity="other">searched %1$d times</item>
+    </plurals>
+    <plurals name="agents_clause_web_lower">
+        <item quantity="one">searched the web %1$d time</item>
+        <item quantity="other">searched the web %1$d times</item>
+    </plurals>
+    <plurals name="agents_clause_tools_lower">
+        <item quantity="one">used %1$d tool</item>
+        <item quantity="other">used %1$d tools</item>
+    </plurals>
+    <plurals name="agents_summary_others">
+        <item quantity="one">%1$s, %2$s and %3$d other action</item>
+        <item quantity="other">%1$s, %2$s and %3$d other actions</item>
+    </plurals>
+    <plurals name="agents_thought_times">
+        <item quantity="one">Thought %1$d time</item>
+        <item quantity="other">Thought %1$d times</item>
+    </plurals>
+    <plurals name="agents_files_changed">
+        <item quantity="one">%1$d file changed</item>
+        <item quantity="other">%1$d files changed</item>
+    </plurals>
+    <plurals name="agents_table_more">
+        <item quantity="one">%1$d more row</item>
+        <item quantity="other">%1$d more rows</item>
+    </plurals>
+    <!-- Agents on Home: one row -->
+    <string name="agents_home_working_for">%1$s is working · %2$s</string>
+    <string name="agents_home_working">%1$s is working</string>
+    <string name="agents_home_done">done %1$s</string>
+    <string name="agents_home_stopped">stopped %1$s</string>
+    <string name="agents_home_failed">failed %1$s</string>
+    <string name="agents_home_paused">paused %1$s</string>
+    <string name="agents_home_start">Start a thread</string>
+    <plurals name="agents_home_requests">
+        <item quantity="one">%1$d request needs you</item>
+        <item quantity="other">%1$d requests need you</item>
+    </plurals>
+    <plurals name="agents_home_threads_working">
+        <item quantity="one">%1$d thread working</item>
+        <item quantity="other">%1$d threads working</item>
+    </plurals>
+    <plurals name="agents_home_sessions_working">
+        <item quantity="one">%1$d session working</item>
+        <item quantity="other">%1$d sessions working</item>
+    </plurals>
+    <plurals name="agents_home_minutes">
+        <item quantity="one">%1$d min</item>
+        <item quantity="other">%1$d min</item>
+    </plurals>
+    <plurals name="agents_home_hours">
+        <item quantity="one">%1$d hr</item>
+        <item quantity="other">%1$d hr</item>
     </plurals>
 </resources>

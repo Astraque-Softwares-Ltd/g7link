@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.agents
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +51,7 @@ import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentContinueBlock
+import app.g7link.core.AgentLink
 import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionSource
 import app.g7link.core.AgentSessionState
@@ -184,79 +186,148 @@ fun AgentSessionScreen(
         }
     }
 
-    val listState = rememberLazyListState()
-    val entries = remember(open?.items) { open?.items.orEmpty().map { TranscriptEntry.Item(it) } }
+    // The same rows as a thread's (contract §P6.1): no turns or phases from a session, so a turn reads as answered once it settles.
+    var openKeys by remember(sessionId) { mutableStateOf(emptySet<String>()) }
+    val ffiRows = remember(sessionId) { FfiRows() }
+    DisposableEffect(ffiRows) { onDispose { ffiRows.close() } }
+    val feedKey = "session:$sessionId"
+    val feed = remember(ffiRows) { RowsFeed(feedKey, ffiRows::make) }
+    LaunchedEffect(feed) { feed.start(this) }
+    val input = remember(open, session, openKeys) {
+        if (open != null && session != null) AgentsModel.sessionTimelineInput(open, session, openKeys) else null
+    }
+    LaunchedEffect(feed, input) { input?.let(feed::submit) }
+    val made by feed.rows.collectAsStateWithLifecycle()
+    val rows = made?.takeIf { it.input.key == feedKey }?.rows.orEmpty()
+    val itemsById = remember(open?.items) { open?.items.orEmpty().associateBy { it.id } }
+    var full by remember(sessionId) { mutableStateOf<FullView?>(null) }
+    var link by remember(sessionId) { mutableStateOf<PendingLink?>(null) }
+    val copy = rememberCopy { core.say(resources.getString(R.string.agents_copied)) }
+    val actions = remember(copy) {
+        RowActions(
+            toggle = { key -> openKeys = if (key in openKeys) openKeys - key else openKeys + key },
+            link = { span, text ->
+                // A link whose text is its target opens at once; any other shows where it goes first.
+                val shown = span.style.link == AgentLink.SHOWN
+                if (shown) openLink(context, span.href)
+                if (!shown) link = PendingLink(span.href, text)
+            },
+            copy = copy,
+            output = { itemId -> full = FullView.Output(itemId) },
+            diff = { title, doc -> full = FullView.Diff(title, doc) },
+            mark = {},
+        )
+    }
+    link?.let { shown ->
+        LinkSheet(
+            link = shown,
+            onOpen = {
+                link = null
+                openLink(context, shown.href)
+            },
+            onDismiss = { link = null },
+        )
+    }
 
-    Column(modifier.fillMaxSize()) {
-        G7Header(title = session?.title.orEmpty(), onBack = onBack) {
-            if (session != null && load == SessionLoad.READY) {
-                G7RowAction(label = stringResource(R.string.agents_share), enabled = !sharing, onClick = share)
-            }
+    val listState = rememberLazyListState()
+    val drawer = rememberAgentsDrawer()
+    BackHandler(enabled = full != null) { full = null }
+    when (val view = full) {
+        is FullView.Output -> {
+            OutputFullScreen(item = itemsById[view.itemId], folder = session?.folder.orEmpty(), onClose = { full = null }, onCopy = copy)
+            return
         }
-        if (session != null) {
-            SessionStatusLine(
-                session = session,
-                now = now,
-                trailing = listOfNotNull(agentName, session.folder.ifBlank { null }).joinToString(" · "),
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-            )
+        is FullView.Diff -> {
+            DiffFullScreen(title = view.title, doc = view.doc, onClose = { full = null })
+            return
         }
-        when {
-            load == SessionLoad.GONE || open?.removed == true || (load == SessionLoad.READY && session == null) ->
-                AgentsEmptyState(title = stringResource(R.string.agents_session_gone, device.name))
-            load == SessionLoad.UNREACHABLE -> AgentsEmptyState(
-                title = stringResource(R.string.agents_unreachable_title, device.name),
-                body = stringResource(R.string.agents_unreachable_body),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            load == SessionLoad.NOT_ALLOWED -> AgentsEmptyState(
-                title = stringResource(R.string.agents_session_allow_on, device.name),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            load == SessionLoad.UNAVAILABLE -> AgentsEmptyState(
-                title = stringResource(R.string.agents_unavailable, device.name),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            load == SessionLoad.FAILED -> AgentsEmptyState(
-                title = stringResource(R.string.agents_failed_generic),
-                action = stringResource(R.string.agents_try_again),
-                onAction = retry,
-            )
-            open == null || !open.loaded || session == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
+        is FullView.Edit, null -> Unit
+    }
+
+    AgentsDrawer(
+        device = device,
+        core = core,
+        control = drawer,
+        selected = DrawerSelection.Session(sessionId),
+        // A thread replaces this view as Continue here does; another session as from its notification.
+        onOpenThread = onOpenThread,
+        onOpenSession = { id -> AgentsNavigation.open(context, device.id, sessionId = id) },
+        modifier = modifier,
+    ) {
+        Column(Modifier.fillMaxSize()) {
+            G7Header(title = session?.title.orEmpty(), onBack = onBack) {
+                AgentsDrawerButton(drawer)
+                if (session != null && load == SessionLoad.READY) {
+                    G7RowAction(label = stringResource(R.string.agents_share), enabled = !sharing, onClick = share)
+                }
             }
-            else -> {
-                StartedBanner(session = session, agentName = agentName, pcName = device.name)
-                if (session.state != AgentSessionState.ENDED) {
-                    G7SwitchRow(
-                        label = stringResource(R.string.agents_session_keep),
-                        sublabel = stringResource(R.string.agents_session_keep_note),
-                        checked = kept,
-                        onCheckedChange = { on -> core.agentSessionKeep(device.id, sessionId, on) },
-                        modifier = Modifier.padding(horizontal = 4.dp),
+            if (session != null) {
+                SessionStatusLine(
+                    session = session,
+                    now = now,
+                    trailing = listOfNotNull(agentName, session.folder.ifBlank { null }).joinToString(" · "),
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                )
+            }
+            when {
+                load == SessionLoad.GONE || open?.removed == true || (load == SessionLoad.READY && session == null) ->
+                    AgentsEmptyState(title = stringResource(R.string.agents_session_gone, device.name))
+                load == SessionLoad.UNREACHABLE -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_unreachable_title, device.name),
+                    body = stringResource(R.string.agents_unreachable_body),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                load == SessionLoad.NOT_ALLOWED -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_session_allow_on, device.name),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                load == SessionLoad.UNAVAILABLE -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_unavailable, device.name),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                load == SessionLoad.FAILED -> AgentsEmptyState(
+                    title = stringResource(R.string.agents_failed_generic),
+                    action = stringResource(R.string.agents_try_again),
+                    onAction = retry,
+                )
+                open == null || !open.loaded || session == null || made == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(stringResource(R.string.agents_loading), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                else -> {
+                    StartedBanner(session = session, agentName = agentName, pcName = device.name)
+                    if (session.state != AgentSessionState.ENDED) {
+                        G7SwitchRow(
+                            label = stringResource(R.string.agents_session_keep),
+                            sublabel = stringResource(R.string.agents_session_keep_note),
+                            checked = kept,
+                            onCheckedChange = { on -> core.agentSessionKeep(device.id, sessionId, on) },
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
+                    }
+                    AgentRowsList(
+                        rows = rows,
+                        context = remember(itemsById, session.folder) { RowsContext(itemsById, session.folder) },
+                        actions = actions,
+                        earlier = open.moreBefore && open.items.isNotEmpty(),
+                        loadingEarlier = loadingEarlier,
+                        onLoadEarlier = loadEarlier,
+                        listState = listState,
+                        modifier = Modifier.weight(1f),
+                    )
+                    SessionFooter(
+                        session = session,
+                        agents = agents,
+                        agentName = agentName,
+                        pcName = device.name,
+                        now = now,
+                        running = remember(open.items) { AgentsModel.runningTool(open.items) },
+                        continuing = continuing,
+                        onContinue = continueHere,
                     )
                 }
-                TranscriptList(
-                    entries = entries,
-                    earlier = open.moreBefore && open.items.isNotEmpty(),
-                    loadingEarlier = loadingEarlier,
-                    onLoadEarlier = loadEarlier,
-                    listState = listState,
-                    modifier = Modifier.weight(1f),
-                )
-                SessionFooter(
-                    session = session,
-                    agents = agents,
-                    agentName = agentName,
-                    pcName = device.name,
-                    now = now,
-                    running = remember(open.items) { AgentsModel.runningTool(open.items) },
-                    continuing = continuing,
-                    onContinue = continueHere,
-                )
             }
         }
     }

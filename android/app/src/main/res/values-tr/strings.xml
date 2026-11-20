@@ -1402,7 +1402,6 @@
     <string name="agents_state_paused">Duraklatıldı</string>
     <string name="agents_usage_limit">Kullanım sınırına ulaşıldı.</string>
     <string name="agents_usage_resets">Kullanım sınırına ulaşıldı. %1$s itibarıyla sıfırlanır.</string>
-    <string name="agents_failed_fix">%1$s üzerinde düzeltin, sonra yeniden denemek için yanıt verin.</string>
     <string name="agents_login_failed">%1$s oturumu kapalı. %3$s üzerinde %2$s komutunu çalıştırın.</string>
     <string name="agents_message_hint">%1$s için mesaj</string>
     <string name="agents_reply_when_stops">%1$s durduğunda yanıt verebilirsiniz.</string>
@@ -1417,19 +1416,8 @@
     <string name="agents_allow">İzin ver</string>
     <string name="agents_deny">Reddet</string>
     <string name="agents_review">İncele</string>
-    <string name="agents_ask_command">Bu komut çalıştırılsın mı?</string>
-    <string name="agents_ask_edit">Bu değişiklik yapılsın mı?</string>
-    <string name="agents_ask_other">Buna izin verilsin mi?</string>
-    <string name="agents_ask_where">%2$s üzerinde, %1$s içinde.</string>
     <string name="agents_ask_when">%1$s soruldu.</string>
-    <string name="agents_ask_also_pc">Bilgisayarda da yanıt verebilirsiniz.</string>
     <string name="agents_ask_says">%1$s diyor ki: %2$s</string>
-    <string name="agents_ask_read_all">İzin vermek için isteğin tamamını okuyun.</string>
-    <string name="agents_ask_deny_note">Reddederseniz ajan başka bir yolla devam eder.</string>
-    <plurals name="agents_more_waiting">
-        <item quantity="one">%1$d tane daha bekliyor</item>
-        <item quantity="other">%1$d tane daha bekliyor</item>
-    </plurals>
     <string name="agents_ask_truncated">Tamamını göstermek için çok uzun. Kalanını bilgisayarınızda görün.</string>
     <string name="agents_truncated">Kısaltıldı</string>
     <string name="agents_answered_elsewhere">Zaten yanıtlandı</string>
@@ -1437,12 +1425,9 @@
     <string name="agents_answered_denied">Reddedildi</string>
     <string name="agents_answered_allowed_on">%1$s üzerinde izin verildi</string>
     <string name="agents_answered_denied_on">%1$s üzerinde reddedildi</string>
-    <string name="agents_answered_expired">Zamanında yanıtlanmadı</string>
-    <string name="agents_answered_cancelled">Artık gerekmiyor</string>
     <string name="agents_failed_generic">Bilgisayarınıza ulaşılamadı</string>
     <string name="agents_step_running">Çalışıyor</string>
     <string name="agents_step_denied">Reddedildi</string>
-    <string name="agents_step_failed">Başarısız</string>
     <string name="agents_load_earlier">Öncekiler</string>
     <string name="agents_thread_gone">Bu konuşma bilgisayarda silindi.</string>
     <string name="channel_agents_working">Çalışan ajanlar</string>
@@ -1459,21 +1444,13 @@
     <string name="agents_notify_reply_failed">Mesajınız gönderilemedi. Yeniden denemek için G7 Link\'i açın.</string>
     <!-- Agents 0.1.14: Home, what a thread does now, sessions started on the PC. -->
     <string name="agents_home_title">%1$s üzerindeki ajanlar</string>
-    <string name="agents_home_all">Tüm konuşmalar</string>
     <string name="agents_home_needs_you">%1$s sizi bekliyor</string>
-    <string name="agents_home_asked">%1$s soruldu</string>
-    <string name="agents_home_edit">%1$s dosyasını düzenle</string>
-    <string name="agents_home_prompt_hint">%1$s, %2$s üzerinde ne yapsın?</string>
-    <string name="agents_home_recent">%1$s · %2$s</string>
     <string name="agents_home_asks_first">Bir dosyayı değiştirmeden veya bir şeyi değiştirebilecek bir komutu çalıştırmadan önce sorar.</string>
     <string name="agents_filter_count">%1$s %2$d</string>
     <string name="agents_notify_working_public">%1$s, %2$s üzerinde çalışıyor</string>
     <string name="agents_step_now">Şimdi: %1$s</string>
     <string name="agents_step_of">Adım %1$d / %2$d</string>
-    <string name="agents_step_writing">Yazıyor</string>
     <string name="agents_step_thinking">Düşünüyor</string>
-    <string name="agents_step_plan">Plan</string>
-    <string name="agents_step_plan_done">%2$d adımdan %1$d tanesi bitti</string>
     <string name="agents_session_section">%1$s üzerinde başlatılanlar</string>
     <string name="agents_session_off_body">%1$s üzerinde bir terminalde veya Claude uygulamasında başlattığınız Claude ve Codex oturumları burada da görünebilir.</string>
     <string name="agents_session_ask">%1$s üzerinde sor</string>
@@ -1514,5 +1491,172 @@
     <plurals name="agents_step_working_for_hours">
         <item quantity="one">%1$d saattir çalışıyor</item>
         <item quantity="other">%1$d saattir çalışıyor</item>
+    </plurals>
+    <!-- Agents: a thread's rows, the request sheet and the reply box (phase 1) -->
+    <string name="agents_drawer_show">Konuşmaları göster</string>
+    <string name="agents_live_starting">Başlıyor…</string>
+    <string name="agents_tool_running">%1$s çalıştırılıyor</string>
+    <string name="agents_tool_ran">%1$s çalıştırıldı</string>
+    <string name="agents_tool_failed">Başarısız: %1$s</string>
+    <string name="agents_tool_denied">Reddedildi: %1$s</string>
+    <string name="agents_tool_stopped">Durduruldu: %1$s</string>
+    <string name="agents_tool_editing">%1$s düzenleniyor</string>
+    <string name="agents_tool_edited">%1$s düzenlendi</string>
+    <string name="agents_tool_edit_failed">%1$s düzenlenemedi</string>
+    <string name="agents_tool_edit_denied">Reddedildi: %1$s düzenleme</string>
+    <string name="agents_tool_edit_stopped">Durduruldu: %1$s düzenleme</string>
+    <string name="agents_tool_reading">%1$s okunuyor</string>
+    <string name="agents_tool_read">%1$s okundu</string>
+    <string name="agents_tool_read_failed">%1$s okunamadı</string>
+    <string name="agents_tool_read_stopped">Durduruldu: %1$s okuma</string>
+    <string name="agents_tool_searching">%1$s aranıyor</string>
+    <string name="agents_tool_searched">%1$s arandı</string>
+    <string name="agents_tool_search_failed">Arama başarısız: %1$s</string>
+    <string name="agents_tool_search_stopped">Durduruldu: %1$s arama</string>
+    <string name="agents_tool_web_searching">Web\'de aranıyor: %1$s</string>
+    <string name="agents_tool_web_searched">Web\'de arandı: %1$s</string>
+    <string name="agents_tool_web_failed">Web araması başarısız: %1$s</string>
+    <string name="agents_tool_wants_run">%1$s çalıştırmak istiyor</string>
+    <string name="agents_tool_wants_edit">%1$s düzenlemek istiyor</string>
+    <string name="agents_tool_wants_read">%1$s okumak istiyor</string>
+    <string name="agents_tool_wants_use">%1$s kullanmak istiyor</string>
+    <string name="agents_summary_two">%1$s ve %2$s</string>
+    <string name="agents_thought">Düşündü</string>
+    <string name="agents_worked">%1$s çalıştı</string>
+    <string name="agents_dur_seconds">%1$d sn</string>
+    <string name="agents_dur_minutes">%1$d dk %2$02d sn</string>
+    <string name="agents_dur_hours">%1$d sa %2$02d dk</string>
+    <string name="agents_edit_of">Düzenleme %1$d / %2$d</string>
+    <string name="agents_mark_waiting">Sizi bekliyor</string>
+    <string name="agents_mark_rule">Bu konuşma için kuralınızla izin verildi</string>
+    <string name="agents_mark_expired">Süresi doldu</string>
+    <string name="agents_mark_cancelled">İptal edildi</string>
+    <string name="agents_dock_count">%1$d / %2$d</string>
+    <string name="agents_held">Siz yazarken geldi</string>
+    <string name="agents_say_why_hint">Nedenini yazın: reddedilir ve %1$s bunun yerine ne yapacağını öğrenir</string>
+    <string name="agents_deny_and_send">Reddet ve gönder</string>
+    <string name="agents_codex_reads_next">Codex durur ve ardından bunu okur.</string>
+    <string name="agents_you_denied_said">Reddettiniz ve şunu dediniz</string>
+    <string name="agents_link_title">Bu bağlantı açılsın mı?</string>
+    <string name="agents_link_shown_as">“%1$s” olarak gösteriliyor.</string>
+    <string name="agents_link_open">Aç</string>
+    <string name="agents_copy">Kopyala</string>
+    <string name="agents_copied">Kopyalandı</string>
+    <string name="agents_wrap">Satırları kaydır</string>
+    <string name="agents_scroll_to_allow">İzin vermek için sona kaydırın</string>
+    <string name="agents_loading">Yükleniyor…</string>
+    <string name="agents_paused_resets">Kullanım sınırına ulaşıldı · %1$s itibarıyla sıfırlanır</string>
+    <string name="agents_cut_short">Bu mesaj kısaltıldı.</string>
+    <string name="agents_output_last_lines">Son satırlar gösteriliyor</string>
+    <string name="agents_output_title">Çıktı</string>
+    <string name="agents_tasks">Görevler %1$d/%2$d</string>
+    <string name="agents_dock_wants_command">%1$s bir komut çalıştırmak istiyor</string>
+    <string name="agents_dock_wants_edit">%1$s bir dosyayı düzenlemek istiyor</string>
+    <string name="agents_dock_wants_other">%1$s bir araç kullanmak istiyor</string>
+    <string name="agents_diff_end">Değişikliğin sonu</string>
+    <string name="agents_folder_on">%2$s üzerinde %1$s</string>
+    <string name="agents_more">Diğer</string>
+    <string name="agents_close">Kapat</string>
+    <string name="agents_show_all">Tümünü göster</string>
+    <string name="agents_alert_note">Not</string>
+    <string name="agents_alert_tip">İpucu</string>
+    <string name="agents_alert_important">Önemli</string>
+    <string name="agents_alert_warning">Uyarı</string>
+    <string name="agents_alert_caution">Dikkat</string>
+    <plurals name="agents_tool_and_more">
+        <item quantity="one">%1$s ve %2$d tane daha</item>
+        <item quantity="other">%1$s ve %2$d tane daha</item>
+    </plurals>
+    <plurals name="agents_clause_commands">
+        <item quantity="one">%1$d komut çalıştırıldı</item>
+        <item quantity="other">%1$d komut çalıştırıldı</item>
+    </plurals>
+    <plurals name="agents_clause_changed">
+        <item quantity="one">%1$d dosya değiştirildi</item>
+        <item quantity="other">%1$d dosya değiştirildi</item>
+    </plurals>
+    <plurals name="agents_clause_read">
+        <item quantity="one">%1$d dosya okundu</item>
+        <item quantity="other">%1$d dosya okundu</item>
+    </plurals>
+    <plurals name="agents_clause_searched">
+        <item quantity="one">%1$d kez arandı</item>
+        <item quantity="other">%1$d kez arandı</item>
+    </plurals>
+    <plurals name="agents_clause_web">
+        <item quantity="one">Web\'de %1$d kez arandı</item>
+        <item quantity="other">Web\'de %1$d kez arandı</item>
+    </plurals>
+    <plurals name="agents_clause_tools">
+        <item quantity="one">%1$d araç kullanıldı</item>
+        <item quantity="other">%1$d araç kullanıldı</item>
+    </plurals>
+    <plurals name="agents_clause_commands_lower">
+        <item quantity="one">%1$d komut çalıştırıldı</item>
+        <item quantity="other">%1$d komut çalıştırıldı</item>
+    </plurals>
+    <plurals name="agents_clause_changed_lower">
+        <item quantity="one">%1$d dosya değiştirildi</item>
+        <item quantity="other">%1$d dosya değiştirildi</item>
+    </plurals>
+    <plurals name="agents_clause_read_lower">
+        <item quantity="one">%1$d dosya okundu</item>
+        <item quantity="other">%1$d dosya okundu</item>
+    </plurals>
+    <plurals name="agents_clause_searched_lower">
+        <item quantity="one">%1$d kez arandı</item>
+        <item quantity="other">%1$d kez arandı</item>
+    </plurals>
+    <plurals name="agents_clause_web_lower">
+        <item quantity="one">web\'de %1$d kez arandı</item>
+        <item quantity="other">web\'de %1$d kez arandı</item>
+    </plurals>
+    <plurals name="agents_clause_tools_lower">
+        <item quantity="one">%1$d araç kullanıldı</item>
+        <item quantity="other">%1$d araç kullanıldı</item>
+    </plurals>
+    <plurals name="agents_summary_others">
+        <item quantity="one">%1$s, %2$s ve %3$d başka işlem</item>
+        <item quantity="other">%1$s, %2$s ve %3$d başka işlem</item>
+    </plurals>
+    <plurals name="agents_thought_times">
+        <item quantity="one">%1$d kez düşündü</item>
+        <item quantity="other">%1$d kez düşündü</item>
+    </plurals>
+    <plurals name="agents_files_changed">
+        <item quantity="one">%1$d dosya değişti</item>
+        <item quantity="other">%1$d dosya değişti</item>
+    </plurals>
+    <plurals name="agents_table_more">
+        <item quantity="one">%1$d satır daha</item>
+        <item quantity="other">%1$d satır daha</item>
+    </plurals>
+    <!-- Agents on Home: one row -->
+    <string name="agents_home_working_for">%1$s çalışıyor · %2$s</string>
+    <string name="agents_home_working">%1$s çalışıyor</string>
+    <string name="agents_home_done">%1$s bitti</string>
+    <string name="agents_home_stopped">%1$s durduruldu</string>
+    <string name="agents_home_failed">%1$s başarısız oldu</string>
+    <string name="agents_home_paused">%1$s duraklatıldı</string>
+    <string name="agents_home_start">Konuşma başlat</string>
+    <plurals name="agents_home_requests">
+        <item quantity="one">%1$d istek sizi bekliyor</item>
+        <item quantity="other">%1$d istek sizi bekliyor</item>
+    </plurals>
+    <plurals name="agents_home_threads_working">
+        <item quantity="one">%1$d konuşma çalışıyor</item>
+        <item quantity="other">%1$d konuşma çalışıyor</item>
+    </plurals>
+    <plurals name="agents_home_sessions_working">
+        <item quantity="one">%1$d oturum çalışıyor</item>
+        <item quantity="other">%1$d oturum çalışıyor</item>
+    </plurals>
+    <plurals name="agents_home_minutes">
+        <item quantity="one">%1$d dk</item>
+        <item quantity="other">%1$d dk</item>
+    </plurals>
+    <plurals name="agents_home_hours">
+        <item quantity="one">%1$d sa</item>
+        <item quantity="other">%1$d sa</item>
     </plurals>
 </resources>

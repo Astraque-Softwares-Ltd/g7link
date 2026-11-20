@@ -3395,9 +3395,9 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     }
 
     /** Answers a request; the answer shows as given until the PC says who answered first. */
-    suspend fun agentAnswer(pcId: String, token: String, allow: Boolean): AgentCall<Unit> {
+    suspend fun agentAnswer(pcId: String, token: String, allow: Boolean, message: String? = null): AgentCall<Unit> {
         updateAgents(pcId) { AgentsModel.answering(it, token) }
-        val result = agentCall { it.agentAnswer(pcId, token, allow) }
+        val result = agentCall { it.agentAnswer(pcId, token, allow, message) }
         if (result is AgentCall.Failed) updateAgents(pcId) { AgentsModel.answerFailed(it, token, result.failure) }
         return result
     }
