@@ -1192,7 +1192,7 @@ impl Host {
 
     /// `settings.get`.
     pub fn settings(&self) -> HostSettings {
-        HostSettings { follow_sessions: self.sessions.following() }
+        HostSettings { follow_sessions: self.sessions.following(), keep_awake: self.keep_awake_on() }
     }
 
     /// `sessions.set_following`: stored, announced, and the scanner stops or starts.
@@ -1201,7 +1201,7 @@ impl Host {
         if self.sessions.following() == on {
             return Ok(self.settings());
         }
-        let settings = HostSettings { follow_sessions: on };
+        let settings = HostSettings { follow_sessions: on, ..self.settings() };
         self.store
             .save_settings(settings)
             .await

@@ -1,33 +1,46 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The Codex adapter (§5): `codex app-server` over stdio JSON-RPC, one
 //! process per thread.
+//!
+//! Phase 2 (§Q4): each `turn/start` carries the thread's model and effort,
+//! and its collaboration mode (plan or default) when Codex accepted the
+//! experimental API; a message sent while a turn runs goes in with
+//! `turn/steer`; questions come as `item/tool/requestUserInput`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::api::{ApprovalKind, Mode, Phase, ToolClass, ToolStatus};
+use crate::api::{self, ApprovalKind, Limit, Mode, Phase, ToolClass, ToolStatus};
 use crate::host::agents::{
-    Answer, ApprovalSpec, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path, file_diff,
-    parse_codex_account, plan_of,
+    Answer, ApprovalSpec, Driver, LaunchSettings, Output, QuestionReply, QuestionSpec, SessionCmd, Step,
+    ToolSpec, TurnEnd, UserInput, code, display_path, file_diff, parse_codex_account, plan_of,
 };
 use crate::host::claude::usage_limit_message;
+use crate::host::{catalog, plan, questions};
 
 /// How we name ourselves to Codex (`clientInfo`, a documented field).
 pub const CLIENT_NAME: &str = "G7 Linux";
 
+/// `initialize`, asking for the experimental API (plan mode's one field, §Q4.2).
 pub fn initialize_request(id: u64) -> Value {
+    initialize_request_with(id, true)
+}
+
+/// `initialize`, with or without the experimental API.
+pub fn initialize_request_with(id: u64, experimental: bool) -> Value {
+    let capabilities = if experimental { json!({"experimentalApi": true}) } else { Value::Null };
     json!({"jsonrpc": "2.0", "id": id, "method": "initialize", "params": {
         "clientInfo": {"name": CLIENT_NAME, "title": CLIENT_NAME, "version": env!("CARGO_PKG_VERSION")},
-        "capabilities": null,
+        "capabilities": capabilities,
     }})
 }
 
-/// The approval policy for a mode.
+/// The approval policy for a mode. Plan mode asks as supervised does.
 pub fn approval_policy(mode: Mode) -> &'static str {
     match mode {
-        Mode::Supervised => "untrusted",
+        Mode::Supervised | Mode::Plan => "untrusted",
         Mode::AutoEdit => "on-request",
     }
 }
@@ -42,6 +55,30 @@ pub const REASONING_SUMMARY: &str = "auto";
 /// interrupted so the words go as the next turn at once (§P8.3). Off: the
 /// turn finishes by itself first.
 pub const INTERRUPT_FOR_REPLY: bool = true;
+
+/// The error code and message of a plan-mode turn this Codex can't run.
+pub const PLAN_UNAVAILABLE_CODE: &str = "plan_unavailable";
+pub const PLAN_UNAVAILABLE: &str = "Plan isn't available with this version of Codex.";
+/// The notice when Codex compacted the conversation.
+pub const COMPACTED: &str = "Compacted the conversation.";
+/// The one Codex command G7 sends as a request of its own (§Q4.7).
+const COMPACT_COMMAND: &str = "/compact";
+
+/// Every method the adapter sends Codex (§Q4.2): each is in the stable
+/// schema; the one experimental field it uses is `turn/start.collaborationMode`.
+pub const METHODS: [&str; 11] = [
+    "initialize",
+    "account/read",
+    "thread/start",
+    "thread/resume",
+    "turn/start",
+    "turn/steer",
+    "turn/interrupt",
+    "thread/compact/start",
+    "skills/list",
+    "model/list",
+    "account/rateLimits/read",
+];
 
 /// Codex's `phase` of an agent message.
 fn phase_of(item: &Value) -> Option<Phase> {
@@ -132,7 +169,16 @@ fn file_tool(item: &Value, cwd: &Path) -> (ToolSpec, bool) {
 /// A request Codex sent us.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerRequest {
-    Approval { spec: Box<ApprovalSpec>, decline_ok: bool },
+    Approval {
+        spec: Box<ApprovalSpec>,
+        decline_ok: bool,
+    },
+    /// The agent asks the user (`item/tool/requestUserInput`).
+    Question(QuestionSpec),
+    /// A question with nothing we can show: answered empty at once.
+    EmptyQuestion,
+    /// An MCP server asks for input (`mcpServer/elicitation/request`): declined.
+    Elicitation,
     Unsupported,
 }
 
@@ -152,6 +198,15 @@ pub struct CodexMapper {
     reasoning: HashMap<String, bool>,
     /// Agent messages of the turn, in order, and whether each has its phase.
     turn_texts: Vec<(String, bool)>,
+    /// The usage windows seen, merged from sparse updates.
+    limits: Vec<Limit>,
+    /// The user's MCP servers by name: their status and failure reason.
+    mcp: BTreeMap<String, (String, Option<String>)>,
+    mcp_sent: Option<(u16, u16, Vec<String>)>,
+    /// Plan items started and not completed.
+    plans: Vec<String>,
+    /// This turn's compaction was reported.
+    compacted: bool,
 }
 
 impl CodexMapper {
@@ -166,6 +221,11 @@ impl CodexMapper {
             rate_limits: None,
             reasoning: HashMap::new(),
             turn_texts: Vec::new(),
+            limits: Vec::new(),
+            mcp: BTreeMap::new(),
+            mcp_sent: None,
+            plans: Vec::new(),
+            compacted: false,
         }
     }
 
@@ -202,6 +262,7 @@ impl CodexMapper {
         self.turn_running = true;
         self.last_final = None;
         self.last_text = None;
+        self.compacted = false;
     }
 
     pub fn set_turn_id(&mut self, id: Option<String>) {
@@ -216,7 +277,41 @@ impl CodexMapper {
         self.file_changes.clear();
         self.reasoning.clear();
         self.turn_texts.clear();
+        self.plans.clear();
         Step::TurnEnded(end)
+    }
+
+    /// The compaction's notice, once per turn. A compaction Codex ran
+    /// without a turn of its own ends the one we opened for it.
+    fn compacted(&mut self, steps: &mut Vec<Step>) {
+        if !self.compacted {
+            self.compacted = true;
+            steps.push(Step::Notice(COMPACTED.to_owned()));
+        }
+        if self.turn_running && self.turn_id.is_none() {
+            steps.push(self.end_turn(TurnEnd::done(None)));
+        }
+    }
+
+    /// The MCP servers' state changed: reported when what we show changed.
+    fn mcp_changed(&mut self, steps: &mut Vec<Step>) {
+        let connected = self.mcp.values().filter(|(status, _)| status == "ready").count();
+        let need_login = self
+            .mcp
+            .values()
+            .filter(|(_, reason)| reason.as_deref() == Some("reauthenticationRequired"))
+            .count();
+        let names: Vec<String> = self.mcp.keys().take(api::MAX_MCP_NAMES).cloned().collect();
+        let now = (
+            u16::try_from(connected).unwrap_or(u16::MAX),
+            u16::try_from(need_login).unwrap_or(u16::MAX),
+            names,
+        );
+        if self.mcp_sent.as_ref() != Some(&now) {
+            self.mcp_sent = Some(now.clone());
+            let (connected, need_login, names) = now;
+            steps.push(Step::Mcp { names, connected, need_login });
+        }
     }
 
     /// A notification (a line with `method` and no `id`).
@@ -242,6 +337,12 @@ impl CodexMapper {
                             steps.push(Step::AssistantPhase { key: id, phase });
                         }
                     }
+                    "plan" => {
+                        if !self.plans.contains(&id) {
+                            self.plans.push(id.clone());
+                            steps.push(Step::PlanOpen { key: id });
+                        }
+                    }
                     "reasoning" => {
                         self.reasoning.insert(id.clone(), false);
                         steps.push(Step::ReasoningOpen { key: id });
@@ -257,16 +358,28 @@ impl CodexMapper {
                     | "webSearch"
                     | "imageView"
                     | "collabAgentToolCall") => {
-                        let title = s(item, "tool").unwrap_or(kind);
+                        let tool = s(item, "tool").unwrap_or(kind);
+                        let title = match (kind, s(item, "server")) {
+                            ("mcpToolCall", Some(server)) => format!("{server}: {tool}"),
+                            _ => tool.to_owned(),
+                        };
                         let class = match kind {
                             "mcpToolCall" => ToolClass::Mcp,
                             "webSearch" => ToolClass::Web,
                             "collabAgentToolCall" => ToolClass::Agent,
                             _ => ToolClass::Other,
                         };
-                        steps.push(Step::ToolStart { key: id, tool: ToolSpec::other(kind, title, class) });
+                        steps.push(Step::ToolStart { key: id, tool: ToolSpec::other(kind, &title, class) });
                     }
                     _ => {}
+                }
+            }
+            "item/plan/delta" => {
+                if let (Some(key), Some(text)) = (s(params, "itemId"), s(params, "delta"))
+                    && !text.is_empty()
+                    && self.plans.iter().any(|p| p == key)
+                {
+                    steps.push(Step::PlanDelta { key: key.to_owned(), text: text.to_owned() });
                 }
             }
             "item/reasoning/summaryTextDelta" => {
@@ -313,6 +426,14 @@ impl CodexMapper {
                             steps.push(Step::AssistantPhase { key: id, phase });
                         }
                     }
+                    "plan" => {
+                        if !self.plans.contains(&id) {
+                            steps.push(Step::PlanOpen { key: id.clone() });
+                        }
+                        self.plans.retain(|p| *p != id);
+                        steps.push(Step::PlanDone { key: id, text: plan::codex_plan_text(item) });
+                    }
+                    "contextCompaction" => self.compacted(&mut steps),
                     "reasoning" => {
                         self.reasoning.remove(&id);
                         steps.push(Step::ReasoningDone { key: id, text: summary_text(item) });
@@ -354,7 +475,47 @@ impl CodexMapper {
                     steps.push(Step::Notice(message.to_owned()));
                 }
             }
-            "account/rateLimits/updated" => self.rate_limits = params.get("rateLimits").cloned(),
+            "account/rateLimits/updated" => {
+                if let Some(snapshot) = params.get("rateLimits") {
+                    catalog::merge_limits(&mut self.limits, catalog::codex_limits(snapshot));
+                    if !self.limits.is_empty() {
+                        steps.push(Step::Limits(self.limits.clone()));
+                    }
+                }
+                // Only the windows are kept (no plan, credits or account).
+                self.rate_limits = params.get("rateLimits").map(|r| {
+                    json!({"primary": r.get("primary").cloned(), "secondary": r.get("secondary").cloned()})
+                });
+            }
+            "thread/tokenUsage/updated" => {
+                let usage = params.get("tokenUsage").unwrap_or(&Value::Null);
+                let used = usage.pointer("/last/totalTokens").and_then(Value::as_u64).unwrap_or(0);
+                let max = usage.get("modelContextWindow").and_then(Value::as_u64).unwrap_or(0);
+                if used > 0 && max > 0 {
+                    steps.push(Step::Context { used, max });
+                }
+            }
+            "mcpServer/startupStatus/updated" => {
+                if let (Some(name), Some(status)) = (s(params, "name"), s(params, "status")) {
+                    let name = api::clean_cut(name.trim(), api::MAX_MCP_NAME).0;
+                    if !name.is_empty()
+                        && (self.mcp.contains_key(&name) || self.mcp.len() < api::MAX_MCP_NAMES * 4)
+                    {
+                        let reason = s(params, "failureReason").map(str::to_owned);
+                        self.mcp.insert(name, (status.to_owned(), reason));
+                        self.mcp_changed(&mut steps);
+                    }
+                }
+            }
+            "model/rerouted" => {
+                if let Some(model) =
+                    s(params, "toModel").map(|m| api::clean_cut(m.trim(), api::MAX_MODEL_ID).0)
+                    && !model.is_empty()
+                {
+                    steps.push(Step::AnsweredModel(model));
+                }
+            }
+            "thread/compacted" => self.compacted(&mut steps),
             "turn/plan/updated" => {
                 if let Some(entries) = params.get("plan").and_then(Value::as_array) {
                     steps.push(Step::Plan(plan_of(
@@ -449,6 +610,11 @@ impl CodexMapper {
                 spec.reason = reason;
                 ServerRequest::Approval { spec: Box::new(spec), decline_ok }
             }
+            "item/tool/requestUserInput" => match questions::codex_spec(params) {
+                Some(spec) => ServerRequest::Question(spec),
+                None => ServerRequest::EmptyQuestion,
+            },
+            "mcpServer/elicitation/request" => ServerRequest::Elicitation,
             _ => ServerRequest::Unsupported,
         }
     }
@@ -469,11 +635,30 @@ impl CodexMapper {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pending {
-    Initialize,
+    Initialize { experimental: bool },
     AccountRead,
     Thread,
+    Skills,
     TurnStart,
+    Steer,
     Interrupt,
+    Compact,
+}
+
+/// A message waiting for its turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Waiting {
+    input: UserInput,
+    /// It came to steer a turn that had ended or refused it: the registry
+    /// learns of its turn ([`Step::TurnStarted`]) and of its delivery.
+    steer: bool,
+}
+
+/// The `turn/start` in flight, to send again without the plan field.
+#[derive(Debug, Clone)]
+struct InFlight {
+    waiting: Waiting,
+    params: Value,
 }
 
 /// The Codex side of [`crate::host::agents::run_session`].
@@ -481,59 +666,158 @@ enum Pending {
 pub struct CodexDriver {
     mapper: CodexMapper,
     cwd: String,
-    mode: Mode,
+    settings: LaunchSettings,
+    /// Codex accepted the experimental API: turns carry `collaborationMode`.
+    plan_ok: bool,
     resume: Option<String>,
     native_id: Option<String>,
-    texts: VecDeque<String>,
+    /// The model Codex reported for the thread.
+    thread_model: Option<String>,
+    texts: VecDeque<Waiting>,
+    in_flight: Option<InFlight>,
     next_id: u64,
     pending: HashMap<u64, Pending>,
+    /// `turn/steer` requests waiting for their answer.
+    steering: HashMap<u64, Waiting>,
     /// Server requests waiting for the user: whether `decline` may be sent.
     asks: HashMap<String, bool>,
+    /// Questions waiting for the user, by request id.
+    questions: HashMap<String, QuestionSpec>,
+    /// The folder's skills (name → path), once asked for.
+    skills: Option<HashMap<String, String>>,
     interrupt_wanted: bool,
     interrupt_sent: bool,
     failed: bool,
 }
 
 impl CodexDriver {
+    /// A driver for a process in `mode` with the CLI's defaults, sending text alone.
     pub fn new(cwd: PathBuf, mode: Mode, resume: Option<String>, first_text: String) -> Self {
+        Self::with_settings(cwd, LaunchSettings::new(mode), resume, UserInput::text(first_text))
+    }
+
+    /// A driver for a process with the thread's settings (§Q4.2).
+    pub fn with_settings(
+        cwd: PathBuf,
+        settings: LaunchSettings,
+        resume: Option<String>,
+        first: UserInput,
+    ) -> Self {
         let mut mapper = CodexMapper::new(cwd.clone());
         mapper.turn_started();
         Self {
             mapper,
             cwd: cwd.to_string_lossy().into_owned(),
-            mode,
+            settings,
+            plan_ok: false,
             resume,
             native_id: None,
-            texts: VecDeque::from([first_text]),
+            thread_model: None,
+            texts: VecDeque::from([Waiting { input: first, steer: false }]),
+            in_flight: None,
             next_id: 1,
             pending: HashMap::new(),
+            steering: HashMap::new(),
             asks: HashMap::new(),
+            questions: HashMap::new(),
+            skills: None,
             interrupt_wanted: false,
             interrupt_sent: false,
             failed: false,
         }
     }
 
-    fn request(&mut self, kind: Pending, method: &str, params: Value, out: &mut Output) {
+    fn request(&mut self, kind: Pending, method: &str, params: Value, out: &mut Output) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.pending.insert(id, kind);
         out.stdin.push(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string());
+        id
+    }
+
+    /// The model a turn runs with: the thread's, else the list's default,
+    /// else what Codex reported for the thread.
+    fn model(&self) -> Option<String> {
+        self.settings
+            .model
+            .clone()
+            .filter(|m| catalog::valid_model_id(m))
+            .or_else(|| self.settings.default_model.clone().filter(|m| catalog::valid_model_id(m)))
+            .or_else(|| self.thread_model.clone())
+    }
+
+    /// A message's inputs: its images, a skill it names, then its text.
+    fn inputs(&self, input: &UserInput) -> Vec<Value> {
+        let mut list: Vec<Value> = input.images.clone();
+        if let Some((name, path)) = self.skill_of(&input.text) {
+            list.push(json!({"type": "skill", "name": name, "path": path}));
+        }
+        list.push(json!({"type": "text", "text": input.text, "text_elements": []}));
+        list
+    }
+
+    /// The skill a message starts with (`/name …`), when the folder has it.
+    fn skill_of(&self, text: &str) -> Option<(String, String)> {
+        let name = slash_word(text)?;
+        let path = self.skills.as_ref()?.get(name)?;
+        Some((name.to_owned(), path.clone()))
+    }
+
+    fn turn_params(&self, native: &str, input: &UserInput, plan: bool) -> Value {
+        let mut params =
+            json!({"threadId": native, "input": self.inputs(input), "summary": REASONING_SUMMARY});
+        if let Some(model) = self.settings.model.as_deref().filter(|m| catalog::valid_model_id(m)) {
+            params["model"] = json!(model);
+        }
+        let effort = self.settings.effort.as_deref().and_then(catalog::effort_word);
+        if let Some(effort) = effort {
+            params["effort"] = json!(effort);
+        }
+        if plan && let Some(model) = self.model() {
+            let effort =
+                effort.or_else(|| self.settings.default_effort.as_deref().and_then(catalog::effort_word));
+            params["collaborationMode"] = json!({
+                "mode": if self.settings.mode == Mode::Plan { "plan" } else { "default" },
+                "settings": {"model": model, "reasoning_effort": effort, "developer_instructions": null},
+            });
+        }
+        params
     }
 
     fn start_turn(&mut self, out: &mut Output) {
         let Some(native) = self.native_id.clone() else { return };
-        if self.pending.values().any(|p| *p == Pending::TurnStart) {
+        if self.pending.values().any(|p| matches!(p, Pending::TurnStart | Pending::Compact | Pending::Skills))
+        {
             return;
         }
-        let Some(text) = self.texts.pop_front() else { return };
+        let Some(front) = self.texts.front() else { return };
+        // A message naming a skill waits for the folder's skills.
+        let needs_skills = self.skills.is_none()
+            && slash_word(&front.input.text).is_some_and(|w| format!("/{w}") != COMPACT_COMMAND);
+        if needs_skills {
+            self.request(Pending::Skills, "skills/list", json!({"cwds": [self.cwd]}), out);
+            return;
+        }
+        let Some(waiting) = self.texts.pop_front() else { return };
         if !self.mapper.turn_running() {
             self.mapper.turn_started();
+            if waiting.steer {
+                out.steps.push(Step::TurnStarted);
+            }
         }
         self.interrupt_sent = false;
-        let params = json!({"threadId": native, "input": [{"type": "text", "text": text}],
-            "summary": REASONING_SUMMARY});
-        self.request(Pending::TurnStart, "turn/start", params, out);
+        if waiting.input.text.trim() == COMPACT_COMMAND && waiting.input.images.is_empty() {
+            self.request(Pending::Compact, "thread/compact/start", json!({"threadId": native}), out);
+            self.in_flight = Some(InFlight { waiting, params: Value::Null });
+            return;
+        }
+        if self.settings.mode == Mode::Plan && (!self.plan_ok || self.model().is_none()) {
+            out.steps.push(self.mapper.end_turn(TurnEnd::failed(PLAN_UNAVAILABLE_CODE, PLAN_UNAVAILABLE)));
+            return self.start_turn(out);
+        }
+        let params = self.turn_params(&native, &waiting.input, self.plan_ok);
+        self.request(Pending::TurnStart, "turn/start", params.clone(), out);
+        self.in_flight = Some(InFlight { waiting, params });
     }
 
     fn send_interrupt(&mut self, out: &mut Output) {
@@ -555,17 +839,39 @@ impl CodexDriver {
         out.close = true;
     }
 
+    /// Codex refused `collaborationMode` (an update took the experimental
+    /// API away): never send it again in this process.
+    fn plan_refused(error: &Value, params: &Value) -> bool {
+        if params.get("collaborationMode").is_none() {
+            return false;
+        }
+        let message = s(error, "message").unwrap_or_default();
+        message.contains("collaborationMode")
+            || message.contains("experimentalApi")
+            || error.get("code").and_then(Value::as_i64) == Some(-32600)
+    }
+
     fn on_response(&mut self, msg: &Value, out: &mut Output) {
         let Some(id) = msg.get("id").and_then(Value::as_u64) else { return };
         let Some(kind) = self.pending.remove(&id) else { return };
+        let error = msg.get("error");
         let error_message =
-            msg.get("error").map(|e| s(e, "message").unwrap_or("The agent refused the request.").to_owned());
+            error.map(|e| s(e, "message").unwrap_or("The agent refused the request.").to_owned());
         let result = msg.get("result").unwrap_or(&Value::Null);
         match kind {
-            Pending::Initialize => {
+            Pending::Initialize { experimental } => {
+                if error_message.is_some() && experimental {
+                    // Without the experimental API: no plan mode (§Q4.2).
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    self.pending.insert(id, Pending::Initialize { experimental: false });
+                    out.stdin.push(initialize_request_with(id, false).to_string());
+                    return;
+                }
                 if let Some(message) = error_message {
                     return self.fail(TurnEnd::failed(code::AGENT_ERROR, message), out);
                 }
+                self.plan_ok = experimental;
                 out.stdin.push(json!({"jsonrpc": "2.0", "method": "initialized"}).to_string());
                 self.request(Pending::AccountRead, "account/read", json!({"refreshToken": false}), out);
             }
@@ -573,7 +879,7 @@ impl CodexDriver {
                 if error_message.is_none() && !parse_codex_account(result).signed_in {
                     return self.fail(TurnEnd::failed(code::LOGIN, "Codex is not signed in."), out);
                 }
-                let policy = approval_policy(self.mode);
+                let policy = approval_policy(self.settings.mode);
                 match self.resume.clone() {
                     Some(native) => self.request(
                         Pending::Thread,
@@ -587,7 +893,7 @@ impl CodexDriver {
                         json!({"cwd": self.cwd, "approvalPolicy": policy, "sandbox": SANDBOX, "approvalsReviewer": "user"}),
                         out,
                     ),
-                }
+                };
             }
             Pending::Thread => {
                 if let Some(message) = error_message {
@@ -599,6 +905,13 @@ impl CodexDriver {
                 };
                 self.native_id = Some(native.clone());
                 out.steps.push(Step::NativeId(native));
+                self.thread_model = s(result, "model")
+                    .map(|m| api::clean_cut(m.trim(), api::MAX_MODEL_ID).0)
+                    .filter(|m| !m.is_empty());
+                let answering = self.settings.model.clone().filter(|m| catalog::valid_model_id(m));
+                if let Some(model) = answering.or_else(|| self.thread_model.clone()) {
+                    out.steps.push(Step::AnsweredModel(model));
+                }
                 if self.interrupt_wanted {
                     // Interrupted before the turn began: nothing to run.
                     self.interrupt_wanted = false;
@@ -608,18 +921,78 @@ impl CodexDriver {
                 }
                 self.start_turn(out);
             }
+            Pending::Skills => {
+                let map: HashMap<String, String> =
+                    if error_message.is_none() { skill_paths(result) } else { HashMap::new() };
+                self.skills = Some(map);
+                self.start_turn(out);
+            }
             Pending::TurnStart => {
-                if let Some(message) = error_message {
-                    let end = TurnEnd::failed(code::AGENT_ERROR, message);
+                let in_flight = self.in_flight.take();
+                if let Some(error) = error {
+                    if let Some(flight) = in_flight.filter(|f| Self::plan_refused(error, &f.params)) {
+                        self.plan_ok = false;
+                        if self.settings.mode == Mode::Plan {
+                            if self.mapper.turn_running() {
+                                let end = TurnEnd::failed(PLAN_UNAVAILABLE_CODE, PLAN_UNAVAILABLE);
+                                out.steps.push(self.mapper.end_turn(end));
+                            }
+                            return self.start_turn(out);
+                        }
+                        let mut params = flight.params;
+                        if let Some(map) = params.as_object_mut() {
+                            map.remove("collaborationMode");
+                        }
+                        self.request(Pending::TurnStart, "turn/start", params.clone(), out);
+                        self.in_flight = Some(InFlight { waiting: flight.waiting, params });
+                        return;
+                    }
+                    let message = s(error, "message").unwrap_or("The agent refused the request.").to_owned();
                     if self.mapper.turn_running() {
-                        out.steps.push(self.mapper.end_turn(end));
+                        out.steps.push(self.mapper.end_turn(TurnEnd::failed(code::AGENT_ERROR, message)));
                     }
                     return;
                 }
                 let turn = result.get("turn").and_then(|t| s(t, "id")).map(str::to_owned);
                 self.mapper.set_turn_id(turn);
+                if let Some(flight) = in_flight
+                    && flight.waiting.steer
+                    && !flight.waiting.input.id.is_empty()
+                {
+                    out.steps.push(Step::Delivered { id: flight.waiting.input.id });
+                }
                 if self.interrupt_wanted {
                     self.send_interrupt(out);
+                }
+            }
+            Pending::Compact => {
+                let flight = self.in_flight.take();
+                if let Some(message) = error_message {
+                    if self.mapper.turn_running() {
+                        out.steps.push(self.mapper.end_turn(TurnEnd::failed(code::AGENT_ERROR, message)));
+                    }
+                    return self.start_turn(out);
+                }
+                if let Some(flight) = flight
+                    && flight.waiting.steer
+                    && !flight.waiting.input.id.is_empty()
+                {
+                    out.steps.push(Step::Delivered { id: flight.waiting.input.id });
+                }
+            }
+            Pending::Steer => {
+                let Some(waiting) = self.steering.remove(&id) else { return };
+                if error.is_none() {
+                    if !waiting.input.id.is_empty() {
+                        out.steps.push(Step::Delivered { id: waiting.input.id });
+                    }
+                    return;
+                }
+                // The turn it was for is over (or refused it): it goes as
+                // the next turn, before anything sent after it (§Q4.5).
+                self.texts.push_front(Waiting { steer: true, ..waiting });
+                if !self.mapper.turn_running() {
+                    self.start_turn(out);
                 }
             }
             Pending::Interrupt => {}
@@ -634,6 +1007,36 @@ impl CodexDriver {
             Answer::Deny(_) | Answer::DenySaying(_) => "cancel",
         }
     }
+
+    fn steer(&mut self, input: UserInput, out: &mut Output) {
+        let running = self.mapper.turn_running();
+        match (running, self.native_id.clone(), self.mapper.turn_id().map(str::to_owned)) {
+            (true, Some(native), Some(turn)) => {
+                let params =
+                    json!({"threadId": native, "expectedTurnId": turn, "input": self.inputs(&input)});
+                let id = self.request(Pending::Steer, "turn/steer", params, out);
+                self.steering.insert(id, Waiting { input, steer: true });
+            }
+            // The turn is starting: the message is its next one.
+            (true, _, _) => self.texts.push_back(Waiting { input, steer: true }),
+            (false, _, _) => {
+                self.texts.push_back(Waiting { input, steer: true });
+                self.start_turn(out);
+            }
+        }
+    }
+}
+
+/// `/name …` → `name`.
+fn slash_word(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('/')?;
+    let word = rest.split_whitespace().next()?;
+    (!word.is_empty() && rest.starts_with(word)).then_some(word)
+}
+
+/// The enabled skills' paths by name from `skills/list`.
+fn skill_paths(result: &Value) -> HashMap<String, String> {
+    catalog::codex_skill_entries_of(result).into_iter().map(|s| (s.command.name, s.path)).collect()
 }
 
 fn id_key(id: &Value) -> String {
@@ -643,7 +1046,7 @@ fn id_key(id: &Value) -> String {
 impl Driver for CodexDriver {
     fn start(&mut self, out: &mut Output) {
         self.next_id = 2;
-        self.pending.insert(1, Pending::Initialize);
+        self.pending.insert(1, Pending::Initialize { experimental: true });
         out.stdin.push(initialize_request(1).to_string());
     }
 
@@ -655,6 +1058,20 @@ impl Driver for CodexDriver {
                 ServerRequest::Approval { spec, decline_ok } => {
                     self.asks.insert(id_key(&id), decline_ok);
                     out.approvals.push((id, *spec));
+                }
+                ServerRequest::Question(spec) => {
+                    self.questions.insert(id_key(&id), spec.clone());
+                    out.questions.push((id, spec));
+                }
+                ServerRequest::EmptyQuestion => {
+                    out.stdin
+                        .push(json!({"jsonrpc": "2.0", "id": id, "result": {"answers": {}}}).to_string());
+                }
+                ServerRequest::Elicitation => {
+                    out.stdin.push(
+                        json!({"jsonrpc": "2.0", "id": id, "result": {"action": "decline"}}).to_string(),
+                    );
+                    out.steps.push(Step::Notice(questions::MCP_DECLINED.to_owned()));
                 }
                 ServerRequest::Unsupported => {
                     out.stdin.push(
@@ -680,12 +1097,12 @@ impl Driver for CodexDriver {
     }
 
     fn on_cmd(&mut self, cmd: SessionCmd, out: &mut Output) {
+        if self.failed {
+            return;
+        }
         match cmd {
-            SessionCmd::Send(text) => {
-                if self.failed {
-                    return;
-                }
-                self.texts.push_back(text);
+            SessionCmd::Send(input) => {
+                self.texts.push_back(Waiting { input, steer: false });
                 if !self.mapper.turn_running() || self.mapper.turn_id().is_none() {
                     if !self.mapper.turn_running() {
                         self.mapper.turn_started();
@@ -693,6 +1110,7 @@ impl Driver for CodexDriver {
                     self.start_turn(out);
                 }
             }
+            SessionCmd::Steer(input) => self.steer(input, out),
             SessionCmd::Interrupt => {
                 if !self.mapper.turn_running() || self.interrupt_sent {
                     return;
@@ -724,6 +1142,12 @@ impl Driver for CodexDriver {
                 self.interrupt_wanted = true;
             }
         }
+    }
+
+    fn on_question_reply(&mut self, id: Value, reply: QuestionReply, out: &mut Output) {
+        let Some(spec) = self.questions.remove(&id_key(&id)) else { return };
+        let result = questions::codex_reply(&spec, &reply);
+        out.stdin.push(json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string());
     }
 
     fn on_too_long(&mut self) -> Vec<Step> {
@@ -1100,8 +1524,10 @@ mod tests {
     #[test]
     fn unknown_server_requests_are_refused() {
         let mut mapper = CodexMapper::new(PathBuf::from("/w"));
-        let req = json!({"method":"item/tool/requestUserInput","id":7,"params":{}});
+        let req = json!({"method":"item/tool/call","id":7,"params":{}});
         assert_eq!(mapper.server_request(&req), ServerRequest::Unsupported);
+        let req = json!({"method":"item/tool/requestUserInput","id":8,"params":{"questions":[]}});
+        assert_eq!(mapper.server_request(&req), ServerRequest::EmptyQuestion);
     }
 
     /// The fields and values we send are ones the 0.170.0 schema has.
@@ -1149,5 +1575,382 @@ mod tests {
                 assert!(text.contains(&format!("\"{decision}\"")), "{file}: {decision}");
             }
         }
+    }
+
+    fn plan_settings() -> LaunchSettings {
+        LaunchSettings {
+            mode: Mode::Plan,
+            model: None,
+            effort: None,
+            mcp: true,
+            default_model: Some("gpt-5.5-codex".into()),
+            default_effort: Some("medium".into()),
+        }
+    }
+
+    fn sent(out: &Output) -> Vec<Value> {
+        out.stdin.iter().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    /// Plays a capture against the driver: its `recv` lines go in, a question
+    /// is answered with `reply`; the lines the driver writes and its steps.
+    fn play(
+        name: &str,
+        settings: LaunchSettings,
+        reply: impl Fn() -> QuestionReply,
+    ) -> (Vec<Step>, Vec<Value>) {
+        let first = fixture(name)
+            .iter()
+            .find(|e| e["msg"]["method"] == "turn/start")
+            .and_then(|e| e["msg"]["params"]["input"][0]["text"].as_str().map(str::to_owned))
+            .unwrap();
+        let mut driver =
+            CodexDriver::with_settings(PathBuf::from("/work"), settings, None, UserInput::text(first));
+        let mut out = Output::default();
+        driver.start(&mut out);
+        for entry in fixture(name) {
+            if entry["dir"] != "recv" {
+                continue;
+            }
+            driver.on_line(entry["msg"].clone(), &mut out);
+            for (id, _) in std::mem::take(&mut out.questions) {
+                driver.on_question_reply(id, reply(), &mut out);
+            }
+        }
+        let lines = sent(&out);
+        (out.steps, lines)
+    }
+
+    #[test]
+    fn a_plan_turn_with_a_question_as_captured() {
+        let answers = || {
+            QuestionReply::Answered(crate::host::agents::SecretAnswers::new(vec![api::Answer {
+                id: "colour".into(),
+                labels: vec!["Blue".into()],
+                other: None,
+            }]))
+        };
+        let (steps, lines) = play("codex-11-plan-question.jsonl", plan_settings(), answers);
+        let expected: Vec<Value> = fixture("codex-11-plan-question.jsonl")
+            .into_iter()
+            .filter(|e| e["dir"] == "send")
+            .map(|e| e["msg"].clone())
+            .collect();
+        // Every line the driver wrote is the capture's (the client version aside).
+        assert_eq!(lines.len(), expected.len());
+        for (ours, theirs) in lines.iter().zip(&expected) {
+            let mut ours = ours.clone();
+            if let Some(version) = ours.pointer_mut("/params/clientInfo/version") {
+                *version = json!("0.1.17");
+            }
+            assert_eq!(&ours, theirs);
+        }
+        let plan: Vec<&Step> = steps
+            .iter()
+            .filter(|s| matches!(s, Step::PlanOpen { .. } | Step::PlanDelta { .. } | Step::PlanDone { .. }))
+            .collect();
+        assert_eq!(
+            plan,
+            [
+                &Step::PlanOpen { key: "plan_1".into() },
+                &Step::PlanDelta { key: "plan_1".into(), text: "1. Add notes.txt ".into() },
+                &Step::PlanDelta { key: "plan_1".into(), text: "with blue.".into() },
+                &Step::PlanDone {
+                    key: "plan_1".into(),
+                    text: "1. Add notes.txt with blue.\n2. Done.".into()
+                },
+            ]
+        );
+        assert!(steps.contains(&Step::Context { used: 19_384, max: 475_000 }));
+        assert!(steps.contains(&Step::AnsweredModel("gpt-5.5-codex".into())));
+        assert!(steps.contains(&Step::Notice(questions::MCP_DECLINED.into())));
+        let limits = steps.iter().find_map(|s| if let Step::Limits(l) = s { Some(l) } else { None }).unwrap();
+        assert_eq!((limits[0].window.as_str(), limits[0].state), ("300", api::LimitState::Warn));
+        let mcp: Vec<&Step> = steps.iter().filter(|s| matches!(s, Step::Mcp { .. })).collect();
+        assert_eq!(
+            mcp.last().unwrap(),
+            &&Step::Mcp { names: vec!["docs".into(), "tracker".into()], connected: 1, need_login: 1 }
+        );
+        assert!(matches!(steps.last(), Some(Step::TurnEnded(e)) if e.outcome == Outcome::Done));
+        // Not one word of the question's text is in a step: it is the host's to show.
+        assert!(!format!("{steps:?}").contains("Red or blue"));
+    }
+
+    #[test]
+    fn a_dismissed_question_answers_empty() {
+        let (_, lines) = play("codex-11-plan-question.jsonl", plan_settings(), || QuestionReply::Dismissed);
+        let reply = lines.iter().find(|l| l["id"] == 0 && l.get("result").is_some()).unwrap();
+        assert_eq!(reply["result"], json!({"answers": {"colour": {"answers": []}}}));
+    }
+
+    fn started(settings: LaunchSettings, thread_result: Value) -> (CodexDriver, Output) {
+        let mut driver =
+            CodexDriver::with_settings(PathBuf::from("/w"), settings, None, UserInput::text("Hi"));
+        let mut out = Output::default();
+        driver.start(&mut out);
+        for reply in [
+            json!({"id": 1, "result": {}}),
+            json!({"id": 2, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": true}}),
+            json!({"id": 3, "result": thread_result}),
+        ] {
+            driver.on_line(reply, &mut out);
+        }
+        (driver, out)
+    }
+
+    #[test]
+    fn model_effort_and_mode_go_with_each_turn() {
+        let settings = LaunchSettings {
+            mode: Mode::Supervised,
+            model: Some("gpt-5.5".into()),
+            effort: Some("xhigh".into()),
+            ..plan_settings()
+        };
+        let (_, out) = started(settings, json!({"thread": {"id": "th"}, "model": "gpt-5.5-codex"}));
+        let lines = sent(&out);
+        assert_eq!(lines[0]["params"]["capabilities"], json!({"experimentalApi": true}));
+        let turn = &lines.iter().find(|l| l["method"] == "turn/start").unwrap()["params"];
+        assert_eq!((turn["model"].as_str(), turn["effort"].as_str()), (Some("gpt-5.5"), Some("xhigh")));
+        assert_eq!(
+            turn["collaborationMode"],
+            json!({"mode": "default", "settings": {"model": "gpt-5.5", "reasoning_effort": "xhigh", "developer_instructions": null}})
+        );
+        assert!(out.steps.contains(&Step::AnsweredModel("gpt-5.5".into())), "the thread's own model");
+        // A model or effort we can't pass safely is left out.
+        let settings = LaunchSettings {
+            mode: Mode::Supervised,
+            model: Some("-x".into()),
+            effort: Some("max!".into()),
+            ..plan_settings()
+        };
+        let (_, out) = started(settings, json!({"thread": {"id": "th"}, "model": "gpt-5.5-codex"}));
+        let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap()["params"].clone();
+        assert!(turn.get("model").is_none() && turn.get("effort").is_none());
+        assert_eq!(turn["collaborationMode"]["settings"]["model"], "gpt-5.5-codex");
+        assert_eq!(turn["collaborationMode"]["settings"]["reasoning_effort"], "medium");
+    }
+
+    #[test]
+    fn without_the_experimental_api_there_is_no_plan_mode() {
+        let mut driver =
+            CodexDriver::with_settings(PathBuf::from("/w"), plan_settings(), None, UserInput::text("Plan"));
+        let mut out = Output::default();
+        driver.start(&mut out);
+        driver
+            .on_line(json!({"id": 1, "error": {"code": -32600, "message": "unknown capability"}}), &mut out);
+        let lines = sent(&out);
+        assert_eq!(lines[1]["method"], "initialize");
+        assert_eq!(lines[1]["params"]["capabilities"], Value::Null);
+        let id = lines[1]["id"].clone();
+        driver.on_line(json!({"id": id, "result": {}}), &mut out);
+        let account = sent(&out).last().unwrap()["id"].clone();
+        driver.on_line(json!({"id": account, "result": {"account": {"type": "chatgpt"}}}), &mut out);
+        let thread = sent(&out).last().unwrap()["id"].clone();
+        driver.on_line(json!({"id": thread, "result": {"thread": {"id": "th"}}}), &mut out);
+        assert!(
+            !sent(&out).iter().any(|l| l["method"] == "turn/start"),
+            "a plan turn isn't sent without plan mode"
+        );
+        let Some(Step::TurnEnded(end)) = out.steps.last() else { panic!("{:?}", out.steps) };
+        assert_eq!(end.error.as_ref().unwrap().code, PLAN_UNAVAILABLE_CODE);
+        assert_eq!(end.error.as_ref().unwrap().message, PLAN_UNAVAILABLE);
+    }
+
+    #[test]
+    fn a_refused_collaboration_mode() {
+        let refusal = json!({"code": -32600, "message": "turn/start.collaborationMode requires experimentalApi capability"});
+        // Plan mode: the turn fails with the reason.
+        let (mut driver, mut out) = started(plan_settings(), json!({"thread": {"id": "th"}}));
+        let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
+        assert_eq!(turn["params"]["collaborationMode"]["mode"], "plan");
+        driver.on_line(json!({"id": turn["id"], "error": refusal}), &mut out);
+        assert!(
+            matches!(out.steps.last(), Some(Step::TurnEnded(e)) if e.error.as_ref().unwrap().code == PLAN_UNAVAILABLE_CODE)
+        );
+        // Another mode: sent again without it, and never again.
+        let settings = LaunchSettings { mode: Mode::Supervised, ..plan_settings() };
+        let (mut driver, mut out) = started(settings, json!({"thread": {"id": "th"}}));
+        let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
+        driver.on_line(json!({"id": turn["id"], "error": refusal}), &mut out);
+        let again = sent(&out).into_iter().rev().find(|l| l["method"] == "turn/start").unwrap();
+        assert_ne!(again["id"], turn["id"]);
+        assert!(again["params"].get("collaborationMode").is_none());
+        assert_eq!(again["params"]["input"], turn["params"]["input"]);
+        assert!(!out.steps.iter().any(|s| matches!(s, Step::TurnEnded(_))));
+        driver.on_line(json!({"id": again["id"], "result": {"turn": {"id": "tu"}}}), &mut out);
+        driver.on_line(
+            json!({"method": "turn/completed", "params": {"turn": {"status": "completed"}}}),
+            &mut out,
+        );
+        driver.on_cmd(SessionCmd::Send(UserInput::text("More")), &mut out);
+        let next = sent(&out).into_iter().rev().find(|l| l["method"] == "turn/start").unwrap();
+        assert!(next["params"].get("collaborationMode").is_none());
+    }
+
+    #[test]
+    fn steering_the_running_turn() {
+        let (mut driver, mut out) =
+            started(LaunchSettings::new(Mode::Supervised), json!({"thread": {"id": "th"}}));
+        let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
+        driver.on_line(json!({"id": turn["id"], "result": {"turn": {"id": "tu_1"}}}), &mut out);
+        let mut out = Output::default();
+        let image = json!({"type": "localImage", "path": "/data/images/th/a.png"});
+        let input = UserInput { id: "u2".into(), text: "Use blue".into(), images: vec![image.clone()] };
+        driver.on_cmd(SessionCmd::Steer(input), &mut out);
+        let steer = sent(&out).pop().unwrap();
+        assert_eq!(steer["method"], "turn/steer");
+        assert_eq!(
+            steer["params"],
+            json!({"threadId": "th", "expectedTurnId": "tu_1", "input": [image, {"type": "text", "text": "Use blue", "text_elements": []}]})
+        );
+        driver.on_line(json!({"id": steer["id"], "result": {"turnId": "tu_1"}}), &mut out);
+        assert_eq!(out.steps, [Step::Delivered { id: "u2".into() }]);
+        // A mismatch: it goes as the next turn when this one ends.
+        let mut out = Output::default();
+        driver.on_cmd(
+            SessionCmd::Steer(UserInput { id: "u3".into(), text: "Late".into(), images: Vec::new() }),
+            &mut out,
+        );
+        let steer = sent(&out).pop().unwrap();
+        driver.on_line(
+            json!({"id": steer["id"], "error": {"code": -32600, "message": "turn mismatch"}}),
+            &mut out,
+        );
+        assert!(out.steps.is_empty());
+        driver.on_line(
+            json!({"method": "turn/completed", "params": {"turn": {"id": "tu_1", "status": "completed"}}}),
+            &mut out,
+        );
+        let marks: Vec<&Step> =
+            out.steps.iter().filter(|s| matches!(s, Step::TurnEnded(_) | Step::TurnStarted)).collect();
+        assert_eq!(marks.len(), 2);
+        assert!(matches!(marks[1], Step::TurnStarted));
+        let next = sent(&out).pop().unwrap();
+        assert_eq!(
+            (next["method"].as_str(), next["params"]["input"][0]["text"].as_str()),
+            (Some("turn/start"), Some("Late"))
+        );
+        driver.on_line(json!({"id": next["id"], "result": {"turn": {"id": "tu_2"}}}), &mut out);
+        assert_eq!(out.steps.last(), Some(&Step::Delivered { id: "u3".into() }));
+    }
+
+    #[test]
+    fn compact_and_skills() {
+        let (mut driver, mut out) =
+            started(LaunchSettings::new(Mode::Supervised), json!({"thread": {"id": "th"}}));
+        let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
+        driver.on_line(json!({"id": turn["id"], "result": {"turn": {"id": "tu_1"}}}), &mut out);
+        driver.on_line(
+            json!({"method": "turn/completed", "params": {"turn": {"status": "completed"}}}),
+            &mut out,
+        );
+        let mut out = Output::default();
+        driver.on_cmd(SessionCmd::Send(UserInput::text("/compact")), &mut out);
+        let compact = sent(&out).pop().unwrap();
+        assert_eq!(
+            (compact["method"].as_str(), &compact["params"]),
+            (Some("thread/compact/start"), &json!({"threadId": "th"}))
+        );
+        driver.on_line(json!({"id": compact["id"], "result": {}}), &mut out);
+        driver.on_line(
+            json!({"method": "thread/compacted", "params": {"threadId": "th", "turnId": "x"}}),
+            &mut out,
+        );
+        assert_eq!(out.steps[0], Step::Notice(COMPACTED.into()));
+        assert!(matches!(&out.steps[1], Step::TurnEnded(e) if e.outcome == Outcome::Done));
+        // A message naming a skill: the folder's skills first, then the turn with it.
+        let mut out = Output::default();
+        driver.on_cmd(SessionCmd::Send(UserInput::text("/review the parser")), &mut out);
+        let skills = sent(&out).pop().unwrap();
+        assert_eq!(
+            (skills["method"].as_str(), &skills["params"]),
+            (Some("skills/list"), &json!({"cwds": ["/w"]}))
+        );
+        driver.on_line(
+            json!({"id": skills["id"], "result": {"data": [{"cwd": "/w", "errors": [], "skills": [
+                {"name": "review", "description": "d", "enabled": true, "path": "/s/review/SKILL.md", "scope": "user"},
+                {"name": "off", "description": "d", "enabled": false, "path": "/s/off", "scope": "user"}]}]}}),
+            &mut out,
+        );
+        let turn = sent(&out).pop().unwrap();
+        assert_eq!(
+            turn["params"]["input"],
+            json!([{"type": "skill", "name": "review", "path": "/s/review/SKILL.md"},
+                   {"type": "text", "text": "/review the parser", "text_elements": []}])
+        );
+        // Asked once per process.
+        driver.on_line(json!({"id": turn["id"], "result": {"turn": {"id": "tu_3"}}}), &mut out);
+        driver.on_line(
+            json!({"method": "turn/completed", "params": {"turn": {"status": "completed"}}}),
+            &mut out,
+        );
+        let mut out = Output::default();
+        driver.on_cmd(SessionCmd::Send(UserInput::text("/off now")), &mut out);
+        let turn = sent(&out).pop().unwrap();
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["input"].as_array().unwrap().len(), 1, "a disabled skill is plain text");
+    }
+
+    #[test]
+    fn the_methods_we_send_are_stable_ones() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex-schema");
+        let stable: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("client-methods.json")).unwrap()).unwrap();
+        let stable: Vec<&str> =
+            stable["methods"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        for method in METHODS {
+            assert!(stable.contains(&method), "{method}");
+        }
+        for never in [
+            "account/rateLimitResetCredit/consume",
+            "account/usage/read",
+            "thread/queue/add",
+            "collaborationMode/list",
+        ] {
+            assert!(!METHODS.contains(&never), "{never}");
+            for file in [include_str!("codex.rs"), include_str!("catalog.rs")] {
+                let code = &file[..file.find("#[cfg(test)]").unwrap()];
+                assert!(!code.contains(never), "{never}");
+            }
+        }
+        // Every method the code names in a request is on the list.
+        for file in [include_str!("codex.rs"), include_str!("catalog.rs")] {
+            let code = &file[..file.find("#[cfg(test)]").unwrap()];
+            for (i, _) in code.match_indices("\"method\": ") {
+                let rest = &code[i + 10..];
+                if let Some(name) = rest.strip_prefix('"').and_then(|r| r.split('"').next())
+                    && name.contains('/')
+                {
+                    assert!(METHODS.contains(&name) || name == "initialized", "{name}");
+                }
+            }
+        }
+        // The fields we send are stable ones, but `turn/start.collaborationMode`.
+        let v2: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("v2-subset.json")).unwrap()).unwrap();
+        let props = |name: &str| -> Vec<String> {
+            v2["definitions"][name]["properties"].as_object().unwrap().keys().cloned().collect()
+        };
+        for (name, fields) in [
+            ("TurnStartParams", &["threadId", "input", "summary", "model", "effort"][..]),
+            ("TurnSteerParams", &["threadId", "expectedTurnId", "input"][..]),
+            ("ModelListParams", &["cursor"][..]),
+            ("SkillsListParams", &["cwds"][..]),
+            ("ThreadCompactStartParams", &["threadId"][..]),
+            ("ToolRequestUserInputResponse", &["answers"][..]),
+            ("McpServerElicitationRequestResponse", &["action"][..]),
+            ("InitializeCapabilities", &["experimentalApi"][..]),
+        ] {
+            let have = props(name);
+            for field in fields {
+                assert!(have.iter().any(|h| h == field), "{name}.{field}");
+            }
+        }
+        assert!(!props("TurnStartParams").iter().any(|p| p == "collaborationMode"), "the named exception");
+        let input = v2["definitions"]["UserInput"].to_string();
+        for kind in ["\"localImage\"", "\"skill\"", "\"text\""] {
+            assert!(input.contains(kind), "{kind}");
+        }
+        assert!(v2["definitions"]["McpServerElicitationAction"].to_string().contains("\"decline\""));
     }
 }

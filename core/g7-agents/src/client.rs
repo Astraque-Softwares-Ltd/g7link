@@ -469,7 +469,7 @@ pub mod calls {
     }
 
     pub fn thread_send(thread_id: String, text: String, origin: Origin) -> Call<()> {
-        Call::new(method::THREAD_SEND, &ThreadSendParams { thread_id, text, origin }, unit)
+        Call::new(method::THREAD_SEND, &ThreadSendParams::new(thread_id, text, origin), unit)
     }
 
     pub fn thread_interrupt(thread_id: String) -> Call<()> {
@@ -550,6 +550,114 @@ pub mod calls {
     pub fn sessions_set_following(on: bool) -> Call<HostSettings> {
         Call::new(method::SESSIONS_SET_FOLLOWING, &SessionsSetFollowingParams { on }, parse_as)
     }
+
+    // ---- Control (phase 2): only to a host that offers `cap::CONTROL` ----
+
+    /// `thread.send` with every field: steer or queue, images, settings.
+    pub fn thread_send_with(params: ThreadSendParams) -> Call<ThreadSendResult> {
+        Call::new(method::THREAD_SEND, &params, parse_as)
+    }
+
+    pub fn thread_configure(params: ThreadConfigureParams) -> Call<ThreadInfo> {
+        Call::new(method::THREAD_CONFIGURE, &params, |v| parse_as::<ThreadResult>(v).map(|r| r.thread))
+    }
+
+    pub fn queue_edit(params: QueueEditParams) -> Call<()> {
+        Call::new(method::QUEUE_EDIT, &params, unit)
+    }
+
+    pub fn queue_remove(params: QueueItemParams) -> Call<()> {
+        Call::new(method::QUEUE_REMOVE, &params, unit)
+    }
+
+    pub fn queue_send_now(params: QueueItemParams) -> Call<()> {
+        Call::new(method::QUEUE_SEND_NOW, &params, unit)
+    }
+
+    pub fn question_answer(params: QuestionAnswerParams) -> Call<()> {
+        Call::new(method::QUESTION_ANSWER, &params, unit)
+    }
+
+    pub fn question_dismiss(token: String, by: By) -> Call<()> {
+        Call::new(method::QUESTION_DISMISS, &QuestionDismissParams { token, by }, unit)
+    }
+
+    pub fn plan_implement(params: PlanImplementParams) -> Call<()> {
+        Call::new(method::PLAN_IMPLEMENT, &params, unit)
+    }
+
+    pub fn files_search(params: FilesSearchParams) -> Call<FilesSearchResult> {
+        Call::new(method::FILES_SEARCH, &params, parse_as)
+    }
+
+    pub fn commands_list(agent: AgentId, folder_id: String) -> Call<Vec<crate::api::Command>> {
+        Call::new(method::COMMANDS_LIST, &CommandsListParams { agent, folder_id }, |v| {
+            parse_as::<CommandsListResult>(v).map(|r| r.commands)
+        })
+    }
+
+    /// A picture on this PC, by path (PC clients only).
+    pub fn image_add_path(path: String) -> Call<ImageRef> {
+        Call::new(method::IMAGE_ADD_PATH, &ImageAddPathParams { path }, |v| {
+            parse_as::<ImageResult>(v).map(|r| r.image)
+        })
+    }
+
+    /// Starts an upload of `bytes`; its id.
+    pub fn image_begin(name: String, bytes: u32) -> Call<String> {
+        Call::new(method::IMAGE_BEGIN, &ImageBeginParams { name, bytes }, |v| {
+            parse_as::<ImageBeginResult>(v).map(|r| r.upload)
+        })
+    }
+
+    pub fn image_chunk(params: ImageChunkParams) -> Call<()> {
+        Call::new(method::IMAGE_CHUNK, &params, unit)
+    }
+
+    pub fn image_end(upload: String) -> Call<ImageRef> {
+        Call::new(method::IMAGE_END, &ImageEndParams { upload }, |v| {
+            parse_as::<ImageResult>(v).map(|r| r.image)
+        })
+    }
+
+    pub fn image_drop(id: String) -> Call<()> {
+        Call::new(method::IMAGE_DROP, &ImageIdParams { id }, unit)
+    }
+
+    pub fn image_read(id: String, max: u16) -> Call<ImageReadResult> {
+        Call::new(method::IMAGE_READ, &ImageReadParams { id, max }, parse_as)
+    }
+
+    /// The draft's new `rev`; a `CONFLICT` error carries the stored draft
+    /// ([`RpcError::conflict_draft`]).
+    pub fn draft_set(params: DraftSetParams) -> Call<u64> {
+        Call::new(method::DRAFT_SET, &params, |v| parse_as::<DraftSetResult>(v).map(|r| r.rev))
+    }
+
+    pub fn draft_get(key: String) -> Call<Option<Draft>> {
+        Call::new(method::DRAFT_GET, &DraftGetParams { key }, |v| {
+            parse_as::<DraftGetResult>(v).map(|r| r.draft)
+        })
+    }
+
+    /// Prompts sent from this PC, newest first (PC clients only).
+    pub fn history_list(limit: Option<u32>) -> Call<Vec<String>> {
+        Call::new(method::HISTORY_LIST, &HistoryListParams { limit }, |v| {
+            parse_as::<HistoryListResult>(v).map(|r| r.prompts)
+        })
+    }
+
+    /// A folder's MCP switch (PC clients only).
+    pub fn folders_set(id: String, mcp: bool) -> Call<Folder> {
+        Call::new(method::FOLDERS_SET, &FoldersSetParams { id, mcp }, |v| {
+            parse_as::<FolderResult>(v).map(|r| r.folder)
+        })
+    }
+
+    /// Changes host settings (PC clients only); the new settings.
+    pub fn settings_set(params: SettingsSetParams) -> Call<HostSettings> {
+        Call::new(method::SETTINGS_SET, &params, parse_as)
+    }
 }
 
 /// Generates one typed method per call builder, async or blocking.
@@ -581,6 +689,27 @@ macro_rules! with_calls {
             thread_export(params: ThreadExportParams) -> ThreadExportResult;
             settings_get() -> HostSettings;
             sessions_set_following(on: bool) -> HostSettings;
+            thread_send_with(params: ThreadSendParams) -> ThreadSendResult;
+            thread_configure(params: ThreadConfigureParams) -> ThreadInfo;
+            queue_edit(params: QueueEditParams) -> ();
+            queue_remove(params: QueueItemParams) -> ();
+            queue_send_now(params: QueueItemParams) -> ();
+            question_answer(params: QuestionAnswerParams) -> ();
+            question_dismiss(token: String, by: By) -> ();
+            plan_implement(params: PlanImplementParams) -> ();
+            files_search(params: FilesSearchParams) -> FilesSearchResult;
+            commands_list(agent: AgentId, folder_id: String) -> Vec<crate::api::Command>;
+            image_add_path(path: String) -> ImageRef;
+            image_begin(name: String, bytes: u32) -> String;
+            image_chunk(params: ImageChunkParams) -> ();
+            image_end(upload: String) -> ImageRef;
+            image_drop(id: String) -> ();
+            image_read(id: String, max: u16) -> ImageReadResult;
+            draft_set(params: DraftSetParams) -> u64;
+            draft_get(key: String) -> Option<Draft>;
+            history_list(limit: Option<u32>) -> Vec<String>;
+            folders_set(id: String, mcp: bool) -> Folder;
+            settings_set(params: SettingsSetParams) -> HostSettings;
         }
     };
 }

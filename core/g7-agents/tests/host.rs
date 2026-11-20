@@ -102,6 +102,7 @@ impl TestHost {
             codex_home: dir.join("home/.codex"),
             proc_root: dir.join("proc"),
             sessions: false,
+            keep_awake_bus: false,
         }
     }
 
@@ -200,13 +201,7 @@ async fn approval(events: &mut Events) -> Approval {
 }
 
 fn start(agent: AgentId, folder: &Folder, prompt: &str) -> ThreadStartParams {
-    ThreadStartParams {
-        agent,
-        folder_id: folder.id.clone(),
-        prompt: prompt.into(),
-        mode: Mode::Supervised,
-        origin: Origin::launcher(),
-    }
+    ThreadStartParams::new(agent, folder.id.clone(), prompt.into(), Mode::Supervised, Origin::launcher())
 }
 
 fn done_of(events: &[Event]) -> &ThreadDoneEvent {
@@ -372,7 +367,8 @@ async fn claude_streams_a_turn_to_done() {
     assert_eq!(terminal.cwd, std::fs::canonicalize(&host.work).unwrap().to_string_lossy());
     let log = host.log();
     assert!(log.contains("--session-id"), "{log}");
-    assert!(log.contains("--strict-mcp-config") && log.contains("--permission-prompt-tool mcp__g7__approve"));
+    assert!(log.contains("--mcp-config") && log.contains("--permission-prompt-tool mcp__g7__approve"));
+    assert!(!log.contains("--strict-mcp-config"), "the folder uses the user's MCP servers by default");
     assert!(!log.contains("--bare"));
 
     let listed = client.threads_list(None, None).await.unwrap();
@@ -393,13 +389,20 @@ async fn claude_asks_through_the_bridge_and_the_user_allows() {
     let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
     let first = until_done(&mut events, &thread.id).await;
     assert_eq!(done_of(&first).outcome, Outcome::Done);
-    // BUSY while working is checked on the next turn; here it's done.
     client
         .thread_send(thread.id.clone(), "Create hello.txt containing exactly: hi".into(), Origin::launcher())
         .await
         .unwrap();
-    let busy = client.thread_send(thread.id.clone(), "again".into(), Origin::launcher()).await.unwrap_err();
-    assert_eq!(busy.code(), Some(ErrorCode::Busy));
+    // While it works a message waits its turn; while it waits on a request, BUSY.
+    let again = ThreadSendParams::new(thread.id.clone(), "again".into(), Origin::launcher());
+    match client.thread_send_with(again).await {
+        Ok(sent) => {
+            let queued = sent.queued.expect("it waits its turn");
+            let remove = QueueItemParams { thread_id: thread.id.clone(), id: queued.id, by: None };
+            client.queue_remove(remove).await.unwrap();
+        }
+        Err(e) => assert_eq!(e.code(), Some(ErrorCode::Busy)),
+    }
     let mut seen = Vec::new();
     let asked = loop {
         let event = next(&mut events, "approval", |_| true).await;
@@ -749,7 +752,7 @@ async fn read_all(client: &Client, thread_id: &str) -> Vec<Item> {
 async fn hello_says_what_the_host_offers() {
     let host = TestHost::start(Options::default()).await;
     let (client, _events) = host.client(ClientKind::Test).await;
-    assert_eq!(client.host().caps, [cap::ITEMS2, cap::DENY_MESSAGE]);
+    assert_eq!(client.host().caps, [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL]);
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
     let err = Client::connect(&host.socket, too_many).await.unwrap_err();
     assert_eq!(err.code(), Some(ErrorCode::BadRequest));
@@ -1250,4 +1253,65 @@ async fn a_current_host_is_left_alone() {
     assert_eq!(client.process().map(|p| p.pid()), Some(pid), "the host's own process was found");
     assert!(client.replace(&launch, When::Now).await.unwrap().is_none(), "never for a current host");
     assert_eq!(hosts.count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_lists_come_from_the_clis_and_the_control_methods_answer() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, _events) = host.subscribed().await;
+    let agents = client.agents_list(false).await.unwrap();
+    let claude = agents.iter().find(|a| a.id == AgentId::Claude).unwrap();
+    let codex = agents.iter().find(|a| a.id == AgentId::Codex).unwrap();
+    assert!(claude.model("default").is_some_and(|m| m.default), "Claude's own list: {:?}", claude.models);
+    assert!(claude.can(Can::Steer) && claude.can(Can::Plan) && claude.can(Can::McpSwitch));
+    assert_eq!(codex.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["gpt-5.5-codex"]);
+    assert!(codex.can(Can::Steer) && !codex.can(Can::McpSwitch));
+    assert_eq!(codex.limits.first().map(|l| (l.window.as_str(), l.used_pct)), Some(("300", Some(41))));
+    let log = host.log();
+    assert!(log.contains("probe control initialize"), "Claude was asked on its control channel: {log}");
+    assert!(
+        !log.lines().any(|l| l.starts_with("args") && l.contains("--no-session-persistence")),
+        "the probe is no thread"
+    );
+
+    let folder = host.folder(&client).await;
+    let commands = client.commands_list(AgentId::Claude, folder.id.clone()).await.unwrap();
+    let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains(&"review") && !names.contains(&"login"), "{names:?}");
+    let skills = client.commands_list(AgentId::Codex, folder.id.clone()).await.unwrap();
+    let skill_names: Vec<&str> = skills.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(skill_names, ["release-notes", "compact"], "G7's own names left out, compact once");
+
+    // A model the list doesn't have needs `custom_model`; a typed one may not be a flag.
+    let unknown = ThreadStartParams { model: Some("opus-9".into()), ..start(AgentId::Claude, &folder, "x") };
+    assert_eq!(client.thread_start(unknown).await.unwrap_err().code(), Some(ErrorCode::BadRequest));
+    let flag = ThreadStartParams {
+        model: Some("--dangerously".into()),
+        custom_model: true,
+        ..start(AgentId::Claude, &folder, "x")
+    };
+    assert_eq!(client.thread_start(flag).await.unwrap_err().code(), Some(ErrorCode::BadRequest));
+
+    // Drafts, the folder's MCP switch, keep-awake and the history.
+    let key = format!("new:{}", folder.id);
+    let set = |text: &str, rev: u64| DraftSetParams {
+        key: key.clone(),
+        text: text.into(),
+        images: vec![],
+        rev,
+        by: None,
+    };
+    assert_eq!(client.draft_set(set("Fix the", 0)).await.unwrap(), 1);
+    let conflict = client.draft_set(set("Fix it", 0)).await.unwrap_err();
+    let ClientError::Remote(error) = conflict else { panic!("not the host's error") };
+    assert_eq!(error.conflict_draft().map(|d| d.text), Some("Fix the".into()));
+    assert!(!client.folders_set(folder.id.clone(), false).await.unwrap().mcp);
+    assert!(!client.folders_list().await.unwrap()[0].mcp, "stored");
+    let settings = client.settings_set(SettingsSetParams { keep_awake: Some(false) }).await.unwrap();
+    assert!(!settings.keep_awake && settings.follow_sessions);
+    assert!(!client.settings_get().await.unwrap().keep_awake);
+    client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    assert_eq!(client.history_list(None).await.unwrap(), ["List the files here."]);
+    assert_eq!(client.draft_get(key.clone()).await.unwrap().map(|d| d.text), Some(String::new()), "sent");
+    host.stop().await;
 }

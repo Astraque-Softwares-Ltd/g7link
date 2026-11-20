@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::api::*;
 use crate::host::agents::{
-    self, AgentEvent, AgentProcess, Answer, ApprovalSpec, DenyReason, Probe, SessionCmd, Step, ToolSpec,
-    TurnEnd, code,
+    self, AgentEvent, AgentProcess, Answer, ApprovalSpec, DenyReason, LaunchSettings, Probe, QuestionReply,
+    QuestionSpec, SecretAnswers, SessionCmd, Step, ToolSpec, TurnEnd, UserInput, code,
 };
 use crate::host::notify::Note;
 use crate::host::store::{ApprovalRecord, Store, now_ms};
@@ -36,8 +36,11 @@ pub const REPLY_NOT_SENT: &str = "Your reply wasn't sent.";
 pub const UNFINISHED_OUTPUT: &str = "Stopped before it finished.";
 /// `thread.state` for a change of `step` alone is sent at most this often.
 const STEP_EVERY: Duration = Duration::from_secs(1);
+/// A steer the agent neither took in nor started a turn for this long
+/// after its turn ended no longer holds the queue back.
+const STEER_GRACE: Duration = Duration::from_secs(10);
 
-fn random_hex(bytes: usize) -> String {
+pub(crate) fn random_hex(bytes: usize) -> String {
     let mut out = String::with_capacity(bytes * 2);
     for _ in 0..bytes {
         out.push_str(&format!("{:02x}", rand::random::<u8>()));
@@ -45,10 +48,10 @@ fn random_hex(bytes: usize) -> String {
     out
 }
 
-struct Session {
-    generation: u64,
-    cmds: mpsc::UnboundedSender<SessionCmd>,
-    bridge_token: Option<String>,
+pub(crate) struct Session {
+    pub(crate) generation: u64,
+    pub(crate) cmds: mpsc::UnboundedSender<SessionCmd>,
+    pub(crate) bridge_token: Option<String>,
 }
 
 /// Assistant text, or thinking, being streamed.
@@ -78,8 +81,10 @@ struct FollowUp {
 }
 
 #[derive(Default)]
-struct Turn {
+pub(crate) struct Turn {
     interrupt_requested: bool,
+    /// The turn proposed a plan: it ends with "Plan ready".
+    plan_ready: bool,
     /// The agent's ids for items (stream keys, tool use ids) → our seq.
     keys: HashMap<String, u64>,
     streams: BTreeMap<u64, Stream>,
@@ -100,9 +105,9 @@ pub struct Entry {
     pub info: ThreadInfo,
     next_seq: u64,
     /// The folder's path when the thread was loaded or started.
-    cwd: Option<PathBuf>,
-    session: Option<Session>,
-    turn: Turn,
+    pub(crate) cwd: Option<PathBuf>,
+    pub(crate) session: Option<Session>,
+    pub(crate) turn: Turn,
     /// The running or last turn's number, 1-based; 0 for a thread stored
     /// before turns were numbered, until its next turn.
     turn_no: u32,
@@ -117,6 +122,12 @@ pub struct Entry {
     step_announced: Option<String>,
     step_sent: Option<Instant>,
     step_timer: bool,
+    /// Messages steered into a turn the agent hasn't taken in yet, oldest first.
+    pub(crate) steering: Vec<Item>,
+    /// The newest plan while it is proposed.
+    pub(crate) plan: Option<Item>,
+    /// The folder's MCP switch when the running process started.
+    mcp_on: bool,
 }
 
 impl Entry {
@@ -136,11 +147,35 @@ impl Entry {
             process_ended_ms: 0,
             step_sent: None,
             step_timer: false,
+            steering: Vec::new(),
+            plan: None,
+            mcp_on: true,
+        }
+    }
+
+    /// When this thread's last agent process exited (Unix ms).
+    pub(crate) fn process_ended_ms(&self) -> u64 {
+        self.process_ended_ms
+    }
+
+    /// The process is running (or starting).
+    pub(crate) fn alive(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| !s.cmds.is_closed())
+    }
+
+    /// Lets the idle process go: the next turn starts a new one (with
+    /// `--resume` and the thread's settings as they are then).
+    pub(crate) fn close_session(&mut self, bridges: &mut HashMap<String, (String, u64)>) {
+        if let Some(session) = self.session.take() {
+            let _ = session.cmds.send(SessionCmd::Close);
+            if let Some(token) = session.bridge_token {
+                bridges.remove(&token);
+            }
         }
     }
 
     /// Changes `state`, and `state_since_ms` with it.
-    fn set_state(&mut self, state: State) {
+    pub(crate) fn set_state(&mut self, state: State) {
         if self.info.state != state {
             self.info.state = state;
             self.info.state_since_ms = now_ms();
@@ -169,7 +204,7 @@ impl Entry {
     }
 
     /// Starts the next turn: items made from now on carry its number.
-    fn advance_turn(&mut self) {
+    pub(crate) fn advance_turn(&mut self) {
         let last = if self.turn_no == 0 { self.users_before } else { self.turn_no };
         self.turn_no = last.saturating_add(1);
     }
@@ -195,7 +230,18 @@ impl Entry {
         }
     }
 
-    fn notice(&mut self, text: &str) -> Item {
+    /// A message from a person: how it reached the turn, and its images.
+    pub(crate) fn message_item(
+        &mut self,
+        text: &str,
+        origin: &Origin,
+        via: Option<Via>,
+        images: Vec<ImageRef>,
+    ) -> Item {
+        Item { via, images, ..self.user_item(text, origin, None) }
+    }
+
+    pub(crate) fn notice(&mut self, text: &str) -> Item {
         Item { text: Some(text.to_owned()), ..self.new_item(|seq| format!("notice-{seq}"), ItemKind::Notice) }
     }
 }
@@ -229,13 +275,29 @@ pub struct PendingApproval {
     by_rule: bool,
 }
 
+/// A question waiting for the user (§Q4.4).
+pub struct PendingQuestion {
+    question: Question,
+    reply: Option<oneshot::Sender<QuestionReply>>,
+    item: Item,
+    generation: u64,
+    bridge_tool_use_id: Option<String>,
+}
+
+impl std::fmt::Debug for PendingQuestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingQuestion").field("thread_id", &self.question.thread_id).finish_non_exhaustive()
+    }
+}
+
 pub struct Registry {
     pub folders: Vec<Folder>,
     folder_exists: HashMap<String, bool>,
     pub threads: HashMap<String, Entry>,
     approvals: HashMap<String, PendingApproval>,
+    questions: HashMap<String, PendingQuestion>,
     answered: Answered,
-    bridges: HashMap<String, (String, u64)>,
+    pub(crate) bridges: HashMap<String, (String, u64)>,
     next_generation: u64,
     next_order: u64,
     pub login_blocked: HashMap<AgentId, String>,
@@ -318,7 +380,7 @@ fn clean_error(error: &ThreadError) -> ThreadError {
     }
 }
 
-fn emit_item(host: &Host, thread_id: &str, item: &Item) {
+pub(crate) fn emit_item(host: &Host, thread_id: &str, item: &Item) {
     host.store.append_item(thread_id, item);
     host.hub.broadcast(&Event::ThreadItem(ThreadItemEvent {
         thread_id: thread_id.to_owned(),
@@ -326,7 +388,8 @@ fn emit_item(host: &Host, thread_id: &str, item: &Item) {
     }));
 }
 
-fn emit_state(host: &Host, entry: &mut Entry) {
+pub(crate) fn emit_state(host: &Host, entry: &mut Entry) {
+    host.awake.working(&entry.info.id, entry.info.state == State::Working);
     entry.info.step = entry.current_step();
     entry.step_announced = entry.info.step.clone();
     entry.step_sent = Some(Instant::now());
@@ -360,7 +423,7 @@ pub(crate) fn subdir_of(dir: &Path, folder: &Path) -> Result<Option<String>, ()>
     rel.to_str().map(|s| Some(s.to_owned())).ok_or(())
 }
 
-fn notify(host: &Host, note: Note) {
+pub(crate) fn notify(host: &Host, note: Note) {
     if let Some(notifier) = &host.notifier {
         notifier.send(note);
     }
@@ -370,7 +433,7 @@ fn notify(host: &Host, note: Note) {
 /// Link shows that thread to the user right now: then the thread's
 /// notification, if one is up, is taken down instead. Clients still get
 /// every event, so lists, badges and phones change as usual.
-fn notify_unless_viewed(host: &Host, thread_id: &str, note: Note) {
+pub(crate) fn notify_unless_viewed(host: &Host, thread_id: &str, note: Note) {
     if host.hub.viewed(thread_id) {
         notify(host, Note::Removed { thread_id: thread_id.to_owned() });
     } else {
@@ -378,7 +441,7 @@ fn notify_unless_viewed(host: &Host, thread_id: &str, note: Note) {
     }
 }
 
-fn err(code: ErrorCode, message: impl AsRef<str>) -> RpcError {
+pub(crate) fn err(code: ErrorCode, message: impl AsRef<str>) -> RpcError {
     RpcError::new(code, message)
 }
 
@@ -393,7 +456,10 @@ impl Registry {
             let mut next_seq = stored.next_seq;
             let turn = (stored.max_turn > 0).then_some(stored.max_turn);
             info.pending = 0;
+            info.asking = 0;
             info.step = None;
+            // A queue that outlived its host waits for the user.
+            info.queue_held = !info.queued.is_empty();
             if info.state_since_ms == 0 {
                 info.state_since_ms = info.updated_ms;
             }
@@ -417,6 +483,7 @@ impl Registry {
             let mut entry = Entry::new(info, next_seq, cwd);
             entry.turn_no = stored.max_turn;
             entry.users_before = stored.users;
+            entry.plan = stored.plan;
             threads.insert(entry.info.id.clone(), entry);
         }
         let mut registry = Registry {
@@ -424,6 +491,7 @@ impl Registry {
             folders,
             threads,
             approvals: HashMap::new(),
+            questions: HashMap::new(),
             answered: Answered::default(),
             bridges: HashMap::new(),
             next_generation: 1,
@@ -456,7 +524,7 @@ impl Registry {
         idle.into_iter().take(excess).map(|(id, _)| id.clone()).collect()
     }
 
-    fn running(&self) -> (usize, HashMap<AgentId, usize>) {
+    pub(crate) fn running(&self) -> (usize, HashMap<AgentId, usize>) {
         let mut total = 0;
         let mut per = HashMap::new();
         for entry in self.threads.values().filter(|e| e.info.state.is_running()) {
@@ -484,7 +552,12 @@ impl Host {
         self.lock_reg().threads.values().any(|e| e.info.state.is_running())
     }
 
-    fn busy_message(&self, agent: AgentId, total: usize, per: &HashMap<AgentId, usize>) -> Option<String> {
+    pub(crate) fn busy_message(
+        &self,
+        agent: AgentId,
+        total: usize,
+        per: &HashMap<AgentId, usize>,
+    ) -> Option<String> {
         if total >= MAX_RUNNING {
             return Some(format!(
                 "{} is already running {MAX_RUNNING} threads. Stop one to start another.",
@@ -508,10 +581,32 @@ impl Host {
         let mut cache = self.probes.lock().await;
         let stale = cache.at.is_none_or(|at| at.elapsed() >= Duration::from_millis(PROBE_CACHE_MS));
         if refresh || stale || cache.claude.is_none() || cache.codex.is_none() {
-            let (claude, codex) = tokio::join!(
+            let (mut claude, (codex, codex_limits)) = tokio::join!(
                 agents::probe_claude(self.config.claude_bin.as_deref(), &self.config.env),
                 agents::probe_codex(self.config.codex_bin.as_deref(), &self.config.env),
             );
+            // Claude's models and commands: asked once per CLI version (§Q4.1).
+            if claude.info.installed
+                && claude.info.problem.is_none()
+                && let Some(bin) = claude.bin.clone()
+            {
+                let known = cache.claude_catalog.as_ref().is_some_and(|(v, _)| *v == claude.info.version);
+                if refresh || !known {
+                    let child_env = env::child_env(AgentId::Claude, self.config.env.iter().cloned());
+                    let catalog =
+                        crate::host::catalog::probe_claude(&bin, &child_env, &self.config.data_dir).await;
+                    let catalog = catalog.unwrap_or_default();
+                    self.lock_commands().set_claude_probe(&catalog.commands);
+                    cache.claude_catalog = Some((claude.info.version.clone(), catalog));
+                }
+                if let Some((_, catalog)) = &cache.claude_catalog {
+                    claude.info.models = catalog.models.clone();
+                    claude.commands = catalog.commands.clone();
+                }
+            }
+            if let Some(limits) = codex_limits {
+                self.keep_limits(AgentId::Codex, limits);
+            }
             if refresh {
                 let mut reg = self.lock_reg();
                 for probe in [&claude, &codex] {
@@ -525,8 +620,8 @@ impl Host {
             cache.at = Some(std::time::Instant::now());
         }
         let mut probes = [
-            cache.claude.clone().unwrap_or(Probe { info: AgentInfo::missing(AgentId::Claude), bin: None }),
-            cache.codex.clone().unwrap_or(Probe { info: AgentInfo::missing(AgentId::Codex), bin: None }),
+            cache.claude.clone().unwrap_or_else(|| Probe::missing(AgentId::Claude)),
+            cache.codex.clone().unwrap_or_else(|| Probe::missing(AgentId::Codex)),
         ];
         {
             let reg = self.lock_reg();
@@ -536,6 +631,9 @@ impl Host {
                     probe.info.problem = Some(clean_cut(message, MAX_PROBLEM).0);
                 }
             }
+        }
+        for probe in &mut probes {
+            probe.info.limits = self.limits_of(probe.info.id);
         }
         let shown: Vec<AgentInfo> = probes.iter().map(|p| p.info.clone()).collect();
         if cache.shown.as_ref() != Some(&shown) {
@@ -621,7 +719,15 @@ impl Host {
             while reg.folders.iter().any(|f| f.id == id) {
                 id = format!("f{}", random_hex(6));
             }
-            let folder = Folder { id, label, path: canonical_str, exists: true, added_ms: now_ms() };
+            let folder = Folder {
+                id,
+                label,
+                path: canonical_str,
+                exists: true,
+                added_ms: now_ms(),
+                mcp: true,
+                mcp_seen: Vec::new(),
+            };
             let mut list = reg.folders.clone();
             list.push(folder.clone());
             (folder, list)
@@ -657,8 +763,41 @@ impl Host {
             reg.folder_exists.remove(id);
             reg.folders = list;
         }
+        self.lock_commands().forget_folder(id);
         self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
         Ok(())
+    }
+
+    /// `folders.set`: the folder's MCP switch, used from each thread's next
+    /// process.
+    pub async fn folders_set(&self, id: &str, mcp: bool) -> Result<Folder, RpcError> {
+        let _serial = self.folders_lock.lock().await;
+        let list = {
+            let reg = self.lock_reg();
+            if !is_valid_folder_id(id) || !reg.folders.iter().any(|f| f.id == id) {
+                return Err(err(ErrorCode::NotFound, "No such folder."));
+            }
+            let mut list = reg.folders.clone();
+            for folder in list.iter_mut().filter(|f| f.id == id) {
+                folder.mcp = mcp;
+            }
+            list
+        };
+        self.store
+            .save_folders(list.clone())
+            .await
+            .map_err(|_| err(ErrorCode::Internal, "Couldn't save the folder list."))?;
+        let folder = {
+            let mut reg = self.lock_reg();
+            // Keep what threads reported meanwhile.
+            for folder in reg.folders.iter_mut().filter(|f| f.id == id) {
+                folder.mcp = mcp;
+            }
+            reg.folders.iter().find(|f| f.id == id).cloned()
+        };
+        self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
+        let folder = folder.ok_or_else(|| err(ErrorCode::NotFound, "No such folder."))?;
+        Ok(Folder { exists: Path::new(&folder.path).is_dir(), ..folder })
     }
 
     // ---- Threads ----
@@ -689,7 +828,12 @@ impl Host {
         err(ErrorCode::Unavailable, message)
     }
 
-    pub async fn thread_start(self: &Arc<Self>, p: ThreadStartParams) -> Result<ThreadInfo, RpcError> {
+    /// `thread.start`. `owner`: whose pending images it may use.
+    pub async fn thread_start(
+        self: &Arc<Self>,
+        p: ThreadStartParams,
+        owner: &str,
+    ) -> Result<ThreadInfo, RpcError> {
         if p.prompt.is_empty() || p.prompt.len() > MAX_PROMPT {
             return Err(err(ErrorCode::BadRequest, "The prompt must be 1 to 16384 bytes."));
         }
@@ -699,10 +843,13 @@ impl Host {
         if !is_valid_folder_id(&p.folder_id) {
             return Err(err(ErrorCode::NotFound, "No such folder."));
         }
-        if p.origin.kind == OriginKind::Phone && p.mode != Mode::Supervised {
+        if p.images.len() > MAX_IMAGES {
+            return Err(err(ErrorCode::BadRequest, "Up to 4 images go with a message."));
+        }
+        if p.origin.kind == OriginKind::Phone && !p.mode.phone_may() {
             return Err(err(
                 ErrorCode::Denied,
-                "A phone can only start threads that ask before each change.",
+                "A phone can only start threads that ask before each change, or plan.",
             ));
         }
         if p.agent == AgentId::Codex && p.mode == Mode::AutoEdit && !CODEX_AUTO_EDIT {
@@ -712,6 +859,39 @@ impl Host {
         let Some(bin) = probe.bin.clone().filter(|_| probe.info.ready()) else {
             return Err(Self::unavailable(&probe));
         };
+        let wanted = crate::host::dispatch::check_settings(
+            &probe.info,
+            None,
+            p.model.as_deref(),
+            p.effort.as_deref(),
+            p.custom_model,
+            Some(p.mode),
+            p.origin.kind == OriginKind::Phone,
+        )?;
+        let model = wanted.model.clone().flatten();
+        if !p.images.is_empty()
+            && model
+                .as_deref()
+                .or(probe.info.default_model().map(|m| m.id.as_str()))
+                .and_then(|m| probe.info.model(m))
+                .is_some_and(|m| !m.images)
+        {
+            return Err(err(
+                ErrorCode::BadRequest,
+                format!("{} can't take images with this model.", p.agent.display_name()),
+            ));
+        }
+        // The id first: the images move into the thread before it exists.
+        let id = {
+            let reg = self.lock_reg();
+            let mut id = random_hex(16);
+            while reg.threads.contains_key(&id) {
+                id = random_hex(16);
+            }
+            id
+        };
+        let images = self.claim_images(&p.images, owner, &id).await?;
+        let blocks = self.agent_images(p.agent, &id, &images).await?;
         let mut reg = self.lock_reg();
         if let Some(message) = reg.login_blocked.get(&p.agent) {
             return Err(err(ErrorCode::Unavailable, message));
@@ -727,9 +907,8 @@ impl Host {
         if let Some(message) = self.busy_message(p.agent, total, &per) {
             return Err(err(ErrorCode::Busy, message));
         }
-        let mut id = random_hex(16);
-        while reg.threads.contains_key(&id) {
-            id = random_hex(16);
+        if reg.threads.contains_key(&id) {
+            return Err(err(ErrorCode::Internal, "Try again."));
         }
         let now = now_ms();
         let info = ThreadInfo {
@@ -753,30 +932,71 @@ impl Host {
             state_since_ms: now,
             subdir: None,
             continued: false,
+            model,
+            effort: wanted.effort.flatten(),
+            answered_model: None,
+            queued: Vec::new(),
+            queue_held: false,
+            context: None,
+            mcp: None,
+            asking: 0,
         };
         let mut entry = Entry::new(info, 1, Some(cwd));
         entry.advance_turn();
-        let user = entry.user_item(&p.prompt, &p.origin, None);
+        let user = entry.message_item(&p.prompt, &p.origin, None, images);
         emit_state(self, &mut entry);
         emit_item(self, &id, &user);
         reg.threads.insert(id.clone(), entry);
-        self.start_session(&mut reg, &id, p.prompt, &bin);
+        let input = UserInput { id: user.id.clone(), text: p.prompt.clone(), images: blocks };
+        self.start_session(&mut reg, &id, input, &bin);
         if p.origin.kind == OriginKind::Phone {
             notify(self, Note::PhoneStarted { thread: reg.threads[&id].info.clone(), continued: false });
         }
         for old in reg.prunable() {
             self.remove_thread(&mut reg, &old);
         }
-        reg.threads.get(&id).map(|e| e.info.clone()).ok_or_else(|| err(ErrorCode::Internal, "lost"))
+        let info =
+            reg.threads.get(&id).map(|e| e.info.clone()).ok_or_else(|| err(ErrorCode::Internal, "lost"))?;
+        drop(reg);
+        self.remember_prompt(&p.prompt, &p.origin);
+        self.draft_sent(&format!("new:{}", p.folder_id), &p.origin);
+        Ok(info)
     }
 
-    /// Starts a process for the thread with `text` as the first message;
+    /// The settings a new process of this thread starts with.
+    fn launch_settings(&self, reg: &Registry, entry: &Entry) -> LaunchSettings {
+        let mcp = reg.folders.iter().find(|f| f.id == entry.info.folder_id).is_none_or(|f| f.mcp);
+        let defaults = self
+            .probes
+            .try_lock()
+            .ok()
+            .and_then(|cache| cache.shown.as_ref()?.iter().find(|a| a.id == entry.info.agent).cloned())
+            .and_then(|a| a.default_model().map(|m| (m.id.clone(), m.default_effort.clone())));
+        LaunchSettings {
+            mode: entry.info.mode,
+            model: entry.info.model.clone(),
+            effort: entry.info.effort.clone(),
+            mcp,
+            default_model: defaults.as_ref().map(|d| d.0.clone()),
+            default_effort: defaults.and_then(|d| d.1),
+        }
+    }
+
+    /// Starts a process for the thread with `input` as the first message;
     /// resumes when the thread has a native id.
-    fn start_session(self: &Arc<Self>, reg: &mut Registry, thread_id: &str, text: String, bin: &Path) {
+    pub(crate) fn start_session(
+        self: &Arc<Self>,
+        reg: &mut Registry,
+        thread_id: &str,
+        input: UserInput,
+        bin: &Path,
+    ) {
         let generation = reg.next_generation;
         reg.next_generation += 1;
+        let Some(settings) = reg.threads.get(thread_id).map(|e| self.launch_settings(reg, e)) else { return };
         let Some(entry) = reg.threads.get_mut(thread_id) else { return };
         let Some(cwd) = entry.cwd.clone() else { return };
+        entry.mcp_on = settings.mcp;
         let (tx, rx) = mpsc::unbounded_channel();
         let events = self.events.clone();
         let agent = entry.info.agent;
@@ -792,7 +1012,7 @@ impl Host {
                 let launch = claude::Launch {
                     bin: bin.to_owned(),
                     cwd: cwd.clone(),
-                    mode: entry.info.mode,
+                    mode: settings.mode,
                     session_id: session_id.clone(),
                     resume,
                     mcp_config: self.config.runtime_dir.join(format!("mcp-{thread_id}-{generation}.json")),
@@ -800,15 +1020,15 @@ impl Host {
                     socket: self.config.socket.clone(),
                     bridge_token: token.clone(),
                     env: child_env,
-                    first_text: text.clone(),
+                    first_text: input.text.clone(),
                 };
-                claude::spawn(&launch).map(|(process, lines)| {
+                claude::spawn_with(&launch, &settings).map(|(process, lines)| {
                     if !resume {
                         entry.info.native_id = Some(session_id.clone());
                         self.store.save_meta(&entry.info, entry.next_seq);
                     }
                     bridge_token = Some(token);
-                    let driver = claude::ClaudeDriver::new(cwd, session_id, text);
+                    let driver = claude::ClaudeDriver::with_settings(cwd, session_id, &settings, input);
                     let thread = thread_id.to_owned();
                     let mcp = launch.mcp_config.clone();
                     tokio::spawn(async move {
@@ -821,7 +1041,7 @@ impl Host {
                 let resume = entry.info.native_id.clone();
                 AgentProcess::spawn(bin, &["app-server".to_owned()], &cwd, &child_env).map(
                     |(process, lines)| {
-                        let driver = codex::CodexDriver::new(cwd, entry.info.mode, resume, text);
+                        let driver = codex::CodexDriver::with_settings(cwd, settings, resume, input);
                         let thread = thread_id.to_owned();
                         tokio::spawn(agents::run_session(
                             process, lines, driver, thread, generation, rx, events,
@@ -845,89 +1065,6 @@ impl Host {
                 self.finish_turn(reg, thread_id, TurnEnd::failed(code::START_FAILED, message));
             }
         }
-    }
-
-    pub async fn thread_send(self: &Arc<Self>, p: ThreadSendParams) -> Result<(), RpcError> {
-        if p.text.is_empty() || p.text.len() > MAX_PROMPT {
-            return Err(err(ErrorCode::BadRequest, "The text must be 1 to 16384 bytes."));
-        }
-        if !p.origin.is_valid() {
-            return Err(err(ErrorCode::BadRequest, "Bad origin."));
-        }
-        let (agent, resume) = {
-            let reg = self.lock_reg();
-            let entry =
-                reg.threads.get(&p.thread_id).ok_or_else(|| err(ErrorCode::NotFound, "No such thread."))?;
-            let alive = entry.session.as_ref().is_some_and(|s| !s.cmds.is_closed());
-            let ours_until = entry.info.updated_ms.max(entry.process_ended_ms);
-            let resume = entry.info.native_id.clone().filter(|_| !alive && !entry.info.state.is_running());
-            (entry.info.agent, resume.map(|native| (native, ours_until)))
-        };
-        // A new process would resume the agent's session: refuse while
-        // something else (a terminal, the agent's app) has it open.
-        if let Some((native, ours_until)) = resume
-            && let Some(source) = self.open_elsewhere(agent, &native, ours_until).await
-        {
-            return Err(err(ErrorCode::Busy, crate::host::sessions::still_open_message(agent, source)));
-        }
-        let probe = self.probe(false).await[agent as usize].clone();
-        let mut guard = self.lock_reg();
-        let reg = &mut *guard;
-        let (total, per) = reg.running();
-        let blocked = reg.login_blocked.get(&agent).cloned();
-        let folder_ok = {
-            let Some(entry) = reg.threads.get(&p.thread_id) else {
-                return Err(err(ErrorCode::NotFound, "No such thread."));
-            };
-            if entry.info.state.is_running() {
-                return Err(err(
-                    ErrorCode::Busy,
-                    format!("You can reply when {} stops.", agent.display_name()),
-                ));
-            }
-            reg.folders
-                .iter()
-                .find(|f| f.id == entry.info.folder_id)
-                .and_then(|f| thread_dir(Path::new(&f.path), entry.info.subdir.as_deref()))
-                .filter(|path| path.is_dir())
-        };
-        if let Some(message) = self.busy_message(agent, total, &per) {
-            return Err(err(ErrorCode::Busy, message));
-        }
-        let Some(cwd) = folder_ok else {
-            return Err(err(ErrorCode::Denied, "The folder was removed or is gone."));
-        };
-        let Some(entry) = reg.threads.get_mut(&p.thread_id) else {
-            return Err(err(ErrorCode::NotFound, "No such thread."));
-        };
-        let alive = entry.session.as_ref().is_some_and(|s| !s.cmds.is_closed());
-        if !alive {
-            if let Some(message) = blocked {
-                return Err(err(ErrorCode::Unavailable, message));
-            }
-            if probe.bin.is_none() || !probe.info.ready() {
-                return Err(Self::unavailable(&probe));
-            }
-        }
-        entry.cwd = Some(cwd);
-        entry.turn = Turn::default();
-        entry.advance_turn();
-        entry.set_state(State::Working);
-        entry.info.error = None;
-        let user = entry.user_item(&p.text, &p.origin, None);
-        emit_state(self, entry);
-        emit_item(self, &p.thread_id, &user);
-        let delivered = alive
-            && entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Send(p.text.clone())).is_ok());
-        if !delivered {
-            let old_token = entry.session.take().and_then(|s| s.bridge_token);
-            if let Some(old) = old_token {
-                reg.bridges.remove(&old);
-            }
-            let Some(bin) = probe.bin else { return Err(Self::unavailable(&probe)) };
-            self.start_session(reg, &p.thread_id, p.text, &bin);
-        }
-        Ok(())
     }
 
     pub fn thread_interrupt(self: &Arc<Self>, thread_id: &str) -> Result<(), RpcError> {
@@ -969,9 +1106,13 @@ impl Host {
         Ok(())
     }
 
-    /// `thread.read`. `items2`: the client understands thinking items; else
-    /// it gets them as tool steps ([`Item::legacy`]).
-    pub async fn thread_read(&self, p: ThreadReadParams, items2: bool) -> Result<ThreadReadResult, RpcError> {
+    /// `thread.read`, in the form a client with `caps` understands
+    /// ([`Item::for_caps`], [`ThreadInfo::for_client`]).
+    pub async fn thread_read(
+        &self,
+        p: ThreadReadParams,
+        caps: crate::host::Caps,
+    ) -> Result<ThreadReadResult, RpcError> {
         if !is_valid_id(&p.thread_id) {
             return Err(err(ErrorCode::NotFound, "No such thread."));
         }
@@ -982,7 +1123,7 @@ impl Host {
                 return Err(err(ErrorCode::NotFound, "No such thread."));
             };
             let live: Vec<Item> = entry.turn.streams.values().map(|s| s.item.clone()).collect();
-            (entry.info.clone(), live, reg.pending_list(&p.thread_id))
+            (entry.info.for_client(caps.items3), live, reg.pending_list(&p.thread_id))
         };
         let mut items = self
             .store
@@ -992,8 +1133,10 @@ impl Host {
         for item in live {
             items.insert(item.seq, item);
         }
-        let items: BTreeMap<u64, Item> =
-            items.into_iter().filter_map(|(seq, item)| Some((seq, item.for_client(items2)?))).collect();
+        let items: BTreeMap<u64, Item> = items
+            .into_iter()
+            .filter_map(|(seq, item)| Some((seq, item.for_caps(caps.items2, caps.items3)?)))
+            .collect();
         let selected: Vec<Item> = match (p.after_seq, p.before_seq) {
             (Some(after), _) => {
                 items.range(after.saturating_add(1)..).take(limit).map(|(_, i)| i.clone()).collect()
@@ -1010,11 +1153,13 @@ impl Host {
                 v
             }
         };
+        let questions = self.questions_of(&p.thread_id);
         let base = serde_json::to_vec(&ThreadReadResult {
             thread: info.clone(),
             items: Vec::new(),
             more_before: false,
             pending: pending.clone(),
+            questions: questions.clone(),
         })
         .map(|v| v.len())
         .unwrap_or(0);
@@ -1037,7 +1182,7 @@ impl Host {
                 None => !items.is_empty() && p.after_seq.is_none(),
             },
         };
-        Ok(ThreadReadResult { thread: info, items: kept, more_before, pending })
+        Ok(ThreadReadResult { thread: info, items: kept, more_before, pending, questions })
     }
 
     fn remove_thread(&self, reg: &mut Registry, thread_id: &str) {
@@ -1049,6 +1194,11 @@ impl Host {
                 }
             }
             self.store.delete(thread_id);
+            self.awake.working(thread_id, false);
+            if let Some(images) = self.images.clone() {
+                let thread = thread_id.to_owned();
+                tokio::spawn(async move { images.remove_thread(&thread).await });
+            }
             self.hub.broadcast(&Event::ThreadRemoved(ThreadRemovedEvent { thread_id: thread_id.to_owned() }));
             notify(self, Note::Removed { thread_id: thread_id.to_owned() });
         }
@@ -1150,6 +1300,14 @@ impl Host {
             state_since_ms: now,
             subdir: c.subdir,
             continued: true,
+            model: None,
+            effort: None,
+            answered_model: None,
+            queued: Vec::new(),
+            queue_held: false,
+            context: None,
+            mcp: None,
+            asking: 0,
         };
         for item in &items {
             self.store.append_item(&id, item);
@@ -1208,9 +1366,15 @@ impl Host {
             AgentEvent::Approval { reply, .. } if !current => {
                 let _ = reply.send(Answer::Deny(DenyReason::Cancelled));
             }
+            AgentEvent::Question { reply, .. } if !current => {
+                let _ = reply.send(QuestionReply::Cancelled);
+            }
             _ if !current => {}
             AgentEvent::Approval { spec, reply } => {
                 self.request_approval(&mut reg, thread_id, generation, spec, reply, None);
+            }
+            AgentEvent::Question { spec, reply } => {
+                self.request_question(&mut reg, thread_id, generation, spec, reply, None);
             }
             AgentEvent::Step(step) => self.apply_step(&mut reg, thread_id, step),
         }
@@ -1228,6 +1392,26 @@ impl Host {
                 self.finish_turn(reg, thread_id, end);
             }
             return;
+        }
+        match step {
+            Step::Limits(limits) => {
+                if let Some(agent) = reg.threads.get(thread_id).map(|e| e.info.agent) {
+                    self.on_limits(agent, limits);
+                }
+                return;
+            }
+            Step::Mcp { names, connected, need_login } => {
+                return self.on_mcp(reg, thread_id, names, connected, need_login);
+            }
+            Step::Init(line) => {
+                if let Some(folder) = reg.threads.get(thread_id).map(|e| e.info.folder_id.clone()) {
+                    self.lock_commands()
+                        .set_claude_init(&folder, crate::host::commands::ClaudeInit::from_line(&line));
+                }
+                return;
+            }
+            Step::TurnStarted => return self.turn_started(reg, thread_id),
+            _ => {}
         }
         let Some(entry) = reg.threads.get_mut(thread_id) else { return };
         if let Step::Plan(plan) = step {
@@ -1304,7 +1488,45 @@ impl Host {
                 emit_item(self, thread_id, &item);
                 entry.turn.streams.insert(item.seq, Stream::new(item, true));
             }
-            Step::AssistantDelta { key, text } | Step::ReasoningDelta { key, text } => {
+            Step::PlanOpen { key } => {
+                if !entry.info.state.is_running() || entry.turn.keys.contains_key(&key) {
+                    return;
+                }
+                let item = Item {
+                    text: Some(String::new()),
+                    plan_state: Some(PlanState::Proposed),
+                    ..entry.new_item(|_| cut(&key, MAX_ITEM_ID).into(), ItemKind::Plan)
+                };
+                entry.turn.keys.insert(key, item.seq);
+                entry.turn.streams.insert(item.seq, Stream::new(item, false));
+            }
+            Step::PlanDone { key, text } => self.plan_done(entry, thread_id, key, text),
+            Step::Delivered { id } => {
+                let Some(pos) = entry.steering.iter().position(|i| i.id == id) else { return };
+                let mut item = entry.steering.remove(pos);
+                item.rev += 1;
+                emit_item(self, thread_id, &item);
+            }
+            Step::Context { used, max } => {
+                let context = (max > 0).then_some(ContextUse { used, max });
+                if context.is_some() && entry.info.context != context {
+                    entry.info.context = context;
+                    emit_state(self, entry);
+                }
+            }
+            Step::AnsweredModel(model) => {
+                let model = clean_cut(model.trim(), MAX_MODEL_ID).0;
+                if model.is_empty() || model == crate::host::catalog::SYNTHETIC_MODEL {
+                    return;
+                }
+                if entry.info.answered_model.as_deref() != Some(model.as_str()) {
+                    entry.info.answered_model = Some(model);
+                    emit_state(self, entry);
+                }
+            }
+            Step::AssistantDelta { key, text }
+            | Step::ReasoningDelta { key, text }
+            | Step::PlanDelta { key, text } => {
                 let Some(&seq) = entry.turn.keys.get(&key) else { return };
                 let Some(stream) = entry.turn.streams.get_mut(&seq) else { return };
                 let cleaned = clean(&text);
@@ -1461,7 +1683,12 @@ impl Host {
                 let item = entry.notice(&clean_cut(&text, MAX_ITEM_TEXT).0);
                 emit_item(self, thread_id, &item);
             }
-            Step::Plan(_) | Step::TurnEnded(_) => {}
+            Step::Plan(_)
+            | Step::TurnEnded(_)
+            | Step::TurnStarted
+            | Step::Limits(_)
+            | Step::Mcp { .. }
+            | Step::Init(_) => {}
         }
     }
 
@@ -1490,6 +1717,22 @@ impl Host {
                 None,
                 Answer::Deny(DenyReason::Cancelled),
                 false,
+            );
+        }
+        let questions: Vec<String> = reg
+            .questions
+            .iter()
+            .filter(|(_, q)| q.question.thread_id == thread_id)
+            .map(|(t, _)| t.clone())
+            .collect();
+        for token in questions {
+            self.resolve_question(
+                reg,
+                &token,
+                QuestionOutcome::Cancelled,
+                None,
+                QuestionReply::Cancelled,
+                None,
             );
         }
     }
@@ -1522,7 +1765,7 @@ impl Host {
     /// Ends the running turn: open text is finished, steps still running
     /// end, pending approvals are cancelled, then `thread.state` and
     /// `thread.done`.
-    fn finish_turn(self: &Arc<Self>, reg: &mut Registry, thread_id: &str, end: TurnEnd) {
+    pub(crate) fn finish_turn(self: &Arc<Self>, reg: &mut Registry, thread_id: &str, end: TurnEnd) {
         self.cancel_requests(reg, thread_id);
         let Some(entry) = reg.threads.get_mut(thread_id) else { return };
         if !entry.info.state.is_running() {
@@ -1534,13 +1777,24 @@ impl Host {
             let notice = entry.notice(REPLY_NOT_SENT);
             emit_item(self, thread_id, &notice);
         }
-        let summary = end
-            .summary
-            .as_deref()
-            .or(turn.final_text.as_deref())
-            .or(turn.last_text.as_deref())
-            .map(summary_of)
-            .unwrap_or_default();
+        let plan_ready = turn.plan_ready && end.outcome == Outcome::Done;
+        let summary = if plan_ready {
+            crate::host::plan::PLAN_READY.to_owned()
+        } else {
+            end.summary
+                .as_deref()
+                .or(turn.final_text.as_deref())
+                .or(turn.last_text.as_deref())
+                .map(summary_of)
+                .unwrap_or_default()
+        };
+        // What waits in the queue: the next turn after a turn that ended
+        // done; held after one that failed or was stopped (§Q3.4).
+        let dispatch =
+            end.outcome == Outcome::Done && !entry.info.queued.is_empty() && !entry.info.queue_held;
+        if end.outcome != Outcome::Done && !entry.info.queued.is_empty() {
+            entry.info.queue_held = true;
+        }
         entry.set_state(end.outcome.state());
         entry.info.pending = 0;
         entry.info.updated_ms = now_ms();
@@ -1556,6 +1810,9 @@ impl Host {
             error: entry.info.error.clone(),
         }));
         match end.outcome {
+            Outcome::Done if plan_ready => {
+                notify_unless_viewed(self, thread_id, Note::PlanReady { thread: entry.info.clone() });
+            }
             Outcome::Done => {
                 notify_unless_viewed(self, thread_id, Note::Done { thread: entry.info.clone(), summary });
             }
@@ -1567,7 +1824,18 @@ impl Host {
         }
         let agent = entry.info.agent;
         let login = entry.info.error.as_ref().filter(|e| e.code == code::LOGIN).map(|e| e.message.clone());
-        self.schedule_idle_close(thread_id, entry.turn_no);
+        let turn_no = entry.turn_no;
+        let steering = !entry.steering.is_empty();
+        let folder_id = entry.info.folder_id.clone();
+        self.schedule_idle_close(thread_id, turn_no);
+        if let Some(folder) = reg.folders.iter().find(|f| f.id == folder_id) {
+            self.files.turn_ended(Path::new(&folder.path));
+        }
+        if dispatch && steering {
+            self.schedule_steer_check(thread_id, turn_no);
+        } else if dispatch {
+            self.dispatch_queue_later(thread_id);
+        }
         if let Some(message) = login {
             let message =
                 if message.is_empty() { format!("{} is signed out.", agent.display_name()) } else { message };
@@ -1598,12 +1866,352 @@ impl Host {
         let user = entry.user_item(&follow.text, &follow.by, follow.deny_of);
         emit_state(self, entry);
         emit_item(self, thread_id, &user);
-        let sent = entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Send(follow.text)).is_ok());
+        let input = UserInput { id: user.id.clone(), text: follow.text, images: Vec::new() };
+        let sent = entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Send(input)).is_ok());
         if !sent {
             let notice = entry.notice(REPLY_NOT_SENT);
             emit_item(self, thread_id, &notice);
             self.finish_turn(reg, thread_id, TurnEnd::interrupted());
         }
+    }
+
+    /// A turn ended with a steer the agent hasn't taken in: it may start a
+    /// turn for it by itself. If none started after [`STEER_GRACE`], the
+    /// steer no longer holds the queue back.
+    fn schedule_steer_check(self: &Arc<Self>, thread_id: &str, turn_no: u32) {
+        let host = Arc::downgrade(self);
+        let thread = thread_id.to_owned();
+        tokio::spawn(async move {
+            tokio::time::sleep(STEER_GRACE).await;
+            let Some(host) = host.upgrade() else { return };
+            {
+                let mut reg = host.lock_reg();
+                let Some(entry) = reg.threads.get_mut(&thread) else { return };
+                if entry.turn_no != turn_no || entry.info.state.is_running() {
+                    return;
+                }
+                entry.steering.clear();
+            }
+            host.dispatch_queue_later(&thread);
+        });
+    }
+
+    /// The agent started a turn by itself (Claude took in a steer after its
+    /// `result`): the thread works again, and that steer is this turn's.
+    fn turn_started(self: &Arc<Self>, reg: &mut Registry, thread_id: &str) {
+        let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+        if entry.info.state.is_running() {
+            return;
+        }
+        entry.turn = Turn::default();
+        entry.advance_turn();
+        entry.set_state(State::Working);
+        entry.info.error = None;
+        if !entry.steering.is_empty() {
+            let mut item = entry.steering.remove(0);
+            item.turn = entry.item_turn();
+            item.rev += 1;
+            emit_item(self, thread_id, &item);
+        }
+        emit_state(self, entry);
+    }
+
+    /// The user's MCP servers a thread's process loaded: the thread shows
+    /// them, and the folder keeps their names for Agents setup.
+    fn on_mcp(
+        self: &Arc<Self>,
+        reg: &mut Registry,
+        thread_id: &str,
+        names: Vec<String>,
+        connected: u16,
+        need_login: u16,
+    ) {
+        let names: Vec<String> = names
+            .iter()
+            .map(|n| clean_cut(n.trim(), MAX_MCP_NAME).0)
+            .filter(|n| !n.is_empty())
+            .take(MAX_MCP_NAMES)
+            .collect();
+        let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+        let mcp = ThreadMcp { on: entry.mcp_on, connected, need_login, names: names.clone() };
+        if entry.info.mcp.as_ref() != Some(&mcp) {
+            entry.info.mcp = Some(mcp);
+            emit_state(self, entry);
+        }
+        let (folder_id, agent) = (entry.info.folder_id.clone(), entry.info.agent);
+        let Some(folder) = reg.folders.iter_mut().find(|f| f.id == folder_id) else { return };
+        let seen = FolderMcp { agent, names };
+        if folder.mcp_seen.contains(&seen) {
+            return;
+        }
+        folder.mcp_seen.retain(|s| s.agent != agent);
+        folder.mcp_seen.push(seen);
+        let host = self.clone();
+        tokio::spawn(async move {
+            let _serial = host.folders_lock.lock().await;
+            let list = host.lock_reg().folders.clone();
+            if host.store.save_folders(list).await.is_err() {
+                tracing::warn!("couldn't save the folder list");
+            }
+            host.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: host.folders_list() }));
+        });
+    }
+
+    /// A plan is complete (§Q4.3): the `plan` item, proposed; the plan it
+    /// follows is replaced; the turn ends with "Plan ready".
+    fn plan_done(self: &Arc<Self>, entry: &mut Entry, thread_id: &str, key: String, text: String) {
+        let seq = match entry.turn.keys.get(&key) {
+            Some(&seq) => seq,
+            None => {
+                let seq = entry.alloc();
+                entry.turn.keys.insert(key.clone(), seq);
+                seq
+            }
+        };
+        let mut item = match entry.turn.streams.remove(&seq) {
+            Some(mut stream) => {
+                flush_stream(self, thread_id, &mut stream);
+                stream.item
+            }
+            None => match entry.plan.as_ref().filter(|p| p.seq == seq) {
+                Some(done) => Item { rev: done.rev + 1, ..done.clone() },
+                None => Item {
+                    turn: entry.item_turn(),
+                    ..Item::new(seq, cut(&key, MAX_ITEM_ID), ItemKind::Plan, now_ms())
+                },
+            },
+        };
+        let (text, truncated) = clean_cut(&text, MAX_PLAN_ITEM);
+        if !text.trim().is_empty() {
+            item.text = Some(text);
+            item.truncated = truncated;
+        }
+        item.text.get_or_insert_with(String::new);
+        item.kind = ItemKind::Plan;
+        item.plan_state = Some(PlanState::Proposed);
+        let now = now_ms();
+        item.end_ms = Some(now);
+        entry.info.updated_ms = now;
+        emit_item(self, thread_id, &item);
+        if let Some(mut old) = entry.plan.take().filter(|old| old.seq != item.seq) {
+            old.plan_state = Some(PlanState::Replaced);
+            old.rev += 1;
+            emit_item(self, thread_id, &old);
+        }
+        entry.plan = Some(item);
+        entry.turn.plan_ready = true;
+    }
+
+    // ---- Questions (§Q4.4) ----
+
+    /// An agent asks the user. A thread has at most
+    /// [`MAX_QUESTIONS_PER_THREAD`] waiting; another is dismissed at once.
+    pub(crate) fn request_question(
+        self: &Arc<Self>,
+        reg: &mut Registry,
+        thread_id: &str,
+        generation: u64,
+        spec: QuestionSpec,
+        reply: oneshot::Sender<QuestionReply>,
+        bridge_tool_use_id: Option<String>,
+    ) {
+        let lifetime = reg.approval_lifetime_ms;
+        let waiting = reg.questions.values().filter(|q| q.question.thread_id == thread_id).count();
+        let Some(entry) = reg.threads.get_mut(thread_id) else {
+            let _ = reply.send(QuestionReply::Cancelled);
+            return;
+        };
+        let live = entry.info.state.is_running()
+            && entry.session.as_ref().is_some_and(|s| s.generation == generation);
+        let asks: Vec<Ask> = spec.asks.iter().filter_map(Ask::sanitized).take(MAX_ASKS).collect();
+        if !live || asks.is_empty() {
+            let _ = reply.send(QuestionReply::Cancelled);
+            return;
+        }
+        if waiting >= MAX_QUESTIONS_PER_THREAD {
+            let _ = reply.send(QuestionReply::Dismissed);
+            return;
+        }
+        let mut token = random_hex(16);
+        while reg.approvals.contains_key(&token)
+            || reg.questions.contains_key(&token)
+            || reg.answered.contains(&token)
+        {
+            token = random_hex(16);
+        }
+        let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+        let secret = asks.iter().any(|a| a.secret);
+        let count = u8::try_from(asks.len()).unwrap_or(u8::MAX);
+        let key = spec.key.filter(|k| !k.is_empty() && !entry.turn.keys.contains_key(k.as_str()));
+        let item = Item {
+            question: Some(QuestionInfo { count, secret, outcome: None }),
+            ..entry.new_item(
+                |seq| {
+                    key.as_deref()
+                        .map_or_else(|| format!("question-{seq}"), |k| cut(k, MAX_ITEM_ID).to_owned())
+                },
+                ItemKind::Question,
+            )
+        };
+        if let Some(key) = key {
+            entry.turn.keys.insert(key, item.seq);
+        }
+        emit_item(self, thread_id, &item);
+        let now = now_ms();
+        let question = Question {
+            token: token.clone(),
+            thread_id: thread_id.to_owned(),
+            item_id: item.id.clone(),
+            secret,
+            asks,
+            created_ms: now,
+            expires_ms: now + lifetime,
+        };
+        entry.info.asking = entry.info.asking.saturating_add(1);
+        entry.set_state(State::Waiting);
+        entry.info.updated_ms = now;
+        emit_state(self, entry);
+        self.hub.broadcast(&Event::QuestionRequested(QuestionRequestedEvent { question: question.clone() }));
+        notify_unless_viewed(
+            self,
+            thread_id,
+            Note::Question { thread: entry.info.clone(), token: token.clone() },
+        );
+        reg.questions.insert(
+            token.clone(),
+            PendingQuestion { question, reply: Some(reply), item, generation, bridge_tool_use_id },
+        );
+        let host = Arc::downgrade(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(lifetime)).await;
+            if let Some(host) = host.upgrade() {
+                let mut reg = host.lock_reg();
+                if reg.questions.contains_key(&token) {
+                    host.resolve_question(
+                        &mut reg,
+                        &token,
+                        QuestionOutcome::Expired,
+                        None,
+                        QuestionReply::Expired,
+                        None,
+                    );
+                }
+            }
+        });
+    }
+
+    /// Ends one question: the agent gets `reply`, every client gets
+    /// `question.resolved`, and the `question` item its outcome (with the
+    /// answers' text only when no ask is secret).
+    fn resolve_question(
+        &self,
+        reg: &mut Registry,
+        token: &str,
+        outcome: QuestionOutcome,
+        by: Option<Origin>,
+        reply: QuestionReply,
+        text: Option<String>,
+    ) {
+        let Some(mut pending) = reg.questions.remove(token) else { return };
+        reg.answered.insert(token.to_owned());
+        let thread_id = pending.question.thread_id.clone();
+        let mut item = pending.item;
+        item.rev += 1;
+        item.end_ms = Some(now_ms());
+        if outcome == QuestionOutcome::Answered {
+            item.origin = by.clone();
+        }
+        if let Some(info) = item.question.as_mut() {
+            info.outcome = Some(outcome);
+        }
+        if !pending.question.secret {
+            item.text = text.map(|t| clean_cut(&t, MAX_ITEM_TEXT).0);
+        }
+        emit_item(self, &thread_id, &item);
+        if let Some(sender) = pending.reply.take() {
+            let _ = sender.send(reply);
+        }
+        self.hub.broadcast(&Event::QuestionResolved(QuestionResolvedEvent {
+            token: token.to_owned(),
+            thread_id: thread_id.clone(),
+            outcome,
+            by,
+        }));
+        notify(self, Note::ApprovalGone { thread_id: thread_id.clone(), token: token.to_owned() });
+        let Some(entry) = reg.threads.get_mut(&thread_id) else { return };
+        entry.info.asking = entry.info.asking.saturating_sub(1);
+        if entry.info.asking == 0 && entry.info.pending == 0 && entry.info.state == State::Waiting {
+            entry.set_state(State::Working);
+        }
+        entry.info.updated_ms = now_ms();
+        emit_state(self, entry);
+    }
+
+    /// `question.answer`: every ask answered, with its own options (or the
+    /// user's words where it takes them). A secret question is answered on
+    /// the PC only.
+    pub fn question_answer(self: &Arc<Self>, p: QuestionAnswerParams) -> Result<(), RpcError> {
+        if !p.by.is_valid() {
+            return Err(err(ErrorCode::BadRequest, "Bad origin."));
+        }
+        if p.answers.len() > MAX_ASKS {
+            return Err(err(ErrorCode::BadRequest, "Too many answers."));
+        }
+        let mut reg = self.lock_reg();
+        let Some(pending) = reg.questions.get(&p.token) else {
+            return Err(if reg.answered.contains(&p.token) {
+                err(ErrorCode::AlreadyAnswered, "Already answered.")
+            } else {
+                err(ErrorCode::NotFound, "No such question.")
+            });
+        };
+        if pending.question.secret && p.by.kind == OriginKind::Phone {
+            return Err(err(ErrorCode::Denied, "Answer it on the PC."));
+        }
+        let answers = checked_answers(&pending.question.asks, p.answers)?;
+        let text = answers_text(&pending.question.asks, &answers);
+        self.resolve_question(
+            &mut reg,
+            &p.token,
+            QuestionOutcome::Answered,
+            Some(p.by),
+            QuestionReply::Answered(SecretAnswers::new(answers)),
+            Some(text),
+        );
+        Ok(())
+    }
+
+    /// `question.dismiss`: the agent is told the user didn't answer.
+    pub fn question_dismiss(self: &Arc<Self>, token: &str, by: Origin) -> Result<(), RpcError> {
+        if !by.is_valid() {
+            return Err(err(ErrorCode::BadRequest, "Bad origin."));
+        }
+        let mut reg = self.lock_reg();
+        if !reg.questions.contains_key(token) {
+            return Err(if reg.answered.contains(token) {
+                err(ErrorCode::AlreadyAnswered, "Already answered.")
+            } else {
+                err(ErrorCode::NotFound, "No such question.")
+            });
+        }
+        self.resolve_question(
+            &mut reg,
+            token,
+            QuestionOutcome::Dismissed,
+            Some(by),
+            QuestionReply::Dismissed,
+            None,
+        );
+        Ok(())
+    }
+
+    /// The thread's waiting questions, oldest first.
+    pub(crate) fn questions_of(&self, thread_id: &str) -> Vec<Question> {
+        let reg = self.lock_reg();
+        let mut list: Vec<&PendingQuestion> =
+            reg.questions.values().filter(|q| q.question.thread_id == thread_id).collect();
+        list.sort_by_key(|q| q.item.seq);
+        list.into_iter().map(|q| q.question.clone()).collect()
     }
 
     fn schedule_idle_close(self: &Arc<Self>, thread_id: &str, turn_no: u32) {
@@ -1804,7 +2412,7 @@ impl Host {
             }
         }
         entry.info.pending = u32::try_from(remaining).unwrap_or(u32::MAX);
-        if remaining == 0 && entry.info.state == State::Waiting {
+        if remaining == 0 && entry.info.asking == 0 && entry.info.state == State::Waiting {
             entry.set_state(State::Working);
         }
         if announce_state {
@@ -2012,6 +2620,33 @@ impl Host {
         generation: u64,
         p: BridgeAskParams,
     ) -> BridgeAskResult {
+        if p.tool_name == crate::host::plan::EXIT_PLAN_TOOL {
+            let mut reg = self.lock_reg();
+            if let Some(entry) = reg.threads.get_mut(thread_id).filter(|e| {
+                e.info.state.is_running() && e.session.as_ref().is_some_and(|s| s.generation == generation)
+            }) && let Some(text) = crate::host::plan::claude_plan(&p.input)
+            {
+                let key =
+                    if p.tool_use_id.is_empty() { format!("plan-{}", entry.next_seq) } else { p.tool_use_id };
+                self.plan_done(entry, thread_id, format!("plan:{key}"), text);
+            }
+            return crate::host::plan::claude_exit_reply();
+        }
+        if p.tool_name == crate::host::questions::ASK_TOOL {
+            let Some(mut spec) = crate::host::questions::claude_spec(&p.input, "") else {
+                return BridgeAskResult::deny(crate::host::questions::NOT_ANSWERED);
+            };
+            // The tool step has the tool use id; the question item its own.
+            spec.key = (!p.tool_use_id.is_empty()).then(|| format!("question:{}", p.tool_use_id));
+            let (tx, rx) = oneshot::channel();
+            {
+                let mut reg = self.lock_reg();
+                let tool_use_id = (!p.tool_use_id.is_empty()).then(|| p.tool_use_id.clone());
+                self.request_question(&mut reg, thread_id, generation, spec, tx, tool_use_id);
+            }
+            let reply = rx.await.unwrap_or(QuestionReply::Cancelled);
+            return crate::host::questions::claude_reply(&p.input, &reply);
+        }
         let (tx, rx) = oneshot::channel();
         {
             let mut reg = self.lock_reg();
@@ -2023,13 +2658,33 @@ impl Host {
         }
         let answer = rx.await.unwrap_or(Answer::Deny(DenyReason::Cancelled));
         match answer.deny_message() {
-            None => BridgeAskResult { behavior: BridgeBehavior::Allow, message: None },
-            Some(message) => BridgeAskResult { behavior: BridgeBehavior::Deny, message: Some(message) },
+            None => BridgeAskResult::allow(),
+            Some(message) => BridgeAskResult::deny(message),
         }
     }
 
     pub fn bridge_cancel(&self, thread_id: &str, generation: u64, tool_use_id: &str) {
         let mut reg = self.lock_reg();
+        let questions: Vec<String> = reg
+            .questions
+            .iter()
+            .filter(|(_, q)| {
+                q.question.thread_id == thread_id
+                    && q.generation == generation
+                    && q.bridge_tool_use_id.as_deref() == Some(tool_use_id)
+            })
+            .map(|(t, _)| t.clone())
+            .collect();
+        for token in questions {
+            self.resolve_question(
+                &mut reg,
+                &token,
+                QuestionOutcome::Cancelled,
+                None,
+                QuestionReply::Cancelled,
+                None,
+            );
+        }
         let tokens: Vec<String> = reg
             .approvals
             .iter()
@@ -2055,6 +2710,26 @@ impl Host {
     /// The bridge went away: what it was asking can't be answered any more.
     pub fn bridge_closed(&self, thread_id: &str, generation: u64) {
         let mut reg = self.lock_reg();
+        let questions: Vec<String> = reg
+            .questions
+            .iter()
+            .filter(|(_, q)| {
+                q.question.thread_id == thread_id
+                    && q.generation == generation
+                    && q.bridge_tool_use_id.is_some()
+            })
+            .map(|(t, _)| t.clone())
+            .collect();
+        for token in questions {
+            self.resolve_question(
+                &mut reg,
+                &token,
+                QuestionOutcome::Cancelled,
+                None,
+                QuestionReply::Cancelled,
+                None,
+            );
+        }
         let tokens: Vec<String> = reg
             .approvals
             .iter()
@@ -2121,6 +2796,70 @@ impl Host {
     }
 }
 
+/// The user's answers, checked against the asks and cleaned, in the asks'
+/// order: one per ask; labels among the ask's options (one unless it is
+/// multi-select); the user's own words only where the ask takes them.
+fn checked_answers(
+    asks: &[Ask],
+    answers: Vec<crate::api::Answer>,
+) -> Result<Vec<crate::api::Answer>, RpcError> {
+    let bad = |m: &str| err(ErrorCode::BadRequest, m);
+    if answers.iter().any(|a| !asks.iter().any(|ask| ask.id == a.id)) {
+        return Err(bad("An answer is for a question that wasn't asked."));
+    }
+    let mut out = Vec::with_capacity(asks.len());
+    for ask in asks {
+        let mut mine = answers.iter().filter(|a| a.id == ask.id);
+        let (Some(answer), None) = (mine.next(), mine.next()) else {
+            return Err(bad("Answer each question once."));
+        };
+        let mut labels = Vec::new();
+        let mut other = answer.other.as_deref().map(|o| clean(o).trim().to_owned()).filter(|o| !o.is_empty());
+        for label in &answer.labels {
+            if ask.options.iter().any(|o| o.label == *label) {
+                if !labels.contains(label) {
+                    labels.push(label.clone());
+                }
+            } else if ask.other && other.is_none() {
+                other = Some(clean(label).trim().to_owned()).filter(|o| !o.is_empty());
+            } else {
+                return Err(bad("That isn't one of the options."));
+            }
+        }
+        if labels.len() > 1 && !ask.multi {
+            return Err(bad("Pick one option."));
+        }
+        if other.is_some() && !ask.other {
+            return Err(bad("This question takes one of its options."));
+        }
+        if other.as_ref().is_some_and(|o| o.len() > MAX_ANSWER_OTHER) {
+            return Err(bad("The answer is too long."));
+        }
+        if labels.is_empty() && other.is_none() {
+            return Err(bad("Answer each question."));
+        }
+        out.push(crate::api::Answer { id: ask.id.clone(), labels, other });
+    }
+    Ok(out)
+}
+
+/// A question item's text: "question: answer", one line each.
+fn answers_text(asks: &[Ask], answers: &[crate::api::Answer]) -> String {
+    let mut text = String::new();
+    for (ask, answer) in asks.iter().zip(answers) {
+        let mut said = answer.labels.join(", ");
+        if let Some(other) = &answer.other {
+            if !said.is_empty() {
+                said.push_str(", ");
+            }
+            said.push_str(other);
+        }
+        let question = collapse_whitespace(&ask.text);
+        text.push_str(&format!("- {question}: {}\n", collapse_whitespace(&said)));
+    }
+    text.trim_end().to_owned()
+}
+
 fn flush_stream(host: &Host, thread_id: &str, stream: &mut Stream) {
     while !stream.pending.is_empty() {
         let chunk = cut(&stream.pending, MAX_DELTA_TEXT).to_owned();
@@ -2142,6 +2881,41 @@ fn flush_stream(host: &Host, thread_id: &str, stream: &mut Stream) {
         }
         stream.sent += chunk.len();
         stream.pending.drain(..chunk.len());
+    }
+}
+
+/// A thread's info with only its agent set (tests).
+#[cfg(test)]
+pub(crate) fn test_info(agent: AgentId) -> ThreadInfo {
+    ThreadInfo {
+        id: "0".repeat(32),
+        agent,
+        folder_id: "f000000000001".into(),
+        folder_label: "work".into(),
+        title: "t".into(),
+        state: State::Done,
+        mode: Mode::Supervised,
+        origin: Origin::launcher(),
+        created_ms: 0,
+        updated_ms: 0,
+        last_seq: 0,
+        pending: 0,
+        summary: None,
+        error: None,
+        native_id: None,
+        step: None,
+        plan: None,
+        state_since_ms: 0,
+        subdir: None,
+        continued: false,
+        model: None,
+        effort: None,
+        answered_model: None,
+        queued: Vec::new(),
+        queue_held: false,
+        context: None,
+        mcp: None,
+        asking: 0,
     }
 }
 
@@ -2175,6 +2949,14 @@ impl Host {
             state_since_ms: 0,
             subdir: None,
             continued: false,
+            model: None,
+            effort: None,
+            answered_model: None,
+            queued: Vec::new(),
+            queue_held: false,
+            context: None,
+            mcp: None,
+            asking: 0,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut entry = Entry::new(info, 1, Some(PathBuf::from("/tmp")));
@@ -2215,6 +2997,48 @@ impl Host {
         self.apply_step(&mut reg, thread_id, step);
     }
 
+    /// Lists `path` as the folder test threads are in.
+    pub(crate) fn test_folder(&self, path: &Path) {
+        let mut reg = self.lock_reg();
+        reg.folders.push(Folder {
+            id: "f000000000001".into(),
+            label: "work".into(),
+            path: path.to_string_lossy().into_owned(),
+            exists: true,
+            added_ms: 0,
+            mcp: true,
+            mcp_seen: Vec::new(),
+        });
+    }
+
+    /// Probes that report these agents (for the next minute).
+    pub(crate) async fn test_agents(&self, claude: AgentInfo, codex: AgentInfo) {
+        let mut cache = self.probes.lock().await;
+        let probe =
+            |info: AgentInfo| Probe { info, bin: Some(PathBuf::from("/bin/false")), commands: Vec::new() };
+        cache.claude = Some(probe(claude));
+        cache.codex = Some(probe(codex));
+        cache.at = Some(Instant::now());
+    }
+
+    /// Runs `f` on the thread's entry.
+    pub(crate) fn test_entry<R>(&self, thread_id: &str, f: impl FnOnce(&mut Entry) -> R) -> R {
+        f(self.lock_reg().threads.get_mut(thread_id).expect("a thread"))
+    }
+
+    /// As if the thread's agent asked `spec`.
+    pub(crate) fn test_question(
+        self: &Arc<Self>,
+        thread_id: &str,
+        generation: u64,
+        spec: QuestionSpec,
+    ) -> oneshot::Receiver<QuestionReply> {
+        let (tx, rx) = oneshot::channel();
+        let mut reg = self.lock_reg();
+        self.request_question(&mut reg, thread_id, generation, spec, tx, None);
+        rx
+    }
+
     /// Every item of the thread, as a client with `items2` reads it.
     pub(crate) async fn test_items(&self, thread_id: &str) -> Vec<Item> {
         let read = ThreadReadParams {
@@ -2222,7 +3046,7 @@ impl Host {
             limit: Some(MAX_READ_LIMIT),
             ..Default::default()
         };
-        self.thread_read(read, true).await.unwrap().items
+        self.thread_read(read, crate::host::Caps { items2: true, items3: true }).await.unwrap().items
     }
 }
 
@@ -2383,6 +3207,8 @@ mod tests {
                 Note::Failed { .. } => "failed".to_owned(),
                 Note::PhoneStarted { .. } => "started".to_owned(),
                 Note::Removed { .. } => "removed".to_owned(),
+                Note::Question { .. } => "question".to_owned(),
+                Note::PlanReady { .. } => "plan".to_owned(),
             });
         }
         seen
@@ -2505,7 +3331,8 @@ mod tests {
             Answer::Deny(DenyReason::Cancelled),
             "the stop took the other request"
         );
-        assert_eq!(cmds.try_recv().unwrap(), SessionCmd::Send("Use a temp dir".into()));
+        let SessionCmd::Send(input) = cmds.try_recv().unwrap() else { panic!("not a message") };
+        assert_eq!(input.text, "Use a temp dir");
         let state = host.test_state(&id);
         assert_eq!((state.state, state.pending), (State::Working, 0));
         assert!(!notes(&mut notes_rx).iter().any(|n| n.starts_with("done") || n == "removed"));
@@ -2647,7 +3474,7 @@ mod tests {
         assert_eq!(host.test_state(&id).summary.as_deref(), Some("Done."), "the answer is the summary");
         // A client without `items2` reads thinking as steps.
         let read = ThreadReadParams { thread_id: id.clone(), ..Default::default() };
-        let legacy = host.thread_read(read, false).await.unwrap().items;
+        let legacy = host.thread_read(read, crate::host::Caps::default()).await.unwrap().items;
         assert_eq!(legacy[0].kind, ItemKind::Tool);
         assert_eq!(legacy[0].tool.as_ref().unwrap().title, "Thinking");
         assert_eq!(legacy.len(), items.len());

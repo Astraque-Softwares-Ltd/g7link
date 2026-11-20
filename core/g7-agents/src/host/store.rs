@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -18,7 +18,9 @@ use std::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use crate::api::{self, ApprovalOutcome, Folder, HostSettings, Item, ItemKind, Origin, ThreadInfo};
+use crate::api::{
+    self, ApprovalOutcome, Draft, Folder, HostSettings, Item, ItemKind, Origin, PlanState, ThreadInfo,
+};
 
 /// Store format version.
 const VERSION: u32 = 1;
@@ -40,6 +42,10 @@ struct StoredFolder {
     label: String,
     path: String,
     added_ms: u64,
+    #[serde(default = "yes")]
+    mcp: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mcp_seen: Vec<api::FolderMcp>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,6 +53,8 @@ struct SettingsFile {
     version: u32,
     #[serde(default = "yes")]
     follow_sessions: bool,
+    #[serde(default = "yes")]
+    keep_awake: bool,
 }
 
 fn yes() -> bool {
@@ -83,8 +91,17 @@ pub struct StoredThread {
     pub next_seq: u64,
     /// The largest `turn` among its items: 0 for a thread stored before turns.
     pub max_turn: u32,
-    /// Its `user` items that start a turn (not denials).
+    /// Its `user` items that start a turn (not denials, not steered).
     pub users: u32,
+    /// Its newest plan, when that one is still proposed.
+    pub plan: Option<Item>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DraftsFile {
+    version: u32,
+    /// Oldest first.
+    drafts: Vec<Draft>,
 }
 
 /// What compaction needs of a stored line.
@@ -190,7 +207,15 @@ impl Store {
             .into_iter()
             .filter(|f| api::is_valid_folder_id(&f.id) && Path::new(&f.path).is_absolute())
             .take(api::MAX_FOLDERS)
-            .map(|f| Folder { id: f.id, label: f.label, path: f.path, exists: false, added_ms: f.added_ms })
+            .map(|f| Folder {
+                id: f.id,
+                label: f.label,
+                path: f.path,
+                exists: false,
+                added_ms: f.added_ms,
+                mcp: f.mcp,
+                mcp_seen: f.mcp_seen,
+            })
             .collect()
     }
 
@@ -204,6 +229,8 @@ impl Store {
                     label: f.label.clone(),
                     path: f.path.clone(),
                     added_ms: f.added_ms,
+                    mcp: f.mcp,
+                    mcp_seen: f.mcp_seen.clone(),
                 })
                 .collect(),
         };
@@ -213,14 +240,75 @@ impl Store {
 
     /// The host's own settings (`settings.json`); the defaults when there are none.
     pub fn load_settings(&self) -> HostSettings {
-        read_json::<SettingsFile>(&self.root.join("settings.json"))
-            .map_or_else(HostSettings::default, |f| HostSettings { follow_sessions: f.follow_sessions })
+        read_json::<SettingsFile>(&self.root.join("settings.json")).map_or_else(HostSettings::default, |f| {
+            HostSettings { follow_sessions: f.follow_sessions, keep_awake: f.keep_awake }
+        })
     }
 
     pub fn save_settings(&self, settings: &HostSettings) -> io::Result<()> {
-        let file = SettingsFile { version: VERSION, follow_sessions: settings.follow_sessions };
+        let file = SettingsFile {
+            version: VERSION,
+            follow_sessions: settings.follow_sessions,
+            keep_awake: settings.keep_awake,
+        };
         let bytes = serde_json::to_vec(&file).map_err(io::Error::other)?;
         atomic_write(&self.root.join("settings.json"), &bytes)
+    }
+
+    /// The composers' drafts (`drafts.json`), oldest first.
+    pub fn load_drafts(&self) -> Vec<Draft> {
+        let mut drafts: Vec<Draft> = read_json::<DraftsFile>(&self.root.join("drafts.json"))
+            .map(|f| f.drafts)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| api::is_valid_draft_key(&d.key) && d.text.len() <= api::MAX_PROMPT)
+            .collect();
+        let excess = drafts.len().saturating_sub(api::MAX_DRAFTS);
+        drafts.drain(..excess);
+        drafts
+    }
+
+    pub fn save_drafts(&self, drafts: &[Draft]) -> io::Result<()> {
+        let bytes = serde_json::to_vec(&DraftsFile { version: VERSION, drafts: drafts.to_vec() })
+            .map_err(io::Error::other)?;
+        atomic_write(&self.root.join("drafts.json"), &bytes)
+    }
+
+    /// The prompts sent from this PC (`history.jsonl`), oldest first, at
+    /// most [`api::MAX_HISTORY`].
+    pub fn load_history(&self) -> Vec<String> {
+        let path = self.root.join("history.jsonl");
+        let Ok(file) = File::open(&path) else { return Vec::new() };
+        let mut lines: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        for line in BufReader::new(file.take(4 * 1024 * 1024)).lines() {
+            let Ok(line) = line else { break };
+            if let Ok(text) = serde_json::from_str::<String>(&line) {
+                lines.push_back(api::cut(&text, api::MAX_HISTORY_PROMPT).to_owned());
+                if lines.len() > api::MAX_HISTORY {
+                    lines.pop_front();
+                }
+            }
+        }
+        lines.into()
+    }
+
+    /// Appends one prompt to `history.jsonl` (0600).
+    pub fn append_history(&self, text: &str) -> io::Result<()> {
+        let mut line = serde_json::to_string(text).map_err(io::Error::other)?;
+        line.push('\n');
+        let mut file =
+            OpenOptions::new().create(true).append(true).mode(0o600).open(self.root.join("history.jsonl"))?;
+        file.write_all(line.as_bytes())
+    }
+
+    /// Replaces `history.jsonl` with `lines`, atomically.
+    pub fn rewrite_history(&self, lines: &[String]) -> io::Result<()> {
+        let mut bytes = Vec::new();
+        for line in lines {
+            bytes.extend_from_slice(serde_json::to_string(line).map_err(io::Error::other)?.as_bytes());
+            bytes.push(b'\n');
+        }
+        atomic_write(&self.root.join("history.jsonl"), &bytes)
     }
 
     /// Every stored thread whose directory name and meta are valid.
@@ -242,9 +330,18 @@ impl Store {
             let max_seq = items.keys().next_back().copied().unwrap_or(0);
             let next_seq = meta.next_seq.max(max_seq + 1).max(1);
             let max_turn = items.values().filter_map(|i| i.turn).max().unwrap_or(0);
-            let users = items.values().filter(|i| i.kind == ItemKind::User && i.deny_of.is_none()).count();
+            let users = items
+                .values()
+                .filter(|i| i.kind == ItemKind::User && i.deny_of.is_none() && i.via != Some(api::Via::Steer))
+                .count();
             let users = u32::try_from(users).unwrap_or(u32::MAX);
-            out.push(StoredThread { info: meta.thread, next_seq, max_turn, users });
+            let plan = items
+                .values()
+                .rev()
+                .find(|i| i.kind == ItemKind::Plan)
+                .filter(|i| i.plan_state == Some(PlanState::Proposed))
+                .cloned();
+            out.push(StoredThread { info: meta.thread, next_seq, max_turn, users, plan });
         }
         out
     }
@@ -405,6 +502,9 @@ enum Op {
     ReadItems(String, oneshot::Sender<io::Result<BTreeMap<u64, Item>>>),
     Delete(String),
     Flush(oneshot::Sender<()>),
+    SaveDrafts(Vec<Draft>),
+    AppendHistory(String),
+    RewriteHistory(Vec<String>),
 }
 
 /// The store, run on its own thread. Cheap to clone.
@@ -460,6 +560,21 @@ impl StoreHandle {
                     Op::Flush(reply) => {
                         let _ = reply.send(());
                     }
+                    Op::SaveDrafts(drafts) => {
+                        if let Err(e) = store.save_drafts(&drafts) {
+                            tracing::warn!("couldn't save the drafts: {e}");
+                        }
+                    }
+                    Op::AppendHistory(text) => {
+                        if let Err(e) = store.append_history(&text) {
+                            tracing::warn!("couldn't save a prompt to the history: {e}");
+                        }
+                    }
+                    Op::RewriteHistory(lines) => {
+                        if let Err(e) = store.rewrite_history(&lines) {
+                            tracing::warn!("couldn't rewrite the history: {e}");
+                        }
+                    }
                 }
             }
         })?;
@@ -512,6 +627,18 @@ impl StoreHandle {
         self.send(Op::Delete(thread_id.to_owned()));
     }
 
+    pub fn save_drafts(&self, drafts: Vec<Draft>) {
+        self.send(Op::SaveDrafts(drafts));
+    }
+
+    pub fn append_history(&self, text: String) {
+        self.send(Op::AppendHistory(text));
+    }
+
+    pub fn rewrite_history(&self, lines: Vec<String>) {
+        self.send(Op::RewriteHistory(lines));
+    }
+
     /// Waits until every earlier operation is done.
     pub async fn flush(&self) {
         let (tx, rx) = oneshot::channel();
@@ -548,6 +675,14 @@ mod tests {
             state_since_ms: 0,
             subdir: None,
             continued: false,
+            model: None,
+            effort: None,
+            answered_model: None,
+            queued: Vec::new(),
+            queue_held: false,
+            context: None,
+            mcp: None,
+            asking: 0,
         }
     }
 
@@ -592,6 +727,8 @@ mod tests {
             path: "/tmp".into(),
             exists: true,
             added_ms: 3,
+            mcp: false,
+            mcp_seen: vec![FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
         };
         store.save_folders(std::slice::from_ref(&folder)).unwrap();
         let loaded = store.load_folders();
@@ -642,7 +779,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_owned()).unwrap();
         assert!(store.load_settings().follow_sessions, "on by default");
-        store.save_settings(&HostSettings { follow_sessions: false }).unwrap();
+        store.save_settings(&HostSettings { follow_sessions: false, keep_awake: true }).unwrap();
         assert!(!store.load_settings().follow_sessions);
         fs::write(dir.path().join("settings.json"), br#"{"version":1}"#).unwrap();
         assert!(store.load_settings().follow_sessions);

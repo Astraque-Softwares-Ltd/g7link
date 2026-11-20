@@ -1,0 +1,18 @@
+{"_stdin":{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/context"}]}},"_id":"u1"}
+{"type":"system","subtype":"init","cwd":"/work","session_id":"11111111-2222-4333-8444-555555555555","model":"claude-opus-5-5","permissionMode":"default","mcp_servers":[{"name":"g7","status":"connected"}],"slash_commands":["compact","context","review"],"terminal_slash_commands":["login","config"],"tools":["Bash","Write"],"uuid":"u-init"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/context"}]},"isReplay":true,"session_id":"11111111-2222-4333-8444-555555555555","parent_tool_use_id":null,"uuid":"r"}
+{"type":"assistant","message":{"id":"msg_c1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Context: 12k of 1M tokens"}]},"parent_tool_use_id":null,"session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"Context: 12k of 1M tokens","session_id":"11111111-2222-4333-8444-555555555555","usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{}}
+{"_stdin":{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/compact"}]}},"_id":"u2"}
+{"type":"system","subtype":"init","cwd":"/work","session_id":"11111111-2222-4333-8444-555555555555","model":"claude-opus-5-5","permissionMode":"default","mcp_servers":[{"name":"g7","status":"connected"}],"slash_commands":["compact","context","review"],"terminal_slash_commands":["login","config"],"tools":["Bash","Write"],"uuid":"u-init"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/compact"}]},"isReplay":true,"session_id":"11111111-2222-4333-8444-555555555555","parent_tool_use_id":null,"uuid":"r"}
+{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Not enough messages to compact.","session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"assistant","message":{"id":"msg_c2","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Error: Not enough messages to compact."}]},"parent_tool_use_id":null,"session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"","session_id":"11111111-2222-4333-8444-555555555555","usage":{},"modelUsage":{}}
+{"_stdin":{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/compact"}]}},"_id":"u3"}
+{"type":"system","subtype":"init","cwd":"/work","session_id":"11111111-2222-4333-8444-555555555555","model":"claude-opus-5-5","permissionMode":"default","mcp_servers":[{"name":"g7","status":"connected"}],"slash_commands":["compact","context","review"],"terminal_slash_commands":["login","config"],"tools":["Bash","Write"],"uuid":"u-init"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/compact"}]},"isReplay":true,"session_id":"11111111-2222-4333-8444-555555555555","parent_tool_use_id":null,"uuid":"r"}
+{"type":"system","subtype":"status","status":"compacting","session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"assistant","message":{"id":"msg_c3","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Compacted."}]},"parent_tool_use_id":null,"session_id":"11111111-2222-4333-8444-555555555555"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"Compacted.","session_id":"11111111-2222-4333-8444-555555555555","usage":{},"modelUsage":{}}

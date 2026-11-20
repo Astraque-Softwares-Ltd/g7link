@@ -16,6 +16,9 @@ host = [
     "dep:rand",
     "dep:dirs",
     "dep:tracing-subscriber",
+    "dep:ignore",
+    "dep:image",
+    "dep:data-encoding",
     "tokio/process",
     "tokio/net",
     "tokio/signal",
@@ -51,6 +54,10 @@ dirs = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 zbus = { workspace = true, optional = true }
+# `@` file search, image intake and the images sent to the agents.
+ignore = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+data-encoding = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

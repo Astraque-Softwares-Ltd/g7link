@@ -158,6 +158,32 @@ fn item_markdown(
             }
         }
         ItemKind::Unknown => {}
+        ItemKind::Plan => {
+            if !text.trim().is_empty() {
+                out.push_str(&quoted("Plan", text.trim_end()));
+            }
+        }
+        ItemKind::Question => {
+            let info = item.question.unwrap_or(QuestionInfo { count: 1, secret: false, outcome: None });
+            let asked = if info.count > 1 {
+                format!("Asked {} questions", info.count)
+            } else {
+                "Asked a question".to_owned()
+            };
+            out.push_str(&format!("_{asked}_\n\n"));
+            // Never the answers to a secret one.
+            if !info.secret && !text.trim().is_empty() {
+                out.push_str(&quoted(&clean(&who(item.origin.as_ref())), text.trim_end()));
+            } else if info.outcome == Some(QuestionOutcome::Answered) {
+                let line = match &item.origin {
+                    Some(by) => format!("Answered on {}", clean(&device(by))),
+                    None => "Answered".to_owned(),
+                };
+                out.push_str(&format!("_{line}_\n\n"));
+            } else if info.outcome.is_some() {
+                out.push_str("_Not answered_\n\n");
+            }
+        }
         ItemKind::Assistant => {
             if !text.trim().is_empty() {
                 out.push_str(&close_fences(text.trim_end()));

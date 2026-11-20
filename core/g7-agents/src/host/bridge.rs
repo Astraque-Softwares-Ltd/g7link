@@ -43,6 +43,16 @@ pub fn decision_reply(id: &Value, behavior: BridgeBehavior, message: Option<&str
     json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": body.to_string()}]}})
 }
 
+/// [`decision_reply`] for the host's answer, with the tool's updated input
+/// when it allows one (a question's answers).
+pub fn result_reply(id: &Value, result: &BridgeAskResult) -> Value {
+    let body = match (result.behavior, &result.updated_input) {
+        (BridgeBehavior::Allow, Some(input)) => json!({"behavior": "allow", "updatedInput": input}),
+        (behavior, _) => return decision_reply(id, behavior, result.message.as_deref()),
+    };
+    json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": body.to_string()}]}})
+}
+
 fn error_reply(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
@@ -133,7 +143,7 @@ impl BridgeCore {
         }
         self.asking.remove(&k);
         Some(match answer {
-            Ok(result) => decision_reply(id, result.behavior, result.message.as_deref()),
+            Ok(result) => result_reply(id, &result),
             Err(()) => decision_reply(id, BridgeBehavior::Deny, Some(DENY_NO_HOST)),
         })
     }
@@ -288,7 +298,7 @@ mod tests {
         assert_eq!(cancels, ["toolu_01YKsx3mzGkW8veWFK5sKNPF"]);
         // An answer that arrives after the cancel is not sent.
         assert_eq!(
-            core.answered(&json!(2), Ok(BridgeAskResult { behavior: BridgeBehavior::Deny, message: None })),
+            core.answered(&json!(2), Ok(BridgeAskResult { message: None, ..BridgeAskResult::deny("") })),
             None
         );
     }

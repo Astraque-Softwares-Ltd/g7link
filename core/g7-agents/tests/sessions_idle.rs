@@ -50,6 +50,7 @@ async fn no_subscriber_means_no_file_is_opened() {
         codex_home: root.join("home/.codex"),
         proc_root: root.join("proc"),
         sessions: true,
+        keep_awake_bus: false,
     };
     let socket = config.socket.clone();
     let (stop, stopped) = oneshot::channel::<()>();

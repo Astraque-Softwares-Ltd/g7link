@@ -1,0 +1,25 @@
+{"dir":"send","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"G7 Linux","title":"G7 Linux","version":"0.1.17"},"capabilities":{"experimentalApi":true}}}}
+{"dir":"recv","msg":{"id":1,"result":{"userAgent":"codex_cli_rs/0.170.0"}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","method":"initialized"}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":2,"method":"account/read","params":{"refreshToken":false}}}
+{"dir":"recv","msg":{"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"},"requiresOpenaiAuth":true}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":3,"method":"thread/start","params":{"cwd":"/work","approvalPolicy":"untrusted","sandbox":"workspace-write","approvalsReviewer":"user"}}}
+{"dir":"recv","msg":{"id":3,"result":{"thread":{"id":"019a0000-0000-7000-8000-00000000c0de"},"model":"gpt-5.5-codex","reasoningEffort":"medium","approvalPolicy":"untrusted","sandbox":{"type":"workspaceWrite"},"cwd":"/work"}}}
+{"dir":"recv","msg":{"method":"thread/started","params":{"thread":{"id":"019a0000-0000-7000-8000-00000000c0de"}}}}
+{"dir":"recv","msg":{"method":"mcpServer/startupStatus/updated","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","name":"docs","status":"starting","error":null,"failureReason":null}}}
+{"dir":"recv","msg":{"method":"mcpServer/startupStatus/updated","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","name":"tracker","status":"failed","error":"401","failureReason":"reauthenticationRequired"}}}
+{"dir":"recv","msg":{"method":"mcpServer/startupStatus/updated","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","name":"docs","status":"ready","error":null,"failureReason":null}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":4,"method":"turn/start","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","input":[{"type":"text","text":"Plan a notes file. Ask me red or blue first.","text_elements":[]}],"summary":"auto","collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.5-codex","reasoning_effort":"medium","developer_instructions":null}}}}}
+{"dir":"recv","msg":{"id":4,"result":{"turn":{"id":"019a0000-0000-7000-8000-0000000000f1","items":[],"status":"inProgress"}}}}
+{"dir":"recv","msg":{"method":"turn/started","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turn":{"id":"019a0000-0000-7000-8000-0000000000f1","items":[],"status":"inProgress"}}}}
+{"dir":"recv","msg":{"id":0,"method":"item/tool/requestUserInput","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turnId":"019a0000-0000-7000-8000-0000000000f1","itemId":"call_q1","isBlocking":true,"autoResolutionMs":null,"questions":[{"id":"colour","header":"Colour","question":"Red or blue?","isOther":true,"isSecret":false,"options":[{"label":"Red","description":"Warm"},{"label":"Blue","description":"Cool"}]}]}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":0,"result":{"answers":{"colour":{"answers":["Blue"]}}}}}
+{"dir":"recv","msg":{"method":"item/started","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turnId":"019a0000-0000-7000-8000-0000000000f1","item":{"type":"plan","id":"plan_1","text":""}}}}
+{"dir":"recv","msg":{"method":"item/plan/delta","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turnId":"019a0000-0000-7000-8000-0000000000f1","itemId":"plan_1","delta":"1. Add notes.txt "}}}
+{"dir":"recv","msg":{"method":"item/plan/delta","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turnId":"019a0000-0000-7000-8000-0000000000f1","itemId":"plan_1","delta":"with blue."}}}
+{"dir":"recv","msg":{"method":"item/completed","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turnId":"019a0000-0000-7000-8000-0000000000f1","item":{"type":"plan","id":"plan_1","text":"1. Add notes.txt with blue.\n2. Done."}}}}
+{"dir":"recv","msg":{"method":"thread/tokenUsage/updated","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turnId":"019a0000-0000-7000-8000-0000000000f1","tokenUsage":{"total":{"totalTokens":30000,"inputTokens":29000,"cachedInputTokens":20000,"outputTokens":1000,"reasoningOutputTokens":10},"last":{"totalTokens":19384,"inputTokens":19330,"cachedInputTokens":19072,"outputTokens":54,"reasoningOutputTokens":30},"modelContextWindow":475000}}}}
+{"dir":"recv","msg":{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":82,"windowDurationMins":300,"resetsAt":1795055175},"secondary":null,"planType":"plus","credits":null,"rateLimitReachedType":null}}}}
+{"dir":"recv","msg":{"id":1,"method":"mcpServer/elicitation/request","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turnId":"019a0000-0000-7000-8000-0000000000f1","serverName":"docs","mode":"form","message":"Your API token?","requestedSchema":{"type":"object","properties":{}}}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":1,"result":{"action":"decline"}}}
+{"dir":"recv","msg":{"method":"turn/completed","params":{"threadId":"019a0000-0000-7000-8000-00000000c0de","turn":{"id":"019a0000-0000-7000-8000-0000000000f1","items":[],"status":"completed","error":null}}}}

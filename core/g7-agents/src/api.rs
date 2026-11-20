@@ -135,6 +135,87 @@ pub const MAX_STATUS_FILE: u64 = 16_384;
 /// Process entries looked at per scan.
 pub const MAX_PROC_SCAN: usize = 4096;
 
+// ---- Control (phase 2) ----
+
+/// Models an agent lists, and each one's fields.
+pub const MAX_MODELS: usize = 40;
+pub const MAX_MODEL_ID: usize = 64;
+pub const MAX_MODEL_NAME: usize = 64;
+pub const MAX_MODEL_NOTE: usize = 120;
+/// Effort levels per model, and the length of each.
+pub const MAX_EFFORTS: usize = 8;
+pub const MAX_EFFORT: usize = 16;
+/// Usage windows per agent.
+pub const MAX_LIMITS: usize = 4;
+pub const MAX_LIMIT_WINDOW: usize = 32;
+/// `agents.changed` for a change of limits alone, at most this often per
+/// agent unless a window's `state` changed.
+pub const LIMITS_EVENT_MS: u64 = 30_000;
+/// Messages waiting in a thread's queue.
+pub const MAX_QUEUED: usize = 5;
+/// A queued message's id: 16 lowercase hex digits.
+pub const QUEUED_ID_LEN: usize = 16;
+/// Images in one message.
+pub const MAX_IMAGES: usize = 4;
+/// An image id: 32 lowercase hex digits.
+pub const IMAGE_ID_LEN: usize = 32;
+pub const MAX_IMAGE_NAME: usize = 128;
+/// `image.add_path`: the file read at most, and the largest side decoded.
+pub const MAX_IMAGE_FILE: u64 = 20 * 1024 * 1024;
+pub const MAX_IMAGE_SIDE: u32 = 12_000;
+/// `image.begin`: an upload's size at most.
+pub const MAX_IMAGE_UPLOAD: u32 = 10_485_760;
+/// `image.chunk`: the base64 text of one chunk at most.
+pub const MAX_IMAGE_CHUNK: usize = 131_072;
+/// An upload not ended this long after its last chunk is dropped.
+pub const IMAGE_UPLOAD_IDLE_MS: u64 = 60_000;
+/// `image.read`: the largest side asked for, and the bytes returned at most.
+pub const MAX_THUMB_SIDE: u16 = 1024;
+pub const MAX_THUMB_BYTES: usize = 150 * 1024;
+/// MCP server names in a thread's `mcp`.
+pub const MAX_MCP_NAMES: usize = 32;
+pub const MAX_MCP_NAME: usize = 64;
+/// Questions in one request, and their fields.
+pub const MAX_ASKS: usize = 4;
+pub const MAX_ASK_ID: usize = 64;
+pub const MAX_ASK_HEADER: usize = 40;
+pub const MAX_ASK_TEXT: usize = 500;
+pub const MAX_ASK_OPTIONS: usize = 6;
+pub const MAX_OPTION_LABEL: usize = 80;
+pub const MAX_OPTION_NOTE: usize = 200;
+/// "Something else": the user's own answer.
+pub const MAX_ANSWER_OTHER: usize = 500;
+/// Questions waiting per thread; a third is dismissed at once.
+pub const MAX_QUESTIONS_PER_THREAD: usize = 2;
+/// How long a question waits for an answer (as an approval does).
+pub const QUESTION_LIFETIME_MS: u64 = APPROVAL_LIFETIME_MS;
+/// `commands.list`.
+pub const MAX_COMMANDS: usize = 300;
+pub const MAX_COMMAND_NAME: usize = 64;
+pub const MAX_COMMAND_NOTE: usize = 200;
+pub const MAX_COMMAND_HINT: usize = 80;
+/// `files.search`.
+pub const MAX_FILES_QUERY: usize = 128;
+pub const MAX_FILES_LIMIT: u32 = 50;
+pub const DEFAULT_FILES_LIMIT: u32 = 20;
+pub const MAX_FILE_HIT_PATH: usize = 512;
+/// Drafts kept; the oldest goes first.
+pub const MAX_DRAFTS: usize = 64;
+pub const MAX_DRAFT_KEY: usize = 64;
+/// Drafts are written this long after the last change.
+pub const DRAFT_SAVE_MS: u64 = 1000;
+/// Prompts kept in `history.jsonl`, the length of each, and `history.list`'s limit.
+pub const MAX_HISTORY: usize = 200;
+pub const MAX_HISTORY_PROMPT: usize = 2048;
+pub const MAX_HISTORY_LIMIT: u32 = 50;
+pub const DEFAULT_HISTORY_LIMIT: u32 = 50;
+/// The keep-awake inhibitor is released this long after the last thread stopped working.
+pub const KEEP_AWAKE_RELEASE_MS: u64 = 60_000;
+/// What `plan.implement` sends, as the user's message.
+pub const IMPLEMENT_PLAN_TEXT: &str = "Implement the plan.";
+/// A plan's text, at most.
+pub const MAX_PLAN_ITEM: usize = 16_384;
+
 // ---- Method and event names ----
 
 pub mod method {
@@ -163,6 +244,27 @@ pub mod method {
     pub const SESSIONS_SET_FOLLOWING: &str = "sessions.set_following";
     pub const SETTINGS_GET: &str = "settings.get";
     pub const THREAD_EXPORT: &str = "thread.export";
+    // Control (phase 2).
+    pub const THREAD_CONFIGURE: &str = "thread.configure";
+    pub const QUEUE_EDIT: &str = "queue.edit";
+    pub const QUEUE_REMOVE: &str = "queue.remove";
+    pub const QUEUE_SEND_NOW: &str = "queue.send_now";
+    pub const QUESTION_ANSWER: &str = "question.answer";
+    pub const QUESTION_DISMISS: &str = "question.dismiss";
+    pub const PLAN_IMPLEMENT: &str = "plan.implement";
+    pub const FILES_SEARCH: &str = "files.search";
+    pub const COMMANDS_LIST: &str = "commands.list";
+    pub const IMAGE_ADD_PATH: &str = "image.add_path";
+    pub const IMAGE_BEGIN: &str = "image.begin";
+    pub const IMAGE_CHUNK: &str = "image.chunk";
+    pub const IMAGE_END: &str = "image.end";
+    pub const IMAGE_DROP: &str = "image.drop";
+    pub const IMAGE_READ: &str = "image.read";
+    pub const DRAFT_SET: &str = "draft.set";
+    pub const DRAFT_GET: &str = "draft.get";
+    pub const HISTORY_LIST: &str = "history.list";
+    pub const FOLDERS_SET: &str = "folders.set";
+    pub const SETTINGS_SET: &str = "settings.set";
 }
 
 /// What a client says it understands (`HelloParams.caps`) and what a host
@@ -173,8 +275,15 @@ pub mod cap {
     pub const ITEMS2: &str = "items2";
     /// The host takes `message` with a `deny` answer.
     pub const DENY_MESSAGE: &str = "deny_message";
+    /// The host has the phase 2 methods: models and modes, the queue and
+    /// steering, questions, plans, files, commands, images, drafts.
+    pub const CONTROL: &str = "control";
+    /// The client understands item kinds `plan` and `question` and mode
+    /// `plan`; a client without it gets them as [`super::Item::legacy`] and
+    /// [`super::ThreadInfo::legacy`] make them.
+    pub const ITEMS3: &str = "items3";
     /// What this host offers.
-    pub const HOST: [&str; 2] = [ITEMS2, DENY_MESSAGE];
+    pub const HOST: [&str; 3] = [ITEMS2, DENY_MESSAGE, CONTROL];
 }
 
 pub mod event {
@@ -192,6 +301,9 @@ pub mod event {
     pub const SESSION_REMOVED: &str = "session.removed";
     pub const SESSION_ITEM: &str = "session.item";
     pub const SETTINGS_CHANGED: &str = "settings.changed";
+    pub const QUESTION_REQUESTED: &str = "question.requested";
+    pub const QUESTION_RESOLVED: &str = "question.resolved";
+    pub const DRAFT_CHANGED: &str = "draft.changed";
 }
 
 // ---- Error codes ----
@@ -211,6 +323,9 @@ pub enum ErrorCode {
     AlreadyAnswered,
     UnsupportedVersion,
     Internal,
+    /// `draft.set` with a `rev` that isn't the stored draft's; the error's
+    /// `data` holds `{"draft": Draft}`.
+    Conflict,
 }
 
 impl ErrorCode {
@@ -225,6 +340,7 @@ impl ErrorCode {
             Self::AlreadyAnswered => "ALREADY_ANSWERED",
             Self::UnsupportedVersion => "UNSUPPORTED_VERSION",
             Self::Internal => "INTERNAL",
+            Self::Conflict => "CONFLICT",
         }
     }
 }
@@ -244,12 +360,21 @@ pub const UNKNOWN_METHOD: &str = "unknown method";
 pub struct RpcError {
     pub code: ErrorCode,
     pub message: String,
+    /// What some errors carry besides their message (`CONFLICT`: the stored draft).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 impl RpcError {
     /// An error with `message` cut to [`MAX_RPC_ERROR_MESSAGE`].
     pub fn new(code: ErrorCode, message: impl AsRef<str>) -> Self {
-        Self { code, message: cut(message.as_ref(), MAX_RPC_ERROR_MESSAGE).to_owned() }
+        Self { code, message: cut(message.as_ref(), MAX_RPC_ERROR_MESSAGE).to_owned(), data: None }
+    }
+
+    /// The draft a `CONFLICT` from `draft.set` carries.
+    pub fn conflict_draft(&self) -> Option<Draft> {
+        let data = self.data.as_ref().filter(|_| self.code == ErrorCode::Conflict)?;
+        serde_json::from_value(data.get("draft")?.clone()).ok()
     }
 }
 
@@ -328,6 +453,16 @@ pub enum Mode {
     Supervised,
     /// Edits without asking; still asks before commands.
     AutoEdit,
+    /// Changes nothing: the agent proposes a plan for the user to review.
+    /// Asks as `supervised` does if the agent asks at all.
+    Plan,
+}
+
+impl Mode {
+    /// A mode a phone may choose (`supervised`, `plan`).
+    pub fn phone_may(self) -> bool {
+        matches!(self, Self::Supervised | Self::Plan)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -360,6 +495,13 @@ pub enum ItemKind {
     /// The agent's thinking. Sent only to clients that said `items2`; see
     /// [`Item::legacy`].
     Reasoning,
+    /// A plan proposed in plan mode (`plan_state`). Sent as it is only to
+    /// clients that said `items3`.
+    Plan,
+    /// The agent asked the user something ([`Question`]); the text is the
+    /// "question: answer" list once answered, absent when any ask is secret.
+    /// Sent as it is only to clients that said `items3`.
+    Question,
     /// A kind this version doesn't know (written by a newer host). Kept in
     /// the store as it is, never sent to a client.
     #[serde(other)]
@@ -389,6 +531,9 @@ pub enum ToolClass {
     Agent,
     Tasks,
     Other,
+    /// Claude writing its plan file in plan mode: no row, and never sent to
+    /// a phone (its path is outside the folder).
+    Plan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -516,7 +661,333 @@ pub enum ContinueBlock {
     Agent,
 }
 
+/// What an agent can do here (`AgentInfo.can`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Can {
+    /// Mode `plan`.
+    Plan,
+    /// It may ask the user questions.
+    Questions,
+    /// A message sent while it works reaches the running turn.
+    Steer,
+    Images,
+    /// Its use of the user's MCP servers follows the folder's switch.
+    McpSwitch,
+    /// `commands.list` has its slash commands or skills.
+    Commands,
+}
+
+/// How close a usage window is to its limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitState {
+    #[default]
+    Ok,
+    Warn,
+    Reached,
+}
+
+/// How a user message reached a running turn (`Item.via`); absent: it
+/// started its turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Via {
+    /// Sent while the agent worked, into its turn.
+    Steer,
+    /// Waited in the queue, then started its turn.
+    Queue,
+}
+
+/// Where a plan stands (`Item.plan_state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanState {
+    Proposed,
+    Implemented,
+    /// A newer plan came after it.
+    Replaced,
+}
+
+/// What `thread.send` does while the thread works.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Dispatch {
+    /// The client's default; the host reads a bare `auto` as `queue`.
+    #[default]
+    Auto,
+    Steer,
+    Queue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandKind {
+    Command,
+    Skill,
+}
+
+/// How a question ended (`question.resolved`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionOutcome {
+    Answered,
+    Dismissed,
+    Expired,
+    /// The turn ended first.
+    Cancelled,
+}
+
 // ---- Records ----
+
+/// A model an agent's CLI reports (§Q4.1). G7 has no list of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// What is passed to the CLI.
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The CLI's default.
+    #[serde(default)]
+    pub default: bool,
+    /// The effort levels it takes, as the CLI names them; empty: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    /// It reads images.
+    #[serde(default)]
+    pub images: bool,
+    /// A short name (Claude's `opus`, `sonnet`): listed first.
+    #[serde(default)]
+    pub short: bool,
+}
+
+impl ModelInfo {
+    /// Cleaned, cut and bounded; `None` without an id.
+    pub fn sanitized(&self) -> Option<ModelInfo> {
+        let id = clean_cut(self.id.trim(), MAX_MODEL_ID).0;
+        if id.is_empty() {
+            return None;
+        }
+        let name = match clean_cut(self.name.trim(), MAX_MODEL_NAME).0 {
+            name if name.is_empty() => id.clone(),
+            name => name,
+        };
+        let effort = |e: &String| Some(clean_cut(e.trim(), MAX_EFFORT).0).filter(|e| !e.is_empty());
+        Some(ModelInfo {
+            id,
+            name,
+            note: self.note.as_ref().map(|n| clean_cut(n.trim(), MAX_MODEL_NOTE).0).filter(|n| !n.is_empty()),
+            default: self.default,
+            efforts: self.efforts.iter().filter_map(effort).take(MAX_EFFORTS).collect(),
+            default_effort: self.default_effort.as_ref().and_then(effort),
+            images: self.images,
+            short: self.short,
+        })
+    }
+}
+
+/// One usage window, as the CLI reports it (§Q4.8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Limit {
+    /// As the CLI names it: `"five_hour"`, `"seven_day"`, or minutes (`"300"`).
+    pub window: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_pct: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_ms: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_or_default")]
+    pub state: LimitState,
+}
+
+/// What a thread's context holds, after its last model call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUse {
+    pub used: u64,
+    pub max: u64,
+}
+
+/// The user's MCP servers in a thread, as the CLI reported them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadMcp {
+    /// The folder's switch when the process started.
+    pub on: bool,
+    pub connected: u16,
+    pub need_login: u16,
+    /// Never sent to a phone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+}
+
+/// The MCP servers an agent last reported in a folder (kept by the host).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderMcp {
+    pub agent: AgentId,
+    pub names: Vec<String>,
+}
+
+/// An image the host holds, re-encoded (§Q4.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageRef {
+    /// 32 lowercase hex digits.
+    pub id: String,
+    pub name: String,
+    pub bytes: u32,
+    pub w: u16,
+    pub h: u16,
+}
+
+/// A message waiting for the running turn to end (§Q3.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Queued {
+    /// 16 lowercase hex digits.
+    pub id: String,
+    pub text: String,
+    pub origin: Origin,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
+    pub created_ms: u64,
+}
+
+/// One option of an [`Ask`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// One question of a [`Question`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ask {
+    pub id: String,
+    pub header: String,
+    pub text: String,
+    /// Several options may be picked.
+    #[serde(default)]
+    pub multi: bool,
+    /// The user may answer in their own words.
+    #[serde(default)]
+    pub other: bool,
+    /// Answered on the PC only; the answer is never stored or sent on.
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<AskOption>,
+}
+
+impl Ask {
+    /// Cleaned and cut to the limits; `None` without an id or text.
+    pub fn sanitized(&self) -> Option<Ask> {
+        let id = clean_cut(&self.id, MAX_ASK_ID).0;
+        let text = clean_cut(self.text.trim(), MAX_ASK_TEXT).0;
+        if id.is_empty() || text.is_empty() {
+            return None;
+        }
+        let options: Vec<AskOption> = self
+            .options
+            .iter()
+            .map(|o| AskOption {
+                label: clean_cut(o.label.trim(), MAX_OPTION_LABEL).0,
+                note: o
+                    .note
+                    .as_ref()
+                    .map(|n| clean_cut(n.trim(), MAX_OPTION_NOTE).0)
+                    .filter(|n| !n.is_empty()),
+            })
+            .filter(|o| !o.label.is_empty())
+            .take(MAX_ASK_OPTIONS)
+            .collect();
+        Some(Ask {
+            id,
+            header: clean_cut(self.header.trim(), MAX_ASK_HEADER).0,
+            text,
+            multi: self.multi && !options.is_empty(),
+            // Without options, only the user's own words can answer it.
+            other: self.other || options.is_empty(),
+            secret: self.secret,
+            options,
+        })
+    }
+}
+
+/// The agent asks the user (§Q4.4). Single use, first answer wins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Question {
+    /// 32 lowercase hex digits, random.
+    pub token: String,
+    pub thread_id: String,
+    /// Its `question` item.
+    pub item_id: String,
+    /// Some ask is secret.
+    pub secret: bool,
+    /// Empty when sent to a client that may not see a secret question.
+    pub asks: Vec<Ask>,
+    pub created_ms: u64,
+    pub expires_ms: u64,
+}
+
+impl Question {
+    /// As a client that isn't on this PC gets it: a secret question without its asks.
+    pub fn redacted(&self) -> Question {
+        if self.secret { Question { asks: Vec::new(), ..self.clone() } } else { self.clone() }
+    }
+}
+
+/// The user's answer to one [`Ask`]. Its `Debug` shows only the id: a
+/// secret ask's answer never reaches a log.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Answer {
+    pub id: String,
+    /// The options picked, by label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+    /// The user's own words ("Something else").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<String>,
+}
+
+impl std::fmt::Debug for Answer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Answer").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
+/// A slash command or skill an agent has (§Q4.7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Command {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Placeholder text for its arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    pub kind: CommandKind,
+}
+
+/// A file or directory `files.search` found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileHit {
+    /// Relative to the folder, `/` separators.
+    pub path: String,
+    pub dir: bool,
+}
+
+/// A composer's unsent text (§Q4.10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Draft {
+    /// A thread id, or `new:<folder id>`.
+    pub key: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
+    pub rev: u64,
+    /// Who set it last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
@@ -537,6 +1008,14 @@ pub struct AgentInfo {
     pub login_hint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// The models the CLI reports; empty until it has.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelInfo>,
+    #[serde(default, deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
+    pub can: Vec<Can>,
+    /// Usage windows, as the CLI last reported them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<Limit>,
 }
 
 impl AgentInfo {
@@ -552,6 +1031,9 @@ impl AgentInfo {
             plan: None,
             login_hint: id.login_hint().to_owned(),
             problem: None,
+            models: Vec::new(),
+            can: Vec::new(),
+            limits: Vec::new(),
         }
     }
 
@@ -559,6 +1041,24 @@ impl AgentInfo {
     pub fn ready(&self) -> bool {
         self.installed && self.signed_in
     }
+
+    pub fn can(&self, can: Can) -> bool {
+        self.can.contains(&can)
+    }
+
+    /// The model `id` names in the list.
+    pub fn model(&self, id: &str) -> Option<&ModelInfo> {
+        self.models.iter().find(|m| m.id == id)
+    }
+
+    /// The CLI's default model, when the list says which.
+    pub fn default_model(&self) -> Option<&ModelInfo> {
+        self.models.iter().find(|m| m.default)
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -571,6 +1071,12 @@ pub struct Folder {
     #[serde(default)]
     pub exists: bool,
     pub added_ms: u64,
+    /// Threads here load the user's own MCP servers (from their next process).
+    #[serde(default = "yes")]
+    pub mcp: bool,
+    /// The servers each agent last reported here; names only. Never sent to a phone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_seen: Vec<FolderMcp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -655,6 +1161,43 @@ pub struct ThreadInfo {
     /// Made by `session.continue`.
     #[serde(default)]
     pub continued: bool,
+    /// The model for its next turns; absent: the CLI's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The model the CLI says answered last; clients show it when it differs from `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_model: Option<String>,
+    /// Messages waiting for the running turn to end, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued: Vec<Queued>,
+    /// The last turn didn't finish: nothing queued is sent until the user says.
+    #[serde(default)]
+    pub queue_held: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextUse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<ThreadMcp>,
+    /// Questions waiting (not counted in `pending`).
+    #[serde(default)]
+    pub asking: u32,
+}
+
+impl ThreadInfo {
+    /// The thread as a client that didn't say `items3` gets it: mode `plan`
+    /// reads as `supervised` (it asks as supervised does).
+    pub fn legacy(&self) -> ThreadInfo {
+        match self.mode {
+            Mode::Plan => ThreadInfo { mode: Mode::Supervised, ..self.clone() },
+            _ => self.clone(),
+        }
+    }
+
+    /// As a client gets it: [`ThreadInfo::legacy`] without `items3`.
+    pub fn for_client(&self, items3: bool) -> ThreadInfo {
+        if items3 { self.clone() } else { self.legacy() }
+    }
 }
 
 /// A session started outside G7 (a terminal, the Claude or Codex app),
@@ -744,6 +1287,31 @@ pub struct Item {
     /// Kind `user`: the tool item this message was a denial of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deny_of: Option<String>,
+    /// Kind `user`: sent while the agent worked (`steer`) or from the queue.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub via: Option<Via>,
+    /// Kind `user`: the images sent with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
+    /// Kind `plan`.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub plan_state: Option<PlanState>,
+    /// Kind `question`: how many asks, and how it ended; `origin` is who answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<QuestionInfo>,
+}
+
+/// A `question` item's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionInfo {
+    /// Its asks, 1 to [`MAX_ASKS`].
+    pub count: u8,
+    /// Some ask is secret: the item never has the answers.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub secret: bool,
+    /// Absent while it waits.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<QuestionOutcome>,
 }
 
 impl Item {
@@ -764,6 +1332,30 @@ impl Item {
             end_ms: None,
             group: None,
             deny_of: None,
+            via: None,
+            images: Vec::new(),
+            plan_state: None,
+            question: None,
+        }
+    }
+
+    /// A tool step of this item's seq, id, time and revision.
+    fn as_tool(&self, name: &str, title: &str, status: ToolStatus) -> Item {
+        Item {
+            tool: Some(Tool {
+                name: name.into(),
+                title: title.into(),
+                detail: None,
+                status,
+                output: None,
+                class: None,
+                path: None,
+                by_rule: false,
+            }),
+            rev: self.rev,
+            turn: self.turn,
+            end_ms: self.end_ms,
+            ..Item::new(self.seq, self.id.clone(), ItemKind::Tool, self.ts_ms)
         }
     }
 
@@ -776,28 +1368,42 @@ impl Item {
             return self.clone();
         }
         let status = if self.end_ms.is_some() { ToolStatus::Ok } else { ToolStatus::Running };
-        Item {
-            tool: Some(Tool {
-                name: "reasoning".into(),
-                title: "Thinking".into(),
-                detail: None,
-                status,
-                output: None,
-                class: None,
-                path: None,
-                by_rule: false,
-            }),
-            rev: self.rev,
-            ..Item::new(self.seq, self.id.clone(), ItemKind::Tool, self.ts_ms)
+        Item { turn: None, end_ms: None, ..self.as_tool("reasoning", "Thinking", status) }
+    }
+
+    /// The item as a client that didn't say `items3` gets it: a plan is an
+    /// assistant message with the plan's text (the turn's answer); a
+    /// question is a tool step "Question", running until it is resolved,
+    /// with no text. Other kinds are unchanged.
+    pub fn legacy3(&self) -> Item {
+        match self.kind {
+            ItemKind::Plan => Item {
+                kind: ItemKind::Assistant,
+                phase: Some(Phase::Final),
+                plan_state: None,
+                question: None,
+                ..self.clone()
+            },
+            ItemKind::Question => {
+                let status = if self.end_ms.is_some() { ToolStatus::Ok } else { ToolStatus::Running };
+                self.as_tool("question", "Question", status)
+            }
+            _ => self.clone(),
         }
     }
 
     /// The item as a client gets it: `None` for a kind no client may see,
     /// the [`Item::legacy`] form for one without `items2`.
     pub fn for_client(&self, items2: bool) -> Option<Item> {
+        self.for_caps(items2, true)
+    }
+
+    /// [`Item::for_client`], and the [`Item::legacy3`] form for a client without `items3`.
+    pub fn for_caps(&self, items2: bool, items3: bool) -> Option<Item> {
         match self.kind {
             ItemKind::Unknown => None,
             ItemKind::Reasoning if !items2 => Some(self.legacy()),
+            ItemKind::Plan | ItemKind::Question if !items3 => Some(self.legacy3()),
             _ => Some(self.clone()),
         }
     }
@@ -1019,6 +1625,34 @@ pub struct ThreadStartParams {
     pub prompt: String,
     pub mode: Mode,
     pub origin: Origin,
+    /// Absent: the CLI's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// `model` was typed by the user: it need not be in the agent's list.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub custom_model: bool,
+    /// Pending image ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+}
+
+impl ThreadStartParams {
+    /// A start with the CLI's default model and no images.
+    pub fn new(agent: AgentId, folder_id: String, prompt: String, mode: Mode, origin: Origin) -> Self {
+        Self {
+            agent,
+            folder_id,
+            prompt,
+            mode,
+            origin,
+            model: None,
+            effort: None,
+            custom_model: false,
+            images: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1031,6 +1665,248 @@ pub struct ThreadSendParams {
     pub thread_id: String,
     pub text: String,
     pub origin: Origin,
+    /// What to do when the thread works; absent: `auto`, read as `queue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<Dispatch>,
+    /// Pending image ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    /// Applied before the turn starts, as `thread.configure` would; refused while it works.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub custom_model: bool,
+}
+
+impl ThreadSendParams {
+    /// Text only, as a client before phase 2 sends it.
+    pub fn new(thread_id: String, text: String, origin: Origin) -> Self {
+        Self {
+            thread_id,
+            text,
+            origin,
+            dispatch: None,
+            images: Vec::new(),
+            model: None,
+            effort: None,
+            mode: None,
+            custom_model: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadSendResult {
+    /// The message waits in the queue (asked for, or the agent can't be steered).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<Queued>,
+}
+
+/// `thread.configure`: what is absent is unchanged; an empty `model` or
+/// `effort` goes back to the CLI's default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadConfigureParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub custom_model: bool,
+    /// Who changed it; absent: this PC. A phone may set only `supervised` or `plan`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `queue.edit`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueEditParams {
+    pub thread_id: String,
+    pub id: String,
+    pub text: String,
+    /// Who edited it; absent: this PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+/// `queue.remove`, `queue.send_now`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueItemParams {
+    pub thread_id: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionAnswerParams {
+    pub token: String,
+    pub answers: Vec<Answer>,
+    pub by: By,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionDismissParams {
+    pub token: String,
+    pub by: By,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanImplementParams {
+    pub thread_id: String,
+    pub item_id: String,
+    /// `supervised` or `auto_edit` (not from a phone).
+    pub mode: Mode,
+    pub by: By,
+}
+
+/// `files.search`: one of `folder_id` and `thread_id`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesSearchParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesSearchResult {
+    pub files: Vec<FileHit>,
+    /// The index is partial or more matched.
+    pub more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandsListParams {
+    pub agent: AgentId,
+    pub folder_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandsListResult {
+    pub commands: Vec<Command>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAddPathParams {
+    pub path: String,
+}
+
+/// `image.add_path`, `image.end`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageResult {
+    pub image: ImageRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageBeginParams {
+    pub name: String,
+    /// The upload's size; more bytes than this end it.
+    pub bytes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageBeginResult {
+    pub upload: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageChunkParams {
+    pub upload: String,
+    /// 0-based, consecutive.
+    pub seq: u32,
+    /// Base64, at most [`MAX_IMAGE_CHUNK`] characters.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageEndParams {
+    pub upload: String,
+}
+
+/// `image.drop`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageIdParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageReadParams {
+    pub id: String,
+    /// The largest side wanted, at most [`MAX_THUMB_SIDE`].
+    pub max: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageReadResult {
+    pub mime: String,
+    /// Base64.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftSetParams {
+    /// A thread id, or `new:<folder id>`.
+    pub key: String,
+    pub text: String,
+    /// Pending image ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    /// The stored draft's `rev`, or 0 for a new one.
+    pub rev: u64,
+    /// Who typed it; absent: this PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftSetResult {
+    pub rev: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftGetParams {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftGetResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<Draft>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryListResult {
+    /// Newest first.
+    pub prompts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoldersSetParams {
+    pub id: String,
+    pub mcp: bool,
+}
+
+/// `settings.set`: what is absent is unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsSetParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_awake: Option<bool>,
 }
 
 /// `thread.interrupt`, `thread.delete`, `thread.terminal_command`.
@@ -1057,6 +1933,9 @@ pub struct ThreadReadResult {
     pub items: Vec<Item>,
     pub more_before: bool,
     pub pending: Vec<Approval>,
+    /// Questions waiting, oldest first (a host with `control`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<Question>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1198,11 +2077,14 @@ pub struct ThreadExportResult {
 pub struct HostSettings {
     /// Follow sessions started outside G7 (on by default).
     pub follow_sessions: bool,
+    /// Keep this PC from sleeping while an agent works (on by default).
+    #[serde(default = "yes")]
+    pub keep_awake: bool,
 }
 
 impl Default for HostSettings {
     fn default() -> Self {
-        Self { follow_sessions: true }
+        Self { follow_sessions: true, keep_awake: true }
     }
 }
 
@@ -1226,11 +2108,24 @@ pub struct BridgeAskParams {
     pub tool_use_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgeAskResult {
     pub behavior: BridgeBehavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// With `allow`: the tool's input as it should run (a question's answers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_input: Option<Value>,
+}
+
+impl BridgeAskResult {
+    pub fn allow() -> Self {
+        Self { behavior: BridgeBehavior::Allow, message: None, updated_input: None }
+    }
+
+    pub fn deny(message: impl Into<String>) -> Self {
+        Self { behavior: BridgeBehavior::Deny, message: Some(message.into()), updated_input: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1306,6 +2201,29 @@ pub struct SessionItemEvent {
     pub item: Item,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionRequestedEvent {
+    pub question: Question,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionResolvedEvent {
+    pub token: String,
+    pub thread_id: String,
+    pub outcome: QuestionOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<By>,
+}
+
+/// A draft changed: clients call `draft.get` for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftChangedEvent {
+    pub key: String,
+    pub rev: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
 /// An event from the host, typed. Parse an [`EventLine`] with
 /// [`Event::from_line`]; an unknown event name gives `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1339,6 +2257,12 @@ pub enum Event {
     SessionItem(SessionItemEvent),
     #[serde(rename = "settings.changed")]
     SettingsChanged(HostSettings),
+    #[serde(rename = "question.requested")]
+    QuestionRequested(QuestionRequestedEvent),
+    #[serde(rename = "question.resolved")]
+    QuestionResolved(QuestionResolvedEvent),
+    #[serde(rename = "draft.changed")]
+    DraftChanged(DraftChangedEvent),
 }
 
 impl Event {
@@ -1366,6 +2290,9 @@ impl Event {
             Self::SessionRemoved(_) => event::SESSION_REMOVED,
             Self::SessionItem(_) => event::SESSION_ITEM,
             Self::SettingsChanged(_) => event::SETTINGS_CHANGED,
+            Self::QuestionRequested(_) => event::QUESTION_REQUESTED,
+            Self::QuestionResolved(_) => event::QUESTION_RESOLVED,
+            Self::DraftChanged(_) => event::DRAFT_CHANGED,
         }
     }
 
@@ -1380,7 +2307,10 @@ impl Event {
             Self::ThreadDone(e) => Some(&e.thread_id),
             Self::ThreadRemoved(e) => Some(&e.thread_id),
             Self::UiOpen(e) => Some(&e.thread_id),
+            Self::QuestionRequested(e) => Some(&e.question.thread_id),
+            Self::QuestionResolved(e) => Some(&e.thread_id),
             Self::AgentsChanged(_)
+            | Self::DraftChanged(_)
             | Self::FoldersChanged(_)
             | Self::SessionState(_)
             | Self::SessionRemoved(_)
@@ -1519,6 +2449,50 @@ where
     Ok(value.and_then(|v| serde_json::from_value(v).ok()))
 }
 
+/// A list a later version may widen: entries this version doesn't know are dropped.
+fn lenient_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let values = Option::<Vec<Value>>::deserialize(deserializer)?.unwrap_or_default();
+    Ok(values.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+}
+
+/// A field a later version may widen: a value this version doesn't know reads as the default.
+fn lenient_or_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    Ok(lenient(deserializer)?.unwrap_or_default())
+}
+
+/// A queued message's id: [`QUEUED_ID_LEN`] lowercase hex digits.
+pub fn is_valid_queued_id(id: &str) -> bool {
+    id.len() == QUEUED_ID_LEN && is_valid_id(id)
+}
+
+/// An image id: [`IMAGE_ID_LEN`] lowercase hex digits.
+pub fn is_valid_image_id(id: &str) -> bool {
+    id.len() == IMAGE_ID_LEN && is_valid_id(id)
+}
+
+/// A draft key: a thread id, or `new:` and a folder id.
+pub fn is_valid_draft_key(key: &str) -> bool {
+    key.len() <= MAX_DRAFT_KEY
+        && (is_valid_thread_id(key) || key.strip_prefix("new:").is_some_and(is_valid_folder_id))
+}
+
+/// A model id a user typed (§Q7): one argv element, never a flag. At most
+/// [`MAX_MODEL_ID`] bytes, no whitespace or control character, not starting with `-`.
+pub fn is_valid_model_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_MODEL_ID
+        && !id.starts_with('-')
+        && !id.chars().any(|c| c.is_whitespace() || c.is_control() || is_stripped_char(c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1556,6 +2530,14 @@ mod tests {
             state_since_ms: 2,
             subdir: Some("app/src".into()),
             continued: true,
+            model: None,
+            effort: None,
+            answered_model: None,
+            queued: Vec::new(),
+            queue_held: false,
+            context: None,
+            mcp: None,
+            asking: 0,
         }
     }
 
@@ -1616,6 +2598,8 @@ mod tests {
             path: "/a".into(),
             exists: true,
             added_ms: 9,
+            mcp: true,
+            mcp_seen: Vec::new(),
         });
         round_trip(&thread());
         round_trip(&Item {
@@ -1663,13 +2647,13 @@ mod tests {
             pid: 7,
             caps: cap::HOST.map(str::to_owned).to_vec(),
         });
-        round_trip(&ThreadStartParams {
-            agent: AgentId::Claude,
-            folder_id: "f0123456789ab".into(),
-            prompt: "hi".into(),
-            mode: Mode::AutoEdit,
-            origin: Origin::launcher(),
-        });
+        round_trip(&ThreadStartParams::new(
+            AgentId::Claude,
+            "f0123456789ab".into(),
+            "hi".into(),
+            Mode::AutoEdit,
+            Origin::launcher(),
+        ));
         round_trip(&ThreadReadParams {
             thread_id: "a".into(),
             before_seq: Some(4),
@@ -1681,6 +2665,7 @@ mod tests {
             items: vec![],
             more_before: true,
             pending: vec![approval()],
+            questions: vec![],
         });
         round_trip(&ApprovalAnswerParams {
             token: "a".into(),
@@ -1722,10 +2707,7 @@ mod tests {
             file_name: "claude-t-2026-11-19.md".into(),
         });
         round_trip(&TerminalCommandResult { argv: vec!["codex".into(), "resume".into()], cwd: "/a".into() });
-        round_trip(&BridgeAskResult {
-            behavior: BridgeBehavior::Deny,
-            message: Some("The user denied this.".into()),
-        });
+        round_trip(&BridgeAskResult::deny("The user denied this."));
         round_trip(&Response::err(3, RpcError::new(ErrorCode::AlreadyAnswered, "x")));
         round_trip(&Response::ok(3, json!({})));
         for ev in [
@@ -1761,7 +2743,7 @@ mod tests {
             Event::UiOpen(ThreadIdParams { thread_id: "a".into() }),
             Event::SessionState(SessionResult { session: session() }),
             Event::SessionRemoved(SessionRemovedEvent { session_id: session().id }),
-            Event::SettingsChanged(HostSettings { follow_sessions: false }),
+            Event::SettingsChanged(HostSettings { follow_sessions: false, keep_awake: true }),
             Event::SessionItem(SessionItemEvent {
                 session_id: session().id,
                 item: Item { text: Some("hi".into()), ..Item::new(65, "u-1", ItemKind::User, 1) },

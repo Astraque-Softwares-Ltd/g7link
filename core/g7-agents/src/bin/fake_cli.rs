@@ -10,6 +10,13 @@
 //! gave; for Codex a line per request method, resumed thread, `turn/start`
 //! summary setting and approval decision received.
 //! `$FAKE_CLI_RESUME_SCRIPT` is the Claude fixture for `--resume` runs.
+//!
+//! The host's catalog probes are answered without a script: Claude's
+//! `initialize` control request (a run with `--no-session-persistence`)
+//! from `$FAKE_CLI_INITIALIZE` (default: `claude-10-initialize.jsonl` beside
+//! the script), and Codex's `account/read`, `model/list`,
+//! `account/rateLimits/read` and `skills/list` wherever they arrive. Neither
+//! is logged as a run or a method: the log lines are `probe <what>`.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -174,6 +181,47 @@ fn needs_approval(line: &Value) -> Option<(String, bool)> {
     matches!(source, Some("user_temporary" | "user_reject")).then_some((id, false))
 }
 
+/// The fixture next to the script, or `$name` when set.
+fn sibling(env: &str, name: &str) -> Option<String> {
+    if let Ok(path) = std::env::var(env) {
+        return Some(path);
+    }
+    let script = std::env::var("FAKE_CLI_SCRIPT").ok()?;
+    let dir = std::path::Path::new(&script).parent()?;
+    Some(dir.join(name).to_string_lossy().into_owned())
+}
+
+/// Claude's catalog probe: answers `initialize` with the captured answer
+/// (its `request_id` made ours), writes nothing else, ends at EOF.
+fn claude_probe(args: &[String]) -> ExitCode {
+    log_line("probe claude");
+    if args.iter().any(|a| a == "--session-id" || a == "--resume") {
+        eprintln!("fake claude: a probe with a session");
+        return ExitCode::from(2);
+    }
+    let answer =
+        sibling("FAKE_CLI_INITIALIZE", "claude-10-initialize.jsonl").map(|p| load(&p)).unwrap_or_default();
+    let mut input = Input::new();
+    while let Some(request) = input.take(|v| v.get("type").and_then(Value::as_str) == Some("control_request"))
+    {
+        let subtype = request.pointer("/request/subtype").and_then(Value::as_str).unwrap_or_default();
+        log_line(&format!("probe control {subtype}"));
+        let id = request.get("request_id").cloned().unwrap_or(Value::Null);
+        for line in &answer {
+            let mut line = line.clone();
+            if line.get("type").and_then(Value::as_str) == Some("control_response") {
+                line["response"]["request_id"] = id.clone();
+            }
+            print(&line);
+        }
+    }
+    if input.queue.iter().any(|v| v.get("type").and_then(Value::as_str) == Some("user")) {
+        eprintln!("fake claude: the probe was sent a message");
+        return ExitCode::from(4);
+    }
+    ExitCode::SUCCESS
+}
+
 fn claude(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "--version") {
         println!("2.1.310 (Claude Code)");
@@ -182,6 +230,9 @@ fn claude(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) == Some("auth") {
         print!("{AUTH_STATUS}");
         return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--no-session-persistence") {
+        return claude_probe(args);
     }
     log_args(args);
     let resume = args.iter().any(|a| a == "--resume");
@@ -274,6 +325,49 @@ fn claude(args: &[String]) -> ExitCode {
 
 // ---- Codex ----
 
+/// What the host's probe asks outside any script, and its canned answer.
+fn codex_probe_answer(method: &str, params: &Value) -> Option<Value> {
+    Some(match method {
+        "account/read" => {
+            json!({"account": {"type": "chatgpt", "planType": "plus"}, "requiresOpenaiAuth": true})
+        }
+        "model/list" => json!({"data": [{
+            "id": "gpt-5.5-codex", "model": "gpt-5.5-codex", "displayName": "GPT-5.5 Codex",
+            "description": "For coding", "hidden": false, "isDefault": true,
+            "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "medium"}, {"reasoningEffort": "high"}],
+            "defaultReasoningEffort": "medium", "inputModalities": ["text", "image"]
+        }], "nextCursor": null}),
+        "account/rateLimits/read" => json!({"rateLimits": {
+            "primary": {"usedPercent": 41, "windowDurationMins": 300, "resetsAt": 1_795_040_000},
+            "secondary": null
+        }}),
+        "skills/list" => {
+            let cwd = params.pointer("/cwds/0").cloned().unwrap_or(Value::Null);
+            // G7's own names and `compact` are the host's to leave out.
+            let skill = |name: &str| {
+                json!({"name": name, "description": "A skill", "shortDescription": "A skill",
+                    "path": format!("/skills/{name}/SKILL.md"), "scope": "user", "enabled": true})
+            };
+            json!({"data": [{"cwd": cwd, "skills": [skill("release-notes"), skill("model"), skill("compact")],
+                "errors": []}]})
+        }
+        _ => return None,
+    })
+}
+
+/// Answers a probe request in place; `true` when it was one.
+fn codex_probe_reply(msg: &Value) -> bool {
+    let (Some(method), Some(id)) = (msg.get("method").and_then(Value::as_str), msg.get("id")) else {
+        return false;
+    };
+    let Some(result) = codex_probe_answer(method, msg.get("params").unwrap_or(&Value::Null)) else {
+        return false;
+    };
+    log_line(&format!("probe {method}"));
+    print(&json!({"id": id, "result": result}));
+    true
+}
+
 fn codex(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "--version") {
         println!("codex-cli 0.170.0");
@@ -293,8 +387,17 @@ fn codex(args: &[String]) -> ExitCode {
         match entry.get("dir").and_then(Value::as_str) {
             Some("send") => {
                 if let Some(method) = msg.get("method").and_then(Value::as_str) {
-                    let Some(got) = input.take(|v| v.get("method").is_some()) else {
-                        return ExitCode::SUCCESS;
+                    // The host's probe asks things no script has: answer
+                    // them and wait on.
+                    let got = loop {
+                        let Some(got) = input.take(|v| v.get("method").is_some()) else {
+                            return ExitCode::SUCCESS;
+                        };
+                        let got_method = got.get("method").and_then(Value::as_str).unwrap_or_default();
+                        if got_method != method && codex_probe_reply(&got) {
+                            continue;
+                        }
+                        break got;
                     };
                     let got_method = got.get("method").and_then(Value::as_str).unwrap_or_default();
                     log_line(&format!("method {got_method}"));
@@ -341,7 +444,10 @@ fn codex(args: &[String]) -> ExitCode {
             _ => {}
         }
     }
-    input.wait_eof();
+    // The script is done; a probe may still be asking.
+    while let Some(got) = input.take(|v| v.get("method").is_some() && v.get("id").is_some()) {
+        codex_probe_reply(&got);
+    }
     ExitCode::SUCCESS
 }
 

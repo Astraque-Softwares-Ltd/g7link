@@ -23,7 +23,6 @@ use crate::lines::{self, LineRead};
 /// The oldest Claude that understands our approval tool's answer.
 pub const CLAUDE_MIN_VERSION: [u32; 3] = [2, 1, 207];
 const PROBE_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
-const CODEX_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// After an interrupt, how long the agent has to end the turn itself.
 pub const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 /// After SIGTERM, how long before SIGKILL.
@@ -201,6 +200,48 @@ pub enum Step {
     /// The agent's plan, replacing the one before.
     Plan(Vec<api::PlanStep>),
     TurnEnded(TurnEnd),
+    /// A proposed plan (plan mode) opened: Codex's `plan` item. Its text
+    /// streams like an answer's.
+    PlanOpen {
+        key: String,
+    },
+    PlanDelta {
+        key: String,
+        text: String,
+    },
+    /// The plan is complete with `text` (Codex's `item/completed`, Claude's
+    /// `ExitPlanMode`); earlier proposed plans of the thread are replaced.
+    PlanDone {
+        key: String,
+        text: String,
+    },
+    /// The agent took in a steered message: `id` is its user item's id
+    /// ([`UserInput::id`]). Claude: its `isReplay` echo.
+    Delivered {
+        id: String,
+    },
+    /// The agent started a turn by itself (Claude: a steer it took in
+    /// after its `result`). The registry opens a new turn.
+    TurnStarted,
+    /// What the thread's context holds now.
+    Context {
+        used: u64,
+        max: u64,
+    },
+    /// The agent's usage windows, replacing the ones before (any thread of
+    /// that agent may report them).
+    Limits(Vec<api::Limit>),
+    /// The user's MCP servers this process loaded (our own bridge left out).
+    Mcp {
+        names: Vec<String>,
+        connected: u16,
+        need_login: u16,
+    },
+    /// The model that answered (not `<synthetic>`).
+    AnsweredModel(String),
+    /// Claude's `system/init` line: the folder's command names come from it
+    /// (`commands.list`).
+    Init(Value),
 }
 
 /// A plan from the agent's `(text, status)` pairs: at most
@@ -261,6 +302,71 @@ impl DenyReason {
     }
 }
 
+/// A question an agent asks the user (§Q4.4), before the host gives it a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionSpec {
+    /// The agent's id for it (Codex's `itemId`); the `question` item takes it.
+    pub key: Option<String>,
+    /// 1 to [`api::MAX_ASKS`]; the host cleans and cuts them.
+    pub asks: Vec<api::Ask>,
+}
+
+/// The answers to a question, as the agent gets them. Its `Debug` prints
+/// nothing of them, and they are overwritten with zeros when dropped: a
+/// secret ask's answer exists only here and in the reply to the agent.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct SecretAnswers(Vec<api::Answer>);
+
+impl SecretAnswers {
+    pub fn new(answers: Vec<api::Answer>) -> Self {
+        Self(answers)
+    }
+
+    pub fn answers(&self) -> &[api::Answer] {
+        &self.0
+    }
+
+    /// The answer to the ask `id`.
+    pub fn get(&self, id: &str) -> Option<&api::Answer> {
+        self.0.iter().find(|a| a.id == id)
+    }
+}
+
+fn zero(text: &mut String) {
+    let mut bytes = std::mem::take(text).into_bytes();
+    bytes.fill(0);
+    std::hint::black_box(&bytes);
+}
+
+impl Drop for SecretAnswers {
+    fn drop(&mut self) {
+        for answer in &mut self.0 {
+            answer.labels.iter_mut().for_each(zero);
+            if let Some(other) = answer.other.as_mut() {
+                zero(other);
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for SecretAnswers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretAnswers(..)")
+    }
+}
+
+/// How a question ended, as the agent is told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestionReply {
+    Answered(SecretAnswers),
+    /// The user dismissed it.
+    Dismissed,
+    /// Nobody answered in time.
+    Expired,
+    /// The turn ended, or too many were waiting.
+    Cancelled,
+}
+
 /// What a session sends the registry.
 #[derive(Debug)]
 pub enum AgentEvent {
@@ -269,17 +375,68 @@ pub enum AgentEvent {
         spec: ApprovalSpec,
         reply: oneshot::Sender<Answer>,
     },
+    /// The agent asks the user (Codex's `item/tool/requestUserInput`).
+    Question {
+        spec: QuestionSpec,
+        reply: oneshot::Sender<QuestionReply>,
+    },
     /// The process is gone; `code` is its exit status when it had one.
     Exited {
         code: Option<i32>,
     },
 }
 
+/// One process's settings (§Q4.2), from the thread and its folder. The
+/// host checks them; adapters map them to fixed flags and fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchSettings {
+    pub mode: Mode,
+    /// Absent: the CLI's default.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// The folder's MCP switch.
+    pub mcp: bool,
+    /// The agent's default model and its default effort, from its list,
+    /// for fields that need a model named (Codex's `collaborationMode`).
+    pub default_model: Option<String>,
+    pub default_effort: Option<String>,
+}
+
+impl LaunchSettings {
+    /// `mode` with the CLI's defaults and the MCP switch on.
+    pub fn new(mode: Mode) -> Self {
+        Self { mode, model: None, effort: None, mcp: true, default_model: None, default_effort: None }
+    }
+}
+
+/// A message for the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserInput {
+    /// Its user item's id: [`Step::Delivered`] names it.
+    pub id: String,
+    pub text: String,
+    /// The images, as this agent takes them, built by the host from its
+    /// image store: Claude `image` content blocks, Codex `localImage`
+    /// inputs. They go before the text, in order.
+    pub images: Vec<Value>,
+}
+
+impl UserInput {
+    /// Text alone, with no item id.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { id: String::new(), text: text.into(), images: Vec::new() }
+    }
+}
+
 /// What the registry tells a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionCmd {
-    /// A follow-up message.
-    Send(String),
+    /// A message that starts the next turn.
+    Send(UserInput),
+    /// A message for the running turn (§Q4.5). An adapter that can't take
+    /// it now reports nothing for it; the registry only steers agents that
+    /// say `can: steer`.
+    Steer(UserInput),
     Interrupt,
     /// Close stdin; the process exits when it's done.
     Close,
@@ -410,22 +567,33 @@ pub fn parse_codex_account(result: &Value) -> ClaudeAuth {
 pub struct Probe {
     pub info: AgentInfo,
     pub bin: Option<PathBuf>,
+    /// The slash commands or skills the CLI reported (§Q4.7), unfiltered.
+    pub commands: Vec<api::Command>,
+}
+
+impl Probe {
+    /// An agent that isn't installed.
+    pub fn missing(id: AgentId) -> Self {
+        Self { info: AgentInfo::missing(id), bin: None, commands: Vec::new() }
+    }
 }
 
 /// Probes Claude: `--version`, then `auth status`.
 pub async fn probe_claude(overridden: Option<&Path>, host_env: &[(OsString, OsString)]) -> Probe {
     let child_env = env::child_env(AgentId::Claude, host_env.iter().cloned());
     let mut info = AgentInfo::missing(AgentId::Claude);
-    let Some(bin) = resolve_cli("claude", overridden, &child_env) else { return Probe { info, bin: None } };
+    let Some(bin) = resolve_cli("claude", overridden, &child_env) else {
+        return Probe { info, bin: None, commands: Vec::new() };
+    };
     let Some((true, version)) = run_capture(&bin, &["--version"], &child_env, PROBE_COMMAND_TIMEOUT).await
     else {
-        return Probe { info, bin: None };
+        return Probe { info, bin: None, commands: Vec::new() };
     };
     info.installed = true;
     info.version = version_text(&version);
     if parse_version(&version).is_some_and(|v| v < CLAUDE_MIN_VERSION) {
         info.problem = Some("Update Claude Code".into());
-        return Probe { info, bin: Some(bin) };
+        return Probe { info, bin: Some(bin), commands: Vec::new() };
     }
     let status = run_capture(&bin, &["auth", "status"], &child_env, PROBE_COMMAND_TIMEOUT).await;
     let auth = status.map_or(ClaudeAuth { signed_in: false, auth: None, plan: None }, |(ok, out)| {
@@ -440,79 +608,42 @@ pub async fn probe_claude(overridden: Option<&Path>, host_env: &[(OsString, OsSt
         info.auth = Some(AuthKind::ApiKey);
         info.plan = None;
     }
-    Probe { info, bin: Some(bin) }
+    info.can = crate::host::catalog::can(AgentId::Claude, true);
+    Probe { info, bin: Some(bin), commands: Vec::new() }
 }
 
-/// Probes Codex: `--version`, then `account/read` through `app-server`.
-pub async fn probe_codex(overridden: Option<&Path>, host_env: &[(OsString, OsString)]) -> Probe {
+/// Probes Codex: `--version`, then one app-server conversation for the
+/// account, the models and the usage windows (§Q4.1). The windows come back
+/// beside the probe: they are kept with the other agents' limits.
+pub async fn probe_codex(
+    overridden: Option<&Path>,
+    host_env: &[(OsString, OsString)],
+) -> (Probe, Option<Vec<api::Limit>>) {
     let child_env = env::child_env(AgentId::Codex, host_env.iter().cloned());
     let mut info = AgentInfo::missing(AgentId::Codex);
-    let Some(bin) = resolve_cli("codex", overridden, &child_env) else { return Probe { info, bin: None } };
+    let Some(bin) = resolve_cli("codex", overridden, &child_env) else {
+        return (Probe { info, bin: None, commands: Vec::new() }, None);
+    };
     let Some((true, version)) = run_capture(&bin, &["--version"], &child_env, PROBE_COMMAND_TIMEOUT).await
     else {
-        return Probe { info, bin: None };
+        return (Probe { info, bin: None, commands: Vec::new() }, None);
     };
     info.installed = true;
     info.version = version_text(&version);
-    let result =
-        tokio::time::timeout(CODEX_PROBE_TIMEOUT, codex_account(&bin, &child_env)).await.ok().flatten();
-    if let Some(result) = result {
-        let auth = parse_codex_account(&result);
-        info.signed_in = auth.signed_in;
-        info.auth = auth.auth;
-        info.plan = auth.plan;
+    let mut limits = None;
+    if let Some(probe) = crate::host::catalog::probe_codex(&bin, &child_env).await {
+        if let Some(auth) = probe.auth {
+            info.signed_in = auth.signed_in;
+            info.auth = auth.auth;
+            info.plan = auth.plan;
+        }
+        info.models = probe.models;
+        info.can = crate::host::catalog::can(AgentId::Codex, probe.plan_ok);
+        limits = Some(probe.limits);
+    } else {
+        info.can = crate::host::catalog::can(AgentId::Codex, false);
     }
-    Probe { info, bin: Some(bin) }
-}
-
-/// `initialize`, `initialized`, `account/read` on a short-lived app-server.
-async fn codex_account(bin: &Path, child_env: &[(OsString, OsString)]) -> Option<Value> {
-    let mut child = Command::new(bin)
-        .arg("app-server")
-        .env_clear()
-        .envs(child_env.iter().map(|(k, v)| (k, v)))
-        .current_dir(home_dir(child_env).unwrap_or_else(|| PathBuf::from("/")))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .ok()?;
-    let mut stdin = child.stdin.take()?;
-    let mut stdout = BufReader::new(child.stdout.take()?);
-    let send = |v: Value| format!("{v}\n");
-    stdin.write_all(send(crate::host::codex::initialize_request(1)).as_bytes()).await.ok()?;
-    let mut buf = Vec::new();
-    let mut result = None;
-    loop {
-        if lines::read_line(&mut stdout, &mut buf, api::MAX_AGENT_LINE).await.ok()? != LineRead::Line {
-            break;
-        }
-        let Ok(msg) = serde_json::from_slice::<Value>(&buf) else { continue };
-        if msg.get("method").is_some() {
-            continue;
-        }
-        match msg.get("id").and_then(Value::as_u64) {
-            Some(1) => {
-                stdin
-                    .write_all(
-                        send(serde_json::json!({"jsonrpc": "2.0", "method": "initialized"})).as_bytes(),
-                    )
-                    .await
-                    .ok()?;
-                let read = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "account/read", "params": {"refreshToken": false}});
-                stdin.write_all(send(read).as_bytes()).await.ok()?;
-            }
-            Some(2) => {
-                result = msg.get("result").cloned();
-                break;
-            }
-            _ => {}
-        }
-    }
-    drop(stdin);
-    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-    result
+    (Probe { info, bin: Some(bin), commands: Vec::new() }, limits)
 }
 
 // ---- One agent process ----
@@ -655,6 +786,8 @@ pub struct Output {
     pub steps: Vec<Step>,
     /// Approvals to ask the user for, keyed by the agent's request id.
     pub approvals: Vec<(Value, ApprovalSpec)>,
+    /// Questions to ask the user, keyed by the agent's request id.
+    pub questions: Vec<(Value, QuestionSpec)>,
     /// Close stdin after writing.
     pub close: bool,
 }
@@ -669,6 +802,8 @@ pub trait Driver: Send + 'static {
     fn on_cmd(&mut self, cmd: SessionCmd, out: &mut Output);
     /// The user's answer to an approval this driver asked for.
     fn on_answer(&mut self, _id: Value, _answer: Answer, _out: &mut Output) {}
+    /// How a question this driver asked ended.
+    fn on_question_reply(&mut self, _id: Value, _reply: QuestionReply, _out: &mut Output) {}
     /// The agent wrote a line over [`api::MAX_AGENT_LINE`]; the process is stopped.
     fn on_too_long(&mut self) -> Vec<Step>;
     /// The process exited; ends a turn that was still running.
@@ -686,7 +821,7 @@ pub async fn run_session<D: Driver>(
     mut cmds: mpsc::UnboundedReceiver<SessionCmd>,
     events: EventTx,
 ) {
-    let (answers_tx, mut answers) = mpsc::unbounded_channel::<(Value, Answer)>();
+    let (answers_tx, mut answers) = mpsc::unbounded_channel::<(Value, Reply)>();
     let emit = |event: AgentEvent| {
         let _ = events.send((thread_id.clone(), generation, event));
     };
@@ -729,8 +864,11 @@ pub async fn run_session<D: Driver>(
                     apply(&mut process, &mut out, &emit, &answers_tx).await;
                 }
             },
-            Some((id, answer)) = answers.recv() => {
-                driver.on_answer(id, answer, &mut out);
+            Some((id, reply)) = answers.recv() => {
+                match reply {
+                    Reply::Approval(answer) => driver.on_answer(id, answer, &mut out),
+                    Reply::Question(reply) => driver.on_question_reply(id, reply, &mut out),
+                }
                 apply(&mut process, &mut out, &emit, &answers_tx).await;
             }
             () = sleep_until(kill_at), if kill_at.is_some() => {
@@ -753,11 +891,17 @@ async fn sleep_until(at: Option<tokio::time::Instant>) {
     }
 }
 
+/// The user's answer to something a driver asked, on its way back.
+enum Reply {
+    Approval(Answer),
+    Question(QuestionReply),
+}
+
 async fn apply(
     process: &mut AgentProcess,
     out: &mut Output,
     emit: &impl Fn(AgentEvent),
-    answers: &mpsc::UnboundedSender<(Value, Answer)>,
+    answers: &mpsc::UnboundedSender<(Value, Reply)>,
 ) {
     for line in out.stdin.drain(..) {
         if !process.write_line(&line).await {
@@ -773,7 +917,16 @@ async fn apply(
         let answers = answers.clone();
         tokio::spawn(async move {
             let answer = rx.await.unwrap_or(Answer::Deny(DenyReason::Cancelled));
-            let _ = answers.send((id, answer));
+            let _ = answers.send((id, Reply::Approval(answer)));
+        });
+    }
+    for (id, spec) in out.questions.drain(..) {
+        let (tx, rx) = oneshot::channel();
+        emit(AgentEvent::Question { spec, reply: tx });
+        let answers = answers.clone();
+        tokio::spawn(async move {
+            let reply = rx.await.unwrap_or(QuestionReply::Cancelled);
+            let _ = answers.send((id, Reply::Question(reply)));
         });
     }
     if std::mem::take(&mut out.close) {
@@ -786,6 +939,7 @@ pub fn mode_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Supervised => "supervised",
         Mode::AutoEdit => "auto_edit",
+        Mode::Plan => "plan",
     }
 }
 

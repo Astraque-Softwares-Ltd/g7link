@@ -4,15 +4,25 @@
 //! subscribers.
 
 pub mod agents;
+pub mod attachments;
+pub mod awake;
 pub mod bridge;
+pub mod catalog;
 pub mod claude;
 pub mod codex;
+pub mod commands;
+pub mod dispatch;
+pub mod drafts;
 pub mod env;
 pub mod export;
+pub mod files;
 pub mod notify;
+pub mod plan;
+pub mod questions;
 pub mod sessions;
 pub mod store;
 pub mod threads;
+pub mod usage;
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
@@ -70,6 +80,9 @@ pub struct Config {
     pub proc_root: PathBuf,
     /// Follow sessions started outside G7 (off with `G7_AGENTS_NO_SESSIONS=1`).
     pub sessions: bool,
+    /// Take logind's inhibitor while an agent works (off with
+    /// `G7_AGENTS_NO_KEEP_AWAKE=1`, and in tests).
+    pub keep_awake_bus: bool,
 }
 
 impl Config {
@@ -126,6 +139,7 @@ impl Config {
             codex_home: roots.codex_home,
             proc_root: roots.proc_root,
             sessions,
+            keep_awake_bus: std::env::var("G7_AGENTS_NO_KEEP_AWAKE").map_or(true, |v| v != "1"),
         })
     }
 }
@@ -237,10 +251,27 @@ struct Subscription {
     sessions: bool,
 }
 
+/// What a client said it understands.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Caps {
+    /// Thinking items as they are.
+    pub items2: bool,
+    /// Plan and question items, and mode `plan`, as they are.
+    pub items3: bool,
+}
+
+impl Caps {
+    fn of(hello: &HelloParams) -> Caps {
+        Caps { items2: hello.has(cap::ITEMS2), items3: hello.has(cap::ITEMS3) }
+    }
+}
+
 struct ClientSlot {
     kind: ClientKind,
     /// It said `items2`: it gets thinking items as they are.
     items2: bool,
+    /// It said `items3`: it gets plan and question items as they are.
+    items3: bool,
     outbox: Arc<Outbox>,
     subscription: Option<Subscription>,
     viewing: Option<String>,
@@ -250,10 +281,11 @@ struct ClientSlot {
 }
 
 impl ClientSlot {
-    fn new(kind: ClientKind, items2: bool, outbox: Arc<Outbox>) -> Self {
+    fn new(kind: ClientKind, caps: Caps, outbox: Arc<Outbox>) -> Self {
         Self {
             kind,
-            items2,
+            items2: caps.items2,
+            items3: caps.items3,
             outbox,
             subscription: None,
             viewing: None,
@@ -316,20 +348,12 @@ impl Hub {
             }
             return;
         }
-        // The form a client without `items2` gets, when it differs.
-        let legacy = match event {
-            Event::ThreadItem(e) => match e.item.kind {
-                ItemKind::Unknown => return,
-                ItemKind::Reasoning => {
-                    let item = e.item.legacy();
-                    Some(
-                        Event::ThreadItem(ThreadItemEvent { thread_id: e.thread_id.clone(), item }).to_line(),
-                    )
-                }
-                _ => None,
-            },
-            _ => None,
-        };
+        if matches!(event, Event::ThreadItem(e) if e.item.kind == ItemKind::Unknown) {
+            return;
+        }
+        // The forms clients that didn't say `items2` or `items3` get, made
+        // once each, when they differ.
+        let mut forms: HashMap<Caps, Option<String>> = HashMap::new();
         let delta = matches!(event, Event::ThreadDelta(_));
         let thread = event.thread_id();
         for slot in self.lock().values() {
@@ -337,17 +361,27 @@ impl Hub {
             if delta && !sub.deltas {
                 continue;
             }
+            if items2_only && !slot.items2 {
+                continue;
+            }
             if let Some(thread) = thread
                 && !sub.threads.contains(thread)
             {
                 continue;
             }
-            let line = match (&legacy, slot.items2) {
-                _ if items2_only && !slot.items2 => continue,
-                (Some(legacy), false) => legacy,
-                _ => &line,
-            };
-            slot.outbox.push(line.clone(), delta);
+            let caps = Caps { items2: slot.items2, items3: slot.items3 };
+            let form = forms.entry(caps).or_insert_with(|| event_for(event, caps).map(|e| e.to_line()));
+            slot.outbox.push(form.as_deref().unwrap_or(&line).to_owned(), delta);
+        }
+    }
+
+    /// Sends `event` to every subscribed connection but `except`.
+    pub fn broadcast_except(&self, event: &Event, except: u64) {
+        let line = event.to_line();
+        for (id, slot) in self.lock().iter() {
+            if *id != except && slot.subscription.is_some() {
+                slot.outbox.push(line.clone(), false);
+            }
         }
     }
 
@@ -373,10 +407,30 @@ impl Hub {
     pub(crate) fn test_viewer(&self, kind: ClientKind, thread_id: Option<&str>) -> u64 {
         let mut clients = self.lock();
         let id = clients.keys().max().map_or(1, |n| n + 1);
-        let mut slot = ClientSlot::new(kind, false, Arc::new(Outbox::new()));
+        let mut slot = ClientSlot::new(kind, Caps::default(), Arc::new(Outbox::new()));
         slot.viewing = thread_id.map(str::to_owned);
         clients.insert(id, slot);
         id
+    }
+
+    /// A connection subscribed to every thread with `caps`; its id.
+    #[cfg(test)]
+    pub(crate) fn test_subscriber(&self, caps: Caps) -> u64 {
+        let mut clients = self.lock();
+        let id = clients.keys().max().map_or(1, |n| n + 1);
+        let mut slot = ClientSlot::new(ClientKind::Test, caps, Arc::new(Outbox::new()));
+        slot.subscription =
+            Some(Subscription { threads: ThreadSelection::All, deltas: true, sessions: false });
+        clients.insert(id, slot);
+        id
+    }
+
+    /// The lines a test connection was sent, oldest first.
+    #[cfg(test)]
+    pub(crate) fn test_lines(&self, client: u64) -> Vec<String> {
+        let clients = self.lock();
+        let Some(slot) = clients.get(&client) else { return Vec::new() };
+        std::iter::from_fn(|| slot.outbox.pop()).map(|l| l.text).collect()
     }
 
     #[cfg(test)]
@@ -430,15 +484,33 @@ impl Hub {
     }
 }
 
+/// `event` as a client with `caps` gets it, when that differs from the
+/// event itself; `None` when it doesn't.
+fn event_for(event: &Event, caps: Caps) -> Option<Event> {
+    match event {
+        Event::ThreadItem(e) => {
+            let item = e.item.for_caps(caps.items2, caps.items3)?;
+            (item != e.item)
+                .then(|| Event::ThreadItem(ThreadItemEvent { thread_id: e.thread_id.clone(), item }))
+        }
+        Event::ThreadState(e) if !caps.items3 && e.thread.mode == Mode::Plan => {
+            Some(Event::ThreadState(ThreadResult { thread: e.thread.legacy() }))
+        }
+        _ => None,
+    }
+}
+
 // ---- The host ----
 
 /// Probe results, refreshed at most every [`PROBE_CACHE_MS`].
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ProbeCache {
     pub at: Option<Instant>,
     pub claude: Option<Probe>,
     pub codex: Option<Probe>,
     pub shown: Option<Vec<AgentInfo>>,
+    /// Claude's models and commands, and the CLI version they came from.
+    pub claude_catalog: Option<(Option<String>, catalog::ClaudeCatalog)>,
 }
 
 pub struct Host {
@@ -453,6 +525,20 @@ pub struct Host {
     pub notifier: Option<Notifier>,
     pub hostname: String,
     pub sessions: sessions::Sessions,
+    /// `settings.keep_awake`.
+    keep_awake: std::sync::atomic::AtomicBool,
+    pub awake: awake::Awake,
+    pub usage: Mutex<usage::Usage>,
+    pub drafts: Mutex<drafts::Drafts>,
+    /// Bumped on each draft change; a save waits for it to settle.
+    pub drafts_generation: AtomicU64,
+    pub history: Mutex<drafts::History>,
+    pub files: files::FileIndex,
+    pub commands: Mutex<commands::Commands>,
+    /// `None` when the image store couldn't be opened.
+    pub images: Option<attachments::ImageStore>,
+    /// Each connection's image upload (one at a time).
+    pub uploads: Mutex<HashMap<u64, attachments::Upload>>,
     clients: AtomicUsize,
     next_client: AtomicU64,
     idle_since: Mutex<Instant>,
@@ -466,8 +552,12 @@ impl std::fmt::Debug for Host {
 }
 
 impl Host {
-    fn lock_reg(&self) -> std::sync::MutexGuard<'_, Registry> {
+    pub(crate) fn lock_reg(&self) -> std::sync::MutexGuard<'_, Registry> {
         self.reg.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn lock_commands(&self) -> std::sync::MutexGuard<'_, commands::Commands> {
+        self.commands.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Marks activity for the idle exit.
@@ -478,6 +568,11 @@ impl Host {
     /// Asks `serve` to stop.
     pub fn stop(&self) {
         self.shutdown.notify_one();
+    }
+
+    /// The keep-awake setting.
+    pub fn keep_awake_on(&self) -> bool {
+        self.keep_awake.load(Ordering::SeqCst)
     }
 }
 
@@ -518,7 +613,11 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
     let mut store = Store::open(config.data_dir.clone())?;
     let registry = Registry::load(&mut store, config.approval_lifetime_ms);
     let settings = store.load_settings();
+    let drafts = drafts::Drafts::load(store.load_drafts());
+    let history = drafts::History::load(store.load_history());
     let store = StoreHandle::spawn(store)?;
+    let images = open_images(&config);
+    let awake_source = if config.keep_awake_bus { awake::Source::System } else { awake::Source::Off };
     let (events_tx, mut events_rx) = mpsc::unbounded_channel::<(String, u64, AgentEvent)>();
     let (actions_tx, mut actions_rx) = mpsc::unbounded_channel::<NoteAction>();
     let notifier = config.notify.then(|| Notifier::spawn(actions_tx));
@@ -526,12 +625,22 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         hub: Hub::default(),
         store,
         reg: Mutex::new(registry),
-        probes: tokio::sync::Mutex::new(ProbeCache { at: None, claude: None, codex: None, shown: None }),
+        probes: tokio::sync::Mutex::new(ProbeCache::default()),
         folders_lock: tokio::sync::Mutex::new(()),
         events: events_tx,
         notifier,
         hostname: hostname(),
         sessions: sessions::Sessions::new(&config),
+        keep_awake: std::sync::atomic::AtomicBool::new(settings.keep_awake),
+        awake: awake::Awake::spawn(awake_source, settings.keep_awake, awake::release_delay()),
+        usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
+        drafts: Mutex::new(drafts),
+        drafts_generation: AtomicU64::new(0),
+        history: Mutex::new(history),
+        files: files::FileIndex::default(),
+        commands: Mutex::new(commands::Commands::default()),
+        images,
+        uploads: Mutex::new(HashMap::new()),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
@@ -580,9 +689,19 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
 
     let outcome = {
         let idle = async {
+            let mut ticks: u64 = 0;
             loop {
                 tokio::time::sleep(Duration::from_secs(5).min(host.config.idle_exit)).await;
                 host.check_folders();
+                host.files.sweep();
+                host.drop_stale_uploads();
+                ticks += 1;
+                // Pending images older than a day go, checked every 10 minutes.
+                if ticks.is_multiple_of(120)
+                    && let Some(images) = host.images.clone()
+                {
+                    tokio::spawn(async move { images.sweep().await });
+                }
                 let busy = host.clients.load(Ordering::SeqCst) > 0 || host.any_running();
                 if busy {
                     host.touch();
@@ -613,6 +732,8 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
     let _ = std::fs::remove_file(&host.config.socket);
     host.sessions.stop();
     host.shutdown_threads().await;
+    host.files.shutdown().await;
+    host.save_drafts_now();
     host.store.flush().await;
     pump.abort();
     actions.abort();
@@ -633,8 +754,8 @@ fn to_value<T: serde::Serialize>(value: &T) -> Result<Value, RpcError> {
 /// What a connection is after `hello`.
 #[derive(Debug, Clone)]
 enum Role {
-    /// A client; whether it said `items2`.
-    Client(ClientKind, bool),
+    /// A client, and what it understands.
+    Client(ClientKind, Caps),
     Bridge {
         thread_id: String,
         generation: u64,
@@ -751,7 +872,8 @@ impl Host {
                     let host = self.clone();
                     let outbox = outbox.clone();
                     tokio::spawn(async move {
-                        let result = host.dispatch(&current, request.method.as_str(), request.params).await;
+                        let result =
+                            host.dispatch(&current, client_id, request.method.as_str(), request.params).await;
                         Self::reply(&outbox, request.id, result);
                         drop(permit);
                     });
@@ -760,6 +882,7 @@ impl Host {
         }
         outbox.close();
         self.hub.lock().remove(&client_id);
+        self.lock_uploads().remove(&client_id);
         if let Some(Role::Bridge { thread_id, generation }) = role {
             self.bridge_closed(&thread_id, generation);
         }
@@ -813,13 +936,13 @@ impl Host {
                 );
                 return None;
             }
-            (None, kind) => Role::Client(kind, params.has(cap::ITEMS2)),
+            (None, kind) => Role::Client(kind, Caps::of(&params)),
         };
-        let (kind, items2) = match &role {
-            Role::Client(kind, items2) => (*kind, *items2),
-            Role::Bridge { .. } => (ClientKind::Bridge, false),
+        let (kind, caps) = match &role {
+            Role::Client(kind, caps) => (*kind, *caps),
+            Role::Bridge { .. } => (ClientKind::Bridge, Caps::default()),
         };
-        self.hub.lock().insert(client_id, ClientSlot::new(kind, items2, outbox.clone()));
+        self.hub.lock().insert(client_id, ClientSlot::new(kind, caps, outbox.clone()));
         let result = HelloResult {
             version: API_VERSION,
             host_version: env!("CARGO_PKG_VERSION").into(),
@@ -833,6 +956,7 @@ impl Host {
     async fn dispatch(
         self: &Arc<Self>,
         role: &Role,
+        client_id: u64,
         method_name: &str,
         params: Value,
     ) -> Result<Value, RpcError> {
@@ -856,6 +980,12 @@ impl Host {
                 _ => Err(RpcError::new(ErrorCode::BadRequest, "a bridge may only ask")),
             };
         }
+        let (kind, caps) = match role {
+            Role::Client(kind, caps) => (*kind, *caps),
+            Role::Bridge { .. } => (ClientKind::Bridge, Caps::default()),
+        };
+        // Whose pending images a request may use.
+        let owner = client_owner(kind);
         match method_name {
             method::AGENTS_LIST => {
                 let p: AgentsListParams = parse(params)?;
@@ -875,17 +1005,17 @@ impl Host {
             }
             method::THREADS_LIST => {
                 let p: ThreadsListParams = parse(params)?;
-                to_value(&ThreadsListResult { threads: self.threads_list(p) })
+                let threads = self.threads_list(p).iter().map(|t| t.for_client(caps.items3)).collect();
+                to_value(&ThreadsListResult { threads })
             }
             method::THREAD_START => {
                 let p: ThreadStartParams = parse(params)?;
-                let thread = self.thread_start(p).await?;
-                to_value(&ThreadResult { thread })
+                let thread = self.thread_start(p, owner).await?;
+                to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
             }
             method::THREAD_SEND => {
                 let p: ThreadSendParams = parse(params)?;
-                self.thread_send(p).await?;
-                Ok(json!({}))
+                to_value(&self.thread_send(p, owner).await?)
             }
             method::THREAD_INTERRUPT => {
                 let p: ThreadIdParams = parse(params)?;
@@ -894,8 +1024,7 @@ impl Host {
             }
             method::THREAD_READ => {
                 let p: ThreadReadParams = parse(params)?;
-                let items2 = matches!(role, Role::Client(_, true));
-                to_value(&self.thread_read(p, items2).await?)
+                to_value(&self.thread_read(p, caps).await?)
             }
             method::THREAD_DELETE => {
                 let p: ThreadIdParams = parse(params)?;
@@ -923,7 +1052,7 @@ impl Host {
             method::SESSION_CONTINUE => {
                 let p: SessionContinueParams = parse(params)?;
                 let thread = self.session_continue(p).await?;
-                to_value(&ThreadResult { thread })
+                to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
             }
             method::SETTINGS_GET => to_value(&self.settings()),
             method::THREAD_EXPORT => {
@@ -933,6 +1062,130 @@ impl Host {
             method::SESSIONS_SET_FOLLOWING => {
                 let p: SessionsSetFollowingParams = parse(params)?;
                 to_value(&self.sessions_set_following(p.on).await?)
+            }
+            method::THREAD_CONFIGURE => {
+                let p: ThreadConfigureParams = parse(params)?;
+                let thread = self.thread_configure(p).await?;
+                to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
+            }
+            method::QUEUE_EDIT => {
+                let p: QueueEditParams = parse(params)?;
+                self.queue_edit(p)?;
+                Ok(json!({}))
+            }
+            method::QUEUE_REMOVE => {
+                let p: QueueItemParams = parse(params)?;
+                self.queue_remove(p)?;
+                Ok(json!({}))
+            }
+            method::QUEUE_SEND_NOW => {
+                let p: QueueItemParams = parse(params)?;
+                self.queue_send_now(p).await?;
+                Ok(json!({}))
+            }
+            method::QUESTION_ANSWER => {
+                let p: QuestionAnswerParams = parse(params)?;
+                self.question_answer(p)?;
+                Ok(json!({}))
+            }
+            method::QUESTION_DISMISS => {
+                let p: QuestionDismissParams = parse(params)?;
+                self.question_dismiss(&p.token, p.by)?;
+                Ok(json!({}))
+            }
+            method::PLAN_IMPLEMENT => {
+                let p: PlanImplementParams = parse(params)?;
+                self.plan_implement(p).await?;
+                Ok(json!({}))
+            }
+            method::FILES_SEARCH => {
+                let p: FilesSearchParams = parse(params)?;
+                to_value(&self.files_search(p).await?)
+            }
+            method::COMMANDS_LIST => {
+                let p: CommandsListParams = parse(params)?;
+                to_value(&CommandsListResult { commands: self.commands_list(p.agent, &p.folder_id).await? })
+            }
+            method::IMAGE_ADD_PATH => {
+                let p: ImageAddPathParams = parse(params)?;
+                let images = self.image_store()?;
+                let info = images.add_path(&p.path, owner).await.map_err(image_error)?;
+                to_value(&ImageResult { image: image_ref(info) })
+            }
+            method::IMAGE_BEGIN => {
+                let p: ImageBeginParams = parse(params)?;
+                self.image_store()?;
+                let upload = attachments::Upload::begin(&p.name, p.bytes).map_err(image_error)?;
+                let id = upload.id().to_owned();
+                self.lock_uploads().insert(client_id, upload);
+                to_value(&ImageBeginResult { upload: id })
+            }
+            method::IMAGE_CHUNK => {
+                let p: ImageChunkParams = parse(params)?;
+                let mut uploads = self.lock_uploads();
+                let upload = uploads
+                    .get_mut(&client_id)
+                    .filter(|u| u.id() == p.upload)
+                    .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such upload."))?;
+                if let Err(e) = upload.chunk(p.seq, &p.data) {
+                    uploads.remove(&client_id);
+                    return Err(image_error(e));
+                }
+                Ok(json!({}))
+            }
+            method::IMAGE_END => {
+                let p: ImageEndParams = parse(params)?;
+                let images = self.image_store()?;
+                let upload = {
+                    let mut uploads = self.lock_uploads();
+                    match uploads.get(&client_id) {
+                        Some(u) if u.id() == p.upload => uploads.remove(&client_id),
+                        _ => None,
+                    }
+                };
+                let upload = upload.ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such upload."))?;
+                let (name, bytes) = upload.finish().map_err(image_error)?;
+                let info = images.add_bytes(&name, bytes, owner).await.map_err(image_error)?;
+                to_value(&ImageResult { image: image_ref(info) })
+            }
+            method::IMAGE_DROP => {
+                let p: ImageIdParams = parse(params)?;
+                self.image_store()?.drop_pending(&p.id, Some(owner)).await.map_err(image_error)?;
+                Ok(json!({}))
+            }
+            method::IMAGE_READ => {
+                let p: ImageReadParams = parse(params)?;
+                to_value(&self.image_store()?.read(&p.id, p.max).await.map_err(image_error)?)
+            }
+            method::DRAFT_SET => {
+                let p: DraftSetParams = parse(params)?;
+                if p.images.len() > MAX_IMAGES {
+                    return Err(RpcError::new(ErrorCode::BadRequest, "Up to 4 images go with a message."));
+                }
+                let mut images = Vec::with_capacity(p.images.len());
+                for id in &p.images {
+                    let info = self.images.as_ref().and_then(|store| store.info(id)).ok_or_else(|| {
+                        RpcError::new(ErrorCode::NotFound, "That image isn't there any more.")
+                    })?;
+                    images.push(image_ref(info));
+                }
+                to_value(&DraftSetResult { rev: self.draft_set(p, images, client_id)? })
+            }
+            method::DRAFT_GET => {
+                let p: DraftGetParams = parse(params)?;
+                to_value(&DraftGetResult { draft: self.draft_get(&p.key)? })
+            }
+            method::HISTORY_LIST => {
+                let p: HistoryListParams = parse(params)?;
+                to_value(&HistoryListResult { prompts: self.history_list(p.limit) })
+            }
+            method::FOLDERS_SET => {
+                let p: FoldersSetParams = parse(params)?;
+                to_value(&FolderResult { folder: self.folders_set(&p.id, p.mcp).await? })
+            }
+            method::SETTINGS_SET => {
+                let p: SettingsSetParams = parse(params)?;
+                to_value(&self.settings_set(p).await?)
             }
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
             _ => Err(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD)),
@@ -976,6 +1229,150 @@ impl Host {
                 let _ = child.wait().await;
             });
         }
+    }
+}
+
+/// Whose pending images a connection may use: images added through one kind
+/// of client (G7 Link's page and the phones it relays, or the launcher) are
+/// that kind's, so a draft's images survive a reconnect.
+fn client_owner(kind: ClientKind) -> &'static str {
+    match kind {
+        ClientKind::Launcher => "launcher",
+        ClientKind::Link => "link",
+        ClientKind::Bridge => "bridge",
+        ClientKind::Cli => "cli",
+        ClientKind::Test => "test",
+    }
+}
+
+fn image_error(e: attachments::ImageError) -> RpcError {
+    RpcError::new(e.code(), e.message())
+}
+
+fn image_ref(info: attachments::ImageInfo) -> ImageRef {
+    info.image_ref()
+}
+
+/// The image store under the data directory. `image.add_path` never opens
+/// anything in the agents' own configuration or a keyring.
+fn open_images(config: &Config) -> Option<attachments::ImageStore> {
+    let mut refused = vec![config.claude_home.clone(), config.codex_home.clone(), config.data_dir.clone()];
+    if let Some(home) = env::lookup(&config.env, "HOME").map(PathBuf::from).filter(|p| p.is_absolute()) {
+        refused.push(home.join(".local/share/keyrings"));
+        refused.push(home.join(".local/share/kwalletd"));
+        refused.push(home.join(".claude.json"));
+        refused.push(home.join(".ssh"));
+        refused.push(home.join(".gnupg"));
+    }
+    match attachments::ImageStore::open(config.data_dir.join("images"), refused) {
+        Ok(store) => Some(store),
+        Err(e) => {
+            tracing::warn!("couldn't open the image store: {e}");
+            None
+        }
+    }
+}
+
+impl Host {
+    fn lock_uploads(&self) -> std::sync::MutexGuard<'_, HashMap<u64, attachments::Upload>> {
+        self.uploads.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn image_store(&self) -> Result<&attachments::ImageStore, RpcError> {
+        self.images
+            .as_ref()
+            .ok_or_else(|| RpcError::new(ErrorCode::Unavailable, "Images aren't available here."))
+    }
+
+    /// Uploads not ended in time are dropped.
+    fn drop_stale_uploads(&self) {
+        self.lock_uploads().retain(|_, upload| !upload.expired());
+    }
+
+    /// `files.search` in a folder, or a thread's folder.
+    async fn files_search(&self, p: FilesSearchParams) -> Result<FilesSearchResult, RpcError> {
+        if p.query.len() > MAX_FILES_QUERY * 4 || p.query.chars().count() > MAX_FILES_QUERY {
+            return Err(RpcError::new(ErrorCode::BadRequest, "The query is too long."));
+        }
+        let folder = {
+            let reg = self.lock_reg();
+            let folder_id = match (&p.folder_id, &p.thread_id) {
+                (Some(id), _) => id.clone(),
+                (None, Some(thread)) => reg
+                    .threads
+                    .get(thread)
+                    .map(|e| e.info.folder_id.clone())
+                    .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such thread."))?,
+                (None, None) => {
+                    return Err(RpcError::new(ErrorCode::BadRequest, "Name a folder or a thread."));
+                }
+            };
+            reg.folders
+                .iter()
+                .find(|f| f.id == folder_id)
+                .map(|f| PathBuf::from(&f.path))
+                .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such folder."))?
+        };
+        let found = self.files.search(&folder, &p.query, p.limit).await?;
+        Ok(FilesSearchResult {
+            files: found.files.into_iter().map(|h| FileHit { path: h.path, dir: h.dir }).collect(),
+            more: found.more,
+        })
+    }
+
+    /// `commands.list`: Claude's from its catalog and the folder's last
+    /// `system/init`; Codex's skills in the folder, asked once.
+    async fn commands_list(
+        &self,
+        agent: AgentId,
+        folder_id: &str,
+    ) -> Result<Vec<crate::api::Command>, RpcError> {
+        let folder = {
+            let reg = self.lock_reg();
+            reg.folders
+                .iter()
+                .find(|f| f.id == folder_id)
+                .map(|f| PathBuf::from(&f.path))
+                .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such folder."))?
+        };
+        let mut commands = match agent {
+            AgentId::Claude => {
+                self.probe(false).await;
+                self.lock_commands().list(AgentId::Claude, folder_id)
+            }
+            AgentId::Codex => {
+                // Asked once per folder; `commands.rs` filters them (G7's own
+                // names) and adds `compact`.
+                if !self.lock_commands().has_codex_skills(folder_id) {
+                    let probe = self.probe(false).await[AgentId::Codex as usize].clone();
+                    let Some(bin) = probe.bin.filter(|_| probe.info.ready()) else { return Ok(Vec::new()) };
+                    let child_env = env::child_env(AgentId::Codex, self.config.env.iter().cloned());
+                    let skills = catalog::codex_skills(&bin, &child_env, &folder).await;
+                    self.lock_commands().set_codex_skills(folder_id, &skills);
+                }
+                self.lock_commands().list(AgentId::Codex, folder_id)
+            }
+        };
+        commands.truncate(MAX_COMMANDS);
+        Ok(commands)
+    }
+
+    /// `settings.set`: stored, announced, and keep-awake follows at once.
+    async fn settings_set(&self, p: SettingsSetParams) -> Result<HostSettings, RpcError> {
+        let _serial = self.folders_lock.lock().await;
+        let Some(keep_awake) = p.keep_awake else { return Ok(self.settings()) };
+        if keep_awake == self.keep_awake_on() {
+            return Ok(self.settings());
+        }
+        let settings = HostSettings { keep_awake, ..self.settings() };
+        self.store
+            .save_settings(settings)
+            .await
+            .map_err(|_| RpcError::new(ErrorCode::Internal, "Couldn't save the setting."))?;
+        self.keep_awake.store(keep_awake, Ordering::SeqCst);
+        self.awake.set_enabled(keep_awake);
+        self.hub.broadcast(&Event::SettingsChanged(settings));
+        Ok(settings)
     }
 }
 
@@ -1037,20 +1434,32 @@ fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Op
         codex_home: dir.join("codex"),
         proc_root: dir.join("proc"),
         sessions: true,
+        keep_awake_bus: false,
     };
     let mut store = Store::open(config.data_dir.clone()).unwrap();
     let registry = Registry::load(&mut store, approval_lifetime_ms);
     let (events, _) = mpsc::unbounded_channel();
+    let images = open_images(&config);
     Arc::new(Host {
         hub: Hub::default(),
         store: StoreHandle::spawn(store).unwrap(),
         reg: Mutex::new(registry),
-        probes: tokio::sync::Mutex::new(ProbeCache { at: None, claude: None, codex: None, shown: None }),
+        probes: tokio::sync::Mutex::new(ProbeCache::default()),
         folders_lock: tokio::sync::Mutex::new(()),
         events,
         notifier,
         hostname: "test-pc".into(),
         sessions: sessions::Sessions::new(&config),
+        keep_awake: std::sync::atomic::AtomicBool::new(true),
+        awake: awake::Awake::spawn(awake::Source::Off, true, awake::release_delay()),
+        usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
+        drafts: Mutex::new(drafts::Drafts::default()),
+        drafts_generation: AtomicU64::new(0),
+        history: Mutex::new(drafts::History::default()),
+        files: files::FileIndex::default(),
+        commands: Mutex::new(commands::Commands::default()),
+        images,
+        uploads: Mutex::new(HashMap::new()),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
@@ -1069,7 +1478,7 @@ mod tests {
         let mut boxes = Vec::new();
         for (id, items2) in [(1, false), (2, true)] {
             let outbox = Arc::new(Outbox::new());
-            let mut slot = ClientSlot::new(ClientKind::Test, items2, outbox.clone());
+            let mut slot = ClientSlot::new(ClientKind::Test, Caps { items2, items3: true }, outbox.clone());
             slot.subscription =
                 Some(Subscription { threads: ThreadSelection::All, deltas: true, sessions: false });
             hub.lock().insert(id, slot);

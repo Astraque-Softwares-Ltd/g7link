@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The Claude adapter (§4): `claude -p` with stream-json on stdin and
 //! stdout, one process per thread, approvals through our MCP bridge.
+//!
+//! Phase 2 (§Q4): the thread's mode, model and effort are flags of the
+//! process (a change restarts it with `--resume`); a message sent while a
+//! turn runs is written at once and Claude takes it in at its next step;
+//! `--replay-user-messages` tells us when it did.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -12,13 +17,24 @@ use serde_json::{Value, json};
 
 use crate::api::{self, ApprovalKind, Mode, Phase, ToolClass, ToolStatus};
 use crate::host::agents::{
-    AgentProcess, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path, plan_of,
-    prefixed_lines,
+    AgentProcess, Driver, LaunchSettings, Output, SessionCmd, Step, ToolSpec, TurnEnd, UserInput, code,
+    display_path, plan_of, prefixed_lines,
 };
+use crate::host::{catalog, plan, questions};
 
 /// The MCP server name and our tool, as Claude sees them.
 pub const MCP_SERVER: &str = "g7";
 pub const PERMISSION_TOOL: &str = "mcp__g7__approve";
+
+/// The only control requests the host ever sends Claude (§Q0.2): Stop, and
+/// the catalog probe's question. Nothing that changes a setting.
+pub const CONTROL_SUBTYPES: [&str; 2] = ["interrupt", "initialize"];
+
+/// Messages written and not yet taken in, remembered at most.
+const MAX_PENDING: usize = 32;
+
+/// The notice when Claude compacted the conversation.
+pub const COMPACTED: &str = "Compacted the conversation.";
 
 /// A new v4 UUID for `--session-id`.
 pub fn new_session_id() -> String {
@@ -39,10 +55,18 @@ pub fn is_session_id(id: &str) -> bool {
             .all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
 }
 
-/// The stdin line for a user message.
+/// The stdin line for a user message of text alone.
 pub fn user_line(text: &str) -> String {
     json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
         .to_string()
+}
+
+/// The stdin line for a message (§Q4.5): its images, as the host built
+/// them (`image` content blocks), before the text.
+pub fn input_line(input: &UserInput) -> String {
+    let mut content: Vec<Value> = input.images.clone();
+    content.push(json!({"type": "text", "text": input.text}));
+    json!({"type": "user", "message": {"role": "user", "content": content}}).to_string()
 }
 
 /// The stdin line for an interrupt.
@@ -51,8 +75,43 @@ pub fn interrupt_line(request_id: &str) -> String {
         .to_string()
 }
 
-/// The arguments for one process: a new session or a resumed one.
-pub fn args(mode: Mode, mcp_config: &Path, session_id: &str, resume: bool) -> Vec<String> {
+/// The stdin line that asks Claude for its models and commands (the
+/// catalog probe, §Q4.1).
+pub fn initialize_line(request_id: &str) -> String {
+    json!({"type": "control_request", "request_id": request_id, "request": {"subtype": "initialize"}})
+        .to_string()
+}
+
+/// Our reply to a control request the CLI sent us, and whether it was an
+/// MCP server asking for input (elicitation), which phase 2 declines with
+/// a notice (§Q4.4). Anything else is refused, so no turn waits on it.
+/// [unverified: the CLI's request and response shapes for these.]
+pub fn cli_request_reply(line: &Value) -> Option<(String, bool)> {
+    let id = line.get("request_id").and_then(Value::as_str)?;
+    let subtype = line.pointer("/request/subtype").and_then(Value::as_str).unwrap_or_default();
+    let elicitation = subtype.contains("elicitation");
+    let response = if elicitation {
+        json!({"subtype": "success", "request_id": id, "response": {"action": "decline"}})
+    } else {
+        json!({"subtype": "error", "request_id": id, "error": "Not supported"})
+    };
+    Some((json!({"type": "control_response", "response": response}).to_string(), elicitation))
+}
+
+/// The permission mode flag's value.
+pub fn permission_mode(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Supervised => "default",
+        Mode::AutoEdit => "acceptEdits",
+        Mode::Plan => "plan",
+    }
+}
+
+/// The arguments for one process (§Q4.2): a new session or a resumed one,
+/// with the thread's mode, model and effort, and the user's MCP servers
+/// unless the folder's switch is off. A model or effort that isn't one we
+/// can pass safely is left out (the CLI's default applies).
+pub fn args(settings: &LaunchSettings, mcp_config: &Path, session_id: &str, resume: bool) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--input-format",
@@ -61,20 +120,25 @@ pub fn args(mode: Mode, mcp_config: &Path, session_id: &str, resume: bool) -> Ve
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        "--replay-user-messages",
         "--permission-mode",
-        match mode {
-            Mode::Supervised => "default",
-            Mode::AutoEdit => "acceptEdits",
-        },
-        "--strict-mcp-config",
-        "--mcp-config",
+        permission_mode(settings.mode),
     ]
     .iter()
     .map(|s| (*s).to_owned())
     .collect();
+    if let Some(model) = settings.model.as_deref().filter(|m| catalog::valid_model_id(m)) {
+        args.extend(["--model".to_owned(), model.to_owned()]);
+    }
+    if let Some(effort) = settings.effort.as_deref().and_then(catalog::effort_word) {
+        args.extend(["--effort".to_owned(), effort.to_owned()]);
+    }
+    if !settings.mcp {
+        args.push("--strict-mcp-config".to_owned());
+    }
+    args.push("--mcp-config".to_owned());
     args.push(mcp_config.to_string_lossy().into_owned());
     args.extend(["--permission-prompt-tool".to_owned(), PERMISSION_TOOL.to_owned()]);
-    args.extend(["--disallowedTools".to_owned(), "AskUserQuestion".to_owned()]);
     args.push(if resume { "--resume" } else { "--session-id" }.to_owned());
     args.push(session_id.to_owned());
     args
@@ -112,6 +176,13 @@ pub fn tool_class(name: &str) -> ToolClass {
         _ if name.starts_with("mcp__") => ToolClass::Mcp,
         _ => ToolClass::Other,
     }
+}
+
+/// `mcp__<server>__<tool>` → `("<server>", "<tool>")`.
+pub fn mcp_parts(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    (!server.is_empty() && !tool.is_empty()).then_some((server, tool))
 }
 
 /// How a Claude tool call is shown and asked about.
@@ -171,11 +242,18 @@ pub fn tool_spec(name: &str, input: &Value, cwd: &Path) -> ToolSpec {
             let path = path_of("notebook_path").unwrap_or_default();
             edit_spec(name, path, prefixed_lines(s("new_source").unwrap_or_default(), '+'))
         }
-        _ => ToolSpec {
-            detail: Some(input.to_string()),
-            path: if name == "Read" { path_of("file_path") } else { None },
-            ..ToolSpec::other(name, name, tool_class(name))
-        },
+        _ => {
+            let detail = input.to_string();
+            let title = match mcp_parts(name) {
+                Some((server, tool)) => format!("{server}: {tool}"),
+                None => name.to_owned(),
+            };
+            ToolSpec {
+                detail: Some(api::cut(&detail, api::MAX_TOOL_DETAIL).to_owned()),
+                path: if name == "Read" { path_of("file_path") } else { None },
+                ..ToolSpec::other(name, &title, tool_class(name))
+            }
+        }
     }
 }
 
@@ -234,11 +312,78 @@ pub fn usage_limit_message(resets: Option<u64>) -> String {
     }
 }
 
+/// The user's MCP servers in a `system/init` line, ours left out: how many
+/// are connected, how many need a sign-in, and their names.
+pub fn mcp_of(init: &Value) -> Option<(u16, u16, Vec<String>)> {
+    let servers = init.get("mcp_servers")?.as_array()?;
+    let mut connected = 0u16;
+    let mut need_login = 0u16;
+    let mut names = Vec::new();
+    for server in servers {
+        let Some(name) = server.get("name").and_then(Value::as_str) else { continue };
+        if name == MCP_SERVER {
+            continue;
+        }
+        match server.get("status").and_then(Value::as_str) {
+            Some("connected") => connected = connected.saturating_add(1),
+            Some("needs-auth") => need_login = need_login.saturating_add(1),
+            _ => {}
+        }
+        let name = api::clean_cut(name.trim(), api::MAX_MCP_NAME).0;
+        if !name.is_empty() && names.len() < api::MAX_MCP_NAMES && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Some((connected, need_login, names))
+}
+
+/// The keys of `system/init` the host uses (the folder's commands and the
+/// mode and model Claude runs with); its paths, tools and the rest stay here.
+pub fn init_summary(init: &Value) -> Value {
+    const KEPT: [&str; 5] =
+        ["slash_commands", "terminal_slash_commands", "skills", "permissionMode", "model"];
+    let kept: serde_json::Map<String, Value> =
+        KEPT.iter().filter_map(|k| init.get(*k).map(|v| ((*k).to_owned(), v.clone()))).collect();
+    Value::Object(kept)
+}
+
+/// The context a turn's `result` reports (§Q4.8): the last model call's
+/// input, cache and output tokens, against the answering model's window.
+pub fn context_of(result: &Value, model: Option<&str>) -> Option<(u64, u64)> {
+    let last = result.pointer("/usage/iterations")?.as_array()?.last()?;
+    let n = |key: &str| last.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let used = n("input_tokens")
+        .saturating_add(n("cache_read_input_tokens"))
+        .saturating_add(n("cache_creation_input_tokens"))
+        .saturating_add(n("output_tokens"));
+    let usage = result.get("modelUsage")?.as_object()?;
+    let window = |v: &Value| v.get("contextWindow").and_then(Value::as_u64);
+    // The usage key may carry a suffix (`claude-opus-5-5[1m]`).
+    let named = model.and_then(|m| {
+        usage.get(m).or_else(|| usage.iter().find(|(k, _)| k.starts_with(&format!("{m}["))).map(|(_, v)| v))
+    });
+    let max = match named {
+        Some(entry) => window(entry)?,
+        None => usage.values().filter_map(window).max()?,
+    };
+    (used > 0 && max > 0).then_some((used, max))
+}
+
+/// A message written to Claude and not yet taken in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Sent {
+    /// Its user item's id.
+    id: String,
+    steer: bool,
+}
+
 /// Turns Claude's stdout lines into steps (§4.4).
 #[derive(Debug)]
 pub struct ClaudeMapper {
     cwd: PathBuf,
     session_id: Option<String>,
+    /// The process's mode (a change restarts the process).
+    mode: Mode,
     current_message: Option<String>,
     /// Text blocks opened by the stream and not yet finished, in order.
     open_text: Vec<String>,
@@ -258,6 +403,17 @@ pub struct ClaudeMapper {
     message_texts: Vec<String>,
     /// Text items of the turn, in order, and whether each has its phase.
     turn_texts: Vec<(String, bool)>,
+    /// Messages written and not yet echoed back (`--replay-user-messages`).
+    pending: VecDeque<Sent>,
+    /// The model that answered last, as reported.
+    answered_model: Option<String>,
+    /// The model of this turn's last real answer (not `<synthetic>`).
+    turn_model: Option<String>,
+    /// What was last reported of the MCP servers.
+    mcp: Option<(u16, u16, Vec<String>)>,
+    /// Tool calls shown as items of their own (the plan, a question): no
+    /// tool step for them or their results.
+    hidden: HashSet<String>,
 }
 
 impl ClaudeMapper {
@@ -265,6 +421,7 @@ impl ClaudeMapper {
         Self {
             cwd,
             session_id,
+            mode: Mode::Supervised,
             current_message: None,
             open_text: Vec::new(),
             synthesized: 0,
@@ -277,7 +434,17 @@ impl ClaudeMapper {
             open_thinking: Vec::new(),
             message_texts: Vec::new(),
             turn_texts: Vec::new(),
+            pending: VecDeque::new(),
+            answered_model: None,
+            turn_model: None,
+            mcp: None,
+            hidden: HashSet::new(),
         }
+    }
+
+    /// The process's mode: in plan mode the plan file's write is marked.
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
     }
 
     pub fn turn_started(&mut self) {
@@ -286,6 +453,7 @@ impl ClaudeMapper {
         self.rate_limited = None;
         self.assistant_error = None;
         self.last_text = None;
+        self.turn_model = None;
     }
 
     pub fn turn_running(&self) -> bool {
@@ -296,6 +464,14 @@ impl ClaudeMapper {
         self.interrupt_sent = true;
     }
 
+    /// A message was written to stdin: `steer` when it went into a running turn.
+    pub fn wrote(&mut self, id: &str, steer: bool) {
+        if self.pending.len() >= MAX_PENDING {
+            self.pending.pop_front();
+        }
+        self.pending.push_back(Sent { id: id.to_owned(), steer });
+    }
+
     fn end_turn(&mut self, end: TurnEnd) -> Step {
         self.turn_running = false;
         self.interrupt_sent = false;
@@ -304,6 +480,7 @@ impl ClaudeMapper {
         self.open_thinking.clear();
         self.message_texts.clear();
         self.turn_texts.clear();
+        self.hidden.clear();
         Step::TurnEnded(end)
     }
 
@@ -380,24 +557,44 @@ impl ClaudeMapper {
                         code::BRIDGE_FAILED,
                         "The approval service didn't start.",
                     )));
+                    return steps;
                 }
+                if let Some(mcp) = mcp_of(line)
+                    && self.mcp.as_ref() != Some(&mcp)
+                {
+                    self.mcp = Some(mcp.clone());
+                    let (connected, need_login, names) = mcp;
+                    steps.push(Step::Mcp { names, connected, need_login });
+                }
+                steps.push(Step::Init(init_summary(line)));
             }
             ("system", "api_retry") => {
                 if let Some(error) = line.get("error").and_then(Value::as_str) {
                     self.assistant_error = Some(error.to_owned());
                 }
             }
+            ("system", "status") => self.status(line, &mut steps),
             ("rate_limit_event", _) => {
                 let info = line.get("rate_limit_info");
                 let status = info.and_then(|i| i.get("status")).and_then(Value::as_str);
                 if status == Some("rejected") {
                     self.rate_limited = Some(info.and_then(|i| i.get("resetsAt")).and_then(Value::as_u64));
                 }
+                let limits = info.map(catalog::claude_limits).unwrap_or_default();
+                if !limits.is_empty() {
+                    steps.push(Step::Limits(limits));
+                }
             }
             ("stream_event", _) => self.stream_event(line.get("event").unwrap_or(&Value::Null), &mut steps),
             ("assistant", _) => self.assistant(line, &mut steps),
+            ("user", _) if line.get("isReplay").and_then(Value::as_bool) == Some(true) => {
+                self.replayed(&mut steps);
+            }
             ("user", _) => self.user(line, &mut steps),
             ("result", _) if self.turn_running => {
+                if let Some((used, max)) = context_of(line, self.turn_model.as_deref()) {
+                    steps.push(Step::Context { used, max });
+                }
                 let end = self.result(line);
                 if end.outcome == crate::api::Outcome::Done {
                     self.settle_phases(&mut steps);
@@ -407,6 +604,36 @@ impl ClaudeMapper {
             _ => {}
         }
         steps
+    }
+
+    /// Claude took in a message we wrote. After its `result` that starts a
+    /// turn of its own (a steer that came too late for the last one).
+    fn replayed(&mut self, steps: &mut Vec<Step>) {
+        let Some(sent) = self.pending.pop_front() else { return };
+        if !self.turn_running {
+            self.turn_started();
+            steps.push(Step::TurnStarted);
+        }
+        if sent.steer && !sent.id.is_empty() {
+            steps.push(Step::Delivered { id: sent.id });
+        }
+    }
+
+    /// `system/status`: a compaction's outcome is a notice.
+    fn status(&mut self, line: &Value, steps: &mut Vec<Step>) {
+        let error =
+            line.get("compact_error").and_then(Value::as_str).map(str::trim).filter(|e| !e.is_empty());
+        if let Some(error) = error {
+            steps.push(Step::Notice(api::clean_cut(error, api::MAX_ERROR_MESSAGE).0));
+            return;
+        }
+        let result = line.get("compact_result").filter(|r| !r.is_null());
+        let failed = result.is_some_and(|r| {
+            r.as_bool() == Some(false) || matches!(r.as_str(), Some("failed" | "error" | "failure"))
+        });
+        if result.is_some() && !failed {
+            steps.push(Step::Notice(COMPACTED.to_owned()));
+        }
     }
 
     /// The key of the block an event is about: `<message id>:<index>`.
@@ -479,13 +706,43 @@ impl ClaudeMapper {
         }
     }
 
+    /// The answering model; a change is reported.
+    fn answered_by(&mut self, model: &str, steps: &mut Vec<Step>) {
+        let model = api::clean_cut(model.trim(), api::MAX_MODEL_ID).0;
+        if model.is_empty() {
+            return;
+        }
+        self.turn_model = Some(model.clone());
+        if self.answered_model.as_deref() != Some(model.as_str()) {
+            self.answered_model = Some(model.clone());
+            steps.push(Step::AnsweredModel(model));
+        }
+    }
+
     fn assistant(&mut self, line: &Value, steps: &mut Vec<Step>) {
         if let Some(error) = line.get("error").and_then(Value::as_str) {
             self.assistant_error = Some(error.to_owned());
         }
         let Some(message) = line.get("message") else { return };
-        let id = message.get("id").and_then(Value::as_str).unwrap_or("message").to_owned();
+        let model = message.get("model").and_then(Value::as_str);
         let Some(blocks) = message.get("content").and_then(Value::as_array) else { return };
+        if model == Some(catalog::SYNTHETIC_MODEL) {
+            // Answered by the CLI itself (a slash command): a notice, never
+            // the model that answered.
+            for block in blocks {
+                if block.get("type").and_then(Value::as_str) == Some("text")
+                    && let Some(text) =
+                        block.get("text").and_then(Value::as_str).filter(|t| !t.trim().is_empty())
+                {
+                    steps.push(Step::Notice(text.to_owned()));
+                }
+            }
+            return;
+        }
+        if let Some(model) = model {
+            self.answered_by(model, steps);
+        }
+        let id = message.get("id").and_then(Value::as_str).unwrap_or("message").to_owned();
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
@@ -533,14 +790,20 @@ impl ClaudeMapper {
                     let Some(key) = block.get("id").and_then(Value::as_str) else { continue };
                     let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                     let input = block.get("input").unwrap_or(&Value::Null);
+                    if name == plan::EXIT_PLAN_TOOL || name == questions::ASK_TOOL {
+                        // The bridge makes its plan or question item.
+                        self.hidden.insert(key.to_owned());
+                        continue;
+                    }
                     self.tool_names.insert(key.to_owned(), name.to_owned());
                     if let Some(plan) = todo_plan(name, input) {
                         steps.push(Step::Plan(plan));
                     }
-                    steps.push(Step::ToolStart {
-                        key: key.to_owned(),
-                        tool: tool_spec(name, input, &self.cwd),
-                    });
+                    let mut tool = tool_spec(name, input, &self.cwd);
+                    if self.mode == Mode::Plan && plan::is_plan_file(name, input, &self.cwd) {
+                        tool.class = ToolClass::Plan;
+                    }
+                    steps.push(Step::ToolStart { key: key.to_owned(), tool });
                 }
                 _ => {}
             }
@@ -583,6 +846,9 @@ impl ClaudeMapper {
                 continue;
             }
             let Some(key) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
+            if self.hidden.contains(key) {
+                continue;
+            }
             let meta = metas.and_then(|metas| {
                 metas
                     .iter()
@@ -675,6 +941,7 @@ impl ClaudeMapper {
 pub struct Launch {
     pub bin: PathBuf,
     pub cwd: PathBuf,
+    /// Used by [`spawn`]; [`spawn_with`] takes the full settings.
     pub mode: Mode,
     pub session_id: String,
     pub resume: bool,
@@ -686,12 +953,20 @@ pub struct Launch {
     pub first_text: String,
 }
 
-/// Starts a Claude process for a thread.
+/// Starts a Claude process for a thread with only its mode set.
 pub fn spawn(
     launch: &Launch,
 ) -> std::io::Result<(AgentProcess, tokio::sync::mpsc::Receiver<crate::host::agents::OutLine>)> {
+    spawn_with(launch, &LaunchSettings::new(launch.mode))
+}
+
+/// Starts a Claude process for a thread with its settings (§Q4.2).
+pub fn spawn_with(
+    launch: &Launch,
+    settings: &LaunchSettings,
+) -> std::io::Result<(AgentProcess, tokio::sync::mpsc::Receiver<crate::host::agents::OutLine>)> {
     write_mcp_config(&launch.mcp_config, &launch.bridge_exe, &launch.socket, &launch.bridge_token)?;
-    let args = args(launch.mode, &launch.mcp_config, &launch.session_id, launch.resume);
+    let args = args(settings, &launch.mcp_config, &launch.session_id, launch.resume);
     let spawned = AgentProcess::spawn(&launch.bin, &args, &launch.cwd, &launch.env);
     if spawned.is_err() {
         let _ = std::fs::remove_file(&launch.mcp_config);
@@ -703,25 +978,58 @@ pub fn spawn(
 #[derive(Debug)]
 pub struct ClaudeDriver {
     mapper: ClaudeMapper,
-    first_text: Option<String>,
+    first: Option<UserInput>,
     interrupts: u64,
 }
 
 impl ClaudeDriver {
+    /// A driver whose first message is text alone, in a supervised process.
     pub fn new(cwd: PathBuf, session_id: String, first_text: String) -> Self {
-        Self { mapper: ClaudeMapper::new(cwd, Some(session_id)), first_text: Some(first_text), interrupts: 0 }
+        Self::with_settings(
+            cwd,
+            session_id,
+            &LaunchSettings::new(Mode::Supervised),
+            UserInput::text(first_text),
+        )
+    }
+
+    /// A driver for a process started with `settings`, sending `first`.
+    pub fn with_settings(
+        cwd: PathBuf,
+        session_id: String,
+        settings: &LaunchSettings,
+        first: UserInput,
+    ) -> Self {
+        let mut mapper = ClaudeMapper::new(cwd, Some(session_id));
+        mapper.set_mode(settings.mode);
+        Self { mapper, first: Some(first), interrupts: 0 }
+    }
+
+    /// Writes a message; `steer` when it goes into the running turn.
+    fn write(&mut self, input: &UserInput, steer: bool, out: &mut Output) {
+        out.stdin.push(input_line(input));
+        self.mapper.wrote(&input.id, steer);
     }
 }
 
 impl Driver for ClaudeDriver {
     fn start(&mut self, out: &mut Output) {
-        if let Some(text) = self.first_text.take() {
-            out.stdin.push(user_line(&text));
+        if let Some(first) = self.first.take() {
+            self.write(&first, false, out);
             self.mapper.turn_started();
         }
     }
 
     fn on_line(&mut self, line: Value, out: &mut Output) {
+        if line.get("type").and_then(Value::as_str) == Some("control_request") {
+            if let Some((reply, elicitation)) = cli_request_reply(&line) {
+                out.stdin.push(reply);
+                if elicitation {
+                    out.steps.push(Step::Notice(crate::host::questions::MCP_DECLINED.to_owned()));
+                }
+            }
+            return;
+        }
         for step in self.mapper.feed(&line) {
             if matches!(&step, Step::TurnEnded(end) if end.error.as_ref().is_some_and(|e| e.code == code::BRIDGE_FAILED))
             {
@@ -733,9 +1041,19 @@ impl Driver for ClaudeDriver {
 
     fn on_cmd(&mut self, cmd: SessionCmd, out: &mut Output) {
         match cmd {
-            SessionCmd::Send(text) => {
-                out.stdin.push(user_line(&text));
+            SessionCmd::Send(input) => {
+                self.write(&input, false, out);
                 self.mapper.turn_started();
+            }
+            SessionCmd::Steer(input) => {
+                // Written now: Claude takes it in at its next step (§Q4.5).
+                // With no turn running it starts one.
+                let running = self.mapper.turn_running();
+                self.write(&input, true, out);
+                if !running {
+                    self.mapper.turn_started();
+                    out.steps.push(Step::TurnStarted);
+                }
             }
             SessionCmd::Interrupt => {
                 if self.mapper.turn_running() {
@@ -1242,12 +1560,357 @@ pub(crate) mod tests {
         assert!(is_session_id(&id));
         assert_eq!(&id[14..15], "4");
         assert!(!is_session_id("../etc"));
-        let a = args(Mode::AutoEdit, Path::new("/r/mcp.json"), &id, true);
+        let a = args(&LaunchSettings::new(Mode::AutoEdit), Path::new("/r/mcp.json"), &id, true);
         assert!(a.windows(2).any(|w| w == ["--permission-mode", "acceptEdits"]));
         assert!(a.windows(2).any(|w| w[0] == "--resume" && w[1] == id));
         assert!(!a.iter().any(|s| s == "--session-id" || s == "--bare"));
-        let a = args(Mode::Supervised, Path::new("/r/mcp.json"), &id, false);
+        let a = args(&LaunchSettings::new(Mode::Supervised), Path::new("/r/mcp.json"), &id, false);
         assert!(a.windows(2).any(|w| w == ["--permission-mode", "default"]));
         assert!(a.windows(2).any(|w| w[0] == "--session-id"));
+    }
+
+    fn settings(mode: Mode, model: Option<&str>, effort: Option<&str>, mcp: bool) -> LaunchSettings {
+        LaunchSettings {
+            mode,
+            model: model.map(str::to_owned),
+            effort: effort.map(str::to_owned),
+            mcp,
+            default_model: None,
+            default_effort: None,
+        }
+    }
+
+    /// Every flag the host may pass Claude (§Q4.2).
+    const DOCUMENTED: [&str; 14] = [
+        "-p",
+        "--input-format",
+        "--output-format",
+        "--verbose",
+        "--include-partial-messages",
+        "--replay-user-messages",
+        "--permission-mode",
+        "--model",
+        "--effort",
+        "--strict-mcp-config",
+        "--mcp-config",
+        "--permission-prompt-tool",
+        "--resume",
+        "--session-id",
+    ];
+
+    #[test]
+    fn launch_flags_for_every_setting() {
+        let id = new_session_id();
+        for mode in [Mode::Supervised, Mode::AutoEdit, Mode::Plan] {
+            for model in [None, Some("opus"), Some("claude-opus-5"), Some("-p"), Some("a b"), Some("x\ny")] {
+                for effort in [None, Some("low"), Some("xhigh"), Some("--bare"), Some("High")] {
+                    for mcp in [true, false] {
+                        for resume in [true, false] {
+                            let a = args(
+                                &settings(mode, model, effort, mcp),
+                                Path::new("/r/m.json"),
+                                &id,
+                                resume,
+                            );
+                            for flag in a.iter().filter(|a| a.starts_with('-')) {
+                                assert!(DOCUMENTED.contains(&flag.as_str()), "{flag} in {a:?}");
+                            }
+                            let value =
+                                |flag: &str| a.windows(2).find(|w| w[0] == flag).map(|w| w[1].as_str());
+                            assert_eq!(value("--permission-mode"), Some(permission_mode(mode)));
+                            assert_eq!(value("--model"), model.filter(|m| catalog::valid_model_id(m)));
+                            assert_eq!(value("--effort"), effort.and_then(catalog::effort_word));
+                            assert_eq!(a.iter().any(|a| a == "--strict-mcp-config"), !mcp);
+                            assert_eq!(value("--mcp-config"), Some("/r/m.json"), "our bridge, always");
+                            assert_eq!(value("--permission-prompt-tool"), Some(PERMISSION_TOOL));
+                            assert!(a.iter().any(|a| a == "--replay-user-messages"));
+                            assert_eq!(
+                                value(if resume { "--resume" } else { "--session-id" }),
+                                Some(id.as_str())
+                            );
+                            for never in ["--bare", "--disallowedTools", "--dangerously-skip-permissions"] {
+                                assert!(!a.iter().any(|a| a == never), "{never}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(permission_mode(Mode::Plan), "plan");
+    }
+
+    #[test]
+    fn the_only_control_requests_are_interrupt_and_initialize() {
+        let source = include_str!("claude.rs");
+        let code = &source[..source.find("#[cfg(test)]").unwrap()];
+        let pattern = "\"request\": {\"subtype\": \"";
+        let found: Vec<&str> = code
+            .match_indices(pattern)
+            .map(|(i, _)| {
+                let rest = &code[i + pattern.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+        assert_eq!(found, CONTROL_SUBTYPES);
+        for word in [
+            "set_model",
+            "set_permission_mode",
+            "apply_flag_settings",
+            "set_max_thinking_tokens",
+            "mcp_status",
+        ] {
+            assert!(!code.contains(word), "{word}");
+        }
+        for line in [interrupt_line("a"), initialize_line("b"), crate::host::catalog::initialize_line()] {
+            let v: Value = serde_json::from_str(&line).unwrap();
+            assert!(CONTROL_SUBTYPES.contains(&v["request"]["subtype"].as_str().unwrap()));
+        }
+        let catalog = include_str!("catalog.rs");
+        let catalog_code = &catalog[..catalog.find("#[cfg(test)]").unwrap()];
+        assert!(!catalog_code.contains("\"subtype\": "), "the probe's request is built here only");
+    }
+
+    /// Drives a fixture through the driver: `_stdin` lines are the host's
+    /// messages (`_steer`: sent while it worked), the first one starts it.
+    fn drive(name: &str, mode: Mode) -> (Vec<Step>, Vec<Value>) {
+        let mut driver: Option<ClaudeDriver> = None;
+        let mut out = Output::default();
+        for line in fixture_lines(name) {
+            if let Some(stdin) = line.get("_stdin") {
+                let input = UserInput {
+                    id: line["_id"].as_str().unwrap_or_default().to_owned(),
+                    text: stdin
+                        .pointer("/message/content/0/text")
+                        .and_then(Value::as_str)
+                        .unwrap()
+                        .to_owned(),
+                    images: Vec::new(),
+                };
+                match driver.as_mut() {
+                    None => {
+                        let mut d = ClaudeDriver::with_settings(
+                            PathBuf::from("/work"),
+                            "11111111-2222-4333-8444-555555555555".into(),
+                            &settings(mode, None, None, true),
+                            input,
+                        );
+                        d.start(&mut out);
+                        driver = Some(d);
+                    }
+                    Some(d) if line["_steer"] == true => d.on_cmd(SessionCmd::Steer(input), &mut out),
+                    Some(d) => d.on_cmd(SessionCmd::Send(input), &mut out),
+                }
+                continue;
+            }
+            driver.as_mut().unwrap().on_line(line, &mut out);
+        }
+        let stdin = out.stdin.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        (out.steps, stdin)
+    }
+
+    #[test]
+    fn plan_mode_hides_the_plan_file_and_the_plan_call() {
+        let (steps, _) = drive("claude-11-plan.jsonl", Mode::Plan);
+        let starts: Vec<(&str, ToolClass)> = steps
+            .iter()
+            .filter_map(|s| {
+                if let Step::ToolStart { key, tool } = s { Some((key.as_str(), tool.class)) } else { None }
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            [("toolu_w", ToolClass::Plan)],
+            "ExitPlanMode makes no step; the plan item comes from the bridge"
+        );
+        assert_eq!(tool_ends(&steps), [("toolu_w", ToolStatus::Ok)]);
+        let (mcp, models): (Vec<_>, Vec<_>) = (
+            steps.iter().filter(|s| matches!(s, Step::Mcp { .. })).collect(),
+            steps
+                .iter()
+                .filter_map(|s| if let Step::AnsweredModel(m) = s { Some(m.as_str()) } else { None })
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            mcp,
+            [&Step::Mcp {
+                names: vec!["github".into(), "linear".into(), "docs".into()],
+                connected: 1,
+                need_login: 1
+            }]
+        );
+        assert_eq!(
+            models,
+            ["claude-opus-5-5", "claude-sonnet-5-5"],
+            "plan mode picked another model on the way"
+        );
+        let init =
+            steps.iter().find_map(|s| if let Step::Init(init) = s { Some(init) } else { None }).unwrap();
+        assert_eq!(init["terminal_slash_commands"][0], "login");
+        assert_eq!(init["permissionMode"], "plan");
+        assert!(
+            init.get("cwd").is_none() && init.get("mcp_servers").is_none() && init.get("tools").is_none()
+        );
+        let context = steps
+            .iter()
+            .find_map(|s| if let Step::Context { used, max } = s { Some((*used, *max)) } else { None });
+        assert_eq!(context, Some((2080, 1_000_000)), "the last call's tokens, the answering model's window");
+        assert_eq!(ends(&steps).len(), 1);
+        // In another mode the same write is an edit.
+        let (steps, _) = drive("claude-11-plan.jsonl", Mode::Supervised);
+        assert!(
+            steps.iter().any(|s| matches!(s, Step::ToolStart { tool, .. } if tool.class == ToolClass::Edit))
+        );
+    }
+
+    #[test]
+    fn a_question_call_makes_no_step() {
+        let (steps, _) = drive("claude-12-question.jsonl", Mode::Supervised);
+        assert!(!steps.iter().any(|s| matches!(s, Step::ToolStart { .. } | Step::ToolEnd { .. })));
+        assert_eq!(assistant_texts(&steps), ["Blue."]);
+        assert_eq!(ends(&steps)[0].outcome, Outcome::Done);
+    }
+
+    #[test]
+    fn a_steer_is_delivered_in_its_turn_or_starts_the_next() {
+        let (steps, stdin) = drive("claude-13-steer.jsonl", Mode::Supervised);
+        assert_eq!(stdin.len(), 3, "each message written at once");
+        assert!(stdin.iter().all(|l| l["type"] == "user"));
+        let marks: Vec<String> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Delivered { id } => Some(format!("delivered {id}")),
+                Step::TurnStarted => Some("started".to_owned()),
+                Step::TurnEnded(_) => Some("ended".to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marks, ["delivered u2", "ended", "started", "delivered u3", "ended"]);
+        assert_eq!(assistant_texts(&steps), ["Pineapple, done.", "Pineapple."]);
+        assert!(ends(&steps).iter().all(|e| e.outcome == Outcome::Done));
+    }
+
+    #[test]
+    fn a_steer_while_idle_starts_a_turn() {
+        let mut driver = ClaudeDriver::new(PathBuf::from("/w"), new_session_id(), "Hi".into());
+        let mut out = Output::default();
+        driver.start(&mut out);
+        let echo = json!({"type": "user", "isReplay": true, "message": {"role": "user", "content": []}});
+        driver.on_line(echo.clone(), &mut out);
+        driver.on_line(
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Hi."}),
+            &mut out,
+        );
+        assert!(!out.steps.iter().any(|s| matches!(s, Step::Delivered { .. } | Step::TurnStarted)));
+        let mut out = Output::default();
+        let input = UserInput { id: "u9".into(), text: "More".into(), images: Vec::new() };
+        driver.on_cmd(SessionCmd::Steer(input), &mut out);
+        assert_eq!(out.steps, [Step::TurnStarted]);
+        assert_eq!(out.stdin.len(), 1);
+        let mut out = Output::default();
+        driver.on_line(echo.clone(), &mut out);
+        assert_eq!(out.steps, [Step::Delivered { id: "u9".into() }]);
+        // An echo nobody waits for is ignored.
+        let mut out = Output::default();
+        driver.on_line(echo, &mut out);
+        assert!(out.steps.is_empty());
+    }
+
+    #[test]
+    fn slash_commands_answered_by_the_cli_are_notices() {
+        let (steps, _) = drive("claude-14-slash.jsonl", Mode::Supervised);
+        let notices: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| if let Step::Notice(t) = s { Some(t.as_str()) } else { None })
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                "Context: 12k of 1M tokens",
+                "Not enough messages to compact.",
+                "Error: Not enough messages to compact.",
+                COMPACTED,
+                "Compacted."
+            ]
+        );
+        assert!(assistant_texts(&steps).is_empty());
+        assert!(!steps.iter().any(|s| matches!(s, Step::AnsweredModel(_) | Step::Context { .. })));
+        assert_eq!(ends(&steps).len(), 3);
+    }
+
+    #[test]
+    fn images_go_before_the_text() {
+        let block = json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}});
+        let input = UserInput { id: "u".into(), text: "What colour?".into(), images: vec![block.clone()] };
+        let line: Value = serde_json::from_str(&input_line(&input)).unwrap();
+        assert_eq!(line["message"]["content"], json!([block, {"type": "text", "text": "What colour?"}]));
+        assert_eq!(
+            serde_json::from_str::<Value>(&user_line("x")).unwrap()["message"]["content"][0]["text"],
+            "x"
+        );
+    }
+
+    #[test]
+    fn context_limits_and_mcp_from_the_captures() {
+        let steps = run("claude-01-list.jsonl");
+        assert!(steps.contains(&Step::Context { used: 40_932, max: 1_000_000 }));
+        assert!(steps.contains(&Step::AnsweredModel("claude-opus-5-5".into())));
+        // Our own bridge is never one of the user's servers.
+        assert!(steps.contains(&Step::Mcp { names: Vec::new(), connected: 0, need_login: 0 }));
+        let steps = run("claude-02-followup-approve.jsonl");
+        let limits: Vec<&Vec<api::Limit>> =
+            steps.iter().filter_map(|s| if let Step::Limits(l) = s { Some(l) } else { None }).collect();
+        assert!(!limits.is_empty());
+        assert_eq!(limits[0][0].window, "seven_day");
+        assert_eq!(limits[0][0].state, api::LimitState::Warn);
+        assert_eq!(
+            steps.iter().filter(|s| matches!(s, Step::AnsweredModel(_))).count(),
+            1,
+            "the same model twice is reported once"
+        );
+        assert_eq!(context_of(&json!({"usage": {"iterations": []}, "modelUsage": {}}), None), None);
+        let two = json!({"usage": {"iterations": [{"input_tokens": 5}]},
+            "modelUsage": {"a": {"contextWindow": 200000}, "b": {"contextWindow": 1000000}}});
+        assert_eq!(context_of(&two, Some("a")), Some((5, 200_000)));
+        assert_eq!(context_of(&two, Some("zzz")), Some((5, 1_000_000)));
+    }
+
+    #[test]
+    fn mcp_tools_are_named_by_server() {
+        let spec = tool_spec("mcp__github__search_issues", &json!({"q": "x".repeat(5000)}), Path::new("/w"));
+        assert_eq!(
+            (spec.title.as_str(), spec.class, spec.kind),
+            ("github: search_issues", ToolClass::Mcp, ApprovalKind::Other)
+        );
+        assert_eq!(spec.detail.unwrap().len(), api::MAX_TOOL_DETAIL);
+        assert_eq!(mcp_parts("mcp__a__b__c"), Some(("a", "b__c")));
+        assert_eq!(mcp_parts("mcp__x"), None);
+        assert_eq!(tool_spec("ToolSearch", &json!({}), Path::new("/w")).class, ToolClass::Other);
+    }
+
+    #[test]
+    fn the_clis_own_requests_are_declined() {
+        let mut driver = ClaudeDriver::new(PathBuf::from("/w"), new_session_id(), "Hi".into());
+        let mut out = Output::default();
+        driver.start(&mut out);
+        let mut out = Output::default();
+        driver.on_line(
+            json!({"type": "control_request", "request_id": "r1", "request": {"subtype": "elicitation", "mcp_server_name": "x", "message": "Your token?"}}),
+            &mut out,
+        );
+        let reply: Value = serde_json::from_str(&out.stdin[0]).unwrap();
+        assert_eq!(
+            reply["response"],
+            json!({"subtype": "success", "request_id": "r1", "response": {"action": "decline"}})
+        );
+        assert_eq!(out.steps, [Step::Notice(crate::host::questions::MCP_DECLINED.into())]);
+        assert!(!format!("{:?}", out.steps).contains("token"));
+        let mut out = Output::default();
+        driver.on_line(
+            json!({"type": "control_request", "request_id": "r2", "request": {"subtype": "hook_callback"}}),
+            &mut out,
+        );
+        let reply: Value = serde_json::from_str(&out.stdin[0]).unwrap();
+        assert_eq!(reply["response"]["subtype"], "error");
+        assert!(out.steps.is_empty());
     }
 }

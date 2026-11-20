@@ -48,6 +48,16 @@ pub enum Note {
     Removed {
         thread_id: String,
     },
+    /// The agent asks the user something; answered in G7, never from the
+    /// notification. Taken down by an `ApprovalGone` with its token.
+    Question {
+        thread: ThreadInfo,
+        token: String,
+    },
+    /// A plan is ready to review.
+    PlanReady {
+        thread: ThreadInfo,
+    },
 }
 
 /// What the user did on a notification.
@@ -160,6 +170,20 @@ pub fn render(note: &Note) -> Option<Rendered> {
                 token: None,
             })
         }
+        Note::Question { thread, token } => Some(Rendered {
+            summary: format!("{} has a question in {}", agent_name(thread), thread.folder_label),
+            body: first_line(&thread.title, MAX_BODY_LINE),
+            actions: vec![("default", "Open")],
+            critical: true,
+            token: Some(token.clone()),
+        }),
+        Note::PlanReady { thread } => Some(Rendered {
+            summary: format!("{} has a plan in {}", agent_name(thread), thread.folder_label),
+            body: first_line(&thread.title, MAX_BODY_LINE),
+            actions: vec![("default", "Open")],
+            critical: false,
+            token: None,
+        }),
         Note::ApprovalGone { .. } | Note::Removed { .. } => None,
     }
 }
@@ -268,7 +292,9 @@ async fn handle_note(
         Note::Approval { thread, .. }
         | Note::Done { thread, .. }
         | Note::Failed { thread, .. }
-        | Note::PhoneStarted { thread, .. } => thread.id.clone(),
+        | Note::PhoneStarted { thread, .. }
+        | Note::Question { thread, .. }
+        | Note::PlanReady { thread } => thread.id.clone(),
         Note::ApprovalGone { thread_id, .. } | Note::Removed { thread_id } => thread_id.clone(),
     };
     let Some(rendered) = render(&note) else {
@@ -383,6 +409,14 @@ mod tests {
             state_since_ms: 0,
             subdir: None,
             continued: false,
+            model: None,
+            effort: None,
+            answered_model: None,
+            queued: Vec::new(),
+            queue_held: false,
+            context: None,
+            mcp: None,
+            asking: 0,
         }
     }
 

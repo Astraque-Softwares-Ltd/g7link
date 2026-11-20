@@ -119,6 +119,7 @@ impl TestHost {
             codex_home: codex.clone(),
             proc_root: proc_root.clone(),
             sessions: true,
+            keep_awake_bus: false,
         };
         let socket = config.socket.clone();
         let (stop, stopped) = oneshot::channel::<()>();
@@ -559,13 +560,13 @@ async fn the_resume_guard_and_the_running_step() {
     let (client, mut events) = host.client().await;
     client.subscribe(ThreadSelection::All, false).await.unwrap();
     let folder = host.folder(&client).await;
-    let params = ThreadStartParams {
-        agent: AgentId::Claude,
-        folder_id: folder.id.clone(),
-        prompt: "List the files here.".into(),
-        mode: Mode::Supervised,
-        origin: Origin::launcher(),
-    };
+    let params = ThreadStartParams::new(
+        AgentId::Claude,
+        folder.id.clone(),
+        "List the files here.".into(),
+        Mode::Supervised,
+        Origin::launcher(),
+    );
     let thread = client.thread_start(params).await.unwrap();
     assert!(thread.state_since_ms > 0);
     until_done(&mut events, &thread.id).await;
