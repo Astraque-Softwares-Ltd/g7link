@@ -110,6 +110,10 @@ struct RecordingPlatform {
     agent_answered: Mutex<std::collections::HashSet<String>>,
     /// The sessions this PC lists (`agent.sessions`).
     agent_sessions: Mutex<Vec<g7link_core::AgentSession>>,
+    /// Drafts this PC keeps (`agent.draft.*`), by key.
+    agent_drafts: Mutex<std::collections::HashMap<String, g7link_core::AgentDraft>>,
+    /// While set, an image a phone sent waits for it to open.
+    agent_image_gate: Mutex<Option<Arc<Gate>>>,
     /// Values sent with media commands (shuffle, loop).
     media_values: Mutex<Vec<(String, MediaAction, String)>>,
     /// The large picture `media_art` serves, and how often it was asked.
@@ -614,15 +618,13 @@ impl Platform for RecordingPlatform {
                 Ok(AgentReply::Items(g7link_core::AgentItems {
                     thread: agent_thread(&thread, "working", false),
                     items: thinking_turn(),
-                    more_before: false,
-                    asks: Vec::new(),
+                    ..Default::default()
                 }))
             }
             AgentRequest::Read { thread, .. } => Ok(AgentReply::Items(g7link_core::AgentItems {
                 thread: agent_thread(&thread, "done", false),
                 items: vec![agent_text(1, "Hello")],
-                more_before: false,
-                asks: Vec::new(),
+                ..Default::default()
             })),
             AgentRequest::Answer { token, .. } => {
                 if self.agent_answered.lock().unwrap().insert(token) {
@@ -671,6 +673,90 @@ impl Platform for RecordingPlatform {
                 }))
             }
             AgentRequest::Export { .. } => Err(AgentFailure::NotFound),
+            AgentRequest::Configure { thread, model, effort, mode, .. } => {
+                let mut configured = agent_thread(&thread, "done", false);
+                configured.mode = mode.unwrap_or(configured.mode);
+                configured.model = model.filter(|m| !m.is_empty());
+                configured.effort = effort.filter(|e| !e.is_empty());
+                Ok(AgentReply::Thread(configured))
+            }
+            AgentRequest::Queue { id, .. } if id == SENT_QUEUED => Err(AgentFailure::NotFound),
+            AgentRequest::Queue { .. } | AgentRequest::Implement { .. } => Ok(AgentReply::Ok),
+            AgentRequest::QuestionAnswer { token, .. } | AgentRequest::QuestionDismiss { token } => {
+                if self.agent_answered.lock().unwrap().insert(token) {
+                    Ok(AgentReply::Ok)
+                } else {
+                    Err(AgentFailure::NotFound)
+                }
+            }
+            AgentRequest::Files { .. } => {
+                let hit = |path: &str, dir: bool| g7link_core::AgentFileHit { path: path.into(), dir };
+                Ok(AgentReply::Files(g7link_core::AgentFiles {
+                    files: vec![
+                        hit("src/main.rs", false),
+                        hit("/home/me/.ssh/id_ed25519", false),
+                        hit("../../etc/passwd", false),
+                        hit("src/", true),
+                    ],
+                    more: false,
+                }))
+            }
+            AgentRequest::Commands { .. } => {
+                let command = |name: &str, kind: &str| g7link_core::AgentCommand {
+                    name: name.into(),
+                    note: Some("Does a thing".into()),
+                    hint: None,
+                    kind: kind.into(),
+                };
+                Ok(AgentReply::Commands(vec![
+                    command("/review", "command"),
+                    command("two words", "command"),
+                    command("pdf", "skill"),
+                ]))
+            }
+            AgentRequest::DraftGet { key } => {
+                Ok(AgentReply::Draft(self.agent_drafts.lock().unwrap().get(&key).cloned()))
+            }
+            AgentRequest::DraftSet { key, text, images, rev } => {
+                let mut drafts = self.agent_drafts.lock().unwrap();
+                let stored = drafts.get(&key).cloned();
+                let current = stored.as_ref().map_or(0, |d| d.rev);
+                if rev != current {
+                    return Ok(AgentReply::DraftSaved(g7link_core::AgentDraftSaved {
+                        rev: current,
+                        conflict: stored,
+                    }));
+                }
+                let images = images
+                    .into_iter()
+                    .map(|id| g7link_core::AgentImage { id, ..Default::default() })
+                    .collect();
+                let draft = g7link_core::AgentDraft {
+                    key: key.clone(),
+                    text,
+                    images,
+                    rev: current + 1,
+                    by_name: Some("Pixel".into()),
+                };
+                drafts.insert(key, draft);
+                Ok(AgentReply::DraftSaved(g7link_core::AgentDraftSaved { rev: current + 1, conflict: None }))
+            }
+            AgentRequest::ImageAdd { name, bytes } => {
+                let gate = self.agent_image_gate.lock().unwrap().clone();
+                if let Some(gate) = gate {
+                    gate.pass();
+                }
+                Ok(AgentReply::Image(g7link_core::AgentImage {
+                    id: format!("{:032x}", bytes.len()),
+                    name,
+                    bytes: bytes.len() as u32,
+                    w: 640,
+                    h: 480,
+                }))
+            }
+            AgentRequest::ImageThumb { id, .. } if id == AGENT_IMAGE => Ok(AgentReply::Thumb(jpeg(9_000))),
+            AgentRequest::ImageThumb { id, .. } if id == BIG_IMAGE => Ok(AgentReply::Thumb(jpeg(200 * 1024))),
+            AgentRequest::ImageThumb { .. } => Err(AgentFailure::NotFound),
         }
     }
     fn set_pc_audio(
@@ -9208,6 +9294,7 @@ fn agent_thread(id: &str, state: &str, from_phone: bool) -> g7link_core::AgentTh
         step: None,
         since: None,
         plan: None,
+        ..Default::default()
     }
 }
 
@@ -9233,6 +9320,7 @@ fn agent_catalog() -> g7link_core::AgentCatalog {
             signed_in: true,
             login_hint: "claude auth login".into(),
             auth: Some("subscription".into()),
+            ..Default::default()
         }],
         folders: vec![g7link_core::AgentCatalogFolder { id: AGENT_FOLDER.into(), label: "g7linux".into() }],
         modes: vec!["supervised".into(), "auto_edit".into()],
@@ -9263,6 +9351,7 @@ fn agent_start(prompt: &str, mode: &str) -> g7link_core::AgentStart {
         folder: AGENT_FOLDER.into(),
         prompt: prompt.into(),
         mode: mode.into(),
+        ..Default::default()
     }
 }
 
@@ -9362,6 +9451,10 @@ async fn a_phone_lists_starts_and_follows_a_thread() {
                 folder: AGENT_FOLDER.into(),
                 prompt: "List the files here.".into(),
                 mode: "supervised".into(),
+                model: None,
+                effort: None,
+                images: Vec::new(),
+                custom_model: false,
             }
         )
     );
@@ -9583,6 +9676,7 @@ async fn a_phone_cant_pick_a_mode_a_scope_or_a_path() {
         folder: "/home/me/project".into(),
         prompt: "hi".into(),
         mode: "supervised".into(),
+        ..Default::default()
     };
     match phone.node.debug_agent_request(pc_id, "agent.start", &pathed).await {
         Err(Error::Protocol(reason)) => assert!(reason.contains("BAD_MESSAGE"), "{reason}"),
@@ -9616,7 +9710,7 @@ async fn oversized_agent_messages_are_refused() {
         other => panic!("not refused as a bad message: {other:?}"),
     };
     refused(phone.node.debug_agent_request(pc_id, "agent.start", &agent_start(&long, "supervised")).await);
-    let send = AgentSend { thread: AGENT_THREAD.into(), text: long.clone() };
+    let send = AgentSend { thread: AGENT_THREAD.into(), text: long.clone(), ..Default::default() };
     refused(phone.node.debug_agent_request(pc_id, "agent.send", &send).await);
     assert!(pc.platform.agent_requests.lock().unwrap().is_empty());
 
@@ -9890,7 +9984,9 @@ async fn a_denial_carries_the_users_words_to_a_pc_that_takes_them() {
     pc.node.update_power(PowerLevel::NotApplicable, caps).await;
     for dev in [&mut first, &mut second] {
         wait_for(dev, "a catalog that takes words", |e| match e {
-            NodeEvent::AgentCatalog { device, catalog: Some(_), can_say_why: true } if *device == pc_id => {
+            NodeEvent::AgentCatalog { device, catalog: Some(_), can_say_why: true, .. }
+                if *device == pc_id =>
+            {
                 Some(())
             }
             _ => None,
@@ -10704,4 +10800,791 @@ async fn exporting_a_session_needs_both_switches() {
         phone.node.agent_export(plain_id, None, Some(FOLLOWED_SESSION.into())).await,
         Err(Error::Unsupported)
     ));
+}
+
+// ---- Agents: control (docs/protocol/agents.md §5) ----
+
+/// A queued message the PC already sent.
+const SENT_QUEUED: &str = "ffffffffffffffff";
+const QUEUED_ID: &str = "0123456789abcdef";
+/// An image whose thumbnail the PC has, and one whose thumbnail is too large.
+const AGENT_IMAGE: &str = "aaaabbbbccccddddeeeeffff00001111";
+const BIG_IMAGE: &str = "bbbbccccddddeeeeffff000011112222";
+const QUESTION_TOKEN: &str = "ffff0000ffff0000ffff0000ffff0000";
+
+/// A catalog whose agent reports models, what it can do and its limits.
+fn control_catalog() -> g7link_core::AgentCatalog {
+    let model = |id: &str, short: bool| g7link_core::AgentModel {
+        id: id.into(),
+        name: id.to_uppercase(),
+        note: Some(format!("A model. {}", "More words. ".repeat(20))),
+        is_default: id == "default",
+        efforts: vec!["low".into(), "high".into()],
+        default_effort: Some("high".into()),
+        images: true,
+        short,
+    };
+    let mut catalog = agent_catalog();
+    catalog.agents[0].models =
+        vec![model("default", true), model("opus", true), model("claude-opus-4-5", false)];
+    catalog.agents[0].can =
+        ["plan", "questions", "steer", "images", "commands", "teleport"].map(String::from).to_vec();
+    catalog.agents[0].limits = vec![g7link_core::AgentLimit {
+        window: "five_hour".into(),
+        used_pct: Some(41),
+        resets: Some(1_795_010_000_000),
+        state: "ok".into(),
+    }];
+    catalog
+}
+
+/// A phone that offers §5 (as the G7 Link app does).
+async fn control_phone(name: &'static str) -> TestDevice {
+    device_with(name, DeviceKind::Phone, &[g7link_core::agent::ITEMS2, g7link_core::agent::CONTROL]).await
+}
+
+/// A PC whose agent host offers §5, with [`control_catalog`], paired with `phone`.
+async fn control_pc_with(phone: &mut TestDevice) -> TestDevice {
+    let caps = [g7link_core::agent::HOST, g7link_core::agent::CONTROL];
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &caps).await;
+    pc.node.set_agent_catalog(Some(control_catalog())).await.unwrap();
+    pair_qr(&mut pc, phone).await;
+    pc
+}
+
+/// A thread in plan mode with everything §5 added.
+fn control_thread() -> g7link_core::AgentThread {
+    let mut thread = agent_thread(AGENT_THREAD, "working", false);
+    thread.mode = "plan".into();
+    thread.model = Some("opus".into());
+    thread.effort = Some("high".into());
+    thread.answered_model = Some("claude-sonnet-4-5".into());
+    thread.queued = vec![g7link_core::AgentQueued {
+        id: QUEUED_ID.into(),
+        text: "Then run the tests.".into(),
+        by_name: Some("Pixel".into()),
+        created: 1_795_000_000_000,
+        ..Default::default()
+    }];
+    thread.context = Some(g7link_core::AgentContext { used: 120_000, max: 1_000_000 });
+    thread.mcp = Some(g7link_core::AgentMcp { on: true, servers: 3, connected: 2, need_login: 1 });
+    thread.asking = 1;
+    thread
+}
+
+/// A plan, a question and the plan file's edit, as the PC's host writes them.
+fn control_items() -> Vec<g7link_core::AgentItem> {
+    use g7link_core::{AgentItem, AgentTool, agent};
+    vec![
+        AgentItem {
+            via: Some(agent::via::STEER.into()),
+            images: vec![g7link_core::AgentImage {
+                id: AGENT_IMAGE.into(),
+                name: "/home/me/Pictures/error.png".into(),
+                bytes: 2_000,
+                w: 10,
+                h: 10,
+            }],
+            kind: agent::item::USER.into(),
+            ..agent_text(1, "And the logout.")
+        },
+        AgentItem {
+            kind: agent::item::TOOL.into(),
+            text: None,
+            tool: Some(AgentTool {
+                name: "Write".into(),
+                title: "Write /home/me/.claude/plans/fix-login.md".into(),
+                detail: Some("# Secret plan".into()),
+                status: "ok".into(),
+                class: Some(agent::tool_class::PLAN.into()),
+                path: Some("fix-login.md".into()),
+                ..Default::default()
+            }),
+            ..agent_text(2, "")
+        },
+        AgentItem {
+            kind: agent::item::PLAN.into(),
+            plan_state: Some(agent::plan_state::PROPOSED.into()),
+            ..agent_text(3, "1. Read the code\n2. Fix it")
+        },
+        AgentItem {
+            kind: agent::item::QUESTION.into(),
+            question: Some(g7link_core::AgentItemQuestion {
+                count: 1,
+                secret: false,
+                outcome: Some("answered".into()),
+                by_name: Some("Pixel".into()),
+            }),
+            ..agent_text(4, "Auth method: OAuth")
+        },
+    ]
+}
+
+fn control_question(secret: bool) -> g7link_core::AgentQuestion {
+    g7link_core::AgentQuestion {
+        token: QUESTION_TOKEN.into(),
+        thread: AGENT_THREAD.into(),
+        thread_title: "List the files here.".into(),
+        agent: "codex".into(),
+        item: "q:4".into(),
+        secret,
+        asks: vec![g7link_core::AgentQuestionAsk {
+            id: "0".into(),
+            header: "Auth method".into(),
+            text: "Which sign-in should the app use?".into(),
+            other: true,
+            secret,
+            options: vec![
+                g7link_core::AgentQuestionOption { label: "OAuth".into(), note: None },
+                g7link_core::AgentQuestionOption { label: "Password".into(), note: None },
+            ],
+            ..Default::default()
+        }],
+        created: 1_795_000_000_000,
+        expires: 1_795_007_200_000,
+    }
+}
+
+fn last_request(pc: &TestDevice) -> g7link_core::AgentRequest {
+    pc.platform.agent_requests.lock().unwrap().last().cloned().unwrap().1
+}
+
+fn requests(pc: &TestDevice) -> usize {
+    pc.platform.agent_requests.lock().unwrap().len()
+}
+
+/// `result` is the PC's refusal with `code`.
+fn refused_with<T: std::fmt::Debug>(result: Result<T, Error>, code: &str) {
+    match result {
+        Err(Error::Protocol(reason)) => assert!(reason.contains(code), "{reason}"),
+        Err(Error::Denied) if code == "DENIED" => {}
+        Err(Error::Unsupported) if code == "UNSUPPORTED" => {}
+        Err(Error::NotFound) if code == "NOT_FOUND" => {}
+        other => panic!("not refused with {code}: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_with_control_picks_models_and_plans() {
+    use g7link_core::{AgentConfigure, AgentRequest, agent};
+    let mut phone = control_phone("Pixel").await;
+    let pc = control_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.set_device_toggle(phone_id, "agents", true).unwrap();
+    let (catalog, can_control) = wait_for(&mut phone, "catalog", |e| match e {
+        NodeEvent::AgentCatalog { device, catalog: Some(c), can_control, .. } if *device == pc_id => {
+            Some((c.clone(), *can_control))
+        }
+        _ => None,
+    })
+    .await;
+    assert!(can_control && phone.node.agent_can_control(pc_id));
+    assert_eq!(catalog.modes, ["supervised", "plan"], "a phone may plan, never edit without asking");
+    let claude = &catalog.agents[0];
+    assert_eq!(claude.models.len(), 3);
+    assert!(claude.models.iter().all(|m| m.note.as_ref().unwrap().len() <= agent::MAX_MODEL_NOTE_BYTES));
+    assert_eq!(claude.can, ["plan", "questions", "steer", "images", "commands"], "a later word goes");
+    assert_eq!(claude.limits[0].used_pct, Some(41));
+
+    let start = g7link_core::AgentStart {
+        model: Some("opus".into()),
+        effort: Some("high".into()),
+        ..agent_start("Plan the login fix", "plan")
+    };
+    with_timeout("start", phone.node.agent_start(pc_id, start)).await.unwrap();
+    match last_request(&pc) {
+        AgentRequest::Start { mode, model, effort, custom_model, .. } => {
+            assert_eq!(
+                (mode.as_str(), model.as_deref(), effort.as_deref()),
+                ("plan", Some("opus"), Some("high"))
+            );
+            assert!(!custom_model);
+        }
+        other => panic!("{other:?}"),
+    }
+    let before = requests(&pc);
+    refused_with(phone.node.agent_start(pc_id, agent_start("hi", "auto_edit")).await, "DENIED");
+    let flag = g7link_core::AgentStart { model: Some("--bare".into()), ..agent_start("hi", "supervised") };
+    assert!(matches!(phone.node.agent_start(pc_id, flag.clone()).await, Err(Error::Protocol(_))));
+    refused_with(phone.node.debug_agent_request(pc_id, "agent.start", &flag).await, "BAD_MESSAGE");
+
+    let plan =
+        AgentConfigure { thread: AGENT_THREAD.into(), mode: Some("plan".into()), ..Default::default() };
+    let thread = with_timeout("configure", phone.node.agent_configure(pc_id, plan)).await.unwrap();
+    assert_eq!(thread.mode, "plan");
+    let typed = AgentConfigure {
+        thread: AGENT_THREAD.into(),
+        model: Some("my-own-model".into()),
+        custom_model: true,
+        ..Default::default()
+    };
+    let thread = with_timeout("configure", phone.node.agent_configure(pc_id, typed)).await.unwrap();
+    assert_eq!(thread.model.as_deref(), Some("my-own-model"));
+    let auto =
+        AgentConfigure { thread: AGENT_THREAD.into(), mode: Some("auto_edit".into()), ..Default::default() };
+    refused_with(phone.node.agent_configure(pc_id, auto).await, "DENIED");
+    assert_eq!(requests(&pc), before + 2, "refusals never reach the host");
+
+    // A thread carries what §5 added, to a phone that takes it.
+    pc.node.agent_event(g7link_core::AgentEvent::state(control_thread()), None).await.unwrap();
+    let state = wait_for(&mut phone, "state", |e| match e {
+        NodeEvent::AgentEvent { event, .. } if event.kind == "state" => event.state.clone(),
+        _ => None,
+    })
+    .await;
+    assert_eq!(state.mode, "plan");
+    assert_eq!(state.queued.len(), 1);
+    assert_eq!(state.queued[0].by_name.as_deref(), Some("Pixel"));
+    assert_eq!(state.mcp, Some(g7link_core::AgentMcp { on: true, servers: 3, connected: 2, need_login: 1 }));
+    assert_eq!((state.asking, state.answered_model.as_deref()), (1, Some("claude-sonnet-4-5")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_phone_gets_what_it_got_before() {
+    use g7link_core::agent;
+    // A 0.1.16 phone: it shows turns and thinking, not §5.
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[agent::ITEMS2]).await;
+    let mut pc = control_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.set_device_toggle(phone_id, "agents", true).unwrap();
+    let (catalog, can_control) = wait_for(&mut phone, "catalog", |e| match e {
+        NodeEvent::AgentCatalog { device, catalog: Some(c), can_control, .. } if *device == pc_id => {
+            Some((c.clone(), *can_control))
+        }
+        _ => None,
+    })
+    .await;
+    assert!(!can_control);
+    assert_eq!(catalog.modes, ["supervised"]);
+    let claude = &catalog.agents[0];
+    assert!(claude.models.is_empty() && claude.can.is_empty() && claude.limits.is_empty());
+
+    with_timeout("watch", phone.node.agent_watch(pc_id, Some(AGENT_THREAD.into()))).await.unwrap();
+    pc.node.agent_event(g7link_core::AgentEvent::state(control_thread()), None).await.unwrap();
+    for item in control_items() {
+        pc.node.agent_event(g7link_core::AgentEvent::item(AGENT_THREAD.into(), item), None).await.unwrap();
+    }
+    pc.node.agent_question(control_question(false)).await.unwrap();
+    pc.node.agent_draft(AGENT_THREAD.into(), 2, None).await.unwrap();
+    let state = wait_for(&mut phone, "state", |e| match e {
+        NodeEvent::AgentEvent { event, .. } if event.kind == "state" => event.state.clone(),
+        _ => None,
+    })
+    .await;
+    assert_eq!(state.mode, "supervised", "plan mode reads as supervised");
+    assert!(state.queued.is_empty() && state.model.is_none() && state.mcp.is_none() && state.asking == 0);
+    let mut items = Vec::new();
+    while items.len() < 4 {
+        items.push(
+            wait_for(&mut phone, "item", |e| match e {
+                NodeEvent::AgentEvent { event, .. } if event.kind == "item" => event.item.clone(),
+                _ => None,
+            })
+            .await,
+        );
+    }
+    assert!(items.iter().all(|i| agent::item::ITEMS2.contains(&i.kind.as_str())), "{items:?}");
+    assert_eq!(items.iter().map(|i| i.seq).collect::<Vec<_>>(), [1, 2, 3, 4], "no gap");
+    assert!(items[0].via.is_none() && items[0].images.is_empty());
+    let plan_file = items[1].tool.as_ref().unwrap();
+    assert_eq!(
+        (plan_file.title.as_str(), plan_file.detail.as_ref(), plan_file.path.as_ref()),
+        ("Plan", None, None)
+    );
+    assert_eq!(
+        (items[2].kind.as_str(), items[2].text.as_deref()),
+        ("assistant", Some("1. Read the code\n2. Fix it"))
+    );
+    assert_eq!(items[3].tool.as_ref().unwrap().name, "question");
+    assert_eq!(items[3].tool.as_ref().unwrap().status, "ok", "it was answered");
+    assert!(items[3].text.is_none() && items[3].question.is_none());
+
+    // Its page is the same, without questions.
+    pc.platform.agent_requests.lock().unwrap().clear();
+    let page =
+        with_timeout("read", phone.node.agent_read(pc_id, AGENT_THREAD.into(), None, 50)).await.unwrap();
+    assert!(page.questions.is_empty());
+    assert!(
+        !drain(&mut phone)
+            .iter()
+            .any(|e| matches!(e, NodeEvent::AgentQuestion { .. } | NodeEvent::AgentDraft { .. }))
+    );
+
+    // What it may not ask for is refused as before; nothing reaches the host.
+    let before = requests(&pc);
+    refused_with(
+        phone.node.debug_agent_request(pc_id, "agent.start", &agent_start("hi", "plan")).await,
+        "DENIED",
+    );
+    let configure = g7link_core::AgentConfigure {
+        thread: AGENT_THREAD.into(),
+        mode: Some("plan".into()),
+        ..Default::default()
+    };
+    refused_with(phone.node.debug_agent_request(pc_id, "agent.configure", &configure).await, "UNSUPPORTED");
+    refused_with(phone.node.agent_configure(pc_id, configure).await, "UNSUPPORTED");
+    let steer = g7link_core::AgentSend {
+        thread: AGENT_THREAD.into(),
+        text: "Go on".into(),
+        dispatch: Some("steer".into()),
+        images: Vec::new(),
+    };
+    refused_with(phone.node.debug_agent_request(pc_id, "agent.send", &steer).await, "UNSUPPORTED");
+    assert_eq!(requests(&pc), before);
+    // What it always did still works.
+    with_timeout("send", phone.node.agent_send(pc_id, AGENT_THREAD.into(), "Go on".into())).await.unwrap();
+    assert!(
+        with_timeout("start", phone.node.agent_start(pc_id, agent_start("hi", "supervised"))).await.is_ok()
+    );
+    drain(&mut pc);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_with_control_keeps_to_what_an_older_pc_does() {
+    use g7link_core::agent;
+    let mut phone = control_phone("Pixel").await;
+    let pc = agents_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node.set_device_toggle(phone_id, "agents", true).unwrap();
+    let can_control = wait_for(&mut phone, "catalog", |e| match e {
+        NodeEvent::AgentCatalog { device, catalog: Some(_), can_control, .. } if *device == pc_id => {
+            Some(*can_control)
+        }
+        _ => None,
+    })
+    .await;
+    assert!(!can_control && !phone.node.agent_can_control(pc_id));
+
+    let configure = g7link_core::AgentConfigure {
+        thread: AGENT_THREAD.into(),
+        mode: Some("plan".into()),
+        ..Default::default()
+    };
+    assert!(matches!(phone.node.agent_configure(pc_id, configure.clone()).await, Err(Error::Unsupported)));
+    assert!(matches!(
+        phone.node.agent_start(pc_id, agent_start("hi", "plan")).await,
+        Err(Error::Unsupported)
+    ));
+    let steer = g7link_core::AgentSend {
+        thread: AGENT_THREAD.into(),
+        text: "Go on".into(),
+        dispatch: Some("queue".into()),
+        images: Vec::new(),
+    };
+    assert!(matches!(phone.node.agent_send_with(pc_id, steer).await, Err(Error::Unsupported)));
+    assert!(matches!(
+        phone.node.agent_image_send(pc_id, "a.jpg".into(), jpeg(100)).await,
+        Err(Error::Unsupported)
+    ));
+    assert!(matches!(phone.node.agent_draft_get(pc_id, AGENT_THREAD.into()).await, Err(Error::Unsupported)));
+    assert_eq!(requests(&pc), 0, "nothing was sent");
+    // The PC says so too when asked anyway.
+    refused_with(phone.node.debug_agent_request(pc_id, "agent.configure", &configure).await, "UNSUPPORTED");
+    // What phase 1 had works as it did.
+    with_timeout("send", phone.node.agent_send(pc_id, AGENT_THREAD.into(), "Go on".into())).await.unwrap();
+    let thread =
+        with_timeout("start", phone.node.agent_start(pc_id, agent_start("hi", "supervised"))).await.unwrap();
+    assert_eq!(thread.mode, agent::mode::SUPERVISED);
+
+    // The PC's host learns §5: the phone gets the catalog again, whole.
+    pc.node.set_agent_catalog(Some(control_catalog())).await.unwrap();
+    let models = wait_for(&mut phone, "the catalog without models", |e| match e {
+        NodeEvent::AgentCatalog { device, catalog: Some(c), .. } if *device == pc_id => {
+            Some(c.agents[0].models.len())
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(models, 0, "not before the PC offers it");
+    let caps = [agent::HOST, agent::CONTROL, "media.control"].map(String::from).to_vec();
+    pc.node.update_power(PowerLevel::NotApplicable, caps).await;
+    let (catalog, can_control) = wait_for(&mut phone, "the whole catalog", |e| match e {
+        NodeEvent::AgentCatalog { device, catalog: Some(c), can_control: true, .. }
+            if *device == pc_id && !c.agents[0].models.is_empty() =>
+        {
+            Some((c.clone(), true))
+        }
+        _ => None,
+    })
+    .await;
+    assert!(can_control && phone.node.agent_can_control(pc_id));
+    assert_eq!(catalog.modes, ["supervised", "plan"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_steers_queues_and_edits_the_queue() {
+    use g7link_core::{AgentQueueChange, AgentRequest, AgentSend, QueueAction};
+    let mut phone = control_phone("Pixel").await;
+    let pc = control_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+
+    let image = with_timeout("image", phone.node.agent_image_send(pc_id, "PXL_1.jpg".into(), jpeg(5_000)))
+        .await
+        .unwrap();
+    let steer = AgentSend {
+        thread: AGENT_THREAD.into(),
+        text: String::new(),
+        dispatch: Some("steer".into()),
+        images: vec![image.id.clone()],
+    };
+    with_timeout("steer", phone.node.agent_send_with(pc_id, steer)).await.unwrap();
+    assert_eq!(
+        last_request(&pc),
+        AgentRequest::Send {
+            thread: AGENT_THREAD.into(),
+            text: String::new(),
+            dispatch: Some("steer".into()),
+            images: vec![image.id.clone()]
+        }
+    );
+    let change = |op: &str, text: Option<&str>| AgentQueueChange {
+        thread: AGENT_THREAD.into(),
+        id: QUEUED_ID.into(),
+        op: op.into(),
+        text: text.map(Into::into),
+    };
+    with_timeout("edit", phone.node.agent_queue(pc_id, change("edit", Some("Run all the tests.\u{1b}"))))
+        .await
+        .unwrap();
+    match last_request(&pc) {
+        AgentRequest::Queue { id, action: QueueAction::Edit(text), .. } => {
+            assert_eq!((id.as_str(), text.as_str()), (QUEUED_ID, "Run all the tests."));
+        }
+        other => panic!("{other:?}"),
+    }
+    with_timeout("remove", phone.node.agent_queue(pc_id, change("remove", None))).await.unwrap();
+    assert!(matches!(last_request(&pc), AgentRequest::Queue { action: QueueAction::Remove, .. }));
+    with_timeout("send now", phone.node.agent_queue(pc_id, change("send_now", None))).await.unwrap();
+    assert!(matches!(last_request(&pc), AgentRequest::Queue { action: QueueAction::SendNow, .. }));
+    let gone = AgentQueueChange { id: SENT_QUEUED.into(), ..change("remove", None) };
+    assert!(matches!(phone.node.agent_queue(pc_id, gone).await, Err(Error::NotFound)));
+
+    let before = requests(&pc);
+    let five = AgentSend {
+        thread: AGENT_THREAD.into(),
+        text: "look".into(),
+        dispatch: None,
+        images: (0..5).map(|i| format!("{i:032x}")).collect(),
+    };
+    assert!(matches!(phone.node.agent_send_with(pc_id, five.clone()).await, Err(Error::Protocol(_))));
+    refused_with(phone.node.debug_agent_request(pc_id, "agent.send", &five).await, "BAD_MESSAGE");
+    let long = change("edit", Some(&"q".repeat(g7link_core::agent::MAX_QUEUED_TEXT_BYTES + 1)));
+    refused_with(phone.node.debug_agent_request(pc_id, "agent.queue", &long).await, "BAD_MESSAGE");
+    refused_with(
+        phone.node.debug_agent_request(pc_id, "agent.queue", &change("reorder", None)).await,
+        "BAD_MESSAGE",
+    );
+    assert_eq!(requests(&pc), before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_reaches_phones_with_control_and_one_answer_closes_it() {
+    use g7link_core::{AgentQuestionAnswer, AgentQuestionReply, AgentRequest};
+    let mut first = control_phone("Pixel").await;
+    let mut second = control_phone("Galaxy").await;
+    let mut older = device_with("Moto", DeviceKind::Phone, &[g7link_core::agent::ITEMS2]).await;
+    let mut pc = control_pc_with(&mut first).await;
+    pair_qr(&mut pc, &mut second).await;
+    pair_qr(&mut pc, &mut older).await;
+    let pc_id = pc.node.device_id();
+    for phone in [&mut first, &mut second, &mut older] {
+        allow_agents(&pc, phone).await;
+    }
+
+    pc.node.agent_question(control_question(false)).await.unwrap();
+    for dev in [&mut first, &mut second] {
+        let question = wait_for(dev, "question", |e| match e {
+            NodeEvent::AgentQuestion { device, question } if *device == pc_id => Some(question.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(question.asks.len(), 1);
+        assert_eq!(question.asks[0].options[0].label, "OAuth");
+    }
+    let answer = AgentQuestionReply {
+        token: QUESTION_TOKEN.into(),
+        answers: vec![AgentQuestionAnswer { id: "0".into(), labels: vec!["OAuth".into()], other: None }],
+        dismiss: false,
+    };
+    with_timeout("answer", first.node.agent_reply(pc_id, answer.clone())).await.unwrap();
+    assert!(matches!(
+        last_request(&pc),
+        AgentRequest::QuestionAnswer { token, answers } if token == QUESTION_TOKEN && answers == answer.answers
+    ));
+    pc.node
+        .agent_questioned(g7link_core::AgentQuestioned {
+            token: QUESTION_TOKEN.into(),
+            thread: AGENT_THREAD.into(),
+            outcome: "answered".into(),
+            by_name: Some("Pixel".into()),
+        })
+        .await
+        .unwrap();
+    for dev in [&mut first, &mut second] {
+        let (outcome, by) = wait_for(dev, "questioned", |e| match e {
+            NodeEvent::AgentQuestioned { token, outcome, by_name, .. } if token == QUESTION_TOKEN => {
+                Some((outcome.clone(), by_name.clone()))
+            }
+            _ => None,
+        })
+        .await;
+        assert_eq!((outcome.as_str(), by.as_deref()), ("answered", Some("Pixel")));
+    }
+    let dismiss = AgentQuestionReply { token: QUESTION_TOKEN.into(), answers: Vec::new(), dismiss: true };
+    assert!(
+        matches!(second.node.agent_reply(pc_id, dismiss).await, Err(Error::NotFound)),
+        "first answer wins"
+    );
+    // An answer that isn't one is refused here.
+    let empty = AgentQuestionReply { token: QUESTION_TOKEN.into(), answers: Vec::new(), dismiss: false };
+    let before = requests(&pc);
+    refused_with(second.node.debug_agent_request(pc_id, "agent.reply", &empty).await, "BAD_MESSAGE");
+    assert_eq!(requests(&pc), before);
+    // The older phone heard nothing of it.
+    assert!(with_timeout("threads", older.node.agent_threads(pc_id)).await.is_ok());
+    assert!(
+        !drain(&mut older)
+            .iter()
+            .any(|e| matches!(e, NodeEvent::AgentQuestion { .. } | NodeEvent::AgentQuestioned { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_question_is_answered_on_the_pc_only() {
+    use g7link_core::{AgentQuestionAnswer, AgentQuestionReply};
+    let mut phone = control_phone("Pixel").await;
+    let pc = control_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+
+    pc.node.agent_question(control_question(true)).await.unwrap();
+    let question = wait_for(&mut phone, "question", |e| match e {
+        NodeEvent::AgentQuestion { question, .. } => Some(question.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(question.secret && question.asks.is_empty(), "no asks reach a phone");
+    let before = requests(&pc);
+    let answer = AgentQuestionReply {
+        token: QUESTION_TOKEN.into(),
+        answers: vec![AgentQuestionAnswer {
+            id: "0".into(),
+            labels: Vec::new(),
+            other: Some("hunter2".into()),
+        }],
+        dismiss: false,
+    };
+    refused_with(phone.node.agent_reply(pc_id, answer).await, "DENIED");
+    let dismiss = AgentQuestionReply { token: QUESTION_TOKEN.into(), answers: Vec::new(), dismiss: true };
+    refused_with(phone.node.agent_reply(pc_id, dismiss).await, "DENIED");
+    assert_eq!(requests(&pc), before, "the host never hears a phone's answer to it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phone_implements_a_plan_supervised() {
+    use g7link_core::AgentRequest;
+    let mut phone = control_phone("Pixel").await;
+    let pc = control_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+
+    with_timeout("watch", phone.node.agent_watch(pc_id, Some(AGENT_THREAD.into()))).await.unwrap();
+    for item in control_items() {
+        pc.node.agent_event(g7link_core::AgentEvent::item(AGENT_THREAD.into(), item), None).await.unwrap();
+    }
+    let mut items = Vec::new();
+    while items.len() < 4 {
+        items.push(
+            wait_for(&mut phone, "item", |e| match e {
+                NodeEvent::AgentEvent { event, .. } if event.kind == "item" => event.item.clone(),
+                _ => None,
+            })
+            .await,
+        );
+    }
+    assert_eq!(items[0].via.as_deref(), Some("steer"));
+    assert_eq!(items[0].images[0].name, "error.png", "an image's name, never its path");
+    let plan_file = items[1].tool.as_ref().unwrap();
+    assert_eq!(plan_file.class.as_deref(), Some("plan"), "a phone with control hides it");
+    assert_eq!((plan_file.detail.as_ref(), plan_file.path.as_ref()), (None, None));
+    assert!(!plan_file.title.contains('/'));
+    assert_eq!((items[2].kind.as_str(), items[2].plan_state.as_deref()), ("plan", Some("proposed")));
+    assert_eq!(items[3].kind, "question");
+    let question = items[3].question.as_ref().unwrap();
+    assert_eq!((question.count, question.outcome.as_deref()), (1, Some("answered")));
+
+    with_timeout("implement", phone.node.agent_implement(pc_id, AGENT_THREAD.into(), "msg_01:3".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        last_request(&pc),
+        AgentRequest::Implement { thread: AGENT_THREAD.into(), item: "msg_01:3".into() },
+        "always supervised: a phone can't say otherwise"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_and_commands_stay_inside_the_folder() {
+    use g7link_core::{AgentFilesRequest, AgentRequest};
+    let mut phone = control_phone("Pixel").await;
+    let pc = control_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+
+    let request = AgentFilesRequest {
+        thread: Some(AGENT_THREAD.into()),
+        folder: None,
+        query: "../../etc".into(),
+        limit: Some(8),
+    };
+    let files = with_timeout("files", phone.node.agent_files(pc_id, request)).await.unwrap();
+    let paths: Vec<&str> = files.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["src/main.rs", "src/"], "an absolute path or one that climbs out never arrives");
+    assert!(matches!(
+        last_request(&pc),
+        AgentRequest::Files { thread: Some(_), folder: None, limit: 8, query } if query == "../../etc"
+    ));
+    let both = AgentFilesRequest {
+        thread: Some(AGENT_THREAD.into()),
+        folder: Some(AGENT_FOLDER.into()),
+        query: String::new(),
+        limit: None,
+    };
+    refused_with(phone.node.debug_agent_request(pc_id, "agent.files", &both).await, "BAD_MESSAGE");
+
+    let commands =
+        with_timeout("commands", phone.node.agent_commands(pc_id, "claude".into(), AGENT_FOLDER.into()))
+            .await
+            .unwrap();
+    let names: Vec<(&str, &str)> = commands.iter().map(|c| (c.name.as_str(), c.kind.as_str())).collect();
+    assert_eq!(names, [("review", "command"), ("pdf", "skill")]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_follows_the_user_to_another_phone() {
+    use g7link_core::AgentDraftSet;
+    let mut first = control_phone("Pixel").await;
+    let mut second = control_phone("Galaxy").await;
+    let mut pc = control_pc_with(&mut first).await;
+    pair_qr(&mut pc, &mut second).await;
+    let (pc_id, first_id) = (pc.node.device_id(), first.node.device_id());
+    allow_agents(&pc, &mut first).await;
+    allow_agents(&pc, &mut second).await;
+
+    let key = format!("new:{AGENT_FOLDER}");
+    let set = AgentDraftSet { key: key.clone(), text: "Half a thought".into(), images: Vec::new(), rev: 0 };
+    let saved = with_timeout("draft", first.node.agent_draft_set(pc_id, set.clone())).await.unwrap();
+    assert_eq!((saved.rev, saved.conflict), (1, None));
+    // The PC's app tells the other phones.
+    pc.node.agent_draft(key.clone(), 1, Some(first_id)).await.unwrap();
+    let rev = wait_for(&mut second, "draft", |e| match e {
+        NodeEvent::AgentDraft { key: k, rev, .. } if *k == key => Some(*rev),
+        _ => None,
+    })
+    .await;
+    assert_eq!(rev, 1);
+    let draft = with_timeout("get", second.node.agent_draft_get(pc_id, key.clone())).await.unwrap().unwrap();
+    assert_eq!(
+        (draft.text.as_str(), draft.rev, draft.by_name.as_deref()),
+        ("Half a thought", 1, Some("Pixel"))
+    );
+    // A change from a stale copy doesn't win: the phone gets the draft as it is.
+    let stale = AgentDraftSet { text: "Something else".into(), ..set };
+    let saved = with_timeout("stale", second.node.agent_draft_set(pc_id, stale)).await.unwrap();
+    assert_eq!(saved.conflict.map(|d| d.text), Some("Half a thought".into()));
+    assert!(
+        !drain(&mut first).iter().any(|e| matches!(e, NodeEvent::AgentDraft { .. })),
+        "not to the phone that wrote it"
+    );
+    let bad_key = AgentDraftSet { key: "new:../x".into(), text: String::new(), images: Vec::new(), rev: 0 };
+    refused_with(first.node.debug_agent_request(pc_id, "agent.draft.set", &bad_key).await, "BAD_MESSAGE");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_image_goes_up_once_and_never_larger_than_announced() {
+    use g7link_core::{AgentRequest, agents::AgentImageMeta};
+    let mut phone = control_phone("Pixel").await;
+    let pc = control_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+
+    let bytes = jpeg(300_000);
+    let image = with_timeout(
+        "image",
+        phone.node.agent_image_send(pc_id, "DCIM/Camera/PXL_1.jpg".into(), bytes.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!((image.bytes, image.name.as_str()), (300_000, "PXL_1.jpg"));
+    match last_request(&pc) {
+        AgentRequest::ImageAdd { name, bytes: got } => {
+            assert_eq!(name, "PXL_1.jpg", "a name, never a path");
+            assert!(got == bytes, "the bytes as sent");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // More bytes than it said: refused, and the host never sees them.
+    let before = requests(&pc);
+    let meta = AgentImageMeta { name: "a.jpg".into(), bytes: 1_000 };
+    refused_with(phone.node.debug_agent_image_send(pc_id, meta, jpeg(200_000)).await, "BAD_MESSAGE");
+    let over = AgentImageMeta { name: "a.jpg".into(), bytes: g7link_core::agent::MAX_IMAGE_BYTES as u64 + 1 };
+    refused_with(phone.node.debug_agent_image_send(pc_id, over, jpeg(10)).await, "BAD_MESSAGE");
+    assert!(matches!(
+        phone
+            .node
+            .agent_image_send(pc_id, "big.jpg".into(), jpeg(g7link_core::agent::MAX_IMAGE_BYTES + 1))
+            .await,
+        Err(Error::Protocol(_))
+    ));
+    assert_eq!(requests(&pc), before);
+
+    // One at a time.
+    let gate = Arc::new(Gate::default());
+    *pc.platform.agent_image_gate.lock().unwrap() = Some(gate.clone());
+    let node = phone.node.clone();
+    let first =
+        tokio::spawn(async move { node.agent_image_send(pc_id, "one.jpg".into(), jpeg(1_000)).await });
+    with_timeout("held", async {
+        while gate.held() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    refused_with(phone.node.agent_image_send(pc_id, "two.jpg".into(), jpeg(1_000)).await, "BUSY");
+    gate.open();
+    assert!(with_timeout("first", first).await.unwrap().is_ok());
+    assert!(
+        with_timeout("again", phone.node.agent_image_send(pc_id, "two.jpg".into(), jpeg(1_000)))
+            .await
+            .is_ok()
+    );
+
+    // Off for this phone: nothing goes up.
+    pc.node.set_device_toggle(phone.node.device_id(), "agents", false).unwrap();
+    refused_with(phone.node.agent_image_send(pc_id, "three.jpg".into(), jpeg(1_000)).await, "DENIED");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thumbnail_is_a_small_jpeg() {
+    let mut phone = control_phone("Pixel").await;
+    let pc = control_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_agents(&pc, &mut phone).await;
+
+    let thumb = with_timeout("thumb", phone.node.agent_image_thumb(pc_id, AGENT_IMAGE.into(), Some(256)))
+        .await
+        .unwrap();
+    assert_eq!(thumb, jpeg(9_000));
+    assert!(matches!(
+        pc.platform.agent_requests.lock().unwrap().last().map(|r| r.1.clone()),
+        Some(g7link_core::AgentRequest::ImageThumb { max: 256, .. })
+    ));
+    refused_with(phone.node.agent_image_thumb(pc_id, BIG_IMAGE.into(), None).await, "INTERNAL");
+    refused_with(
+        phone.node.agent_image_thumb(pc_id, "cccc0000cccc0000cccc0000cccc0000".into(), None).await,
+        "NOT_FOUND",
+    );
+    assert!(matches!(phone.node.agent_image_thumb(pc_id, "x".into(), None).await, Err(Error::Protocol(_))));
 }

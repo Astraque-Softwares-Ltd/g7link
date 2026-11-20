@@ -397,6 +397,9 @@ pub enum NodeEvent {
         catalog: Option<crate::AgentCatalog>,
         /// The PC takes a denial with the user's words (`agent.say_why`).
         can_say_why: bool,
+        /// The PC and this phone both offer `agent.control` (§5). Sent again
+        /// when only this changed.
+        can_control: bool,
     },
     /// Phone: a PC's agent thread changed (`agent.event`).
     AgentEvent {
@@ -439,5 +442,28 @@ pub enum NodeEvent {
         device: DeviceId,
         session: String,
         item: crate::AgentItem,
+    },
+    /// Phone: an agent on a PC asks the user (`agent.question`). A secret
+    /// question comes without its asks: it's answered on the PC.
+    AgentQuestion {
+        device: DeviceId,
+        question: crate::AgentQuestion,
+    },
+    /// Phone: a question on a PC ended (`agent.questioned`).
+    AgentQuestioned {
+        device: DeviceId,
+        token: String,
+        thread: String,
+        /// `answered`, `dismissed`, `expired` or `cancelled`.
+        outcome: String,
+        /// The device that answered or dismissed it.
+        by_name: Option<String>,
+    },
+    /// Phone: a draft on a PC changed on another device (`agent.draft`); read
+    /// it with `agent_draft_get` when it matters.
+    AgentDraft {
+        device: DeviceId,
+        key: String,
+        rev: u64,
     },
 }

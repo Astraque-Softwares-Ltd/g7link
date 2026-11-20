@@ -159,6 +159,21 @@ pub mod types {
     pub const AGENT_SESSION_CONTINUE: &str = "agent.session.continue";
     pub const AGENT_EXPORT: &str = "agent.export";
     pub const AGENT_EXPORT_META: &str = "agent.export.meta";
+    pub const AGENT_CONFIGURE: &str = "agent.configure";
+    pub const AGENT_QUEUE: &str = "agent.queue";
+    pub const AGENT_QUESTION: &str = "agent.question";
+    pub const AGENT_QUESTIONED: &str = "agent.questioned";
+    pub const AGENT_REPLY: &str = "agent.reply";
+    pub const AGENT_IMPLEMENT: &str = "agent.implement";
+    pub const AGENT_FILES: &str = "agent.files";
+    pub const AGENT_COMMANDS: &str = "agent.commands";
+    pub const AGENT_DRAFT_GET: &str = "agent.draft.get";
+    pub const AGENT_DRAFT_SET: &str = "agent.draft.set";
+    pub const AGENT_DRAFT: &str = "agent.draft";
+    pub const AGENT_IMAGE_META: &str = "agent.image.meta";
+    pub const AGENT_IMAGE: &str = "agent.image";
+    pub const AGENT_IMAGE_THUMB: &str = "agent.image.thumb";
+    pub const AGENT_IMAGE_THUMB_META: &str = "agent.image.thumb.meta";
 }
 
 /// What kind of device this is.
@@ -5303,6 +5318,11 @@ pub mod agent {
     pub const ITEMS2: &str = "agent.items2";
     /// Desktop: `agent.answer` may carry `message` ("deny and say why").
     pub const SAY_WHY: &str = "agent.say_why";
+    /// Both: the control messages of §5 (models, plan mode, steering and
+    /// the queue, questions, images, files, commands, drafts) and item kinds
+    /// `plan` and `question`. A PC sends them only to a phone that offers it,
+    /// and answers them only while both offer it.
+    pub const CONTROL: &str = "agent.control";
     /// What the user said when denying (`agent.answer`'s and `agent.asked`'s `message`).
     pub const MAX_DENY_MESSAGE_BYTES: usize = 2000;
     /// A tool step's `path`.
@@ -5364,6 +5384,172 @@ pub mod agent {
     pub const MAX_ITEMS_BYTES: usize = 196_608;
     /// Asks in one `agent.items`.
     pub const MAX_ASKS: usize = 16;
+    /// Questions in one `agent.items` (a thread has at most 2 waiting).
+    pub const MAX_PAGE_QUESTIONS: usize = 4;
+
+    // ---- §5, `agent.control` ----
+
+    /// Models an agent lists in the catalog.
+    pub const MAX_MODELS: usize = 40;
+    /// A model's `id`, as the agent's CLI takes it.
+    pub const MAX_MODEL_ID_BYTES: usize = 64;
+    /// A model's `name`.
+    pub const MAX_MODEL_NAME_BYTES: usize = 64;
+    /// A model's `note` (its description).
+    pub const MAX_MODEL_NOTE_BYTES: usize = 120;
+    /// Effort levels a model lists.
+    pub const MAX_EFFORTS: usize = 8;
+    /// An effort level (`low`, `xhigh`, …): `[a-z0-9_]`.
+    pub const MAX_EFFORT_BYTES: usize = 16;
+    /// Words in an agent's `can`.
+    pub const MAX_CAN: usize = 16;
+    /// Usage windows an agent reports.
+    pub const MAX_LIMITS: usize = 4;
+    /// A usage window's name (`five_hour`, `300`).
+    pub const MAX_LIMIT_WINDOW_BYTES: usize = 32;
+    /// Messages waiting in a thread's queue.
+    pub const MAX_QUEUED: usize = 5;
+    /// A queued message's `text`, and an `agent.queue` edit.
+    pub const MAX_QUEUED_TEXT_BYTES: usize = 16384;
+    /// Queued text one `agent.threads` carries whole; past it, the rest of
+    /// the list's queued messages are cut to [`MAX_QUEUED_PREVIEW_BYTES`].
+    pub const MAX_THREADS_QUEUED_BYTES: usize = 262_144;
+    /// A queued message cut to fit an `agent.threads` (`truncated`).
+    pub const MAX_QUEUED_PREVIEW_BYTES: usize = 280;
+    /// A queued message's id: 16 lowercase hex digits.
+    pub const QUEUED_ID_BYTES: usize = 16;
+    /// Images one message carries.
+    pub const MAX_IMAGES: usize = 4;
+    /// An image's id: 32 lowercase hex digits.
+    pub const IMAGE_ID_BYTES: usize = 32;
+    /// An image's `name`: a file name, never a path.
+    pub const MAX_IMAGE_NAME_BYTES: usize = 128;
+    /// The bytes of one image a phone sends (`agent.image.meta`'s `bytes`).
+    pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+    /// A thumbnail (`agent.image.thumb`): a JPEG.
+    pub const MAX_THUMB_BYTES: usize = 150 * 1024;
+    /// A thumbnail's longest side when the phone doesn't say, and the range it may ask for.
+    pub const THUMB_DEFAULT_PX: u32 = 512;
+    pub const MIN_THUMB_PX: u32 = 64;
+    pub const MAX_THUMB_PX: u32 = 1024;
+    /// Asks in one question.
+    pub const MAX_QUESTION_ASKS: usize = 4;
+    /// An ask's `id`, and an answer's.
+    pub const MAX_ASK_ID_BYTES: usize = 64;
+    /// An ask's `header`.
+    pub const MAX_ASK_HEADER_BYTES: usize = 40;
+    /// An ask's `text`.
+    pub const MAX_ASK_TEXT_BYTES: usize = 500;
+    /// Options of one ask, and labels of one answer.
+    pub const MAX_OPTIONS: usize = 6;
+    /// An option's `label`, and each of an answer's `labels`.
+    pub const MAX_OPTION_LABEL_BYTES: usize = 80;
+    /// An option's `note`.
+    pub const MAX_OPTION_NOTE_BYTES: usize = 200;
+    /// An answer's `other`: the user's own words.
+    pub const MAX_OTHER_BYTES: usize = 500;
+    /// Slash commands in `agent.commands`.
+    pub const MAX_COMMANDS: usize = 300;
+    /// A slash command's `name`, without the `/`.
+    pub const MAX_COMMAND_NAME_BYTES: usize = 64;
+    /// A slash command's `note`.
+    pub const MAX_COMMAND_NOTE_BYTES: usize = 200;
+    /// A slash command's `hint` (its arguments).
+    pub const MAX_COMMAND_HINT_BYTES: usize = 80;
+    /// File hits in `agent.files`, and the default a request gets.
+    pub const MAX_FILE_HITS: usize = 50;
+    pub const DEFAULT_FILE_HITS: u32 = 20;
+    /// An `agent.files` query.
+    pub const MAX_FILE_QUERY_BYTES: usize = 128;
+    /// A file hit's `path`, relative to the folder.
+    pub const MAX_FILE_PATH_BYTES: usize = 512;
+    /// A draft's `key`: a thread id, or `new:` and a folder id.
+    pub const MAX_DRAFT_KEY_BYTES: usize = 64;
+    /// A draft's `text`.
+    pub const MAX_DRAFT_TEXT_BYTES: usize = 16384;
+    /// The start of a draft key for a new thread in a folder.
+    pub const DRAFT_NEW_PREFIX: &str = "new:";
+    /// The tool step a `question` item becomes for a phone without
+    /// [`CONTROL`]: its name and title.
+    pub const QUESTION_TOOL_NAME: &str = "question";
+    pub const QUESTION_TOOL_TITLE: &str = "Question";
+    /// The tool step the plan file's edit becomes for any phone: its name
+    /// and title (its path and content stay on the PC).
+    pub const PLAN_TOOL_NAME: &str = "plan";
+    pub const PLAN_TOOL_TITLE: &str = "Plan";
+
+    /// What an agent can do (`can`). Receivers read a word they don't know as absent.
+    pub mod can {
+        pub const PLAN: &str = "plan";
+        pub const QUESTIONS: &str = "questions";
+        pub const STEER: &str = "steer";
+        pub const IMAGES: &str = "images";
+        pub const MCP_SWITCH: &str = "mcp_switch";
+        pub const COMMANDS: &str = "commands";
+        pub const ALL: &[&str] = &[PLAN, QUESTIONS, STEER, IMAGES, MCP_SWITCH, COMMANDS];
+    }
+
+    /// A usage window's `state`. Receivers read a word they don't know as [`OK`](limit_state::OK).
+    pub mod limit_state {
+        pub const OK: &str = "ok";
+        pub const WARN: &str = "warn";
+        pub const REACHED: &str = "reached";
+        pub const ALL: &[&str] = &[OK, WARN, REACHED];
+    }
+
+    /// How a user message reached a running thread (`via`). Receivers read a
+    /// word they don't know as absent: an ordinary message.
+    pub mod via {
+        /// Sent while it worked, and read at the agent's next step.
+        pub const STEER: &str = "steer";
+        /// Waited in the queue for the turn before it to end.
+        pub const QUEUE: &str = "queue";
+        pub const ALL: &[&str] = &[STEER, QUEUE];
+    }
+
+    /// A `plan` item's state. Receivers read a word they don't know as absent.
+    pub mod plan_state {
+        pub const PROPOSED: &str = "proposed";
+        pub const IMPLEMENTED: &str = "implemented";
+        pub const REPLACED: &str = "replaced";
+        pub const ALL: &[&str] = &[PROPOSED, IMPLEMENTED, REPLACED];
+    }
+
+    /// `agent.send`'s `dispatch`: what a message sent while a turn runs does.
+    pub mod dispatch {
+        /// The PC's choice: it waits its turn.
+        pub const AUTO: &str = "auto";
+        /// Read by the agent at its next step (queued when it can't be steered).
+        pub const STEER: &str = "steer";
+        /// Waits for the running turn to end.
+        pub const QUEUE: &str = "queue";
+        pub const ALL: &[&str] = &[AUTO, STEER, QUEUE];
+    }
+
+    /// `agent.queue`'s `op`.
+    pub mod queue_op {
+        pub const EDIT: &str = "edit";
+        pub const REMOVE: &str = "remove";
+        pub const SEND_NOW: &str = "send_now";
+        pub const ALL: &[&str] = &[EDIT, REMOVE, SEND_NOW];
+    }
+
+    /// How a question ended (`agent.questioned`).
+    pub mod questioned {
+        pub const ANSWERED: &str = "answered";
+        pub const DISMISSED: &str = "dismissed";
+        pub const EXPIRED: &str = "expired";
+        pub const CANCELLED: &str = "cancelled";
+        pub const ALL: &[&str] = &[ANSWERED, DISMISSED, EXPIRED, CANCELLED];
+    }
+
+    /// A slash command's `kind`. Receivers read a word they don't know as
+    /// [`COMMAND`](command_kind::COMMAND).
+    pub mod command_kind {
+        pub const COMMAND: &str = "command";
+        pub const SKILL: &str = "skill";
+        pub const ALL: &[&str] = &[COMMAND, SKILL];
+    }
 
     /// A thread's `state`.
     pub mod state {
@@ -5379,9 +5565,15 @@ pub mod agent {
     pub mod mode {
         /// Asks before every edit and every command that isn't read-only.
         pub const SUPERVISED: &str = "supervised";
-        /// Edits without asking (never offered to a phone in v1).
+        /// Edits without asking (never offered to a phone).
         pub const AUTO_EDIT: &str = "auto_edit";
-        pub const ALL: &[&str] = &[SUPERVISED, AUTO_EDIT];
+        /// Changes nothing; writes a plan for the user to implement (§5).
+        pub const PLAN: &str = "plan";
+        pub const ALL: &[&str] = &[SUPERVISED, AUTO_EDIT, PLAN];
+        /// The modes a phone without [`CONTROL`](super::CONTROL) knows.
+        pub const LEGACY: &[&str] = &[SUPERVISED, AUTO_EDIT];
+        /// The modes a phone may start, configure or implement with.
+        pub const PHONE: &[&str] = &[SUPERVISED, PLAN];
     }
 
     /// An item's `kind`.
@@ -5393,9 +5585,17 @@ pub mod agent {
         /// The agent thinking; sent only to phones that offer
         /// [`ITEMS2`](super::ITEMS2).
         pub const REASONING: &str = "reasoning";
-        pub const ALL: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE, REASONING];
+        /// A plan the agent wrote in plan mode; sent only to phones that
+        /// offer [`CONTROL`](super::CONTROL).
+        pub const PLAN: &str = "plan";
+        /// Questions the agent asked the user; sent only to phones that
+        /// offer [`CONTROL`](super::CONTROL).
+        pub const QUESTION: &str = "question";
+        pub const ALL: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE, REASONING, PLAN, QUESTION];
         /// The kinds a phone without [`ITEMS2`](super::ITEMS2) takes.
         pub const LEGACY: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE];
+        /// The kinds a phone without [`CONTROL`](super::CONTROL) takes.
+        pub const ITEMS2: &[&str] = &[USER, ASSISTANT, TOOL, NOTICE, REASONING];
     }
 
     /// An assistant item's `phase`. Receivers read a word they don't know as absent.
@@ -5418,7 +5618,10 @@ pub mod agent {
         pub const AGENT: &str = "agent";
         pub const TASKS: &str = "tasks";
         pub const OTHER: &str = "other";
-        pub const ALL: &[&str] = &[COMMAND, EDIT, READ, SEARCH, WEB, MCP, AGENT, TASKS, OTHER];
+        /// The edit that wrote a plan-mode plan to its file outside the
+        /// folder: a phone gets it as a bare step, never its path or content.
+        pub const PLAN: &str = "plan";
+        pub const ALL: &[&str] = &[COMMAND, EDIT, READ, SEARCH, WEB, MCP, AGENT, TASKS, OTHER, PLAN];
     }
 
     /// A tool step's `status`.
@@ -5541,6 +5744,41 @@ fn is_agent_item_id(id: &str) -> bool {
     (1..=agent::MAX_ITEM_ID_BYTES).contains(&id.len()) && !id.chars().any(char::is_control)
 }
 
+fn is_lower_hex(text: &str, len: usize) -> bool {
+    text.len() == len && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Whether `id` is an image's id: 32 lowercase hex digits.
+pub fn is_agent_image_id(id: &str) -> bool {
+    is_lower_hex(id, agent::IMAGE_ID_BYTES)
+}
+
+/// Whether `id` is a queued message's id: 16 lowercase hex digits.
+pub fn is_agent_queued_id(id: &str) -> bool {
+    is_lower_hex(id, agent::QUEUED_ID_BYTES)
+}
+
+/// Whether `id` can be a model id passed to an agent's CLI: 1 to 64 bytes,
+/// no control characters or white space, not starting with `-` (contract
+/// §Q7: it's one argument, never a flag).
+pub fn is_model_id(id: &str) -> bool {
+    (1..=agent::MAX_MODEL_ID_BYTES).contains(&id.len())
+        && !id.starts_with('-')
+        && !id.chars().any(|c| c.is_control() || c.is_whitespace() || is_bidi_control(c))
+}
+
+/// Whether `effort` is an effort level: 1 to 16 bytes of `[a-z0-9_]`.
+pub fn is_effort(effort: &str) -> bool {
+    effort.len() <= agent::MAX_EFFORT_BYTES && is_agent_word(effort)
+}
+
+/// Image ids a message carries: at most [`agent::MAX_IMAGES`], each an id, none twice.
+fn is_valid_image_ids(ids: &[String]) -> bool {
+    ids.len() <= agent::MAX_IMAGES
+        && ids.iter().all(|id| is_agent_image_id(id))
+        && ids.iter().enumerate().all(|(i, id)| !ids[..i].contains(id))
+}
+
 fn fits_opt(text: &Option<String>, max: usize) -> bool {
     text.as_ref().is_none_or(|t| t.len() <= max)
 }
@@ -5627,7 +5865,7 @@ fn clean_tool_path(path: &mut Option<String>) -> bool {
 }
 
 /// One agent in an [`AgentCatalog`].
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentCatalogAgent {
     pub id: String,
     pub name: String,
@@ -5639,6 +5877,17 @@ pub struct AgentCatalogAgent {
     /// else about the account ever crosses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
+    /// The models its CLI reports on the PC, at most [`agent::MAX_MODELS`];
+    /// empty until it has said (offer "Default" and a typed model then).
+    /// [`agent::CONTROL`] only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<AgentModel>,
+    /// What it can do: words of [`agent::can`]. [`agent::CONTROL`] only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub can: Vec<String>,
+    /// Its usage windows as its CLI last reported them. [`agent::CONTROL`] only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<AgentLimit>,
 }
 
 impl std::fmt::Debug for AgentCatalogAgent {
@@ -5647,7 +5896,61 @@ impl std::fmt::Debug for AgentCatalogAgent {
             .field("id", &self.id)
             .field("installed", &self.installed)
             .field("signed_in", &self.signed_in)
+            .field("models", &self.models.len())
+            .field("can", &self.can)
+            .field("limits", &self.limits)
             .finish_non_exhaustive()
+    }
+}
+
+impl AgentCatalogAgent {
+    fn is_valid(&self) -> bool {
+        is_valid_agent_id(&self.id)
+            && self.name.len() <= agent::MAX_LABEL_BYTES
+            && self.login_hint.len() <= agent::MAX_LABEL_BYTES
+            && self.auth.as_deref().is_none_or(is_agent_word)
+            && self.models.len() <= agent::MAX_MODELS
+            && self.models.iter().all(AgentModel::is_valid)
+            && self.can.len() <= agent::MAX_CAN
+            && self.can.iter().all(|c| c.len() <= agent::MAX_WORD_BYTES)
+            && self.limits.len() <= agent::MAX_LIMITS
+            && self.limits.iter().all(AgentLimit::is_valid)
+    }
+
+    fn clean(&mut self) {
+        clean_line(&mut self.name, agent::MAX_LABEL_BYTES);
+        clean_line(&mut self.login_hint, agent::MAX_LABEL_BYTES);
+        if !self.auth.as_deref().is_none_or(is_agent_word) {
+            self.auth = None;
+        }
+        self.models =
+            std::mem::take(&mut self.models).into_iter().filter_map(AgentModel::sanitized).collect();
+        self.models.truncate(agent::MAX_MODELS);
+        let mut seen = Vec::new();
+        self.can.retain(|c| {
+            let keep = agent::can::ALL.contains(&c.as_str()) && !seen.contains(c);
+            if keep {
+                seen.push(c.clone());
+            }
+            keep
+        });
+        self.limits =
+            std::mem::take(&mut self.limits).into_iter().filter_map(AgentLimit::sanitized).collect();
+        self.limits.truncate(agent::MAX_LIMITS);
+    }
+
+    /// The agent as a phone without [`agent::CONTROL`] takes it: no models,
+    /// `can` or limits.
+    pub fn for_legacy(mut self) -> Self {
+        self.models = Vec::new();
+        self.can = Vec::new();
+        self.limits = Vec::new();
+        self
+    }
+
+    /// Whether it can do `what` (one of [`agent::can`]).
+    pub fn can(&self, what: &str) -> bool {
+        self.can.iter().any(|c| c == what)
     }
 }
 
@@ -5689,12 +5992,7 @@ impl std::fmt::Debug for AgentCatalog {
 impl AgentCatalog {
     pub fn is_valid(&self) -> bool {
         self.agents.len() <= agent::MAX_AGENTS
-            && self.agents.iter().all(|a| {
-                is_valid_agent_id(&a.id)
-                    && a.name.len() <= agent::MAX_LABEL_BYTES
-                    && a.login_hint.len() <= agent::MAX_LABEL_BYTES
-                    && a.auth.as_deref().is_none_or(is_agent_word)
-            })
+            && self.agents.iter().all(AgentCatalogAgent::is_valid)
             && self.folders.len() <= agent::MAX_FOLDERS
             && self
                 .folders
@@ -5710,11 +6008,7 @@ impl AgentCatalog {
         self.agents.retain(|a| is_valid_agent_id(&a.id));
         self.agents.truncate(agent::MAX_AGENTS);
         for a in &mut self.agents {
-            clean_line(&mut a.name, agent::MAX_LABEL_BYTES);
-            clean_line(&mut a.login_hint, agent::MAX_LABEL_BYTES);
-            if !a.auth.as_deref().is_none_or(is_agent_word) {
-                a.auth = None;
-            }
+            a.clean();
         }
         self.folders.retain(|f| is_valid_agent_id(&f.id));
         self.folders.truncate(agent::MAX_FOLDERS);
@@ -5725,10 +6019,18 @@ impl AgentCatalog {
         self.modes.truncate(agent::MAX_MODES);
         self
     }
+
+    /// The catalog as a phone without [`agent::CONTROL`] takes it: the
+    /// agents without what §5 added, and the modes it knows.
+    pub fn for_legacy(mut self) -> Self {
+        self.agents = self.agents.into_iter().map(AgentCatalogAgent::for_legacy).collect();
+        self.modes.retain(|m| agent::mode::LEGACY.contains(&m.as_str()));
+        self
+    }
 }
 
 /// A thread as a phone sees it (`AgentThread`, `docs/protocol/agents.md` §2).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentThread {
     pub id: String,
     pub agent: String,
@@ -5765,6 +6067,30 @@ pub struct AgentThread {
     /// The agent's own plan for the turn, when it made one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Vec<AgentPlanStep>>,
+    /// The model chosen for its next turn; absent: the CLI's default (§5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The effort chosen for its next turn; absent: the model's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The model the CLI says answered last, when it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_model: Option<String>,
+    /// Messages waiting for the running turn to end, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued: Vec<AgentQueued>,
+    /// The queue waits for the user: the last turn didn't finish.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queue_held: bool,
+    /// How full the context is, as the CLI last reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<AgentContext>,
+    /// The user's own MCP servers in this thread: counts, never names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<AgentMcp>,
+    /// Questions waiting for an answer (not counted in `asks`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub asking: u32,
 }
 
 /// One step of a thread's plan (`AgentThread.plan`).
@@ -5816,6 +6142,8 @@ impl std::fmt::Debug for AgentThread {
             .field("mode", &self.mode)
             .field("from_phone", &self.from_phone)
             .field("asks", &self.asks)
+            .field("queued", &self.queued.len())
+            .field("asking", &self.asking)
             .finish_non_exhaustive()
     }
 }
@@ -5833,6 +6161,11 @@ impl AgentThread {
             && self.error_code.as_deref().is_none_or(is_agent_code)
             && fits_opt(&self.step, agent::MAX_STEP_BYTES)
             && is_valid_plan(&self.plan)
+            && self.model.as_deref().is_none_or(is_model_id)
+            && self.effort.as_deref().is_none_or(is_effort)
+            && fits_opt(&self.answered_model, agent::MAX_MODEL_ID_BYTES)
+            && self.queued.len() <= agent::MAX_QUEUED
+            && self.queued.iter().all(AgentQueued::is_valid)
     }
 
     /// The thread within its limits, or `None` when an id or a wire word is bad.
@@ -5853,7 +6186,54 @@ impl AgentThread {
         }
         clean_opt(&mut self.step, false, agent::MAX_STEP_BYTES);
         clean_plan(&mut self.plan);
+        if !self.model.as_deref().is_none_or(is_model_id) {
+            self.model = None;
+        }
+        if !self.effort.as_deref().is_none_or(is_effort) {
+            self.effort = None;
+        }
+        clean_opt(&mut self.answered_model, false, agent::MAX_MODEL_ID_BYTES);
+        if self.answered_model.as_deref().is_some_and(str::is_empty) {
+            self.answered_model = None;
+        }
+        self.queued =
+            std::mem::take(&mut self.queued).into_iter().filter_map(AgentQueued::sanitized).collect();
+        self.queued.truncate(agent::MAX_QUEUED);
         Some(self)
+    }
+
+    /// The thread as a phone without [`agent::CONTROL`] takes it: plan mode
+    /// reads as `supervised` (it asks before everything, and changes nothing),
+    /// and what §5 added is left out.
+    pub fn for_legacy(mut self) -> Self {
+        if !agent::mode::LEGACY.contains(&self.mode.as_str()) {
+            self.mode = agent::mode::SUPERVISED.to_owned();
+        }
+        self.model = None;
+        self.effort = None;
+        self.answered_model = None;
+        self.queued = Vec::new();
+        self.queue_held = false;
+        self.context = None;
+        self.mcp = None;
+        self.asking = 0;
+        self
+    }
+
+    /// Cuts the queued messages' text to [`agent::MAX_QUEUED_PREVIEW_BYTES`],
+    /// flagged `truncated`.
+    fn preview_queued(&mut self) {
+        for queued in &mut self.queued {
+            if queued.text.len() > agent::MAX_QUEUED_PREVIEW_BYTES {
+                let end = cut_text(&queued.text, agent::MAX_QUEUED_PREVIEW_BYTES).len();
+                queued.text.truncate(end);
+                queued.truncated = true;
+            }
+        }
+    }
+
+    fn queued_bytes(&self) -> usize {
+        self.queued.iter().map(|q| q.text.len()).sum()
     }
 
     /// Whether a turn is running (`working` or `waiting`).
@@ -5956,6 +6336,18 @@ pub struct AgentItem {
     /// A user item: the id of the tool step this message denied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deny_of: Option<String>,
+    /// A user item sent while a turn ran: one of [`agent::via`] (§5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// A user item's images, at most [`agent::MAX_IMAGES`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<AgentImage>,
+    /// A `plan` item's state: one of [`agent::plan_state`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_state: Option<String>,
+    /// A `question` item: how many it asked, and how it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<AgentItemQuestion>,
 }
 
 /// Never prints the text or the ids it names (protocol v0 §11).
@@ -5968,6 +6360,9 @@ impl std::fmt::Debug for AgentItem {
             .field("tool", &self.tool)
             .field("turn", &self.turn)
             .field("phase", &self.phase)
+            .field("via", &self.via)
+            .field("images", &self.images.len())
+            .field("plan_state", &self.plan_state)
             .finish_non_exhaustive()
     }
 }
@@ -5989,6 +6384,11 @@ impl AgentItem {
             && fits_word(&self.phase)
             && self.group.as_deref().is_none_or(is_agent_item_id)
             && self.deny_of.as_deref().is_none_or(is_agent_item_id)
+            && fits_word(&self.via)
+            && self.images.len() <= agent::MAX_IMAGES
+            && self.images.iter().all(AgentImage::is_valid)
+            && fits_word(&self.plan_state)
+            && self.question.as_ref().is_none_or(AgentItemQuestion::is_valid)
     }
 
     /// The item within its limits (text cut is flagged `truncated`), or
@@ -6027,10 +6427,94 @@ impl AgentItem {
         clean_item_ref(&mut self.group);
         if self.kind == agent::item::USER {
             clean_item_ref(&mut self.deny_of);
+            known_word(&mut self.via, agent::via::ALL);
+            self.images =
+                std::mem::take(&mut self.images).into_iter().filter_map(AgentImage::sanitized).collect();
+            self.images.truncate(agent::MAX_IMAGES);
         } else {
             self.deny_of = None;
+            self.via = None;
+            self.images = Vec::new();
         }
+        if self.kind == agent::item::PLAN {
+            known_word(&mut self.plan_state, agent::plan_state::ALL);
+        } else {
+            self.plan_state = None;
+        }
+        self.question = match self.question.take() {
+            Some(question) if self.kind == agent::item::QUESTION => Some(question.sanitized()),
+            _ => None,
+        };
         Some(self)
+    }
+
+    /// The item as a phone with these capabilities takes it: the plan
+    /// file's edit as a bare step (never its path or content), then
+    /// [`for_control_legacy`](Self::for_control_legacy) without
+    /// [`agent::CONTROL`] and [`for_legacy`](Self::for_legacy) without
+    /// [`agent::ITEMS2`]. Its `seq` always stays, so a phone sees no gap.
+    pub fn for_phone(self, items2: bool, control: bool) -> Self {
+        let item = self.without_plan_file(control);
+        let item = if control { item } else { item.for_control_legacy() };
+        if items2 { item } else { item.for_legacy() }
+    }
+
+    /// A tool step of class [`agent::tool_class::PLAN`] (Claude writing its
+    /// plan to a file outside the folder) as a step named "plan", titled
+    /// "Plan", with no detail, output, path or text. The class stays only
+    /// for a phone with [`agent::CONTROL`] (it hides such steps).
+    fn without_plan_file(mut self, control: bool) -> Self {
+        let Some(tool) = &self.tool else { return self };
+        if tool.class.as_deref() != Some(agent::tool_class::PLAN) {
+            return self;
+        }
+        self.text = None;
+        self.truncated = false;
+        self.tool = Some(AgentTool {
+            name: agent::PLAN_TOOL_NAME.to_owned(),
+            title: agent::PLAN_TOOL_TITLE.to_owned(),
+            status: tool.status.clone(),
+            class: control.then(|| agent::tool_class::PLAN.to_owned()),
+            by_rule: tool.by_rule,
+            ..AgentTool::default()
+        });
+        self
+    }
+
+    /// The item as a phone without [`agent::CONTROL`] takes it (§5): a
+    /// `plan` item is an `assistant` item with the plan's text; a `question`
+    /// item is a tool step named `question`, titled "Question", running
+    /// until it ends, with no text. The fields §5 added go.
+    pub fn for_control_legacy(mut self) -> Self {
+        match self.kind.as_str() {
+            agent::item::PLAN => {
+                self.kind = agent::item::ASSISTANT.to_owned();
+            }
+            agent::item::QUESTION => {
+                let ended = self.end.is_some() || self.question.as_ref().is_some_and(|q| q.outcome.is_some());
+                let status = if ended { agent::tool::OK } else { agent::tool::RUNNING };
+                self.kind = agent::item::TOOL.to_owned();
+                self.text = None;
+                self.truncated = false;
+                self.tool = Some(AgentTool {
+                    name: agent::QUESTION_TOOL_NAME.to_owned(),
+                    title: agent::QUESTION_TOOL_TITLE.to_owned(),
+                    status: status.to_owned(),
+                    ..AgentTool::default()
+                });
+            }
+            _ => {}
+        }
+        if let Some(tool) = &mut self.tool
+            && tool.class.as_deref() == Some(agent::tool_class::PLAN)
+        {
+            tool.class = None;
+        }
+        self.via = None;
+        self.images = Vec::new();
+        self.plan_state = None;
+        self.question = None;
+        self
     }
 
     /// The item as a phone without [`agent::ITEMS2`] takes it (§2.4): a
@@ -6070,7 +6554,16 @@ impl AgentItem {
         let tool = self.tool.as_ref().map_or(0, |t| {
             t.name.len() + t.title.len() + t.status.len() + len(&t.detail) + len(&t.output) + len(&t.path)
         });
-        OVERHEAD + self.id.len() + len(&self.text) + tool + len(&self.group) + len(&self.deny_of)
+        let images = self.images.iter().map(|i| OVERHEAD + i.name.len()).sum::<usize>();
+        let question = self.question.as_ref().map_or(0, |q| len(&q.by_name));
+        OVERHEAD
+            + self.id.len()
+            + len(&self.text)
+            + tool
+            + len(&self.group)
+            + len(&self.deny_of)
+            + images
+            + question
     }
 }
 
@@ -6181,7 +6674,7 @@ fn keep_newest_items(items: &mut Vec<AgentItem>) -> bool {
 }
 
 /// Body of `agent.items`: a page of a thread's transcript and its asks.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentItems {
     pub thread: AgentThread,
     #[serde(default)]
@@ -6190,6 +6683,10 @@ pub struct AgentItems {
     pub more_before: bool,
     #[serde(default)]
     pub asks: Vec<AgentAsk>,
+    /// Questions waiting in the thread (§5); a secret one without its asks.
+    /// [`agent::CONTROL`] only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<AgentQuestion>,
 }
 
 impl std::fmt::Debug for AgentItems {
@@ -6199,6 +6696,7 @@ impl std::fmt::Debug for AgentItems {
             .field("items", &self.items.len())
             .field("more_before", &self.more_before)
             .field("asks", &self.asks.len())
+            .field("questions", &self.questions.len())
             .finish()
     }
 }
@@ -6211,6 +6709,8 @@ impl AgentItems {
             && self.items.iter().map(AgentItem::size).sum::<usize>() <= agent::MAX_ITEMS_BYTES
             && self.asks.len() <= agent::MAX_ASKS
             && self.asks.iter().all(AgentAsk::is_valid)
+            && self.questions.len() <= agent::MAX_PAGE_QUESTIONS
+            && self.questions.iter().all(AgentQuestion::is_valid)
     }
 
     /// The page within its limits: bad items and asks left out, then the
@@ -6223,7 +6723,23 @@ impl AgentItems {
         self.more_before |= keep_newest_items(&mut self.items);
         self.asks = self.asks.into_iter().filter_map(AgentAsk::sanitized).collect();
         self.asks.truncate(agent::MAX_ASKS);
+        self.questions = self.questions.into_iter().filter_map(AgentQuestion::sanitized).collect();
+        self.questions.truncate(agent::MAX_PAGE_QUESTIONS);
         Some(self)
+    }
+
+    /// The page as a phone with these capabilities takes it: each item as
+    /// [`AgentItem::for_phone`] makes it; without [`agent::CONTROL`] the
+    /// thread's legacy form and no questions; a secret question's asks never.
+    pub fn for_phone(mut self, items2: bool, control: bool) -> Self {
+        self.items = self.items.into_iter().map(|item| item.for_phone(items2, control)).collect();
+        if control {
+            self.questions = self.questions.into_iter().map(AgentQuestion::for_phone).collect();
+        } else {
+            self.thread = self.thread.for_legacy();
+            self.questions = Vec::new();
+        }
+        self
     }
 }
 
@@ -6390,24 +6906,54 @@ impl std::fmt::Debug for AgentThreads {
 
 impl AgentThreads {
     pub fn is_valid(&self) -> bool {
-        self.threads.len() <= agent::MAX_THREADS && self.threads.iter().all(AgentThread::is_valid)
+        self.threads.len() <= agent::MAX_THREADS
+            && self.threads.iter().all(AgentThread::is_valid)
+            && self.threads.iter().map(AgentThread::queued_bytes).sum::<usize>()
+                <= agent::MAX_THREADS_QUEUED_BYTES
+                    + agent::MAX_THREADS * agent::MAX_QUEUED * agent::MAX_QUEUED_PREVIEW_BYTES
     }
 
+    /// The list within its limits. Its queued messages are whole while their
+    /// text fits in [`agent::MAX_THREADS_QUEUED_BYTES`], newest thread first;
+    /// past that they're cut to a preview and flagged `truncated` (the
+    /// thread's page and its events carry them whole).
     pub fn sanitized(mut self) -> Self {
         self.threads = self.threads.into_iter().filter_map(AgentThread::sanitized).collect();
         self.threads.truncate(agent::MAX_THREADS);
+        let mut budget = agent::MAX_THREADS_QUEUED_BYTES;
+        for thread in &mut self.threads {
+            let bytes = thread.queued_bytes();
+            if bytes <= budget {
+                budget -= bytes;
+            } else {
+                budget = 0;
+                thread.preview_queued();
+            }
+        }
         self
     }
 }
 
 /// Body of `agent.start`: phone to PC.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentStart {
     pub agent: String,
     /// The folder's id.
     pub folder: String,
     pub prompt: String,
     pub mode: String,
+    /// The model to start with; absent: the CLI's default (§5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The effort to start with; absent: the model's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Images the phone sent first (`agent.image.meta`), by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    /// `model` was typed by the user rather than picked from the catalog.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub custom_model: bool,
 }
 
 /// Never prints the prompt (protocol v0 §11).
@@ -6418,38 +6964,77 @@ impl std::fmt::Debug for AgentStart {
             .field("folder", &self.folder)
             .field("mode", &self.mode)
             .field("bytes", &self.prompt.len())
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .field("images", &self.images.len())
             .finish()
     }
 }
 
 impl AgentStart {
-    /// Ids, a prompt of 1 to 8192 bytes and a well-formed mode. Whether the
-    /// mode may be used is the PC's call (`DENIED`), not a shape error.
+    /// Ids, a prompt of 1 to 8192 bytes, a well-formed mode, and §5's
+    /// fields within their limits. Whether the mode may be used is the PC's
+    /// call (`DENIED`), not a shape error.
     pub fn is_valid(&self) -> bool {
         is_valid_agent_id(&self.agent)
             && is_valid_agent_id(&self.folder)
             && (1..=agent::MAX_PROMPT_BYTES).contains(&self.prompt.len())
             && is_agent_word(&self.mode)
+            && self.model.as_deref().is_none_or(is_model_id)
+            && self.effort.as_deref().is_none_or(is_effort)
+            && is_valid_image_ids(&self.images)
+            && (!self.custom_model || self.model.is_some())
+    }
+
+    /// Whether it uses anything of §5 (a PC answers it only with [`agent::CONTROL`]).
+    pub fn uses_control(&self) -> bool {
+        self.model.is_some()
+            || self.effort.is_some()
+            || !self.images.is_empty()
+            || self.custom_model
+            || !agent::mode::LEGACY.contains(&self.mode.as_str())
     }
 }
 
 /// Body of `agent.send`: phone to PC.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentSend {
     pub thread: String,
+    /// 1 to [`agent::MAX_PROMPT_BYTES`]; may be empty with `images`.
     pub text: String,
+    /// One of [`agent::dispatch`]: what it does while a turn runs (§5).
+    /// Absent: the turn must have ended (`BUSY` otherwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<String>,
+    /// Images the phone sent first (`agent.image.meta`), by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// Never prints the text (protocol v0 §11).
 impl std::fmt::Debug for AgentSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentSend").field("thread", &self.thread).field("bytes", &self.text.len()).finish()
+        f.debug_struct("AgentSend")
+            .field("thread", &self.thread)
+            .field("bytes", &self.text.len())
+            .field("dispatch", &self.dispatch)
+            .field("images", &self.images.len())
+            .finish()
     }
 }
 
 impl AgentSend {
     pub fn is_valid(&self) -> bool {
-        is_valid_agent_id(&self.thread) && (1..=agent::MAX_PROMPT_BYTES).contains(&self.text.len())
+        let least = usize::from(self.images.is_empty());
+        is_valid_agent_id(&self.thread)
+            && (least..=agent::MAX_PROMPT_BYTES).contains(&self.text.len())
+            && self.dispatch.as_deref().is_none_or(|d| agent::dispatch::ALL.contains(&d))
+            && is_valid_image_ids(&self.images)
+    }
+
+    /// Whether it uses anything of §5 (a PC answers it only with [`agent::CONTROL`]).
+    pub fn uses_control(&self) -> bool {
+        self.dispatch.is_some() || !self.images.is_empty()
     }
 }
 
@@ -6881,6 +7466,9 @@ impl AgentSessionContinue {
         is_valid_agent_id(&self.session)
     }
 }
+
+mod agent_control;
+pub use agent_control::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).
@@ -9145,6 +9733,7 @@ mod tests {
                 text: "Read the tests".into(),
                 status: "completed".into(),
             }]),
+            ..Default::default()
         }
     }
 
@@ -9203,6 +9792,7 @@ mod tests {
                 signed_in: true,
                 login_hint: "claude auth login".into(),
                 auth: Some("api_key".into()),
+                ..Default::default()
             }],
             folders: vec![AgentCatalogFolder { id: "f0123456789ab".into(), label: "g7linux".into() }],
             modes: vec![agent::mode::SUPERVISED.into()],
@@ -9229,6 +9819,7 @@ mod tests {
             items: vec![agent_item(1, "Hi"), tool],
             more_before: false,
             asks: vec![agent_ask()],
+            ..Default::default()
         };
         assert!(items.is_valid());
         round_trip(types::AGENT_ITEMS, &items);
@@ -9247,10 +9838,14 @@ mod tests {
             folder: "f0123456789ab".into(),
             prompt: "List the files here.".into(),
             mode: agent::mode::SUPERVISED.into(),
+            ..Default::default()
         };
         assert!(start.is_valid());
         round_trip(types::AGENT_START, &start);
-        round_trip(types::AGENT_SEND, &AgentSend { thread: thread.id.clone(), text: "Go on".into() });
+        round_trip(
+            types::AGENT_SEND,
+            &AgentSend { thread: thread.id.clone(), text: "Go on".into(), ..Default::default() },
+        );
         round_trip(types::AGENT_CANCEL, &AgentCancel { thread: thread.id.clone() });
         round_trip(
             types::AGENT_READ,
@@ -9298,6 +9893,7 @@ mod tests {
             folder: folder.into(),
             prompt,
             mode: mode.into(),
+            ..Default::default()
         };
         assert!(start("x".repeat(agent::MAX_PROMPT_BYTES), "f0123456789ab", "supervised").is_valid());
         assert!(!start("x".repeat(agent::MAX_PROMPT_BYTES + 1), "f0123456789ab", "supervised").is_valid());
@@ -9306,7 +9902,7 @@ mod tests {
         // A mode the PC doesn't offer is its call (DENIED), not a shape error.
         assert!(start("hi".into(), "f0123456789ab", "auto_edit").is_valid());
         assert!(!start("hi".into(), "f0123456789ab", "--dangerously").is_valid());
-        assert!(!AgentSend { thread: "a".into(), text: "x".repeat(8193) }.is_valid());
+        assert!(!AgentSend { thread: "a".into(), text: "x".repeat(8193), ..Default::default() }.is_valid());
         assert!(!AgentRead { thread: "a".into(), before: None, limit: Some(0) }.is_valid());
         assert_eq!(AgentRead { thread: "a".into(), before: None, limit: Some(500) }.limit(), 50);
         assert_eq!(AgentRead { thread: "a".into(), before: None, limit: None }.limit(), 50);
@@ -9346,9 +9942,8 @@ mod tests {
         // A page keeps the newest items that fit, and says there are more.
         let big = "z".repeat(10_000);
         let items: Vec<_> = (1..=60).map(|seq| agent_item(seq, &big)).collect();
-        let page = AgentItems { thread: agent_thread("abc"), items, more_before: false, asks: vec![] }
-            .sanitized()
-            .unwrap();
+        let page =
+            AgentItems { thread: agent_thread("abc"), items, ..Default::default() }.sanitized().unwrap();
         assert!(page.is_valid() && page.more_before);
         assert_eq!(page.items.last().unwrap().seq, 60);
         assert!(page.items.len() < 20);
@@ -9378,9 +9973,10 @@ mod tests {
                 agent: "claude".into(),
                 folder: "f1".into(),
                 prompt: "secret words".into(),
-                mode: "supervised".into()
+                mode: "supervised".into(),
+                ..Default::default()
             },
-            AgentSend { thread: "abc".into(), text: "secret words".into() },
+            AgentSend { thread: "abc".into(), text: "secret words".into(), ..Default::default() },
         );
         assert!(
             !shown.contains("secret") && !shown.contains("cargo test") && !shown.contains(&ask.token),
@@ -9440,6 +10036,7 @@ mod tests {
             items: vec![tool.clone(), answer.clone(), denial.clone(), thinking.clone()],
             more_before: false,
             asks: vec![ask.clone()],
+            ..Default::default()
         };
         assert!(page.is_valid());
         assert_eq!(page.clone().sanitized().unwrap(), page, "nothing to clean");
@@ -9534,8 +10131,7 @@ mod tests {
         let page = |items: Vec<AgentItem>| AgentItems {
             thread: agent_thread(&"b".repeat(32)),
             items,
-            more_before: false,
-            asks: vec![],
+            ..Default::default()
         };
         let old: old::Items = read_as(&page(vec![thinking.clone(), agent_item2(6)]));
         assert!(!old.is_valid(), "a kind it doesn't know fails the whole page");

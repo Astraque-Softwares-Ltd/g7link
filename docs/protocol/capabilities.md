@@ -30,6 +30,7 @@ capability is missing.
 | `media.remote` | Shows and controls other devices' media players | app update |
 | `ble.link` | Opens the Bluetooth channel with a paired phone or PC ([Bluetooth](bluetooth.md) §4) | phone: Nearby devices permission, Android 12+ · desktop: an adapter that serves GATT |
 | `ble.remote` | The Bluetooth channel also carries the typing box and holds (`ble.use`); a phone picks a path for its touchpad ([Bluetooth](bluetooth.md) §4.5-4.6). Offered with `ble.link` | as `ble.link`, app update |
+| `agent.control` | Coding agents' controls ([agents](agents.md) §5): the phone picks the model and effort, plans, steers and queues messages, answers the agent's questions, sends pictures, finds files for `@` and commands for `/`, and keeps drafts; the PC takes all of that. Used only while both offer it; to a phone without it a PC sends what it sent before (plan mode as supervised, a plan as an answer, a question as a tool step) | phone: app update · desktop: an agent host that offers its `control` capability |
 
 > **LocalSend v2.1 LAN interop:** Unpaired LocalSend discovery and file transfer
 > (`224.0.0.167:53317` UDP multicast + HTTP/HTTPS `/api/localsend/v2/*` on TCP

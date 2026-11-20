@@ -13,7 +13,10 @@ use std::{
 
 use g7_agents_render as render;
 
-use crate::{AgentItem, AgentItemKind, AgentItemPhase, AgentThreadState, AgentToolClass, AgentToolStatus};
+use crate::{
+    AgentItem, AgentItemKind, AgentItemPhase, AgentPlanState, AgentQuestionOutcome, AgentThreadState,
+    AgentToolClass, AgentToolStatus, AgentVia,
+};
 
 /// `Debug` for a record that prints only the fields named, never its text.
 macro_rules! quiet_debug {
@@ -310,10 +313,12 @@ quiet_debug!(AgentRow { key, kind, turn, depth, seq });
 pub enum AgentRowKind {
     /// Your message, or one from `from` (a phone's name; empty for the PC).
     /// `deny_of`: you denied a request with it ("You denied it and said").
+    /// `via`: sent while the agent worked ("Sent while it worked").
     User {
         text: String,
         from: String,
         deny_of: bool,
+        via: Option<AgentVia>,
     },
     /// One Markdown block of an answer; `index` from 0, `last` for the
     /// message's last block (its "Copy message").
@@ -374,6 +379,26 @@ pub enum AgentRowKind {
     Notice {
         text: String,
     },
+    /// The head of a plan's card ("Plan"); `shown` of its blocks follow as
+    /// `Block` rows, and `more` are left out until it's opened (its key).
+    /// A `Replaced` one shows this row only until opened.
+    Plan {
+        state: AgentPlanState,
+        shown: u16,
+        more: u16,
+        open: bool,
+    },
+    /// The agent's questions, one line: "Asked you a question" / "Asked you
+    /// %n questions" (`count`, 0 when not known), "You answered", "Answered
+    /// on %1" (`by`), "Not answered". Opened, the answers follow as `Block`
+    /// rows when the item has them (`has_text`).
+    Question {
+        state: AgentQuestionState,
+        count: u8,
+        by: String,
+        has_text: bool,
+        open: bool,
+    },
     /// The working line, last: "Starting…" or "Thinking", with the thought
     /// so far when there is one, since `since_ms`.
     Live {
@@ -397,9 +422,23 @@ impl std::fmt::Debug for AgentRowKind {
             Self::Changes { .. } => "Changes",
             Self::Mark { .. } => "Mark",
             Self::Notice { .. } => "Notice",
+            Self::Plan { .. } => "Plan",
+            Self::Question { .. } => "Question",
             Self::Live { .. } => "Live",
         })
     }
+}
+
+/// Where a question stands, for its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentQuestionState {
+    /// Waiting for the user.
+    Asked,
+    Answered,
+    /// The user chose not to answer.
+    Dismissed,
+    /// It ended unanswered: it lapsed, or its turn ended.
+    Expired,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -777,7 +816,16 @@ impl From<render::RowKind> for AgentRowKind {
     fn from(kind: render::RowKind) -> Self {
         use render::RowKind as K;
         match kind {
-            K::User { text, from, deny_of } => Self::User { text, from, deny_of },
+            K::User { text, from, deny_of, via } => Self::User {
+                text,
+                from,
+                deny_of,
+                via: match via {
+                    render::Via::Turn => None,
+                    render::Via::Steer => Some(AgentVia::Steer),
+                    render::Via::Queue => Some(AgentVia::Queue),
+                },
+            },
             K::Block { block, index, last, phase } => {
                 Self::Block { block: block.into(), index, last, phase: phase.map(Into::into) }
             }
@@ -810,6 +858,10 @@ impl From<render::RowKind> for AgentRowKind {
             },
             K::Mark { kind, by } => Self::Mark { kind: kind.into(), by },
             K::Notice { text } => Self::Notice { text },
+            K::Plan { state, shown, more, open } => Self::Plan { state: state.into(), shown, more, open },
+            K::Question { state, count, by, has_text, open } => {
+                Self::Question { state: state.into(), count, by, has_text, open }
+            }
             K::Live { label, thought, since_ms } => Self::Live {
                 label: match label {
                     render::LiveLabel::Starting => AgentLiveLabel::Starting,
@@ -928,6 +980,7 @@ impl From<render::ToolClass> for AgentToolClass {
             C::Agent => Self::Agent,
             C::Tasks => Self::Tasks,
             C::Other => Self::Other,
+            C::Plan => Self::Plan,
         }
     }
 }
@@ -945,7 +998,47 @@ impl From<AgentToolClass> for render::ToolClass {
             AgentToolClass::Agent => C::Agent,
             AgentToolClass::Tasks => C::Tasks,
             AgentToolClass::Other => C::Other,
+            AgentToolClass::Plan => C::Plan,
         }
+    }
+}
+
+impl From<render::PlanState> for AgentPlanState {
+    fn from(state: render::PlanState) -> Self {
+        match state {
+            render::PlanState::Proposed => Self::Proposed,
+            render::PlanState::Implemented => Self::Implemented,
+            render::PlanState::Replaced => Self::Replaced,
+        }
+    }
+}
+
+impl From<AgentPlanState> for render::PlanState {
+    fn from(state: AgentPlanState) -> Self {
+        match state {
+            AgentPlanState::Proposed => Self::Proposed,
+            AgentPlanState::Implemented => Self::Implemented,
+            AgentPlanState::Replaced => Self::Replaced,
+        }
+    }
+}
+
+impl From<render::QuestionState> for AgentQuestionState {
+    fn from(state: render::QuestionState) -> Self {
+        match state {
+            render::QuestionState::Asked => Self::Asked,
+            render::QuestionState::Answered => Self::Answered,
+            render::QuestionState::Dismissed => Self::Dismissed,
+            render::QuestionState::Expired => Self::Expired,
+        }
+    }
+}
+
+fn via(via: Option<AgentVia>) -> render::Via {
+    match via {
+        None => render::Via::Turn,
+        Some(AgentVia::Steer) => render::Via::Steer,
+        Some(AgentVia::Queue) => render::Via::Queue,
     }
 }
 
@@ -956,6 +1049,8 @@ fn item_kind(kind: AgentItemKind) -> render::ItemKind {
         AgentItemKind::Tool => render::ItemKind::Tool,
         AgentItemKind::Notice => render::ItemKind::Notice,
         AgentItemKind::Reasoning => render::ItemKind::Reasoning,
+        AgentItemKind::Plan => render::ItemKind::Plan,
+        AgentItemKind::Question => render::ItemKind::Question,
     }
 }
 
@@ -997,6 +1092,89 @@ fn revision(text: &str, detail: &str) -> u32 {
     hash
 }
 
+// ---- The composer's `@` and `/` ----
+
+/// What the text at the cursor asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentTriggerKind {
+    /// An `@` at the start of the text or after a space: files of the
+    /// folder (`agent_files` with `query`).
+    Mention,
+    /// A `/` as the text's first character: a command (`agent_commands`,
+    /// filtered by `query`).
+    Slash,
+}
+
+/// A trigger at the cursor: `start` is where its `@` or `/` is, in UTF-16
+/// units; `query` what follows it up to the cursor.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentTrigger {
+    pub kind: AgentTriggerKind,
+    pub start: u32,
+    pub query: String,
+}
+
+quiet_debug!(AgentTrigger { kind, start });
+
+/// The text after a pick, and where the cursor goes (UTF-16 units).
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AgentTriggerApplied {
+    pub text: String,
+    pub cursor: u32,
+}
+
+quiet_debug!(AgentTriggerApplied { cursor });
+
+/// An `@path` in the text, for a chip: from `start`, `length` UTF-16 units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct AgentMention {
+    pub start: u32,
+    pub length: u32,
+}
+
+impl From<render::Trigger> for AgentTrigger {
+    fn from(t: render::Trigger) -> Self {
+        let kind = match t.kind {
+            render::TriggerKind::Mention => AgentTriggerKind::Mention,
+            render::TriggerKind::Slash => AgentTriggerKind::Slash,
+        };
+        AgentTrigger { kind, start: t.start, query: t.query }
+    }
+}
+
+/// The trigger at `cursor` (UTF-16 units) in the composer's `text`, if any:
+/// call it on each change, and open or close the `@` or `/` list.
+#[uniffi::export]
+pub fn agent_trigger(text: String, cursor: u32) -> Option<AgentTrigger> {
+    render::trigger(&text, cursor).map(Into::into)
+}
+
+/// `text` with `trigger`'s run up to `cursor` replaced by the pick
+/// (`insert`: a path relative to the folder, or a command's name, bare), and
+/// where the cursor goes. A path with spaces is written `@"the path"`; a
+/// directory (ending in `/`) leaves the cursor after it so the list opens again.
+#[uniffi::export]
+pub fn agent_trigger_apply(
+    text: String,
+    trigger: AgentTrigger,
+    cursor: u32,
+    insert: String,
+) -> AgentTriggerApplied {
+    let kind = match trigger.kind {
+        AgentTriggerKind::Mention => render::TriggerKind::Mention,
+        AgentTriggerKind::Slash => render::TriggerKind::Slash,
+    };
+    let trigger = render::Trigger { kind, start: trigger.start, query: trigger.query };
+    let (text, cursor) = render::apply(&text, &trigger, cursor, &insert);
+    AgentTriggerApplied { text, cursor }
+}
+
+/// The `@path` mentions of `text`, in order, for chips.
+#[uniffi::export]
+pub fn agent_mentions(text: String) -> Vec<AgentMention> {
+    render::mentions(&text).into_iter().map(|(start, length)| AgentMention { start, length }).collect()
+}
+
 /// One thread's rows, with the parsed answers kept between calls so a
 /// finished answer isn't read again. One per open thread; drop it when the
 /// thread closes.
@@ -1027,8 +1205,10 @@ impl AgentTimeline {
     /// after the item before it). `state` and `state_since_ms`: the thread's
     /// state and since when (`AgentThread.since_ms`). `marks`: the requests
     /// at their steps; a step with `by_rule` gets the `Rule` mark by itself,
-    /// in place of an `Allowed` passed for it. `open`: the keys of the rows
-    /// the user opened.
+    /// in place of an `Allowed` passed for it. A `Question` item's state is
+    /// its `question`'s; a mark on it wins (`Waiting` asked, `Allowed`
+    /// answered by `by`, `Denied` dismissed, `Expired` not answered). `open`:
+    /// the keys of the rows the user opened.
     #[allow(clippy::too_many_arguments)]
     pub fn rows(
         &self,
@@ -1067,6 +1247,32 @@ fn marks_for(items: &[AgentItem], marks: Vec<AgentMark>) -> Vec<render::Mark> {
         .collect()
 }
 
+/// What a `Question` item says of itself, so a thread opened again reads as
+/// it ended: its `question` (the host's count and outcome), or, from a PC
+/// that doesn't send it, answered when it has the answers as text. A mark
+/// on the item wins over either.
+fn question_in<'a>(item: &'a AgentItem, text: &str) -> Option<render::QuestionIn<'a>> {
+    if item.kind != AgentItemKind::Question {
+        return None;
+    }
+    let Some(q) = &item.question else {
+        return (!text.trim().is_empty()).then_some(render::QuestionIn {
+            state: render::QuestionState::Answered,
+            count: 0,
+            by: "",
+        });
+    };
+    let state = match q.outcome {
+        None => render::QuestionState::Asked,
+        Some(AgentQuestionOutcome::Answered) => render::QuestionState::Answered,
+        Some(AgentQuestionOutcome::Dismissed) => render::QuestionState::Dismissed,
+        Some(AgentQuestionOutcome::Expired | AgentQuestionOutcome::Cancelled) => {
+            render::QuestionState::Expired
+        }
+    };
+    Some(render::QuestionIn { state, count: q.count, by: q.by_name.as_deref().unwrap_or("") })
+}
+
 /// The timeline's view of `items` and the text still arriving, in `seq` order.
 fn inputs<'a>(items: &'a [AgentItem], streaming: &'a [AgentStreaming]) -> Vec<render::ItemIn<'a>> {
     let live: HashMap<&str, &AgentStreaming> = streaming.iter().map(|s| (s.item_id.as_str(), s)).collect();
@@ -1101,6 +1307,9 @@ fn inputs<'a>(items: &'a [AgentItem], streaming: &'a [AgentStreaming]) -> Vec<re
                 deny_of: item.deny_of.as_deref(),
                 tool,
                 truncated: item.truncated,
+                via: via(item.via),
+                plan_state: item.plan_state.map(Into::into),
+                question: question_in(item, text),
             }
         })
         .collect();
@@ -1130,6 +1339,9 @@ fn inputs<'a>(items: &'a [AgentItem], streaming: &'a [AgentStreaming]) -> Vec<re
             deny_of: None,
             tool: None,
             truncated: false,
+            via: render::Via::Turn,
+            plan_state: None,
+            question: None,
         });
     }
     inputs.sort_by_key(|input| input.seq);
@@ -1155,6 +1367,10 @@ mod tests {
             end_ms: None,
             group: None,
             deny_of: None,
+            via: None,
+            images: Vec::new(),
+            plan_state: None,
+            question: None,
         }
     }
 
@@ -1338,6 +1554,94 @@ mod tests {
             })
             .collect();
         assert_eq!(marks, [("m:i2", AgentMarkKind::Rule), ("m:i3", AgentMarkKind::Allowed)]);
+    }
+
+    #[test]
+    fn plans_questions_and_steered_messages_have_rows_of_their_own() {
+        let mut steered = item(1, AgentItemKind::User, "And the logout.");
+        steered.via = Some(AgentVia::Steer);
+        let plan_file = AgentItem {
+            tool: Some(AgentTool {
+                name: "plan".into(),
+                title: "Plan".into(),
+                detail: None,
+                status: AgentToolStatus::Ok,
+                output: None,
+                tool_class: Some(AgentToolClass::Plan),
+                path: None,
+                by_rule: false,
+            }),
+            ..item(2, AgentItemKind::Tool, "")
+        };
+        let mut plan = item(3, AgentItemKind::Plan, "1. Read the code\n2. Fix it");
+        plan.plan_state = Some(AgentPlanState::Proposed);
+        let question = |outcome, by_name: Option<&str>| crate::AgentItemQuestion {
+            count: 2,
+            secret: false,
+            outcome,
+            by_name: by_name.map(Into::into),
+        };
+        let mut asked = item(4, AgentItemKind::Question, "");
+        asked.question = Some(question(None, None));
+        let mut answered = item(5, AgentItemKind::Question, "Auth: OAuth");
+        answered.question = Some(question(Some(crate::AgentQuestionOutcome::Answered), Some("Pixel")));
+        let rows = AgentTimeline::new().rows(
+            vec![steered, plan_file, plan, asked, answered],
+            vec![],
+            AgentThreadState::Waiting,
+            1_000,
+            3_000,
+            vec![],
+            vec![],
+        );
+        assert!(rows.iter().all(|r| r.item_id != "i2"), "the plan file makes no row: {rows:?}");
+        assert!(rows.iter().any(|r| matches!(r.kind, AgentRowKind::User { via: Some(AgentVia::Steer), .. })));
+        assert!(rows.iter().any(|r| r.item_id == "i3"
+            && matches!(r.kind, AgentRowKind::Plan { state: AgentPlanState::Proposed, .. })));
+        assert!(rows.iter().any(|r| r.item_id == "i4"
+            && matches!(r.kind, AgentRowKind::Question { state: AgentQuestionState::Asked, count: 2, .. })));
+        assert!(rows.iter().any(|r| r.item_id == "i5"
+            && matches!(&r.kind, AgentRowKind::Question { state: AgentQuestionState::Answered, by, .. } if by == "Pixel")));
+
+        // Opened again in a finished turn, from a PC that sends no state: its
+        // answers say it was answered.
+        let mut answered = item(2, AgentItemKind::Question, "Auth: OAuth");
+        answered.end_ms = Some(2_500);
+        let rows = AgentTimeline::new().rows(
+            vec![
+                item(1, AgentItemKind::User, "Fix it."),
+                answered,
+                item(3, AgentItemKind::Assistant, "Done."),
+            ],
+            vec![],
+            AgentThreadState::Done,
+            1_000,
+            9_000,
+            vec![],
+            vec![],
+        );
+        assert!(
+            rows.iter().all(|r| !matches!(
+                r.kind,
+                AgentRowKind::Question { state: AgentQuestionState::Expired, .. }
+            )),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_composer_finds_its_trigger_and_writes_the_pick() {
+        let trigger = agent_trigger("see @src/ma".into(), 11).unwrap();
+        assert_eq!(
+            (trigger.kind, trigger.start, trigger.query.as_str()),
+            (AgentTriggerKind::Mention, 4, "src/ma")
+        );
+        let applied = agent_trigger_apply("see @src/ma".into(), trigger, 11, "src/main.rs".into());
+        assert!(applied.text.starts_with("see @src/main.rs"), "{}", applied.text);
+        assert!(applied.cursor as usize >= "see @src/main.rs".len());
+        assert_eq!(agent_mentions(applied.text).first().map(|m| m.start), Some(4));
+        assert_eq!(agent_trigger("/rev".into(), 4).map(|t| t.kind), Some(AgentTriggerKind::Slash));
+        assert!(agent_trigger("mail me@example.com".into(), 19).is_none(), "an address isn't a mention");
     }
 
     #[test]

@@ -18,6 +18,7 @@ never sends a path, a command, a program name or a flag.
 | `agent.follow` | phone | Shows a PC's sessions started outside G7 Link (§3) |
 | `agent.items2` | phone | Understands item kind `reasoning` and the item fields of §2.4 |
 | `agent.say_why` | desktop | `agent.answer` may carry `message`: deny and say why (§2.4) |
+| `agent.control` | both | Models and effort, plan mode, steering and the queue, the agent's questions, images, `@` files, `/` commands and drafts (§5) |
 
 Everything here is governed by the PC's per-device toggle `agents`, **off by
 default**. While it is off for a phone the PC sends that phone nothing from
@@ -32,7 +33,8 @@ whether or not it offers it.
 
 ## 2. Messages
 
-All on the control stream, except §4's export. None are carried over Bluetooth.
+All on the control stream, except §4's export and §5.3's images. None are
+carried over Bluetooth.
 
 ```
 t = "agent.catalog"            b = AgentCatalog                    PC → phone, no reply
@@ -370,7 +372,305 @@ t = "agent.export.meta"  re = 1  b = { length: uint, truncated: bool, file_name:
   The PC gives up on a stream that doesn't ask within 20 s, and on one whose
   text doesn't cross within 60 s; a phone waits 20 s for the meta.
 
-## 5. Implementation notes
+## 5. Control (`agent.control`)
+
+Added after G7 Link 0.1.16. A phone that offers `agent.control` picks the
+model and effort, plans before it acts, steers a running turn or queues a
+message behind it, answers the agent's questions, sends pictures, finds files
+for `@` and commands for `/`, and carries on with a message started on
+another device. A PC that offers it takes all of that. **Only while both
+offer it** does either side send or answer anything of this section: to any
+other phone the PC sends what §2 says and nothing more (§5.7), and a phone
+sends a PC without it nothing of this section (it gives up with
+`UNSUPPORTED` without sending). Everything here follows the `agents` toggle
+as §2 does, with its prompt and errors. Nothing here travels on Bluetooth.
+
+The models, effort levels, commands and limits are the ones the agents' own
+CLIs report on the PC. The PC asks no vendor for them and keeps no list of
+its own.
+
+### 5.1 Messages
+
+```
+t = "agent.configure"   id = n  b = { thread, model?, effort?, mode?, custom_model? }    → agent.thread
+t = "agent.queue"       id = n  b = { thread, id, op, text? }                             → ok
+t = "agent.question"            b = AgentQuestion                                         PC → phone, no reply
+t = "agent.questioned"          b = { token, thread, outcome, by_name? }                  PC → phone, no reply
+t = "agent.reply"       id = n  b = { token, answers: [AgentAnswer] } | { token, dismiss: true }   → ok
+t = "agent.implement"   id = n  b = { thread, item }                                      → ok
+t = "agent.files"       id = n  b = { thread? | folder?, query, limit? }
+t = "agent.files"       re = n  b = { files: [{ path, dir? }], more }
+t = "agent.commands"    id = n  b = { agent, folder }
+t = "agent.commands"    re = n  b = { commands: [AgentCommand] }
+t = "agent.draft.get"   id = n  b = { key }
+t = "agent.draft.get"   re = n  b = { draft?: AgentDraft }
+t = "agent.draft.set"   id = n  b = { key, text, images?: [text], rev }
+t = "agent.draft.set"   re = n  b = { rev, conflict?: AgentDraft }
+t = "agent.draft"               b = { key, rev }                                          PC → phone, no reply
+```
+
+What §2's bodies gain:
+
+```
+AgentCatalog.agents[] += models?: [AgentModel],   // at most 40; absent: the CLI hasn't said yet
+                         can?: [text],            // "plan" | "questions" | "steer" | "images" | "mcp_switch" | "commands"
+                         limits?: [AgentLimit]    // at most 4
+AgentCatalog.modes     may be ["supervised", "plan"]
+AgentStart  += model?: text, effort?: text, images?: [text], custom_model?: bool;  mode may be "plan"
+agent.send  += dispatch?: text,                   // "auto" | "steer" | "queue"
+               images?: [text]                    // `text` may then be empty
+AgentThread += model?: text, effort?: text,       // the next turn's; absent: the CLI's default
+               answered_model?: text,             // what the CLI says answered last
+               queued?: [AgentQueued],            // at most 5, oldest first
+               queue_held?: bool,                 // the last turn didn't finish: nothing is sent by itself
+               context?: { used: uint, max: uint },
+               mcp?: { on: bool, servers: uint, connected: uint, need_login: uint },
+               asking?: uint                      // questions waiting (not counted in `asks`)
+AgentItem   += via?: text,                        // kind "user": "steer" | "queue"
+               images?: [AgentImage],             // kind "user"
+               plan_state?: text,                 // kind "plan": "proposed" | "implemented" | "replaced"
+               question?: { count: uint, secret?: bool, outcome?: text, by_name?: text }
+                                                  // kind "question": how many it asked, how it ended (§5.2)
+agent::item += "plan", "question"
+AgentTool.class += "plan"                         // the plan file's edit (below)
+AgentItems  += questions?: [AgentQuestion]        // waiting in the thread; at most 4
+
+AgentModel    = { id: text, name: text, note?: text, default?: bool, efforts?: [text],
+                  default_effort?: text, images?: bool, short?: bool }
+AgentLimit    = { window: text, used_pct?: uint, resets?: uint, state: text }   // "ok" | "warn" | "reached"
+AgentQueued   = { id: text, text: text, truncated?: bool, by_name?: text, images?: [AgentImage], created: uint }
+AgentImage    = { id: text, name: text, bytes: uint, w: uint, h: uint }
+AgentQuestion = { token: text, thread: text, thread_title: text, agent: text, item: text,
+                  secret?: bool, asks: [AgentAsk2], created: uint, expires: uint }
+AgentAsk2     = { id: text, header: text, text: text, multi?: bool, other?: bool, secret?: bool,
+                  options?: [{ label: text, note?: text }] }
+AgentAnswer   = { id: text, labels?: [text], other?: text }
+AgentCommand  = { name: text, note?: text, hint?: text, kind: text }            // "command" | "skill"
+AgentDraft    = { key: text, text: text, images?: [AgentImage], rev: uint, by_name?: text }
+```
+
+(`AgentAsk2` is a question's ask, so as not to be confused with §2's
+`AgentAsk`, a request for approval. All times are Unix ms.)
+
+- **Models and effort.** A model's `id` is what the CLI takes; `short` ones
+  (`opus`) follow the newest model and are listed first, the rest under "More
+  models". An agent without `models` hasn't said yet: offer "Default" and a
+  typed model. A typed model is sent with `custom_model` and needn't be
+  listed. `effort` must be one the model lists. A model id is one word: no
+  white space or control characters, not starting with `-`, at most 64 bytes;
+  the PC passes it to the CLI as one argument, never through a shell, and
+  maps effort and mode to fixed words of its own.
+- **`agent.configure`** changes a thread for its next turn: `model`,
+  `effort`, `mode`, each optional and at least one; an empty `model` or
+  `effort` goes back to the default. A phone sets `mode` `supervised` or
+  `plan` only (`DENIED` otherwise, as for `agent.start`). The PC answers
+  `BUSY` while the thread works or waits. Nothing changes a running turn.
+- **Plan mode.** A thread in mode `plan` changes nothing; the agent writes a
+  plan, which arrives as an item of kind `plan` with `plan_state:
+  proposed`, and the thread ends its turn. An earlier proposed plan of the
+  thread becomes `replaced`. "Change the plan" is an ordinary `agent.send`.
+  `agent.implement` implements the thread's newest proposed plan (its item
+  id): the thread goes back to supervised, the plan becomes `implemented`,
+  and the PC sends the agent "Implement the plan." from that phone; a phone
+  can't choose another mode for it. `NOT_FOUND` for any other plan, `BUSY`
+  while the thread runs. Claude writes its plan to a file outside the folder
+  first: that edit is a tool item of class `plan`, which a phone gets as a
+  step named `plan`, titled "Plan", with no detail, output, path or text.
+- **Sending while a turn runs.** `dispatch: "steer"` gives the message to
+  the running turn: Codex reads it at once, Claude at its next step (after
+  the tool it is running). `"queue"` puts it in the thread's queue, sent when
+  the turn ends; `"auto"`, or `"steer"` to an agent that can't be steered
+  (no `steer` in `can`), queues it too. Without `dispatch` a running thread
+  answers `BUSY`, as before. A message the agent has taken in shows as a
+  `user` item with `via`. While the thread waits for an answer (a request or
+  a question) every send is `BUSY`. A sixth queued message is `BUSY`.
+- **The queue.** `queued` lists the messages waiting, oldest first. When a
+  turn ends done the oldest is sent (its item has `via: "queue"`), one at a
+  time. When it fails or is stopped, `queue_held` is set and nothing is sent
+  until the user sends something, sends one now, or removes them. A usage
+  limit holds it too, never resumed by itself. `agent.queue` changes one:
+  `op` `edit` (with `text`, 1 to 16384 bytes), `remove`, or `send_now` (steer
+  with it while the thread works and the agent can, else start a turn with
+  it; `BUSY` while it waits for an answer). `NOT_FOUND` when it was sent
+  already. Only messages a person wrote and sent enter the queue.
+- **Context and limits** are as the agent's CLI last reported them; absent
+  until it has. `used_pct` 0 to 100; `resets` when the window resets;
+  `state` `warn` when it's nearly used, `reached` when it is. A client words
+  `window` itself (`"300"` → "5-hour", `"10080"` → "weekly", `"five_hour"`,
+  `"seven_day"`, anything else as given). Nothing else about the account
+  crosses.
+- **MCP.** `mcp` counts the PC user's own MCP servers in the thread, as the
+  agent reported them: `servers` in all, `connected`, and `need_login` (signed
+  in in a terminal on the PC). Their names, commands and settings never
+  reach a phone; a phone can't change the PC's per-folder switch.
+- **Files for `@`.** `agent.files` searches a thread's folder (`thread`) or
+  a folder (`folder`), exactly one; `query` is what follows the `@` (empty:
+  the folder's top level and its recently changed files), `limit` 1 to 50
+  (default 20). Each hit's `path` is relative to the folder with `/` between
+  components, a directory may end with `/`: never absolute, never with `..`,
+  `.` or an empty component (a receiver leaves out a hit that is). The PC
+  reads nothing for it: the message carries the path as text and the agent
+  opens the file itself, under its own permission rules.
+- **Commands for `/`.** `agent.commands` lists what `agent` offers in
+  `folder`: its CLI's commands, less those that need a terminal or touch the
+  account or its settings, and its skills (`kind: "skill"`). `name` is one
+  word, without the `/`; `hint` is its arguments. A command is sent as the
+  first word of a message the user typed. Clients add their own `/model`,
+  `/effort` and `/plan`, which are never sent.
+- **Drafts.** The PC keeps the message being written per thread (`key`: its
+  id) or per folder for a new thread (`new:<folder id>`), so another device
+  can carry on with it. `agent.draft.set` stores it when `rev` is the draft's
+  `rev` as the phone last saw it (0 for a new one) and answers its new `rev`;
+  otherwise it stores nothing and answers `conflict`, the draft as it is. An
+  empty text with no images clears it. After a change the PC sends
+  `agent.draft` (`key`, `rev`) to every other phone that offers
+  `agent.control`, which reads it with `agent.draft.get` when it matters. A
+  draft is removed when its text is sent from any device. The PC keeps at
+  most 64.
+
+### 5.2 Questions
+
+An agent may ask the user something mid-turn: `agent.question` goes to every
+phone that offers `agent.control` with the toggle on, and the thread is
+`waiting` with `asking` counting them. A question has 1 to 4 asks; each has
+up to 6 options, may allow more than one (`multi`) and the user's own words
+(`other`, "Something else"). It lives two hours, as a request does; at most
+two wait per thread.
+
+- `agent.reply` answers it, one answer per ask, by the options' own labels
+  and/or `other` (the PC answers `BAD_MESSAGE` to a label that isn't the
+  ask's own without `other`); or dismisses it (`dismiss: true`: the agent is
+  told the user didn't answer). The first answer from any device wins; every
+  phone then gets `agent.questioned` with `outcome` `answered`, `dismissed`,
+  `expired` or `cancelled`, and `by_name`. A later answer is `NOT_FOUND`.
+- **Secret questions** are answered on the PC only. A phone gets one with
+  `secret: true` and no asks, never their words or options, and the PC
+  answers `DENIED` to a phone's `agent.reply` for it. A secret answer is
+  never stored, logged or sent to a phone.
+- The `question` item's text lists the questions and their answers once
+  answered, and is absent when any ask was secret. Its `question` says how
+  many it asked, whether one was secret, and once it ended its `outcome`
+  (as `agent.questioned`'s) and `by_name`; without `outcome` it waits. A
+  receiver reads an `outcome` it doesn't know as absent.
+- A request for a value or a sign-in from an MCP server is declined by the
+  PC with a notice item; it never reaches a phone.
+
+### 5.3 Images
+
+Up to 4 images go with a message (`agent.start`, `agent.send`, a draft),
+by id. A phone sends each first on a bidirectional stream of its own:
+
+```
+stream header  { svc: "agent", op: "image", v: 1 }
+t = "agent.image.meta"   id = 1  b = { name: text, bytes: uint }    // phone → PC
+t = "ok"                 re = 1                                     // PC → phone: send the bytes (or an error)
+<bytes bytes>, then the stream's end                                 // phone → PC
+t = "agent.image"        re = 1  b = AgentImage                     // PC → phone (or an error)
+
+stream header  { svc: "agent", op: "thumb", v: 1 }
+t = "agent.image.thumb"       id = 1  b = { id: text, max?: uint }  // phone → PC
+t = "agent.image.thumb.meta"  re = 1  b = { length: uint }          // a JPEG, at most 153600 bytes
+<length bytes>
+```
+
+- `bytes` is 1 to 10485760 (10 MiB). The PC refuses a meta over it before
+  any byte comes, answers `BUSY` while that phone has another upload running
+  (one at a time per phone), and drops an upload whose bytes don't end
+  within 60 s. When more bytes come than `bytes` said, it answers
+  `BAD_MESSAGE` and keeps none of them.
+- The PC decodes the picture with its own bounded decoder (PNG, JPEG, WebP or
+  GIF, by its first bytes; at most 12000 px a side), scales it to 2048 px at
+  most and keeps a re-encoded copy without its metadata (location, camera,
+  colour profile); the bytes as sent are never stored. `BAD_MESSAGE` for
+  anything else ("That isn't an image G7 can send.") or too large ("That
+  image is too large."). `AgentImage.name` is a file name, never a path.
+- `agent.image.thumb` returns a JPEG of an image of a thread the phone may
+  read, no larger than `max` px a side (64 to 1024; default 512) and 150
+  KiB. A phone refuses a meta over that before reading on and checks it's a
+  JPEG.
+- Images, like everything here, follow the `agents` toggle (`DENIED`), and
+  need `agent.control` on both sides (`UNSUPPORTED`).
+
+### 5.4 Rules
+
+- A phone never receives: an MCP server's name or settings; an absolute path
+  (file hits are relative; the plan file's edit comes without its path or
+  content; an image's name is a file name); a secret question's asks; any
+  usage limit field but `window`, `used_pct`, `resets` and `state`; a
+  model's `note` longer than 120 bytes; the PC's prompt history; a sign-in
+  token, an account detail (email, organisation, plan, credits) or any other
+  credential.
+- A phone may: start and configure threads with mode `supervised` or `plan`
+  only; implement a plan (supervised); steer, queue, edit, remove and send now
+  queued messages; answer or dismiss a question that isn't secret; send up to
+  4 images per message, one upload at a time; search files and list commands
+  of folders the catalog lists.
+- A phone may not: change a folder's MCP switch, read or change the PC's
+  "keep awake" setting, add an image by a path, or read another device's
+  draft images other than as thumbnails.
+- Every message, queue change, plan implementation and answer a phone sends
+  is shown on the PC with the phone's name, as messages are.
+- A receiver reads a `can`, `via`, `plan_state`, limit `state` or command
+  `kind` it doesn't know as absent (a limit as `ok`, a command as
+  `command`), and doesn't refuse the message for it. A model, option or
+  command whose id, label or name isn't whole is left out, never cut.
+
+### 5.5 Limits
+
+| Field | Limit (bytes of UTF-8 unless noted) |
+|---|---|
+| model `id` | 1 to 64; no white space or control characters; not starting with `-` |
+| model `name` / `note` | 64 / 120 |
+| `models` | 40 per agent |
+| effort | 1 to 16, `[a-z0-9_]`; 8 per model |
+| `can` | 16 words of 1 to 32 |
+| `limits` | 4; `window` 1 to 32 |
+| `queued` | 5 per thread; `text` 16384; `id` 16 lowercase hex digits |
+| `agent.threads` | the queued messages' text carries whole up to 262144 bytes, newest thread first; past it each is cut to 280 and `truncated` (a thread's page and its events carry it whole) |
+| `images` | 4 per message; `id` 32 lowercase hex digits; `name` 128 |
+| `agent.image.meta` `bytes` | 1 to 10485760 |
+| thumbnail | 153600; `max` 64 to 1024 px |
+| question | 1 to 4 asks; `item` an item id (1 to 96) |
+| ask `id` / `header` / `text` | 1 to 64 / 40 / 500 |
+| options | 6 per ask; `label` 1 to 80; `note` 200 |
+| answer | `labels` 6 of 1 to 80; `other` 1 to 500 |
+| `agent.items` `questions` | 4 |
+| `agent.files` | `query` 128; `limit` 1 to 50; `path` 1 to 512 |
+| `agent.commands` | 300; `name` 1 to 64, one word; `note` 200; `hint` 80 |
+| draft `key` | a thread id, or `new:` and a folder id (at most 64) |
+| draft `text` | 16384 |
+
+### 5.6 Errors
+
+As §2.3, and: `UNSUPPORTED` for anything of this section when the PC or the
+phone doesn't offer `agent.control`; `DENIED` for a mode other than
+`supervised` or `plan`, and for a phone's reply to a secret question;
+`BAD_MESSAGE` for a model id that isn't one word, more than 4 images, an
+image's bytes that don't match its meta, and an answer that isn't one;
+`NOT_FOUND` for a queued message already sent, a question already answered,
+a plan that isn't the newest proposed one; `BUSY` while a thread waits for
+an answer, for a sixth queued message, for configuring a running thread, and
+for a second upload at once. A draft conflict is not an error: it's the
+`conflict` reply.
+
+### 5.7 Older devices
+
+A phone without `agent.control` gets what it got before, whatever the PC
+does: a catalog without `models`, `can` and `limits`, and `modes:
+["supervised"]`; a thread in plan mode as `supervised`, without `model`,
+`effort`, `answered_model`, `queued`, `queue_held`, `context`, `mcp` and
+`asking`; a `plan` item as an `assistant` item with the plan's text; a
+`question` item as a tool step named `question`, titled "Question",
+`running` until it ends (`end` or an `outcome`) and then `ok`, with no text
+and no `question`; a user item
+without `via` and `images`; no `agent.question`, `agent.questioned`,
+`agent.draft` or `questions`. Its `seq`s are as they are for everyone, so it
+sees no gap. Its requests are answered as before: `plan` is `DENIED`, the
+rest of this section `UNSUPPORTED`. A phone that offers `agent.control`
+talking to a PC that doesn't sends it nothing of this section and offers
+what that PC's catalog says.
+
+## 6. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -396,6 +696,15 @@ t = "agent.export.meta"  re = 1  b = { length: uint, truncated: bool, file_name:
 - The core answers the `agent/export` stream itself, checking the toggles,
   and asks the platform for the text (`AgentRequest::Export`); G7 Link
   desktop gets it from the host's `thread.export`.
+- The core answers §5's requests after checking `agent.control` on both
+  sides, the toggle, the limits, the mode and secret questions (it remembers
+  the last 64 secret tokens it relayed), and makes every thread, item, page
+  and catalog fit the phone it goes to (`for_phone`, `for_legacy`). It runs
+  the image streams itself, one upload per phone, and hands the platform the
+  whole bytes only when exactly as many came as announced
+  (`AgentRequest::ImageAdd`); G7 Link desktop passes them to the host's
+  `image.begin`/`image.chunk`/`image.end`. The G7 Link FFI announces
+  `agent.control` for the app.
 - G7 Link desktop's second prompt, for `agent_sessions`: title "Let %1 see
   sessions started on this PC?"; body "It will be able to list and read the
   Claude and Codex sessions you start here in a terminal or the Claude app, in

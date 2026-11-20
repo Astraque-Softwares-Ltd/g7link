@@ -18,7 +18,10 @@ use tokio::{runtime::Runtime, sync::broadcast::error::RecvError};
 
 uniffi::setup_scaffolding!();
 
+mod agent_control;
 pub mod agent_rows;
+
+pub use agent_control::*;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -1269,6 +1272,29 @@ pub enum Event {
         session: String,
         item: AgentItem,
     },
+    /// An agent on a PC asks the user (`agent.control`). A secret question
+    /// has no asks: "Answer it on <PC>."
+    AgentQuestion {
+        id: String,
+        question: AgentQuestion,
+    },
+    /// A question ended: answered on some device, dismissed, or it lapsed.
+    AgentQuestioned {
+        id: String,
+        token: String,
+        thread: String,
+        outcome: AgentQuestionOutcome,
+        /// The device that answered ("Answered on %1").
+        by_name: Option<String>,
+    },
+    /// A draft changed on another device: while its composer isn't focused,
+    /// read it (`agent_draft_get`) and take its text; while it is, offer
+    /// "Use the draft from %1".
+    AgentDraftChanged {
+        id: String,
+        key: String,
+        rev: u64,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -1432,13 +1458,17 @@ impl AgentThreadState {
     }
 }
 
-/// How a thread asks before acting. A phone starts `Supervised` only.
+/// How a thread asks before acting. A phone starts and sets `Supervised`
+/// or, with a PC that offers it (the catalog's `modes`), `Plan`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum AgentMode {
     /// Asks before every edit and every command that isn't read-only.
     Supervised,
     /// Edits without asking.
     AutoEdit,
+    /// Changes nothing: it writes a plan to implement ("Plan: it changes
+    /// nothing until you say so"). Added with `agent.control`.
+    Plan,
 }
 
 impl AgentMode {
@@ -1446,14 +1476,16 @@ impl AgentMode {
         match mode {
             core::agent::mode::SUPERVISED => Some(Self::Supervised),
             core::agent::mode::AUTO_EDIT => Some(Self::AutoEdit),
+            core::agent::mode::PLAN => Some(Self::Plan),
             _ => None,
         }
     }
 
-    fn wire(self) -> &'static str {
+    pub(crate) fn wire(self) -> &'static str {
         match self {
             Self::Supervised => core::agent::mode::SUPERVISED,
             Self::AutoEdit => core::agent::mode::AUTO_EDIT,
+            Self::Plan => core::agent::mode::PLAN,
         }
     }
 }
@@ -1467,6 +1499,12 @@ pub enum AgentItemKind {
     /// The agent thinking: its `text` is what it showed of its thought,
     /// often empty; `end_ms` is set when it stopped. Added with `agent.items2`.
     Reasoning,
+    /// A plan the agent wrote in plan mode: its `text` is the plan,
+    /// `plan_state` where it stands. Added with `agent.control`.
+    Plan,
+    /// Questions the agent asked: its `text`, when any, lists the answers
+    /// (never for a secret one). Added with `agent.control`.
+    Question,
 }
 
 impl AgentItemKind {
@@ -1478,6 +1516,8 @@ impl AgentItemKind {
             item::TOOL => Self::Tool,
             item::NOTICE => Self::Notice,
             item::REASONING => Self::Reasoning,
+            item::PLAN => Self::Plan,
+            item::QUESTION => Self::Question,
             _ => return None,
         })
     }
@@ -1515,6 +1555,9 @@ pub enum AgentToolClass {
     Agent,
     Tasks,
     Other,
+    /// Writing a plan-mode plan to its file: no row (the `Plan` item shows
+    /// it). It comes without its path or content. Added with `agent.control`.
+    Plan,
 }
 
 impl AgentToolClass {
@@ -1530,6 +1573,7 @@ impl AgentToolClass {
             tool_class::AGENT => Self::Agent,
             tool_class::TASKS => Self::Tasks,
             tool_class::OTHER => Self::Other,
+            tool_class::PLAN => Self::Plan,
             _ => return None,
         })
     }
@@ -1618,16 +1662,18 @@ impl AgentAskOutcome {
 }
 
 /// What this build offers on top of what the app passes: it shows PCs'
-/// screens, and its agent records carry turns and thinking (`agent.items2`).
+/// screens, its agent records carry turns and thinking (`agent.items2`), and
+/// it controls agents (`agent.control`: models, plan mode, the queue,
+/// questions, images, files, commands, drafts).
 fn with_built_in_capabilities(caps: &mut Vec<String>) {
-    for cap in [core::MIRROR_VIEW, core::agent::ITEMS2] {
+    for cap in [core::MIRROR_VIEW, core::agent::ITEMS2, core::agent::CONTROL] {
         if !caps.iter().any(|c| c == cap) {
             caps.push(cap.into());
         }
     }
 }
 
-fn ms(value: u64) -> i64 {
+pub(crate) fn ms(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
@@ -1644,6 +1690,16 @@ pub struct AgentInfo {
     /// or `other`; null when the PC doesn't say. Added after contract §6.3.
     #[uniffi(default = None)]
     pub auth: Option<String>,
+    /// The models its CLI reports on the PC; empty until it has said (offer
+    /// "Default" and "Other…" then). Added with `agent.control`.
+    #[uniffi(default = [])]
+    pub models: Vec<AgentModel>,
+    /// What it can do. Added with `agent.control`.
+    #[uniffi(default = [])]
+    pub can: Vec<AgentCan>,
+    /// Its usage windows as its CLI last reported them. Added with `agent.control`.
+    #[uniffi(default = [])]
+    pub limits: Vec<AgentLimit>,
 }
 
 impl std::fmt::Debug for AgentInfo {
@@ -1681,11 +1737,16 @@ pub struct AgentCatalog {
     /// `Event.AgentCatalog` when only this changes.
     #[uniffi(default = false)]
     pub can_say_why: bool,
+    /// The PC takes what `agent.control` adds: models and effort, plan
+    /// mode, steering and the queue, questions, images, `@` files, `/`
+    /// commands and drafts. Without it, offer what 0.1.16 did.
+    #[uniffi(default = false)]
+    pub can_control: bool,
 }
 
 impl AgentCatalog {
-    fn from_core(c: core::AgentCatalog, can_say_why: bool) -> Self {
-        AgentCatalog { can_say_why, ..c.into() }
+    fn from_core(c: core::AgentCatalog, can_say_why: bool, can_control: bool) -> Self {
+        AgentCatalog { can_say_why, can_control, ..c.into() }
     }
 }
 
@@ -1702,12 +1763,16 @@ impl From<core::AgentCatalog> for AgentCatalog {
                     signed_in: a.signed_in,
                     login_hint: a.login_hint,
                     auth: a.auth,
+                    models: a.models.into_iter().map(Into::into).collect(),
+                    can: a.can.iter().filter_map(|c| AgentCan::from_wire(c)).collect(),
+                    limits: a.limits.into_iter().map(Into::into).collect(),
                 })
                 .collect(),
             folders: c.folders.into_iter().map(|f| AgentFolder { id: f.id, label: f.label }).collect(),
             // A mode this build doesn't know can't be started from here.
             modes: c.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
             can_say_why: false,
+            can_control: false,
         }
     }
 }
@@ -1744,6 +1809,31 @@ pub struct AgentThread {
     /// The agent's own plan for the turn; null when it made none. 0.1.14.
     #[uniffi(default = None)]
     pub plan: Option<Vec<AgentPlanStep>>,
+    /// The model chosen for its next turn; null: "Default". `agent.control`.
+    #[uniffi(default = None)]
+    pub model: Option<String>,
+    /// The effort chosen for its next turn; null: the model's default.
+    #[uniffi(default = None)]
+    pub effort: Option<String>,
+    /// The model that answered last, as the CLI said: show "Answered by %1"
+    /// when it isn't `model`.
+    #[uniffi(default = None)]
+    pub answered_model: Option<String>,
+    /// Messages waiting for the running turn to end, oldest first (at most 5).
+    #[uniffi(default = [])]
+    pub queued: Vec<AgentQueued>,
+    /// The queue waits: "Waiting: the last turn didn't finish."
+    #[uniffi(default = false)]
+    pub queue_held: bool,
+    /// How full its context is, once the CLI said.
+    #[uniffi(default = None)]
+    pub context: Option<AgentContext>,
+    /// The PC user's MCP servers in it, counted.
+    #[uniffi(default = None)]
+    pub mcp: Option<AgentMcp>,
+    /// Questions waiting for an answer (not counted in `asks`).
+    #[uniffi(default = 0)]
+    pub asking: u32,
 }
 
 /// A plan step's state.
@@ -1815,6 +1905,19 @@ impl AgentThread {
                     })
                     .collect()
             }),
+            model: t.model,
+            effort: t.effort,
+            answered_model: t.answered_model,
+            queued: t.queued.into_iter().map(Into::into).collect(),
+            queue_held: t.queue_held,
+            context: t.context.map(|c| AgentContext { used: c.used, max: c.max }),
+            mcp: t.mcp.map(|m| AgentMcp {
+                on: m.on,
+                servers: m.servers,
+                connected: m.connected,
+                need_login: m.need_login,
+            }),
+            asking: t.asking,
         })
     }
 }
@@ -1877,6 +1980,18 @@ pub struct AgentItem {
     /// A user item: the id of the tool step this message denied.
     #[uniffi(default = None)]
     pub deny_of: Option<String>,
+    /// A user item sent while a turn ran ("Sent while it worked").
+    #[uniffi(default = None)]
+    pub via: Option<AgentVia>,
+    /// A user item's images.
+    #[uniffi(default = [])]
+    pub images: Vec<AgentImage>,
+    /// A `Plan` item: where it stands; null reads as proposed.
+    #[uniffi(default = None)]
+    pub plan_state: Option<AgentPlanState>,
+    /// A `Question` item: how many it asked and how it ended.
+    #[uniffi(default = None)]
+    pub question: Option<AgentItemQuestion>,
 }
 
 /// Never prints the text or the ids it names (protocol v0 §11).
@@ -1920,6 +2035,10 @@ impl AgentItem {
             end_ms: i.end.map(ms),
             group: i.group,
             deny_of: i.deny_of,
+            via: i.via.as_deref().and_then(AgentVia::from_wire),
+            images: i.images.into_iter().map(Into::into).collect(),
+            plan_state: i.plan_state.as_deref().and_then(AgentPlanState::from_wire),
+            question: i.question.map(Into::into),
         })
     }
 }
@@ -1985,6 +2104,10 @@ pub struct AgentPage {
     pub items: Vec<AgentItem>,
     pub more_before: bool,
     pub asks: Vec<AgentAsk>,
+    /// Questions waiting in the thread (a secret one without its asks).
+    /// Added with `agent.control`.
+    #[uniffi(default = [])]
+    pub questions: Vec<AgentQuestion>,
 }
 
 impl AgentPage {
@@ -1994,6 +2117,7 @@ impl AgentPage {
             items: p.items.into_iter().filter_map(AgentItem::from_core).collect(),
             more_before: p.more_before,
             asks: p.asks.into_iter().filter_map(AgentAsk::from_core).collect(),
+            questions: p.questions.into_iter().map(Into::into).collect(),
         })
     }
 }
@@ -3903,10 +4027,23 @@ impl Event {
             NodeEvent::RemoteRouteChanged { device, state } => {
                 Event::RemoteRouteChanged { id: device.to_string(), state: state.into() }
             }
-            NodeEvent::AgentCatalog { device, catalog, can_say_why } => Event::AgentCatalog {
+            NodeEvent::AgentCatalog { device, catalog, can_say_why, can_control } => Event::AgentCatalog {
                 id: device.to_string(),
-                catalog: catalog.map(|c| AgentCatalog::from_core(c, can_say_why)),
+                catalog: catalog.map(|c| AgentCatalog::from_core(c, can_say_why, can_control)),
             },
+            NodeEvent::AgentQuestion { device, question } => {
+                Event::AgentQuestion { id: device.to_string(), question: question.into() }
+            }
+            NodeEvent::AgentQuestioned { device, token, thread, outcome, by_name } => Event::AgentQuestioned {
+                id: device.to_string(),
+                token,
+                thread,
+                outcome: AgentQuestionOutcome::from_wire(&outcome)?,
+                by_name,
+            },
+            NodeEvent::AgentDraft { device, key, rev } => {
+                Event::AgentDraftChanged { id: device.to_string(), key, rev }
+            }
             NodeEvent::AgentEvent { device, event } => return agent_event(device.to_string(), *event),
             NodeEvent::AgentAsk { device, ask } => {
                 Event::AgentAsk { id: device.to_string(), ask: AgentAsk::from_core(ask)? }
@@ -5894,7 +6031,8 @@ impl G7LinkNode {
     pub fn agent_catalog(&self, id: String) -> Result<Option<AgentCatalog>> {
         let id = parse_id(&id)?;
         let can_say_why = self.node.agent_can_say_why(id);
-        Ok(self.node.agent_catalog(id).map(|c| AgentCatalog::from_core(c, can_say_why)))
+        let can_control = self.node.agent_can_control(id);
+        Ok(self.node.agent_catalog(id).map(|c| AgentCatalog::from_core(c, can_say_why, can_control)))
     }
 
     /// A PC's threads, newest first (at most 50).
@@ -5906,6 +6044,13 @@ impl G7LinkNode {
     }
 
     /// Starts a thread on a PC: `agent` and `folder` are ids from its catalog.
+    /// With a PC whose catalog has `can_control`: `mode` may be `Plan`;
+    /// `model` an id from the agent's `models` (or one the user typed, with
+    /// `custom_model`; one word, never starting with `-`); `effort` one of
+    /// the model's `efforts`; `images` ids from `agent_image_send` (at most
+    /// 4). Otherwise those are `Unsupported`, and nothing is sent.
+    #[uniffi::method(default(model = None, effort = None, images = [], custom_model = false))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn agent_start(
         &self,
         id: String,
@@ -5913,20 +6058,47 @@ impl G7LinkNode {
         folder: String,
         prompt: String,
         mode: AgentMode,
+        model: Option<String>,
+        effort: Option<String>,
+        images: Vec<String>,
+        custom_model: bool,
     ) -> Result<AgentThread> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
-        let start = core::AgentStart { agent, folder, prompt, mode: mode.wire().into() };
+        let start = core::AgentStart {
+            agent,
+            folder,
+            prompt,
+            mode: mode.wire().into(),
+            model,
+            effort,
+            images,
+            custom_model,
+        };
         let thread = self.run(async move { node.agent_start(id, start).await }).await?;
         AgentThread::from_core(thread)
             .ok_or_else(|| G7LinkError::Internal { reason: "unknown thread state".into() })
     }
 
-    /// Sends a follow-up to a thread that isn't running.
-    pub async fn agent_send(&self, id: String, thread: String, text: String) -> Result<()> {
+    /// Sends a follow-up to a thread that isn't running. With a PC whose
+    /// catalog has `can_control`, also to one that is: `dispatch` says
+    /// whether it steers the running turn or waits in its queue (the
+    /// thread's next state shows where it went); `images` are ids from
+    /// `agent_image_send` (at most 4; `text` may then be empty). Without it
+    /// those are `Unsupported`, and nothing is sent.
+    #[uniffi::method(default(dispatch = None, images = []))]
+    pub async fn agent_send(
+        &self,
+        id: String,
+        thread: String,
+        text: String,
+        dispatch: Option<AgentDispatch>,
+        images: Vec<String>,
+    ) -> Result<()> {
         let id = parse_id(&id)?;
         let node = self.node.clone();
-        self.run(async move { Ok(node.agent_send(id, thread, text).await?) }).await
+        let send = core::AgentSend { thread, text, dispatch: agent_control::dispatch_wire(dispatch), images };
+        self.run(async move { Ok(node.agent_send_with(id, send).await?) }).await
     }
 
     /// Stops a thread's running turn.
@@ -6696,6 +6868,7 @@ mod tests {
                 core::AgentPlanStep { text: "Fix it".into(), status: "in_progress".into() },
                 core::AgentPlanStep { text: "Later".into(), status: "someday".into() },
             ]),
+            ..Default::default()
         }
     }
 
@@ -6969,18 +7142,30 @@ mod tests {
     fn a_catalog_says_whether_the_pc_takes_words_with_a_denial() {
         let pc = core::DeviceId([3; 32]);
         let catalog = core::AgentCatalog { agents: vec![], folders: vec![], modes: vec![] };
-        for can_say_why in [false, true] {
-            let event = NodeEvent::AgentCatalog { device: pc, catalog: Some(catalog.clone()), can_say_why };
+        for (can_say_why, can_control) in [(false, false), (true, false), (false, true)] {
+            let event = NodeEvent::AgentCatalog {
+                device: pc,
+                catalog: Some(catalog.clone()),
+                can_say_why,
+                can_control,
+            };
             match Event::from_node(event) {
-                Some(Event::AgentCatalog { catalog: Some(c), .. }) => assert_eq!(c.can_say_why, can_say_why),
+                Some(Event::AgentCatalog { catalog: Some(c), .. }) => {
+                    assert_eq!((c.can_say_why, c.can_control), (can_say_why, can_control));
+                }
                 other => panic!("{other:?}"),
             }
         }
-        assert!(!AgentCatalog::from(catalog).can_say_why);
+        assert!(!AgentCatalog::from(catalog.clone()).can_say_why);
+        assert!(!AgentCatalog::from(catalog).can_control);
         let mut caps = vec!["agent.remote".to_owned(), core::MIRROR_VIEW.to_owned()];
         with_built_in_capabilities(&mut caps);
         with_built_in_capabilities(&mut caps);
-        assert_eq!(caps, ["agent.remote", core::MIRROR_VIEW, core::agent::ITEMS2], "once each");
+        assert_eq!(
+            caps,
+            ["agent.remote", core::MIRROR_VIEW, core::agent::ITEMS2, core::agent::CONTROL],
+            "once each"
+        );
     }
 
     #[test]
@@ -6993,14 +7178,173 @@ mod tests {
                 signed_in: true,
                 login_hint: "codex login".into(),
                 auth: Some("api_key".into()),
+                ..Default::default()
             }],
             folders: vec![core::AgentCatalogFolder { id: "f1".into(), label: "g7linux".into() }],
-            modes: vec!["supervised".into(), "plan".into()],
+            modes: vec!["supervised".into(), "plan".into(), "full_access".into()],
         });
-        assert_eq!(catalog.modes, vec![AgentMode::Supervised]);
+        assert_eq!(catalog.modes, vec![AgentMode::Supervised, AgentMode::Plan]);
+        assert_eq!(AgentMode::Plan.wire(), "plan");
         assert_eq!(catalog.agents[0].auth.as_deref(), Some("api_key"));
         assert_eq!(catalog.folders[0].label, "g7linux");
         assert_eq!(AgentMode::AutoEdit.wire(), "auto_edit");
+    }
+
+    #[test]
+    fn what_control_adds_reaches_kotlin() {
+        use g7link_core::agent;
+        let image = core::AgentImage { id: "a".repeat(32), name: "shot.png".into(), bytes: 9, w: 4, h: 3 };
+        let thread = core::AgentThread {
+            mode: agent::mode::PLAN.into(),
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            answered_model: Some("claude-sonnet-4-5".into()),
+            queued: vec![core::AgentQueued {
+                id: "0123456789abcdef".into(),
+                text: "Then the tests.".into(),
+                truncated: true,
+                by_name: Some("Pixel".into()),
+                images: vec![image.clone()],
+                created: 1_795_000_000_000,
+            }],
+            queue_held: true,
+            context: Some(core::AgentContext { used: 1, max: 2 }),
+            mcp: Some(core::AgentMcp { on: true, servers: 3, connected: 2, need_login: 1 }),
+            asking: 2,
+            ..core_thread("waiting")
+        };
+        let thread = AgentThread::from_core(thread).unwrap();
+        assert_eq!(thread.mode, AgentMode::Plan);
+        assert_eq!((thread.model.as_deref(), thread.effort.as_deref()), (Some("opus"), Some("high")));
+        assert_eq!(thread.queued[0].images[0].width, 4);
+        assert!(thread.queued[0].truncated && thread.queue_held);
+        assert_eq!(thread.queued[0].created_ms, 1_795_000_000_000);
+        assert_eq!(thread.mcp, Some(AgentMcp { on: true, servers: 3, connected: 2, need_login: 1 }));
+        assert_eq!((thread.asking, thread.context.map(|c| c.max)), (2, Some(2)));
+        let older = AgentThread::from_core(core_thread("done")).unwrap();
+        assert!(older.queued.is_empty() && older.model.is_none() && older.asking == 0);
+
+        let item =
+            |kind: &str| core::AgentItem { seq: 1, id: "i".into(), kind: kind.into(), ..Default::default() };
+        let user = core::AgentItem {
+            via: Some(agent::via::STEER.into()),
+            images: vec![image],
+            ..item(agent::item::USER)
+        };
+        let user = AgentItem::from_core(user).unwrap();
+        assert_eq!((user.via, user.images.len()), (Some(AgentVia::Steer), 1));
+        let plan = core::AgentItem { plan_state: Some("replaced".into()), ..item(agent::item::PLAN) };
+        let plan = AgentItem::from_core(plan).unwrap();
+        assert_eq!((plan.kind, plan.plan_state), (AgentItemKind::Plan, Some(AgentPlanState::Replaced)));
+        assert_eq!(AgentItem::from_core(item(agent::item::QUESTION)).unwrap().kind, AgentItemKind::Question);
+        let asked = core::AgentItem {
+            question: Some(core::AgentItemQuestion {
+                count: 2,
+                secret: true,
+                outcome: Some("dismissed".into()),
+                by_name: Some("Pixel".into()),
+            }),
+            ..item(agent::item::QUESTION)
+        };
+        let question = AgentItem::from_core(asked).unwrap().question.unwrap();
+        assert_eq!((question.count, question.secret), (2, true));
+        assert_eq!(
+            (question.outcome, question.by_name.as_deref()),
+            (Some(AgentQuestionOutcome::Dismissed), Some("Pixel"))
+        );
+        let later = core::AgentItem { via: Some("teleport".into()), ..item(agent::item::USER) };
+        assert_eq!(AgentItem::from_core(later).unwrap().via, None, "a later word reads as absent");
+
+        let catalog = AgentCatalog::from(core::AgentCatalog {
+            agents: vec![core::AgentCatalogAgent {
+                id: "claude".into(),
+                models: vec![core::AgentModel {
+                    id: "opus".into(),
+                    name: "Opus".into(),
+                    is_default: true,
+                    efforts: vec!["high".into()],
+                    short: true,
+                    ..Default::default()
+                }],
+                can: vec!["plan".into(), "teleport".into(), "mcp_switch".into()],
+                limits: vec![core::AgentLimit {
+                    window: "300".into(),
+                    used_pct: Some(85),
+                    resets: Some(1_795_010_000_000),
+                    state: "rejected_soon".into(),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let claude = &catalog.agents[0];
+        assert!(claude.models[0].is_default && claude.models[0].short);
+        assert_eq!(claude.can, [AgentCan::Plan, AgentCan::McpSwitch]);
+        assert_eq!(claude.limits[0].state, AgentLimitState::Ok, "a state this build doesn't know");
+        assert_eq!(claude.limits[0].resets_ms, Some(1_795_010_000_000));
+    }
+
+    #[test]
+    fn questions_and_drafts_become_their_own_events() {
+        let pc = core::DeviceId([4; 32]);
+        let question = core::AgentQuestion {
+            token: "t".repeat(32),
+            thread: "abc".into(),
+            agent: "codex".into(),
+            item: "q:1".into(),
+            asks: vec![core::AgentQuestionAsk {
+                id: "0".into(),
+                text: "Which?".into(),
+                options: vec![core::AgentQuestionOption { label: "A".into(), note: None }],
+                ..Default::default()
+            }],
+            created: 1,
+            expires: 2,
+            ..Default::default()
+        };
+        match Event::from_node(NodeEvent::AgentQuestion { device: pc, question: question.clone() }) {
+            Some(Event::AgentQuestion { question, .. }) => {
+                assert_eq!(question.asks[0].options[0].label, "A");
+                assert_eq!(question.expires_ms, 2);
+            }
+            other => panic!("{other:?}"),
+        }
+        let secret = core::AgentQuestion { secret: true, ..question };
+        match Event::from_node(NodeEvent::AgentQuestion { device: pc, question: secret }) {
+            Some(Event::AgentQuestion { question, .. }) => {
+                assert!(question.secret && question.asks.is_empty())
+            }
+            other => panic!("{other:?}"),
+        }
+        let questioned = NodeEvent::AgentQuestioned {
+            device: pc,
+            token: "t".repeat(32),
+            thread: "abc".into(),
+            outcome: "answered".into(),
+            by_name: Some("Pixel".into()),
+        };
+        assert!(matches!(
+            Event::from_node(questioned),
+            Some(Event::AgentQuestioned { outcome: AgentQuestionOutcome::Answered, .. })
+        ));
+        let later = NodeEvent::AgentQuestioned {
+            device: pc,
+            token: "t".repeat(32),
+            thread: "abc".into(),
+            outcome: "forgotten".into(),
+            by_name: None,
+        };
+        assert!(Event::from_node(later).is_none(), "an outcome this build doesn't know is dropped");
+        assert!(matches!(
+            Event::from_node(NodeEvent::AgentDraft { device: pc, key: "abc".into(), rev: 3 }),
+            Some(Event::AgentDraftChanged { rev: 3, .. })
+        ));
+        let shown = format!(
+            "{:?} {:?}",
+            AgentAnswer { id: "0".into(), labels: vec!["secret label".into()], other: Some("secret".into()) },
+            AgentDraft { key: "abc".into(), text: "secret".into(), images: vec![], rev: 1, by_name: None },
+        );
+        assert!(!shown.contains("secret"), "{shown}");
     }
 
     #[test]

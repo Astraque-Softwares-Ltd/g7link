@@ -596,7 +596,18 @@ fn is_background_rpc(t: &str) -> bool {
             | types::AGENT_SEND
             | types::AGENT_CANCEL
             | types::AGENT_READ
+            | types::AGENT_SESSIONS
+            | types::AGENT_SESSION_READ
+            | types::AGENT_SESSION_CONTINUE
             | types::AGENT_ANSWER
+            | types::AGENT_CONFIGURE
+            | types::AGENT_QUEUE
+            | types::AGENT_REPLY
+            | types::AGENT_IMPLEMENT
+            | types::AGENT_FILES
+            | types::AGENT_COMMANDS
+            | types::AGENT_DRAFT_GET
+            | types::AGENT_DRAFT_SET
     )
 }
 
@@ -650,6 +661,7 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             if had_caps {
                 shared.send_toggles_state(session).await;
                 crate::agents::peer_caps_changed(shared, &peer);
+                crate::agents::refresh_catalogs(shared, Some(peer)).await;
             }
         }
         types::DEVICE_RING => {

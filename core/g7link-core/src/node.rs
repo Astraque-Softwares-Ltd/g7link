@@ -4580,6 +4580,13 @@ impl Node {
         crate::agents::can_say_why(&self.shared, &peer)
     }
 
+    /// Phone: whether `peer` and this phone both offer `agent.control`
+    /// (models, plan mode, the queue, questions, images, files, commands and
+    /// drafts, `docs/protocol/agents.md` §5).
+    pub fn agent_can_control(&self, peer: DeviceId) -> bool {
+        crate::agents::can_control(&self.shared, &peer)
+    }
+
     /// Phone: `peer`'s threads, newest first.
     pub async fn agent_threads(&self, peer: DeviceId) -> Result<Vec<crate::AgentThread>> {
         crate::agents::threads(&self.shared, peer).await
@@ -4592,7 +4599,18 @@ impl Node {
 
     /// Phone: sends a follow-up to a thread that isn't running.
     pub async fn agent_send(&self, peer: DeviceId, thread: String, text: String) -> Result<()> {
-        crate::agents::send(&self.shared, peer, thread, text).await
+        let body = crate::agents::AgentSend { thread, text, ..Default::default() };
+        crate::agents::send(&self.shared, peer, body).await
+    }
+
+    /// Phone: sends a message to a thread, with what §5 adds: `dispatch`
+    /// (steer or queue while a turn runs) and images sent first with
+    /// [`agent_image_send`](Self::agent_image_send). Those need
+    /// `agent.control` on both sides (`Unsupported` otherwise, and nothing
+    /// is sent). It reaches the thread through its queue when the PC queued
+    /// it: the thread's next state says so.
+    pub async fn agent_send_with(&self, peer: DeviceId, send: crate::agents::AgentSend) -> Result<()> {
+        crate::agents::send(&self.shared, peer, send).await
     }
 
     /// Phone: stops a thread's running turn.
@@ -4703,6 +4721,126 @@ impl Node {
         request: crate::agents::AgentExportRequest,
     ) -> Result<crate::AgentExport> {
         crate::agents::export_unchecked(&self.shared, peer, request).await
+    }
+
+    // ---- Agents: control (docs/protocol/agents.md §5) ----
+    //
+    // Each needs `agent.control` on both sides: `Unsupported` otherwise,
+    // without sending anything.
+
+    /// PC: an agent asks the user something; every phone that gets §5 is
+    /// told, a secret question without its asks (and a phone's answer to it
+    /// is refused from then on).
+    pub async fn agent_question(&self, question: crate::agents::AgentQuestion) -> Result<()> {
+        crate::agents::send_question(&self.shared, question)
+    }
+
+    /// PC: a question ended (`outcome`: `answered`, `dismissed`, `expired`
+    /// or `cancelled`); `by_name` names the device that answered.
+    pub async fn agent_questioned(&self, questioned: crate::agents::AgentQuestioned) -> Result<()> {
+        crate::agents::send_questioned(&self.shared, questioned)
+    }
+
+    /// PC: draft `key` changed (now `rev`); every phone that gets §5 but
+    /// `except` (the one that changed it, if a phone did) is told.
+    pub async fn agent_draft(&self, key: String, rev: u64, except: Option<DeviceId>) -> Result<()> {
+        crate::agents::send_draft(&self.shared, key, rev, except)
+    }
+
+    /// Phone: changes a thread's model, effort or mode for its next turn
+    /// (`supervised` or `plan` only); the thread as it is now.
+    pub async fn agent_configure(
+        &self,
+        peer: DeviceId,
+        configure: crate::agents::AgentConfigure,
+    ) -> Result<crate::AgentThread> {
+        crate::agents::configure(&self.shared, peer, configure).await
+    }
+
+    /// Phone: edits, removes or sends now one queued message.
+    pub async fn agent_queue(&self, peer: DeviceId, change: crate::agents::AgentQueueChange) -> Result<()> {
+        crate::agents::queue(&self.shared, peer, change).await
+    }
+
+    /// Phone: answers a question (one answer per ask), or dismisses it. A
+    /// secret question is answered on the PC only (`Denied`).
+    pub async fn agent_reply(&self, peer: DeviceId, reply: crate::agents::AgentQuestionReply) -> Result<()> {
+        crate::agents::reply(&self.shared, peer, reply).await
+    }
+
+    /// Phone: implements the thread's newest proposed plan (`item`), asking
+    /// before edits and commands.
+    pub async fn agent_implement(&self, peer: DeviceId, thread: String, item: String) -> Result<()> {
+        crate::agents::implement(&self.shared, peer, crate::agents::AgentImplement { thread, item }).await
+    }
+
+    /// Phone: files of a thread's folder (or a folder) matching `query`, for `@`.
+    pub async fn agent_files(
+        &self,
+        peer: DeviceId,
+        request: crate::agents::AgentFilesRequest,
+    ) -> Result<crate::agents::AgentFiles> {
+        crate::agents::files(&self.shared, peer, request).await
+    }
+
+    /// Phone: the slash commands `agent` offers in `folder`.
+    pub async fn agent_commands(
+        &self,
+        peer: DeviceId,
+        agent: String,
+        folder: String,
+    ) -> Result<Vec<crate::agents::AgentCommand>> {
+        crate::agents::commands(&self.shared, peer, crate::agents::AgentCommandsRequest { agent, folder })
+            .await
+    }
+
+    /// Phone: draft `key` (a thread id, or `new:` and a folder id), if there is one.
+    pub async fn agent_draft_get(
+        &self,
+        peer: DeviceId,
+        key: String,
+    ) -> Result<Option<crate::agents::AgentDraft>> {
+        crate::agents::draft_get(&self.shared, peer, key).await
+    }
+
+    /// Phone: stores a draft when `rev` is still its `rev` (0 for a new
+    /// one); otherwise the reply's `conflict` is the draft as it is.
+    pub async fn agent_draft_set(
+        &self,
+        peer: DeviceId,
+        set: crate::agents::AgentDraftSet,
+    ) -> Result<crate::agents::AgentDraftSaved> {
+        crate::agents::draft_set(&self.shared, peer, set).await
+    }
+
+    /// Phone: sends one image (at most 10 MiB) for a message, on a stream
+    /// of its own; one at a time (`BUSY` while another runs). Its id goes in
+    /// the message.
+    pub async fn agent_image_send(
+        &self,
+        peer: DeviceId,
+        name: String,
+        bytes: Vec<u8>,
+    ) -> Result<crate::agents::AgentImage> {
+        crate::agents::image_send(&self.shared, peer, name, bytes).await
+    }
+
+    /// [`agent_image_send`](Self::agent_image_send) with a meta that needn't
+    /// match the bytes, so tests can see what a PC refuses.
+    #[doc(hidden)]
+    pub async fn debug_agent_image_send(
+        &self,
+        peer: DeviceId,
+        meta: crate::agents::AgentImageMeta,
+        bytes: Vec<u8>,
+    ) -> Result<crate::agents::AgentImage> {
+        crate::agents::image_send_unchecked(&self.shared, peer, meta, bytes).await
+    }
+
+    /// Phone: a JPEG of image `id`, at most 150 KiB, no larger than `max` px
+    /// a side (64 to 1024; 512 when `None`).
+    pub async fn agent_image_thumb(&self, peer: DeviceId, id: String, max: Option<u32>) -> Result<Vec<u8>> {
+        crate::agents::image_thumb(&self.shared, peer, id, max).await
     }
 
     /// Sends an `agent.*` request as is, without the checks the methods
@@ -4961,6 +5099,7 @@ impl Node {
         for session in self.shared.live_sessions() {
             self.shared.send_deck(&session).await;
         }
+        crate::agents::refresh_catalogs(&self.shared, None).await;
     }
 
     // ---- Timeline ----

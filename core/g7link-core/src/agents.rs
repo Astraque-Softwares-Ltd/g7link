@@ -16,6 +16,12 @@
 //!
 //! An export (§4) is larger than a control message, so it travels on a
 //! stream of its own, checked the same way.
+//!
+//! The control messages (§5) need `agent.control` on both sides. To a phone
+//! without it the PC sends what phase 1 sent: no models, queue or
+//! questions, plan mode as supervised, a plan as an answer and a question
+//! as a tool step. Images travel on streams of their own, one upload at a
+//! time per phone, refused when more bytes come than were announced.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -25,14 +31,22 @@ use std::{
 
 pub use g7link_protocol::messages::{
     AgentAnswer, AgentAsk, AgentAsked, AgentCancel, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder,
-    AgentEvent, AgentExportMeta, AgentExportRequest, AgentItem, AgentItems, AgentPlanStep, AgentRead,
-    AgentSend, AgentSession, AgentSessionContinue, AgentSessionEvent, AgentSessionItem, AgentSessionItems,
-    AgentSessionRead, AgentSessionWatch, AgentSessions, AgentStart, AgentThread, AgentThreads, AgentTool,
-    AgentWatch, agent, clean_deny_message, is_valid_agent_id,
+    AgentCommand, AgentCommands, AgentCommandsRequest, AgentConfigure, AgentContext, AgentDraft,
+    AgentDraftChanged, AgentDraftReply, AgentDraftRequest, AgentDraftSaved, AgentDraftSet, AgentEvent,
+    AgentExportMeta, AgentExportRequest, AgentFileHit, AgentFiles, AgentFilesRequest, AgentImage,
+    AgentImageMeta, AgentImageThumb, AgentImageThumbMeta, AgentImplement, AgentItem, AgentItemQuestion,
+    AgentItems, AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion, AgentQuestionAnswer,
+    AgentQuestionAsk, AgentQuestionOption, AgentQuestionReply, AgentQuestioned, AgentQueueChange,
+    AgentQueued, AgentRead, AgentSend, AgentSession, AgentSessionContinue, AgentSessionEvent,
+    AgentSessionItem, AgentSessionItems, AgentSessionRead, AgentSessionWatch, AgentSessions, AgentStart,
+    AgentThread, AgentThreads, AgentTool, AgentWatch, agent, clean_deny_message, is_valid_agent_id,
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, ProtocolError,
-    messages::{StreamHeader, agent_export, clean_agent_export, clean_export_file_name, types},
+    messages::{
+        StreamHeader, agent_export, agent_image, clean_agent_export, clean_export_file_name,
+        clean_image_name, is_jpeg, types,
+    },
     read_frame, write_frame,
 };
 use iroh::endpoint::{RecvStream, SendStream};
@@ -65,6 +79,37 @@ const EXPORT_SEND: Duration = Duration::from_secs(60);
 /// Reasoning items remembered (thread, item id), so their deltas can be
 /// kept from phones without `agent.items2`. The oldest go first.
 const REASONING_KEPT: usize = 256;
+/// Secret questions remembered (their tokens), so a phone's reply to one is
+/// refused here. The oldest go first.
+const SECRETS_KEPT: usize = 64;
+/// How long an image stream waits for its meta, or for the PC's answer.
+const IMAGE_WAIT: Duration = Duration::from_secs(20);
+/// How long an image's bytes may take to cross (contract: an upload not
+/// ended in 60 s is dropped).
+const IMAGE_SEND: Duration = Duration::from_secs(60);
+/// What one read of an image's bytes takes at most.
+const IMAGE_CHUNK: usize = 64 * 1024;
+
+/// What a phone does to one queued message (`agent.queue`).
+#[derive(Clone, PartialEq, Eq)]
+pub enum QueueAction {
+    /// Replace its text (cleaned, 1 to [`agent::MAX_QUEUED_TEXT_BYTES`]).
+    Edit(String),
+    Remove,
+    /// Steer with it now when the thread works and the agent can, else
+    /// start a turn with it.
+    SendNow,
+}
+
+impl std::fmt::Debug for QueueAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Edit(text) => f.debug_struct("Edit").field("bytes", &text.len()).finish(),
+            Self::Remove => f.write_str("Remove"),
+            Self::SendNow => f.write_str("SendNow"),
+        }
+    }
+}
 
 /// A phone's request, after the core checked the toggle, the limits and the
 /// mode. Answered by [`Platform::agent_request`](crate::Platform::agent_request).
@@ -72,10 +117,63 @@ const REASONING_KEPT: usize = 256;
 pub enum AgentRequest {
     /// `agent.threads`: newest first, at most [`agent::MAX_THREADS`].
     Threads,
-    /// `agent.start`. `mode` is always `"supervised"`.
-    Start { agent: String, folder: String, prompt: String, mode: String },
-    /// `agent.send`.
-    Send { thread: String, text: String },
+    /// `agent.start`. `mode` is `"supervised"`, or `"plan"` from a phone
+    /// with `agent.control`; `model`, `effort` and `images` come only from
+    /// such a phone too (`model` as one argument: never a flag, no space).
+    /// `custom_model`: the user typed `model` (it needn't be listed).
+    Start {
+        agent: String,
+        folder: String,
+        prompt: String,
+        mode: String,
+        model: Option<String>,
+        effort: Option<String>,
+        images: Vec<String>,
+        custom_model: bool,
+    },
+    /// `agent.send`. `dispatch` (one of [`agent::dispatch`]) and `images`
+    /// only from a phone with `agent.control`; without `dispatch` the turn
+    /// must have ended. `text` may be empty with images.
+    Send { thread: String, text: String, dispatch: Option<String>, images: Vec<String> },
+    /// `agent.configure`: changes for the thread's next turn. An empty
+    /// `model` or `effort` goes back to the default; `mode` is
+    /// `"supervised"` or `"plan"`. Answered with `Thread`.
+    Configure {
+        thread: String,
+        model: Option<String>,
+        effort: Option<String>,
+        mode: Option<String>,
+        custom_model: bool,
+    },
+    /// `agent.queue`: a change to the queued message `id` of `thread`.
+    Queue { thread: String, id: String, action: QueueAction },
+    /// `agent.reply` with answers, one per ask, by the asks' labels or the
+    /// user's own words. Never for a secret question (the core refuses it).
+    QuestionAnswer { token: String, answers: Vec<AgentQuestionAnswer> },
+    /// `agent.reply` with `dismiss`: the user won't answer.
+    QuestionDismiss { token: String },
+    /// `agent.implement`: implement the thread's newest proposed plan
+    /// (`item`), asking before edits and commands (supervised, always).
+    Implement { thread: String, item: String },
+    /// `agent.files`: files of a thread's folder, or of a folder, for `@`;
+    /// at most `limit` (1 to [`agent::MAX_FILE_HITS`]). Paths relative to it.
+    Files { thread: Option<String>, folder: Option<String>, query: String, limit: u32 },
+    /// `agent.commands`: the slash commands `agent` offers in `folder`.
+    Commands { agent: String, folder: String },
+    /// `agent.draft.get`. Answered with `Draft`.
+    DraftGet { key: String },
+    /// `agent.draft.set`: store it when `rev` is the draft's (0: new).
+    /// Answered with `DraftSaved`; tell the other phones with
+    /// [`Node::agent_draft`](crate::Node::agent_draft).
+    DraftSet { key: String, text: String, images: Vec<String>, rev: u64 },
+    /// An image a phone sent on an `agent/image` stream, all its bytes (at
+    /// most [`agent::MAX_IMAGE_BYTES`], not yet checked to be an image):
+    /// hand it to the host's bounded decoder. `name` is a file name.
+    /// Answered with `Image`.
+    ImageAdd { name: String, bytes: Vec<u8> },
+    /// A JPEG of image `id` no larger than `max` px a side and
+    /// [`agent::MAX_THUMB_BYTES`]. Answered with `Thumb`.
+    ImageThumb { id: String, max: u32 },
     /// `agent.cancel`: interrupt the running turn.
     Cancel { thread: String },
     /// `agent.read`: the newest `limit` items, or the ones before `before`.
@@ -107,14 +205,63 @@ impl std::fmt::Debug for AgentRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Threads => f.write_str("Threads"),
-            Self::Start { agent, folder, mode, .. } => f
+            Self::Start { agent, folder, mode, model, effort, images, custom_model, .. } => f
                 .debug_struct("Start")
                 .field("agent", agent)
                 .field("folder", folder)
                 .field("mode", mode)
+                .field("model", model)
+                .field("effort", effort)
+                .field("images", &images.len())
+                .field("custom_model", custom_model)
                 .finish_non_exhaustive(),
-            Self::Send { thread, .. } => {
-                f.debug_struct("Send").field("thread", thread).finish_non_exhaustive()
+            Self::Send { thread, dispatch, images, .. } => f
+                .debug_struct("Send")
+                .field("thread", thread)
+                .field("dispatch", dispatch)
+                .field("images", &images.len())
+                .finish_non_exhaustive(),
+            Self::Configure { thread, model, effort, mode, custom_model } => f
+                .debug_struct("Configure")
+                .field("thread", thread)
+                .field("model", model)
+                .field("effort", effort)
+                .field("mode", mode)
+                .field("custom_model", custom_model)
+                .finish(),
+            Self::Queue { thread, action, .. } => f
+                .debug_struct("Queue")
+                .field("thread", thread)
+                .field("action", action)
+                .finish_non_exhaustive(),
+            Self::QuestionAnswer { answers, .. } => {
+                f.debug_struct("QuestionAnswer").field("answers", answers).finish_non_exhaustive()
+            }
+            Self::QuestionDismiss { .. } => f.debug_struct("QuestionDismiss").finish_non_exhaustive(),
+            Self::Implement { thread, .. } => {
+                f.debug_struct("Implement").field("thread", thread).finish_non_exhaustive()
+            }
+            Self::Files { thread, folder, limit, .. } => f
+                .debug_struct("Files")
+                .field("thread", thread)
+                .field("folder", folder)
+                .field("limit", limit)
+                .finish_non_exhaustive(),
+            Self::Commands { agent, folder } => {
+                f.debug_struct("Commands").field("agent", agent).field("folder", folder).finish()
+            }
+            Self::DraftGet { .. } => f.debug_struct("DraftGet").finish_non_exhaustive(),
+            Self::DraftSet { text, images, rev, .. } => f
+                .debug_struct("DraftSet")
+                .field("bytes", &text.len())
+                .field("images", &images.len())
+                .field("rev", rev)
+                .finish_non_exhaustive(),
+            Self::ImageAdd { bytes, .. } => {
+                f.debug_struct("ImageAdd").field("bytes", &bytes.len()).finish_non_exhaustive()
+            }
+            Self::ImageThumb { max, .. } => {
+                f.debug_struct("ImageThumb").field("max", max).finish_non_exhaustive()
             }
             Self::Cancel { thread } => f.debug_struct("Cancel").field("thread", thread).finish(),
             Self::Read { thread, before, limit } => f
@@ -149,11 +296,14 @@ impl std::fmt::Debug for AgentRequest {
 }
 
 /// The platform's answer to an [`AgentRequest`]: `Threads` for `Threads`,
-/// `Thread` for `Start` and `SessionContinue`, `Items` for `Read`,
-/// `Sessions` for `Sessions`, `SessionItems` for `SessionRead`, `Export` for
-/// `Export`, `Ok` for the rest. Threads carry `from_phone` for the phone
-/// that asked.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Thread` for `Start`, `SessionContinue` and `Configure`, `Items` for
+/// `Read`, `Sessions` for `Sessions`, `SessionItems` for `SessionRead`,
+/// `Export` for `Export`, `Files` for `Files`, `Commands` for `Commands`,
+/// `Draft` for `DraftGet`, `DraftSaved` for `DraftSet`, `Image` for
+/// `ImageAdd`, `Thumb` for `ImageThumb`, `Ok` for the rest. Threads carry
+/// `from_phone` for the phone that asked; the core makes everything fit the
+/// phone that asked (legacy forms, no secret asks, relative paths only).
+#[derive(Clone, PartialEq, Eq)]
 pub enum AgentReply {
     Ok,
     Threads(Vec<AgentThread>),
@@ -162,6 +312,34 @@ pub enum AgentReply {
     Sessions(Vec<AgentSession>),
     SessionItems(AgentSessionItems),
     Export(AgentExport),
+    Files(AgentFiles),
+    Commands(Vec<AgentCommand>),
+    Draft(Option<AgentDraft>),
+    DraftSaved(AgentDraftSaved),
+    Image(AgentImage),
+    /// A JPEG.
+    Thumb(Vec<u8>),
+}
+
+/// Never prints a thumbnail's bytes.
+impl std::fmt::Debug for AgentReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ok => f.write_str("Ok"),
+            Self::Threads(threads) => f.debug_tuple("Threads").field(threads).finish(),
+            Self::Thread(thread) => f.debug_tuple("Thread").field(thread).finish(),
+            Self::Items(items) => f.debug_tuple("Items").field(items).finish(),
+            Self::Sessions(sessions) => f.debug_tuple("Sessions").field(sessions).finish(),
+            Self::SessionItems(items) => f.debug_tuple("SessionItems").field(items).finish(),
+            Self::Export(export) => f.debug_tuple("Export").field(export).finish(),
+            Self::Files(files) => f.debug_tuple("Files").field(&files.files.len()).finish(),
+            Self::Commands(commands) => f.debug_tuple("Commands").field(&commands.len()).finish(),
+            Self::Draft(draft) => f.debug_tuple("Draft").field(draft).finish(),
+            Self::DraftSaved(saved) => f.debug_tuple("DraftSaved").field(saved).finish(),
+            Self::Image(image) => f.debug_tuple("Image").field(image).finish(),
+            Self::Thumb(bytes) => f.debug_struct("Thumb").field("bytes", &bytes.len()).finish(),
+        }
+    }
 }
 
 /// A thread or a session as Markdown (`docs/protocol/agents.md` §4).
@@ -261,11 +439,26 @@ struct Inner {
     prompted_sessions: HashSet<DeviceId>,
     /// PC: `agent.session` pacing per session id.
     session_gates: HashMap<String, SessionGate>,
-    /// Phone: the last catalog each PC sent, if it had agents, and whether
-    /// that PC offered `agent.say_why` when it was last told.
-    peer_catalogs: HashMap<DeviceId, (AgentCatalog, bool)>,
+    /// Phone: the last catalog each PC sent, if it had agents, and what that
+    /// PC offered when it was last told.
+    peer_catalogs: HashMap<DeviceId, (AgentCatalog, PeerOffers)>,
     /// PC: reasoning items seen lately, as (thread, item id).
     reasoning: VecDeque<(String, String)>,
+    /// PC: tokens of secret questions sent lately (a phone may not answer them).
+    secrets: VecDeque<String>,
+    /// PC: phones with an image upload running (one at a time each).
+    uploading: HashSet<DeviceId>,
+    /// PC: the form of the catalog each phone got last: with §5 or not.
+    catalog_forms: HashMap<DeviceId, bool>,
+}
+
+/// Phone: what a PC offers on top of `agent.host`, as it last said.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PeerOffers {
+    /// `agent.say_why`.
+    pub say_why: bool,
+    /// `agent.control`.
+    pub control: bool,
 }
 
 impl Inner {
@@ -282,6 +475,40 @@ impl Inner {
 
     fn is_reasoning(&self, thread: &str, item_id: &str) -> bool {
         self.reasoning.iter().any(|(t, i)| t == thread && i == item_id)
+    }
+
+    /// Remembers that the question `token` is secret.
+    fn note_secret(&mut self, token: &str) {
+        if self.secrets.iter().any(|t| t == token) {
+            return;
+        }
+        if self.secrets.len() == SECRETS_KEPT {
+            self.secrets.pop_front();
+        }
+        self.secrets.push_back(token.to_owned());
+    }
+
+    fn is_secret(&self, token: &str) -> bool {
+        self.secrets.iter().any(|t| t == token)
+    }
+}
+
+/// PC: `peer`'s image upload, while it runs; it ends when this goes.
+struct Upload {
+    shared: Arc<Shared>,
+    peer: DeviceId,
+}
+
+impl Upload {
+    /// `None` while `peer` has one running.
+    fn begin(shared: &Arc<Shared>, peer: DeviceId) -> Option<Self> {
+        shared.agents.lock().uploading.insert(peer).then(|| Self { shared: shared.clone(), peer })
+    }
+}
+
+impl Drop for Upload {
+    fn drop(&mut self) {
+        self.shared.agents.lock().uploading.remove(&self.peer);
     }
 }
 
@@ -306,6 +533,7 @@ impl Agents {
         inner.watching.remove(peer);
         inner.gates.remove(peer);
         inner.peer_catalogs.remove(peer);
+        inner.catalog_forms.remove(peer);
         inner.session_watching.remove(peer).is_some()
     }
 
@@ -345,6 +573,11 @@ impl Agents {
     pub fn peer_catalog(&self, peer: &DeviceId) -> Option<AgentCatalog> {
         self.lock().peer_catalogs.get(peer).map(|(catalog, _)| catalog.clone())
     }
+
+    /// PC: whether the question `token` is secret, as far as it was told.
+    fn is_secret(&self, token: &str) -> bool {
+        self.lock().is_secret(token)
+    }
 }
 
 impl Shared {
@@ -362,23 +595,48 @@ impl Shared {
         self.store.get_peer(peer).ok().flatten().is_some_and(|p| p.caps.contains(cap))
     }
 
-    /// The live sessions this PC sends agent pushes to.
-    fn agent_recipients(&self) -> Vec<Arc<Session>> {
-        self.agent_recipients_items2().into_iter().map(|(session, _)| session).collect()
+    /// Whether this PC offers §5 (`agent.control`).
+    fn offers_control(&self) -> bool {
+        self.we_offer(agent::CONTROL)
     }
 
-    /// [`agent_recipients`](Self::agent_recipients), each with whether that
-    /// phone takes reasoning items (`agent.items2`).
-    fn agent_recipients_items2(&self) -> Vec<(Arc<Session>, bool)> {
+    /// Whether this PC and `peer` both offer `agent.control`: only then does
+    /// either side use §5.
+    fn control_with(&self, peer: &DeviceId) -> bool {
+        self.offers_control() && self.peer_offers(peer, agent::CONTROL)
+    }
+
+    /// The live sessions this PC sends agent pushes to.
+    fn agent_recipients(&self) -> Vec<Arc<Session>> {
+        self.agent_recipient_caps().into_iter().map(|r| r.session).collect()
+    }
+
+    /// [`agent_recipients`](Self::agent_recipients), each with what that phone takes.
+    fn agent_recipient_caps(&self) -> Vec<Recipient> {
         if !self.offers_agents() {
             return Vec::new();
         }
-        self.live_sessions()
+        let sessions = self.live_sessions().into_iter().filter(|s| self.toggle_on(&s.peer, TOGGLE)).collect();
+        self.with_caps(sessions, agent::REMOTE)
+    }
+
+    /// The phones that get §5's pushes (questions, drafts).
+    fn control_recipients(&self) -> Vec<Arc<Session>> {
+        self.agent_recipient_caps().into_iter().filter(|r| r.control).map(|r| r.session).collect()
+    }
+
+    /// `sessions` whose phone offers `cap`, each with what it takes.
+    fn with_caps(&self, sessions: Vec<Arc<Session>>, cap: &str) -> Vec<Recipient> {
+        let control = self.offers_control();
+        sessions
             .into_iter()
-            .filter(|s| self.toggle_on(&s.peer, TOGGLE))
             .filter_map(|s| {
                 let caps = self.store.get_peer(&s.peer).ok().flatten()?.caps;
-                caps.contains(agent::REMOTE).then(|| (s, caps.contains(agent::ITEMS2)))
+                caps.contains(cap).then(|| Recipient {
+                    items2: caps.contains(agent::ITEMS2),
+                    control: control && caps.contains(agent::CONTROL),
+                    session: s,
+                })
             })
             .collect()
     }
@@ -386,30 +644,30 @@ impl Shared {
     /// The live sessions this PC sends §3's pushes to: both toggles on, and
     /// the phone shows sessions.
     fn session_recipients(&self) -> Vec<Arc<Session>> {
-        self.session_recipients_items2().into_iter().map(|(session, _)| session).collect()
+        self.session_recipient_caps().into_iter().map(|r| r.session).collect()
     }
 
-    /// [`session_recipients`](Self::session_recipients), each with whether
-    /// that phone takes reasoning items (`agent.items2`).
-    fn session_recipients_items2(&self) -> Vec<(Arc<Session>, bool)> {
+    /// [`session_recipients`](Self::session_recipients), each with what that phone takes.
+    fn session_recipient_caps(&self) -> Vec<Recipient> {
         if !self.we_offer(agent::SESSIONS) {
             return Vec::new();
         }
-        self.live_sessions()
+        let sessions = self
+            .live_sessions()
             .into_iter()
             .filter(|s| self.toggle_on(&s.peer, TOGGLE) && self.toggle_on(&s.peer, SESSIONS_TOGGLE))
-            .filter_map(|s| {
-                let caps = self.store.get_peer(&s.peer).ok().flatten()?.caps;
-                caps.contains(agent::FOLLOW).then(|| (s, caps.contains(agent::ITEMS2)))
-            })
-            .collect()
+            .collect();
+        self.with_caps(sessions, agent::FOLLOW)
     }
 }
 
-/// `item` as `peer` takes it: a reasoning item becomes a tool step for a
-/// phone without `agent.items2` (`docs/protocol/agents.md` §2.4).
-fn item_for(item: AgentItem, items2: bool) -> AgentItem {
-    if items2 { item } else { item.for_legacy() }
+/// A phone the PC sends agent pushes to, and what it takes.
+struct Recipient {
+    session: Arc<Session>,
+    /// `agent.items2`.
+    items2: bool,
+    /// `agent.control`, while this PC offers it too.
+    control: bool,
 }
 
 /// PC: tells the platform that `peer` watches no session any more (its
@@ -423,9 +681,12 @@ pub(crate) fn unwatch_on_platform(shared: &Shared, peer: DeviceId) {
     });
 }
 
-fn catalog_env(catalog: Option<&AgentCatalog>) -> Option<Envelope> {
-    let empty = AgentCatalog::default();
-    Envelope::new(types::AGENT_CATALOG, catalog.unwrap_or(&empty)).ok()
+/// The catalog as a phone takes it: in full with `agent.control`, its
+/// legacy form otherwise; an empty one when there's none.
+fn catalog_env(catalog: Option<&AgentCatalog>, control: bool) -> Option<Envelope> {
+    let catalog = catalog.cloned().unwrap_or_default();
+    let catalog = if control { catalog } else { catalog.for_legacy() };
+    Envelope::new(types::AGENT_CATALOG, &catalog).ok()
 }
 
 /// PC: sends this PC's catalog to `session` when it may have it (on connect,
@@ -434,9 +695,33 @@ pub(crate) async fn send_catalog(shared: &Arc<Shared>, session: &Arc<Session>) {
     if !shared.offers_agents() || !shared.agents_reach(&session.peer) {
         return;
     }
-    let env = catalog_env(shared.agents.lock().catalog.as_ref());
+    let control = shared.control_with(&session.peer);
+    let env = {
+        let mut inner = shared.agents.lock();
+        inner.catalog_forms.insert(session.peer, control);
+        catalog_env(inner.catalog.as_ref(), control)
+    };
     if let Some(env) = env {
         let _ = session.send(env).await;
+    }
+}
+
+/// PC: sends the catalog again to the phones (all, or `only`) whose form of
+/// it, with §5 or without, changed since they got it: after this PC's or a
+/// phone's capabilities changed.
+pub(crate) async fn refresh_catalogs(shared: &Arc<Shared>, only: Option<DeviceId>) {
+    if !shared.offers_agents() {
+        return;
+    }
+    for recipient in shared.agent_recipient_caps() {
+        let peer = recipient.session.peer;
+        if only.is_some_and(|only| only != peer) {
+            continue;
+        }
+        let sent = shared.agents.lock().catalog_forms.get(&peer).copied();
+        if sent.is_some_and(|sent| sent != recipient.control) {
+            send_catalog(shared, &recipient.session).await;
+        }
     }
 }
 
@@ -464,7 +749,7 @@ pub(crate) fn toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
             // The last word: nothing can be started or followed from here now.
             if shared.offers_agents()
                 && shared.peer_offers(&peer, agent::REMOTE)
-                && let Some(env) = catalog_env(None)
+                && let Some(env) = catalog_env(None, false)
             {
                 let _ = session.send(env).await;
             }
@@ -556,55 +841,74 @@ pub(crate) fn send_session_item(shared: &Arc<Shared>, session: String, item: Age
     let body = AgentSessionItem { session, item }
         .sanitized()
         .ok_or_else(|| Error::Protocol("invalid agent session item".into()))?;
-    let recipients = shared.session_recipients_items2();
+    let recipients = shared.session_recipient_caps();
     if recipients.is_empty() {
         return Ok(());
     }
-    let env = Envelope::new(types::AGENT_SESSION_ITEM, &body)?;
-    let legacy = if body.item.is_reasoning() {
-        let legacy = AgentSessionItem { session: body.session.clone(), item: body.item.clone().for_legacy() };
-        Some(Envelope::new(types::AGENT_SESSION_ITEM, &legacy)?)
-    } else {
-        None
-    };
     let inner = shared.agents.lock();
-    for (session, items2) in recipients {
-        if inner.session_watching.get(&session.peer) == Some(&body.session) {
-            let env = if items2 { &env } else { legacy.as_ref().unwrap_or(&env) };
-            let _ = session.send_now(env.clone());
+    for recipient in recipients {
+        if inner.session_watching.get(&recipient.session.peer) == Some(&body.session) {
+            let item = body.item.clone().for_phone(recipient.items2, recipient.control);
+            let env = Envelope::new(
+                types::AGENT_SESSION_ITEM,
+                &AgentSessionItem { session: body.session.clone(), item },
+            )?;
+            let _ = recipient.session.send_now(env);
         }
     }
     Ok(())
 }
 
 /// PC: replaces this PC's catalog (`None`: the host is gone) and sends it to
-/// the phones that may have it when it changed.
+/// the phones that may have it when it changed. A phone may start
+/// supervised threads, and plan-mode ones (an agent that can plan, a phone
+/// with `agent.control`); what §5 added goes only to such a phone.
 pub(crate) fn set_catalog(shared: &Arc<Shared>, catalog: Option<AgentCatalog>) {
     let catalog = catalog.map(AgentCatalog::sanitized).map(|mut c| {
-        c.modes = if c.agents.is_empty() { Vec::new() } else { vec![agent::mode::SUPERVISED.to_owned()] };
+        let plan = c.agents.iter().any(|a| a.can(agent::can::PLAN));
+        c.modes = match (c.agents.is_empty(), plan) {
+            (true, _) => Vec::new(),
+            (false, false) => vec![agent::mode::SUPERVISED.to_owned()],
+            (false, true) => vec![agent::mode::SUPERVISED.to_owned(), agent::mode::PLAN.to_owned()],
+        };
         c
     });
-    let recipients = shared.agent_recipients();
+    let recipients = shared.agent_recipient_caps();
     let mut inner = shared.agents.lock();
     if inner.catalog == catalog {
         return;
     }
     inner.catalog = catalog;
-    if let Some(env) = catalog_env(inner.catalog.as_ref()) {
-        for session in recipients {
-            let _ = session.send_now(env.clone());
+    let full = catalog_env(inner.catalog.as_ref(), true);
+    let legacy = catalog_env(inner.catalog.as_ref(), false);
+    for recipient in recipients {
+        inner.catalog_forms.insert(recipient.session.peer, recipient.control);
+        if let Some(env) = if recipient.control { &full } else { &legacy } {
+            let _ = recipient.session.send_now(env.clone());
         }
     }
 }
 
+/// `thread` as a phone takes it: its legacy form without `agent.control`.
+fn thread_for(thread: AgentThread, control: bool) -> AgentThread {
+    if control { thread } else { thread.for_legacy() }
+}
+
 /// `event` for one phone: `from_phone` says whether that phone started the
-/// thread, and a reasoning item is a tool step for a phone without `agent.items2`.
-fn for_phone(event: &AgentEvent, peer: &DeviceId, started_by: Option<&DeviceId>, items2: bool) -> AgentEvent {
+/// thread; the thread and the item as [`thread_for`] and
+/// [`AgentItem::for_phone`] make them.
+fn for_phone(
+    event: &AgentEvent,
+    peer: &DeviceId,
+    started_by: Option<&DeviceId>,
+    recipient: &Recipient,
+) -> AgentEvent {
     let mut event = event.clone();
-    if let Some(state) = &mut event.state {
+    if let Some(mut state) = event.state.take() {
         state.from_phone = started_by == Some(peer);
+        event.state = Some(thread_for(state, recipient.control));
     }
-    event.item = event.item.map(|item| item_for(item, items2));
+    event.item = event.item.map(|item| item.for_phone(recipient.items2, recipient.control));
     event
 }
 
@@ -645,7 +949,7 @@ pub(crate) fn send_event(
     started_by: Option<DeviceId>,
 ) -> Result<()> {
     let event = event.sanitized().ok_or_else(|| Error::Protocol("invalid agent event".into()))?;
-    let recipients = shared.agent_recipients_items2();
+    let recipients = shared.agent_recipient_caps();
     let mut schedule = Vec::new();
     {
         let mut inner = shared.agents.lock();
@@ -654,8 +958,8 @@ pub(crate) fn send_event(
         }
         let reasoning_delta = event.kind == agent::event::DELTA
             && event.item_id.as_deref().is_some_and(|id| inner.is_reasoning(&event.thread, id));
-        for (session, items2) in &recipients {
-            let (peer, items2) = (session.peer, *items2);
+        for recipient in &recipients {
+            let (session, peer, items2) = (&recipient.session, recipient.session.peer, recipient.items2);
             let watches = inner.watching.get(&peer).is_some_and(|t| *t == event.thread);
             match event.kind.as_str() {
                 agent::event::DELTA => {
@@ -695,13 +999,13 @@ pub(crate) fn send_event(
                         continue;
                     }
                     flush_for(&mut inner, session, &event.thread);
-                    if let Some(env) = event_env(&for_phone(&event, &peer, None, items2)) {
+                    if let Some(env) = event_env(&for_phone(&event, &peer, None, recipient)) {
                         let _ = session.send_now(env);
                     }
                 }
                 _ => {
                     flush_for(&mut inner, session, &event.thread);
-                    if let Some(env) = event_env(&for_phone(&event, &peer, started_by.as_ref(), items2)) {
+                    if let Some(env) = event_env(&for_phone(&event, &peer, started_by.as_ref(), recipient)) {
                         let _ = session.send_now(env);
                     }
                 }
@@ -743,6 +1047,53 @@ pub(crate) fn send_asked(shared: &Arc<Shared>, asked: AgentAsked) -> Result<()> 
     let env = Envelope::new(types::AGENT_ASKED, &asked)?;
     for session in shared.agent_recipients() {
         let _ = session.send_now(env.clone());
+    }
+    Ok(())
+}
+
+/// PC: sends a question to every phone that gets §5 (`docs/protocol/agents.md`
+/// §5.2). A secret question goes without its asks, and the core refuses a
+/// phone's reply to it from then on.
+pub(crate) fn send_question(shared: &Arc<Shared>, question: AgentQuestion) -> Result<()> {
+    let question = question.sanitized().ok_or_else(|| Error::Protocol("invalid agent question".into()))?;
+    if question.secret {
+        shared.agents.lock().note_secret(&question.token);
+    }
+    let env = Envelope::new(types::AGENT_QUESTION, &question.for_phone())?;
+    for session in shared.control_recipients() {
+        let _ = session.send_now(env.clone());
+    }
+    Ok(())
+}
+
+/// PC: tells every phone that gets §5 that a question ended.
+pub(crate) fn send_questioned(shared: &Arc<Shared>, questioned: AgentQuestioned) -> Result<()> {
+    let questioned =
+        questioned.sanitized().ok_or_else(|| Error::Protocol("invalid agent.questioned".into()))?;
+    let env = Envelope::new(types::AGENT_QUESTIONED, &questioned)?;
+    for session in shared.control_recipients() {
+        let _ = session.send_now(env.clone());
+    }
+    Ok(())
+}
+
+/// PC: tells every phone that gets §5, but `except` (the one that changed
+/// it), that a draft changed.
+pub(crate) fn send_draft(
+    shared: &Arc<Shared>,
+    key: String,
+    rev: u64,
+    except: Option<DeviceId>,
+) -> Result<()> {
+    let body = AgentDraftChanged { key, rev };
+    if !body.is_valid() {
+        return Err(Error::Protocol("invalid agent.draft".into()));
+    }
+    let env = Envelope::new(types::AGENT_DRAFT, &body)?;
+    for session in shared.control_recipients() {
+        if Some(session.peer) != except {
+            let _ = session.send_now(env.clone());
+        }
     }
     Ok(())
 }
@@ -797,10 +1148,47 @@ fn refusal(shared: &Arc<Shared>, peer: DeviceId, sessions: bool) -> Option<Envel
     None
 }
 
+/// Whether `t` is one of §5's requests (they need `agent.control` on both sides).
+fn is_control_request(t: &str) -> bool {
+    matches!(
+        t,
+        types::AGENT_CONFIGURE
+            | types::AGENT_QUEUE
+            | types::AGENT_REPLY
+            | types::AGENT_IMPLEMENT
+            | types::AGENT_FILES
+            | types::AGENT_COMMANDS
+            | types::AGENT_DRAFT_GET
+            | types::AGENT_DRAFT_SET
+    )
+}
+
+/// The refusal of §5 from `peer` when this PC or the phone doesn't offer
+/// `agent.control`.
+fn control_refusal(shared: &Shared, peer: &DeviceId) -> Option<Envelope> {
+    (!shared.control_with(peer))
+        .then(|| Envelope::error(ErrorCode::Unsupported, "this PC or phone can't do that yet"))
+}
+
+/// The refusal of a mode a phone asked for: `supervised`, and `plan` with
+/// `agent.control`, are the only ones.
+fn mode_refusal(shared: &Shared, peer: &DeviceId, mode: &str) -> Option<Envelope> {
+    let allowed = mode == agent::mode::SUPERVISED || (mode == agent::mode::PLAN && shared.control_with(peer));
+    (!allowed).then(|| {
+        Envelope::error(ErrorCode::Denied, "a phone asks before edits and commands, or plans; nothing else")
+    })
+}
+
 /// PC: what to answer a phone's `agent.*` request, checked in the order of
-/// `docs/protocol/agents.md` and contract §6.2 (0.1.14 contract §A4.2 for §3).
+/// `docs/protocol/agents.md` and contract §6.2 (0.1.14 contract §A4.2 for
+/// §3; phase 2 contract §Q5 for §5).
 async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelope {
     if let Some(refused) = refusal(shared, peer, is_session_request(&env.t)) {
+        return refused;
+    }
+    if is_control_request(&env.t)
+        && let Some(refused) = control_refusal(shared, &peer)
+    {
         return refused;
     }
     let bad = || Envelope::error(ErrorCode::BadMessage, "invalid agent request");
@@ -808,19 +1196,38 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
         types::AGENT_THREADS => AgentRequest::Threads,
         types::AGENT_START => {
             let Some(start) = decode::<AgentStart>(env, AgentStart::is_valid) else { return bad() };
-            if start.mode != agent::mode::SUPERVISED {
-                return Envelope::error(ErrorCode::Denied, "a phone starts supervised threads only");
+            if let Some(refused) = mode_refusal(shared, &peer, &start.mode) {
+                return refused;
+            }
+            if start.uses_control()
+                && let Some(refused) = control_refusal(shared, &peer)
+            {
+                return refused;
             }
             AgentRequest::Start {
                 agent: start.agent,
                 folder: start.folder,
                 prompt: clean_typed(start.prompt),
                 mode: start.mode,
+                model: start.model,
+                effort: start.effort,
+                images: start.images,
+                custom_model: start.custom_model,
             }
         }
         types::AGENT_SEND => {
             let Some(send) = decode::<AgentSend>(env, AgentSend::is_valid) else { return bad() };
-            AgentRequest::Send { thread: send.thread, text: clean_typed(send.text) }
+            if send.uses_control()
+                && let Some(refused) = control_refusal(shared, &peer)
+            {
+                return refused;
+            }
+            AgentRequest::Send {
+                thread: send.thread,
+                text: clean_typed(send.text),
+                dispatch: send.dispatch,
+                images: send.images,
+            }
         }
         types::AGENT_CANCEL => {
             let Some(cancel) = decode::<AgentCancel>(env, AgentCancel::is_valid) else { return bad() };
@@ -874,14 +1281,94 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
             };
             AgentRequest::SessionContinue { session: cont.session }
         }
+        types::AGENT_CONFIGURE => {
+            let Some(c) = decode::<AgentConfigure>(env, AgentConfigure::is_valid) else { return bad() };
+            if let Some(mode) = c.mode.as_deref()
+                && let Some(refused) = mode_refusal(shared, &peer, mode)
+            {
+                return refused;
+            }
+            AgentRequest::Configure {
+                thread: c.thread,
+                model: c.model,
+                effort: c.effort,
+                mode: c.mode,
+                custom_model: c.custom_model,
+            }
+        }
+        types::AGENT_QUEUE => {
+            let Some(change) = decode::<AgentQueueChange>(env, AgentQueueChange::is_valid) else {
+                return bad();
+            };
+            let action = match (change.op.as_str(), change.text) {
+                (agent::queue_op::EDIT, Some(text)) => QueueAction::Edit(clean_typed(text)),
+                (agent::queue_op::REMOVE, None) => QueueAction::Remove,
+                (agent::queue_op::SEND_NOW, None) => QueueAction::SendNow,
+                _ => return bad(),
+            };
+            AgentRequest::Queue { thread: change.thread, id: change.id, action }
+        }
+        types::AGENT_REPLY => {
+            let Some(reply) = decode::<AgentQuestionReply>(env, AgentQuestionReply::is_valid) else {
+                return bad();
+            };
+            if shared.agents.is_secret(&reply.token) {
+                return Envelope::error(ErrorCode::Denied, "answer this one on the PC");
+            }
+            if reply.dismiss {
+                AgentRequest::QuestionDismiss { token: reply.token }
+            } else {
+                AgentRequest::QuestionAnswer { token: reply.token, answers: reply.answers }
+            }
+        }
+        types::AGENT_IMPLEMENT => {
+            let Some(implement) = decode::<AgentImplement>(env, AgentImplement::is_valid) else {
+                return bad();
+            };
+            AgentRequest::Implement { thread: implement.thread, item: implement.item }
+        }
+        types::AGENT_FILES => {
+            let Some(files) = decode::<AgentFilesRequest>(env, AgentFilesRequest::is_valid) else {
+                return bad();
+            };
+            let limit = files.limit();
+            AgentRequest::Files { thread: files.thread, folder: files.folder, query: files.query, limit }
+        }
+        types::AGENT_COMMANDS => {
+            let Some(c) = decode::<AgentCommandsRequest>(env, AgentCommandsRequest::is_valid) else {
+                return bad();
+            };
+            AgentRequest::Commands { agent: c.agent, folder: c.folder }
+        }
+        types::AGENT_DRAFT_GET => {
+            let Some(get) = decode::<AgentDraftRequest>(env, AgentDraftRequest::is_valid) else {
+                return bad();
+            };
+            AgentRequest::DraftGet { key: get.key }
+        }
+        types::AGENT_DRAFT_SET => {
+            let Some(set) = decode::<AgentDraftSet>(env, AgentDraftSet::is_valid) else { return bad() };
+            AgentRequest::DraftSet {
+                key: set.key,
+                text: clean_typed(set.text),
+                images: set.images,
+                rev: set.rev,
+            }
+        }
         _ => return Envelope::error(ErrorCode::Unsupported, "unknown agent request"),
     };
     let expects = match &request {
         AgentRequest::Threads => types::AGENT_THREADS,
-        AgentRequest::Start { .. } | AgentRequest::SessionContinue { .. } => types::AGENT_THREAD,
+        AgentRequest::Start { .. }
+        | AgentRequest::SessionContinue { .. }
+        | AgentRequest::Configure { .. } => types::AGENT_THREAD,
         AgentRequest::Read { .. } => types::AGENT_ITEMS,
         AgentRequest::Sessions => types::AGENT_SESSIONS,
         AgentRequest::SessionRead { .. } => types::AGENT_SESSION_ITEMS,
+        AgentRequest::Files { .. } => types::AGENT_FILES,
+        AgentRequest::Commands { .. } => types::AGENT_COMMANDS,
+        AgentRequest::DraftGet { .. } => types::AGENT_DRAFT_GET,
+        AgentRequest::DraftSet { .. } => types::AGENT_DRAFT_SET,
         _ => types::OK,
     };
     let watching = match &request {
@@ -889,34 +1376,32 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
         _ => None,
     };
     let items2 = shared.peer_offers(&peer, agent::ITEMS2);
-    let platform = shared.platform.clone();
-    let task = tokio::task::spawn_blocking(move || platform.agent_request(&peer, request));
-    let reply = match tokio::time::timeout(PLATFORM_LIMIT, task).await {
-        Ok(Ok(reply)) => reply,
-        Ok(Err(_)) | Err(_) => {
-            tracing::warn!(peer = %peer.short(), "the agent host didn't answer");
-            Err(AgentFailure::Internal)
-        }
-    };
+    let control = shared.control_with(&peer);
+    let reply = ask_platform(shared, peer, request).await;
     let built = match reply {
         Ok(AgentReply::Ok) if expects == types::OK => Ok(Envelope::empty(types::OK)),
         Ok(AgentReply::Threads(threads)) if expects == types::AGENT_THREADS => {
+            let threads = threads.into_iter().map(|t| thread_for(t, control)).collect();
             Envelope::new(types::AGENT_THREADS, &AgentThreads { threads }.sanitized())
         }
-        Ok(AgentReply::Thread(thread)) if expects == types::AGENT_THREAD => match thread.sanitized() {
-            Some(thread) => Envelope::new(types::AGENT_THREAD, &thread),
-            None => return AgentFailure::Internal.reply("the host's answer was malformed"),
-        },
-        Ok(AgentReply::Items(mut items)) if expects == types::AGENT_ITEMS => {
+        Ok(AgentReply::Thread(thread)) if expects == types::AGENT_THREAD => {
+            match thread.sanitized().map(|t| thread_for(t, control)) {
+                Some(thread) => Envelope::new(types::AGENT_THREAD, &thread),
+                None => return AgentFailure::Internal.reply("the host's answer was malformed"),
+            }
+        }
+        Ok(AgentReply::Items(items)) if expects == types::AGENT_ITEMS => {
             {
                 let mut inner = shared.agents.lock();
                 for item in &items.items {
                     inner.note_reasoning(&items.thread.id, item);
                 }
+                for question in items.questions.iter().filter(|q| q.secret) {
+                    inner.note_secret(&question.token);
+                }
             }
-            items.items = items.items.into_iter().map(|item| item_for(item, items2)).collect();
             match items.sanitized() {
-                Some(items) => Envelope::new(types::AGENT_ITEMS, &items),
+                Some(items) => Envelope::new(types::AGENT_ITEMS, &items.for_phone(items2, control)),
                 None => return AgentFailure::Internal.reply("the host's answer was malformed"),
             }
         }
@@ -924,11 +1409,24 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
             Envelope::new(types::AGENT_SESSIONS, &AgentSessions { sessions }.sanitized())
         }
         Ok(AgentReply::SessionItems(mut items)) if expects == types::AGENT_SESSION_ITEMS => {
-            items.items = items.items.into_iter().map(|item| item_for(item, items2)).collect();
+            items.items = items.items.into_iter().map(|item| item.for_phone(items2, control)).collect();
             match items.sanitized() {
                 Some(items) => Envelope::new(types::AGENT_SESSION_ITEMS, &items),
                 None => return AgentFailure::Internal.reply("the host's answer was malformed"),
             }
+        }
+        Ok(AgentReply::Files(files)) if expects == types::AGENT_FILES => {
+            Envelope::new(types::AGENT_FILES, &files.sanitized())
+        }
+        Ok(AgentReply::Commands(commands)) if expects == types::AGENT_COMMANDS => {
+            Envelope::new(types::AGENT_COMMANDS, &AgentCommands { commands }.sanitized())
+        }
+        Ok(AgentReply::Draft(draft)) if expects == types::AGENT_DRAFT_GET => Envelope::new(
+            types::AGENT_DRAFT_GET,
+            &AgentDraftReply { draft: draft.and_then(AgentDraft::sanitized) },
+        ),
+        Ok(AgentReply::DraftSaved(saved)) if expects == types::AGENT_DRAFT_SET => {
+            Envelope::new(types::AGENT_DRAFT_SET, &saved.sanitized())
         }
         Ok(_) => return AgentFailure::Internal.reply("the host answered something else"),
         Err(failure) => {
@@ -947,6 +1445,24 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
         };
     }
     built.unwrap_or_else(|_| AgentFailure::Internal.reply("failed"))
+}
+
+/// Hands `request` to the platform on a blocking thread, giving up after
+/// [`PLATFORM_LIMIT`].
+async fn ask_platform(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    request: AgentRequest,
+) -> std::result::Result<AgentReply, AgentFailure> {
+    let platform = shared.platform.clone();
+    let task = tokio::task::spawn_blocking(move || platform.agent_request(&peer, request));
+    match tokio::time::timeout(PLATFORM_LIMIT, task).await {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(_)) | Err(_) => {
+            tracing::warn!(peer = %peer.short(), "the agent host didn't answer");
+            Err(AgentFailure::Internal)
+        }
+    }
 }
 
 fn failure_message(failure: AgentFailure) -> &'static str {
@@ -1028,6 +1544,155 @@ pub(crate) async fn serve_export(
     }
 }
 
+/// Writes `reply` (an answer to request `id`) and ends the stream.
+async fn end_with(send: &mut SendStream, reply: Envelope, id: Option<u64>) {
+    let _ = write_frame(send, &reply.reply_to(id).to_cbor()).await;
+    let _ = send.finish();
+}
+
+/// What `peer` may not do on an image stream, if anything: the toggle, and
+/// `agent.control` on both sides.
+fn image_refusal(shared: &Arc<Shared>, peer: DeviceId) -> Option<Envelope> {
+    refusal(shared, peer, false).or_else(|| control_refusal(shared, &peer))
+}
+
+/// Reads exactly `length` bytes of an image from `recv`, then its end. `Err`
+/// with the reply when more come than were announced, or the stream fails
+/// or stalls (then `None`: nothing to say).
+async fn read_image(recv: &mut RecvStream, length: usize) -> std::result::Result<Vec<u8>, Option<Envelope>> {
+    let read = async {
+        let mut data = Vec::with_capacity(length);
+        loop {
+            match recv.read_chunk(IMAGE_CHUNK).await {
+                Ok(Some(chunk)) => {
+                    if data.len() + chunk.len() > length {
+                        return Err(Some(Envelope::error(
+                            ErrorCode::BadMessage,
+                            "more bytes than agent.image.meta said",
+                        )));
+                    }
+                    data.extend_from_slice(&chunk);
+                }
+                Ok(None) if data.len() == length => return Ok(data),
+                Ok(None) | Err(_) => return Err(None),
+            }
+        }
+    };
+    tokio::time::timeout(IMAGE_SEND, read).await.unwrap_or(Err(None))
+}
+
+/// PC: the `agent/image` stream (its header already read): one image a
+/// phone sends for a message (`docs/protocol/agents.md` §5.3). One at a
+/// time per phone; the bytes go to the platform only when exactly as many
+/// came as announced.
+pub(crate) async fn serve_image(
+    shared: Arc<Shared>,
+    peer: DeviceId,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) {
+    let Ok(Ok(Some(bytes))) = tokio::time::timeout(IMAGE_WAIT, read_frame(&mut recv)).await else {
+        return;
+    };
+    let Ok(env) = Envelope::from_cbor(&bytes) else { return };
+    if let Some(refused) = image_refusal(&shared, peer) {
+        return end_with(&mut send, refused, env.id).await;
+    }
+    let meta =
+        env.expect_body::<AgentImageMeta>(types::AGENT_IMAGE_META).ok().filter(AgentImageMeta::is_valid);
+    let Some((meta, length)) = meta.and_then(|m| usize::try_from(m.bytes).ok().map(|length| (m, length)))
+    else {
+        return end_with(
+            &mut send,
+            Envelope::error(ErrorCode::BadMessage, "invalid agent.image.meta"),
+            env.id,
+        )
+        .await;
+    };
+    let Some(_upload) = Upload::begin(&shared, peer) else {
+        return end_with(&mut send, Envelope::error(ErrorCode::Busy, "one image at a time"), env.id).await;
+    };
+    if write_frame(&mut send, &Envelope::empty(types::OK).reply_to(env.id).to_cbor()).await.is_err() {
+        return;
+    }
+    let data = match read_image(&mut recv, length).await {
+        Ok(data) => data,
+        Err(Some(reply)) => return end_with(&mut send, reply, env.id).await,
+        Err(None) => return,
+    };
+    let request = AgentRequest::ImageAdd { name: clean_image_name(&meta.name), bytes: data };
+    let reply = match ask_platform(&shared, peer, request).await {
+        Ok(AgentReply::Image(image)) => match image.sanitized() {
+            Some(image) => Envelope::new(types::AGENT_IMAGE, &image),
+            None => Ok(AgentFailure::Internal.reply("the host's answer was malformed")),
+        },
+        Ok(_) => Ok(AgentFailure::Internal.reply("the host answered something else")),
+        Err(failure) => Ok(failure.reply(failure_message(failure))),
+    };
+    let reply = reply.unwrap_or_else(|_| AgentFailure::Internal.reply("failed"));
+    end_with(&mut send, reply, env.id).await;
+}
+
+/// PC: the `agent/thumb` stream (its header already read): a JPEG of one
+/// image, at most [`agent::MAX_THUMB_BYTES`] (§5.3).
+pub(crate) async fn serve_thumb(
+    shared: Arc<Shared>,
+    peer: DeviceId,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) {
+    let Ok(Ok(Some(bytes))) = tokio::time::timeout(IMAGE_WAIT, read_frame(&mut recv)).await else {
+        return;
+    };
+    let Ok(env) = Envelope::from_cbor(&bytes) else { return };
+    if let Some(refused) = image_refusal(&shared, peer) {
+        return end_with(&mut send, refused, env.id).await;
+    }
+    let Some(thumb) =
+        env.expect_body::<AgentImageThumb>(types::AGENT_IMAGE_THUMB).ok().filter(AgentImageThumb::is_valid)
+    else {
+        return end_with(
+            &mut send,
+            Envelope::error(ErrorCode::BadMessage, "invalid agent.image.thumb"),
+            env.id,
+        )
+        .await;
+    };
+    let max = thumb.max();
+    let jpeg = match ask_platform(&shared, peer, AgentRequest::ImageThumb { id: thumb.id, max }).await {
+        Ok(AgentReply::Thumb(jpeg))
+            if is_jpeg(&jpeg) && (1..=agent::MAX_THUMB_BYTES).contains(&jpeg.len()) =>
+        {
+            jpeg
+        }
+        Ok(AgentReply::Thumb(jpeg)) => {
+            tracing::warn!(bytes = jpeg.len(), "a thumbnail isn't one that can be sent");
+            return end_with(&mut send, AgentFailure::Internal.reply("can't send that picture"), env.id)
+                .await;
+        }
+        Ok(_) => {
+            return end_with(
+                &mut send,
+                AgentFailure::Internal.reply("the host answered something else"),
+                env.id,
+            )
+            .await;
+        }
+        Err(failure) => return end_with(&mut send, failure.reply(failure_message(failure)), env.id).await,
+    };
+    let meta = AgentImageThumbMeta { length: jpeg.len() as u64 };
+    let Ok(reply) = Envelope::new(types::AGENT_IMAGE_THUMB_META, &meta).map(|e| e.reply_to(env.id)) else {
+        return;
+    };
+    let sent = tokio::time::timeout(IMAGE_SEND, async {
+        write_frame(&mut send, &reply.to_cbor()).await.is_ok() && send.write_all(&jpeg).await.is_ok()
+    })
+    .await;
+    if sent == Ok(true) {
+        let _ = send.finish();
+    }
+}
+
 /// Handles `agent.*` messages: requests on a PC, pushes on a phone.
 pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
     let peer = session.peer;
@@ -1046,7 +1711,15 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         | types::AGENT_SESSIONS
         | types::AGENT_SESSION_READ
         | types::AGENT_SESSION_WATCH
-        | types::AGENT_SESSION_CONTINUE => {
+        | types::AGENT_SESSION_CONTINUE
+        | types::AGENT_CONFIGURE
+        | types::AGENT_QUEUE
+        | types::AGENT_REPLY
+        | types::AGENT_IMPLEMENT
+        | types::AGENT_FILES
+        | types::AGENT_COMMANDS
+        | types::AGENT_DRAFT_GET
+        | types::AGENT_DRAFT_SET => {
             let reply = answer(shared, peer, env).await;
             if env.id.is_some() {
                 session.send(reply.reply_to(env.id)).await?;
@@ -1059,15 +1732,20 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             }
             let catalog = catalog.sanitized();
             let catalog = (!catalog.agents.is_empty()).then_some(catalog);
-            let can_say_why = shared.peer_offers(&peer, agent::SAY_WHY);
+            let offers = peer_offers_now(shared, &peer);
             {
                 let mut inner = shared.agents.lock();
                 match &catalog {
-                    Some(c) => inner.peer_catalogs.insert(peer, (c.clone(), can_say_why)),
+                    Some(c) => inner.peer_catalogs.insert(peer, (c.clone(), offers)),
                     None => inner.peer_catalogs.remove(&peer),
                 };
             }
-            shared.emit(NodeEvent::AgentCatalog { device: peer, catalog, can_say_why });
+            shared.emit(NodeEvent::AgentCatalog {
+                device: peer,
+                catalog,
+                can_say_why: offers.say_why,
+                can_control: offers.control,
+            });
         }
         types::AGENT_EVENT if shared.we_offer(agent::REMOTE) => {
             if let Ok(event) = env.body::<AgentEvent>()
@@ -1124,12 +1802,44 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 });
             }
         }
+        types::AGENT_QUESTION if shared.we_offer(agent::REMOTE) => {
+            if let Ok(question) = env.body::<AgentQuestion>()
+                && question.is_valid()
+                && let Some(question) = question.sanitized()
+            {
+                shared.emit(NodeEvent::AgentQuestion { device: peer, question: question.for_phone() });
+            }
+        }
+        types::AGENT_QUESTIONED if shared.we_offer(agent::REMOTE) => {
+            if let Ok(done) = env.body::<AgentQuestioned>()
+                && done.is_valid()
+                && let Some(done) = done.sanitized()
+            {
+                shared.emit(NodeEvent::AgentQuestioned {
+                    device: peer,
+                    token: done.token,
+                    thread: done.thread,
+                    outcome: done.outcome,
+                    by_name: done.by_name,
+                });
+            }
+        }
+        types::AGENT_DRAFT if shared.we_offer(agent::REMOTE) => {
+            if let Ok(changed) = env.body::<AgentDraftChanged>()
+                && changed.is_valid()
+            {
+                shared.emit(NodeEvent::AgentDraft { device: peer, key: changed.key, rev: changed.rev });
+            }
+        }
         types::AGENT_CATALOG
         | types::AGENT_EVENT
         | types::AGENT_ASK
         | types::AGENT_ASKED
         | types::AGENT_SESSION
-        | types::AGENT_SESSION_ITEM => {}
+        | types::AGENT_SESSION_ITEM
+        | types::AGENT_QUESTION
+        | types::AGENT_QUESTIONED
+        | types::AGENT_DRAFT => {}
         _ => return Ok(false),
     }
     Ok(true)
@@ -1189,10 +1899,20 @@ pub(crate) async fn threads(shared: &Arc<Shared>, peer: DeviceId) -> Result<Vec<
     Ok(reply.sanitized().threads)
 }
 
+/// Phone: `Unsupported` without sending anything when `uses` needs §5 and
+/// `peer` or this phone doesn't offer `agent.control`.
+fn needs_control(shared: &Shared, peer: &DeviceId, uses: bool) -> Result<()> {
+    if uses && !can_control(shared, peer) {
+        return Err(Error::Unsupported);
+    }
+    Ok(())
+}
+
 pub(crate) async fn start(shared: &Arc<Shared>, peer: DeviceId, start: AgentStart) -> Result<AgentThread> {
     if !start.is_valid() {
         return Err(invalid("agent.start"));
     }
+    needs_control(shared, &peer, start.uses_control())?;
     let env = Envelope::new(types::AGENT_START, &start)?;
     let thread: AgentThread = request(shared, peer, env, types::AGENT_THREAD).await?;
     if !thread.is_valid() {
@@ -1201,12 +1921,217 @@ pub(crate) async fn start(shared: &Arc<Shared>, peer: DeviceId, start: AgentStar
     thread.sanitized().ok_or_else(|| invalid("agent.thread reply"))
 }
 
-pub(crate) async fn send(shared: &Arc<Shared>, peer: DeviceId, thread: String, text: String) -> Result<()> {
-    let body = AgentSend { thread, text };
+pub(crate) async fn send(shared: &Arc<Shared>, peer: DeviceId, body: AgentSend) -> Result<()> {
     if !body.is_valid() {
         return Err(invalid("agent.send"));
     }
+    needs_control(shared, &peer, body.uses_control())?;
     request_ok(shared, peer, Envelope::new(types::AGENT_SEND, &body)?).await
+}
+
+// ---- Phone side of §5 (`agent.control`) ----
+
+/// A request of §5 to `peer`, which must offer `agent.control` (as must this phone).
+async fn control_request<T: serde::de::DeserializeOwned>(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    env: Envelope,
+    expected: &'static str,
+) -> Result<T> {
+    needs_control(shared, &peer, true)?;
+    request_of(shared, peer, env, expected, agent::CONTROL).await
+}
+
+async fn control_ok(shared: &Arc<Shared>, peer: DeviceId, env: Envelope) -> Result<()> {
+    control_request::<g7link_protocol::messages::Empty>(shared, peer, env, types::OK).await.map(|_| ())
+}
+
+pub(crate) async fn configure(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    body: AgentConfigure,
+) -> Result<AgentThread> {
+    if !body.is_valid() {
+        return Err(invalid("agent.configure"));
+    }
+    let env = Envelope::new(types::AGENT_CONFIGURE, &body)?;
+    let thread: AgentThread = control_request(shared, peer, env, types::AGENT_THREAD).await?;
+    if !thread.is_valid() {
+        return Err(invalid("agent.thread reply"));
+    }
+    thread.sanitized().ok_or_else(|| invalid("agent.thread reply"))
+}
+
+pub(crate) async fn queue(shared: &Arc<Shared>, peer: DeviceId, body: AgentQueueChange) -> Result<()> {
+    if !body.is_valid() {
+        return Err(invalid("agent.queue"));
+    }
+    control_ok(shared, peer, Envelope::new(types::AGENT_QUEUE, &body)?).await
+}
+
+pub(crate) async fn reply(shared: &Arc<Shared>, peer: DeviceId, body: AgentQuestionReply) -> Result<()> {
+    if !body.is_valid() {
+        return Err(invalid("agent.reply"));
+    }
+    control_ok(shared, peer, Envelope::new(types::AGENT_REPLY, &body)?).await
+}
+
+pub(crate) async fn implement(shared: &Arc<Shared>, peer: DeviceId, body: AgentImplement) -> Result<()> {
+    if !body.is_valid() {
+        return Err(invalid("agent.implement"));
+    }
+    control_ok(shared, peer, Envelope::new(types::AGENT_IMPLEMENT, &body)?).await
+}
+
+pub(crate) async fn files(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    body: AgentFilesRequest,
+) -> Result<AgentFiles> {
+    if !body.is_valid() {
+        return Err(invalid("agent.files"));
+    }
+    let env = Envelope::new(types::AGENT_FILES, &body)?;
+    let files: AgentFiles = control_request(shared, peer, env, types::AGENT_FILES).await?;
+    // A hit outside the folder is left out here too, never shown.
+    Ok(files.sanitized())
+}
+
+pub(crate) async fn commands(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    body: AgentCommandsRequest,
+) -> Result<Vec<AgentCommand>> {
+    if !body.is_valid() {
+        return Err(invalid("agent.commands"));
+    }
+    let env = Envelope::new(types::AGENT_COMMANDS, &body)?;
+    let commands: AgentCommands = control_request(shared, peer, env, types::AGENT_COMMANDS).await?;
+    Ok(commands.sanitized().commands)
+}
+
+pub(crate) async fn draft_get(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    key: String,
+) -> Result<Option<AgentDraft>> {
+    let body = AgentDraftRequest { key };
+    if !body.is_valid() {
+        return Err(invalid("agent.draft.get"));
+    }
+    let env = Envelope::new(types::AGENT_DRAFT_GET, &body)?;
+    let reply: AgentDraftReply = control_request(shared, peer, env, types::AGENT_DRAFT_GET).await?;
+    Ok(reply.draft.and_then(AgentDraft::sanitized))
+}
+
+pub(crate) async fn draft_set(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    body: AgentDraftSet,
+) -> Result<AgentDraftSaved> {
+    if !body.is_valid() {
+        return Err(invalid("agent.draft.set"));
+    }
+    let env = Envelope::new(types::AGENT_DRAFT_SET, &body)?;
+    let saved: AgentDraftSaved = control_request(shared, peer, env, types::AGENT_DRAFT_SET).await?;
+    Ok(saved.sanitized())
+}
+
+/// Phone: sends one image for a message on an `agent/image` stream; its id
+/// goes in `agent.start` or `agent.send`. The PC decodes it with its own
+/// bounded decoder and keeps a re-encoded copy without its metadata.
+pub(crate) async fn image_send(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    name: String,
+    bytes: Vec<u8>,
+) -> Result<AgentImage> {
+    if !(1..=agent::MAX_IMAGE_BYTES).contains(&bytes.len()) {
+        return Err(invalid("agent image"));
+    }
+    let meta = AgentImageMeta { name: clean_image_name(&name), bytes: bytes.len() as u64 };
+    image_send_unchecked(shared, peer, meta, bytes).await
+}
+
+/// [`image_send`] with a meta that may not match the bytes, for tests of
+/// what the PC refuses.
+pub(crate) async fn image_send_unchecked(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    meta: AgentImageMeta,
+    bytes: Vec<u8>,
+) -> Result<AgentImage> {
+    needs_control(shared, &peer, true)?;
+    let session = shared.session(&peer).ok_or(Error::Offline)?;
+    let (mut send, mut recv) = session.open_bi().await?;
+    let header = StreamHeader {
+        svc: agent_image::SERVICE.into(),
+        op: agent_image::OP_UPLOAD.into(),
+        v: agent_image::VERSION,
+    };
+    write_frame(&mut send, &Envelope::new(types::STREAM, &header)?.to_cbor()).await?;
+    write_frame(&mut send, &Envelope::new(types::AGENT_IMAGE_META, &meta)?.with_id(1).to_cbor()).await?;
+    let go = read_reply(&mut recv, IMAGE_WAIT).await?;
+    go.expect(types::OK).map_err(reply_error)?;
+    // A PC that stops reading has said why: its reply follows.
+    let _ = tokio::time::timeout(IMAGE_SEND, send.write_all(&bytes)).await;
+    let _ = send.finish();
+    let reply = read_reply(&mut recv, IMAGE_SEND).await?;
+    let image: AgentImage = reply.expect_body(types::AGENT_IMAGE).map_err(reply_error)?;
+    if !image.is_valid() {
+        return Err(invalid("agent.image reply"));
+    }
+    image.sanitized().ok_or_else(|| invalid("agent.image reply"))
+}
+
+/// The next frame on `recv` as an envelope, waiting at most `wait`.
+async fn read_reply(recv: &mut RecvStream, wait: Duration) -> Result<Envelope> {
+    match tokio::time::timeout(wait, read_frame(recv)).await {
+        Ok(Ok(Some(bytes))) => Ok(Envelope::from_cbor(&bytes)?),
+        Ok(Ok(None)) => Err(Error::Offline),
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => Err(Error::Timeout),
+    }
+}
+
+/// Phone: a JPEG of image `id` of `peer`, no larger than `max` px a side, on
+/// an `agent/thumb` stream; refused before it's read when it's over
+/// [`agent::MAX_THUMB_BYTES`].
+pub(crate) async fn image_thumb(
+    shared: &Arc<Shared>,
+    peer: DeviceId,
+    id: String,
+    max: Option<u32>,
+) -> Result<Vec<u8>> {
+    let body = AgentImageThumb { id, max };
+    if !body.is_valid() {
+        return Err(invalid("agent.image.thumb"));
+    }
+    needs_control(shared, &peer, true)?;
+    let session = shared.session(&peer).ok_or(Error::Offline)?;
+    let (mut send, mut recv) = session.open_bi().await?;
+    let header = StreamHeader {
+        svc: agent_image::SERVICE.into(),
+        op: agent_image::OP_THUMB.into(),
+        v: agent_image::VERSION,
+    };
+    write_frame(&mut send, &Envelope::new(types::STREAM, &header)?.to_cbor()).await?;
+    write_frame(&mut send, &Envelope::new(types::AGENT_IMAGE_THUMB, &body)?.with_id(1).to_cbor()).await?;
+    let _ = send.finish();
+    let reply = read_reply(&mut recv, IMAGE_WAIT).await?;
+    let meta: AgentImageThumbMeta = reply.expect_body(types::AGENT_IMAGE_THUMB_META).map_err(reply_error)?;
+    let Some(length) = usize::try_from(meta.length).ok().filter(|_| meta.is_valid()) else {
+        return Err(invalid("agent.image.thumb.meta"));
+    };
+    let mut data = vec![0u8; length];
+    tokio::time::timeout(IMAGE_SEND, recv.read_exact(&mut data))
+        .await
+        .map_err(|_| Error::Timeout)?
+        .map_err(|e| Error::Network(e.to_string()))?;
+    if !is_jpeg(&data) {
+        return Err(invalid("agent thumbnail"));
+    }
+    Ok(data)
 }
 
 pub(crate) async fn cancel(shared: &Arc<Shared>, peer: DeviceId, thread: String) -> Result<()> {
@@ -1277,21 +2202,36 @@ pub(crate) fn can_say_why(shared: &Shared, peer: &DeviceId) -> bool {
     shared.peer_offers(peer, agent::SAY_WHY)
 }
 
-/// Phone: `peer` said what it offers again. When whether it takes a
-/// denial with a message changed, its catalog is told again with the news.
+/// Phone: whether `peer` and this phone both offer `agent.control` (§5).
+pub(crate) fn can_control(shared: &Shared, peer: &DeviceId) -> bool {
+    shared.we_offer(agent::CONTROL) && shared.peer_offers(peer, agent::CONTROL)
+}
+
+/// Phone: what `peer` offers on top of `agent.host`, as it last said.
+fn peer_offers_now(shared: &Shared, peer: &DeviceId) -> PeerOffers {
+    PeerOffers { say_why: can_say_why(shared, peer), control: can_control(shared, peer) }
+}
+
+/// Phone: `peer` said what it offers again. When whether it takes a denial
+/// with a message, or §5, changed, its catalog is told again with the news.
 pub(crate) fn peer_caps_changed(shared: &Shared, peer: &DeviceId) {
-    let can_say_why = shared.peer_offers(peer, agent::SAY_WHY);
+    let offers = peer_offers_now(shared, peer);
     let catalog = {
         let mut inner = shared.agents.lock();
         match inner.peer_catalogs.get_mut(peer) {
-            Some((catalog, said)) if *said != can_say_why => {
-                *said = can_say_why;
+            Some((catalog, said)) if *said != offers => {
+                *said = offers;
                 catalog.clone()
             }
             _ => return,
         }
     };
-    shared.emit(NodeEvent::AgentCatalog { device: *peer, catalog: Some(catalog), can_say_why });
+    shared.emit(NodeEvent::AgentCatalog {
+        device: *peer,
+        catalog: Some(catalog),
+        can_say_why: offers.say_why,
+        can_control: offers.control,
+    });
 }
 
 /// Phone: the sessions started on `peer` outside G7 Link.
@@ -1465,6 +2405,10 @@ mod tests {
             folder: "f1".into(),
             prompt: "secret plan".into(),
             mode: "supervised".into(),
+            model: None,
+            effort: None,
+            images: Vec::new(),
+            custom_model: false,
         };
         let answer = AgentRequest::Answer {
             token: "0123abcd".into(),

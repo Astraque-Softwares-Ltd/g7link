@@ -55,10 +55,13 @@ pub mod webcam;
 
 pub use actions::{PC_WAKE, PowerAction};
 pub use agents::{
-    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentExport,
-    AgentFailure, AgentItem, AgentItems, AgentPlanStep, AgentReply, AgentRequest, AgentSession,
-    AgentSessionItems, AgentStart, AgentThread, AgentTool, SESSIONS_TOGGLE as AGENT_SESSIONS_TOGGLE,
-    TOGGLE as AGENTS_TOGGLE, agent, is_valid_agent_id,
+    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentCommand, AgentConfigure,
+    AgentContext, AgentDraft, AgentDraftSaved, AgentDraftSet, AgentEvent, AgentExport, AgentFailure,
+    AgentFileHit, AgentFiles, AgentFilesRequest, AgentImage, AgentItem, AgentItemQuestion, AgentItems,
+    AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion, AgentQuestionAnswer, AgentQuestionAsk,
+    AgentQuestionOption, AgentQuestionReply, AgentQuestioned, AgentQueueChange, AgentQueued, AgentReply,
+    AgentRequest, AgentSend, AgentSession, AgentSessionItems, AgentStart, AgentThread, AgentTool,
+    QueueAction, SESSIONS_TOGGLE as AGENT_SESSIONS_TOGGLE, TOGGLE as AGENTS_TOGGLE, agent, is_valid_agent_id,
 };
 pub use ble_link::{
     BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BLE_REMOTE_CAPABILITY, BleEndpoint,
