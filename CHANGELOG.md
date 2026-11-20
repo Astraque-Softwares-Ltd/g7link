@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## Unreleased
+## 0.1.18 (2026-11-20)
 
 The phone and the PC stay connected, and talk to each other on G7 Link's own
 protocol: a slow answer no longer holds up a key press, a call or anything
