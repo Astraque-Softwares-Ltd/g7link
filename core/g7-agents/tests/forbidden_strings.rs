@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 //! Strings that name something G7 must never send, call or open (phase 2 contract §Q7). They may
 //! only appear in tests that check they are absent, so this looks at shipped code only: Rust before
 //! its first `#[cfg(test)]`, and the desktop and Android sources outside their test folders.

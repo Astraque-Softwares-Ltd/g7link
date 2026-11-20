@@ -111,7 +111,8 @@ class FfiRows : AutoCloseable {
 
     /** Null when the timeline was closed while this was on its way (the screen left). */
     fun make(input: TimelineInput, nowMs: Long): List<AgentRow>? = runCatching {
-        // items, streaming, state, state_since_ms, now_ms, marks, open (contract §P4.3), questions (§Q2.3).
+        // items, streaming, state, state_since_ms, now_ms, marks, open (contract §P4.3); a question's
+        // state comes from its item, so the waiting questions aren't passed.
         timeline.rows(
             input.items,
             input.streaming,
@@ -120,7 +121,6 @@ class FfiRows : AutoCloseable {
             nowMs,
             input.marks,
             input.open,
-            AgentControlFfi.timelineQuestions(input.questions),
         )
     }.getOrNull()
 

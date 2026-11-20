@@ -66,10 +66,9 @@ the PC, the launcher or the phone.
   usage windows with when they reset, as the agents report them. A thread
   shows one amber line when a limit is nearly used. G7 never asks a vendor
   for these and never shows a cost.
-- **Drafts follow you.** What you've typed but not sent is kept on the PC, so
-  you can start a message on the phone and finish it on the PC; a box you're
-  typing in offers "Use the draft from …" instead of replacing your text. On
-  the PC, Up in an empty box goes back through what you sent from this PC.
+- **Drafts are kept.** What you've typed but not sent in a thread on the PC
+  stays there when you leave the page or restart G7 Link, and Up in an empty
+  box goes back through what you sent from this PC.
 - **The PC stays awake while an agent works.** On by default ("Keep this PC
   awake while an agent works"); it lets the PC sleep again a minute after
   the last turn ends, and never while a thread only waits for you. Closing
@@ -93,7 +92,7 @@ the PC, the launcher or the phone.
   before edits and commands, a plan as an answer and a question as a step to
   answer on the PC. An updated phone works with a PC that isn't updated yet,
   and offers what that PC can do; models, Plan, the queue, questions,
-  pictures, `@`, `/` and drafts wait for the PC's update.
+  pictures, `@` and `/` wait for the PC's update.
 
 ### Fixed
 

@@ -618,6 +618,9 @@ data class CoreState(
         is Event.AgentSessionChanged,
         is Event.AgentSessionRemoved,
         is Event.AgentSessionItem,
+        is Event.AgentQuestion,
+        is Event.AgentQuestioned,
+        is Event.AgentDraftChanged,
         -> this
     }
 
@@ -718,6 +721,9 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.AgentSessionChanged,
     is Event.AgentSessionRemoved,
     is Event.AgentSessionItem,
+    is Event.AgentQuestion,
+    is Event.AgentQuestioned,
+    is Event.AgentDraftChanged,
     -> false
     else -> true
 }
