@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use g7_agents::api::*;
-use g7_agents::client::{Client, ClientError, Events};
+use g7_agents::client::{Client, ClientError, Events, When};
 use g7_agents::host::{self, Config, Served};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -706,4 +706,229 @@ async fn a_second_host_exits_and_a_restart_interrupts_running_threads() {
     let _ = stop.send(());
     task.await.unwrap().unwrap();
     drop(host.dir);
+}
+
+// ---- Replacing an outdated host ----
+
+/// Real `g7-agents serve` processes, kept apart from the user's own (socket,
+/// data, home and agents all in a test folder), stopped when dropped.
+#[derive(Clone)]
+struct RealHosts {
+    dir: PathBuf,
+    codex: Option<PathBuf>,
+    started: std::sync::Arc<std::sync::Mutex<Vec<std::process::Child>>>,
+}
+
+impl RealHosts {
+    fn new(dir: &Path, codex: Option<PathBuf>) -> RealHosts {
+        for sub in ["run", "home", "work"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::set_permissions(dir.join("run"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        RealHosts { dir: dir.to_owned(), codex, started: Default::default() }
+    }
+
+    fn socket(&self) -> PathBuf {
+        self.dir.join("run/host.sock")
+    }
+
+    /// Starts `exe serve`; its pid.
+    fn start(&self, exe: &Path) -> std::io::Result<u32> {
+        use std::os::unix::process::CommandExt;
+        let codex = self.codex.clone().unwrap_or_else(|| PathBuf::from("/bin/false"));
+        let child = std::process::Command::new(exe)
+            .arg("serve")
+            .env_clear()
+            .env("HOME", self.dir.join("home"))
+            .env("PATH", "/usr/bin:/bin")
+            .env("G7_AGENTS_SOCKET", self.socket())
+            .env("G7_AGENTS_DATA_DIR", self.dir.join("data"))
+            .env("G7_AGENTS_NO_NOTIFY", "1")
+            .env("G7_AGENTS_NO_SESSIONS", "1")
+            .env("G7_AGENTS_CLAUDE_BIN", "/bin/false")
+            .env("G7_AGENTS_CODEX_BIN", codex)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()?;
+        let pid = child.id();
+        self.started.lock().unwrap().push(child);
+        Ok(pid)
+    }
+
+    /// How a client of `version` starts this build's host here.
+    fn launch(&self, version: &str) -> g7_agents::client::Launch {
+        let hosts = self.clone();
+        g7_agents::client::Launch::new(self.socket(), version, move || {
+            hosts.start(Path::new(env!("CARGO_BIN_EXE_g7-agents"))).map(drop)
+        })
+    }
+
+    async fn listening(&self) {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while UnixStream::connect(self.socket()).await.is_err() {
+            assert!(tokio::time::Instant::now() < deadline, "the host didn't listen");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Waits until `pid` has exited; its status.
+    async fn exited(&self, pid: u32) -> std::process::ExitStatus {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            {
+                let mut started = self.started.lock().unwrap();
+                let child = started.iter_mut().find(|c| c.id() == pid).expect("a host started here");
+                if let Some(status) = child.try_wait().unwrap() {
+                    return status;
+                }
+            }
+            assert!(tokio::time::Instant::now() < deadline, "the host didn't exit");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.started.lock().unwrap().len()
+    }
+}
+
+impl Drop for RealHosts {
+    fn drop(&mut self) {
+        // The last clone (the test's own) stops whatever still runs.
+        if std::sync::Arc::strong_count(&self.started) > 1 {
+            return;
+        }
+        for child in self.started.lock().unwrap_or_else(|e| e.into_inner()).iter_mut() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+fn private_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
+const NEWER: &str = "99.0.0";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_outdated_host_gives_way_to_the_current_one() {
+    let dir = private_dir();
+    let hosts = RealHosts::new(dir.path(), None);
+    let old = hosts.start(Path::new(env!("CARGO_BIN_EXE_g7-agents"))).unwrap();
+    hosts.listening().await;
+    let launch = hosts.launch(NEWER);
+    let (client, _events) = Client::connect_or_spawn_with(&launch, ClientKind::Test).await.unwrap();
+    assert!(hosts.exited(old).await.success(), "the old host stopped cleanly on SIGTERM");
+    assert_eq!(hosts.count(), 2, "one new host was started");
+    assert_ne!(client.host().pid, old);
+    assert!(client.folders_list().await.is_ok(), "the new host serves");
+    // It is no newer than this test pretends to be, but it isn't replaced again.
+    assert_eq!(client.outdated(NEWER), Some(g7_agents::client::Outdated::Older));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_busy_outdated_host_is_kept_until_its_threads_finish() {
+    let dir = private_dir();
+    let log = dir.path().join("cli.log");
+    let codex = wrapper(dir.path(), "codex", "codex-01-create-approve.jsonl", None, &log);
+    let hosts = RealHosts::new(dir.path(), Some(codex));
+    let old = hosts.start(Path::new(env!("CARGO_BIN_EXE_g7-agents"))).unwrap();
+    hosts.listening().await;
+    let (user, mut events) = Client::connect(
+        &hosts.socket(),
+        HelloParams { client: ClientKind::Test, version: 1, bridge_token: None },
+    )
+    .await
+    .unwrap();
+    user.subscribe(ThreadSelection::All, false).await.unwrap();
+    let work = dir.path().join("work").to_string_lossy().into_owned();
+    let folder = user.folders_add(work, Some("work".into())).await.unwrap();
+    let thread =
+        user.thread_start(start(AgentId::Codex, &folder, "Create hello.txt, then run ls")).await.unwrap();
+    let asked = approval(&mut events).await;
+
+    let launch = hosts.launch(NEWER);
+    let (client, _events) = Client::connect_or_spawn_with(&launch, ClientKind::Test).await.unwrap();
+    assert_eq!(client.host().pid, old, "a host with a thread waiting is kept");
+    assert_eq!(hosts.count(), 1);
+    assert_eq!(client.outdated(NEWER), Some(g7_agents::client::Outdated::Older));
+    assert_eq!(client.running_threads().await.unwrap(), 1);
+    assert!(client.replace(&launch, When::Idle).await.unwrap().is_none(), "still busy");
+
+    user.approval_answer(asked.token, Decision::Allow, Origin::launcher()).await.unwrap();
+    assert_eq!(done_of(&until_done(&mut events, &thread.id).await).outcome, Outcome::Done);
+    let (replaced, _events) = client.replace(&launch, When::Idle).await.unwrap().expect("replaced once idle");
+    assert!(hosts.exited(old).await.success());
+    assert_ne!(replaced.host().pid, old);
+    let threads = replaced.threads_list(None, None).await.unwrap();
+    assert_eq!(threads.len(), 1, "the new host has the same threads");
+    assert_eq!(threads[0].state, State::Done);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_user_can_restart_a_busy_outdated_host() {
+    let dir = private_dir();
+    let log = dir.path().join("cli.log");
+    let codex = wrapper(dir.path(), "codex", "codex-01-create-approve.jsonl", None, &log);
+    let hosts = RealHosts::new(dir.path(), Some(codex));
+    let old = hosts.start(Path::new(env!("CARGO_BIN_EXE_g7-agents"))).unwrap();
+    hosts.listening().await;
+    let (client, mut events) = Client::connect(
+        &hosts.socket(),
+        HelloParams { client: ClientKind::Test, version: 1, bridge_token: None },
+    )
+    .await
+    .unwrap();
+    client.subscribe(ThreadSelection::All, false).await.unwrap();
+    let work = dir.path().join("work").to_string_lossy().into_owned();
+    let folder = client.folders_add(work, Some("work".into())).await.unwrap();
+    let thread =
+        client.thread_start(start(AgentId::Codex, &folder, "Create hello.txt, then run ls")).await.unwrap();
+    approval(&mut events).await;
+    let launch = hosts.launch(NEWER);
+    assert!(client.replace(&launch, When::Idle).await.unwrap().is_none());
+    let (replaced, _events) = client.replace(&launch, When::Now).await.unwrap().expect("replaced");
+    assert!(hosts.exited(old).await.success());
+    let threads = replaced.threads_list(None, None).await.unwrap();
+    assert_eq!(threads[0].id, thread.id);
+    assert_eq!(threads[0].state, State::Interrupted, "its running thread stopped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_whose_program_was_upgraded_gives_way_at_the_same_version() {
+    let dir = private_dir();
+    let hosts = RealHosts::new(dir.path(), None);
+    let bin = dir.path().join("old/g7-agents");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_g7-agents"), &bin).unwrap();
+    let old = hosts.start(&bin).unwrap();
+    hosts.listening().await;
+    // The package manager replaces the file.
+    std::fs::remove_file(&bin).unwrap();
+    let launch = hosts.launch(g7_agents::client::VERSION);
+    let (client, _events) = Client::connect_or_spawn_with(&launch, ClientKind::Test).await.unwrap();
+    assert!(hosts.exited(old).await.success());
+    assert_ne!(client.host().pid, old);
+    assert_eq!(client.outdated(g7_agents::client::VERSION), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_current_host_is_left_alone() {
+    let dir = private_dir();
+    let hosts = RealHosts::new(dir.path(), None);
+    let pid = hosts.start(Path::new(env!("CARGO_BIN_EXE_g7-agents"))).unwrap();
+    hosts.listening().await;
+    let launch = hosts.launch(g7_agents::client::VERSION);
+    let (client, _events) = Client::connect_or_spawn_with(&launch, ClientKind::Test).await.unwrap();
+    assert_eq!(client.host().pid, pid);
+    assert_eq!(client.process().map(|p| p.pid()), Some(pid), "the host's own process was found");
+    assert!(client.replace(&launch, When::Now).await.unwrap().is_none(), "never for a current host");
+    assert_eq!(hosts.count(), 1);
 }

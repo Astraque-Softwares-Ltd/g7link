@@ -199,6 +199,11 @@ QtObject {
     // what's read character by character (codes, keys, commands).
     readonly property string fontUi: "Figtree"
     readonly property string fontMono: "Geist Mono"
+    // For every text set in fontMono. Geist Mono's standard ligatures (`--`,
+    // `->`, `==`, `!=` …) draw two characters in one cell over the space before
+    // them ("tsc --noEmit" shows as "tsc--noEmit"), and code is read character
+    // by character, so they're off.
+    readonly property var monoFeatures: ({ "liga": 0, "calt": 0 })
     readonly property var typography: Tokens.data.themes.quiet.typography
 
     // ---- Layout and spacing ----

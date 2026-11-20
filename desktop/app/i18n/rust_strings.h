@@ -12,6 +12,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "Couldn't export it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't open a terminal"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't reach the agent host"), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Couldn't restart agents"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't save it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Couldn't stop it"), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "It's no longer there."), // desktop/app/src/agents.rs
@@ -27,6 +28,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "That folder is no longer in the list."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That folder isn't one of your agent folders."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That request was already answered."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "The agent host is out of date. Restart agents to finish the update."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "The command is copied. Paste it in a terminal."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Too many sessions are being followed. New lines show when you open it again."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Too many threads are running. Wait for one to finish."), // desktop/app/src/agents.rs

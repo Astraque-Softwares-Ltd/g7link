@@ -36,7 +36,9 @@ Item {
     readonly property var threads: parse(Agents.threads, [])
     readonly property var sessions: parse(Agents.sessions, [])
     readonly property var info: parse(Agents.openInfo, ({}))
-    readonly property var asks: parse(Agents.asks, [])
+    // The open thread's oldest waiting request ({} for none).
+    readonly property var ask: parse(Agents.ask, ({}))
+    readonly property bool asking: isThread && (ask.token || "").length > 0
     readonly property var steps: parse(Agents.steps, [])
     readonly property var changes: parse(Agents.changes, [])
 
@@ -254,8 +256,15 @@ Item {
         folderPicker.open()
     }
 
+    // While the window is active the host hears which thread is on screen,
+    // and skips its "needs you" and "finished" notifications.
+    readonly property bool windowActive: Window.active
     onActiveChanged: Agents.pageVisible(active)
-    Component.onCompleted: Agents.pageVisible(active)
+    onWindowActiveChanged: Agents.windowActive(windowActive)
+    Component.onCompleted: {
+        Agents.windowActive(windowActive)
+        Agents.pageVisible(active)
+    }
     Component.onDestruction: Agents.pageVisible(false)
 
     Timer {
@@ -328,7 +337,7 @@ Item {
     Shortcut {
         sequence: "Esc"
         enabled: page.active && (page.openKind.length > 0 || page.pane.length > 0)
-                 && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened
+                 && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
                  && !AppController.commandPaletteOpen
         onActivated: page.back()
     }
@@ -448,6 +457,48 @@ Item {
                     }
                 }
             }
+            // The agent host is still the version from before an update, kept
+            // because threads run on it.
+            Rectangle {
+                visible: Agents.outdated
+                width: parent.width
+                height: visible ? updateColumn.height + 20 : 0
+                radius: Theme.radiusMd
+                color: Theme.surfaceContainerLow
+                border.width: 1
+                border.color: Theme.tintAmber
+                Column {
+                    id: updateColumn
+                    x: 10
+                    y: 10
+                    width: parent.width - 20
+                    spacing: 8
+                    Txt {
+                        width: parent.width
+                        text: qsTr("Restart agents to finish the update")
+                        weight: 500
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                    }
+                    Txt {
+                        width: parent.width
+                        text: page.anyRunning
+                            ? qsTr("Threads are still running on the previous version. It updates by itself once they finish.")
+                            : qsTr("The previous version is still running.")
+                        role: "bodySmall"
+                        muted: true
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                    }
+                    Button {
+                        variant: "tonal"
+                        size: "sm"
+                        text: qsTr("Restart agents")
+                        busy: Agents.status === "connecting"
+                        onClicked: restartSheet.open()
+                    }
+                }
+            }
         }
 
         Flickable {
@@ -495,6 +546,17 @@ Item {
                     counted: false
                     now: page.now
                     onPicked: (id) => page.openRow("session", id)
+                }
+                Txt {
+                    visible: Agents.sessionsUnsupported && page.connected
+                    x: Theme.rowPadding
+                    width: parent.width - 2 * Theme.rowPadding
+                    topPadding: 12
+                    text: qsTr("Restart agents to see the sessions started on this PC.")
+                    role: "bodySmall"
+                    muted: true
+                    wrapMode: Text.WordWrap
+                    elide: Text.ElideNone
                 }
                 Txt {
                     visible: page.threads.length === 0 && page.sessions.length === 0 && page.connected
@@ -826,138 +888,177 @@ Item {
                         }
                     }
 
-                    // What the thread asks.
-                    Repeater {
-                        model: page.isThread ? page.asks : []
-                        delegate: Rectangle {
-                            id: askCard
-                            required property var modelData
-                            readonly property var diffLines: (modelData.diff || "").split("\n").slice(0, 200)
-                            width: transcript.width
-                            height: askColumn.height + 24
-                            radius: Theme.radiusMd
-                            color: Theme.surfaceContainerLow
-                            border.width: 1
-                            border.color: Theme.tintAmber
-                            Column {
-                                id: askColumn
-                                x: 12
-                                y: 12
-                                width: parent.width - 24
-                                spacing: 10
-                                Txt {
-                                    width: parent.width
-                                    text: askCard.modelData.kind === "command"
-                                        ? qsTr("%1 wants to run a command").arg(page.agentName)
-                                        : askCard.modelData.kind === "edit"
-                                            ? qsTr("%1 wants to change %2").arg(page.agentName).arg(askCard.modelData.path || askCard.modelData.title)
-                                            : askCard.modelData.title
-                                    weight: 500
-                                    wrapMode: Text.WordWrap
-                                    elide: Text.ElideNone
-                                }
-                                Rectangle {
-                                    visible: (askCard.modelData.command || "").length > 0
-                                    width: parent.width
-                                    height: visible ? askCommand.height + 16 : 0
-                                    radius: Theme.radiusSm
-                                    color: Theme.surfaceContainerHigh
+                    // What the thread asks: one request at a time, the oldest, with how
+                    // many more wait behind it. Answering it shows the next.
+                    Rectangle {
+                        id: askCard
+                        readonly property var ask: page.ask
+                        readonly property var diffLines: (ask.diff || "").split("\n").slice(0, 200)
+                        readonly property bool alwaysOffered: ask.can_allow_thread === true
+                            && page.info.mode !== "auto_edit" && (ask.kind === "command" || ask.kind === "edit")
+                        visible: page.asking
+                        width: transcript.width
+                        height: visible ? askColumn.height + 24 : 0
+                        radius: Theme.radiusMd
+                        color: Theme.surfaceContainerLow
+                        border.width: 1
+                        border.color: Theme.tintAmber
+                        Column {
+                            id: askColumn
+                            x: 12
+                            y: 12
+                            width: parent.width - 24
+                            spacing: 10
+                            Txt {
+                                width: parent.width
+                                text: askCard.ask.kind === "command"
+                                    ? qsTr("%1 wants to run a command").arg(page.agentName)
+                                    : askCard.ask.kind === "edit"
+                                        ? qsTr("%1 wants to change %2").arg(page.agentName).arg(askCard.ask.path || askCard.ask.title)
+                                        : (askCard.ask.title || "")
+                                weight: 500
+                                wrapMode: Text.WordWrap
+                                elide: Text.ElideNone
+                            }
+                            Rectangle {
+                                visible: (askCard.ask.command || "").length > 0
+                                width: parent.width
+                                height: visible ? askCommand.y + askCommand.height + 8 : 0
+                                radius: Theme.radiusSm
+                                color: Theme.surfaceContainerHigh
+                                // The folder it runs in, beside the command.
+                                Row {
+                                    x: 10
+                                    y: 6
+                                    spacing: 6
+                                    visible: (page.info.folder || "").length > 0
+                                    Icon {
+                                        width: 13
+                                        height: 13
+                                        path: Icons.folder
+                                        color: Theme.surfaceContentVariant
+                                    }
                                     Txt {
-                                        id: askCommand
-                                        x: 10
-                                        y: 8
-                                        width: parent.width - 20
-                                        text: askCard.modelData.command || ""
-                                        role: "code"
-                                        wrapMode: Text.WrapAnywhere
-                                        elide: Text.ElideNone
+                                        text: page.info.folder || ""
+                                        role: "caption"
+                                        muted: true
                                     }
                                 }
-                                Rectangle {
-                                    visible: (askCard.modelData.diff || "").length > 0
+                                Txt {
+                                    id: askCommand
+                                    x: 10
+                                    y: (page.info.folder || "").length > 0 ? 24 : 8
+                                    width: parent.width - 20
+                                    text: askCard.ask.command || ""
+                                    role: "code"
+                                    wrapMode: Text.WrapAnywhere
+                                    elide: Text.ElideNone
+                                }
+                            }
+                            Rectangle {
+                                visible: (askCard.ask.diff || "").length > 0
+                                width: parent.width
+                                height: visible ? askDiff.height + 12 : 0
+                                radius: Theme.radiusSm
+                                color: Theme.surfaceContainerHigh
+                                clip: true
+                                Column {
+                                    id: askDiff
+                                    y: 6
                                     width: parent.width
-                                    height: visible ? askDiff.height + 12 : 0
-                                    radius: Theme.radiusSm
-                                    color: Theme.surfaceContainerHigh
-                                    clip: true
-                                    Column {
-                                        id: askDiff
-                                        y: 6
-                                        width: parent.width
-                                        Repeater {
-                                            model: askCard.diffLines
-                                            delegate: Rectangle {
-                                                id: askLine
-                                                required property string modelData
-                                                width: askDiff.width
-                                                height: diffLine.height
-                                                color: modelData.startsWith("+") ? Theme.wash(Theme.tintGreen)
-                                                    : (modelData.startsWith("-") ? Theme.wash(Theme.error) : "transparent")
-                                                Txt {
-                                                    id: diffLine
-                                                    x: 10
-                                                    width: parent.width - 20
-                                                    text: askLine.modelData.length > 0 ? askLine.modelData : " "
-                                                    role: "code"
-                                                    wrapMode: Text.WrapAnywhere
-                                                    elide: Text.ElideNone
-                                                }
+                                    Repeater {
+                                        model: askCard.diffLines
+                                        delegate: Rectangle {
+                                            id: askLine
+                                            required property string modelData
+                                            width: askDiff.width
+                                            height: diffLine.height
+                                            color: modelData.startsWith("+") ? Theme.wash(Theme.tintGreen)
+                                                : (modelData.startsWith("-") ? Theme.wash(Theme.error) : "transparent")
+                                            Txt {
+                                                id: diffLine
+                                                x: 10
+                                                width: parent.width - 20
+                                                text: askLine.modelData.length > 0 ? askLine.modelData : " "
+                                                role: "code"
+                                                wrapMode: Text.WrapAnywhere
+                                                elide: Text.ElideNone
                                             }
                                         }
                                     }
                                 }
+                            }
+                            // The agent's own words, set apart from G7's.
+                            Row {
+                                visible: (askCard.ask.reason || "").length > 0
+                                width: parent.width
+                                spacing: 8
+                                Rectangle {
+                                    width: 2
+                                    height: askReason.height
+                                    color: Theme.outlineVariant
+                                }
                                 Txt {
-                                    visible: (askCard.modelData.reason || "").length > 0
-                                    width: parent.width
-                                    text: askCard.modelData.reason || ""
+                                    id: askReason
+                                    width: parent.width - 10
+                                    text: qsTr("%1 says: %2").arg(page.agentName).arg(askCard.ask.reason || "")
                                     role: "bodySmall"
                                     muted: true
                                     wrapMode: Text.WordWrap
                                     elide: Text.ElideNone
                                 }
-                                Txt {
-                                    visible: askCard.modelData.truncated === true
-                                    width: parent.width
-                                    text: qsTr("It's too long to show in full here.")
-                                    role: "bodySmall"
-                                    muted: true
-                                    wrapMode: Text.WordWrap
+                            }
+                            Txt {
+                                visible: askCard.ask.truncated === true
+                                width: parent.width
+                                text: qsTr("It's too long to show in full here.")
+                                role: "bodySmall"
+                                muted: true
+                                wrapMode: Text.WordWrap
+                            }
+                            Flow {
+                                width: parent.width
+                                spacing: 8
+                                layoutDirection: Qt.RightToLeft
+                                Button {
+                                    text: qsTr("Allow")
+                                    busy: Agents.busy
+                                    onClicked: Agents.answer(askCard.ask.token, "allow")
                                 }
-                                Flow {
-                                    width: parent.width
-                                    spacing: 8
-                                    layoutDirection: Qt.RightToLeft
-                                    Button {
-                                        text: qsTr("Allow")
-                                        busy: Agents.busy
-                                        onClicked: Agents.answer(askCard.modelData.token, "allow")
-                                    }
-                                    Button {
-                                        visible: askCard.modelData.can_allow_thread === true
-                                        variant: "tonal"
-                                        text: qsTr("Allow for this thread")
-                                        enabled: !Agents.busy
-                                        onClicked: Agents.answer(askCard.modelData.token, "allow_thread")
-                                    }
-                                    Button {
-                                        variant: "text"
-                                        text: qsTr("Deny")
-                                        enabled: !Agents.busy
-                                        onClicked: Agents.answer(askCard.modelData.token, "deny")
-                                    }
+                                Button {
+                                    visible: askCard.alwaysOffered
+                                    variant: "tonal"
+                                    text: askCard.ask.kind === "command"
+                                        ? qsTr("Always allow this exact command in this thread")
+                                        : qsTr("Always allow edits in this thread")
+                                    enabled: !Agents.busy
+                                    onClicked: Agents.answer(askCard.ask.token, "allow_thread")
                                 }
-                                Txt {
-                                    width: parent.width
-                                    text: qsTr("If you deny, the agent carries on another way.")
-                                    role: "caption"
-                                    muted: true
-                                    horizontalAlignment: Text.AlignRight
-                                    wrapMode: Text.WordWrap
+                                Button {
+                                    variant: "text"
+                                    text: qsTr("Deny")
+                                    enabled: !Agents.busy
+                                    onClicked: Agents.answer(askCard.ask.token, "deny")
                                 }
+                            }
+                            Txt {
+                                width: parent.width
+                                text: qsTr("If you deny, the agent carries on another way.")
+                                role: "caption"
+                                muted: true
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.WordWrap
                             }
                         }
                     }
-
+                    Txt {
+                        visible: page.asking && Agents.asksWaiting > 0
+                        width: parent.width
+                        text: qsTr("%n more waiting", "", Agents.asksWaiting)
+                        role: "bodySmall"
+                        muted: true
+                        horizontalAlignment: Text.AlignRight
+                    }
                     // A session that waits in the app it runs in.
                     Rectangle {
                         visible: page.isSession && page.phase === "needs_you"
@@ -1800,6 +1901,49 @@ Item {
                     onClicked: {
                         Agents.continueSession(Agents.openId)
                         continueSheet.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // Restarting an outdated host now stops what runs on it.
+    Sheet {
+        id: restartSheet
+        cardWidth: 420
+        Column {
+            width: parent.width
+            spacing: 12
+            Txt {
+                width: parent.width
+                text: qsTr("Restart agents now?")
+                role: "headline"
+                wrapMode: Text.WordWrap
+            }
+            Txt {
+                width: parent.width
+                text: page.anyRunning
+                    ? qsTr("Threads running now will stop. You can reply to them afterwards to carry on.")
+                    : qsTr("The updated version starts in its place.")
+                role: "body"
+                muted: true
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: 10
+                Button {
+                    variant: "text"
+                    text: qsTr("Not now")
+                    onClicked: restartSheet.close()
+                }
+                Button {
+                    iconPath: Icons.refresh
+                    text: qsTr("Restart")
+                    onClicked: {
+                        Agents.restartHost()
+                        restartSheet.close()
                     }
                 }
             }

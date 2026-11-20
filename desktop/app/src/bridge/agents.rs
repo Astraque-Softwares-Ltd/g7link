@@ -41,8 +41,10 @@ pub mod qobject {
         #[qproperty(QString, open_id)]
         /// The open row, with the same fields as its list row (JSON).
         #[qproperty(QString, open_info)]
-        /// The open thread's approvals (JSON).
-        #[qproperty(QString, asks)]
+        /// The open thread's oldest waiting request (JSON object, `{}` for none).
+        #[qproperty(QString, ask)]
+        /// How many more of its requests wait behind that one.
+        #[qproperty(i32, asks_waiting)]
         /// The open view's newest tool steps, oldest first (JSON).
         #[qproperty(QString, steps)]
         /// The files the open view's edits changed (JSON).
@@ -56,13 +58,24 @@ pub mod qobject {
         /// Where the save dialog suggests saving the waiting export, as a
         /// file URL ("" while none waits).
         #[qproperty(QString, export_file)]
+        /// The agent host is out of date and threads run on it; restarting
+        /// it finishes the update.
+        #[qproperty(bool, outdated)]
+        /// The host can't list sessions started on this PC until it's updated.
+        #[qproperty(bool, sessions_unsupported)]
         type Agents = super::AgentsRust;
 
         /// The page is on screen (or left).
         #[qinvokable]
         fn page_visible(self: &Agents, visible: bool);
+        /// The window is the active one (or stopped being it, or was hidden).
+        #[qinvokable]
+        fn window_active(self: &Agents, active: bool);
         #[qinvokable]
         fn start_host(self: &Agents);
+        /// Restarts an outdated host now (the user agreed its threads stop).
+        #[qinvokable]
+        fn restart_host(self: &Agents);
         #[qinvokable]
         fn refresh(self: &Agents);
         /// Adds a folder by its local path (after the user confirmed it).
@@ -211,13 +224,16 @@ pub struct AgentsRust {
     open_kind: QString,
     open_id: QString,
     open_info: QString,
-    asks: QString,
+    ask: QString,
+    asks_waiting: i32,
     steps: QString,
     changes: QString,
     more: bool,
     loading: bool,
     busy: bool,
     export_file: QString,
+    outdated: bool,
+    sessions_unsupported: bool,
     /// What was last shown, to set only what changed.
     last: Option<agents::View>,
 }
@@ -258,8 +274,8 @@ impl qobject::Agents {
         if differs(|v| &v.open_info) {
             self.as_mut().set_open_info(QString::from(&view.open_info));
         }
-        if differs(|v| &v.asks) {
-            self.as_mut().set_asks(QString::from(&view.asks));
+        if differs(|v| &v.ask) {
+            self.as_mut().set_ask(QString::from(&view.ask));
         }
         if differs(|v| &v.steps) {
             self.as_mut().set_steps(QString::from(&view.steps));
@@ -276,6 +292,9 @@ impl qobject::Agents {
             self.as_mut().set_export_file(url);
         }
         self.as_mut().set_needs_you(view.needs_you);
+        self.as_mut().set_asks_waiting(view.asks_waiting);
+        self.as_mut().set_outdated(view.outdated);
+        self.as_mut().set_sessions_unsupported(view.sessions_unsupported);
         self.as_mut().set_more(view.more);
         self.as_mut().set_loading(view.loading);
         self.as_mut().set_busy(view.busy);
@@ -286,8 +305,16 @@ impl qobject::Agents {
         agents::page_visible(visible);
     }
 
+    pub fn window_active(&self, active: bool) {
+        agents::window_active(active);
+    }
+
     pub fn start_host(&self) {
         agents::start_host();
+    }
+
+    pub fn restart_host(&self) {
+        agents::restart_host();
     }
 
     pub fn refresh(&self) {

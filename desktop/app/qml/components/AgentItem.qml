@@ -334,6 +334,7 @@ Item {
                     selectionColor: Theme.selection
                     selectedTextColor: Theme.surfaceContent
                     font.family: Theme.fontMono
+                    font.features: Theme.monoFeatures
                     font.pixelSize: Theme.typography.code.size
                 }
             }

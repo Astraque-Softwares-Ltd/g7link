@@ -1430,6 +1430,10 @@
     <string name="agents_ask_says">%1$s says: %2$s</string>
     <string name="agents_ask_read_all">Read the whole request to allow it.</string>
     <string name="agents_ask_deny_note">If you deny, the agent carries on another way.</string>
+    <plurals name="agents_more_waiting">
+        <item quantity="one">%1$d more waiting</item>
+        <item quantity="other">%1$d more waiting</item>
+    </plurals>
     <string name="agents_ask_truncated">Too long to show in full. See the rest on your PC.</string>
     <string name="agents_truncated">Shortened</string>
     <string name="agents_answered_elsewhere">Already answered</string>

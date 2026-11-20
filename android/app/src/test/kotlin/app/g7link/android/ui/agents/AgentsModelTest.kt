@@ -594,6 +594,49 @@ class AgentsModelTest {
     }
 
     @Test
+    fun `a thread shows one request at a time, the oldest, and how many more wait`() {
+        var state = AgentsModel.withThreads(AgentsState(catalog = catalog()), listOf(thread("t1", AgentThreadState.WAITING, asks = 3u)))
+        assertNull(state.askQueue("t1"))
+        state = reduce(state, Event.AgentAsk(pc, ask("a2", command = "rg --files", expiresMs = 20_000L))).state
+        state = reduce(state, Event.AgentAsk(pc, ask("a1", command = "pnpm exec tsc --noEmit", expiresMs = 10_000L))).state
+        state = reduce(state, Event.AgentAsk(pc, ask("a3", command = "cargo test", expiresMs = 30_000L))).state
+        var queue = state.askQueue("t1")!!
+        assertEquals("a1", queue.shown.token)
+        assertEquals("pnpm exec tsc --noEmit", queue.shown.command)
+        assertEquals(2, queue.more)
+
+        // Answering it shows the next.
+        state = reduce(state, Event.AgentAsked(pc, "a1", "t1", AgentAskOutcome.DENIED)).state
+        queue = state.askQueue("t1")!!
+        assertEquals("a2", queue.shown.token)
+        assertEquals(1, queue.more)
+        assertNull(state.askQueue("other"))
+    }
+
+    @Test
+    fun `home says how many more requests wait behind the one it shows`() {
+        val ready = AgentsState(catalog = catalog())
+        var state = AgentsModel.withThreads(
+            ready,
+            listOf(thread("t1", AgentThreadState.WAITING, asks = 2u), thread("t2", AgentThreadState.WAITING, asks = 1u)),
+        )
+        // The phone hasn't heard of the requests yet: the threads' own counts.
+        var lead = AgentsModel.homeSummary(state)!!.lead as HomeLead.NeedsYou
+        assertNull(lead.ask)
+        assertEquals(2, lead.more)
+
+        state = reduce(state, Event.AgentAsk(pc, ask("a1", threadId = "t1", expiresMs = 10_000L))).state
+        lead = AgentsModel.homeSummary(state)!!.lead as HomeLead.NeedsYou
+        assertEquals("a1", lead.ask?.token)
+        assertEquals(2, lead.more)
+
+        // One waiting request alone: nothing more to say.
+        state = AgentsModel.withThreads(ready, listOf(thread("t1", AgentThreadState.WAITING, asks = 1u)))
+        state = reduce(state, Event.AgentAsk(pc, ask("a1", threadId = "t1"))).state
+        assertEquals(0, (AgentsModel.homeSummary(state)!!.lead as HomeLead.NeedsYou).more)
+    }
+
+    @Test
     fun `a guessed needs-you is never the summary`() {
         val ready = AgentsState(catalog = catalog())
         for (guessed in listOf(session(idA, AgentSessionState.NEEDS_YOU, guess = true), session(idA, AgentSessionState.MAY_NEED_YOU))) {

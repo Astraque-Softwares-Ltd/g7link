@@ -48,6 +48,7 @@ import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.G7SwitchRow
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Tints
+import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentContinueBlock
 import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionSource
@@ -391,8 +392,7 @@ private fun RunningCommand(running: app.g7link.core.AgentItem?, folder: String) 
         }
         Text(
             detail,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = LocalAppFonts.current.mono,
+            style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
             maxLines = 6,
             overflow = TextOverflow.Ellipsis,
         )

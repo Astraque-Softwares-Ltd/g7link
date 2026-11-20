@@ -322,9 +322,26 @@ impl Hub {
         sent
     }
 
-    /// A launcher or G7 Link says its window shows this thread.
-    pub fn launcher_viewing(&self, thread_id: &str) -> bool {
+    /// A launcher or G7 Link says its window shows this thread to the user
+    /// right now (`ui.viewing`).
+    pub fn viewed(&self, thread_id: &str) -> bool {
         self.lock().values().any(|s| s.shows_threads() && s.viewing.as_deref() == Some(thread_id))
+    }
+
+    /// A connection of `kind` that views `thread_id`; its id.
+    #[cfg(test)]
+    pub(crate) fn test_viewer(&self, kind: ClientKind, thread_id: Option<&str>) -> u64 {
+        let mut clients = self.lock();
+        let id = clients.keys().max().map_or(1, |n| n + 1);
+        let mut slot = ClientSlot::new(kind, Arc::new(Outbox::new()));
+        slot.viewing = thread_id.map(str::to_owned);
+        clients.insert(id, slot);
+        id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_view(&self, client: u64, thread_id: Option<&str>) {
+        self.set(client, |slot| slot.viewing = thread_id.map(str::to_owned));
     }
 
     /// Some connection subscribed with `sessions` or watches a session.
@@ -868,7 +885,7 @@ impl Host {
                 to_value(&self.sessions_set_following(p.on).await?)
             }
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
-            _ => Err(RpcError::new(ErrorCode::BadRequest, "unknown method")),
+            _ => Err(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD)),
         }
     }
 
@@ -939,6 +956,21 @@ impl Answered {
 /// A host with no socket and no agents, for tests of the registry.
 #[cfg(test)]
 pub(crate) fn test_host(dir: &std::path::Path, approval_lifetime_ms: u64) -> Arc<Host> {
+    test_host_with(dir, approval_lifetime_ms, None)
+}
+
+/// [`test_host`] whose notifications land in the receiver.
+#[cfg(test)]
+pub(crate) fn test_host_noting(
+    dir: &std::path::Path,
+    approval_lifetime_ms: u64,
+) -> (Arc<Host>, mpsc::UnboundedReceiver<notify::Note>) {
+    let (notifier, notes) = Notifier::recording();
+    (test_host_with(dir, approval_lifetime_ms, Some(notifier)), notes)
+}
+
+#[cfg(test)]
+fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Option<Notifier>) -> Arc<Host> {
     let config = Config {
         socket: dir.join("host.sock"),
         runtime_dir: dir.to_owned(),
@@ -966,7 +998,7 @@ pub(crate) fn test_host(dir: &std::path::Path, approval_lifetime_ms: u64) -> Arc
         probes: tokio::sync::Mutex::new(ProbeCache { at: None, claude: None, codex: None, shown: None }),
         folders_lock: tokio::sync::Mutex::new(()),
         events,
-        notifier: None,
+        notifier,
         hostname: "test-pc".into(),
         sessions: sessions::Sessions::new(&config),
         clients: AtomicUsize::new(0),

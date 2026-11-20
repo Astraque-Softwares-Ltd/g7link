@@ -53,6 +53,10 @@ data class AgentsState(
     fun asksFor(threadId: String): List<AgentAsk> =
         asks.values.filter { it.thread == threadId }.sortedBy { it.expiresMs }
 
+    /** The one request a thread shows, its oldest, and how many wait behind it; null when none waits. */
+    fun askQueue(threadId: String): AskQueue? =
+        asksFor(threadId).let { asks -> asks.firstOrNull()?.let { AskQueue(it, asks.size - 1) } }
+
     /** The agents a thread can start with now. */
     val readyAgents: List<AgentInfo>
         get() = catalog?.agents.orEmpty().filter { it.installed && it.signedIn }
@@ -117,6 +121,10 @@ data class Step(
 
 enum class StepKind { TOOL, WRITING, THINKING }
 
+/** A thread's requests are answered one at a time: [shown] in full, then the next of [more]. */
+@Immutable
+data class AskQueue(val shown: AgentAsk, val more: Int)
+
 /**
  * What Home shows of a PC's agents: what needs you first (a request, or a
  * session started on the PC that waits there), then what's working, or, with
@@ -134,8 +142,11 @@ data class HomeSummary(
 
 @Immutable
 sealed interface HomeLead {
-    /** A thread that needs you; [ask] is its oldest request when the phone has it. */
-    data class NeedsYou(val thread: AgentThread?, val ask: AgentAsk?) : HomeLead
+    /**
+     * A thread that needs you; [ask] is the oldest request when the phone has
+     * it, and [more] how many others wait (in any thread), shown one at a time.
+     */
+    data class NeedsYou(val thread: AgentThread?, val ask: AgentAsk?, val more: Int = 0) : HomeLead
 
     /** A session started on the PC that waits for an answer there (reported by the agent, never a guess). */
     data class SessionNeedsYou(val session: AgentSession) : HomeLead
@@ -467,12 +478,14 @@ object AgentsModel {
     fun homeSummary(state: AgentsState): HomeSummary? {
         val catalog = state.catalog ?: return null
         val ask = state.asks.values.minByOrNull { it.expiresMs }
+        // The threads' own counts when the phone hasn't heard of every request.
+        val more = (maxOf(state.asks.size, state.threads.sumOf { it.asks.toInt() }) - 1).coerceAtLeast(0)
         val lead: HomeLead? = when {
-            ask != null -> HomeLead.NeedsYou(state.thread(ask.thread), ask)
+            ask != null -> HomeLead.NeedsYou(state.thread(ask.thread), ask, more)
             else -> state.threads
                 .filter { it.state == AgentThreadState.WAITING || it.asks > 0u }
                 .maxByOrNull { it.updatedMs }
-                ?.let { HomeLead.NeedsYou(it, null) }
+                ?.let { HomeLead.NeedsYou(it, null, more) }
                 ?: state.sessions.filter { needsYouExactly(it) }.maxByOrNull { it.updatedMs }?.let { HomeLead.SessionNeedsYou(it) }
         }
         val leadThread = (lead as? HomeLead.NeedsYou)?.let { it.thread?.id ?: it.ask?.thread }

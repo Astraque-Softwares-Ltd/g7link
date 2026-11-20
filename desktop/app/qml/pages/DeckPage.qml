@@ -886,8 +886,10 @@ Item {
                             color: Theme.surfaceContent
                             selectionColor: Theme.selection
                             selectedTextColor: Theme.surfaceContent
-                            font.family: editorSheet.actionKind === "run_command" || editorSheet.actionKind === "shortcut"
-                                ? Theme.fontMono : Theme.fontUi
+                            readonly property bool mono: editorSheet.actionKind === "run_command"
+                                || editorSheet.actionKind === "shortcut"
+                            font.family: mono ? Theme.fontMono : Theme.fontUi
+                            font.features: mono ? Theme.monoFeatures : ({})
                             font.pixelSize: Theme.typography.body.size
                             text: editorSheet.paramValue
                             onTextEdited: editorSheet.paramValue = text

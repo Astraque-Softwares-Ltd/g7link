@@ -37,6 +37,17 @@ class AppFonts(assets: AssetManager) {
 val LocalAppFonts = staticCompositionLocalOf<AppFonts> { error("G7LinkTheme provides the fonts") }
 
 /**
+ * Font features for every text set in [AppFonts.mono]. Geist Mono's standard
+ * ligatures (`--`, `->`, `==`, `!=` …) draw two characters in one cell over
+ * the space before them ("tsc --noEmit" shows as "tsc--noEmit"), and code is
+ * read character by character, so they're off.
+ */
+const val MONO_FEATURES = "\"liga\" 0, \"calt\" 0"
+
+/** This style in [AppFonts.mono], each character in its own cell. */
+fun TextStyle.mono(fonts: AppFonts): TextStyle = copy(fontFamily = fonts.mono, fontFeatureSettings = MONO_FEATURES)
+
+/**
  * G7's type scale, smaller than Material's: rows are 15 sp with 12 sp labels.
  */
 internal fun typography(fonts: AppFonts): Typography {

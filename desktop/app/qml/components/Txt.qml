@@ -22,6 +22,7 @@ Text {
 
     color: muted ? Theme.surfaceContentVariant : Theme.surfaceContent
     font.family: role === "code" ? Theme.fontMono : Theme.fontUi
+    font.features: role === "code" ? Theme.monoFeatures : ({})
     font.pixelSize: Math.max(1, Math.round(size))
     font.weight: weight
     font.variableAxes: ({ "wght": weight })

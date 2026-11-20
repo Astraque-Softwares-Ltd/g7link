@@ -1426,6 +1426,10 @@
     <string name="agents_ask_says">%1$s sagt: %2$s</string>
     <string name="agents_ask_read_all">Lies die ganze Anfrage, um sie zu erlauben.</string>
     <string name="agents_ask_deny_note">Wenn du ablehnst, macht der Agent auf andere Weise weiter.</string>
+    <plurals name="agents_more_waiting">
+        <item quantity="one">%1$d weitere wartet</item>
+        <item quantity="other">%1$d weitere warten</item>
+    </plurals>
     <string name="agents_ask_truncated">Zu lang, um alles zu zeigen. Den Rest siehst du auf deinem PC.</string>
     <string name="agents_truncated">Gekürzt</string>
     <string name="agents_answered_elsewhere">Bereits beantwortet</string>

@@ -1293,6 +1293,9 @@
     <string name="agents_ask_says">%1$s 说：%2$s</string>
     <string name="agents_ask_read_all">看完整个请求后才能允许。</string>
     <string name="agents_ask_deny_note">如果你拒绝，智能体会换一种方式继续。</string>
+    <plurals name="agents_more_waiting">
+        <item quantity="other">还有 %1$d 个请求在等待</item>
+    </plurals>
     <string name="agents_ask_truncated">内容太长，无法完整显示。请在电脑上查看其余部分。</string>
     <string name="agents_truncated">已缩短</string>
     <string name="agents_answered_elsewhere">已被回答</string>

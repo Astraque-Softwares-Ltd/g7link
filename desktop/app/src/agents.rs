@@ -27,7 +27,7 @@ use g7_agents::{
         ThreadExportParams, ThreadExportResult, ThreadInfo, ThreadReadParams, ThreadSelection,
         ThreadStartParams, UiViewingParams,
     },
-    client::{self, Client, ClientError, Events},
+    client::{self, Client, ClientError, Events, Launch, When},
 };
 use g7link_core::{
     AgentAsk, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentExport, AgentFailure,
@@ -66,8 +66,6 @@ const DELTA_EVERY: Duration = Duration::from_millis(100);
 const LISTS_EVERY: Duration = Duration::from_millis(250);
 /// The open view's tool steps shown in its timeline.
 const STEPS_SHOWN: usize = 12;
-/// The open thread's approvals shown at once.
-const ASKS_SHOWN: usize = 8;
 /// A step's detail (its command) as the "Now" card shows it.
 const STEP_DETAIL: usize = 400;
 /// Files listed under Changes.
@@ -497,7 +495,15 @@ fn stop(conns: Vec<WatchConn>) {
 #[derive(Debug, Default)]
 struct BridgeState {
     client: Option<Client>,
+    /// Counts connections, so what was told one isn't taken as told the next.
+    conn: u64,
     status: Status,
+    /// The connected host is older than this build (or an upgrade replaced its
+    /// program) and threads ran on it: it's replaced once none runs, or when
+    /// the user restarts it.
+    outdated: bool,
+    /// The host doesn't know `sessions.list` (it's older).
+    sessions_unsupported: bool,
     agents: Vec<AgentInfo>,
     folders: Vec<Folder>,
     threads: HashMap<String, ThreadInfo>,
@@ -509,7 +515,11 @@ struct BridgeState {
     user_started: bool,
     /// The Agents page is on screen.
     page_open: bool,
+    /// G7 Link's window is the active one.
+    window_active: bool,
     open: Option<OpenView>,
+    /// What `ui.viewing` last told the host on connection `conn`.
+    viewing_sent: Option<(u64, UiViewingParams)>,
     /// The page's requests that haven't answered yet.
     busy: u32,
     watches: PhoneWatches,
@@ -555,6 +565,10 @@ struct Bridge {
     feed: Mutex<Feed>,
     lists: Mutex<ListsGate>,
     wake: Notify,
+    /// The user asked to restart an outdated host now.
+    restart: Notify,
+    /// One `ui.viewing` at a time, so the last one sent is the latest.
+    viewing: tokio::sync::Mutex<()>,
     connected: watch::Sender<bool>,
 }
 
@@ -565,6 +579,8 @@ impl Bridge {
             feed: Mutex::default(),
             lists: Mutex::default(),
             wake: Notify::new(),
+            restart: Notify::new(),
+            viewing: tokio::sync::Mutex::new(()),
             connected: watch::Sender::new(false),
         }
     }
@@ -596,6 +612,11 @@ impl Bridge {
 
     fn known(&self, thread_id: &str) -> Option<ThreadInfo> {
         self.lock().threads.get(thread_id).cloned()
+    }
+
+    /// Some thread the bridge knows is working or waiting.
+    fn any_running(&self) -> bool {
+        self.lock().threads.values().any(|t| t.state.is_running())
     }
 
     fn catalog(&self) -> AgentCatalog {
@@ -825,6 +846,10 @@ pub(crate) fn ask(approval: &Approval, info: Option<&ThreadInfo>) -> AgentAsk {
 
 /// The protocol error for a failed host call (contract §6.1).
 pub(crate) fn failure(e: &ClientError) -> AgentFailure {
+    if e.is_unknown_method() {
+        // An older host, until it's replaced.
+        return AgentFailure::Unsupported;
+    }
     match e.code() {
         Some(ErrorCode::BadRequest) => AgentFailure::BadMessage,
         Some(ErrorCode::NotFound | ErrorCode::AlreadyAnswered) => AgentFailure::NotFound,
@@ -1024,26 +1049,24 @@ fn count_lines(diff: &str) -> (u32, u32) {
     })
 }
 
-fn asks_json(asks: &[Approval]) -> Value {
-    Value::Array(
-        asks.iter()
-            .take(ASKS_SHOWN)
-            .map(|a| {
-                json!({
-                    "token": a.token,
-                    "kind": word(&a.kind),
-                    "title": a.title,
-                    "command": a.command.clone().unwrap_or_default(),
-                    "diff": a.diff.clone().unwrap_or_default(),
-                    "path": a.path.clone().unwrap_or_default(),
-                    "reason": a.reason.clone().unwrap_or_default(),
-                    "truncated": a.truncated,
-                    "can_allow_thread": a.can_allow_thread,
-                    "created_ms": a.created_ms,
-                })
-            })
-            .collect(),
-    )
+/// The one request the page shows: the oldest still waiting (`{}` for
+/// none), and how many more wait behind it. Answering it shows the next.
+fn ask_json(asks: &[Approval]) -> (Value, i32) {
+    let Some(a) = asks.iter().min_by_key(|a| a.created_ms) else { return (json!({}), 0) };
+    let more = i32::try_from(asks.len() - 1).unwrap_or(i32::MAX);
+    let ask = json!({
+        "token": a.token,
+        "kind": word(&a.kind),
+        "title": a.title,
+        "command": a.command.clone().unwrap_or_default(),
+        "diff": a.diff.clone().unwrap_or_default(),
+        "path": a.path.clone().unwrap_or_default(),
+        "reason": a.reason.clone().unwrap_or_default(),
+        "truncated": a.truncated,
+        "can_allow_thread": a.can_allow_thread,
+        "created_ms": a.created_ms,
+    });
+    (ask, more)
 }
 
 // ---- The connection ----
@@ -1122,21 +1145,37 @@ fn hello() -> HelloParams {
 
 async fn run() {
     let Some(node) = core_host::wait_for_node().await else { return };
-    follow(bridge(), &NodeRelay(node), |want| async move {
-        if want == Want::Run {
-            Client::connect_or_spawn(ClientKind::Link).await
-        } else {
-            Client::connect(&client::socket_path(), hello()).await
-        }
+    let launch = Launch::current();
+    follow(bridge(), &NodeRelay(node), &launch, |want| {
+        let launch = launch.clone();
+        async move { connect(&launch, want).await }
     })
     .await;
+}
+
+/// Connects to the host, starting it when it's wanted. An outdated host
+/// (older than this build, or its program replaced by an upgrade) that runs
+/// no thread is replaced by the current one either way.
+async fn connect(launch: &Launch, want: Want) -> Result<(Client, Events), ClientError> {
+    if want == Want::Run {
+        return Client::connect_or_spawn_with(launch, ClientKind::Link).await;
+    }
+    let (client, events) = Client::connect(&launch.socket, hello()).await?;
+    match client.replace(launch, When::Idle).await {
+        Ok(Some(replaced)) => Ok(replaced),
+        Ok(None) => Ok((client, events)),
+        Err(e) => {
+            tracing::warn!(error = %e, "the outdated agent host wasn't replaced");
+            Ok((client, events))
+        }
+    }
 }
 
 /// Keeps a connection to the host: a running one is always followed; one
 /// that isn't running is looked for every 15 s, or started (retrying after
 /// 1, 2, 4 … 30 s) while something needs it. Phones hear there's nothing
 /// while it's away.
-async fn follow<R, F, Fut>(bridge: &Bridge, relay: &R, connect: F)
+async fn follow<R, F, Fut>(bridge: &Bridge, relay: &R, launch: &Launch, connect: F)
 where
     R: Relay,
     F: Fn(Want) -> Fut,
@@ -1152,7 +1191,12 @@ where
         match connect(wanted).await {
             Ok((client, events)) => {
                 backoff = Duration::from_secs(1);
-                serve(bridge, relay, client, events).await;
+                // An outdated host replaced while followed hands over its successor.
+                let (mut next, mut fresh) = (Some((client, events)), false);
+                while let Some((client, events)) = next.take() {
+                    next = serve(bridge, relay, launch, client, events, fresh).await;
+                    fresh = true;
+                }
                 told_none = true;
             }
             Err(e) => {
@@ -1181,15 +1225,25 @@ where
     }
 }
 
-/// Follows the host until the connection closes.
-async fn serve<R: Relay>(bridge: &Bridge, relay: &R, client: Client, mut events: Events) {
+/// Follows the host until the connection closes, or until an outdated host
+/// was replaced: then the connection to its successor, to follow next. A
+/// `fresh` host (that successor) isn't replaced on its own again, so a binary
+/// older than this build can't make it restart after every turn.
+async fn serve<R: Relay>(
+    bridge: &Bridge,
+    relay: &R,
+    launch: &Launch,
+    client: Client,
+    mut events: Events,
+    fresh: bool,
+) -> Option<(Client, Events)> {
     let seeded = async {
         let subscribe = SubscribeParams { threads: ThreadSelection::All, deltas: true, sessions: true };
         client.subscribe_with(subscribe).await?;
         let agents = client.agents_list(false).await?;
         let folders = client.folders_list().await?;
         let threads = client.threads_list(Some(LISTED_THREADS as u32), None).await.unwrap_or_default();
-        let sessions = client.sessions_list(Some(api::MAX_SESSIONS as u32)).await.unwrap_or_default();
+        let sessions = client.sessions_list(Some(api::MAX_SESSIONS as u32)).await;
         let following = following::read(&client).await;
         Ok::<_, ClientError>((agents, folders, threads, sessions, following))
     };
@@ -1198,17 +1252,29 @@ async fn serve<R: Relay>(bridge: &Bridge, relay: &R, client: Client, mut events:
         Err(e) => {
             tracing::warn!(error = %e, "the agent host didn't answer");
             bridge.set_status(Status::Failed);
-            return;
+            return None;
         }
     };
+    let outdated = client.outdated(&launch.version).is_some();
+    if outdated {
+        tracing::info!(
+            host = %client.host().host_version,
+            "the agent host is out of date; it's replaced once no thread runs on it"
+        );
+    }
     let reopen = {
         let mut s = bridge.lock();
         s.client = Some(client.clone());
+        s.conn += 1;
+        // A new connection views nothing until told.
+        s.viewing_sent = Some((s.conn, UiViewingParams::default()));
         s.status = Status::Connected;
+        s.outdated = outdated;
+        s.sessions_unsupported = matches!(&sessions, Err(e) if e.is_unknown_method());
         s.agents = agents;
         s.folders = folders;
         s.threads = threads.into_iter().map(|t| (t.id.clone(), t)).collect();
-        s.sessions = sessions;
+        s.sessions = sessions.unwrap_or_default();
         s.following = following;
         s.open.as_ref().map(|o| (o.generation, o.kind, o.id.clone()))
     };
@@ -1220,12 +1286,42 @@ async fn serve<R: Relay>(bridge: &Bridge, relay: &R, client: Client, mut events:
     {
         core_host::spawn(load(client.clone(), generation, kind, id, false));
     }
-    while let Some(event) = events.recv().await {
-        relay_event(bridge, relay, &client, event).await;
-    }
+    sync_viewing();
+    // Replaced on its own once its threads finish; given up after a failed try
+    // (the user can still restart it).
+    let mut may_swap = outdated && !fresh;
+    let successor = loop {
+        tokio::select! {
+            event = events.recv() => {
+                let Some(event) = event else { break None };
+                let settles =
+                    matches!(event, Event::ThreadState(_) | Event::ThreadDone(_) | Event::ThreadRemoved(_));
+                relay_event(bridge, relay, &client, event).await;
+                if may_swap && settles && !bridge.any_running() {
+                    match swap(bridge, &client, launch, When::Idle).await {
+                        Ok(Some(successor)) => break Some(successor),
+                        Ok(None) => {}
+                        Err(_) => may_swap = false,
+                    }
+                }
+            }
+            () = bridge.restart.notified() => {
+                if !bridge.lock().outdated {
+                    continue;
+                }
+                match swap(bridge, &client, launch, When::Now).await {
+                    Ok(Some(successor)) => break Some(successor),
+                    Ok(None) => {}
+                    Err(_) => crate::bridge::app::show_message(tr!("Agents", "Couldn't restart agents")),
+                }
+            }
+        }
+    };
     {
         let mut s = bridge.lock();
         s.client = None;
+        s.outdated = false;
+        s.sessions_unsupported = false;
         s.threads.clear();
         s.sessions.clear();
         s.following = None;
@@ -1238,9 +1334,37 @@ async fn serve<R: Relay>(bridge: &Bridge, relay: &R, client: Client, mut events:
     }
     bridge.send_ui(UiUpdate::Reset);
     bridge.connected.send_replace(false);
-    bridge.set_status(Status::NotRunning);
-    changed();
-    relay.catalog(None).await;
+    if successor.is_none() {
+        bridge.set_status(Status::NotRunning);
+        changed();
+        relay.catalog(None).await;
+    }
+    successor
+}
+
+/// Replaces the outdated host (see [`Client::replace`]); while the user's
+/// restart runs the page says it's connecting.
+async fn swap(
+    bridge: &Bridge,
+    client: &Client,
+    launch: &Launch,
+    when: When,
+) -> Result<Option<(Client, Events)>, ClientError> {
+    if when == When::Now {
+        bridge.set_status(Status::Connecting);
+    }
+    let result = client.replace(launch, when).await;
+    match &result {
+        Ok(Some((new, _))) => {
+            tracing::info!(version = %new.host().host_version, "the agent host was updated")
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "the agent host couldn't be updated"),
+    }
+    if when == When::Now && !matches!(result, Ok(Some(_))) {
+        bridge.set_status(Status::Connected);
+    }
+    result
 }
 
 async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, event: Event) {
@@ -1283,6 +1407,7 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             if was_open {
                 bridge.send_ui(UiUpdate::Reset);
                 changed();
+                sync_viewing();
             }
             lists_changed();
             relay.event(AgentEvent::removed(e.thread_id), None).await;
@@ -1639,7 +1764,10 @@ pub(crate) struct View {
     pub open_kind: String,
     pub open_id: String,
     pub open_info: String,
-    pub asks: String,
+    /// The oldest request waiting in the open thread (`{}` for none).
+    pub ask: String,
+    /// Requests waiting behind it.
+    pub asks_waiting: i32,
     pub steps: String,
     pub changes: String,
     pub more: bool,
@@ -1647,6 +1775,10 @@ pub(crate) struct View {
     pub busy: bool,
     /// Where the save dialog suggests saving the waiting export ("" for none).
     pub export_path: String,
+    /// The host is out of date and threads run on it: restarting finishes the update.
+    pub outdated: bool,
+    /// The host can't list sessions started on this PC until it's updated.
+    pub sessions_unsupported: bool,
 }
 
 pub(crate) fn view() -> View {
@@ -1664,6 +1796,7 @@ pub(crate) fn view() -> View {
         }),
         None => None,
     };
+    let (ask, asks_waiting) = ask_json(open.map_or(&[][..], |o| &o.asks));
     View {
         status: word(&s.status),
         setup: setup_json(&s, home.as_deref()),
@@ -1678,13 +1811,16 @@ pub(crate) fn view() -> View {
         },
         open_id: open.map(|o| o.id.clone()).unwrap_or_default(),
         open_info: open_info.unwrap_or_else(|| json!({})).to_string(),
-        asks: asks_json(open.map_or(&[][..], |o| &o.asks)).to_string(),
+        ask: ask.to_string(),
+        asks_waiting,
         steps: steps_json(open.map_or(&[][..], |o| &o.rows)).to_string(),
         changes: changes_json(open.map_or(&[][..], |o| &o.rows)).to_string(),
         more: open.is_some_and(|o| o.more),
         loading: open.is_some_and(|o| o.loading),
         busy: s.busy > 0,
         export_path: s.export.as_ref().map(|e| e.path.to_string_lossy().into_owned()).unwrap_or_default(),
+        outdated: s.outdated,
+        sessions_unsupported: s.sessions_unsupported,
     }
 }
 
@@ -1766,6 +1902,7 @@ pub fn page_visible(visible: bool) {
     if !visible {
         close();
     }
+    sync_viewing();
     if let Some(client) = refresh {
         core_host::spawn(async move {
             if let Ok(agents) = client.agents_list(true).await {
@@ -1777,10 +1914,66 @@ pub fn page_visible(visible: bool) {
     changed();
 }
 
+/// G7 Link's window became the active one, or stopped being it (another
+/// window took focus, or it was hidden).
+pub fn window_active(active: bool) {
+    let changed = std::mem::replace(&mut lock().window_active, active) != active;
+    if changed {
+        sync_viewing();
+    }
+}
+
+/// What the host should hear the page shows: the open thread or session
+/// while the page is on screen in the active window, else nothing. The host
+/// skips "needs you" and "finished" notifications for a thread on screen.
+fn wanted_viewing(s: &BridgeState) -> UiViewingParams {
+    match &s.open {
+        Some(open) if s.page_open && s.window_active => match open.kind {
+            OpenKind::Thread => UiViewingParams { thread_id: Some(open.id.clone()), session_id: None },
+            OpenKind::Session => UiViewingParams { thread_id: None, session_id: Some(open.id.clone()) },
+        },
+        _ => UiViewingParams::default(),
+    }
+}
+
+/// Tells the host what the page shows when that changed: one call at a time,
+/// each reading what's wanted when it runs, so the last one sent is the latest.
+fn sync_viewing() {
+    if core_host::try_host().is_none() {
+        return;
+    }
+    core_host::spawn(async {
+        let bridge = bridge();
+        let _one = bridge.viewing.lock().await;
+        let (client, conn, wanted) = {
+            let s = bridge.lock();
+            let Some(client) = s.client.clone() else { return };
+            let wanted = wanted_viewing(&s);
+            if s.viewing_sent.as_ref().is_some_and(|(conn, sent)| *conn == s.conn && *sent == wanted) {
+                return;
+            }
+            (client, s.conn, wanted)
+        };
+        if client.ui_viewing_with(wanted.clone()).await.is_ok() {
+            let mut s = bridge.lock();
+            if s.conn == conn {
+                s.viewing_sent = Some((conn, wanted));
+            }
+        }
+    });
+}
+
 /// The user asked to start the host.
 pub fn start_host() {
     lock().user_started = true;
     wake();
+}
+
+/// The user agreed to restart an outdated host now: threads running on it stop.
+pub fn restart_host() {
+    if lock().outdated {
+        bridge().restart.notify_one();
+    }
 }
 
 /// Reads the agents, folders, threads and sessions again.
@@ -1806,6 +1999,7 @@ pub fn refresh() {
             if let Ok(threads) = threads {
                 s.threads = threads.into_iter().map(|t| (t.id.clone(), t)).collect();
             }
+            s.sessions_unsupported = matches!(&sessions, Err(e) if e.is_unknown_method());
             if let Ok(sessions) = sessions {
                 s.sessions = sessions;
             }
@@ -1901,6 +2095,7 @@ pub fn set_following(on: bool) {
                     lists_changed();
                 }
             }
+            Err(e) if e.is_unknown_method() => crate::bridge::app::show_message(outdated_host()),
             Err(e) => {
                 tracing::debug!(error = %e, "following sessions wasn't changed");
                 crate::bridge::app::show_message(tr!("Agents", "Couldn't change that setting"));
@@ -1943,27 +2138,22 @@ fn open(kind: OpenKind, id: String) {
     };
     bridge().send_ui(UiUpdate::Reset);
     changed();
+    sync_viewing();
     // Without a host it's read once one is reached.
     if let Some(client) = client {
         core_host::spawn(load(client, generation, kind, id, was_session));
     }
 }
 
-/// Reads the open view's newest items and tells the host it's on screen.
+/// Reads the open view's newest items (and watches a session's).
 async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwatch: bool) {
-    let current = || lock().open.as_ref().is_some_and(|o| o.generation == generation);
     let read = match kind {
         OpenKind::Thread => {
             if unwatch {
                 let _ = client.session_watch(None).await;
             }
-            let params =
-                ThreadReadParams { thread_id: id.clone(), limit: Some(READ_PAGE), ..Default::default() };
+            let params = ThreadReadParams { thread_id: id, limit: Some(READ_PAGE), ..Default::default() };
             let read = client.thread_read(params).await;
-            if current() {
-                let viewing = UiViewingParams { thread_id: Some(id), session_id: None };
-                let _ = client.ui_viewing_with(viewing).await;
-            }
             read.map(|page| {
                 bridge().remember(&page.thread);
                 (page.items, page.more_before, page.pending)
@@ -1978,13 +2168,8 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
                     "Too many sessions are being followed. New lines show when you open it again."
                 ));
             }
-            let params =
-                SessionReadParams { session_id: id.clone(), before_seq: None, limit: Some(READ_PAGE) };
+            let params = SessionReadParams { session_id: id, before_seq: None, limit: Some(READ_PAGE) };
             let read = client.session_read(params).await;
-            if current() {
-                let viewing = UiViewingParams { thread_id: None, session_id: Some(id) };
-                let _ = client.ui_viewing_with(viewing).await;
-            }
             read.map(|page| {
                 upsert_session(&mut lock().sessions, page.session);
                 (page.items, page.more_before, Vec::new())
@@ -2023,16 +2208,17 @@ pub fn close() {
     let Some(was) = was else { return };
     bridge().send_ui(UiUpdate::Reset);
     changed();
+    sync_viewing();
     let Some(client) = client else { return };
+    if was.kind != OpenKind::Session || core_host::try_host().is_none() {
+        return;
+    }
     core_host::spawn(async move {
-        // A view opened meanwhile says what's on screen itself.
+        // A session opened meanwhile watches itself.
         if lock().open.is_some() {
             return;
         }
-        let _ = client.ui_viewing_with(UiViewingParams::default()).await;
-        if was.kind == OpenKind::Session {
-            let _ = client.session_watch(None).await;
-        }
+        let _ = client.session_watch(None).await;
     });
 }
 
@@ -2097,9 +2283,17 @@ enum Request {
     Continue(SessionSource, AgentId),
 }
 
+/// What an older host that hasn't been replaced yet can't do.
+fn outdated_host() -> String {
+    tr!("Agents", "The agent host is out of date. Restart agents to finish the update.")
+}
+
 fn request_error(e: &ClientError, request: Request) -> String {
     if e.is_unreachable() {
         return tr!("Agents", "Couldn't reach the agent host");
+    }
+    if e.is_unknown_method() {
+        return outdated_host();
     }
     match (e.code(), request) {
         (Some(ErrorCode::Busy | ErrorCode::Limit), Request::Start) => {
@@ -2692,9 +2886,77 @@ mod tests {
         let pc = || "guchu".to_owned();
         assert_eq!(answered_by(&Origin::phone("abc", "Pixel"), pc).as_deref(), Some("Pixel"));
         assert_eq!(answered_by(&Origin::launcher(), pc).as_deref(), Some("guchu"));
-        let asks: Value = asks_json(&[approval]);
-        assert_eq!(asks[0]["can_allow_thread"], true);
-        assert_eq!(asks[0]["path"], "src/main.rs");
+        let (shown, more) = ask_json(&[approval]);
+        assert_eq!(shown["can_allow_thread"], true);
+        assert_eq!(shown["path"], "src/main.rs");
+        assert_eq!(more, 0);
+    }
+
+    fn command_ask(token: &str, command: &str, created_ms: u64) -> Approval {
+        Approval {
+            token: token.into(),
+            thread_id: "0123456789abcdef0123456789abcdef".into(),
+            kind: ApprovalKind::Command,
+            title: "Run command".into(),
+            command: Some(command.into()),
+            diff: None,
+            path: None,
+            reason: Some("To check the types.".into()),
+            truncated: false,
+            can_allow_thread: true,
+            created_ms,
+            expires_ms: created_ms + 7_200_000,
+        }
+    }
+
+    #[test]
+    fn the_page_shows_one_request_at_a_time_the_oldest_first() {
+        let (none, more) = ask_json(&[]);
+        assert_eq!((none, more), (json!({}), 0));
+        let asks = [
+            command_ask("b", "rg --files", 20),
+            command_ask("a", "pnpm exec tsc --noEmit", 10),
+            command_ask("c", "cargo test", 30),
+        ];
+        let (shown, more) = ask_json(&asks);
+        assert_eq!(shown["token"], "a");
+        assert_eq!(shown["command"], "pnpm exec tsc --noEmit", "the command reaches the page as it is");
+        assert_eq!(more, 2, "\"2 more waiting\"");
+        // Answering the first shows the next.
+        let (next, more) = ask_json(&asks[..1]);
+        assert_eq!((next["token"].as_str(), more), (Some("b"), 0));
+    }
+
+    #[test]
+    fn the_host_hears_what_the_page_shows_only_while_its_window_is_active() {
+        let mut s = BridgeState { page_open: true, window_active: true, ..BridgeState::default() };
+        assert_eq!(wanted_viewing(&s), UiViewingParams::default(), "nothing open");
+        s.open = Some(OpenView::new(1, OpenKind::Thread, "t1".into()));
+        assert_eq!(wanted_viewing(&s), UiViewingParams { thread_id: Some("t1".into()), session_id: None });
+        s.window_active = false;
+        assert_eq!(
+            wanted_viewing(&s),
+            UiViewingParams::default(),
+            "another window has focus, or it's hidden"
+        );
+        s.window_active = true;
+        s.page_open = false;
+        assert_eq!(wanted_viewing(&s), UiViewingParams::default(), "another page is shown");
+        s.page_open = true;
+        s.open = Some(OpenView::new(2, OpenKind::Session, "s1".into()));
+        assert_eq!(wanted_viewing(&s), UiViewingParams { thread_id: None, session_id: Some("s1".into()) });
+    }
+
+    #[test]
+    fn an_older_host_says_so_instead_of_coming_back_empty() {
+        use g7_agents::api::{RpcError, UNKNOWN_METHOD};
+        let old = ClientError::Remote(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD));
+        assert_eq!(request_error(&old, Request::Export), outdated_host());
+        assert_eq!(
+            request_error(&old, Request::Continue(SessionSource::Terminal, AgentId::Codex)),
+            outdated_host()
+        );
+        assert_eq!(failure(&old), AgentFailure::Unsupported, "phones hear it can't be done yet");
     }
 
     #[test]
@@ -2884,6 +3146,21 @@ mod tests {
     /// it answers, sends one event after `threads.list`, and drops the
     /// connection when told to. Its log has each method it was asked.
     async fn fake_host(path: std::path::PathBuf, close: Arc<Notify>, log: Arc<Mutex<Vec<String>>>) {
+        fake_host_of("test", path, close, log).await;
+    }
+
+    /// [`fake_host`] reporting `version`; "0.1.13" also runs a thread and
+    /// doesn't know the methods 0.1.14 added.
+    async fn fake_host_of(
+        version: &'static str,
+        path: std::path::PathBuf,
+        close: Arc<Notify>,
+        log: Arc<Mutex<Vec<String>>>,
+    ) {
+        let old = version == "0.1.13";
+        let mut running = info(Origin::launcher());
+        running.id = "f".repeat(32);
+        running.state = State::Working;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         loop {
@@ -2899,15 +3176,22 @@ mod tests {
                         let entry = if method == "subscribe" { format!("subscribe {}", request["params"]) } else { method.clone() };
                         log.lock().unwrap().push(entry);
                         let result = match method.as_str() {
-                            "hello" => serde_json::json!({ "version": 1, "host_version": "test", "pid": 1 }),
+                            "hello" => serde_json::json!({ "version": 1, "host_version": version, "pid": 1 }),
                             "agents.list" => serde_json::json!({ "agents": [AgentInfo::missing(AgentId::Claude)] }),
                             "folders.list" => serde_json::json!({ "folders": [folder("f0123456789ab", true)] }),
+                            "threads.list" if old => serde_json::json!({ "threads": [running] }),
                             "threads.list" => serde_json::json!({ "threads": [] }),
+                            "sessions.list" | "settings.get" if old => serde_json::Value::Null,
                             "sessions.list" => serde_json::json!({ "sessions": [] }),
                             "settings.get" => serde_json::json!({ "follow_sessions": true }),
                             _ => serde_json::json!({}),
                         };
-                        let reply = serde_json::json!({ "id": request["id"], "result": result });
+                        let reply = if result.is_null() {
+                            let error = serde_json::json!({ "code": "BAD_REQUEST", "message": "unknown method" });
+                            serde_json::json!({ "id": request["id"], "error": error })
+                        } else {
+                            serde_json::json!({ "id": request["id"], "result": result })
+                        };
                         write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
                         if method == "threads.list" {
                             let event = serde_json::json!({
@@ -2955,6 +3239,13 @@ mod tests {
         async fn session(&self, _session: Option<AgentSession>, _removed: Option<String>) {}
     }
 
+    /// A launch that never starts a host (the fake hosts never look outdated).
+    fn test_launch() -> &'static Launch {
+        Box::leak(Box::new(Launch::new("/nonexistent/host.sock".into(), client::VERSION, || {
+            Err(std::io::Error::other("tests don't start hosts"))
+        })))
+    }
+
     async fn until(what: &str, done: impl Fn() -> bool) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         while !done() {
@@ -2982,7 +3273,7 @@ mod tests {
         let bridge: &'static Bridge = Box::leak(Box::new(Bridge::new()));
         let relay: &'static TestRelay = Box::leak(Box::new(TestRelay::new(Want::Run)));
         let socket = path.clone();
-        let follower = tokio::spawn(follow(bridge, relay, move |_| {
+        let follower = tokio::spawn(follow(bridge, relay, test_launch(), move |_| {
             let socket = socket.clone();
             async move { Client::connect(&socket, hello()).await }
         }));
@@ -3013,7 +3304,7 @@ mod tests {
         let relay: &'static TestRelay = Box::leak(Box::new(TestRelay::new(Want::Look)));
         let spawned = Arc::new(Mutex::new(0));
         let (socket, count) = (path.clone(), spawned.clone());
-        let follower = tokio::spawn(follow(bridge, relay, move |want| {
+        let follower = tokio::spawn(follow(bridge, relay, test_launch(), move |want| {
             let socket = socket.clone();
             if want == Want::Run {
                 *count.lock().unwrap() += 1;
@@ -3030,13 +3321,38 @@ mod tests {
         let (_dir, missing) = host_dir();
         let bridge: &'static Bridge = Box::leak(Box::new(Bridge::new()));
         let relay: &'static TestRelay = Box::leak(Box::new(TestRelay::new(Want::Look)));
-        let follower = tokio::spawn(follow(bridge, relay, move |_| {
+        let follower = tokio::spawn(follow(bridge, relay, test_launch(), move |_| {
             let socket = missing.clone();
             async move { Client::connect(&socket, hello()).await }
         }));
         until("looked", || relay.count("catalog none") == 1).await;
         assert_eq!(bridge.lock().status, Status::NotRunning);
         follower.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_old_host_running_threads_is_kept_and_the_page_says_to_restart() {
+        let (_dir, path) = host_dir();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let server = tokio::spawn(fake_host_of("0.1.13", path.clone(), Arc::new(Notify::new()), log));
+        let bridge: &'static Bridge = Box::leak(Box::new(Bridge::new()));
+        let relay: &'static TestRelay = Box::leak(Box::new(TestRelay::new(Want::Run)));
+        let socket = path.clone();
+        let follower = tokio::spawn(follow(bridge, relay, test_launch(), move |_| {
+            let socket = socket.clone();
+            async move { Client::connect(&socket, hello()).await }
+        }));
+        until("connected", || relay.count("event removed") == 1).await;
+        {
+            let s = bridge.lock();
+            assert_eq!(s.status, Status::Connected);
+            assert!(s.outdated, "0.1.13 is older than this build");
+            assert!(s.sessions_unsupported, "its unknown method isn't taken for no sessions");
+            assert_eq!(s.threads.len(), 1);
+        }
+        assert!(bridge.any_running(), "so it's kept until its thread finishes");
+        follower.abort();
+        server.abort();
     }
 
     #[test]

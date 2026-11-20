@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,6 +49,7 @@ import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Tints
+import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentAsk
 import app.g7link.core.AgentAskKind
 import app.g7link.core.AgentSession
@@ -157,7 +159,8 @@ private val CARD = RoundedCornerShape(10.dp)
 
 /**
  * A thread that needs you: who asks, the thread, what it wants to do on one
- * line and the folder beside it, and Review. Allow and Deny are in the thread.
+ * line and the folder beside it, how many more wait, and Review. Allow and
+ * Deny are in the thread, one request at a time.
  */
 @Composable
 private fun NeedsYouCard(lead: HomeLead.NeedsYou, agentName: String, now: Long, onReview: () -> Unit) {
@@ -215,8 +218,9 @@ private fun NeedsYouCard(lead: HomeLead.NeedsYou, agentName: String, now: Long, 
                 )
                 Text(
                     what,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = if (ask.kind == AgentAskKind.COMMAND) LocalAppFonts.current.mono else null,
+                    style = MaterialTheme.typography.bodySmall.let {
+                        if (ask.kind == AgentAskKind.COMMAND) it.mono(LocalAppFonts.current) else it
+                    },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
@@ -228,7 +232,19 @@ private fun NeedsYouCard(lead: HomeLead.NeedsYou, agentName: String, now: Long, 
                 }
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (lead.more > 0) {
+                Text(
+                    pluralStringResource(R.plurals.agents_more_waiting, lead.more, lead.more),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 28.dp).weight(1f),
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
             G7RowAction(label = stringResource(R.string.agents_review), accent = true, onClick = onReview)
         }
     }

@@ -214,6 +214,10 @@ impl std::fmt::Display for ErrorCode {
     }
 }
 
+/// The message of the `BAD_REQUEST` a host answers a method it doesn't have
+/// with, in every version: clients tell an older host by it.
+pub const UNKNOWN_METHOD: &str = "unknown method";
+
 /// The `error` member of a failed response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RpcError {

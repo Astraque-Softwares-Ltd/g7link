@@ -1362,6 +1362,9 @@
 <string name="agents_ask_says">%1$s nói: %2$s</string>
 <string name="agents_ask_read_all">Hãy xem hết yêu cầu để cho phép.</string>
 <string name="agents_ask_deny_note">Nếu bạn từ chối, agent sẽ tiếp tục theo cách khác.</string>
+<plurals name="agents_more_waiting">
+    <item quantity="other">Còn %1$d yêu cầu đang chờ</item>
+</plurals>
 <string name="agents_ask_truncated">Quá dài để hiển thị hết. Xem phần còn lại trên PC của bạn.</string>
 <string name="agents_truncated">Đã rút gọn</string>
 <string name="agents_answered_elsewhere">Đã được trả lời</string>

@@ -55,6 +55,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
@@ -84,6 +85,7 @@ import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.g7Collapse
 import app.g7link.android.ui.theme.g7Expand
 import app.g7link.android.ui.theme.g7Tints
+import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentAsk
 import app.g7link.core.AgentAskKind
 import app.g7link.core.AgentAskOutcome
@@ -122,7 +124,7 @@ fun AgentThreadScreen(
     val agents = all[device.id] ?: AgentsState()
     val thread = agents.thread(threadId)
     val open = agents.open?.takeIf { it.threadId == threadId }
-    val asks = remember(agents.asks, threadId) { agents.asksFor(threadId) }
+    val queue = remember(agents.asks, threadId) { agents.askQueue(threadId) }
     val hasCatalog = agents.catalog != null
     var load by remember(threadId) { mutableStateOf(ThreadLoad.LOADING) }
     var attempt by remember(threadId) { mutableIntStateOf(0) }
@@ -283,7 +285,7 @@ fun AgentThreadScreen(
         if (!plan.isNullOrEmpty() && load == ThreadLoad.READY) {
             PlanCard(
                 plan = plan,
-                startOpen = asks.isEmpty(),
+                startOpen = queue == null,
                 key = threadId,
                 modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 6.dp),
             )
@@ -324,7 +326,7 @@ fun AgentThreadScreen(
                     listState = listState,
                     modifier = Modifier.weight(1f),
                 )
-                if (thread != null && thread.state == AgentThreadState.WORKING && asks.isEmpty()) {
+                if (thread != null && thread.state == AgentThreadState.WORKING && queue == null) {
                     NowCard(
                         step = thread.step,
                         steps = remember(open, thread) { AgentsModel.steps(open, thread) },
@@ -338,9 +340,9 @@ fun AgentThreadScreen(
                 if (thread != null && status != null) {
                     EndNote(status, thread, agents, device.name)
                 }
-                if (asks.isNotEmpty()) {
+                if (queue != null) {
                     AskCards(
-                        asks = asks,
+                        queue = queue,
                         answering = agents.answering,
                         agentName = agentName,
                         folder = thread?.folder,
@@ -518,8 +520,7 @@ private fun ToolRow(tool: AgentTool) {
                 if (detail != null && !expanded) {
                     Text(
                         detail.lineSequence().first(),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = LocalAppFonts.current.mono,
+                        style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
                         color = scheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -623,10 +624,14 @@ private fun EndNote(status: ThreadStatus, thread: AgentThread, agents: AgentsSta
     }
 }
 
-/** The requests waiting in this thread, oldest first, above the reply box. */
+/**
+ * What this thread waits on, above the reply box: one request at a time, the
+ * oldest, with a quiet line saying how many more wait behind it. Answering it
+ * shows the next.
+ */
 @Composable
 private fun AskCards(
-    asks: List<AgentAsk>,
+    queue: AskQueue,
     answering: Set<String>,
     agentName: String,
     folder: String?,
@@ -634,6 +639,7 @@ private fun AskCards(
     now: Long,
     onAnswer: (AgentAsk, Boolean) -> Unit,
 ) {
+    val ask = queue.shown
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -642,18 +648,25 @@ private fun AskCards(
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        for (ask in asks) {
-            key(ask.token) {
-                AskCard(
-                    ask = ask,
-                    answering = ask.token in answering,
-                    agentName = agentName,
-                    folder = folder,
-                    pcName = pcName,
-                    now = now,
-                    onAnswer = { allow -> onAnswer(ask, allow) },
-                )
-            }
+        // A new request is a new card: its own "read it all" before Allow.
+        key(ask.token) {
+            AskCard(
+                ask = ask,
+                answering = ask.token in answering,
+                agentName = agentName,
+                folder = folder,
+                pcName = pcName,
+                now = now,
+                onAnswer = { allow -> onAnswer(ask, allow) },
+            )
+        }
+        if (queue.more > 0) {
+            Text(
+                pluralStringResource(R.plurals.agents_more_waiting, queue.more, queue.more),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
         }
     }
 }
@@ -975,8 +988,7 @@ private fun NowCard(
                 }
                 Text(
                     detail,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = LocalAppFonts.current.mono,
+                    style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
                     maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1058,8 +1070,7 @@ internal fun CodeBlock(
     ) {
         Text(
             shown,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = LocalAppFonts.current.mono,
+            style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
             color = MaterialTheme.colorScheme.onSurface,
             softWrap = true,
             modifier = Modifier

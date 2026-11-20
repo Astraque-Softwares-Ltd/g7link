@@ -312,6 +312,18 @@ fn notify(host: &Host, note: Note) {
     }
 }
 
+/// Posts a "needs you" or "finished" notification, unless a launcher or G7
+/// Link shows that thread to the user right now: then the thread's
+/// notification, if one is up, is taken down instead. Clients still get
+/// every event, so lists, badges and phones change as usual.
+fn notify_unless_viewed(host: &Host, thread_id: &str, note: Note) {
+    if host.hub.viewed(thread_id) {
+        notify(host, Note::Removed { thread_id: thread_id.to_owned() });
+    } else {
+        notify(host, note);
+    }
+}
+
 fn err(code: ErrorCode, message: impl AsRef<str>) -> RpcError {
     RpcError::new(code, message)
 }
@@ -1397,11 +1409,7 @@ impl Host {
         }));
         match end.outcome {
             Outcome::Done => {
-                if !self.hub.launcher_viewing(thread_id) {
-                    notify(self, Note::Done { thread: entry.info.clone(), summary });
-                } else {
-                    notify(self, Note::Removed { thread_id: thread_id.to_owned() });
-                }
+                notify_unless_viewed(self, thread_id, Note::Done { thread: entry.info.clone(), summary });
             }
             Outcome::Failed => {
                 let message = entry.info.error.as_ref().map(|e| e.message.clone()).unwrap_or_default();
@@ -1530,7 +1538,11 @@ impl Host {
         emit_state(self, entry);
         self.hub.broadcast(&Event::ApprovalRequested(ApprovalRequestedEvent { approval: approval.clone() }));
         if pending_count == 0 {
-            notify(self, Note::Approval { thread: entry.info.clone(), approval: approval.clone() });
+            notify_unless_viewed(
+                self,
+                thread_id,
+                Note::Approval { thread: entry.info.clone(), approval: approval.clone() },
+            );
         }
         let order = reg.next_order;
         reg.next_order += 1;
@@ -1611,7 +1623,13 @@ impl Host {
             emit_state(self, entry);
         }
         match next {
-            Some(approval) => notify(self, Note::Approval { thread: entry.info.clone(), approval }),
+            Some(approval) => {
+                notify_unless_viewed(
+                    self,
+                    &thread_id,
+                    Note::Approval { thread: entry.info.clone(), approval },
+                );
+            }
             None => notify(self, Note::ApprovalGone { thread_id, token: token.to_owned() }),
         }
     }
@@ -2042,6 +2060,66 @@ mod tests {
         let rx = host.test_ask(&id, generation + 100, command("ls"));
         assert_eq!(rx.await.unwrap(), Answer::Deny(DenyReason::Cancelled));
         assert!(host.test_pending(&id).is_empty());
+    }
+
+    /// What was posted (`Approval`/`Done` with the command or summary) or
+    /// taken down, in order.
+    fn notes(rx: &mut mpsc::UnboundedReceiver<Note>) -> Vec<String> {
+        let mut seen = Vec::new();
+        while let Ok(note) = rx.try_recv() {
+            seen.push(match note {
+                Note::Approval { approval, .. } => format!("ask {}", approval.command.unwrap_or_default()),
+                Note::ApprovalGone { .. } => "gone".to_owned(),
+                Note::Done { summary, .. } => format!("done {summary}"),
+                Note::Failed { .. } => "failed".to_owned(),
+                Note::PhoneStarted { .. } => "started".to_owned(),
+                Note::Removed { .. } => "removed".to_owned(),
+            });
+        }
+        seen
+    }
+
+    #[tokio::test]
+    async fn a_thread_on_screen_gets_no_needs_you_or_done_notification() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut rx) = crate::host::test_host_noting(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, _cmds) = host.test_thread(AgentId::Codex);
+        let (other, other_generation, _other_cmds) = host.test_thread(AgentId::Codex);
+        // G7 Link's page shows the thread while its window is active.
+        let page = host.hub.test_viewer(ClientKind::Link, Some(&id));
+        let _first = host.test_ask(&id, generation, command("pnpm exec tsc --noEmit"));
+        let _second = host.test_ask(&id, generation, command("rg --files"));
+        let _elsewhere = host.test_ask(&other, other_generation, command("ls"));
+        assert_eq!(notes(&mut rx), ["removed", "ask ls"], "only the thread not on screen asks");
+        assert_eq!(host.test_state(&id).state, State::Waiting, "the list and badge still change");
+        let token = host.test_pending(&id)[0].token.clone();
+        host.approval_answer(&token, Decision::Allow, Origin::launcher()).unwrap();
+        assert_eq!(notes(&mut rx), ["removed"], "the next request isn't posted either");
+        host.test_finish(&id, TurnEnd::done(Some("Checked.".into())));
+        assert_eq!(notes(&mut rx), ["gone", "removed"], "the turn ended with one still waiting");
+
+        // The window lost focus: the next turn's request and end are posted.
+        host.hub.test_view(page, None);
+        let (id, generation, _cmds) = host.test_thread(AgentId::Codex);
+        let _ask = host.test_ask(&id, generation, command("rg --files"));
+        assert_eq!(notes(&mut rx), ["ask rg --files"]);
+        let token = host.test_pending(&id)[0].token.clone();
+        host.approval_answer(&token, Decision::Deny, Origin::launcher()).unwrap();
+        host.test_finish(&id, TurnEnd::done(Some("Stopped there.".into())));
+        assert_eq!(notes(&mut rx), ["gone", "done Stopped there."]);
+    }
+
+    #[tokio::test]
+    async fn a_test_or_cli_connection_viewing_doesnt_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut rx) = crate::host::test_host_noting(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, _cmds) = host.test_thread(AgentId::Claude);
+        host.hub.test_viewer(ClientKind::Cli, Some(&id));
+        let _ask = host.test_ask(&id, generation, command("ls"));
+        assert_eq!(notes(&mut rx), ["ask ls"]);
+        host.hub.test_viewer(ClientKind::Launcher, Some(&id));
+        host.test_finish(&id, TurnEnd::done(Some("Listed.".into())));
+        assert_eq!(notes(&mut rx), ["gone", "removed"], "the launcher shows it");
     }
 
     #[test]

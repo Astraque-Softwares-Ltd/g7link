@@ -71,6 +71,7 @@ import app.g7link.android.ui.theme.G7StatusDot
 import app.g7link.android.ui.theme.G7Tabs
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Tints
+import app.g7link.android.ui.theme.mono
 import app.g7link.core.AgentAsk
 import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentInfo
@@ -556,8 +557,7 @@ private fun ThreadRow(thread: AgentThread, agentName: String, ask: AgentAsk?, no
             if (!preview.isNullOrBlank()) {
                 Text(
                     preview,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = LocalAppFonts.current.mono,
+                    style = MaterialTheme.typography.bodySmall.mono(LocalAppFonts.current),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier

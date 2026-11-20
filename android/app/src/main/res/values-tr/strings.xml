@@ -1426,6 +1426,10 @@
     <string name="agents_ask_says">%1$s diyor ki: %2$s</string>
     <string name="agents_ask_read_all">İzin vermek için isteğin tamamını okuyun.</string>
     <string name="agents_ask_deny_note">Reddederseniz ajan başka bir yolla devam eder.</string>
+    <plurals name="agents_more_waiting">
+        <item quantity="one">%1$d tane daha bekliyor</item>
+        <item quantity="other">%1$d tane daha bekliyor</item>
+    </plurals>
     <string name="agents_ask_truncated">Tamamını göstermek için çok uzun. Kalanını bilgisayarınızda görün.</string>
     <string name="agents_truncated">Kısaltıldı</string>
     <string name="agents_answered_elsewhere">Zaten yanıtlandı</string>

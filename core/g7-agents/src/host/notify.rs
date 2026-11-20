@@ -181,6 +181,13 @@ impl Notifier {
     pub fn send(&self, note: Note) {
         let _ = self.tx.send(note);
     }
+
+    /// A notifier that posts nothing: its notes land in the receiver.
+    #[cfg(test)]
+    pub(crate) fn recording() -> (Notifier, mpsc::UnboundedReceiver<Note>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Notifier { tx }, rx)
+    }
 }
 
 #[derive(Debug)]

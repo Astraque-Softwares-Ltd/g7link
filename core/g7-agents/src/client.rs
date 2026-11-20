@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Clients of the host socket: [`Client`] for tokio, [`BlockingClient`] for
-//! plain threads, the socket path, and starting the host on demand.
+//! plain threads, the socket path, and starting the host on demand. A host
+//! older than this build (or whose program an upgrade replaced) is swapped
+//! for the current one once no thread runs on it.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{self, BufReader as StdBufReader, Write as _};
+use std::io::{self, BufReader as StdBufReader, Read as _, Write as _};
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::os::unix::process::CommandExt;
@@ -36,6 +40,20 @@ pub const SPAWN_RETRY: Duration = Duration::from_millis(50);
 /// Events buffered for a client that isn't reading them; later ones are
 /// dropped until it catches up.
 pub const EVENT_BUFFER: usize = 4096;
+/// This build's version: a host reporting an older one is replaced.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// How long a host that was asked to stop gets to stop its agents and exit.
+pub const STOP_WAIT: Duration = Duration::from_secs(25);
+/// How often a stopping host is looked at until it has exited.
+const EXIT_POLL: Duration = Duration::from_millis(50);
+/// Threads looked at to learn whether any runs (the host keeps at most 200).
+const RUNNING_PAGES: usize = 3;
+const PROC: &str = "/proc";
+/// The host's program file name, in every package.
+const HOST_EXE_NAME: &str = "g7-agents";
+/// What the kernel appends to `/proc/<pid>/exe` once the file is gone.
+const DELETED: &[u8] = b" (deleted)";
+const MAX_STAT: u64 = 4096;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -43,6 +61,8 @@ pub enum ClientError {
     NotInstalled,
     #[error("the agent host did not start")]
     NotStarted,
+    #[error("the running agent host could not be stopped")]
+    NotStopped,
     #[error("{0} is not private to this user")]
     Insecure(PathBuf),
     #[error("the connection to the agent host closed")]
@@ -69,6 +89,11 @@ impl ClientError {
     /// The host can't be reached (not installed, not running, gone).
     pub fn is_unreachable(&self) -> bool {
         matches!(self, Self::NotInstalled | Self::NotStarted | Self::Closed | Self::Io(_) | Self::Timeout)
+    }
+
+    /// The host doesn't have the method: it is older than this build.
+    pub fn is_unknown_method(&self) -> bool {
+        matches!(self, Self::Remote(e) if e.code == ErrorCode::BadRequest && e.message == UNKNOWN_METHOD)
     }
 }
 
@@ -200,6 +225,176 @@ pub fn spawn_host(bin: &Path) -> io::Result<()> {
 
 fn is_not_running(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
+}
+
+// ---- Replacing an outdated host ----
+
+/// `a` is an older version than `b`: dotted numbers compared in order,
+/// anything after `-` or `+` ignored. `false` when either can't be read.
+pub fn is_older(a: &str, b: &str) -> bool {
+    fn parts(version: &str) -> Option<Vec<u64>> {
+        let core = version.trim().split(['-', '+']).next()?;
+        core.split('.').map(|p| p.parse().ok()).collect::<Option<Vec<u64>>>().filter(|p| !p.is_empty())
+    }
+    let (Some(mut a), Some(mut b)) = (parts(a), parts(b)) else { return false };
+    let n = a.len().max(b.len());
+    a.resize(n, 0);
+    b.resize(n, 0);
+    a < b
+}
+
+/// Why a running host should give way to this build's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outdated {
+    /// It reports an older version.
+    Older,
+    /// Its program file was replaced or removed since it started, as a
+    /// package upgrade does.
+    Replaced,
+}
+
+/// The host process behind a connection, as `/proc` showed it right after
+/// `hello`: a signal goes to it only while the same pid still has the same
+/// start time and program, never to a process that reused the pid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostProcess {
+    pid: u32,
+    /// Field 22 of `/proc/<pid>/stat`: clock ticks after boot.
+    start_ticks: u64,
+    /// `/proc/<pid>/exe`, " (deleted)" included once the file is gone.
+    exe: PathBuf,
+}
+
+fn read_small(path: &Path, limit: u64) -> Option<String> {
+    let mut text = String::new();
+    std::fs::File::open(path).ok()?.take(limit).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+impl HostProcess {
+    /// `pid` under `proc_root` (`/proc`), when it is a live `g7-agents` run by
+    /// this user.
+    pub fn read(proc_root: &Path, pid: u32) -> Option<HostProcess> {
+        if pid == 0 {
+            return None;
+        }
+        let dir = proc_root.join(pid.to_string());
+        if std::fs::metadata(&dir).ok()?.uid() != euid() {
+            return None;
+        }
+        let stat = read_small(&dir.join("stat"), MAX_STAT)?;
+        // Fields after the last `)`, so a `)` in the command name can't shift them.
+        let fields: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
+        if matches!(fields.first(), Some(&("Z" | "X" | "x"))) {
+            return None;
+        }
+        let start_ticks = fields.get(19)?.parse().ok()?;
+        let exe = std::fs::read_link(dir.join("exe")).ok()?;
+        let bytes = exe.as_os_str().as_bytes();
+        let file = Path::new(std::ffi::OsStr::from_bytes(bytes.strip_suffix(DELETED).unwrap_or(bytes)));
+        (file.file_name()? == HOST_EXE_NAME).then_some(HostProcess { pid, start_ticks, exe })
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Its program file was replaced or removed since it started.
+    pub fn exe_replaced(&self) -> bool {
+        self.exe.as_os_str().as_bytes().ends_with(DELETED)
+    }
+
+    /// Sends SIGTERM to this process if it is still the one that was read: a
+    /// pidfd pins whatever has the pid now, its start time and program are
+    /// checked again, and the signal goes through the pidfd, so it can't
+    /// reach a process that reused the pid.
+    fn terminate(&self, proc_root: &Path) -> Result<(), ClientError> {
+        let raw = i32::try_from(self.pid).map_err(|_| ClientError::NotStopped)?;
+        let pid = rustix::process::Pid::from_raw(raw).ok_or(ClientError::NotStopped)?;
+        let pidfd: OwnedFd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())
+            .map_err(io::Error::from)?;
+        if HostProcess::read(proc_root, self.pid).as_ref() != Some(self) {
+            return Err(ClientError::NotStopped);
+        }
+        rustix::process::pidfd_send_signal(&pidfd, rustix::process::Signal::TERM).map_err(io::Error::from)?;
+        Ok(())
+    }
+
+    /// Waits until this process has exited (gone, a zombie, or its pid
+    /// taken by another), at most `limit`.
+    async fn exited(&self, proc_root: &Path, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        loop {
+            if HostProcess::read(proc_root, self.pid).as_ref() != Some(self) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(EXIT_POLL).await;
+        }
+    }
+}
+
+type SpawnFn = dyn Fn() -> Result<(), ClientError> + Send + Sync;
+
+/// Where the host listens, how it is started, and which version is current.
+#[derive(Clone)]
+pub struct Launch {
+    pub socket: PathBuf,
+    /// A host reporting an older version is replaced.
+    pub version: String,
+    spawn: Arc<SpawnFn>,
+}
+
+impl std::fmt::Debug for Launch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Launch")
+            .field("socket", &self.socket)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Launch {
+    /// This build's: [`socket_path`], [`VERSION`], and the binary
+    /// [`find_host_binary`] finds, started with [`spawn_host`].
+    pub fn current() -> Launch {
+        Launch {
+            socket: socket_path(),
+            version: VERSION.to_owned(),
+            spawn: Arc::new(|| {
+                let bin = find_host_binary().ok_or(ClientError::NotInstalled)?;
+                spawn_host(&bin).map_err(ClientError::from)
+            }),
+        }
+    }
+
+    /// A host on `socket` that `spawn` starts (tests, or another binary).
+    pub fn new(
+        socket: PathBuf,
+        version: impl Into<String>,
+        spawn: impl Fn() -> io::Result<()> + Send + Sync + 'static,
+    ) -> Launch {
+        Launch {
+            socket,
+            version: version.into(),
+            spawn: Arc::new(move || spawn().map_err(ClientError::from)),
+        }
+    }
+
+    fn spawn(&self) -> Result<(), ClientError> {
+        (self.spawn)()
+    }
+}
+
+/// When [`Client::replace`] may stop an outdated host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum When {
+    /// Only while no thread is working or waiting on it.
+    Idle,
+    /// Now: its running threads stop (the user agreed to that).
+    Now,
 }
 
 // ---- Typed calls ----
@@ -467,7 +662,10 @@ impl Events {
 #[derive(Clone)]
 pub struct Client {
     shared: Arc<Shared>,
+    kind: ClientKind,
     hello: HelloResult,
+    /// The host process, when it could be told for sure.
+    process: Option<HostProcess>,
 }
 
 impl std::fmt::Debug for Client {
@@ -485,6 +683,8 @@ impl Client {
             return Err(io::Error::from(io::ErrorKind::NotFound).into());
         }
         let stream = UnixStream::connect(path).await?;
+        // The kernel's word for who serves the socket, to check the pid `hello` gives.
+        let peer = stream.peer_cred().ok().and_then(|cred| cred.pid());
         let (read, write) = stream.into_split();
         let (events_tx, events_rx) = mpsc::channel(EVENT_BUFFER);
         let shared = Arc::new(Shared {
@@ -495,8 +695,12 @@ impl Client {
         });
         let reader = tokio::spawn(read_loop(BufReader::new(read), Arc::downgrade(&shared), events_tx));
         *shared.reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader);
-        let mut client =
-            Client { shared, hello: HelloResult { version: 0, host_version: String::new(), pid: 0 } };
+        let mut client = Client {
+            shared,
+            kind: hello.client,
+            hello: HelloResult { version: 0, host_version: String::new(), pid: 0 },
+            process: None,
+        };
         let value = client
             .call_value(
                 method::HELLO,
@@ -505,22 +709,50 @@ impl Client {
             )
             .await?;
         client.hello = serde_json::from_value(value).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        // Read while the connection is open, so the pid is still the host's.
+        client.process = peer
+            .filter(|&pid| u32::try_from(pid).ok() == Some(client.hello.pid))
+            .and_then(|_| HostProcess::read(Path::new(PROC), client.hello.pid));
         Ok((client, Events { rx: events_rx }))
     }
 
     /// Connects to the host, starting it first if it isn't running (§1.3).
+    /// An outdated host that runs no thread is stopped and the current one
+    /// started instead; one with threads running is kept, and
+    /// [`Client::outdated`] says so.
     pub async fn connect_or_spawn(client: ClientKind) -> Result<(Client, Events), ClientError> {
-        let path = socket_path();
-        match Client::connect(&path, hello_params(client)).await {
-            Err(ClientError::Io(e)) if is_not_running(&e) => {}
-            other => return other,
+        Client::connect_or_spawn_with(&Launch::current(), client).await
+    }
+
+    /// [`Client::connect_or_spawn`] for the host `launch` describes.
+    pub async fn connect_or_spawn_with(
+        launch: &Launch,
+        kind: ClientKind,
+    ) -> Result<(Client, Events), ClientError> {
+        let (client, events) = match Client::connect(&launch.socket, hello_params(kind)).await {
+            Err(ClientError::Io(e)) if is_not_running(&e) => {
+                launch.spawn()?;
+                // A host just started is the one this build finds; it isn't replaced again.
+                return Client::connect_started(launch, kind).await;
+            }
+            other => other?,
+        };
+        match client.replace(launch, When::Idle).await {
+            Ok(Some(replaced)) => Ok(replaced),
+            Ok(None) => Ok((client, events)),
+            Err(e) => {
+                tracing::warn!(error = %e, "the outdated agent host wasn't replaced");
+                Ok((client, events))
+            }
         }
-        let bin = find_host_binary().ok_or(ClientError::NotInstalled)?;
-        spawn_host(&bin)?;
+    }
+
+    /// Connects to a host that was just started, retrying for [`SPAWN_WAIT`].
+    async fn connect_started(launch: &Launch, kind: ClientKind) -> Result<(Client, Events), ClientError> {
         let deadline = Instant::now() + SPAWN_WAIT;
         loop {
             tokio::time::sleep(SPAWN_RETRY).await;
-            match Client::connect(&path, hello_params(client)).await {
+            match Client::connect(&launch.socket, hello_params(kind)).await {
                 Err(ClientError::Io(e)) if is_not_running(&e) && Instant::now() < deadline => continue,
                 Err(ClientError::Io(e)) if is_not_running(&e) => return Err(ClientError::NotStarted),
                 other => return other,
@@ -531,6 +763,70 @@ impl Client {
     /// What the host said to `hello`.
     pub fn host(&self) -> &HelloResult {
         &self.hello
+    }
+
+    /// The host process, when it could be told for sure (a `g7-agents` of
+    /// this user, the pid `hello` gave matching the socket's peer).
+    pub fn process(&self) -> Option<&HostProcess> {
+        self.process.as_ref()
+    }
+
+    /// Why this host should give way to one of `version` ([`VERSION`] for
+    /// this build), if it should.
+    pub fn outdated(&self, version: &str) -> Option<Outdated> {
+        if is_older(&self.hello.host_version, version) {
+            Some(Outdated::Older)
+        } else if self.process.as_ref().is_some_and(HostProcess::exe_replaced) {
+            Some(Outdated::Replaced)
+        } else {
+            None
+        }
+    }
+
+    /// Threads working or waiting on this host.
+    pub async fn running_threads(&self) -> Result<usize, ClientError> {
+        const PAGE: u32 = 100;
+        let mut running = 0;
+        let mut before = None;
+        for _ in 0..RUNNING_PAGES {
+            let page = self.threads_list(Some(PAGE), before).await?;
+            running += page.iter().filter(|t| t.state.is_running()).count();
+            if page.len() < PAGE as usize {
+                break;
+            }
+            before = page.last().map(|t| t.updated_ms);
+        }
+        Ok(running)
+    }
+
+    /// Replaces this host when it is outdated for `launch` and `when` allows:
+    /// stops it (SIGTERM to the process read at connect, verified again),
+    /// waits until it has exited, starts the current one and connects to it.
+    /// `Ok(None)` when it is current, or threads run on it and `when` is
+    /// [`When::Idle`]: it's kept, to be replaced once they finish.
+    pub async fn replace(
+        &self,
+        launch: &Launch,
+        when: When,
+    ) -> Result<Option<(Client, Events)>, ClientError> {
+        let Some(why) = self.outdated(&launch.version) else { return Ok(None) };
+        if when == When::Idle && self.running_threads().await? > 0 {
+            return Ok(None);
+        }
+        let process = self.process.as_ref().ok_or(ClientError::NotStopped)?;
+        tracing::info!(
+            ?why,
+            host = %self.hello.host_version,
+            ours = %launch.version,
+            pid = process.pid,
+            "replacing the agent host"
+        );
+        process.terminate(Path::new(PROC))?;
+        if !process.exited(Path::new(PROC), STOP_WAIT).await {
+            return Err(ClientError::NotStopped);
+        }
+        launch.spawn()?;
+        Client::connect_started(launch, self.kind).await.map(Some)
     }
 
     /// Sends a request and waits for its result, at most `timeout` (none:
@@ -955,6 +1251,113 @@ mod tests {
         assert_eq!(export.text, text);
         drop(client);
         server.await.unwrap();
+    }
+
+    #[test]
+    fn versions_compare_by_their_numbers() {
+        assert!(is_older("0.1.13", "0.1.14"));
+        assert!(is_older("0.1.9", "0.1.10"), "numbers, not text");
+        assert!(is_older("0.1", "0.1.1"));
+        assert!(is_older("0.1.14-rc1", "0.1.15"));
+        assert!(!is_older("0.1.14", "0.1.14"));
+        assert!(!is_older("0.1.14", "0.1.14+build5"));
+        assert!(!is_older("0.2.0", "0.1.99"));
+        assert!(!is_older("test", "0.1.14"), "a version that can't be read is never older");
+        assert!(!is_older("", "0.1.14"));
+        assert!(!is_older("0.1.13", "x"));
+    }
+
+    /// A fake `/proc/<pid>` with its `stat` (`state`, `start`) and `exe`.
+    fn fake_proc(root: &Path, pid: u32, state: &str, start: u64, exe: &str) {
+        let dir = root.join(pid.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let stat = format!(
+            "{pid} (g7 (agents)) {state} 1 {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start} 1000 1 0"
+        );
+        std::fs::write(dir.join("stat"), stat).unwrap();
+        std::os::unix::fs::symlink(exe, dir.join("exe")).unwrap();
+    }
+
+    #[test]
+    fn a_host_process_is_a_live_g7_agents_and_an_upgrade_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fake_proc(root, 10, "S", 4242, "/usr/lib/g7link/g7-agents");
+        fake_proc(root, 11, "S", 4343, "/usr/lib/g7link/g7-agents (deleted)");
+        fake_proc(root, 12, "S", 1, "/usr/bin/sleep");
+        fake_proc(root, 13, "Z", 1, "/usr/lib/g7link/g7-agents");
+        let current = HostProcess::read(root, 10).unwrap();
+        assert_eq!(
+            (current.pid(), current.start_ticks),
+            (10, 4242),
+            "a ')' in the name doesn't shift fields"
+        );
+        assert!(!current.exe_replaced());
+        assert!(HostProcess::read(root, 11).unwrap().exe_replaced());
+        assert_eq!(HostProcess::read(root, 12), None, "another program is never taken for the host");
+        assert_eq!(HostProcess::read(root, 13), None, "nor a process that has exited");
+        assert_eq!(HostProcess::read(root, 14), None);
+        assert_eq!(HostProcess::read(root, 0), None);
+    }
+
+    /// A process whose program is called `g7-agents` (a copy of `sh`
+    /// waiting on stdin), to signal for real.
+    fn standin(dir: &Path) -> (std::process::Child, std::process::ChildStdin) {
+        let sh = std::fs::canonicalize("/bin/sh").unwrap();
+        let exe = dir.join("g7-agents");
+        std::fs::copy(&sh, &exe).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = Command::new(&exe).args(["-c", "read line"]).stdin(Stdio::piped()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        (child, stdin)
+    }
+
+    async fn read_live(pid: u32) -> HostProcess {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(process) = HostProcess::read(Path::new(PROC), pid) {
+                return process;
+            }
+            assert!(Instant::now() < deadline, "the stand-in host didn't start");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_process_read_at_connect_is_stopped() {
+        use std::os::unix::process::ExitStatusExt;
+        let dir = private_tempdir();
+        let (mut child, _stdin) = standin(dir.path());
+        let process = read_live(child.id()).await;
+        assert!(!process.exe_replaced());
+        // Another process with the same pid would have started at another time.
+        let reused = HostProcess { start_ticks: process.start_ticks + 1, ..process.clone() };
+        assert!(matches!(reused.terminate(Path::new(PROC)), Err(ClientError::NotStopped)));
+        assert!(child.try_wait().unwrap().is_none(), "nothing was signalled");
+        process.terminate(Path::new(PROC)).unwrap();
+        assert!(process.exited(Path::new(PROC), Duration::from_secs(5)).await, "a zombie counts as gone");
+        assert_eq!(child.wait().unwrap().signal(), Some(15));
+    }
+
+    #[tokio::test]
+    async fn a_replaced_program_shows_on_its_process() {
+        let dir = private_tempdir();
+        let (mut child, _stdin) = standin(dir.path());
+        read_live(child.id()).await;
+        std::fs::remove_file(dir.path().join("g7-agents")).unwrap();
+        let process = read_live(child.id()).await;
+        assert!(process.exe_replaced());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn unknown_methods_are_told_apart() {
+        let old = ClientError::Remote(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD));
+        assert!(old.is_unknown_method());
+        let shape = ClientError::Remote(RpcError::new(ErrorCode::BadRequest, "bad thread list"));
+        assert!(!shape.is_unknown_method());
+        assert!(!ClientError::Closed.is_unknown_method());
     }
 
     #[test]
