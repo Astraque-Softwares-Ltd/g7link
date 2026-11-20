@@ -1,0 +1,16 @@
+{
+  "cursor": 50,
+  "cursor_out": 6,
+  "insert": "x.rs",
+  "mentions": [
+    [0,2]
+  ],
+  "mentions_out": [
+    [0,5]
+  ],
+  "note": "An offset past the end counts as the end.",
+  "out": "@x.rs ",
+  "text": "@x",
+  "trigger": {"kind":"mention","query":"x","start":0},
+  "trigger_out": null
+}

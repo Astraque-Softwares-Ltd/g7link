@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
-//! One test per bound of contract §P2.3: just under it nothing gives, just
-//! over it the stated fallback happens.
+//! One test per bound of contract §P2.3 (and phase 2's plan card and
+//! composer): just under it nothing gives, just over it the stated fallback
+//! happens.
 
 use g7_agents_render::bounds::*;
 use g7_agents_render::{
     BlockKind, Ctx, GuardEvent, ItemIn, ItemKind, Link, Phase, Row, RowKind, ThreadState, Timeline, TokClass,
-    ToolClass, ToolIn, ToolStatus, TypingGuard, changed_files, diff, highlight, live_thought_line, markdown,
-    tool_label,
+    ToolClass, ToolIn, ToolStatus, TypingGuard, Via, changed_files, diff, highlight, live_thought_line,
+    markdown, mentions, tool_label, trigger,
 };
 
 fn item<'a>(seq: u64, id: &'a str, kind: ItemKind, text: &'a str) -> ItemIn<'a> {
@@ -26,6 +27,9 @@ fn item<'a>(seq: u64, id: &'a str, kind: ItemKind, text: &'a str) -> ItemIn<'a> 
         deny_of: None,
         tool: None,
         truncated: false,
+        via: Via::Turn,
+        plan_state: None,
+        question: None,
     }
 }
 
@@ -338,4 +342,53 @@ fn cache_entries_and_bytes() {
     assert!(bytes <= CACHE_BYTES, "{bytes}");
     assert!(entries < 200);
     assert_eq!(rows.len(), 200);
+}
+
+/// The plan card's (shown, more) for a plan of `lines` one-line paragraphs.
+fn plan_card(lines: usize, open: bool) -> (u16, u16) {
+    let text: String = (0..lines).map(|k| format!("Step {k}.\n\n")).collect();
+    let plan = item(1, "p1", ItemKind::Plan, &text);
+    let keys = if open { vec!["p:p1".to_owned()] } else { Vec::new() };
+    let rows = Timeline::new().rows(
+        &[plan],
+        &Ctx { state: ThreadState::Working, state_since_ms: 0, now_ms: 0, marks: &[], open: &keys },
+    );
+    match rows[0].kind {
+        RowKind::Plan { shown, more, .. } => (shown, more),
+        _ => panic!("a plan row first"),
+    }
+}
+
+#[test]
+fn plan_fold_lines() {
+    let at = PLAN_FOLD_LINES;
+    assert_eq!(plan_card(at, false), (at as u16, 0));
+    assert_eq!(plan_card(at + 1, false), (at as u16, 1));
+    assert_eq!(plan_card(at + 1, true), (at as u16 + 1, 0));
+    // A first block longer than the card still shows.
+    let code = format!("```\n{}```", "x\n".repeat(at + 5));
+    let plan = item(1, "p1", ItemKind::Plan, &code);
+    let rows = Timeline::new().rows(&[plan], &ctx(ThreadState::Working));
+    assert!(matches!(rows[0].kind, RowKind::Plan { shown: 1, more: 0, .. }));
+}
+
+#[test]
+fn max_trigger_query_units() {
+    let at = format!("see @{}", "😀".repeat(MAX_TRIGGER_QUERY_UNITS / 2));
+    let cursor = at.encode_utf16().count() as u32;
+    assert_eq!(trigger(&at, cursor).map(|t| t.query.encode_utf16().count()), Some(MAX_TRIGGER_QUERY_UNITS));
+    let over = format!("{at}a");
+    assert!(trigger(&over, cursor + 1).is_none());
+    let slash = format!("/{}", "a".repeat(MAX_TRIGGER_QUERY_UNITS + 1));
+    assert!(trigger(&slash, MAX_TRIGGER_QUERY_UNITS as u32 + 1).is_some());
+    assert!(trigger(&slash, MAX_TRIGGER_QUERY_UNITS as u32 + 2).is_none());
+}
+
+#[test]
+fn max_mentions() {
+    assert_eq!(mentions(&"@a ".repeat(MAX_MENTIONS)).len(), MAX_MENTIONS);
+    let over = "@a ".repeat(MAX_MENTIONS + 1);
+    let found = mentions(&over);
+    assert_eq!(found.len(), MAX_MENTIONS);
+    assert_eq!(found.last(), Some(&(3 * (MAX_MENTIONS as u32 - 1), 2)));
 }

@@ -1,0 +1,20 @@
+{
+  "ctx": {"marks":[],"now_ms":30000,"open":[],"state":"done","state_since_ms":25000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Plan the cache eviction fix.","ts_ms":1000,"turn":1},
+    {"end_ms":1500,"id":"t1","kind":"tool","seq":2,"tool":{"class":"command","detail":"rg -n evict src","name":"command","status":"ok","title":"Run"},"ts_ms":1100,"turn":1},
+    {"end_ms":2000,"id":"t2","kind":"tool","seq":3,"tool":{"class":"command","detail":"sed -n 1,80p src/cache.rs","name":"command","status":"ok","title":"Run"},"ts_ms":1600,"turn":1},
+    {"end_ms":20000,"id":"p1","kind":"plan","plan_state":"proposed","seq":4,"text":"# Evict by size\n\n- Track bytes per entry.\n- Evict the oldest past the cap.","ts_ms":3000,"turn":1},
+    {"end_ms":25000,"id":"a1","kind":"assistant","phase":"final","seq":5,"text":"The plan is above. Say if you want it changed.","ts_ms":21000,"turn":1}
+  ],
+  "note": "Codex in plan mode: the fold hides the work, never the plan; the answer follows the plan.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Plan the cache eviction fix.","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":24000},
+    {"depth":0,"item_id":"p1","key":"p:p1","kind":"plan","seq":4,"shown":3,"state":"proposed","turn":1},
+    {"block":{"kind":{"heading":1},"text":"Evict by size"},"depth":0,"index":0,"item_id":"p1","key":"b:p1:0","kind":"block","seq":4,"turn":1},
+    {"block":{"kind":"list_item","marker":"bullet","text":"Track bytes per entry."},"depth":0,"index":1,"item_id":"p1","key":"b:p1:1","kind":"block","seq":4,"turn":1},
+    {"block":{"kind":"list_item","marker":"bullet","text":"Evict the oldest past the cap."},"depth":0,"index":2,"item_id":"p1","key":"b:p1:2","kind":"block","last":true,"seq":4,"turn":1},
+    {"block":{"kind":"paragraph","text":"The plan is above. Say if you want it changed."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"final","seq":5,"turn":1}
+  ]
+}

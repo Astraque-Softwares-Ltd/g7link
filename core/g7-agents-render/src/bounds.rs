@@ -47,6 +47,13 @@ pub const LABEL_UNITS: usize = 160;
 pub const THOUGHT_PREVIEW_UNITS: usize = 240;
 /// A request that arrives within this long of the last keystroke is held.
 pub const TYPING_IDLE_MS: u64 = 1_500;
+/// A plan's card shows the blocks within its first this many lines until
+/// it is opened.
+pub const PLAN_FOLD_LINES: usize = 20;
+/// A composer trigger's query, in UTF-16 units; a longer run is no trigger.
+pub const MAX_TRIGGER_QUERY_UNITS: usize = 128;
+/// `@path` mentions found in one text; later ones are not returned.
+pub const MAX_MENTIONS: usize = 256;
 /// The timeline's parsed-Markdown cache.
 pub const CACHE_ENTRIES: usize = 256;
 pub const CACHE_BYTES: usize = 4_194_304;

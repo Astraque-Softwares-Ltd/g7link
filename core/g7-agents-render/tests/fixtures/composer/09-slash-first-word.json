@@ -1,0 +1,12 @@
+{
+  "cursor": 4,
+  "cursor_out": 8,
+  "insert": "review",
+  "mentions": [],
+  "mentions_out": [],
+  "note": "A / as the first character, the cursor in the first word.",
+  "out": "/review ",
+  "text": "/rev",
+  "trigger": {"kind":"slash","query":"rev","start":0},
+  "trigger_out": null
+}

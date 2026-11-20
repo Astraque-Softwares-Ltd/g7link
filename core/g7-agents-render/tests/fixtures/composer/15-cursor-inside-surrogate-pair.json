@@ -1,0 +1,9 @@
+{
+  "cursor": 2,
+  "mentions": [
+    [0,3]
+  ],
+  "note": "An offset inside a surrogate pair counts as the start of its character.",
+  "text": "@😀",
+  "trigger": null
+}

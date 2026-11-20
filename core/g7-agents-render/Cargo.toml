@@ -12,6 +12,7 @@ repository.workspace = true
 [dependencies]
 pulldown-cmark = { workspace = true }
 syntect = { workspace = true }
+two-face = { workspace = true }
 similar = { workspace = true }
 serde = { workspace = true }
 

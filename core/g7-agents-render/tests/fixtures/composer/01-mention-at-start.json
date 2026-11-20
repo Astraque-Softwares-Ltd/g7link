@@ -1,0 +1,14 @@
+{
+  "cursor": 1,
+  "cursor_out": 11,
+  "insert": "README.md",
+  "mentions": [],
+  "mentions_out": [
+    [0,10]
+  ],
+  "note": "An @ at the start of the text, nothing after it yet: every file.",
+  "out": "@README.md ",
+  "text": "@",
+  "trigger": {"kind":"mention","query":"","start":0},
+  "trigger_out": null
+}

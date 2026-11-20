@@ -1,0 +1,26 @@
+{
+  "ctx": {"marks":[],"now_ms":60000,"open":[],"state":"done","state_since_ms":50000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Plan the reconnect log change.","ts_ms":1000,"turn":1},
+    {"end_ms":5000,"id":"p1","kind":"plan","plan_state":"replaced","seq":2,"text":"# Make the reconnect log say which side gave up\n\nToday the reconnect path logs one line, `reconnect failed`, whichever side dropped the lease.\n\n## Changes\n\n1. Add `DropReason` to `core/ble/src/lease.rs`.\n2. Send the reason in the `LeaseEnded` frame.\n3. Log `reconnect: gave up (<side>, <reason>)` on both sides.\n\n## Tests\n\nOne test per reason in `core/ble/tests/two_devices.rs`.","ts_ms":5000,"turn":1},
+    {"id":"u2","kind":"user","seq":3,"text":"Keep the lease timings as they are.","ts_ms":10000,"turn":2},
+    {"end_ms":15000,"id":"p2","kind":"plan","plan_state":"implemented","seq":4,"text":"# Log which side gave up\n\nThe same, without touching the timings.","ts_ms":15000,"turn":2},
+    {"id":"u3","kind":"user","seq":5,"text":"Implement the plan.","ts_ms":20000,"turn":3},
+    {"end_ms":22000,"id":"t1","kind":"tool","seq":6,"tool":{"class":"edit","detail":"-    Ended,\n+    Ended(DropReason),","name":"Edit","path":"core/ble/src/lease.rs","status":"ok","title":"Edit core/ble/src/lease.rs"},"ts_ms":21000,"turn":3},
+    {"end_ms":40000,"id":"t2","kind":"tool","seq":7,"tool":{"class":"command","detail":"cargo test -p ble","name":"Bash","output":"test result: ok","status":"ok","title":"Bash"},"ts_ms":23000,"turn":3},
+    {"end_ms":50000,"id":"a1","kind":"assistant","seq":8,"text":"Done: each side logs why it gave up.","ts_ms":45000,"turn":3}
+  ],
+  "note": "A replaced plan shows its head only; the plan that took its place was implemented; the turn that implemented it folds as usual.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Plan the reconnect log change.","turn":1},
+    {"depth":0,"item_id":"p1","key":"p:p1","kind":"plan","more":8,"seq":2,"state":"replaced","turn":1},
+    {"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":3,"text":"Keep the lease timings as they are.","turn":2},
+    {"depth":0,"item_id":"p2","key":"p:p2","kind":"plan","seq":4,"shown":2,"state":"implemented","turn":2},
+    {"block":{"kind":{"heading":1},"text":"Log which side gave up"},"depth":0,"index":0,"item_id":"p2","key":"b:p2:0","kind":"block","seq":4,"turn":2},
+    {"block":{"kind":"paragraph","text":"The same, without touching the timings."},"depth":0,"index":1,"item_id":"p2","key":"b:p2:1","kind":"block","last":true,"seq":4,"turn":2},
+    {"depth":0,"item_id":"u3","key":"i:u3","kind":"user","seq":5,"text":"Implement the plan.","turn":3},
+    {"depth":0,"hidden":1,"item_id":"u3","key":"f:3","kind":"fold","seq":5,"turn":3,"worked_ms":30000},
+    {"block":{"kind":"paragraph","text":"Done: each side logs why it gave up."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"seq":8,"turn":3},
+    {"adds":1,"dels":1,"depth":0,"files":[{"adds":1,"dels":1,"path":"core/ble/src/lease.rs"}],"item_id":"a1","key":"c:3","kind":"changes","seq":8,"turn":3}
+  ]
+}

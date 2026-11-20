@@ -1,0 +1,14 @@
+{
+  "ctx": {"marks":[{"by":"","item_id":"q1","kind":"denied"}],"now_ms":6000,"open":[],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Tidy the logs.","ts_ms":1000,"turn":1},
+    {"end_ms":4000,"id":"q1","kind":"question","question":{"count":1,"state":"asked"},"seq":2,"ts_ms":2000,"turn":1},
+    {"id":"t1","kind":"tool","seq":3,"tool":{"class":"command","detail":"cargo fmt","name":"Bash","status":"running","title":"Bash"},"ts_ms":4500,"turn":1}
+  ],
+  "note": "Dismissed by the user (a denied mark): not answered; the agent carries on.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Tidy the logs.","turn":1},
+    {"count":1,"depth":0,"item_id":"q1","key":"q:q1","kind":"question","seq":2,"state":"dismissed","turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo fmt"},"seq":3,"status":"running","turn":1}
+  ]
+}

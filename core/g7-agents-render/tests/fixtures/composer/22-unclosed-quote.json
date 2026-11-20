@@ -1,0 +1,9 @@
+{
+  "cursor": 0,
+  "mentions": [
+    [4,4]
+  ],
+  "note": "An unclosed quote: the mention is the run up to whitespace.",
+  "text": "see @\"my notes and more",
+  "trigger": null
+}

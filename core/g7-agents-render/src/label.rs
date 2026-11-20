@@ -11,7 +11,7 @@ use crate::bounds::{
 };
 use crate::diff::file_headers;
 use crate::markdown::is_zero;
-use crate::timeline::{ToolClass, ToolIn};
+use crate::timeline::{ToolClass, ToolIn, is_shown_tool};
 
 /// The object of a tool line ("Ran <object>"), one line.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ pub fn tool_label(tool: &ToolIn<'_>) -> ToolLabel {
             let path = first_line(tool.path);
             if path.is_empty() { path_in(&title).unwrap_or(title) } else { path }
         }
-        ToolClass::Mcp | ToolClass::Agent | ToolClass::Tasks | ToolClass::Other => title,
+        ToolClass::Mcp | ToolClass::Agent | ToolClass::Tasks | ToolClass::Other | ToolClass::Plan => title,
     };
     let more =
         if tool.class == ToolClass::Edit { sat16(file_headers(tool.detail).saturating_sub(1)) } else { 0 };
@@ -197,12 +197,16 @@ fn path_in(title: &str) -> Option<String> {
 
 /// The summary of a group's tools: per class, with edits and reads counted
 /// as distinct paths; in the order command, edit, read, search, web, then
-/// everything else as one "other" tally. Task lists are not counted.
+/// everything else as one "other" tally. Task lists, the plan file and tool
+/// searches are not counted.
 pub fn summary(tools: &[ToolIn<'_>]) -> Summary {
     let mut counts = [0usize; 6];
     let mut edits: Vec<&str> = Vec::new();
     let mut reads: Vec<&str> = Vec::new();
     for tool in tools {
+        if !is_shown_tool(tool) {
+            continue;
+        }
         let slot = match tool.class {
             ToolClass::Command => 0,
             ToolClass::Edit => {
@@ -225,7 +229,7 @@ pub fn summary(tools: &[ToolIn<'_>]) -> Summary {
             }
             ToolClass::Search => 3,
             ToolClass::Web => 4,
-            ToolClass::Tasks => continue,
+            ToolClass::Tasks | ToolClass::Plan => continue,
             ToolClass::Mcp | ToolClass::Agent | ToolClass::Other => 5,
         };
         counts[slot] += 1;

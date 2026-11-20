@@ -8,14 +8,27 @@
 use std::collections::HashSet;
 
 use g7_agents_render::{
-    Ctx, ItemIn, ItemKind, Mark, MarkKind, Phase, ThreadState, Timeline, ToolClass, ToolIn, ToolStatus,
+    Ctx, ItemIn, ItemKind, Mark, MarkKind, Phase, PlanState, QuestionIn, QuestionState, ThreadState,
+    Timeline, ToolClass, ToolIn, ToolStatus, Via,
 };
 use libfuzzer_sys::fuzz_target;
 
 const IDS: [&str; 8] = ["a", "b", "c", "d", "a:0", "b:1", "1", "live"];
-const KINDS: [ItemKind; 5] =
-    [ItemKind::User, ItemKind::Assistant, ItemKind::Tool, ItemKind::Notice, ItemKind::Reasoning];
-const CLASSES: [ToolClass; 9] = [
+const KINDS: [ItemKind; 7] = [
+    ItemKind::User,
+    ItemKind::Assistant,
+    ItemKind::Tool,
+    ItemKind::Notice,
+    ItemKind::Reasoning,
+    ItemKind::Plan,
+    ItemKind::Question,
+];
+const VIAS: [Via; 3] = [Via::Turn, Via::Steer, Via::Queue];
+const PLAN_STATES: [Option<PlanState>; 4] =
+    [None, Some(PlanState::Proposed), Some(PlanState::Implemented), Some(PlanState::Replaced)];
+const QUESTION_STATES: [QuestionState; 4] =
+    [QuestionState::Asked, QuestionState::Answered, QuestionState::Dismissed, QuestionState::Expired];
+const CLASSES: [ToolClass; 10] = [
     ToolClass::Command,
     ToolClass::Edit,
     ToolClass::Read,
@@ -25,6 +38,7 @@ const CLASSES: [ToolClass; 9] = [
     ToolClass::Agent,
     ToolClass::Tasks,
     ToolClass::Other,
+    ToolClass::Plan,
 ];
 const STATUSES: [ToolStatus; 4] =
     [ToolStatus::Running, ToolStatus::Ok, ToolStatus::Error, ToolStatus::Denied];
@@ -54,7 +68,7 @@ fuzz_target!(|data: &[u8]| {
         let h = b(k * 3) ^ (b(k * 3 + 1) << 8) ^ (b(k * 3 + 2) << 16);
         let kind = KINDS[h % KINDS.len()];
         let tool = (kind == ItemKind::Tool).then(|| ToolIn {
-            name: "t",
+            name: if h & 128 == 0 { "t" } else { "ToolSearch" },
             title: piece,
             class: CLASSES[(h >> 3) % CLASSES.len()],
             detail: piece,
@@ -79,6 +93,13 @@ fuzz_target!(|data: &[u8]| {
             deny_of: (h & 32 == 0).then(|| IDS[(h >> 4) % IDS.len()]),
             tool,
             truncated: h & 64 == 0,
+            via: VIAS[(h >> 6) % VIAS.len()],
+            plan_state: PLAN_STATES[(h >> 8) % PLAN_STATES.len()],
+            question: (h & 256 == 0).then(|| QuestionIn {
+                state: QUESTION_STATES[(h >> 10) % QUESTION_STATES.len()],
+                count: (h >> 13) as u8 % 6,
+                by: if h & 512 == 0 { piece } else { "" },
+            }),
         });
     }
     let marks: Vec<Mark> = (0..b(1) % 4)
@@ -90,7 +111,9 @@ fuzz_target!(|data: &[u8]| {
         .collect();
     let open: Vec<String> = IDS
         .iter()
-        .flat_map(|id| [format!("i:{id}"), format!("g:{id}"), format!("t:{id}")])
+        .flat_map(|id| {
+            [format!("i:{id}"), format!("g:{id}"), format!("t:{id}"), format!("p:{id}"), format!("q:{id}")]
+        })
         .chain(["f:1".into(), "c:1:0".into()])
         .collect();
     let open = &open[..b(0) % open.len()];

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Every fixture under `tests/fixtures/` is loaded and compared in full.
 //! The launcher re-implements the rules and reads the same `timeline/`,
-//! `labels/`, `thought/` and `guard/` files.
+//! `labels/`, `thought/`, `guard/` and `composer/` files.
 
 mod common;
 
 use common::{CtxJ, ItemJ, ToolJ, blessing, first_difference, fixtures, load, save, text_input};
 use g7_agents_render::{
-    GuardEvent, Timeline, TypingGuard, diff, live_thought_line, markdown, summary, tool_label,
+    GuardEvent, Timeline, TypingGuard, apply, diff, live_thought_line, markdown, mentions, summary,
+    tool_label, trigger,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -40,6 +41,48 @@ fn timeline() {
         let keys: std::collections::HashSet<_> = rows.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys.len(), rows.len(), "{}: duplicate keys", path.display());
         check(&path, fixture, "rows", serde_json::to_value(&rows).expect("rows serialize"));
+    }
+}
+
+/// Compares several produced fields at once, or writes them all.
+fn check_all(path: &std::path::Path, mut fixture: Value, got: Vec<(&str, Value)>) {
+    if blessing() {
+        for (field, value) in got {
+            fixture[field] = value;
+        }
+        save(path, &fixture);
+        return;
+    }
+    for (field, value) in got {
+        if let Some(d) = first_difference(field, &fixture[field], &value) {
+            panic!("{}: {d}", path.display());
+        }
+    }
+}
+
+/// `{text, cursor, insert?}` → `trigger` (null for none) and `mentions` of
+/// the text; with `insert`, `out` and `cursor_out` from `apply`, then the
+/// `trigger_out` at the new cursor and the `mentions_out` of the new text.
+#[test]
+fn composer() {
+    for path in fixtures("composer") {
+        let fixture = load(&path);
+        let text = fixture["text"].as_str().unwrap_or_else(|| panic!("{}: text", path.display())).to_owned();
+        let cursor = fixture["cursor"].as_u64().and_then(|c| u32::try_from(c).ok()).expect("a cursor");
+        let found = trigger(&text, cursor);
+        let mut got = vec![
+            ("trigger", serde_json::to_value(&found).expect("triggers serialize")),
+            ("mentions", json!(mentions(&text))),
+        ];
+        if let Some(insert) = fixture.get("insert").and_then(Value::as_str) {
+            let t = found.as_ref().unwrap_or_else(|| panic!("{}: an insert needs a trigger", path.display()));
+            let (out, at) = apply(&text, t, cursor, insert);
+            got.push(("trigger_out", serde_json::to_value(trigger(&out, at)).expect("triggers serialize")));
+            got.push(("mentions_out", json!(mentions(&out))));
+            got.push(("cursor_out", json!(at)));
+            got.push(("out", json!(out)));
+        }
+        check_all(&path, fixture, got);
     }
 }
 

@@ -1,0 +1,14 @@
+{
+  "ctx": {"marks":[{"by":"","item_id":"q1","kind":"waiting"}],"now_ms":4000,"open":[],"state":"waiting","state_since_ms":3000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Make the reconnect log say which side gave up.","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"read","name":"Read","path":"core/ble/src/lease.rs","status":"ok","title":"Read"},"ts_ms":1100,"turn":1},
+    {"id":"q1","kind":"question","question":{"count":2,"state":"asked"},"seq":3,"ts_ms":3000,"turn":1}
+  ],
+  "note": "The agent asks two questions: one line at its place, kind waiting on its mark; the turn does not fold.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Make the reconnect log say which side gave up.","turn":1},
+    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"core/ble/src/lease.rs"},"ms":100,"seq":2,"status":"ok","turn":1},
+    {"count":2,"depth":0,"item_id":"q1","key":"q:q1","kind":"question","seq":3,"state":"asked","turn":1}
+  ]
+}

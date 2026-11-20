@@ -2,7 +2,8 @@
 // Parts ported from t3code (MIT); see THIRD-PARTY-T3CODE.md.
 //! A thread's items into the rows a client draws: turns that fold behind
 //! "Worked for …" once answered, runs of finished tools gathered into one
-//! line, thoughts, requests waiting at their tool, and the live line.
+//! line, thoughts, requests waiting at their tool, plans, questions the
+//! agent asked, and the live line.
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,11 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::bounds::{
     CACHE_BYTES, CACHE_ENTRIES, GROUP_MIN, MAX_CHANGED_FILES, MAX_DEPTH, MAX_ITEMS_IN, MAX_ROWS_OUT,
-    MAX_SRC_BYTES, clean, cut_bytes, is_stripped_char, sat16,
+    MAX_SRC_BYTES, PLAN_FOLD_LINES, clean, cut_bytes, is_stripped_char, sat16,
 };
 use crate::diff::{DiffDoc, diff};
 use crate::label::{Summary, ToolLabel, live_thought_line, summary, tool_label};
-use crate::markdown::{Block, is_false, is_zero, parse};
+use crate::markdown::{Block, BlockKind, is_false, is_zero, parse};
 use crate::stream::{StreamCache, blocks as stream_blocks};
 
 // ── Input ──────────────────────────────────────────────────────────────────
@@ -43,6 +44,14 @@ pub struct ItemIn<'a> {
     pub tool: Option<ToolIn<'a>>,
     /// The host cut the item's text or output.
     pub truncated: bool,
+    /// A user item: how it reached the agent.
+    pub via: Via,
+    /// A plan item: where it stands; `None` reads as proposed.
+    pub plan_state: Option<PlanState>,
+    /// A question item: what the client knows of it; `None` reads as asked,
+    /// with no count. A mark on the item overrides its state (see
+    /// [`QuestionIn`]).
+    pub question: Option<QuestionIn<'a>>,
 }
 
 impl std::fmt::Debug for ItemIn<'_> {
@@ -54,6 +63,9 @@ impl std::fmt::Debug for ItemIn<'_> {
             .field("turn", &self.turn)
             .field("streaming", &self.streaming)
             .field("tool", &self.tool)
+            .field("via", &self.via)
+            .field("plan_state", &self.plan_state)
+            .field("question", &self.question)
             .finish_non_exhaustive()
     }
 }
@@ -66,6 +78,67 @@ pub enum ItemKind {
     Tool,
     Notice,
     Reasoning,
+    /// A plan the agent proposed in plan mode; its text is the plan.
+    Plan,
+    /// Questions the agent asked; its text, when any, is the answers.
+    Question,
+}
+
+/// How a user item reached the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Via {
+    /// It started a turn.
+    #[default]
+    Turn,
+    /// Sent while the agent worked, and taken into the running turn.
+    Steer,
+    /// Sent while the agent worked, and sent when the turn ended.
+    Queue,
+}
+
+impl Via {
+    pub fn is_turn(&self) -> bool {
+        matches!(self, Via::Turn)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanState {
+    #[default]
+    Proposed,
+    Implemented,
+    /// A newer plan of the thread took its place.
+    Replaced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuestionState {
+    /// Waiting for the user.
+    #[default]
+    Asked,
+    Answered,
+    /// The user chose not to answer.
+    Dismissed,
+    /// It ended unanswered: it lapsed, or the turn ended or was stopped.
+    Expired,
+}
+
+/// A question item as the client knows it from the item and the question's
+/// events. A mark on the item, when there is one, decides the state
+/// instead: `Waiting` and `Held` → asked, `Allowed` → answered by the mark's
+/// `by`, `Denied` → dismissed, `Expired` and `Cancelled` → expired. A
+/// question still asked when its turn has ended reads as expired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+pub struct QuestionIn<'a> {
+    pub state: QuestionState,
+    /// How many questions it asked, 1 to 4; 0 when not known (a secret
+    /// question on a phone).
+    pub count: u8,
+    /// Who answered: a phone's name; empty for this device.
+    pub by: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -114,6 +187,21 @@ pub enum ToolClass {
     Tasks,
     #[default]
     Other,
+    /// Writing the plan file in plan mode: no row (the plan item shows it).
+    Plan,
+}
+
+/// The tool search an agent runs to find its tools: no row, not counted.
+const TOOL_SEARCH: &str = "ToolSearch";
+
+/// Whether a tool item makes a line of its own: not a task list, not the
+/// plan file, not a tool search.
+pub(crate) fn is_shown_tool(tool: &ToolIn<'_>) -> bool {
+    match tool.class {
+        ToolClass::Tasks | ToolClass::Plan => false,
+        ToolClass::Other => tool.name != TOOL_SEARCH,
+        _ => true,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -204,6 +292,10 @@ pub enum RowKind {
         from: String,
         #[serde(default, skip_serializing_if = "is_false")]
         deny_of: bool,
+        /// Sent while the agent worked: taken in (`steer`) or sent after
+        /// (`queue`).
+        #[serde(default, skip_serializing_if = "Via::is_turn")]
+        via: Via,
     },
     /// One Markdown block of an answer, a message or an opened thought.
     Block {
@@ -273,6 +365,32 @@ pub enum RowKind {
     Notice {
         text: String,
     },
+    /// The head of a plan's card; `shown` of its blocks follow as `Block`
+    /// rows (`index` 0 up), and `more` are left out until it is opened
+    /// (key `p:<item id>`): a long plan shows its first
+    /// `PLAN_FOLD_LINES` lines, a replaced one only this row.
+    Plan {
+        state: PlanState,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        shown: u16,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        more: u16,
+        #[serde(default, skip_serializing_if = "is_false")]
+        open: bool,
+    },
+    /// The agent's questions, one line; opened (key `q:<item id>`), the
+    /// answers follow as `Block` rows when the item has them.
+    Question {
+        state: QuestionState,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        count: u8,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        by: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        has_text: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        open: bool,
+    },
     Live {
         label: LiveLabel,
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -295,6 +413,8 @@ impl RowKind {
             RowKind::Changes { .. } => "changes",
             RowKind::Mark { .. } => "mark",
             RowKind::Notice { .. } => "notice",
+            RowKind::Plan { .. } => "plan",
+            RowKind::Question { .. } => "question",
             RowKind::Live { .. } => "live",
         }
     }
@@ -629,15 +749,46 @@ enum Unit {
     Notice(usize),
     Thought(Vec<usize>),
     Tool(usize),
+    Plan(usize),
+    Question(usize),
 }
 
 impl Unit {
     fn first(&self) -> usize {
         match self {
-            Unit::User(i) | Unit::Assistant(i) | Unit::Notice(i) | Unit::Tool(i) => *i,
+            Unit::User(i)
+            | Unit::Assistant(i)
+            | Unit::Notice(i)
+            | Unit::Tool(i)
+            | Unit::Plan(i)
+            | Unit::Question(i) => *i,
             Unit::Thought(ids) => ids.first().copied().unwrap_or_default(),
         }
     }
+}
+
+/// The lines a block takes in a plan's card: its text's lines (a final
+/// line break starts none), a table's rows with its head; at least 1.
+fn block_lines(b: &Block) -> usize {
+    match b.kind {
+        BlockKind::Table => b.table.as_ref().map_or(1, |t| t.cells.len() / usize::from(t.columns.max(1))),
+        BlockKind::Rule => 1,
+        _ => b.text.lines().count(),
+    }
+    .max(1)
+}
+
+/// How many of a plan's blocks its closed card shows: those that end within
+/// its first `PLAN_FOLD_LINES` lines, and at least the first.
+fn plan_fold(blocks: &[Block]) -> usize {
+    let mut lines = 0usize;
+    for (k, b) in blocks.iter().enumerate() {
+        lines = lines.saturating_add(block_lines(b));
+        if lines > PLAN_FOLD_LINES {
+            return k.max(1);
+        }
+    }
+    blocks.len()
 }
 
 struct View<'c, 'a> {
@@ -680,7 +831,9 @@ impl<'c, 'a> View<'c, 'a> {
         let its: Vec<&ItemIn<'a>> = window.iter().filter(|i| seen.insert(i.id)).collect();
         let index: HashMap<&str, usize> = its.iter().enumerate().map(|(n, i)| (i.id, n)).collect();
         let is_tool_line =
-            |i: &ItemIn<'_>| i.kind == ItemKind::Tool && i.tool.is_some_and(|t| t.class != ToolClass::Tasks);
+            |i: &ItemIn<'_>| i.kind == ItemKind::Tool && i.tool.is_some_and(|t| is_shown_tool(&t));
+        // A question's mark is its state, not a row of its own.
+        let takes_mark = |i: &ItemIn<'_>| is_tool_line(i) || i.kind == ItemKind::Question;
         let mut marks = HashMap::new();
         let mut orphans = Vec::new();
         for mark in ctx.marks {
@@ -690,7 +843,7 @@ impl<'c, 'a> View<'c, 'a> {
                 continue;
             }
             match index.get(mark.item_id.as_str()) {
-                Some(&n) if is_tool_line(its[n]) => {
+                Some(&n) if takes_mark(its[n]) => {
                     marks.insert(mark.item_id.as_str(), mark);
                 }
                 _ => orphans.push(mark),
@@ -757,6 +910,27 @@ impl<'c, 'a> View<'c, 'a> {
         self.marks.get(self.its[n].id).is_some_and(|m| matches!(m.kind, MarkKind::Waiting | MarkKind::Held))
     }
 
+    /// A question's state, count and who answered: its mark decides when it
+    /// has one, else what the client knows; still asked once its turn has
+    /// ended, it reads as expired.
+    fn question(&self, n: usize, settled: bool) -> (QuestionState, u8, &str) {
+        let it = self.its[n];
+        let known = it.question.unwrap_or_default();
+        let from_mark = self.marks.get(it.id).and_then(|m| match m.kind {
+            MarkKind::Waiting | MarkKind::Held => Some((QuestionState::Asked, "")),
+            MarkKind::Allowed => Some((QuestionState::Answered, m.by.as_str())),
+            MarkKind::Denied => Some((QuestionState::Dismissed, "")),
+            MarkKind::Expired | MarkKind::Cancelled => Some((QuestionState::Expired, "")),
+            MarkKind::Rule => None,
+        });
+        let (state, by) = match from_mark {
+            Some(marked) => marked,
+            None if known.state == QuestionState::Asked && settled => (QuestionState::Expired, ""),
+            None => (known.state, if known.state == QuestionState::Answered { known.by } else { "" }),
+        };
+        (state, known.count, by)
+    }
+
     fn status(&self, n: usize, settled: bool) -> RowStatus {
         if self.waiting(n) {
             return RowStatus::Asking;
@@ -799,10 +973,12 @@ impl<'c, 'a> View<'c, 'a> {
                     }
                 }
                 ItemKind::Tool => {
-                    if it.tool.is_some_and(|t| t.class != ToolClass::Tasks) {
+                    if it.tool.is_some_and(|t| is_shown_tool(&t)) {
                         units.push(Unit::Tool(n));
                     }
                 }
+                ItemKind::Plan => units.push(Unit::Plan(n)),
+                ItemKind::Question => units.push(Unit::Question(n)),
             }
         }
         units
@@ -855,10 +1031,15 @@ impl<'c, 'a> View<'c, 'a> {
         }
         let busy = all.iter().any(|&n| {
             let it = self.its[n];
-            (it.kind == ItemKind::Assistant && it.streaming)
-                || (it.kind == ItemKind::Tool
-                    && it.tool.is_some_and(|t| t.class != ToolClass::Tasks)
-                    && matches!(self.status(n, false), RowStatus::Running | RowStatus::Asking))
+            match it.kind {
+                ItemKind::Assistant | ItemKind::Plan => it.streaming,
+                ItemKind::Tool => {
+                    it.tool.is_some_and(|t| is_shown_tool(&t))
+                        && matches!(self.status(n, false), RowStatus::Running | RowStatus::Asking)
+                }
+                ItemKind::Question => self.question(n, false).0 == QuestionState::Asked,
+                ItemKind::User | ItemKind::Notice | ItemKind::Reasoning => false,
+            }
         });
         if busy {
             return;
@@ -920,21 +1101,25 @@ impl<'c, 'a> View<'c, 'a> {
         settled: bool,
         folds_here: bool,
     ) {
-        let answer = if settled && folds_here { self.answer(members, settled) } else { None };
         let all = self.with_children(members);
         let pending = all.iter().any(|&n| self.waiting(n));
-        let Some(answer) = answer.filter(|_| !pending) else {
-            let units = self.units(members);
+        let units = self.units(members);
+        let folds = settled && folds_here && !pending;
+        let answer = if folds { self.answer(members, settled) } else { None };
+        // A turn that ended with a plan and no answer folds behind its plan.
+        let plan = units.iter().rev().find_map(|u| if let Unit::Plan(n) = u { Some(*n) } else { None });
+        let Some(end) = answer.or(plan.filter(|_| folds)) else {
             self.emit_units(out, &units, 0, turn, settled);
             return;
         };
-        let units = self.units(members);
         let anchor = units.iter().position(|u| matches!(u, Unit::User(_)));
-        let hidden: Vec<Unit> = units
+        // After the anchor and without the answer, in order; plans and
+        // messages sent while it worked stay out of the fold.
+        let rest: Vec<(bool, &Unit)> = units
             .iter()
             .enumerate()
-            .filter(|(k, u)| Some(*k) != anchor && !matches!(u, Unit::Assistant(n) if *n == answer))
-            .map(|(_, u)| u.clone())
+            .filter(|(k, u)| Some(*k) != anchor && !matches!(u, Unit::Assistant(n) if Some(*n) == answer))
+            .map(|(_, u)| (self.stays_out(u), u))
             .collect();
         if let Some(a) = anchor {
             self.emit_unit(out, &units[a], 0, turn, settled);
@@ -943,12 +1128,13 @@ impl<'c, 'a> View<'c, 'a> {
         let was = (out.count_only, out.count);
         out.count_only = true;
         out.count = 0;
-        self.emit_units(out, &hidden, 1, turn, settled);
+        self.emit_rest(out, &rest, turn, settled, true);
         let hidden_rows = out.count;
         (out.count_only, out.count) = was;
+        let mut open = false;
         if hidden_rows > 0 {
             let key = format!("f:{turn}");
-            let open = self.is_open(&key);
+            open = self.is_open(&key);
             let start = anchor.map_or(members.first().copied(), |a| Some(units[a].first()));
             let since = start.map_or(0, |n| self.its[n].ts_ms);
             let end =
@@ -956,12 +1142,51 @@ impl<'c, 'a> View<'c, 'a> {
             let worked_ms = end.saturating_sub(since);
             let count = sat16(hidden_rows);
             out.push(|| self.row(key, RowKind::Fold { worked_ms, hidden: count, open }, turn, 0, start));
-            if open {
-                self.emit_units(out, &hidden, 1, turn, settled);
+        }
+        self.emit_rest(out, &rest, turn, settled, open);
+        if let Some(answer) = answer {
+            self.emit_blocks(out, answer, 0, turn);
+        }
+        self.emit_changes(out, turn, &all, end);
+    }
+
+    /// A unit a fold never hides: a plan, a message sent while it worked.
+    fn stays_out(&self, unit: &Unit) -> bool {
+        match unit {
+            Unit::Plan(_) => true,
+            Unit::User(n) => !self.its[*n].via.is_turn(),
+            _ => false,
+        }
+    }
+
+    /// A folded turn's units after its anchor: those that stay out at depth
+    /// 0, and, when `hidden` (the fold is open, or rows are being counted),
+    /// the runs between them at depth 1.
+    fn emit_rest(
+        &self,
+        out: &mut Emit<'_, '_>,
+        rest: &[(bool, &Unit)],
+        turn: u32,
+        settled: bool,
+        hidden: bool,
+    ) {
+        let mut run: Vec<Unit> = Vec::new();
+        for (out_of_fold, unit) in rest {
+            if !*out_of_fold {
+                run.push((*unit).clone());
+                continue;
+            }
+            if hidden {
+                self.emit_units(out, &run, 1, turn, settled);
+            }
+            run.clear();
+            if !out.count_only {
+                self.emit_unit(out, unit, 0, turn, settled);
             }
         }
-        self.emit_blocks(out, answer, 0, turn);
-        self.emit_changes(out, turn, &all, answer);
+        if hidden {
+            self.emit_units(out, &run, 1, turn, settled);
+        }
     }
 
     fn emit_changes(&self, out: &mut Emit<'_, '_>, turn: u32, all: &[usize], answer: usize) {
@@ -1115,6 +1340,7 @@ impl<'c, 'a> View<'c, 'a> {
                             text: plain_text(it.text),
                             from: plain_text(it.from),
                             deny_of: it.deny_of.is_some(),
+                            via: it.via,
                         },
                         turn,
                         depth,
@@ -1157,6 +1383,56 @@ impl<'c, 'a> View<'c, 'a> {
                 }
             }
             Unit::Tool(n) => self.emit_tool(out, *n, depth, turn, settled),
+            Unit::Plan(n) => self.emit_plan(out, *n, depth, turn),
+            Unit::Question(n) => self.emit_question(out, *n, depth, turn, settled),
+        }
+    }
+
+    fn emit_plan(&self, out: &mut Emit<'_, '_>, n: usize, depth: u8, turn: u32) {
+        let it = self.its[n];
+        if it.streaming {
+            out.used.insert(it.id.to_owned());
+        }
+        let key = format!("p:{}", it.id);
+        let open = self.is_open(&key);
+        let state = it.plan_state.unwrap_or_default();
+        let blocks = out.tl.blocks(it);
+        let total = blocks.len();
+        let shown = if open {
+            total
+        } else if state == PlanState::Replaced {
+            0
+        } else {
+            plan_fold(&blocks)
+        };
+        let more = sat16(total - shown);
+        out.push(|| {
+            self.row(key, RowKind::Plan { state, shown: sat16(shown), more, open }, turn, depth, Some(n))
+        });
+        for (index, block) in blocks.into_iter().take(shown).enumerate() {
+            let key = format!("b:{}:{index}", it.id);
+            let kind = RowKind::Block { block, index: sat16(index), last: index + 1 == total, phase: None };
+            out.push(|| self.row(key, kind, turn, depth, Some(n)));
+        }
+    }
+
+    fn emit_question(&self, out: &mut Emit<'_, '_>, n: usize, depth: u8, turn: u32, settled: bool) {
+        let it = self.its[n];
+        let key = format!("q:{}", it.id);
+        let open = self.is_open(&key);
+        let (state, count, by) = self.question(n, settled);
+        let has_text = !md_blank(it.text);
+        out.push(|| {
+            self.row(
+                key,
+                RowKind::Question { state, count, by: plain_text(by), has_text, open },
+                turn,
+                depth,
+                Some(n),
+            )
+        });
+        if open && has_text {
+            self.emit_blocks(out, n, depth.saturating_add(1), turn);
         }
     }
 

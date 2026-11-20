@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Code into lines of classed tokens.
 //!
-//! The grammars are Sublime Text syntaxes run by syntect with its pure-Rust
-//! regex engine. No theme is loaded: each token gets a [`TokClass`] from its
-//! scopes, and every client colours the classes from its own palette.
+//! The grammars are the Sublime Text syntaxes bat curates, from two-face's
+//! pure-Rust build, run by syntect with its pure-Rust regex engine. No theme
+//! is loaded: each token gets a [`TokClass`] from its scopes, and every
+//! client colours the classes from its own palette.
 
 use std::sync::OnceLock;
 
@@ -229,23 +230,30 @@ fn rules() -> &'static Rules {
 /// The bundled syntaxes, loaded once.
 pub(crate) fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SET.get_or_init(two_face::syntax::extra_newlines)
+}
+
+/// The name of every grammar in the set, hidden ones included; each is a
+/// language word [`highlight`] accepts.
+pub fn languages() -> impl Iterator<Item = &'static str> {
+    syntaxes().syntaxes().iter().map(|s| s.name.as_str())
 }
 
 /// A fence's language word to the name or extension it is looked up by.
 fn alias(lang: &str) -> &str {
     match lang {
         "sh" | "shell" | "zsh" => "bash",
-        "js" | "mjs" | "cjs" => "javascript",
-        // The bundled grammars have no TypeScript: JavaScript's reads it well.
-        "ts" | "typescript" | "tsx" | "jsx" => "javascript",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "typescriptreact",
         "py" => "python",
         "rs" => "rust",
         "yml" => "yaml",
-        "kt" => "kotlin",
+        "kt" | "kts" => "kotlin",
         "cpp" | "cc" | "hpp" | "cxx" => "c++",
         "md" => "markdown",
         "patch" => "diff",
+        "docker" | "containerfile" => "dockerfile",
         other => other,
     }
 }
@@ -264,7 +272,8 @@ pub(crate) fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
     })
 }
 
-/// The language words the aliases accept, for tests.
+/// The language words the aliases accept, and a few names the set has, for
+/// tests.
 pub const ALIASES: &[&str] = &[
     "sh",
     "shell",
@@ -273,11 +282,13 @@ pub const ALIASES: &[&str] = &[
     "js",
     "mjs",
     "cjs",
+    "jsx",
     "javascript",
     "ts",
+    "mts",
+    "cts",
     "typescript",
     "tsx",
-    "jsx",
     "py",
     "python",
     "rs",
@@ -285,6 +296,7 @@ pub const ALIASES: &[&str] = &[
     "yml",
     "yaml",
     "kt",
+    "kts",
     "kotlin",
     "cpp",
     "cc",
@@ -295,6 +307,12 @@ pub const ALIASES: &[&str] = &[
     "markdown",
     "diff",
     "patch",
+    "toml",
+    "dockerfile",
+    "docker",
+    "containerfile",
+    "swift",
+    "dart",
 ];
 
 #[cfg(test)]
@@ -302,9 +320,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_alias_but_kotlin_finds_a_grammar() {
+    fn every_alias_finds_a_grammar() {
         for a in ALIASES {
-            assert_eq!(find_syntax(a).is_some(), !matches!(*a, "kt" | "kotlin"), "{a}");
+            assert!(find_syntax(a).is_some(), "{a}");
+        }
+    }
+
+    /// What each language word resolves to (contract §Q2.1).
+    #[test]
+    fn aliases_resolve_to_these_grammars() {
+        let want = [
+            ("sh", "Bourne Again Shell (bash)"),
+            ("zsh", "Bourne Again Shell (bash)"),
+            ("js", "JavaScript"),
+            ("jsx", "JavaScript"),
+            ("ts", "TypeScript"),
+            ("typescript", "TypeScript"),
+            ("mts", "TypeScript"),
+            ("tsx", "TypeScriptReact"),
+            ("kt", "Kotlin"),
+            ("kts", "Kotlin"),
+            ("kotlin", "Kotlin"),
+            ("py", "Python"),
+            ("rs", "Rust"),
+            ("yml", "YAML"),
+            ("cpp", "C++"),
+            ("md", "Markdown"),
+            ("patch", "Diff"),
+            ("toml", "TOML"),
+            ("dockerfile", "Dockerfile"),
+            ("docker", "Dockerfile"),
+            ("swift", "Swift"),
+            ("dart", "Dart"),
+            ("Kotlin", "Kotlin"),
+            (" TSX ", "TypeScriptReact"),
+        ];
+        for (word, name) in want {
+            assert_eq!(find_syntax(word).map(|s| s.name.as_str()), Some(name), "{word}");
+        }
+    }
+
+    #[test]
+    fn every_grammar_name_is_a_language_word() {
+        let names: Vec<&str> = languages().collect();
+        assert!(names.len() > 150, "{} grammars", names.len());
+        for name in names {
+            assert!(find_syntax(name).is_some(), "{name}");
         }
     }
 

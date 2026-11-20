@@ -13,6 +13,7 @@ MPL-2.0, like the other core crates.
 | `src/label.rs` | `packages/shared/src/toolActivity.ts` (`SEARCH_QUERY_KEYS`, `SEARCH_GLOB_KEYS`, `SEARCH_TARGET_KEYS`, `searchToolLabelParts`) | which keys of a search tool's input name what it looked for |
 | `src/timeline.rs` | `apps/web/src/components/chat/MessagesTimeline.logic.ts` (lines 1180-1310, 1609-2418) | turns that fold behind "Worked for" once answered, the elapsed time, runs of finished tool steps grouped, thoughts merged |
 | `src/guard.rs` | `apps/web/src/components/chat/composerTypingGuard.ts` (whole file) | the typing guard's state machine |
+| `src/composer.rs` | `apps/web/src/composer-logic.ts` (`detectComposerTrigger`, `tokenStartForCursor`, lines 115-121 and 262-297) | the `@` and `/` triggers at the cursor; adapted: `/` only as the text's first character, an `@` run that ends at the cursor, UTF-16 offsets |
 | `src/stream.rs` | `apps/web/src/components/chat/markdownStreamBlocks.ts` (`splitMarkdownBlocks`), `apps/web/src/markdown-incremental.ts` | cutting streamed Markdown at blank lines that close every block, and keeping the finished pieces |
 
 The expected values in `tests/fixtures/thought/` and `tests/fixtures/guard/` were produced by

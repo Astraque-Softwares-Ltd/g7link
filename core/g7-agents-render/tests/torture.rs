@@ -7,9 +7,10 @@ use std::collections::HashSet;
 
 use g7_agents_render::bounds::*;
 use g7_agents_render::{
-    ALIASES, Block, CodeLine, Ctx, DetailOf, DiffDoc, ItemIn, ItemKind, Link, Mark, MarkKind, Phase, Row,
-    RowKind, Span, ThreadState, Timeline, ToolClass, ToolIn, ToolStatus, diff, highlight, live_thought_line,
-    markdown, summary, tool_label,
+    ALIASES, Block, CodeLine, Ctx, DetailOf, DiffDoc, ItemIn, ItemKind, Link, Mark, MarkKind, Phase,
+    PlanState, QuestionIn, QuestionState, Row, RowKind, Span, ThreadState, Timeline, ToolClass, ToolIn,
+    ToolStatus, Via, apply, diff, highlight, languages, live_thought_line, markdown, mentions, summary,
+    tool_label, trigger,
 };
 
 /// Inputs per run, sized to finish well inside 20 s in a debug build
@@ -22,6 +23,8 @@ const INPUTS: usize = 10_000;
 const CODE_INPUTS: usize = 250;
 const HIGHLIGHT_EVERY: usize = 2;
 const TIMELINE_EVERY: usize = 10;
+/// Inputs per grammar in `torture_every_grammar`.
+const GRAMMAR_INPUTS: usize = 2;
 
 struct Rng(u64);
 
@@ -197,6 +200,9 @@ const FENCES: &[&str] = &[
     "```c++\n",
     "```yaml\n",
     "```md\n",
+    "```kt\n",
+    "```tsx\n",
+    "```toml\n",
 ];
 
 fn build(rng: &mut Rng, code: bool) -> String {
@@ -346,7 +352,20 @@ fn check_rows(rows: &[Row], what: &str) {
             }
             RowKind::User { text, from, .. } => assert!(clean(text) && clean(from), "{what}: user text"),
             RowKind::Notice { text } => assert!(clean(text), "{what}: notice"),
+            RowKind::Question { by, .. } => assert!(clean(by), "{what}: question by"),
             _ => {}
+        }
+    }
+    // A plan's head is followed by exactly `shown` of its blocks, in order.
+    for (k, r) in rows.iter().enumerate() {
+        if let RowKind::Plan { shown, .. } = r.kind {
+            for (index, next) in rows.iter().skip(k + 1).take(usize::from(shown)).enumerate() {
+                assert!(
+                    matches!(next.kind, RowKind::Block { index: i, .. } if usize::from(i) == index)
+                        && next.item_id == r.item_id,
+                    "{what}: plan blocks"
+                );
+            }
         }
     }
     let live = rows.iter().filter(|r| r.key == "live").count();
@@ -366,10 +385,22 @@ const CLASSES: &[ToolClass] = &[
     ToolClass::Agent,
     ToolClass::Tasks,
     ToolClass::Other,
+    ToolClass::Plan,
 ];
 const STATUSES: &[ToolStatus] = &[ToolStatus::Running, ToolStatus::Ok, ToolStatus::Error, ToolStatus::Denied];
-const KINDS: &[ItemKind] =
-    &[ItemKind::User, ItemKind::Assistant, ItemKind::Tool, ItemKind::Notice, ItemKind::Reasoning];
+const KINDS: &[ItemKind] = &[
+    ItemKind::User,
+    ItemKind::Assistant,
+    ItemKind::Tool,
+    ItemKind::Notice,
+    ItemKind::Reasoning,
+    ItemKind::Plan,
+    ItemKind::Question,
+];
+const VIAS: &[Via] = &[Via::Turn, Via::Steer, Via::Queue];
+const PLAN_STATES: &[PlanState] = &[PlanState::Proposed, PlanState::Implemented, PlanState::Replaced];
+const QUESTION_STATES: &[QuestionState] =
+    &[QuestionState::Asked, QuestionState::Answered, QuestionState::Dismissed, QuestionState::Expired];
 const STATES: &[ThreadState] = &[
     ThreadState::Working,
     ThreadState::Waiting,
@@ -398,7 +429,7 @@ fn random_timeline(rng: &mut Rng, texts: &[String], ids: &[String]) {
         }
         let text = texts[rng.below(texts.len())].as_str();
         let tool = (kind == ItemKind::Tool).then(|| ToolIn {
-            name: "x",
+            name: if rng.chance(10) { "ToolSearch" } else { "x" },
             title: texts[rng.below(texts.len())].as_str(),
             class: CLASSES[rng.below(CLASSES.len())],
             detail: texts[rng.below(texts.len())].as_str(),
@@ -429,6 +460,13 @@ fn random_timeline(rng: &mut Rng, texts: &[String], ids: &[String]) {
             deny_of: rng.chance(10).then(|| ids[rng.below(ids.len())].as_str()),
             tool,
             truncated: rng.chance(10),
+            via: VIAS[rng.below(VIAS.len())],
+            plan_state: rng.chance(80).then(|| PLAN_STATES[rng.below(PLAN_STATES.len())]),
+            question: rng.chance(80).then(|| QuestionIn {
+                state: QUESTION_STATES[rng.below(QUESTION_STATES.len())],
+                count: rng.below(6) as u8,
+                by: if rng.chance(50) { "Pixel\u{202e}" } else { "" },
+            }),
         });
     }
     let marks: Vec<Mark> = (0..rng.below(5))
@@ -441,13 +479,15 @@ fn random_timeline(rng: &mut Rng, texts: &[String], ids: &[String]) {
     let mut open: Vec<String> = Vec::new();
     for _ in 0..rng.below(8) {
         let id = &ids[rng.below(ids.len())];
-        let key = match rng.below(7) {
+        let key = match rng.below(9) {
             0 => format!("i:{id}"),
             1 => format!("g:{id}"),
             2 => format!("t:{id}"),
             3 => format!("f:{}", rng.below(5)),
             4 => format!("c:{}:{}", rng.below(5), rng.below(3)),
             5 => format!("d:{id}:c"),
+            6 => format!("p:{id}"),
+            7 => format!("q:{id}"),
             _ => "live".into(),
         };
         open.push(key);
@@ -476,6 +516,58 @@ fn torture() {
 #[test]
 fn torture_with_highlighting() {
     run(0x7267_6869_6768_6c74, CODE_INPUTS, true);
+}
+
+/// Every grammar in the set, not only the aliased ones (contract §Q2.1),
+/// on a few threads: a grammar's first use compiles its patterns, which is
+/// slow unoptimised.
+#[test]
+fn torture_every_grammar() {
+    let langs: Vec<&str> = languages().collect();
+    let chunk = langs.len().div_ceil(4).max(1);
+    std::thread::scope(|s| {
+        for (k, part) in langs.chunks(chunk).enumerate() {
+            s.spawn(move || {
+                let mut rng = Rng(0x6772_616d_6d61_7273 ^ (k as u64 + 1));
+                for lang in part {
+                    for _ in 0..GRAMMAR_INPUTS {
+                        let input = build(&mut rng, true);
+                        check_lines(&highlight(lang, &input), lang);
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// The composer's functions on a text: total, in bounds, on character
+/// boundaries, and `apply` leaves the text around the run alone.
+fn check_composer(input: &str, n: usize) {
+    let edges = boundaries(input);
+    let len = input.encode_utf16().count() as u32;
+    let cursor = (n as u32).wrapping_mul(2_654_435_761) % (len + 2);
+    if let Some(t) = trigger(input, cursor) {
+        assert!(edges.contains(&t.start) && t.start < len.max(1), "trigger start");
+        assert!(t.query.encode_utf16().count() <= MAX_TRIGGER_QUERY_UNITS && clean(&t.query), "query");
+        let (out, at) = apply(input, &t, cursor, "src/a b😀/c.rs");
+        let out_edges = boundaries(&out);
+        assert!(out_edges.contains(&at), "apply cursor");
+        let prefix: Vec<u16> = input.encode_utf16().take(t.start as usize).collect();
+        assert_eq!(
+            out.encode_utf16().take(prefix.len()).collect::<Vec<_>>(),
+            prefix,
+            "apply keeps the start"
+        );
+        assert!(trigger(&out, at).is_none(), "a trigger right after apply");
+    }
+    let mut end = 0;
+    let found = mentions(input);
+    assert!(found.len() <= MAX_MENTIONS, "mentions");
+    for (start, l) in found {
+        assert!(l >= 2 && start >= end, "mentions order");
+        end = start + l;
+        assert!(edges.contains(&start) && edges.contains(&end) && end <= len, "mention bounds");
+    }
 }
 
 fn run(seed: u64, inputs: usize, code: bool) {
@@ -511,9 +603,10 @@ fn run(seed: u64, inputs: usize, code: bool) {
         });
         assert!(label.object.encode_utf16().count() <= LABEL_UNITS && !label.object.contains('\n'), "label");
         if code && n % HIGHLIGHT_EVERY == 0 {
-            let alias = ALIASES[(n / HIGHLIGHT_EVERY) % ALIASES.len()];
-            check_lines(&highlight(alias, &input), alias);
+            let lang = ALIASES[(n / HIGHLIGHT_EVERY) % ALIASES.len()];
+            check_lines(&highlight(lang, &input), lang);
         }
+        check_composer(&input, n);
         // The timeline's pieces parse like the whole text.
         let answer = ItemIn {
             seq: 1,
@@ -531,6 +624,9 @@ fn run(seed: u64, inputs: usize, code: bool) {
             deny_of: None,
             tool: None,
             truncated: false,
+            via: Via::Turn,
+            plan_state: None,
+            question: None,
         };
         let rows = timeline.rows(
             &[answer],

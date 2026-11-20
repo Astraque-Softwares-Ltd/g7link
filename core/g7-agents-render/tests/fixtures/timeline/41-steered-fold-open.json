@@ -1,0 +1,29 @@
+{
+  "ctx": {"marks":[],"now_ms":9000,"open":["f:1"],"state":"done","state_since_ms":5000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test.","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"read","name":"Read","path":"src/parse.rs","status":"ok","title":"Read"},"ts_ms":1100,"turn":1},
+    {"end_ms":1400,"id":"t2","kind":"tool","seq":3,"tool":{"class":"search","detail":"{\"pattern\":\"fn parse_line\"}","name":"Grep","status":"ok","title":"Grep"},"ts_ms":1300,"turn":1},
+    {"id":"u2","kind":"user","seq":4,"text":"Also keep the old error text.","ts_ms":1500,"turn":1,"via":"steer"},
+    {"end_ms":1700,"id":"t3","kind":"tool","seq":5,"tool":{"class":"edit","detail":"-    if end < len {\n+    if end <= len {","name":"Edit","path":"src/parse.rs","status":"ok","title":"Edit src/parse.rs"},"ts_ms":1600,"turn":1},
+    {"end_ms":4000,"id":"t4","kind":"tool","seq":6,"tool":{"class":"command","detail":"cargo test","name":"Bash","output":"test result: ok","status":"ok","title":"Bash"},"ts_ms":1800,"turn":1},
+    {"end_ms":4500,"id":"a1","kind":"assistant","seq":7,"text":"Fixed, and the error text is unchanged.","ts_ms":4100,"turn":1},
+    {"from":"Pixel 8 Pro","id":"u3","kind":"user","seq":8,"text":"Now update the changelog.","ts_ms":3000,"turn":2,"via":"queue"},
+    {"end_ms":4700,"id":"t5","kind":"tool","seq":9,"tool":{"class":"edit","detail":"+- Parser keeps the last line.","name":"Edit","path":"CHANGELOG.md","status":"ok","title":"Edit CHANGELOG.md"},"ts_ms":4600,"turn":2},
+    {"end_ms":5000,"id":"a2","kind":"assistant","seq":10,"text":"Added a line to the changelog.","ts_ms":4800,"turn":2}
+  ],
+  "note": "The same with the first fold open: the steered message keeps its place among the hidden rows, at depth 0.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test.","turn":1},
+    {"depth":0,"hidden":2,"item_id":"u1","key":"f:1","kind":"fold","open":true,"seq":1,"turn":1,"worked_ms":3500},
+    {"count":2,"depth":1,"item_id":"t1","key":"g:t1","kind":"group","seq":2,"summary":{"first":{"class":"read","count":1},"second":{"class":"search","count":1}},"turn":1},
+    {"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":4,"text":"Also keep the old error text.","turn":1,"via":"steer"},
+    {"count":2,"depth":1,"item_id":"t3","key":"g:t3","kind":"group","seq":5,"summary":{"first":{"class":"command","count":1},"second":{"class":"edit","count":1}},"turn":1},
+    {"block":{"kind":"paragraph","text":"Fixed, and the error text is unchanged."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"seq":7,"turn":1},
+    {"adds":1,"dels":1,"depth":0,"files":[{"adds":1,"dels":1,"path":"src/parse.rs"}],"item_id":"a1","key":"c:1","kind":"changes","seq":7,"turn":1},
+    {"depth":0,"from":"Pixel 8 Pro","item_id":"u3","key":"i:u3","kind":"user","seq":8,"text":"Now update the changelog.","turn":2,"via":"queue"},
+    {"depth":0,"hidden":1,"item_id":"u3","key":"f:2","kind":"fold","seq":8,"turn":2,"worked_ms":2000},
+    {"block":{"kind":"paragraph","text":"Added a line to the changelog."},"depth":0,"index":0,"item_id":"a2","key":"b:a2:0","kind":"block","last":true,"seq":10,"turn":2},
+    {"adds":1,"dels":0,"depth":0,"files":[{"adds":1,"dels":0,"path":"CHANGELOG.md"}],"item_id":"a2","key":"c:2","kind":"changes","seq":10,"turn":2}
+  ]
+}

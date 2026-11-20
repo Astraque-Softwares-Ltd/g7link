@@ -1,0 +1,16 @@
+{
+  "cursor": 12,
+  "cursor_out": 23,
+  "insert": "src/parse.rs",
+  "mentions": [
+    [9,3]
+  ],
+  "mentions_out": [
+    [9,13]
+  ],
+  "note": "A line break is whitespace too.",
+  "out": "Fix this\n@src/parse.rs ",
+  "text": "Fix this\n@sr",
+  "trigger": {"kind":"mention","query":"sr","start":9},
+  "trigger_out": null
+}

@@ -1,0 +1,12 @@
+{
+  "ctx": {"marks":[{"by":"","item_id":"q1","kind":"held"}],"now_ms":4000,"open":[],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Make the reconnect log say which side gave up.","ts_ms":1000,"turn":1},
+    {"id":"q1","kind":"question","seq":2,"ts_ms":3000,"turn":1}
+  ],
+  "note": "A question held by the typing guard while the thread still reads as working: still asked, and no live line.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Make the reconnect log say which side gave up.","turn":1},
+    {"depth":0,"item_id":"q1","key":"q:q1","kind":"question","seq":2,"state":"asked","turn":1}
+  ]
+}

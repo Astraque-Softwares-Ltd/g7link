@@ -1,0 +1,16 @@
+{
+  "cursor": 3,
+  "cursor_out": 5,
+  "insert": "src/",
+  "mentions": [
+    [0,3]
+  ],
+  "mentions_out": [
+    [0,5]
+  ],
+  "note": "A directory gets no space: the list opens again inside it.",
+  "out": "@src/",
+  "text": "@sr",
+  "trigger": {"kind":"mention","query":"sr","start":0},
+  "trigger_out": {"kind":"mention","query":"src/","start":0}
+}

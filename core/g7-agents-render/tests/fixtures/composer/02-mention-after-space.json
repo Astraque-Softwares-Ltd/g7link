@@ -1,0 +1,16 @@
+{
+  "cursor": 15,
+  "cursor_out": 21,
+  "insert": "src/main.rs",
+  "mentions": [
+    [8,7]
+  ],
+  "mentions_out": [
+    [8,12]
+  ],
+  "note": "The query is what follows the @ up to the cursor.",
+  "out": "Look at @src/main.rs ",
+  "text": "Look at @src/ma",
+  "trigger": {"kind":"mention","query":"src/ma","start":8},
+  "trigger_out": null
+}

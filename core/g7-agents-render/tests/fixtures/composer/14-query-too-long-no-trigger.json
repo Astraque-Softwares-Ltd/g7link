@@ -1,0 +1,9 @@
+{
+  "cursor": 130,
+  "mentions": [
+    [0,130]
+  ],
+  "note": "A query over 128 UTF-16 units is no trigger.",
+  "text": "@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "trigger": null
+}

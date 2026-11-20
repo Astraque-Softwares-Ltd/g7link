@@ -1,0 +1,10 @@
+{
+  "cursor": 0,
+  "mentions": [
+    [4,12],
+    [21,18]
+  ],
+  "note": "Mentions for chips: plain and quoted, not an e-mail, not a bare @.",
+  "text": "See @src/main.rs and @\"my notes/a b.md\", not a@b.example or @ alone.",
+  "trigger": null
+}

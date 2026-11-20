@@ -1,0 +1,16 @@
+{
+  "cursor": 8,
+  "cursor_out": 30,
+  "insert": "my notes/todo list.md",
+  "mentions": [
+    [5,3]
+  ],
+  "mentions_out": [
+    [5,24]
+  ],
+  "note": "A path with whitespace is written quoted.",
+  "out": "Open @\"my notes/todo list.md\" ",
+  "text": "Open @my",
+  "trigger": {"kind":"mention","query":"my","start":5},
+  "trigger_out": null
+}

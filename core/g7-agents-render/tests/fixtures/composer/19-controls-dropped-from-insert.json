@@ -1,0 +1,16 @@
+{
+  "cursor": 2,
+  "cursor_out": 6,
+  "insert": "a\u202e.rs\n",
+  "mentions": [
+    [0,2]
+  ],
+  "mentions_out": [
+    [0,5]
+  ],
+  "note": "Control and bidi characters of the value are dropped.",
+  "out": "@a.rs ",
+  "text": "@a",
+  "trigger": {"kind":"mention","query":"a","start":0},
+  "trigger_out": null
+}

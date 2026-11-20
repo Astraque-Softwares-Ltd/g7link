@@ -2,15 +2,20 @@
 //! The fixtures' JSON forms of the inputs, shared by the tests.
 //!
 //! An item is `ItemIn` with owned strings: `seq`, `id`, `kind` are required;
-//! every other field may be left out (`0`, `""`, `false`, absent). A tool is
-//! `ToolIn` the same way (`status` required, `class` defaults to `other`).
+//! every other field may be left out (`0`, `""`, `false`, absent, `via`
+//! `turn`). A tool is `ToolIn` the same way (`status` required, `class`
+//! defaults to `other`); a question is `QuestionIn` (`state` defaults to
+//! `asked`).
 //! A context is `Ctx` with `marks` and `open` as arrays.
 
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
-use g7_agents_render::{Ctx, ItemIn, ItemKind, Mark, Phase, ThreadState, ToolClass, ToolIn, ToolStatus};
+use g7_agents_render::{
+    Ctx, ItemIn, ItemKind, Mark, Phase, PlanState, QuestionIn, QuestionState, ThreadState, ToolClass, ToolIn,
+    ToolStatus, Via,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,6 +47,22 @@ pub struct ItemJ {
     pub tool: Option<ToolJ>,
     #[serde(default)]
     pub truncated: bool,
+    #[serde(default)]
+    pub via: Via,
+    #[serde(default)]
+    pub plan_state: Option<PlanState>,
+    #[serde(default)]
+    pub question: Option<QuestionJ>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuestionJ {
+    #[serde(default)]
+    pub state: QuestionState,
+    #[serde(default)]
+    pub count: u8,
+    #[serde(default)]
+    pub by: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +117,13 @@ impl ItemJ {
             deny_of: self.deny_of.as_deref(),
             tool: self.tool.as_ref().map(ToolJ::as_in),
             truncated: self.truncated,
+            via: self.via,
+            plan_state: self.plan_state,
+            question: self.question.as_ref().map(|q| QuestionIn {
+                state: q.state,
+                count: q.count,
+                by: &q.by,
+            }),
         }
     }
 }

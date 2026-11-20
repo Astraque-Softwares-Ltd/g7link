@@ -1,0 +1,7 @@
+{
+  "cursor": 10,
+  "mentions": [],
+  "note": "A path at the start still reads as a command; the client finds none.",
+  "text": "/etc/hosts is wrong",
+  "trigger": {"kind":"slash","query":"etc/hosts","start":0}
+}

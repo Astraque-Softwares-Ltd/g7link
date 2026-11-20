@@ -211,7 +211,7 @@ fn write_icons(text: &mut String, root: &Path) -> Result<()> {
 }
 
 /// The agents' timeline rules are ported from t3code, and code is coloured with the syntax
-/// definitions syntect bundles; both carry notices of their own.
+/// definitions two-face bundles for syntect; both carry notices of their own.
 fn write_agents_render(text: &mut String, root: &Path) -> Result<()> {
     writeln!(text, "\nAgents timeline and code colouring\n{}", "-".repeat(34))?;
     for name in ["THIRD-PARTY-T3CODE.md", "THIRD-PARTY-SYNTAXES.md"] {

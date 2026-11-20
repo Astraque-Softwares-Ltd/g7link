@@ -1,0 +1,12 @@
+{
+  "cursor": 3,
+  "cursor_out": 8,
+  "insert": "review",
+  "mentions": [],
+  "mentions_out": [],
+  "note": "The cursor inside the first word: the query stops at it, the whole word is replaced.",
+  "out": "/review the diff",
+  "text": "/rexx the diff",
+  "trigger": {"kind":"slash","query":"re","start":0},
+  "trigger_out": null
+}

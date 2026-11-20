@@ -1,0 +1,16 @@
+{
+  "cursor": 10,
+  "cursor_out": 18,
+  "insert": "docs/a.md",
+  "mentions": [
+    [7,3]
+  ],
+  "mentions_out": [
+    [7,10]
+  ],
+  "note": "Offsets are UTF-16 units: the emoji counts two.",
+  "out": "😀 see @docs/a.md ",
+  "text": "😀 see @do",
+  "trigger": {"kind":"mention","query":"do","start":7},
+  "trigger_out": null
+}

@@ -1,0 +1,7 @@
+{
+  "cursor": 28,
+  "mentions": [],
+  "note": "An @ inside a word is an e-mail address, not a mention.",
+  "text": "write to someone@example.com",
+  "trigger": null
+}

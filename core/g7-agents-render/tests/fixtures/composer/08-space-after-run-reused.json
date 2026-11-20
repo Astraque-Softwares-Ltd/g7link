@@ -1,0 +1,16 @@
+{
+  "cursor": 7,
+  "cursor_out": 17,
+  "insert": "src/main.rs",
+  "mentions": [
+    [4,3]
+  ],
+  "mentions_out": [
+    [4,12]
+  ],
+  "note": "The space already after the run is the one space.",
+  "out": "see @src/main.rs and fix",
+  "text": "see @ma and fix",
+  "trigger": {"kind":"mention","query":"ma","start":4},
+  "trigger_out": null
+}

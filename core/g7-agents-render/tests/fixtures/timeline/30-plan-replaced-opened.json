@@ -1,0 +1,26 @@
+{
+  "ctx": {"marks":[],"now_ms":60000,"open":["p:p1"],"state":"done","state_since_ms":50000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Plan the reconnect log change.","ts_ms":1000,"turn":1},
+    {"end_ms":5000,"id":"p1","kind":"plan","plan_state":"replaced","seq":2,"text":"# Make the reconnect log say which side gave up\n\nToday the reconnect path logs one line, `reconnect failed`, whichever side dropped the lease.\n\n## Changes\n\n1. Add `DropReason` to `core/ble/src/lease.rs`.\n2. Send the reason in the `LeaseEnded` frame.\n3. Log `reconnect: gave up (<side>, <reason>)` on both sides.\n\n## Tests\n\nOne test per reason in `core/ble/tests/two_devices.rs`.","ts_ms":5000,"turn":1},
+    {"id":"u2","kind":"user","seq":3,"text":"Keep the lease timings as they are.","ts_ms":10000,"turn":2},
+    {"end_ms":15000,"id":"p2","kind":"plan","plan_state":"implemented","seq":4,"text":"# Log which side gave up\n\nThe same, without touching the timings.","ts_ms":15000,"turn":2}
+  ],
+  "note": "A replaced plan opened: its blocks follow its head.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Plan the reconnect log change.","turn":1},
+    {"depth":0,"item_id":"p1","key":"p:p1","kind":"plan","open":true,"seq":2,"shown":8,"state":"replaced","turn":1},
+    {"block":{"kind":{"heading":1},"text":"Make the reconnect log say which side gave up"},"depth":0,"index":0,"item_id":"p1","key":"b:p1:0","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":"paragraph","spans":[{"len":16,"start":40,"style":{"code":true}}],"text":"Today the reconnect path logs one line, reconnect failed, whichever side dropped the lease."},"depth":0,"index":1,"item_id":"p1","key":"b:p1:1","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":{"heading":2},"text":"Changes"},"depth":0,"index":2,"item_id":"p1","key":"b:p1:2","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":"list_item","marker":{"number":1},"spans":[{"len":10,"start":4,"style":{"code":true}},{"len":21,"start":18,"style":{"code":true}}],"text":"Add DropReason to core/ble/src/lease.rs."},"depth":0,"index":3,"item_id":"p1","key":"b:p1:3","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":"list_item","marker":{"number":2},"spans":[{"len":10,"start":23,"style":{"code":true}}],"text":"Send the reason in the LeaseEnded frame."},"depth":0,"index":4,"item_id":"p1","key":"b:p1:4","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":"list_item","marker":{"number":3},"spans":[{"len":37,"start":4,"style":{"code":true}}],"text":"Log reconnect: gave up (<side>, <reason>) on both sides."},"depth":0,"index":5,"item_id":"p1","key":"b:p1:5","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":{"heading":2},"text":"Tests"},"depth":0,"index":6,"item_id":"p1","key":"b:p1:6","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":"paragraph","spans":[{"len":29,"start":23,"style":{"code":true}}],"text":"One test per reason in core/ble/tests/two_devices.rs."},"depth":0,"index":7,"item_id":"p1","key":"b:p1:7","kind":"block","last":true,"seq":2,"turn":1},
+    {"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":3,"text":"Keep the lease timings as they are.","turn":2},
+    {"depth":0,"item_id":"p2","key":"p:p2","kind":"plan","seq":4,"shown":2,"state":"implemented","turn":2},
+    {"block":{"kind":{"heading":1},"text":"Log which side gave up"},"depth":0,"index":0,"item_id":"p2","key":"b:p2:0","kind":"block","seq":4,"turn":2},
+    {"block":{"kind":"paragraph","text":"The same, without touching the timings."},"depth":0,"index":1,"item_id":"p2","key":"b:p2:1","kind":"block","last":true,"seq":4,"turn":2}
+  ]
+}

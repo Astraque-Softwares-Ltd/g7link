@@ -1,0 +1,9 @@
+{
+  "cursor": 4,
+  "mentions": [
+    [0,12]
+  ],
+  "note": "The cursor must be at the end of the run.",
+  "text": "@src/main.rs",
+  "trigger": null
+}

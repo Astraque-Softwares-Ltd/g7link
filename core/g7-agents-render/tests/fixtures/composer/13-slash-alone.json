@@ -1,0 +1,12 @@
+{
+  "cursor": 1,
+  "cursor_out": 9,
+  "insert": "compact",
+  "mentions": [],
+  "mentions_out": [],
+  "note": "A lone /: every command.",
+  "out": "/compact ",
+  "text": "/",
+  "trigger": {"kind":"slash","query":"","start":0},
+  "trigger_out": null
+}

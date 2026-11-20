@@ -1,0 +1,13 @@
+{
+  "ctx": {"marks":[],"now_ms":12000,"open":[],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Make the reconnect log say which side gave up.","ts_ms":1000,"turn":1},
+    {"end_ms":9000,"id":"q1","kind":"question","question":{"by":"","count":1,"state":"answered"},"rev":1,"seq":2,"text":"- Which side logs first?: Both","ts_ms":3000,"turn":1}
+  ],
+  "note": "No mark (a client that reloaded the thread): the item's own state, answered here, with its answers to open.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Make the reconnect log say which side gave up.","turn":1},
+    {"count":1,"depth":0,"has_text":true,"item_id":"q1","key":"q:q1","kind":"question","seq":2,"state":"answered","turn":1},
+    {"depth":0,"item_id":"","key":"live","kind":"live","label":"thinking","seq":0,"since_ms":1000,"turn":1}
+  ]
+}

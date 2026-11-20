@@ -1,0 +1,14 @@
+{
+  "cursor": 3,
+  "cursor_out": 8,
+  "insert": "b.rs",
+  "mentions": [],
+  "mentions_out": [
+    [2,5]
+  ],
+  "note": "An @ alone after whitespace, the cursor right after it: an empty query.",
+  "out": "a @b.rs b",
+  "text": "a @ b",
+  "trigger": {"kind":"mention","query":"","start":2},
+  "trigger_out": null
+}

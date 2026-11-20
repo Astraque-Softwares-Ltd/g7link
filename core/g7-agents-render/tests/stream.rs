@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use g7_agents_render::{Block, Ctx, ItemIn, ItemKind, Phase, Row, RowKind, ThreadState, Timeline, markdown};
+use g7_agents_render::{
+    Block, Ctx, ItemIn, ItemKind, Phase, Row, RowKind, ThreadState, Timeline, Via, markdown,
+};
 
 const TEXTS: &[&str] = &[
     "I found it.\n\nThe parser drops the last line.\n\n- one\n- two\n  - nested\n\nDone.",
@@ -39,6 +41,9 @@ fn assistant<'a>(text: &'a str, streaming: bool, rev: u32) -> [ItemIn<'a>; 2] {
         deny_of: None,
         tool: None,
         truncated: false,
+        via: Via::Turn,
+        plan_state: None,
+        question: None,
     };
     let answer = ItemIn {
         seq: 2,
