@@ -27,6 +27,7 @@ use g7link_protocol::{
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::{
+    dispatch::Responder,
     error::{Error, Result},
     node::Shared,
     session::Session,
@@ -57,12 +58,17 @@ pub(crate) async fn start(session: &Session, request: ElevatedUsbStart) -> Resul
     }
     let env = Envelope::new(types::ELEVATED_USB_START, &request)?;
     let reply = session.request(env, READY_TIMEOUT + GRANT_TIMEOUT * elevated::MAX_GRANTS as u32).await?;
-    let ready: ElevatedUsbReady = reply.expect_body(types::ELEVATED_USB_READY)?;
+    let ready: ElevatedUsbReady = reply.expect_body(types::OK)?;
     Ok(ready.port)
 }
 
 /// The PC's side of `elevated.usb.start`.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     if env.t != types::ELEVATED_USB_START {
         return Ok(false);
     }
@@ -76,22 +82,23 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         None
     };
     if let Some(refusal) = refusal {
-        session.send(refusal.reply_to(env.id)).await?;
+        rsp.send(refusal).await?;
         return Ok(true);
     }
-    // Finding the phone, the grants and the helper take seconds: answer from a task of its own.
-    let (shared, session, id) = (shared.clone(), session.clone(), env.id);
-    tokio::spawn(async move {
-        let reply = match start_helper(&shared, &session, &request).await {
-            Ok(port) => Envelope::new(types::ELEVATED_USB_READY, &ElevatedUsbReady { port })
-                .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "can't answer")),
-            Err((code, reason)) => {
-                tracing::info!(peer = %peer.short(), reason, "couldn't start Elevated through adb");
-                Envelope::error(code, reason)
-            }
-        };
-        let _ = session.send(reply.reply_to(id)).await;
-    });
+    // Finding the phone, the grants and the helper take seconds, on a task of
+    // their own: a phone that stops waiting doesn't leave a helper half started.
+    let (shared, session) = (shared.clone(), session.clone());
+    let started = tokio::spawn(async move { start_helper(&shared, &session, &request).await });
+    let reply = match started.await {
+        Ok(Ok(port)) => Envelope::new(types::OK, &ElevatedUsbReady { port })
+            .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "can't answer")),
+        Ok(Err((code, reason))) => {
+            tracing::info!(peer = %peer.short(), reason, "couldn't start Elevated through adb");
+            Envelope::error(code, reason)
+        }
+        Err(e) => Envelope::error(ErrorCode::Internal, e.to_string()),
+    };
+    rsp.send(reply).await?;
     Ok(true)
 }
 

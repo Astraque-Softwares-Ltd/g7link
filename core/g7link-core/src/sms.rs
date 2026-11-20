@@ -10,19 +10,17 @@ use std::{
 };
 
 use g7link_protocol::{
-    DeviceId, Envelope, ErrorCode, MAX_FRAME_LEN,
+    DeviceId, Envelope, ErrorCode,
     messages::{
         SmsAttachment, SmsChanged, SmsMessage, SmsMessages, SmsMessagesGet, SmsPartData, SmsPartGet, SmsSend,
         SmsThread, SmsThreads, SmsThreadsGet, sms, types,
     },
 };
 
-use crate::{Error, Result, events::NodeEvent, node::Shared, session::Session};
+use crate::{Error, Result, dispatch::Responder, events::NodeEvent, node::Shared, session::Session};
 
 /// The device toggle that allows messages for a device.
 pub(crate) const TOGGLE: &str = "messages";
-/// Room left in a frame for the envelope around a list.
-const FRAME_MARGIN: usize = 4 * 1024;
 /// Requests from one PC the phone answers at once; more are turned away.
 const MAX_RUNNING: usize = 4;
 /// Texts one PC may send through the phone in [`SEND_WINDOW`].
@@ -126,8 +124,7 @@ pub(crate) async fn threads(
     allowed(shared, &session.peer)?;
     let limit = limit.clamp(1, sms::MAX_PAGE);
     let env = Envelope::new(types::SMS_THREADS, &SmsThreadsGet { limit })?;
-    let SmsThreads { mut threads, app } =
-        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::SMS_THREADS)?;
+    let SmsThreads { mut threads, app } = session.request_paged(env, crate::session::REQUEST_TIMEOUT).await?;
     threads.truncate(limit as usize);
     for t in &mut threads {
         if t.photo.as_ref().is_some_and(|p| p.len() > sms::MAX_PHOTO_BYTES) {
@@ -147,8 +144,7 @@ pub(crate) async fn messages(
     allowed(shared, &session.peer)?;
     let limit = limit.clamp(1, sms::MAX_PAGE);
     let env = Envelope::new(types::SMS_MESSAGES, &SmsMessagesGet { thread, before, limit })?;
-    let SmsMessages { mut messages } =
-        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::SMS_MESSAGES)?;
+    let SmsMessages { mut messages } = session.request_paged(env, crate::session::REQUEST_TIMEOUT).await?;
     messages.truncate(limit as usize);
     Ok(messages)
 }
@@ -184,7 +180,7 @@ pub(crate) async fn part(shared: &Shared, session: &Session, id: String) -> Resu
     allowed(shared, &session.peer)?;
     let env = Envelope::new(types::SMS_PART, &SmsPartGet { id })?;
     let SmsPartData { mime, data } =
-        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::SMS_PART)?;
+        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::OK)?;
     if data.len() > sms::MAX_PART_BYTES {
         return Err(Error::TooLarge);
     }
@@ -198,7 +194,12 @@ pub(crate) async fn part(shared: &Shared, session: &Session, id: String) -> Resu
 // ---- The phone answering ----
 
 /// Handles `sms.*`. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     if env.t == types::SMS_CHANGED {
         let SmsChanged { thread } = env.body()?;
         if shared.offers_locally(sms::SHOW) && shared.toggle_on(&session.peer, TOGGLE) {
@@ -213,33 +214,42 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
     let started = limits().start(session.peer, env.t == types::SMS_SEND, Instant::now());
     if let Err(why) = started {
         tracing::warn!(peer = %session.peer.short(), t = %env.t, why, "turned a messages request away");
-        let _ = session.send(Envelope::error(ErrorCode::Busy, why).reply_to(env.id)).await;
+        let _ = rsp.send(Envelope::error(ErrorCode::Busy, why)).await;
         return Ok(true);
     }
-    let running = Running(session.peer);
-    // Reading the phone's messages takes a moment: not on the session's loop.
-    let (shared, session, env) = (shared.clone(), session.clone(), env.clone());
-    tokio::spawn(async move {
-        let _running = running;
-        let reply = answer(&shared, &session, &env).await.unwrap_or_else(|e| {
+    let _running = Running(session.peer);
+    match answer(shared, session, env).await {
+        Ok(Answer::Threads(threads)) => rsp.paged(threads).await?,
+        Ok(Answer::Messages(messages)) => rsp.paged(messages).await?,
+        Ok(Answer::Plain(reply)) => rsp.send(reply).await?,
+        Err(e) => {
             tracing::debug!(error = %e, "bad messages request");
-            Envelope::error(ErrorCode::BadMessage, "invalid request")
-        });
-        let _ = session.send(reply.reply_to(env.id)).await;
-    });
+            rsp.error(ErrorCode::BadMessage, "invalid request").await?;
+        }
+    }
     Ok(true)
 }
 
-async fn answer(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Result<Envelope> {
+/// The phone's answer to a messages request.
+enum Answer {
+    Threads(SmsThreads),
+    Messages(SmsMessages),
+    Plain(Envelope),
+}
+
+async fn answer(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Result<Answer> {
     if !shared.toggle_on(&session.peer, TOGGLE) {
-        return Ok(Envelope::error(ErrorCode::Denied, "messages are off for this device"));
+        return Ok(Answer::Plain(Envelope::error(ErrorCode::Denied, "messages are off for this device")));
     }
     let needs = if env.t == types::SMS_SEND { sms::SEND } else { sms::READ };
     if !shared.offers_locally(needs) {
-        return Ok(Envelope::error(ErrorCode::Unsupported, "this phone doesn't share messages"));
+        return Ok(Answer::Plain(Envelope::error(
+            ErrorCode::Unsupported,
+            "this phone doesn't share messages",
+        )));
     }
     let platform = shared.platform.clone();
-    let blocking = |f: Box<dyn FnOnce() -> std::result::Result<Envelope, String> + Send>| async move {
+    let blocking = |f: Box<dyn FnOnce() -> std::result::Result<Answer, String> + Send>| async move {
         tokio::task::spawn_blocking(f).await.unwrap_or_else(|e| Err(e.to_string()))
     };
     let result = match env.t.as_str() {
@@ -253,9 +263,7 @@ async fn answer(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Resu
                     }
                 }
                 let app = platform.sms_app().filter(|a| g7link_protocol::messages::is_package_name(a));
-                fit(threads, |threads| {
-                    Envelope::new(types::SMS_THREADS, &SmsThreads { threads, app: app.clone() })
-                })
+                Ok(Answer::Threads(SmsThreads { threads, app }))
             }))
             .await
         }
@@ -263,19 +271,19 @@ async fn answer(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Resu
             let SmsMessagesGet { thread, before, limit } = env.body()?;
             blocking(Box::new(move || {
                 let messages = platform.sms_messages(&thread, before, limit.min(sms::MAX_PAGE))?;
-                fit(messages, |messages| Envelope::new(types::SMS_MESSAGES, &SmsMessages { messages }))
+                Ok(Answer::Messages(SmsMessages { messages }))
             }))
             .await
         }
         types::SMS_SEND => {
             let send: SmsSend = env.body()?;
             if !send.is_valid() {
-                return Ok(Envelope::error(ErrorCode::BadMessage, "invalid text"));
+                return Ok(Answer::Plain(Envelope::error(ErrorCode::BadMessage, "invalid text")));
             }
             blocking(Box::new(move || {
                 platform
                     .send_sms_with_attachments(&send.to, &send.body, &send.attachments)
-                    .map(|()| Envelope::empty(types::OK))
+                    .map(|()| Answer::Plain(Envelope::empty(types::OK)))
             }))
             .await
         }
@@ -284,38 +292,19 @@ async fn answer(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Resu
             blocking(Box::new(move || {
                 let (mime, data) = platform.sms_part(&id)?;
                 if data.len() > sms::MAX_PART_BYTES {
-                    return Ok(Envelope::error(ErrorCode::FrameTooLarge, "too large"));
+                    return Ok(Answer::Plain(Envelope::error(ErrorCode::FrameTooLarge, "too large")));
                 }
-                Envelope::new(types::SMS_PART, &SmsPartData { mime, data }).map_err(|e| e.to_string())
+                Envelope::new(types::OK, &SmsPartData { mime, data })
+                    .map(Answer::Plain)
+                    .map_err(|e| e.to_string())
             }))
             .await
         }
     };
     Ok(result.unwrap_or_else(|reason| {
         tracing::warn!(reason, t = env.t, "a messages request failed");
-        Envelope::error(ErrorCode::Internal, "the phone couldn't do it")
+        Answer::Plain(Envelope::error(ErrorCode::Internal, "the phone couldn't do it"))
     }))
-}
-
-/// The envelope for as many of `items` (newest first) as fit in a frame.
-pub(crate) fn fit<T: Clone>(
-    mut items: Vec<T>,
-    wrap: impl Fn(Vec<T>) -> std::result::Result<Envelope, g7link_protocol::ProtocolError>,
-) -> std::result::Result<Envelope, String> {
-    let had_items = !items.is_empty();
-    loop {
-        let env = wrap(items.clone()).map_err(|e| e.to_string())?;
-        if env.to_cbor().len() + FRAME_MARGIN <= MAX_FRAME_LEN {
-            return Ok(env);
-        }
-        // Drop the oldest quarter and try again. With nothing left, an
-        // empty list would read as "there's none", so it's an error.
-        let keep = items.len() - items.len().div_ceil(4);
-        items.truncate(keep);
-        if items.is_empty() && had_items {
-            return Err("the newest item is too large to send".into());
-        }
-    }
 }
 
 #[cfg(test)]
@@ -349,44 +338,5 @@ mod tests {
         assert!(limits.start(pc, false, start + Duration::from_secs(30)).is_ok());
         limits.finish(&pc);
         assert!(limits.start(pc, true, start + SEND_WINDOW).is_ok());
-    }
-
-    #[test]
-    fn an_item_too_large_for_a_frame_is_an_error_not_an_empty_list() {
-        let message = SmsMessage {
-            id: "1".into(),
-            thread: "1".into(),
-            address: "+1555".into(),
-            body: "x".repeat(MAX_FRAME_LEN),
-            date: 1,
-            outgoing: false,
-            status: None,
-            parts: Vec::new(),
-        };
-        let wrap = |messages| Envelope::new(types::SMS_MESSAGES, &SmsMessages { messages });
-        assert!(fit(vec![message], wrap).is_err());
-        assert!(fit(Vec::<SmsMessage>::new(), wrap).is_ok(), "an empty list is still fine");
-    }
-
-    #[test]
-    fn long_lists_are_cut_to_fit_a_frame() {
-        let message = |i: usize| SmsMessage {
-            id: i.to_string(),
-            thread: "1".into(),
-            address: "+1555".into(),
-            body: "x".repeat(20_000),
-            date: i as i64,
-            outgoing: false,
-            status: None,
-            parts: Vec::new(),
-        };
-        let env = fit((0..100).map(message).collect(), |messages| {
-            Envelope::new(types::SMS_MESSAGES, &SmsMessages { messages })
-        })
-        .unwrap();
-        assert!(env.to_cbor().len() <= MAX_FRAME_LEN);
-        let SmsMessages { messages } = env.body().unwrap();
-        assert!(messages.len() >= 30 && messages.len() < 100, "{}", messages.len());
-        assert_eq!(messages[0].id, "0", "the newest stay");
     }
 }

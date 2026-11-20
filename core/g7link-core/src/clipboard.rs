@@ -12,7 +12,9 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, Result, error::net, events::NodeEvent, node::Shared, session::Session};
+use crate::{
+    Error, Result, dispatch::Responder, error::net, events::NodeEvent, node::Shared, session::Session,
+};
 
 /// How long an image may take to arrive, or to be answered: generous, for
 /// a large screenshot on a slow link.
@@ -42,7 +44,12 @@ pub(crate) async fn announce(
 }
 
 /// Handles `clip.set` and `clip.changed`. Returns false for other message types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     // One way, no reply. One this app doesn't understand is dropped.
     if env.t == types::CLIP_CHANGED {
         if shared.toggle_on(&session.peer, TOGGLE)
@@ -66,7 +73,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             _ => Envelope::error(ErrorCode::BadMessage, "clipboard text is empty or too large"),
         }
     };
-    session.send(reply.reply_to(env.id)).await?;
+    rsp.send(reply).await?;
     Ok(true)
 }
 

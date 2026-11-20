@@ -23,6 +23,7 @@ use g7link_protocol::{DeviceId, Envelope, ErrorCode, messages::types};
 
 use crate::{
     Error, Result,
+    dispatch::Responder,
     events::NodeEvent,
     node::Shared,
     session::{REQUEST_TIMEOUT, Session},
@@ -88,7 +89,7 @@ impl Shared {
             return;
         }
         let Some(state) = self.toggles.get() else { return };
-        if let Ok(env) = Envelope::new(types::PHONE_TOGGLES, &state) {
+        if let Ok(env) = Envelope::new(types::TOGGLES_STATE, &state) {
             let _ = session.send(env).await;
         }
     }
@@ -97,7 +98,7 @@ impl Shared {
     pub(crate) async fn toggles_changed(&self, state: PhoneToggles) -> Result<()> {
         let state = state.sanitized().ok_or_else(|| Error::Protocol("invalid phone toggles".into()))?;
         self.toggles.set(state.clone());
-        let env = Envelope::new(types::PHONE_TOGGLES, &state)?;
+        let env = Envelope::new(types::TOGGLES_STATE, &state)?;
         for session in self.live_sessions() {
             if self.shows_toggles(&session.peer) && self.toggle_on(&session.peer, TOGGLE) {
                 let _ = session.send(env.clone()).await;
@@ -173,21 +174,26 @@ fn set_request(shared: &Shared, peer: &DeviceId, id: String, value: PhoneToggleV
     if !peer_caps.contains(cap) || (silent_needs_dnd && !peer_caps.contains(TOGGLES_DND)) {
         return Err(Error::Unsupported);
     }
-    Ok(Envelope::new(types::PHONE_TOGGLE_SET, &req)?)
+    Ok(Envelope::new(types::TOGGLES_SET, &req)?)
 }
 
 /// Handles `phone.toggles` and `phone.toggle.set`.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
-        types::PHONE_TOGGLES => {
+        types::TOGGLES_STATE => {
             let state: PhoneToggles = env.body()?;
             apply_state(shared, peer, state);
         }
-        types::PHONE_TOGGLE_SET => {
+        types::TOGGLES_SET => {
             let req: PhoneToggleSet = env.body()?;
             let reply = run_set(shared, &peer, req).await;
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         _ => return Ok(false),
     }

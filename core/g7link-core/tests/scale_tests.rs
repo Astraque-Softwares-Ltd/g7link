@@ -100,28 +100,33 @@ async fn relayed_wake_and_pc_audio_pcm_roundtrip() {
         .await;
     assert!(matches!(relayed, Err(g7link_core::Error::Denied)), "{relayed:?}");
 
-    // 2. Low-latency PC-to-Phone PCM audio stream (`audio.pcm`).
+    // 2. Low-latency PC-to-Phone sound: datagrams of at most 960 bytes, so
+    // 1920 bytes come as two pieces, numbered one after the other.
     let pcm_payload: Vec<u8> = (0..1920).map(|i| (i % 251) as u8).collect();
     pc.send_pc_audio_pcm(&phone.device_id(), 48_000, 2, pcm_payload.clone())
         .await
         .expect("send_pc_audio_pcm succeeds");
 
     let received = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Ok(NodeEvent::PcAudioFrame { device, sample_rate, channels, pcm }) =
-                phone_events.recv().await
-            {
-                return (device, sample_rate, channels, pcm);
+        let mut pieces = Vec::new();
+        while pieces.len() < 2 {
+            match phone_events.recv().await {
+                Ok(NodeEvent::PcAudioFrame { device, sample_rate, channels, seq, pcm, .. }) => {
+                    pieces.push((device, sample_rate, channels, seq, pcm));
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(e) => panic!("event stream closed: {e}"),
             }
         }
+        pieces
     })
     .await
     .expect("phone receives PcAudioFrame within 5s");
 
-    assert_eq!(received.0, pc.device_id());
-    assert_eq!(received.1, 48_000);
-    assert_eq!(received.2, 2);
-    assert_eq!(received.3, pcm_payload);
+    assert!(received.iter().all(|p| p.0 == pc.device_id() && p.1 == 48_000 && p.2 == 2));
+    assert_eq!(received[1].3, received[0].3.wrapping_add(1), "numbered in order");
+    let whole: Vec<u8> = received.into_iter().flat_map(|p| p.4).collect();
+    assert_eq!(whole, pcm_payload);
 
     phone.shutdown().await;
     pc.shutdown().await;

@@ -10,7 +10,7 @@ use std::{
 };
 
 use g7link_protocol::{
-    ALPN_PAIR, ALPN_SESSION, DeviceId, Envelope, ErrorCode,
+    ALPN_PAIR, ALPN_SESSION, ALPN_SESSION_V0, DeviceId, Envelope, ErrorCode,
     messages::{
         Battery, ClipSet, DeviceInfo, DeviceKind, HelloUpdate, MediaCommand, MediaPlayer, Notification,
         NotificationChatMessage, NotificationConversation, NotifyAction, NotifyKey, PowerLevel, Ring, types,
@@ -285,6 +285,22 @@ pub(crate) struct Shared {
     pub(crate) runtime: tokio::runtime::Handle,
     /// One Away mode change at a time.
     away_switch: tokio::sync::Mutex<()>,
+    /// Each paired device's capabilities as stored, for checks made per
+    /// message (a pointer datagram, a pacing report) without the store.
+    peer_caps: RwLock<HashMap<DeviceId, Arc<std::collections::BTreeSet<String>>>>,
+    /// RPCs a new session lets this side have in flight to its peer.
+    pub(crate) outgoing_rpc_limit: std::sync::atomic::AtomicUsize,
+    /// Session tasks running now, across all sessions.
+    pub(crate) session_tasks: Arc<std::sync::atomic::AtomicUsize>,
+    /// This device's default gateways, read at start and after network changes.
+    gateways: RwLock<Vec<std::net::IpAddr>>,
+    /// Test hook: the heartbeat sees no allowed path while set.
+    debug_refuse_paths: std::sync::atomic::AtomicBool,
+    /// When each paired device on an old protocol was last said to need an update.
+    pub(crate) needs_update_said: Mutex<HashMap<DeviceId, std::time::Instant>>,
+    /// Phone: capture requests waiting on each PC, so a prompt that comes
+    /// after its answer is dropped.
+    pub(crate) capture_waiting: Mutex<HashMap<DeviceId, usize>>,
 }
 
 /// How long a receiver's resume that overtook its pause still counts: the
@@ -759,6 +775,42 @@ impl Shared {
         self.secret.sign(message).to_bytes()
     }
 
+    /// `peer`'s capabilities as last stored, from memory; read from the
+    /// store the first time.
+    pub(crate) fn peer_caps(&self, peer: &DeviceId) -> Arc<std::collections::BTreeSet<String>> {
+        if let Some(caps) = self.peer_caps.read().unwrap_or_else(|e| e.into_inner()).get(peer) {
+            return caps.clone();
+        }
+        self.refresh_peer_caps(peer)
+    }
+
+    /// Whether paired `peer` offers `cap`, from memory.
+    pub(crate) fn peer_offers_cap(&self, peer: &DeviceId, cap: &str) -> bool {
+        self.peer_caps(peer).contains(cap)
+    }
+
+    /// Re-reads `peer`'s capabilities after they were stored, or after it was
+    /// forgotten. Call it wherever capabilities are written.
+    pub(crate) fn refresh_peer_caps(&self, peer: &DeviceId) -> Arc<std::collections::BTreeSet<String>> {
+        let caps = self.store.get_peer(peer).ok().flatten().map(|p| Arc::new(p.caps));
+        let mut cache = self.peer_caps.write().unwrap_or_else(|e| e.into_inner());
+        match caps {
+            Some(caps) => {
+                cache.insert(*peer, caps.clone());
+                caps
+            }
+            None => {
+                cache.remove(peer);
+                Arc::default()
+            }
+        }
+    }
+
+    /// Whether the test hook [`Node::debug_refuse_paths`] is on.
+    pub(crate) fn debug_paths_refused(&self) -> bool {
+        self.debug_refuse_paths.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn toggle_on(&self, peer: &DeviceId, toggle: &str) -> bool {
         self.store
             .toggle(peer, toggle)
@@ -849,6 +901,36 @@ impl Shared {
             || lock(&self.lan_seen)
                 .get(peer)
                 .is_some_and(|(_, announced)| crate::session::is_lan_peer_ip(ip, announced))
+    }
+
+    /// The heartbeat's path rule for a live session: a direct path this
+    /// device allows, or, with Away mode off, any path to a peer that is this
+    /// device's default gateway and was reached there on a LAN path in this
+    /// session (the laptop on the phone's own hotspot: the phone's mobile
+    /// address answers too, and QUIC may settle on it).
+    pub(crate) fn session_path_allowed(&self, session: &Session) -> bool {
+        let gateways = self.gateways.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if self.is_connection_allowed(&session.conn) {
+            let paths = session.conn.paths();
+            let lan_ips = paths.iter().filter_map(|p| match p.remote_addr() {
+                iroh::TransportAddr::Ip(addr) if !p.is_relay() && crate::session::is_lan_ip(addr.ip()) => {
+                    Some(addr.ip().to_canonical())
+                }
+                _ => None,
+            });
+            for ip in lan_ips {
+                if gateways.contains(&ip) {
+                    session.note_reached_at_gateway(ip);
+                }
+            }
+            return true;
+        }
+        allowed_via_gateway(&gateways, session.reached_at_gateway())
+    }
+
+    /// Reads this device's default gateways again (after a network change).
+    pub(crate) fn refresh_gateways(&self) {
+        *self.gateways.write().unwrap_or_else(|e| e.into_inner()) = default_gateways();
     }
 
     pub(crate) fn is_connection_allowed(&self, conn: &Connection) -> bool {
@@ -1347,6 +1429,7 @@ impl Shared {
         // Store the new pairing first: if that fails, the old one is untouched.
         // Storing it also moves the old entry's history and queue over.
         self.store.upsert_peer_skipping(&peer, &info, paired_at, &online_peers)?;
+        self.refresh_peer_caps(&peer);
         for old in replaced {
             let _ = self.store.reassign_timeline(&old, &peer);
             let _ = self.store.reassign_send_queue_peer(&old, &peer);
@@ -1406,6 +1489,7 @@ impl Shared {
         }
         // One transaction: an error leaves both the device and its queue.
         let (existed, dropped_queue) = self.store.remove_peer_with_queue(peer)?;
+        self.refresh_peer_caps(peer);
         for (id, _) in &dropped_queue {
             transfer::cleanup_staging_id(self, id);
         }
@@ -1528,6 +1612,7 @@ impl Shared {
         if let Err(e) = self.store.update_capabilities(&peer, Some(&caps), Some(remote.power.effective())) {
             tracing::warn!(error = %e, "failed to update peer capabilities");
         }
+        self.refresh_peer_caps(&peer);
 
         let weak = Arc::downgrade(self);
         let session = Session::spawn(self, conn, dialer, streams, move |ended| {
@@ -1576,6 +1661,8 @@ impl Shared {
         self.emit(NodeEvent::PeerPowerChanged { device: peer, power: remote.power.effective() });
         self.refresh_capabilities(&peer);
         self.publish_online(&session);
+        // The apps hear the device is online before anything it sends.
+        session.mark_ready();
         self.queue_notify.notify_waiters();
 
         // Bring the peer up to date with state it may have missed.
@@ -1584,7 +1671,7 @@ impl Shared {
         let s = session.clone();
         tokio::spawn(async move {
             if let Some(battery) = battery
-                && let Ok(env) = Envelope::new(types::EVENT_BATTERY, &battery)
+                && let Ok(env) = Envelope::new(types::DEVICE_BATTERY, &battery)
             {
                 let _ = s.send(env).await;
             }
@@ -1682,7 +1769,14 @@ impl Shared {
         let conn = tokio::time::timeout(DIAL_TIMEOUT, self.endpoint.connect(addr, ALPN_SESSION))
             .await
             .map_err(|_| Error::Timeout)?
-            .map_err(crate::error::net)?;
+            .map_err(|e| {
+                if refused_alpn(&e) {
+                    // A paired device that doesn't speak this protocol: it needs an update.
+                    Error::VersionTooOld { side: crate::Side::Remote }
+                } else {
+                    crate::error::net(e)
+                }
+            })?;
         let mut guard = CloseOnDrop(Some(conn));
         let conn_ref = guard.0.as_ref().expect("connection present");
         if !self.verify_usb_connection(conn_ref).await || !self.wait_connection_allowed(conn_ref).await {
@@ -1692,8 +1786,22 @@ impl Shared {
             }
             return Err(Error::Offline);
         }
+        // The other side's dial landed meanwhile and that session is up and
+        // heard from: keep it rather than tear it down for this one.
+        if let Some(live) = self.session(&peer).filter(|s| s.is_settled_and_heard()) {
+            if let Some(c) = guard.0.take() {
+                c.close(VarInt::from_u32(session::CLOSE_DUPLICATE), b"duplicate");
+            }
+            return Ok(live);
+        }
         let hello = session::local_hello(self);
         let (send, recv, remote) = session::handshake_dialer(conn_ref, &hello).await?;
+        if let Some(live) = self.session(&peer).filter(|s| s.is_settled_and_heard()) {
+            if let Some(c) = guard.0.take() {
+                c.close(VarInt::from_u32(session::CLOSE_DUPLICATE), b"duplicate");
+            }
+            return Ok(live);
+        }
         let conn = guard.0.take().expect("connection present");
         self.register_session(conn, self.id, (send, recv), remote)
             .or_else(|| self.session(&peer))
@@ -1744,7 +1852,7 @@ impl Shared {
         let hints: Vec<(String, String)> = lock(&self.update_hints).clone().into_iter().collect();
         for (channel, version) in hints {
             let hint = g7link_protocol::messages::UpdateHint { channel, version };
-            if let Ok(env) = Envelope::new(types::EVENT_UPDATE, &hint) {
+            if let Ok(env) = Envelope::new(types::DEVICE_UPDATE, &hint) {
                 let _ = session.send(env).await;
             }
         }
@@ -1834,15 +1942,15 @@ async fn maintain(shared: Weak<Shared>, peer: DeviceId, wake: Arc<Notify>, cance
                 _ = session.cancel.cancelled() => {}
                 _ = cancel.cancelled() => return,
             }
-            if session.started.elapsed() >= Duration::from_secs(15)
-                || shared.upgrade().is_some_and(|n| n.session(&peer).is_some())
-            {
-                backoff = BACKOFF_MIN;
+            // A session that was up and closed for liveness or a path is
+            // dialled again at once, however short it was; only a refusal
+            // from the other side waits, longer each time.
+            let ended = end_reason(&session);
+            backoff = next_redial_wait(ended, backoff);
+            if ended == EndReason::Closed || shared.upgrade().is_some_and(|n| n.session(&peer).is_some()) {
                 continue;
             }
-            // A short-lived session (< 15s) just dropped (e.g. mobile data transition or
-            // remote peer rejected non-LAN path): purge non-LAN addresses and sleep with
-            // exponential backoff so we never flap in a tight loop.
+            // Refused: purge non-LAN addresses and wait, so this never flaps in a tight loop.
             if let Some(n) = shared.upgrade() {
                 n.purge_non_lan_addrs(&peer);
             }
@@ -1852,14 +1960,13 @@ async fn maintain(shared: Weak<Shared>, peer: DeviceId, wake: Arc<Notify>, cance
                 _ = wake.notified() => {}
                 _ = cancel.cancelled() => return,
             }
-            backoff = (backoff * 2).min(BACKOFF_MAX);
             continue;
         }
         // When both devices come up together they'd dial each other at once and
         // one connection would be dropped. The higher ID briefly defers so the
         // lower one usually wins; it still dials in case the other can't reach it.
         // Skip the deferral if an outbound USB tunnel is already ready.
-        if node.id > peer && backoff == BACKOFF_MIN && node.usb_peer_addr(&peer).is_none() {
+        if node.id > peer && node.usb_peer_addr(&peer).is_none() {
             drop(node);
             tokio::select! {
                 _ = tokio::time::sleep(DEFER_DIAL) => {}
@@ -1894,7 +2001,44 @@ async fn maintain(shared: Weak<Shared>, peer: DeviceId, wake: Arc<Notify>, cance
             _ = wake.notified() => {}
             _ = cancel.cancelled() => return,
         }
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        backoff = next_redial_wait(EndReason::DialFailed, backoff);
+    }
+}
+
+/// How a session with a peer came to an end, for the next dial's wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndReason {
+    /// It was up, and closed: a dead link, a path gone, either side's app.
+    Closed,
+    /// The dial didn't get through.
+    DialFailed,
+    /// The other side turned the session away (unpaired, an old version,
+    /// reconnecting off, not on this network).
+    Refused,
+}
+
+/// Why `session` ended, from how its connection was closed.
+fn end_reason(session: &Session) -> EndReason {
+    use iroh::endpoint::ConnectionError;
+    match session.conn.close_reason() {
+        Some(ConnectionError::ApplicationClosed(close)) => {
+            let code = close.error_code.into_inner();
+            let refused_code = [ErrorCode::Unpaired, ErrorCode::VersionTooOld, ErrorCode::Denied]
+                .iter()
+                .any(|c| u64::from(c.close_code()) == code);
+            let refused_reason =
+                matches!(&close.reason[..], b"away mode disabled" | b"reconnect off" | b"unpaired");
+            if refused_code || refused_reason { EndReason::Refused } else { EndReason::Closed }
+        }
+        _ => EndReason::Closed,
+    }
+}
+
+/// The wait before dialing again after `ended`, from the last wait.
+fn next_redial_wait(ended: EndReason, backoff: Duration) -> Duration {
+    match ended {
+        EndReason::Closed => BACKOFF_MIN,
+        EndReason::DialFailed | EndReason::Refused => (backoff * 2).min(BACKOFF_MAX),
     }
 }
 
@@ -1910,12 +2054,59 @@ fn handle_dial_result(
         Err(e) => {
             *lock(&shared.dial_failures).entry(peer).or_insert(0) += 1;
             tracing::debug!(peer = %peer.short(), error = %e, retry_in = ?backoff, "dial failed");
+            if matches!(e, Error::VersionTooOld { side: crate::Side::Remote }) {
+                shared.say_needs_update(peer);
+            }
             false
         }
     }
 }
 
-/// Accepts `g7link/0` sessions from paired devices.
+/// Whether a peer reached on a LAN path at `reached_at`, which is (still)
+/// one of this device's default `gateways`, counts as local at any address.
+fn allowed_via_gateway(gateways: &[std::net::IpAddr], reached_at: Option<std::net::IpAddr>) -> bool {
+    reached_at.is_some_and(|ip| gateways.contains(&ip))
+}
+
+/// This device's default IPv4 gateways, from the kernel's route table.
+#[cfg(target_os = "linux")]
+fn default_gateways() -> Vec<std::net::IpAddr> {
+    let table = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
+    parse_default_gateways(&table)
+}
+
+/// Elsewhere the apps don't say yet (Android needs it through `Platform`).
+#[cfg(not(target_os = "linux"))]
+fn default_gateways() -> Vec<std::net::IpAddr> {
+    Vec::new()
+}
+
+/// The gateways of the default routes in `/proc/net/route`: hexadecimal,
+/// in the host's byte order (little endian), destination `00000000`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_default_gateways(table: &str) -> Vec<std::net::IpAddr> {
+    let mut gateways = Vec::new();
+    for line in table.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (Some(&dest), Some(&gateway)) = (fields.get(1), fields.get(2)) else { continue };
+        if dest != "00000000" {
+            continue;
+        }
+        let Ok(raw) = u32::from_str_radix(gateway, 16) else { continue };
+        let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::from(raw.to_le_bytes()));
+        if raw != 0 && !gateways.contains(&ip) {
+            gateways.push(ip);
+        }
+    }
+    gateways
+}
+
+/// Streams one peer may have open on a connection at once.
+const MAX_BIDI_STREAMS: u32 = 256;
+/// Datagram bytes waiting to be sent, at most.
+const DATAGRAM_SEND_BUFFER: usize = 64 * 1024;
+
+/// Accepts `g7link/1` sessions from paired devices.
 #[derive(Debug, Clone)]
 struct SessionProtocol(Weak<Shared>);
 
@@ -1949,6 +2140,69 @@ impl ProtocolHandler for SessionProtocol {
                 Err(AcceptError::from_err(e))
             }
         }
+    }
+}
+
+/// Whether a dial failed because the other side's TLS took none of the
+/// protocols offered (`no_application_protocol`): it doesn't speak this one.
+fn refused_alpn(err: &iroh::endpoint::ConnectError) -> bool {
+    use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
+    /// The TLS alert a server sends when it shares no ALPN with the client.
+    const NO_APPLICATION_PROTOCOL: u8 = 120;
+    let closed = match err {
+        ConnectError::Connecting { source: ConnectingError::ConnectionError { source, .. }, .. } => source,
+        ConnectError::Connection { source, .. } => source,
+        _ => return false,
+    };
+    matches!(
+        closed,
+        ConnectionError::ConnectionClosed(close)
+            if close.error_code == TransportErrorCode::crypto(NO_APPLICATION_PROTOCOL)
+    )
+}
+
+/// How often a paired device on an old protocol is said to need an update, at most.
+const NEEDS_UPDATE_EVERY: Duration = Duration::from_secs(60);
+
+impl Shared {
+    /// Tells the apps that paired `peer` needs an update of G7 Link, at most
+    /// once a minute.
+    pub(crate) fn say_needs_update(&self, peer: DeviceId) {
+        let now = std::time::Instant::now();
+        let due = {
+            let mut said = lock(&self.needs_update_said);
+            let due =
+                said.get(&peer).is_none_or(|at| now.saturating_duration_since(*at) >= NEEDS_UPDATE_EVERY);
+            if due {
+                said.insert(peer, now);
+            }
+            due
+        };
+        if due {
+            tracing::info!(peer = %peer.short(), "a paired device needs an update of G7 Link");
+            self.emit(NodeEvent::PeerNeedsUpdate { device: peer });
+        }
+    }
+}
+
+/// Answers `g7link/0`, the protocol before this one, only to turn it away: a
+/// paired device is told it needs an update (`docs/protocol/v1.md` §2) and
+/// closed with `VERSION_TOO_OLD`, anyone else with `UNPAIRED`. It opens no
+/// streams and reads nothing.
+#[derive(Debug, Clone)]
+struct TombstoneProtocol(Weak<Shared>);
+
+impl ProtocolHandler for TombstoneProtocol {
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        let Some(shared) = self.0.upgrade() else { return Err(AcceptError::from_err(Error::Offline)) };
+        let peer = crate::device_id(&conn.remote_id());
+        if shared.store.is_paired(&peer).unwrap_or(false) {
+            shared.say_needs_update(peer);
+            conn.close(VarInt::from_u32(ErrorCode::VersionTooOld.close_code()), b"update G7 Link");
+        } else {
+            conn.close(VarInt::from_u32(ErrorCode::Unpaired.close_code()), b"unpaired");
+        }
+        Ok(())
     }
 }
 
@@ -2145,6 +2399,13 @@ impl Node {
             transfers: Mutex::new(HashMap::new()),
             runtime: tokio::runtime::Handle::current(),
             away_switch: tokio::sync::Mutex::new(()),
+            peer_caps: RwLock::new(HashMap::new()),
+            outgoing_rpc_limit: std::sync::atomic::AtomicUsize::new(crate::rpc::MAX_OUTGOING_RPCS),
+            session_tasks: Default::default(),
+            needs_update_said: Mutex::new(HashMap::new()),
+            debug_refuse_paths: Default::default(),
+            gateways: RwLock::new(default_gateways()),
+            capture_waiting: Mutex::new(HashMap::new()),
         });
 
         if config.lan_discovery {
@@ -2154,8 +2415,11 @@ impl Node {
             shared.localsend.start(&shared);
         }
 
+        tokio::spawn(crate::wire_stats::watch_starvation(shared.cancel.clone()));
+
         let router = Router::builder(endpoint)
             .accept(ALPN_SESSION, SessionProtocol(Arc::downgrade(&shared)))
+            .accept(ALPN_SESSION_V0, TombstoneProtocol(Arc::downgrade(&shared)))
             .accept(ALPN_PAIR, PairProtocol(Arc::downgrade(&shared)))
             .spawn();
 
@@ -2413,13 +2677,14 @@ impl Node {
     /// away instead of after their backoff. Harmless when nothing changed.
     pub async fn network_changed(&self) {
         self.shared.endpoint.network_change().await;
-        for session in self.shared.live_sessions() {
-            let shared = self.shared.clone();
-            tokio::spawn(async move {
-                crate::session::probe_after_network_change(&shared, &session).await;
-            });
-        }
+        let shared = self.shared.clone();
+        let _ = tokio::task::spawn_blocking(move || shared.refresh_gateways()).await;
         self.shared.nudge_reconnect();
+        // Each session's heartbeat pings now and judges by its own rule:
+        // a change here is no reason to close a session by itself.
+        for session in self.shared.live_sessions() {
+            session.wake_heartbeat();
+        }
     }
 
     /// What a "refresh" button does: reconnects to devices that aren't
@@ -3087,7 +3352,102 @@ impl Node {
         Ok(updated)
     }
 
-    // ---- LocalSend compatibility (docs/protocol/v0.md) ----
+    /// The wire counters of the session with `peer` (`plans/protocol-v1-contract.md`
+    /// §3), if one is up. For tests and diagnostics.
+    #[doc(hidden)]
+    pub fn wire_counters(&self, peer: DeviceId) -> Option<crate::WireCounters> {
+        self.shared.session(&peer).map(|s| s.wire_counters())
+    }
+
+    /// How many session tasks run now, across sessions. For tests.
+    #[doc(hidden)]
+    pub fn debug_session_tasks(&self) -> usize {
+        self.shared.session_tasks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Test hook: while on, heartbeats find no allowed path for their sessions.
+    #[doc(hidden)]
+    pub fn debug_refuse_paths(&self, on: bool) {
+        self.shared.debug_refuse_paths.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Test hook: RPCs a session opened from now on may have in flight.
+    #[doc(hidden)]
+    pub fn debug_set_outgoing_rpc_limit(&self, limit: usize) {
+        self.shared.outgoing_rpc_limit.store(limit.max(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Test hook: dials `peer` now, as the reconnect loop does.
+    #[doc(hidden)]
+    pub async fn debug_dial(&self, peer: DeviceId) -> Result<()> {
+        self.shared.dial(peer).await.map(|_| ())
+    }
+
+    /// Test hook: closes the session with `peer` as a dead link would end it.
+    #[doc(hidden)]
+    pub fn debug_close_session(&self, peer: DeviceId) {
+        if let Some(session) = self.shared.session(&peer) {
+            session.close(session::CLOSE_NORMAL, b"test");
+        }
+    }
+
+    /// Test hook: a number that tells the session with `peer` from any other.
+    #[doc(hidden)]
+    pub fn debug_session_serial(&self, peer: DeviceId) -> Option<u64> {
+        self.shared.session(&peer).map(|s| s.serial)
+    }
+
+    /// Test hook: ends the lanes this side opened to `peer` as a failed
+    /// stream would; the next message on each opens it again.
+    #[doc(hidden)]
+    pub fn debug_fail_lanes(&self, peer: DeviceId) {
+        if let Some(session) = self.shared.session(&peer) {
+            session.lanes.fail_all();
+        }
+    }
+
+    /// Test hook: opens a stream to `peer` with header `svc`/`op` and keeps it
+    /// open for `hold`; returns the first frame the other side answers with
+    /// within half a second, if any.
+    #[doc(hidden)]
+    pub async fn debug_open_stream(
+        &self,
+        peer: DeviceId,
+        svc: &str,
+        op: &str,
+        hold: Duration,
+    ) -> Result<Option<Envelope>> {
+        let session = self.connected(&peer)?;
+        let (mut send, mut recv) = session.open_bi().await?;
+        let header = g7link_protocol::messages::StreamHeader { svc: svc.into(), op: op.into(), v: 1 };
+        g7link_protocol::write_frame(&mut send, &Envelope::new(types::STREAM, &header)?.to_cbor()).await?;
+        let first =
+            tokio::time::timeout(Duration::from_millis(500), g7link_protocol::read_frame(&mut recv)).await;
+        let answer = match first {
+            Ok(Ok(Some(frame))) => Some(Envelope::from_cbor(&frame)?),
+            _ => None,
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(hold).await;
+            drop((send, recv));
+        });
+        Ok(answer)
+    }
+
+    /// Test hook: whether `peer` asked this device to hold its notifications.
+    #[doc(hidden)]
+    pub fn debug_notifications_held(&self, peer: DeviceId) -> bool {
+        self.shared.session(&peer).is_some_and(|s| s.notifications_held())
+    }
+
+    /// Test hook: sends `t` with `body` to `peer` as a request on its lane,
+    /// RPC stream or control, as the type says, and returns the answer.
+    #[doc(hidden)]
+    pub async fn debug_request(&self, peer: DeviceId, env: Envelope, wait: Duration) -> Result<Envelope> {
+        self.connected(&peer)?.request(env, wait).await
+    }
+
+    // ---- LocalSend compatibility (docs/protocol/v1.md §15) ----
 
     /// Whether LocalSend v2.1 compatibility is enabled on this device.
     pub fn localsend_enabled(&self) -> bool {
@@ -3506,17 +3866,17 @@ impl Node {
     ) -> Result<()> {
         let session = self.connected(relay_peer)?;
         let env = Envelope::new(
-            types::WAKE_RELAY,
+            types::PC_WAKE_RELAY,
             &g7link_protocol::messages::WakeRelay { mac, broadcast: broadcast.map(|b| b.to_string()) },
         )?;
         session.request(env, REQUEST_TIMEOUT).await?.expect(types::OK)?;
         Ok(())
     }
 
-    /// Sends a low-latency PCM audio frame (`audio.pcm`) to a connected paired device.
-    /// Single sub-MTU frames (`<= 960` bytes) use a zero-HOL-blocking QUIC datagram;
-    /// larger frames are sent intact as an `AUDIO_PCM` envelope so frame boundaries
-    /// are never fragmented or partially lost.
+    /// Sends a piece of PC sound to a connected paired device: a datagram
+    /// (`docs/protocol/v1.md` §5) numbered and timed by the session, or, when
+    /// datagrams can't carry it, a frame on the `media/sound` stream. `pcm`
+    /// is whole frames of 16-bit PCM, at most 960 bytes.
     pub async fn send_pc_audio_pcm(
         &self,
         peer: &DeviceId,
@@ -3528,24 +3888,7 @@ impl Node {
             return Ok(());
         }
         let session = self.connected(peer)?;
-        if pcm.len() <= 960
-            && session.conn.max_datagram_size().is_some_and(|max_dgram| 10 + pcm.len() <= max_dgram)
-        {
-            let mut pkt = Vec::with_capacity(10 + pcm.len());
-            pkt.extend_from_slice(b"NLPA");
-            pkt.extend_from_slice(&sample_rate.to_le_bytes());
-            pkt.push(channels);
-            pkt.push(0);
-            pkt.extend_from_slice(&pcm);
-            if session.send_datagram(bytes::Bytes::from(pkt)).is_ok() {
-                return Ok(());
-            }
-        }
-        let env = Envelope::new(
-            types::AUDIO_PCM,
-            &g7link_protocol::messages::AudioPcmFrame { sample_rate, channels, pcm },
-        )?;
-        session.try_send_realtime(env)
+        crate::sound::send(&session, sample_rate, channels, pcm).await
     }
 
     /// Opens a web link on a paired device. The other device asks its user
@@ -3841,7 +4184,7 @@ impl Node {
         crate::mic::open(&self.shared, &session).await
     }
 
-    // ---- Continuity Camera (docs/protocol/v0.md §Continuity Camera) ----
+    // ---- Continuity Camera (docs/protocol/v1.md §14) ----
 
     /// Asks a paired phone to capture a photo or scan a document and stream the result back.
     pub async fn request_camera_capture(
@@ -5026,7 +5369,7 @@ impl Node {
             local.battery = Some(battery.clone());
             changed
         };
-        if changed && let Ok(env) = Envelope::new(types::EVENT_BATTERY, &battery) {
+        if changed && let Ok(env) = Envelope::new(types::DEVICE_BATTERY, &battery) {
             self.shared.broadcast(env).await;
         }
     }
@@ -5044,7 +5387,7 @@ impl Node {
         if !new {
             return;
         }
-        let Ok(env) = Envelope::new(types::EVENT_UPDATE, &hint) else { return };
+        let Ok(env) = Envelope::new(types::DEVICE_UPDATE, &hint) else { return };
         for session in self.shared.live_sessions() {
             if self.shared.offers(&session.peer, g7link_protocol::messages::UPDATE_HINT).unwrap_or(false)
                 && let Err(e) = session.send(env.clone()).await
@@ -5474,6 +5817,12 @@ async fn bind_endpoint(
         "transport"
     );
     let transport = QuicTransportConfig::builder()
+        // Lanes, RPCs and media streams each take a stream; the session's
+        // own limits (`rpc.rs`, `session.rs`) answer BUSY well before this.
+        .max_concurrent_bidi_streams(VarInt::from_u32(MAX_BIDI_STREAMS))
+        // Sound and motion that can't go out promptly are stale: a congested
+        // link drops them instead of queueing seconds of them.
+        .datagram_send_buffer_size(DATAGRAM_SEND_BUFFER)
         .keep_alive_interval(KEEP_ALIVE_INTERVAL)
         .max_idle_timeout(Some(IDLE_TIMEOUT.try_into().expect("the idle timeout fits a QUIC varint")))
         .stream_receive_window(VarInt::from_u32(tuning.stream_window))
@@ -5483,7 +5832,7 @@ async fn bind_endpoint(
         .build();
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
-        .alpns(vec![ALPN_SESSION.to_vec(), ALPN_PAIR.to_vec()])
+        .alpns(vec![ALPN_SESSION.to_vec(), ALPN_SESSION_V0.to_vec(), ALPN_PAIR.to_vec()])
         // Keep a relay transport even in LAN mode, so it can be enabled later.
         .relay_mode(RelayMode::Custom(relay_map))
         .transport_config(transport);
@@ -6238,6 +6587,41 @@ mod away_tests {
 
 #[cfg(test)]
 mod seen_on_lan_tests {
+    #[test]
+    fn only_a_failed_or_refused_dial_backs_off() {
+        use super::{BACKOFF_MAX, BACKOFF_MIN, EndReason, next_redial_wait};
+        let long = Duration::from_secs(16);
+        assert_eq!(next_redial_wait(EndReason::Closed, long), BACKOFF_MIN, "established, then closed");
+        assert_eq!(next_redial_wait(EndReason::DialFailed, BACKOFF_MIN), BACKOFF_MIN * 2);
+        assert_eq!(next_redial_wait(EndReason::Refused, Duration::from_secs(4)), Duration::from_secs(8));
+        assert_eq!(next_redial_wait(EndReason::Refused, BACKOFF_MAX), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn a_peer_that_is_our_gateway_is_local_at_any_address() {
+        let gateway: std::net::IpAddr = "10.76.220.1".parse().unwrap();
+        // Reached on the hotspot's own address: any path of it counts.
+        assert!(super::allowed_via_gateway(&[gateway], Some(gateway)));
+        // Another gateway (the laptop moved networks), or never reached there: no.
+        let other: std::net::IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(!super::allowed_via_gateway(&[other], Some(gateway)));
+        assert!(!super::allowed_via_gateway(&[gateway], None));
+        assert!(!super::allowed_via_gateway(&[], Some(gateway)));
+    }
+
+    #[test]
+    fn default_gateways_come_from_the_route_table() {
+        let table = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\n\
+                     wlan0\t00000000\t01DC4C0A\t0003\t0\t0\t600\t00000000\n\
+                     wlan0\t00DC4C0A\t00000000\t0001\t0\t0\t600\t00FFFFFF\n\
+                     docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\n";
+        assert_eq!(
+            super::parse_default_gateways(table),
+            vec!["10.76.220.1".parse::<std::net::IpAddr>().unwrap()]
+        );
+        assert!(super::parse_default_gateways("").is_empty());
+    }
+
     use super::*;
     use iroh::address_lookup::{AddressLookup, EndpointData, EndpointInfo, Item};
 

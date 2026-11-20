@@ -51,12 +51,7 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{
-    Error, Result,
-    events::NodeEvent,
-    node::Shared,
-    session::{REQUEST_TIMEOUT, Session},
-};
+use crate::{Error, Result, dispatch::Responder, events::NodeEvent, node::Shared, session::Session};
 
 /// The per-device toggle on the PC that governs the service (off by default).
 pub const TOGGLE: &str = agent::TOGGLE;
@@ -66,6 +61,9 @@ pub const SESSIONS_TOGGLE: &str = agent::SESSIONS_TOGGLE;
 
 /// How long the platform has to answer one request.
 const PLATFORM_LIMIT: Duration = Duration::from_secs(15);
+/// How long a phone waits for a PC's answer: longer than the PC gives its
+/// host ([`PLATFORM_LIMIT`]), so the PC's own refusal arrives first.
+const AGENT_WAIT: Duration = Duration::from_secs(20);
 /// The least time between two `delta` events to one phone.
 const DELTA_INTERVAL: Duration = Duration::from_millis(1000 / agent::MAX_DELTAS_PER_SEC as u64);
 /// The least time between two `agent.session` changes of one session.
@@ -937,7 +935,7 @@ fn flush_for(inner: &mut Inner, session: &Session, thread: &str) {
         && let Some(env) = gate.pending.take().as_ref().and_then(event_env)
     {
         gate.last = Some(Instant::now());
-        let _ = session.try_send_realtime(env);
+        let _ = session.send_lossy(env);
     }
 }
 
@@ -976,14 +974,14 @@ pub(crate) fn send_event(
                         } else {
                             let earlier = gate.pending.replace(event.clone());
                             if let Some(env) = earlier.as_ref().and_then(event_env) {
-                                let _ = session.try_send_realtime(env);
+                                let _ = session.send_lossy(env);
                             }
                             gate.last = Some(now);
                         }
                     } else if gate.last.is_none_or(|last| now.duration_since(last) >= DELTA_INTERVAL) {
                         gate.last = Some(now);
                         if let Some(env) = event_env(&event) {
-                            let _ = session.try_send_realtime(env);
+                            let _ = session.send_lossy(env);
                         }
                     } else {
                         gate.pending = Some(event.clone());
@@ -1024,7 +1022,7 @@ pub(crate) fn send_event(
             gate.last = Some(Instant::now());
             let still_watching = inner.watching.get(&peer).is_some_and(|t| *t == pending.thread);
             if let (Some(session), true, Some(env)) = (session, still_watching, event_env(&pending)) {
-                let _ = session.try_send_realtime(env);
+                let _ = session.send_lossy(env);
             }
         });
     }
@@ -1182,27 +1180,48 @@ fn mode_refusal(shared: &Shared, peer: &DeviceId, mode: &str) -> Option<Envelope
 /// PC: what to answer a phone's `agent.*` request, checked in the order of
 /// `docs/protocol/agents.md` and contract §6.2 (0.1.14 contract §A4.2 for
 /// §3; phase 2 contract §Q5 for §5).
-async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelope {
+/// A PC's answer to a phone's request: a list that may go in parts, or one envelope.
+enum PcAnswer {
+    Plain(Envelope),
+    Threads(AgentThreads),
+    Items(Box<AgentItems>),
+    Sessions(AgentSessions),
+    SessionItems(Box<AgentSessionItems>),
+    Files(AgentFiles),
+    Commands(AgentCommands),
+}
+
+impl From<Envelope> for PcAnswer {
+    fn from(env: Envelope) -> Self {
+        PcAnswer::Plain(env)
+    }
+}
+
+async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> PcAnswer {
+    answer_envelope(shared, peer, env).await
+}
+
+async fn answer_envelope(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> PcAnswer {
     if let Some(refused) = refusal(shared, peer, is_session_request(&env.t)) {
-        return refused;
+        return refused.into();
     }
     if is_control_request(&env.t)
         && let Some(refused) = control_refusal(shared, &peer)
     {
-        return refused;
+        return refused.into();
     }
     let bad = || Envelope::error(ErrorCode::BadMessage, "invalid agent request");
     let request = match env.t.as_str() {
         types::AGENT_THREADS => AgentRequest::Threads,
         types::AGENT_START => {
-            let Some(start) = decode::<AgentStart>(env, AgentStart::is_valid) else { return bad() };
+            let Some(start) = decode::<AgentStart>(env, AgentStart::is_valid) else { return bad().into() };
             if let Some(refused) = mode_refusal(shared, &peer, &start.mode) {
-                return refused;
+                return refused.into();
             }
             if start.uses_control()
                 && let Some(refused) = control_refusal(shared, &peer)
             {
-                return refused;
+                return refused.into();
             }
             AgentRequest::Start {
                 agent: start.agent,
@@ -1216,11 +1235,11 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
             }
         }
         types::AGENT_SEND => {
-            let Some(send) = decode::<AgentSend>(env, AgentSend::is_valid) else { return bad() };
+            let Some(send) = decode::<AgentSend>(env, AgentSend::is_valid) else { return bad().into() };
             if send.uses_control()
                 && let Some(refused) = control_refusal(shared, &peer)
             {
-                return refused;
+                return refused.into();
             }
             AgentRequest::Send {
                 thread: send.thread,
@@ -1230,63 +1249,66 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
             }
         }
         types::AGENT_CANCEL => {
-            let Some(cancel) = decode::<AgentCancel>(env, AgentCancel::is_valid) else { return bad() };
+            let Some(cancel) = decode::<AgentCancel>(env, AgentCancel::is_valid) else { return bad().into() };
             AgentRequest::Cancel { thread: cancel.thread }
         }
         types::AGENT_READ => {
-            let Some(read) = decode::<AgentRead>(env, AgentRead::is_valid) else { return bad() };
+            let Some(read) = decode::<AgentRead>(env, AgentRead::is_valid) else { return bad().into() };
             let limit = read.limit();
             AgentRequest::Read { thread: read.thread, before: read.before, limit }
         }
         types::AGENT_ANSWER => {
-            let Some(answer) = decode::<AgentAnswer>(env, AgentAnswer::is_valid) else { return bad() };
+            let Some(answer) = decode::<AgentAnswer>(env, AgentAnswer::is_valid) else { return bad().into() };
             if answer.scope.as_deref().is_some_and(|s| s != agent::scope::ONCE) {
-                return Envelope::error(ErrorCode::Denied, "only this request can be answered from a phone");
+                return Envelope::error(ErrorCode::Denied, "only this request can be answered from a phone")
+                    .into();
             }
             let message = match answer.message.as_deref() {
                 None => None,
                 Some(_) if !shared.we_offer(agent::SAY_WHY) => {
-                    return Envelope::error(ErrorCode::Unsupported, "this PC can't pass a message on");
+                    return Envelope::error(ErrorCode::Unsupported, "this PC can't pass a message on").into();
                 }
                 Some(message) => match clean_deny_message(message) {
                     Some(message) => Some(message),
-                    None => return bad(),
+                    None => return bad().into(),
                 },
             };
             let allow = answer.allow();
             AgentRequest::Answer { token: answer.token, allow, message }
         }
         types::AGENT_WATCH => {
-            let Some(watch) = decode::<AgentWatch>(env, AgentWatch::is_valid) else { return bad() };
+            let Some(watch) = decode::<AgentWatch>(env, AgentWatch::is_valid) else { return bad().into() };
             shared.agents.watch(peer, watch.thread);
-            return Envelope::empty(types::OK);
+            return Envelope::empty(types::OK).into();
         }
         types::AGENT_SESSIONS => AgentRequest::Sessions,
         types::AGENT_SESSION_READ => {
             let Some(read) = decode::<AgentSessionRead>(env, AgentSessionRead::is_valid) else {
-                return bad();
+                return bad().into();
             };
             let limit = read.limit();
             AgentRequest::SessionRead { session: read.session, before: read.before, limit }
         }
         types::AGENT_SESSION_WATCH => {
             let Some(watch) = decode::<AgentSessionWatch>(env, AgentSessionWatch::is_valid) else {
-                return bad();
+                return bad().into();
             };
             AgentRequest::SessionWatch { session: watch.session }
         }
         types::AGENT_SESSION_CONTINUE => {
             let Some(cont) = decode::<AgentSessionContinue>(env, AgentSessionContinue::is_valid) else {
-                return bad();
+                return bad().into();
             };
             AgentRequest::SessionContinue { session: cont.session }
         }
         types::AGENT_CONFIGURE => {
-            let Some(c) = decode::<AgentConfigure>(env, AgentConfigure::is_valid) else { return bad() };
+            let Some(c) = decode::<AgentConfigure>(env, AgentConfigure::is_valid) else {
+                return bad().into();
+            };
             if let Some(mode) = c.mode.as_deref()
                 && let Some(refused) = mode_refusal(shared, &peer, mode)
             {
-                return refused;
+                return refused.into();
             }
             AgentRequest::Configure {
                 thread: c.thread,
@@ -1298,22 +1320,22 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
         }
         types::AGENT_QUEUE => {
             let Some(change) = decode::<AgentQueueChange>(env, AgentQueueChange::is_valid) else {
-                return bad();
+                return bad().into();
             };
             let action = match (change.op.as_str(), change.text) {
                 (agent::queue_op::EDIT, Some(text)) => QueueAction::Edit(clean_typed(text)),
                 (agent::queue_op::REMOVE, None) => QueueAction::Remove,
                 (agent::queue_op::SEND_NOW, None) => QueueAction::SendNow,
-                _ => return bad(),
+                _ => return bad().into(),
             };
             AgentRequest::Queue { thread: change.thread, id: change.id, action }
         }
         types::AGENT_REPLY => {
             let Some(reply) = decode::<AgentQuestionReply>(env, AgentQuestionReply::is_valid) else {
-                return bad();
+                return bad().into();
             };
             if shared.agents.is_secret(&reply.token) {
-                return Envelope::error(ErrorCode::Denied, "answer this one on the PC");
+                return Envelope::error(ErrorCode::Denied, "answer this one on the PC").into();
             }
             if reply.dismiss {
                 AgentRequest::QuestionDismiss { token: reply.token }
@@ -1323,31 +1345,33 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
         }
         types::AGENT_IMPLEMENT => {
             let Some(implement) = decode::<AgentImplement>(env, AgentImplement::is_valid) else {
-                return bad();
+                return bad().into();
             };
             AgentRequest::Implement { thread: implement.thread, item: implement.item }
         }
         types::AGENT_FILES => {
             let Some(files) = decode::<AgentFilesRequest>(env, AgentFilesRequest::is_valid) else {
-                return bad();
+                return bad().into();
             };
             let limit = files.limit();
             AgentRequest::Files { thread: files.thread, folder: files.folder, query: files.query, limit }
         }
         types::AGENT_COMMANDS => {
             let Some(c) = decode::<AgentCommandsRequest>(env, AgentCommandsRequest::is_valid) else {
-                return bad();
+                return bad().into();
             };
             AgentRequest::Commands { agent: c.agent, folder: c.folder }
         }
         types::AGENT_DRAFT_GET => {
             let Some(get) = decode::<AgentDraftRequest>(env, AgentDraftRequest::is_valid) else {
-                return bad();
+                return bad().into();
             };
             AgentRequest::DraftGet { key: get.key }
         }
         types::AGENT_DRAFT_SET => {
-            let Some(set) = decode::<AgentDraftSet>(env, AgentDraftSet::is_valid) else { return bad() };
+            let Some(set) = decode::<AgentDraftSet>(env, AgentDraftSet::is_valid) else {
+                return bad().into();
+            };
             AgentRequest::DraftSet {
                 key: set.key,
                 text: clean_typed(set.text),
@@ -1355,16 +1379,16 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
                 rev: set.rev,
             }
         }
-        _ => return Envelope::error(ErrorCode::Unsupported, "unknown agent request"),
+        _ => return Envelope::error(ErrorCode::Unsupported, "unknown agent request").into(),
     };
     let expects = match &request {
         AgentRequest::Threads => types::AGENT_THREADS,
         AgentRequest::Start { .. }
         | AgentRequest::SessionContinue { .. }
         | AgentRequest::Configure { .. } => types::AGENT_THREAD,
-        AgentRequest::Read { .. } => types::AGENT_ITEMS,
+        AgentRequest::Read { .. } => types::OK,
         AgentRequest::Sessions => types::AGENT_SESSIONS,
-        AgentRequest::SessionRead { .. } => types::AGENT_SESSION_ITEMS,
+        AgentRequest::SessionRead { .. } => types::OK,
         AgentRequest::Files { .. } => types::AGENT_FILES,
         AgentRequest::Commands { .. } => types::AGENT_COMMANDS,
         AgentRequest::DraftGet { .. } => types::AGENT_DRAFT_GET,
@@ -1379,18 +1403,18 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
     let control = shared.control_with(&peer);
     let reply = ask_platform(shared, peer, request).await;
     let built = match reply {
-        Ok(AgentReply::Ok) if expects == types::OK => Ok(Envelope::empty(types::OK)),
+        Ok(AgentReply::Ok) if expects == types::OK => Ok(Envelope::empty(types::OK).into()),
         Ok(AgentReply::Threads(threads)) if expects == types::AGENT_THREADS => {
             let threads = threads.into_iter().map(|t| thread_for(t, control)).collect();
-            Envelope::new(types::AGENT_THREADS, &AgentThreads { threads }.sanitized())
+            Ok(PcAnswer::Threads(AgentThreads { threads }.sanitized()))
         }
         Ok(AgentReply::Thread(thread)) if expects == types::AGENT_THREAD => {
             match thread.sanitized().map(|t| thread_for(t, control)) {
-                Some(thread) => Envelope::new(types::AGENT_THREAD, &thread),
-                None => return AgentFailure::Internal.reply("the host's answer was malformed"),
+                Some(thread) => Envelope::new(types::OK, &thread).map(PcAnswer::from),
+                None => return AgentFailure::Internal.reply("the host's answer was malformed").into(),
             }
         }
-        Ok(AgentReply::Items(items)) if expects == types::AGENT_ITEMS => {
+        Ok(AgentReply::Items(items)) if expects == types::OK => {
             {
                 let mut inner = shared.agents.lock();
                 for item in &items.items {
@@ -1401,40 +1425,40 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
                 }
             }
             match items.sanitized() {
-                Some(items) => Envelope::new(types::AGENT_ITEMS, &items.for_phone(items2, control)),
-                None => return AgentFailure::Internal.reply("the host's answer was malformed"),
+                Some(items) => Ok(PcAnswer::Items(Box::new(items.for_phone(items2, control)))),
+                None => return AgentFailure::Internal.reply("the host's answer was malformed").into(),
             }
         }
         Ok(AgentReply::Sessions(sessions)) if expects == types::AGENT_SESSIONS => {
-            Envelope::new(types::AGENT_SESSIONS, &AgentSessions { sessions }.sanitized())
+            Ok(PcAnswer::Sessions(AgentSessions { sessions }.sanitized()))
         }
-        Ok(AgentReply::SessionItems(mut items)) if expects == types::AGENT_SESSION_ITEMS => {
+        Ok(AgentReply::SessionItems(mut items)) if expects == types::OK => {
             items.items = items.items.into_iter().map(|item| item.for_phone(items2, control)).collect();
             match items.sanitized() {
-                Some(items) => Envelope::new(types::AGENT_SESSION_ITEMS, &items),
-                None => return AgentFailure::Internal.reply("the host's answer was malformed"),
+                Some(items) => Ok(PcAnswer::SessionItems(Box::new(items))),
+                None => return AgentFailure::Internal.reply("the host's answer was malformed").into(),
             }
         }
         Ok(AgentReply::Files(files)) if expects == types::AGENT_FILES => {
-            Envelope::new(types::AGENT_FILES, &files.sanitized())
+            Ok(PcAnswer::Files(files.sanitized()))
         }
         Ok(AgentReply::Commands(commands)) if expects == types::AGENT_COMMANDS => {
-            Envelope::new(types::AGENT_COMMANDS, &AgentCommands { commands }.sanitized())
+            Ok(PcAnswer::Commands(AgentCommands { commands }.sanitized()))
         }
-        Ok(AgentReply::Draft(draft)) if expects == types::AGENT_DRAFT_GET => Envelope::new(
-            types::AGENT_DRAFT_GET,
-            &AgentDraftReply { draft: draft.and_then(AgentDraft::sanitized) },
-        ),
+        Ok(AgentReply::Draft(draft)) if expects == types::AGENT_DRAFT_GET => {
+            Envelope::new(types::OK, &AgentDraftReply { draft: draft.and_then(AgentDraft::sanitized) })
+                .map(PcAnswer::from)
+        }
         Ok(AgentReply::DraftSaved(saved)) if expects == types::AGENT_DRAFT_SET => {
-            Envelope::new(types::AGENT_DRAFT_SET, &saved.sanitized())
+            Envelope::new(types::OK, &saved.sanitized()).map(PcAnswer::from)
         }
-        Ok(_) => return AgentFailure::Internal.reply("the host answered something else"),
+        Ok(_) => return AgentFailure::Internal.reply("the host answered something else").into(),
         Err(failure) => {
             if watching.is_some() {
                 // Refused (a third phone, say): this phone watches nothing now.
                 shared.agents.unwatch_session(&peer);
             }
-            return failure.reply(failure_message(failure));
+            return failure.reply(failure_message(failure)).into();
         }
     };
     if let Some(session) = watching {
@@ -1444,7 +1468,7 @@ async fn answer(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Envelop
             None => inner.session_watching.remove(&peer),
         };
     }
-    built.unwrap_or_else(|_| AgentFailure::Internal.reply("failed"))
+    built.unwrap_or_else(|_| AgentFailure::Internal.reply("failed").into())
 }
 
 /// Hands `request` to the platform on a blocking thread, giving up after
@@ -1694,12 +1718,13 @@ pub(crate) async fn serve_thumb(
 }
 
 /// Handles `agent.*` messages: requests on a PC, pushes on a phone.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
-    if env.re.is_some() {
-        // A reply that came after its request gave up.
-        return Ok(true);
-    }
     match env.t.as_str() {
         types::AGENT_THREADS
         | types::AGENT_START
@@ -1719,12 +1744,15 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         | types::AGENT_FILES
         | types::AGENT_COMMANDS
         | types::AGENT_DRAFT_GET
-        | types::AGENT_DRAFT_SET => {
-            let reply = answer(shared, peer, env).await;
-            if env.id.is_some() {
-                session.send(reply.reply_to(env.id)).await?;
-            }
-        }
+        | types::AGENT_DRAFT_SET => match answer(shared, peer, env).await {
+            PcAnswer::Plain(reply) => rsp.send(reply).await?,
+            PcAnswer::Threads(body) => rsp.paged(body).await?,
+            PcAnswer::Items(body) => rsp.paged(*body).await?,
+            PcAnswer::Sessions(body) => rsp.paged(body).await?,
+            PcAnswer::SessionItems(body) => rsp.paged(*body).await?,
+            PcAnswer::Files(body) => rsp.paged(body).await?,
+            PcAnswer::Commands(body) => rsp.paged(body).await?,
+        },
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };
             if !catalog.is_valid() {
@@ -1861,29 +1889,52 @@ async fn request<T: serde::de::DeserializeOwned>(
     shared: &Arc<Shared>,
     peer: DeviceId,
     env: Envelope,
-    expected: &'static str,
 ) -> Result<T> {
-    request_of(shared, peer, env, expected, agent::HOST).await
+    request_of(shared, peer, env, agent::HOST).await
 }
 
-/// A request to `peer`, which must offer `cap`.
+async fn request_paged<T>(shared: &Arc<Shared>, peer: DeviceId, env: Envelope) -> Result<T>
+where
+    T: g7link_protocol::lanes::Paged + serde::de::DeserializeOwned + Send + 'static,
+{
+    request_paged_of(shared, peer, env, agent::HOST).await
+}
+
+/// The session with `peer` for a request it must offer `cap` for.
+fn session_offering(shared: &Arc<Shared>, peer: &DeviceId, cap: &str) -> Result<Arc<Session>> {
+    let session = shared.session(peer).ok_or(Error::Offline)?;
+    if !shared.peer_offers_cap(peer, cap) {
+        return Err(Error::Unsupported);
+    }
+    Ok(session)
+}
+
+/// A request to `peer`, which must offer `cap`: the body of its `ok`.
 async fn request_of<T: serde::de::DeserializeOwned>(
     shared: &Arc<Shared>,
     peer: DeviceId,
     env: Envelope,
-    expected: &'static str,
     cap: &str,
 ) -> Result<T> {
-    let session = shared.session(&peer).ok_or(Error::Offline)?;
-    if !shared.store.get_peer(&peer)?.is_some_and(|p| p.caps.contains(cap)) {
-        return Err(Error::Unsupported);
-    }
-    let reply = session.request(env, REQUEST_TIMEOUT).await?;
-    reply.expect_body::<T>(expected).map_err(reply_error)
+    let session = session_offering(shared, &peer, cap)?;
+    let reply = session.request(env, AGENT_WAIT).await?;
+    reply.expect_body::<T>(types::OK).map_err(reply_error)
+}
+
+/// A request to `peer` whose answer is a list that may come in parts.
+async fn request_paged_of<T>(shared: &Arc<Shared>, peer: DeviceId, env: Envelope, cap: &str) -> Result<T>
+where
+    T: g7link_protocol::lanes::Paged + serde::de::DeserializeOwned + Send + 'static,
+{
+    let session = session_offering(shared, &peer, cap)?;
+    let op = g7link_protocol::lanes::rpc_of(&env.t).ok_or_else(|| Error::Internal("not an RPC".into()))?;
+    let answer = session.rpc(op, env, AGENT_WAIT).await?;
+    answer.last.expect(types::OK).map_err(reply_error)?;
+    crate::rpc::assemble(answer).await
 }
 
 async fn request_ok(shared: &Arc<Shared>, peer: DeviceId, env: Envelope) -> Result<()> {
-    request::<g7link_protocol::messages::Empty>(shared, peer, env, types::OK).await.map(|_| ())
+    request::<g7link_protocol::messages::Empty>(shared, peer, env).await.map(|_| ())
 }
 
 fn invalid(what: &str) -> Error {
@@ -1892,7 +1943,7 @@ fn invalid(what: &str) -> Error {
 
 pub(crate) async fn threads(shared: &Arc<Shared>, peer: DeviceId) -> Result<Vec<AgentThread>> {
     let env = Envelope::empty(types::AGENT_THREADS);
-    let reply: AgentThreads = request(shared, peer, env, types::AGENT_THREADS).await?;
+    let reply: AgentThreads = request_paged(shared, peer, env).await?;
     if !reply.is_valid() {
         return Err(invalid("agent.threads reply"));
     }
@@ -1914,7 +1965,7 @@ pub(crate) async fn start(shared: &Arc<Shared>, peer: DeviceId, start: AgentStar
     }
     needs_control(shared, &peer, start.uses_control())?;
     let env = Envelope::new(types::AGENT_START, &start)?;
-    let thread: AgentThread = request(shared, peer, env, types::AGENT_THREAD).await?;
+    let thread: AgentThread = request(shared, peer, env).await?;
     if !thread.is_valid() {
         return Err(invalid("agent.thread reply"));
     }
@@ -1936,14 +1987,22 @@ async fn control_request<T: serde::de::DeserializeOwned>(
     shared: &Arc<Shared>,
     peer: DeviceId,
     env: Envelope,
-    expected: &'static str,
 ) -> Result<T> {
     needs_control(shared, &peer, true)?;
-    request_of(shared, peer, env, expected, agent::CONTROL).await
+    request_of(shared, peer, env, agent::CONTROL).await
+}
+
+/// Like [`control_request`], for a list that may come in parts.
+async fn control_paged<T>(shared: &Arc<Shared>, peer: DeviceId, env: Envelope) -> Result<T>
+where
+    T: g7link_protocol::lanes::Paged + serde::de::DeserializeOwned + Send + 'static,
+{
+    needs_control(shared, &peer, true)?;
+    request_paged_of(shared, peer, env, agent::CONTROL).await
 }
 
 async fn control_ok(shared: &Arc<Shared>, peer: DeviceId, env: Envelope) -> Result<()> {
-    control_request::<g7link_protocol::messages::Empty>(shared, peer, env, types::OK).await.map(|_| ())
+    control_request::<g7link_protocol::messages::Empty>(shared, peer, env).await.map(|_| ())
 }
 
 pub(crate) async fn configure(
@@ -1955,7 +2014,7 @@ pub(crate) async fn configure(
         return Err(invalid("agent.configure"));
     }
     let env = Envelope::new(types::AGENT_CONFIGURE, &body)?;
-    let thread: AgentThread = control_request(shared, peer, env, types::AGENT_THREAD).await?;
+    let thread: AgentThread = control_request(shared, peer, env).await?;
     if !thread.is_valid() {
         return Err(invalid("agent.thread reply"));
     }
@@ -1992,7 +2051,7 @@ pub(crate) async fn files(
         return Err(invalid("agent.files"));
     }
     let env = Envelope::new(types::AGENT_FILES, &body)?;
-    let files: AgentFiles = control_request(shared, peer, env, types::AGENT_FILES).await?;
+    let files: AgentFiles = control_paged(shared, peer, env).await?;
     // A hit outside the folder is left out here too, never shown.
     Ok(files.sanitized())
 }
@@ -2006,7 +2065,7 @@ pub(crate) async fn commands(
         return Err(invalid("agent.commands"));
     }
     let env = Envelope::new(types::AGENT_COMMANDS, &body)?;
-    let commands: AgentCommands = control_request(shared, peer, env, types::AGENT_COMMANDS).await?;
+    let commands: AgentCommands = control_paged(shared, peer, env).await?;
     Ok(commands.sanitized().commands)
 }
 
@@ -2020,7 +2079,7 @@ pub(crate) async fn draft_get(
         return Err(invalid("agent.draft.get"));
     }
     let env = Envelope::new(types::AGENT_DRAFT_GET, &body)?;
-    let reply: AgentDraftReply = control_request(shared, peer, env, types::AGENT_DRAFT_GET).await?;
+    let reply: AgentDraftReply = control_request(shared, peer, env).await?;
     Ok(reply.draft.and_then(AgentDraft::sanitized))
 }
 
@@ -2033,7 +2092,7 @@ pub(crate) async fn draft_set(
         return Err(invalid("agent.draft.set"));
     }
     let env = Envelope::new(types::AGENT_DRAFT_SET, &body)?;
-    let saved: AgentDraftSaved = control_request(shared, peer, env, types::AGENT_DRAFT_SET).await?;
+    let saved: AgentDraftSaved = control_request(shared, peer, env).await?;
     Ok(saved.sanitized())
 }
 
@@ -2153,8 +2212,7 @@ pub(crate) async fn read(
     if !body.is_valid() {
         return Err(invalid("agent.read"));
     }
-    let items: AgentItems =
-        request(shared, peer, Envelope::new(types::AGENT_READ, &body)?, types::AGENT_ITEMS).await?;
+    let items: AgentItems = request_paged(shared, peer, Envelope::new(types::AGENT_READ, &body)?).await?;
     if !items.is_valid() {
         return Err(invalid("agent.items reply"));
     }
@@ -2237,7 +2295,7 @@ pub(crate) fn peer_caps_changed(shared: &Shared, peer: &DeviceId) {
 /// Phone: the sessions started on `peer` outside G7 Link.
 pub(crate) async fn sessions(shared: &Arc<Shared>, peer: DeviceId) -> Result<Vec<AgentSession>> {
     let env = Envelope::empty(types::AGENT_SESSIONS);
-    let reply: AgentSessions = request_of(shared, peer, env, types::AGENT_SESSIONS, agent::SESSIONS).await?;
+    let reply: AgentSessions = request_paged_of(shared, peer, env, agent::SESSIONS).await?;
     if !reply.is_valid() {
         return Err(invalid("agent.sessions reply"));
     }
@@ -2256,8 +2314,7 @@ pub(crate) async fn session_read(
         return Err(invalid("agent.session.read"));
     }
     let env = Envelope::new(types::AGENT_SESSION_READ, &body)?;
-    let items: AgentSessionItems =
-        request_of(shared, peer, env, types::AGENT_SESSION_ITEMS, agent::SESSIONS).await?;
+    let items: AgentSessionItems = request_paged_of(shared, peer, env, agent::SESSIONS).await?;
     if !items.is_valid() {
         return Err(invalid("agent.session.items reply"));
     }
@@ -2274,9 +2331,7 @@ pub(crate) async fn session_watch(
         return Err(invalid("agent.session.watch"));
     }
     let env = Envelope::new(types::AGENT_SESSION_WATCH, &body)?;
-    request_of::<g7link_protocol::messages::Empty>(shared, peer, env, types::OK, agent::SESSIONS)
-        .await
-        .map(|_| ())
+    request_of::<g7link_protocol::messages::Empty>(shared, peer, env, agent::SESSIONS).await.map(|_| ())
 }
 
 pub(crate) async fn session_continue(
@@ -2289,7 +2344,7 @@ pub(crate) async fn session_continue(
         return Err(invalid("agent.session.continue"));
     }
     let env = Envelope::new(types::AGENT_SESSION_CONTINUE, &body)?;
-    let thread: AgentThread = request_of(shared, peer, env, types::AGENT_THREAD, agent::SESSIONS).await?;
+    let thread: AgentThread = request_of(shared, peer, env, agent::SESSIONS).await?;
     if !thread.is_valid() {
         return Err(invalid("agent.thread reply"));
     }
@@ -2359,7 +2414,7 @@ pub(crate) async fn raw<T: serde::Serialize>(
     body: &T,
 ) -> Result<()> {
     let session = shared.session(&peer).ok_or(Error::Offline)?;
-    let reply = session.request(Envelope::new(t, body)?, REQUEST_TIMEOUT).await?;
+    let reply = session.request(Envelope::new(t, body)?, AGENT_WAIT).await?;
     if reply.t == types::ERROR {
         reply.expect(types::OK).map_err(reply_error)?;
     }

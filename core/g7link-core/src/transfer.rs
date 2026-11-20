@@ -1376,7 +1376,7 @@ async fn attempt(
             Ok(accept) if accept.have.len() == files.len() => accept.have,
             _ => return Attempt::Fatal(TransferFailure::Other("bad answer to the offer".into())),
         },
-        Reply::Envelope(env) => return Attempt::Fatal(refusal(&env)),
+        Reply::Envelope(env) => return refused(&env),
         Reply::Cancelled => {
             let _ = send.reset(VarInt::from_u32(files::CANCELLED));
             return Attempt::Cancelled;
@@ -1485,7 +1485,7 @@ async fn attempt(
     }
     match read_reply(&mut recv, cancel, pause_rx).await {
         Reply::Envelope(env) if env.t == files::DONE => Attempt::Done,
-        Reply::Envelope(env) => Attempt::Fatal(refusal(&env)),
+        Reply::Envelope(env) => refused(&env),
         Reply::Cancelled => Attempt::Cancelled,
         Reply::Paused => {
             let _ = send.reset(VarInt::from_u32(files::PAUSED));
@@ -1504,6 +1504,20 @@ fn stopped(code: VarInt) -> Attempt {
         c if c == ErrorCode::Busy.close_code() => Attempt::Fatal(TransferFailure::NoSpace),
         c if c == ErrorCode::Denied.close_code() => Attempt::Fatal(TransferFailure::Denied),
         _ => Attempt::Retry,
+    }
+}
+
+/// What a refusal from the receiver means for this attempt. A receiver with
+/// too many streams open at once says BUSY too, but that passes: it's tried
+/// again, never taken for a full disk.
+fn refused(env: &Envelope) -> Attempt {
+    match env.body::<ErrorBody>() {
+        Ok(ErrorBody { code: ErrorCode::Busy, msg: Some(msg) })
+            if msg == crate::session::TOO_MANY_STREAMS =>
+        {
+            Attempt::Retry
+        }
+        _ => Attempt::Fatal(refusal(env)),
     }
 }
 
@@ -1588,114 +1602,130 @@ pub(crate) async fn handle_control(shared: &Arc<Shared>, peer: DeviceId, env: &E
 
 // ---- Receiving ----
 
-/// Handles a stream the other device opened (its header not yet read).
-pub(crate) async fn accept_stream(
-    shared: Arc<Shared>,
-    session: Arc<Session>,
-    mut send: SendStream,
-    mut recv: RecvStream,
-) {
-    let header = match tokio::time::timeout(REPLY_TIMEOUT, read_frame(&mut recv)).await {
+/// Reads the header of a stream the other device opened.
+pub(crate) async fn read_header(recv: &mut RecvStream) -> Option<StreamHeader> {
+    match tokio::time::timeout(REPLY_TIMEOUT, read_frame(recv)).await {
         Ok(Ok(Some(bytes))) => {
             Envelope::from_cbor(&bytes).ok().and_then(|e| e.expect_body::<StreamHeader>(types::STREAM).ok())
         }
         _ => None,
-    };
-    match header {
+    }
+}
+
+/// Turns away a stream this device doesn't serve.
+pub(crate) async fn refuse_unknown(mut send: SendStream) {
+    let reply = Envelope::error(ErrorCode::Unsupported, "unknown stream");
+    let _ = write_frame(&mut send, &reply.to_cbor()).await;
+    let _ = send.finish();
+}
+
+/// Serves a media or bulk stream the other device opened, by its header.
+pub(crate) async fn serve_stream(
+    shared: Arc<Shared>,
+    peer: DeviceId,
+    header: StreamHeader,
+    send: SendStream,
+    recv: RecvStream,
+) {
+    let session_peer = peer;
+    match Some(header) {
         Some(h) if h.svc == files::SERVICE && h.op == files::OP_SEND && h.v == files::VERSION => {
-            receive(shared, session.peer, send, recv).await;
+            receive(shared, session_peer, send, recv).await;
         }
         Some(h) if h.svc == clip::SERVICE && h.op == clip::OP_IMAGE && h.v == clip::VERSION => {
-            crate::clipboard::receive_image(shared, session.peer, send, recv).await;
+            crate::clipboard::receive_image(shared, session_peer, send, recv).await;
         }
         Some(h) if h.svc == mirror::SERVICE && h.op == mirror::OP_VIDEO && h.v == mirror::VERSION => {
-            crate::mirror::receive(shared, session.peer, send, recv).await;
+            crate::mirror::receive(shared, session_peer, send, recv).await;
         }
         Some(h) if h.svc == mirror::SERVICE && h.op == mirror::OP_AUDIO && h.v == mirror::VERSION => {
-            crate::mirror::receive_audio(shared, session.peer, send, recv).await;
+            crate::mirror::receive_audio(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::media_watch::SERVICE
                 && h.op == g7link_protocol::messages::media_watch::OP_FILE
                 && h.v == g7link_protocol::messages::media_watch::VERSION =>
         {
-            crate::media::serve_file(shared, session.peer, send, recv).await;
+            crate::media::serve_file(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::media_art::SERVICE
                 && h.op == g7link_protocol::messages::media_art::OP
                 && h.v == g7link_protocol::messages::media_art::VERSION =>
         {
-            crate::media::serve_art(shared, session.peer, send, recv).await;
+            crate::media::serve_art(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::agent_export::SERVICE
                 && h.op == g7link_protocol::messages::agent_export::OP
                 && h.v == g7link_protocol::messages::agent_export::VERSION =>
         {
-            crate::agents::serve_export(shared, session.peer, send, recv).await;
+            crate::agents::serve_export(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::agent_image::SERVICE
                 && h.op == g7link_protocol::messages::agent_image::OP_UPLOAD
                 && h.v == g7link_protocol::messages::agent_image::VERSION =>
         {
-            crate::agents::serve_image(shared, session.peer, send, recv).await;
+            crate::agents::serve_image(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::agent_image::SERVICE
                 && h.op == g7link_protocol::messages::agent_image::OP_THUMB
                 && h.v == g7link_protocol::messages::agent_image::VERSION =>
         {
-            crate::agents::serve_thumb(shared, session.peer, send, recv).await;
+            crate::agents::serve_thumb(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::mic::SERVICE
                 && h.op == g7link_protocol::messages::mic::OP_PCM
                 && h.v == g7link_protocol::messages::mic::VERSION =>
         {
-            crate::mic::receive(shared, session.peer, send, recv).await;
+            crate::mic::receive(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::webcam::SERVICE
                 && h.op == g7link_protocol::messages::webcam::OP_VIDEO
                 && h.v == g7link_protocol::messages::webcam::VERSION =>
         {
-            crate::webcam::receive(shared, session.peer, send, recv).await;
+            crate::webcam::receive(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::continuity_camera::SERVICE
                 && h.op == g7link_protocol::messages::continuity_camera::OP_RESULT
                 && h.v == g7link_protocol::messages::continuity_camera::VERSION =>
         {
-            crate::continuity_camera::receive_result(shared, session.peer, send, recv).await;
+            crate::continuity_camera::receive_result(shared, session_peer, send, recv).await;
         }
         Some(h)
-            if h.svc == g7link_protocol::messages::remote::SERVICE
-                && h.op == g7link_protocol::messages::remote::OP_MOTION
+            if h.svc == g7link_protocol::messages::input::SERVICE
+                && h.op == g7link_protocol::messages::input::OP_MOTION
                 && h.v == 1 =>
         {
-            crate::remote::receive_motion(shared, session.peer, send, recv).await;
+            crate::remote::receive_motion(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::storage::SERVICE
                 && h.op == g7link_protocol::messages::storage::OP_READ
                 && h.v == g7link_protocol::messages::storage::VERSION =>
         {
-            crate::storage::serve_read(shared, session.peer, send, recv).await;
+            crate::storage::serve_read(shared, session_peer, send, recv).await;
         }
         Some(h)
             if h.svc == g7link_protocol::messages::storage::SERVICE
                 && h.op == g7link_protocol::messages::storage::OP_WRITE
                 && h.v == g7link_protocol::messages::storage::VERSION =>
         {
-            crate::storage::serve_write(shared, session.peer, send, recv).await;
+            crate::storage::serve_write(shared, session_peer, send, recv).await;
         }
-        _ => {
-            let reply = Envelope::error(ErrorCode::Unsupported, "unknown stream");
-            let _ = write_frame(&mut send, &reply.to_cbor()).await;
-            let _ = send.finish();
+        Some(h)
+            if h.svc == g7link_protocol::messages::media_sound::SERVICE
+                && h.op == g7link_protocol::messages::media_sound::OP
+                && h.v == g7link_protocol::messages::media_sound::VERSION =>
+        {
+            crate::sound::receive(shared, session_peer, send, recv).await;
         }
+        _ => refuse_unknown(send).await,
     }
 }
 

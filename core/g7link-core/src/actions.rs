@@ -15,7 +15,7 @@ use g7link_protocol::{
     },
 };
 
-use crate::{Error, NodeEvent, Result, node::Shared, session::Session};
+use crate::{Error, NodeEvent, Result, dispatch::Responder, node::Shared, session::Session};
 
 /// The device toggle that lets a phone lock, sleep or wake this PC.
 pub(crate) const POWER_TOGGLE: &str = "pc_actions";
@@ -406,7 +406,12 @@ pub(crate) async fn task_notify(
 }
 
 /// Handles `pc.power`, `pc.wake_info`, `link.open`, and `task.notify`. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     let reply = match env.t.as_str() {
         types::PC_WAKE_INFO => {
@@ -418,7 +423,11 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             let info = info.sanitized();
             let stored = (!info.macs.is_empty()).then_some(info);
             let can_wake = stored.is_some();
-            if let Err(e) = shared.store.update_wake_info(&peer, stored.as_ref()) {
+            let saved = crate::session::store_blocking(shared, move |shared| {
+                shared.store.update_wake_info(&peer, stored.as_ref())
+            })
+            .await;
+            if let Err(e) = saved {
                 tracing::warn!(%peer, error = %e, "couldn't store wake info");
             }
             shared.emit(NodeEvent::WakeInfoChanged { device: peer, can_wake });
@@ -436,8 +445,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     Some(action) => {
                         let platform = shared.platform.clone();
                         // Sleeping cuts the connection: answer first.
-                        let reply = Envelope::empty(types::OK).reply_to(env.id);
-                        session.send(reply).await?;
+                        rsp.ok().await?;
                         tokio::spawn(async move {
                             // Give the answer time to leave before sleep cuts the network.
                             if action == PowerAction::Sleep {
@@ -511,13 +519,64 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 }
             };
             if env.id.is_some() {
-                session.send(reply.reply_to(env.id)).await?;
+                rsp.send(reply).await?;
             }
             return Ok(true);
         }
         _ => return Ok(false),
     };
-    session.send(reply.reply_to(env.id)).await?;
+    rsp.send(reply).await?;
+    Ok(true)
+}
+
+/// The wake info a paired PC gave with `mac` among its addresses, if any.
+fn known_wake_info(shared: &Shared, mac: &[u8; 6]) -> Option<PcWakeInfo> {
+    let mac = g7link_protocol::messages::format_mac(mac);
+    shared
+        .store
+        .list_peers()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| p.wake_info)
+        .find(|w| w.macs.iter().any(|m| m.eq_ignore_ascii_case(&mac)))
+}
+
+/// `pc/wake.relay`: sends a magic packet on this network for a paired PC,
+/// by an address that PC gave as its own.
+pub(crate) async fn wake_relay(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
+    let peer = session.peer;
+    let req = env.body::<g7link_protocol::messages::WakeRelay>().ok();
+    let shared_clone = shared.clone();
+    let known = tokio::task::spawn_blocking(move || {
+        // Only for a PC paired with this device, by an address it gave as its own.
+        let info = req.as_ref().and_then(|r| known_wake_info(&shared_clone, &r.mac));
+        let known = info.is_some();
+        if let (Some(req), Some(info)) = (req, info) {
+            // Only to a subnet that PC gave as its own; anything else goes
+            // to this network's broadcast, never to an address a peer picks.
+            let bcast = req
+                .broadcast
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| info.broadcasts.iter().any(|own| own.trim() == *b))
+                .and_then(|b| b.parse().ok());
+            let _ = crate::session::wake::send_magic_packet(req.mac, bcast);
+        }
+        known
+    })
+    .await
+    .unwrap_or(false);
+    if known {
+        rsp.ok().await?;
+    } else {
+        tracing::debug!(peer = %peer.short(), "refusing to wake an address no paired PC gave");
+        rsp.error(ErrorCode::Denied, "not a paired PC's wake address").await?;
+    }
     Ok(true)
 }
 

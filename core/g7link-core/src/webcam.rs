@@ -15,6 +15,7 @@ use iroh::endpoint::{RecvStream, SendStream, VarInt};
 
 use crate::{
     Error, MirrorStream, Result,
+    dispatch::Responder,
     events::NodeEvent,
     node::Shared,
     session::{FIRST_CONFIG_TIMEOUT, Session},
@@ -50,7 +51,7 @@ pub(crate) async fn start(shared: &Shared, session: &Session, options: WebcamSta
         return Err(Error::Protocol("invalid webcam options".into()));
     }
     let env = Envelope::new(types::WEBCAM_START, &options)?;
-    session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect(types::WEBCAM_OK)?;
+    session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect(types::OK)?;
     Ok(())
 }
 
@@ -68,7 +69,7 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
         let _ = send.reset(VarInt::from_u32(webcam::STOPPED));
         let _ = recv.stop(VarInt::from_u32(webcam::STOPPED));
     };
-    let supports = shared.we_offer(webcam::VIRTUAL);
+    let supports = shared.we_offer(webcam::VIEW);
     if !supports || !shared.toggle_on(&peer, TOGGLE) {
         return refuse(send, recv);
     }
@@ -149,7 +150,12 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
 
 // ---- The phone ----
 
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     let platform = shared.platform.clone();
     match env.t.as_str() {
@@ -166,20 +172,20 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()))
                 {
-                    Ok(()) => Envelope::empty(types::WEBCAM_OK),
+                    Ok(()) => Envelope::empty(types::OK),
                     Err(reason) => {
                         tracing::warn!(reason, "can't ask to start the webcam");
                         Envelope::error(ErrorCode::Internal, "the phone couldn't start the webcam")
                     }
                 }
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         types::WEBCAM_STOP => {
             shared.stop_webcam(&peer);
             tokio::task::spawn_blocking(move || platform.webcam_stop_requested(&peer));
             if env.id.is_some() {
-                session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
+                rsp.send(Envelope::empty(types::OK)).await?;
             }
         }
         types::WEBCAM_KEYFRAME => {
@@ -196,6 +202,7 @@ pub(crate) async fn open(shared: &Arc<Shared>, session: &Session) -> Result<Mirr
         return Err(Error::Denied);
     }
     let (mut send, recv) = session.conn.open_bi().await.map_err(crate::error::net)?;
+    let _ = send.set_priority(crate::lane::priority_of(webcam::SERVICE, webcam::OP_VIDEO));
     let header =
         StreamHeader { svc: webcam::SERVICE.into(), op: webcam::OP_VIDEO.into(), v: webcam::VERSION };
     write_frame(&mut send, &Envelope::new(types::STREAM, &header)?.to_cbor()).await?;

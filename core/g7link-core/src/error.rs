@@ -30,6 +30,8 @@ pub enum Error {
     NotFound,
     #[error("too large to send")]
     TooLarge,
+    #[error("the other device has too much in flight")]
+    Busy,
     #[error("{0}")]
     QueueFull(String),
     #[error("no pairing in progress")]
@@ -54,6 +56,8 @@ impl From<ProtocolError> for Error {
     fn from(err: ProtocolError) -> Self {
         match err {
             ProtocolError::Remote { code, msg } => match code {
+                // An RPC's BUSY is `Error::Busy` (`Session::rpc`); elsewhere
+                // (pairing, a stream's refusal) it stays a refusal.
                 ErrorCode::Denied | ErrorCode::Busy => Error::Denied,
                 ErrorCode::Unpaired => Error::NotPaired,
                 ErrorCode::Unsupported => Error::Unsupported,

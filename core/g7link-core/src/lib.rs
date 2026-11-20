@@ -20,6 +20,7 @@ pub mod continuity_camera;
 pub mod deck;
 #[cfg(target_os = "linux")]
 pub mod direct_network;
+mod dispatch;
 pub(crate) mod elevated_usb;
 mod error;
 mod events;
@@ -28,6 +29,7 @@ pub mod handoff;
 mod identity;
 #[cfg(target_os = "linux")]
 mod keyring;
+mod lane;
 pub mod localsend;
 mod media;
 pub mod mic;
@@ -43,8 +45,10 @@ pub mod play_on_phone;
 pub mod relays;
 pub mod remote;
 mod ring;
+mod rpc;
 mod session;
 mod sms;
+mod sound;
 pub mod storage;
 mod store;
 pub mod timeline;
@@ -52,6 +56,7 @@ pub mod toggles;
 mod transfer;
 pub mod usb;
 pub mod webcam;
+mod wire_stats;
 
 pub use actions::{PC_WAKE, PowerAction};
 pub use agents::{
@@ -92,7 +97,7 @@ pub use g7link_protocol::messages::clip::{
     IMAGE_TYPES as CLIP_IMAGE_TYPES, MAX_IMAGE_BYTES as CLIP_MAX_IMAGE_BYTES,
 };
 pub use g7link_protocol::messages::{
-    BleUseReply, BleUseState, RemoteTextState, TextFieldKind, remote as remote_limits,
+    BleUseReply, BleUseState, RemoteTextState, TextFieldKind, input as remote_limits,
 };
 pub use g7link_protocol::messages::{media_actions, media_limits, media_loop, media_shuffle};
 pub use g7link_protocol::{
@@ -151,9 +156,9 @@ pub use g7link_protocol::{
             SHOW as TOGGLES_SHOW, VOLUME as TOGGLES_VOLUME, WIFI as TOGGLES_WIFI,
         },
         webcam::{
-            ADDON_VCAM as WEBCAM_ADDON_VCAM, CAMERA_BACK as WEBCAM_CAMERA_BACK,
+            ADDON as WEBCAM_ADDON_VCAM, CAMERA_BACK as WEBCAM_CAMERA_BACK,
             CAMERA_FRONT as WEBCAM_CAMERA_FRONT, H264 as WEBCAM_H264, H265 as WEBCAM_H265,
-            HEVC as WEBCAM_HEVC, STREAM as WEBCAM_STREAM, VIRTUAL as WEBCAM_VIRTUAL,
+            HEVC as WEBCAM_HEVC, STREAM as WEBCAM_STREAM, VIEW as WEBCAM_VIRTUAL,
         },
     },
     pairing::PairingUri,
@@ -199,6 +204,7 @@ pub use transfer::{
 };
 pub use usb::{DEFAULT_ADB_ADDR, DEFAULT_USB_PORT, USB_PORT_COUNT};
 pub use webcam::{TOGGLE as WEBCAM_TOGGLE, WebcamSink};
+pub use wire_stats::WireCounters;
 
 pub(crate) fn device_id(key: &iroh::PublicKey) -> DeviceId {
     DeviceId(*key.as_bytes())

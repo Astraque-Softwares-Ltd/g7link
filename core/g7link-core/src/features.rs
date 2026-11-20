@@ -975,7 +975,7 @@ pub const FEATURES: &[FeatureDef] = &[
     FeatureDef {
         id: "media.pc_audio",
         group: FeatureGroup::Media,
-        requires: &[desktop("pc.audio", UPDATE), DeviceToggle("pc_actions")],
+        requires: &[desktop("deck.audio", UPDATE), DeviceToggle("pc_actions")],
         partial: None,
     },
     // Camera
@@ -983,9 +983,9 @@ pub const FEATURES: &[FeatureDef] = &[
         id: "camera.webcam",
         group: FeatureGroup::Camera,
         requires: &[
-            phone("camera.stream", Unlock::Permission(Permission::Camera)),
-            desktop("camera.virtual", UPDATE),
-            desktop("addon.vcam", Unlock::Addon("vcam")),
+            phone("webcam.stream", Unlock::Permission(Permission::Camera)),
+            desktop("webcam.view", UPDATE),
+            desktop("webcam.addon", Unlock::Addon("vcam")),
             DeviceToggle("webcam"),
         ],
         partial: None,
@@ -1074,7 +1074,7 @@ mod tests {
         "mirror.audio.playback",
         "media.control",
         "media.remote",
-        "camera.stream",
+        "webcam.stream",
         "camera.capture",
         "toggles.read",
         "toggles.ringer",
@@ -1085,7 +1085,7 @@ mod tests {
     ];
     const PC: &[&str] = &[
         "pc.power",
-        "pc.audio",
+        "deck.audio",
         "files.transfer",
         "files.browse",
         "recorder",
@@ -1096,7 +1096,7 @@ mod tests {
         "deck.actions",
         "mirror.view",
         "mirror.listen",
-        "camera.virtual",
+        "webcam.view",
         "camera.continuity",
     ];
 
@@ -1264,7 +1264,7 @@ mod tests {
     #[test]
     fn the_easiest_upgrade_is_offered_first() {
         // Webcam needs the camera permission (instant) and the add-on (~1 min).
-        let caps: Vec<&str> = BASIC_PHONE.iter().copied().filter(|c| *c != "camera.stream").collect();
+        let caps: Vec<&str> = BASIC_PHONE.iter().copied().filter(|c| *c != "webcam.stream").collect();
         let m = matrix(&facts(DeviceKind::Phone, "android", "16", PowerLevel::Basic, &caps));
         assert_eq!(
             m.state("camera.webcam"),

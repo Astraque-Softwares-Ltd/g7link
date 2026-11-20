@@ -18,6 +18,7 @@ pub use g7link_protocol::messages::{
 
 use crate::{
     Error, NodeEvent, Result,
+    dispatch::Responder,
     node::Shared,
     session::Session,
     transfer::{FileSource, OutgoingFile},
@@ -97,6 +98,7 @@ impl PcCaptureError {
         match err {
             Error::NotPaired | Error::Offline | Error::Network(_) => PcCaptureError::Offline,
             Error::Unsupported => PcCaptureError::Unsupported,
+            Error::Busy => PcCaptureError::Busy,
             other => PcCaptureError::Failed(other.to_string()),
         }
     }
@@ -131,12 +133,46 @@ async fn ask(shared: &Shared, peer: DeviceId, t: &str, wait: Duration) -> Result
     if !shared.offers(&peer, CAP).unwrap_or(false) {
         return Err(PcCaptureError::Unsupported);
     }
+    let _waiting = Waiting::new(shared, peer);
     session.request(Envelope::empty(t), wait).await.map_err(PcCaptureError::from_core)
+}
+
+/// A capture request this phone waits on, counted while it does. The PC's
+/// prompt travels on its `pc` lane and the answer on the request's own
+/// stream, so a prompt can come after the answer: one that finds nothing
+/// waiting is dropped.
+struct Waiting<'a> {
+    shared: &'a Shared,
+    peer: DeviceId,
+}
+
+impl<'a> Waiting<'a> {
+    fn new(shared: &'a Shared, peer: DeviceId) -> Self {
+        *shared.capture_waiting.lock().unwrap_or_else(|e| e.into_inner()).entry(peer).or_default() += 1;
+        Waiting { shared, peer }
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        let mut waiting = self.shared.capture_waiting.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = waiting.get_mut(&self.peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                waiting.remove(&self.peer);
+            }
+        }
+    }
+}
+
+/// Whether this phone waits on a capture request to `peer`.
+fn waits_on(shared: &Shared, peer: &DeviceId) -> bool {
+    shared.capture_waiting.lock().unwrap_or_else(|e| e.into_inner()).contains_key(peer)
 }
 
 /// The file in an answer, or why there is none.
 fn file_in(reply: &Envelope) -> Result<PcCaptureResult, PcCaptureError> {
-    match reply.expect_body::<PcCaptureResult>(types::PC_CAPTURE_RESULT) {
+    match reply.expect_body::<PcCaptureResult>(types::OK) {
         Ok(file) if file.is_valid() => Ok(file),
         Ok(_) => Err(PcCaptureError::Failed("invalid file in the answer".into())),
         Err(ProtocolError::Remote { code, msg }) => Err(PcCaptureError::from_remote(code, &msg)),
@@ -169,7 +205,12 @@ pub(crate) async fn record_stop(shared: &Shared, peer: DeviceId) -> Result<PcCap
 // ---- PC ----
 
 /// Handles `pc.capture.*` messages. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
         types::PC_CAPTURE_SHOT | types::PC_CAPTURE_RECORD_START | types::PC_CAPTURE_RECORD_STOP => {
@@ -177,13 +218,15 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 tracing::info!(peer = %peer.short(), t = %env.t, error = %e, "no capture");
                 e.envelope()
             });
-            if env.id.is_some() {
-                session.send(reply.reply_to(env.id)).await?;
-            }
+            rsp.send(reply).await?;
             Ok(true)
         }
         types::PC_CAPTURE_PROMPT => {
-            shared.emit(NodeEvent::PcCapturePrompt { device: peer });
+            if waits_on(shared, &peer) {
+                shared.emit(NodeEvent::PcCapturePrompt { device: peer });
+            } else {
+                tracing::debug!(peer = %peer.short(), "dropped a capture prompt that came after its answer");
+            }
             Ok(true)
         }
         types::PC_CAPTURE_RECORD_ENDED => {
@@ -227,7 +270,7 @@ async fn answer(shared: &Arc<Shared>, session: &Arc<Session>, t: &str) -> Result
 }
 
 fn result_envelope(file: &PcCaptureResult) -> Result<Envelope, PcCaptureError> {
-    Envelope::new(types::PC_CAPTURE_RESULT, file).map_err(|e| PcCaptureError::Failed(e.to_string()))
+    Envelope::new(types::OK, file).map_err(|e| PcCaptureError::Failed(e.to_string()))
 }
 
 fn prompt_for(session: &Arc<Session>) -> CapturePrompt {

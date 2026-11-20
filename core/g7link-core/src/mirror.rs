@@ -32,7 +32,7 @@ use g7link_protocol::{
 use iroh::endpoint::{RecvStream, SendStream, VarInt};
 use tokio::sync::mpsc;
 
-use crate::{Error, Result, events::NodeEvent, node::Shared, session::Session};
+use crate::{Error, Result, dispatch::Responder, events::NodeEvent, node::Shared, session::Session};
 
 /// The device toggle that allows phone-to-PC mirroring for a device.
 pub(crate) const TOGGLE: &str = "mirroring";
@@ -67,9 +67,6 @@ const STALE_AFTER: Duration = Duration::from_millis(500);
 /// How long a measured round trip stays in use: long enough to span a busy
 /// spell, short enough to notice a move from Wi-Fi to a relay.
 const TRIP_MEMORY: Duration = Duration::from_secs(10);
-/// Icons in a `mirror.apps` answer, at most, in bytes: the rest go without
-/// (the answer stays well inside a frame).
-const ICONS_BUDGET: usize = 768 * 1024;
 
 /// What the PC's app gets of a mirroring stream. Called from the core's
 /// threads; must return quickly (hand the work to a thread of its own).
@@ -224,8 +221,7 @@ pub(crate) async fn apps(shared: &Shared, session: &Session) -> Result<Vec<Phone
         return Err(Error::Denied);
     }
     let env = Envelope::empty(types::MIRROR_APPS);
-    let PhoneApps { mut apps } =
-        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::MIRROR_APPS)?;
+    let PhoneApps { mut apps } = session.request_paged(env, crate::session::REQUEST_TIMEOUT).await?;
     apps.retain(|a| g7link_protocol::messages::is_package_name(&a.pkg));
     apps.truncate(mirror::MAX_APPS);
     for app in &mut apps {
@@ -408,7 +404,12 @@ pub(crate) async fn receive_audio(
 // ---- The phone ----
 
 /// Handles `mirror.*` on a session. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     let platform = shared.platform.clone();
     match env.t.as_str() {
@@ -470,7 +471,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     }
                 }
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         types::MIRROR_STOP => {
             let MirrorSession { session: mirroring } = env.body()?;
@@ -485,7 +486,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             }
             shared.emit(NodeEvent::Mirroring { device: peer, session: mirroring, on: false });
             tokio::task::spawn_blocking(move || platform.mirror_stop_requested(&peer, mirroring));
-            session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
+            rsp.send(Envelope::empty(types::OK)).await?;
         }
         types::MIRROR_NOTICE => {
             let notice: MirrorNotice = env.body()?;
@@ -554,40 +555,37 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             }
         }
         types::MIRROR_APPS => {
-            let reply = if !shared.toggle_on(&peer, TOGGLE) {
-                Envelope::error(ErrorCode::Denied, "mirroring is off for this device")
+            if !shared.toggle_on(&peer, TOGGLE) {
+                rsp.error(ErrorCode::Denied, "mirroring is off for this device").await?;
             } else if !shared.we_offer(mirror::VIRTUAL_DISPLAY) {
-                Envelope::error(ErrorCode::Unsupported, "this device doesn't open apps in windows")
+                rsp.error(ErrorCode::Unsupported, "this device doesn't open apps in windows").await?;
             } else {
                 match tokio::task::spawn_blocking(move || platform.phone_apps())
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()))
                 {
-                    Ok(apps) => Envelope::new(types::MIRROR_APPS, &PhoneApps { apps: fit_apps(apps) })?,
+                    Ok(apps) => rsp.paged(PhoneApps { apps: fit_apps(apps) }).await?,
                     Err(reason) => {
                         tracing::warn!(reason, "can't list the apps");
-                        Envelope::error(ErrorCode::Internal, "the phone couldn't list its apps")
+                        rsp.error(ErrorCode::Internal, "the phone couldn't list its apps").await?;
                     }
                 }
-            };
-            session.send(reply.reply_to(env.id)).await?;
+            }
         }
         _ => return Ok(false),
     }
     Ok(true)
 }
 
-/// Apps within the limits: at most [`mirror::MAX_APPS`], icons small and
-/// within [`ICONS_BUDGET`] all together.
+/// Apps within the limits: at most [`mirror::MAX_APPS`], each icon small.
+/// A long list goes in parts.
 fn fit_apps(mut apps: Vec<PhoneApp>) -> Vec<PhoneApp> {
     apps.retain(|a| g7link_protocol::messages::is_package_name(&a.pkg));
     apps.truncate(mirror::MAX_APPS);
-    let mut budget = ICONS_BUDGET;
     for app in &mut apps {
         app.label = app.label.chars().take(100).collect();
-        match app.icon.as_ref().map(Vec::len) {
-            Some(len) if len <= mirror::MAX_ICON_BYTES && len <= budget => budget -= len,
-            _ => app.icon = None,
+        if app.icon.as_ref().is_some_and(|icon| icon.len() > mirror::MAX_ICON_BYTES) {
+            app.icon = None;
         }
     }
     apps
@@ -847,13 +845,12 @@ fn drop_stale(waiting: &mut Vec<(PacketKind, u64, Vec<u8>)>) -> bool {
 /// Whether this device reports video packets as they arrive. Anything else
 /// mustn't be sent reports: it would take them for the end of the stream.
 fn peer_reports(shared: &Shared, peer: &DeviceId) -> bool {
-    shared.store.get_peer(peer).ok().flatten().is_some_and(|record| record.caps.contains(mirror::PACE))
+    shared.peer_offers_cap(peer, mirror::PACE)
 }
 
 /// Send priorities: sound before video, as a gap in it is the more
-/// noticeable; both after the control stream (`session::CONTROL_PRIORITY`).
-pub(crate) const VIDEO_PRIORITY: i32 = 1;
-pub(crate) const AUDIO_PRIORITY: i32 = 2;
+/// noticeable; both after control, the lanes and RPCs ([`crate::lane::priority_of`]).
+pub(crate) use crate::lane::{AUDIO_PRIORITY, VIDEO_PRIORITY};
 
 impl MirrorStream {
     pub(crate) fn spawn_stream(

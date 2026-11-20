@@ -2981,6 +2981,38 @@ fn cleanup_peers(
 
 #[cfg(test)]
 mod tests {
+    /// 0.1.18 opens what 0.1.17 kept as it was: the schema doesn't move, and
+    /// capabilities stored under old names stay until the peer's next `hello`.
+    #[test]
+    fn a_store_from_0_1_17_opens_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let peer = DeviceId([5; 32]);
+        let secret = [9u8; LINK_SECRET_LEN];
+        let version = {
+            let store = Store::open(dir.path()).unwrap();
+            store.upsert_peer(&peer, &info("Pixel"), 1_700_000_000).unwrap();
+            let old_caps: BTreeSet<String> = ["camera.stream", "pc.audio", "ble.remote", "agent.items2"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+            store.update_capabilities(&peer, Some(&old_caps), None).unwrap();
+            store.set_toggle(&peer, "remote_input", true).unwrap();
+            store.set_toggle(&peer, "mirroring", false).unwrap();
+            assert!(store.set_link_secret(&peer, &secret).unwrap());
+            store.with(|c| c.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))).unwrap()
+        };
+        let store = Store::open(dir.path()).unwrap();
+        let reopened: i64 = store.with(|c| c.pragma_query_value(None, "user_version", |r| r.get(0))).unwrap();
+        assert_eq!(reopened, version, "the schema is unchanged");
+        assert_eq!(reopened as usize, MIGRATIONS.len());
+        let record = store.get_peer(&peer).unwrap().expect("the peer is still paired");
+        assert_eq!(record.info.name, "Pixel");
+        assert!(record.caps.contains("camera.stream"), "old names stay until the next hello");
+        assert_eq!(store.toggle(&peer, "remote_input").unwrap(), Some(true));
+        assert_eq!(store.toggle(&peer, "mirroring").unwrap(), Some(false));
+        assert_eq!(store.link_secret(&peer).unwrap(), Some(secret));
+    }
+
     use super::*;
     use g7link_protocol::messages::{ScreenCorners, ScreenRect};
 

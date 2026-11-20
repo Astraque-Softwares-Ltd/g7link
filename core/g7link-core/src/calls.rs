@@ -16,7 +16,7 @@ use g7link_protocol::{
     },
 };
 
-use crate::{Error, Result, events::NodeEvent, node::Shared, session::Session};
+use crate::{Error, Result, dispatch::Responder, events::NodeEvent, node::Shared, session::Session};
 
 /// The device toggle that allows calls for a device.
 pub(crate) const TOGGLE: &str = "calls";
@@ -205,8 +205,7 @@ pub(crate) async fn log(
     }
     let limit = limit.clamp(1, calls::MAX_LOG_PAGE);
     let env = Envelope::new(types::CALL_LOG, &CallLogGet { before, limit })?;
-    let CallLog { mut entries } =
-        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::CALL_LOG)?;
+    let CallLog { mut entries } = session.request_paged(env, crate::session::REQUEST_TIMEOUT).await?;
     entries.truncate(limit as usize);
     for e in &mut entries {
         if e.photo.as_ref().is_some_and(|p| p.len() > calls::MAX_LOG_PHOTO_BYTES) {
@@ -243,7 +242,7 @@ pub(crate) async fn dial(
 /// Whether the device on `session` said it offers `cap` (in its last hello
 /// or capability update).
 fn peer_offers(shared: &Shared, session: &Session, cap: &str) -> bool {
-    shared.store.get_peer(&session.peer).ok().flatten().is_some_and(|record| record.caps.contains(cap))
+    shared.peer_offers_cap(&session.peer, cap)
 }
 
 /// The phone's SIMs, to pick one for [`dial`]; none from a phone that
@@ -257,7 +256,7 @@ pub(crate) async fn sims(shared: &Shared, session: &Session) -> Result<CallSims>
     }
     let env = Envelope::new(types::CALL_SIMS, &CallSims::default())?;
     let sims: CallSims =
-        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::CALL_SIMS)?;
+        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::OK)?;
     if !sims.is_valid() {
         return Err(Error::Protocol("invalid SIM list".into()));
     }
@@ -265,7 +264,12 @@ pub(crate) async fn sims(shared: &Shared, session: &Session) -> Result<CallSims>
 }
 
 /// Handles `call.*`. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
         types::CALL_STATE => {
@@ -314,34 +318,45 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     _ => Envelope::error(ErrorCode::NotFound, "no such call"),
                 }
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
             Ok(true)
         }
         types::CALL_LOG | types::CALL_DIAL | types::CALL_SIMS => {
-            // Reading the call log or starting a call takes a moment: these run as background
-            // requests (`session::is_background_rpc`), which keep their slot until answered,
-            // while `call.state` and `call.action` stay in order on the stream.
-            let reply = answer_log_or_dial(shared, session, env).await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "bad call request");
-                Envelope::error(ErrorCode::BadMessage, "invalid request")
-            });
-            let _ = session.send(reply.reply_to(env.id)).await;
+            // RPCs, each on a stream of its own: reading the call log or starting a
+            // call takes a moment, and `call.state` and `call.action` keep their lane.
+            match answer_log_or_dial(shared, session, env).await {
+                Ok(Answer::Log(log)) => rsp.paged(log).await?,
+                Ok(Answer::Plain(reply)) => rsp.send(reply).await?,
+                Err(e) => {
+                    tracing::debug!(error = %e, "bad call request");
+                    rsp.error(ErrorCode::BadMessage, "invalid request").await?;
+                }
+            }
             Ok(true)
         }
         _ => Ok(false),
     }
 }
 
-async fn answer_log_or_dial(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Result<Envelope> {
+/// The phone's answer to a call log, SIMs or dial request.
+enum Answer {
+    Log(CallLog),
+    Plain(Envelope),
+}
+
+async fn answer_log_or_dial(shared: &Arc<Shared>, session: &Session, env: &Envelope) -> Result<Answer> {
     if !shared.toggle_on(&session.peer, TOGGLE) {
-        return Ok(Envelope::error(ErrorCode::Denied, "calls are off for this device"));
+        return Ok(Answer::Plain(Envelope::error(ErrorCode::Denied, "calls are off for this device")));
     }
     let offers = |cap: &str| shared.we_offer(cap);
     let platform = shared.platform.clone();
     let result = match env.t.as_str() {
         types::CALL_SIMS => {
             if !offers(calls::SIMS) {
-                return Ok(Envelope::error(ErrorCode::Unsupported, "this phone doesn't list its SIMs"));
+                return Ok(Answer::Plain(Envelope::error(
+                    ErrorCode::Unsupported,
+                    "this phone doesn't list its SIMs",
+                )));
             }
             tokio::task::spawn_blocking(move || {
                 let mut sims = platform.call_sims()?;
@@ -349,14 +364,17 @@ async fn answer_log_or_dial(shared: &Arc<Shared>, session: &Session, env: &Envel
                 if !sims.is_valid() {
                     return Err("the phone's SIM list didn't check out".to_owned());
                 }
-                Envelope::new(types::CALL_SIMS, &sims).map_err(|e| e.to_string())
+                Envelope::new(types::OK, &sims).map(Answer::Plain).map_err(|e| e.to_string())
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
         }
         types::CALL_LOG => {
             if !offers(calls::LOG) {
-                return Ok(Envelope::error(ErrorCode::Unsupported, "this phone doesn't share recent calls"));
+                return Ok(Answer::Plain(Envelope::error(
+                    ErrorCode::Unsupported,
+                    "this phone doesn't share recent calls",
+                )));
             }
             let CallLogGet { before, limit } = env.body()?;
             let limit = limit.clamp(1, calls::MAX_LOG_PAGE);
@@ -367,18 +385,21 @@ async fn answer_log_or_dial(shared: &Arc<Shared>, session: &Session, env: &Envel
                         e.photo = None;
                     }
                 }
-                crate::sms::fit(entries, |entries| Envelope::new(types::CALL_LOG, &CallLog { entries }))
+                Ok(Answer::Log(CallLog { entries }))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
         }
         _ => {
             if !offers(calls::DIAL) {
-                return Ok(Envelope::error(ErrorCode::Unsupported, "this phone doesn't place calls"));
+                return Ok(Answer::Plain(Envelope::error(
+                    ErrorCode::Unsupported,
+                    "this phone doesn't place calls",
+                )));
             }
             let dial: CallDial = env.body()?;
             if !dial.is_valid() {
-                return Ok(Envelope::error(ErrorCode::BadMessage, "invalid number"));
+                return Ok(Answer::Plain(Envelope::error(ErrorCode::BadMessage, "invalid number")));
             }
             let number = dial.number.trim().to_owned();
             let sim = dial.sim.filter(|_| offers(calls::SIMS));
@@ -387,7 +408,7 @@ async fn answer_log_or_dial(shared: &Arc<Shared>, session: &Session, env: &Envel
                     Some(sim) => platform.call_dial_on(&number, sim),
                     None => platform.call_dial(&number),
                 }
-                .map(|()| Envelope::empty(types::OK))
+                .map(|()| Answer::Plain(Envelope::empty(types::OK)))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
@@ -395,7 +416,7 @@ async fn answer_log_or_dial(shared: &Arc<Shared>, session: &Session, env: &Envel
     };
     Ok(result.unwrap_or_else(|reason| {
         tracing::warn!(reason, t = env.t, "a call request failed");
-        Envelope::error(ErrorCode::Internal, "the phone couldn't do it")
+        Answer::Plain(Envelope::error(ErrorCode::Internal, "the phone couldn't do it"))
     }))
 }
 

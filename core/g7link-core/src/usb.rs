@@ -9,7 +9,7 @@
 //! 2. The PC's ADB watcher forwards a local ephemeral TCP port to each of those
 //!    phone ports (`adb forward tcp:0 tcp:53319`, ...) and opens a TCP
 //!    connection to each one that answers.
-//! 3. Both sides exchange a [`UsbHello`] header (`NLQU` magic + length-prefixed
+//! 3. Both sides exchange a [`UsbHello`] header (`G7QU` magic + length-prefixed
 //!    JSON) to learn each other's [`DeviceId`] and display name before any QUIC
 //!    packets flow.
 //! 4. Each side binds a loopback UDP socket (`127.0.0.1:0`) and bridges UDP
@@ -52,7 +52,7 @@ pub const USB_PORT_COUNT: u16 = 4;
 
 pub use g7link_adb::DEFAULT_ADB_ADDR;
 
-const MAGIC: &[u8; 4] = b"NLQU";
+const MAGIC: &[u8; 4] = b"G7QU";
 const MAX_HELLO_BYTES: usize = 4096;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 const ADB_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -211,7 +211,7 @@ pub(crate) fn start_phone_listener(shared: &Arc<Shared>, preferred_port: u16) ->
 }
 
 /// Connects to a forwarded phone USB tunnel TCP address (`127.0.0.1:<port>`),
-/// runs the `NLQU` handshake, spawns the UDP-over-TCP bridge, and triggers
+/// runs the `G7QU` handshake, spawns the UDP-over-TCP bridge, and triggers
 /// session connection (if paired) or USB auto-pairing (if unpaired).
 pub(crate) async fn connect_usb_tunnel(shared: &Arc<Shared>, forwarded_tcp: SocketAddr) -> Result<DeviceId> {
     let mut stream = tokio::time::timeout(HELLO_TIMEOUT, TcpStream::connect(forwarded_tcp))
@@ -583,6 +583,44 @@ async fn relay_until_silent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hello read off a loopback TCP stream that `bytes` were written to.
+    async fn read_written(bytes: Vec<u8>) -> Result<(DeviceId, String)> {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let writer = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream.write_all(&bytes).await.unwrap();
+            stream
+        });
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let read = read_hello(&mut stream).await;
+        drop(writer.await);
+        read
+    }
+
+    fn hello_bytes(magic: &[u8; 4], id: &DeviceId) -> Vec<u8> {
+        let payload =
+            serde_json::to_vec(&UsbHello { v: 1, id: id.to_string(), name: "Pixel".into() }).unwrap();
+        let mut bytes = magic.to_vec();
+        bytes.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&payload);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn a_g7qu_hello_is_read() {
+        let id = DeviceId([3; 32]);
+        let (peer, name) = read_written(hello_bytes(b"G7QU", &id)).await.unwrap();
+        assert_eq!((peer, name.as_str()), (id, "Pixel"));
+    }
+
+    #[tokio::test]
+    async fn an_nlqu_hello_is_refused() {
+        let id = DeviceId([3; 32]);
+        let refused = read_written(hello_bytes(b"NLQU", &id)).await;
+        assert!(matches!(refused, Err(Error::Protocol(_))), "{refused:?}");
+    }
 
     /// Tests that bind real ports run one at a time, or one's probing takes another's port.
     static PORTS: Mutex<()> = Mutex::new(());

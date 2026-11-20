@@ -15,7 +15,7 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, NodeEvent, Result, error::net, node::Shared, session::Session};
+use crate::{Error, NodeEvent, Result, dispatch::Responder, error::net, node::Shared, session::Session};
 
 /// Per-device toggle that gates Continuity Camera along with photo sharing.
 pub const TOGGLE: &str = "photos";
@@ -74,8 +74,16 @@ pub(crate) async fn request_on_session(
         types::CAMERA_CAPTURE_REQUEST,
         &CameraCaptureRequest { request_id: request_id.clone(), mode },
     )?;
-    session.send(env).await?;
-    asked().push((session.peer, request_id, std::time::Instant::now()));
+    // Noted first: the phone's result or cancel may come before its answer.
+    asked().push((session.peer, request_id.clone(), std::time::Instant::now()));
+    let answered = session
+        .request(env, crate::session::REQUEST_TIMEOUT)
+        .await
+        .and_then(|reply| Ok(reply.expect_body::<CameraCaptureOk>(types::OK)?));
+    if let Err(e) = answered {
+        take_asked(&session.peer, &request_id);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -132,13 +140,21 @@ pub(crate) async fn cancel(
 }
 
 /// Handles `camera.capture.*` messages on the control stream.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     match env.t.as_str() {
+        // Answered `ok` once the request is taken; whether a picture comes
+        // is told by `camera.capture.cancel` or the result stream.
         types::CAMERA_CAPTURE_REQUEST => {
             let req: CameraCaptureRequest = env.body()?;
             if !valid_request_id(&req.request_id) {
                 return Err(Error::Protocol("invalid continuity camera request_id".into()));
             }
+            let taken = Envelope::new(types::OK, &CameraCaptureOk { request_id: req.request_id.clone() })?;
             if !shared.toggle_on(&session.peer, TOGGLE) {
                 let cancel = Envelope::new(
                     types::CAMERA_CAPTURE_CANCEL,
@@ -148,15 +164,11 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     },
                 )?;
                 let _ = session.send(cancel).await;
+                rsp.send(taken).await?;
                 return Ok(true);
             }
             match shared.platform.camera_capture_requested(&session.peer, &req) {
                 Ok(()) => {
-                    let ok = Envelope::new(
-                        types::CAMERA_CAPTURE_OK,
-                        &CameraCaptureOk { request_id: req.request_id.clone() },
-                    )?;
-                    let _ = session.send(ok).await;
                     shared.emit(NodeEvent::CameraCaptureRequested {
                         device: session.peer,
                         request_id: req.request_id,
@@ -171,13 +183,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     let _ = session.send(cancel).await;
                 }
             }
-            Ok(true)
-        }
-        types::CAMERA_CAPTURE_OK => {
-            let ok: CameraCaptureOk = env.body()?;
-            if !valid_request_id(&ok.request_id) {
-                return Err(Error::Protocol("invalid continuity camera request_id".into()));
-            }
+            rsp.send(taken).await?;
             Ok(true)
         }
         types::CAMERA_CAPTURE_CANCEL => {

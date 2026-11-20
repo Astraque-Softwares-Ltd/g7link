@@ -2,7 +2,7 @@
 //! Phone as touchpad, keyboard and presentation remote (`docs/protocol/remote.md`).
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -15,13 +15,16 @@ use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
     messages::{
         RemoteAppIcon, RemoteAppIconData, RemoteTextFocus, RemoteTextState, RemoteTextWatch, StreamHeader,
-        is_icon_key, remote, types,
+        input as remote, is_icon_key, types,
     },
     read_frame, write_frame,
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, NodeEvent, Result, ble_link::RemotePath, node::Shared, session::Session};
+use crate::{
+    Error, NodeEvent, Result, ble_link::RemotePath, dispatch::Responder, node::Shared, session::Session,
+    wire_stats::Counters,
+};
 
 /// Capability ID announced by a desktop that can inject mouse, keyboard and
 /// presentation input (`docs/protocol/remote.md` §1).
@@ -52,9 +55,15 @@ const RATE_LIMITED: &str = "rate limit exceeded";
 const RATE_LIMIT_RETRY_FOR: Duration = Duration::from_secs(3);
 const RATE_LIMIT_RETRY_AFTER: Duration = Duration::from_millis(25);
 
-/// Maximum rate of incoming datagrams (`move`, `scroll`, `laser`) per peer.
-const DATAGRAM_RATE_PER_SEC: f64 = 240.0;
-const DATAGRAM_BURST: f64 = 60.0;
+/// Maximum rate of pointer motion (`move`, `scroll`, `laser`) run per peer,
+/// after motion waiting together is added up.
+const DATAGRAM_RATE_PER_SEC: f64 = 480.0;
+const DATAGRAM_BURST: f64 = 120.0;
+/// Motion waiting for the motion worker, at most; past that, new motion is
+/// added into what waits, never dropped.
+const MOTION_QUEUE: usize = 64;
+/// How often an idle motion worker looks whether its session is gone.
+const ABANDONED_CHECK: Duration = Duration::from_millis(500);
 
 /// Maximum rate of incoming control-stream `remote.input` requests per peer.
 /// Typing sends one request per key: when voice typing rewrites a sentence,
@@ -185,7 +194,7 @@ pub(crate) fn watch_via(shared: &Shared, peer: &DeviceId) -> Option<RemotePath> 
 }
 
 fn peer_offers(shared: &Shared, peer: &DeviceId, cap: &str) -> Result<bool> {
-    Ok(shared.store.get_peer(peer)?.is_some_and(|p| p.caps.contains(cap)))
+    Ok(shared.peer_offers_cap(peer, cap))
 }
 
 fn check_allowed_with(
@@ -232,7 +241,7 @@ pub(crate) async fn check(shared: &Arc<Shared>, session: &Arc<Session>) -> Resul
     {
         return Err(Error::Unsupported);
     }
-    session.request(Envelope::empty(types::REMOTE_CHECK), TIMEOUT).await?.expect(types::OK)?;
+    session.request(Envelope::empty(types::INPUT_CHECK), TIMEOUT).await?.expect(types::OK)?;
     Ok(())
 }
 
@@ -242,7 +251,7 @@ pub(crate) async fn text_focus(shared: &Shared, session: &Session, editable: boo
     if !shared.toggle_on(&session.peer, TOGGLE) {
         return Ok(());
     }
-    session.send(Envelope::new(types::REMOTE_TEXT_FOCUS, &RemoteTextFocus { editable })?).await
+    session.send(Envelope::new(types::INPUT_TEXT_FOCUS, &RemoteTextFocus { editable })?).await
 }
 
 /// Sends a phone the field that has the focus on this PC
@@ -254,7 +263,7 @@ pub(crate) async fn text_state(shared: &Shared, session: &Session, state: &Remot
     if !state.is_valid() {
         return Err(Error::Protocol("invalid text state".into()));
     }
-    session.send(Envelope::new(types::REMOTE_TEXT_STATE, state)?).await
+    session.send(Envelope::new(types::INPUT_TEXT_STATE, state)?).await
 }
 
 /// Phone: tells the PC `peer` that its typing box opened (`on`) or closed
@@ -263,7 +272,7 @@ pub(crate) async fn text_watch(shared: &Shared, session: &Session, on: bool) -> 
     if !peer_offers(shared, &session.peer, INPUT_TEXT_MIRROR)? {
         return Err(Error::Unsupported);
     }
-    session.send(Envelope::new(types::REMOTE_TEXT_WATCH, &RemoteTextWatch { on })?).await
+    session.send(Envelope::new(types::INPUT_TEXT_WATCH, &RemoteTextWatch { on })?).await
 }
 
 /// Phone: whether the PC `peer` mirrors its text fields and takes `Edit`.
@@ -290,8 +299,8 @@ pub(crate) async fn app_icon(shared: &Shared, session: &Session, key: String) ->
         return Err(Error::Protocol("invalid app icon key".into()));
     }
     let reply =
-        session.request(Envelope::new(types::REMOTE_APP_ICON, &RemoteAppIcon { key })?, TIMEOUT).await?;
-    let icon: RemoteAppIconData = reply.expect_body(types::REMOTE_APP_ICON)?;
+        session.request(Envelope::new(types::INPUT_APP_ICON, &RemoteAppIcon { key })?, TIMEOUT).await?;
+    let icon: RemoteAppIconData = reply.expect_body(types::OK)?;
     if !icon.is_valid() {
         return Err(Error::Protocol("invalid app icon".into()));
     }
@@ -311,7 +320,7 @@ fn serve_app_icon(shared: &Shared, peer: &DeviceId, env: &Envelope) -> Envelope 
     };
     let png = shared.remote.lock().unwrap_or_else(|e| e.into_inner()).icon(&key);
     match png {
-        Some(png) => Envelope::new(types::REMOTE_APP_ICON, &RemoteAppIconData { png: png.to_vec() })
+        Some(png) => Envelope::new(types::OK, &RemoteAppIconData { png: png.to_vec() })
             .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "app icon")),
         None => Envelope::error(ErrorCode::NotFound, "no such app icon"),
     }
@@ -335,7 +344,7 @@ pub(crate) async fn input(shared: &Arc<Shared>, session: &Arc<Session>, event: R
     }
     let give_up = Instant::now() + RATE_LIMIT_RETRY_FOR;
     loop {
-        let env = Envelope::new(types::REMOTE_INPUT, &event)?;
+        let env = Envelope::new(types::INPUT_EVENT, &event)?;
         let reply = session.request(env, TIMEOUT).await?;
         match reply.expect(types::OK) {
             Err(g7link_protocol::ProtocolError::Remote { code: ErrorCode::Denied, msg })
@@ -415,7 +424,7 @@ async fn send_datagram(shared: &Arc<Shared>, session: &Arc<Session>, event: &Rem
         StreamHeader { svc: remote::SERVICE.into(), op: remote::OP_MOTION.into(), v: remote::VERSION };
     let header = Envelope::new(types::STREAM, &header)?;
     write_frame(&mut send, &header.to_cbor()).await?;
-    let frame = Envelope::new(types::REMOTE_INPUT, event)?;
+    let frame = Envelope::new(types::INPUT_EVENT, event)?;
     write_frame(&mut send, &frame.to_cbor()).await?;
     let _ = send.finish();
     Ok(())
@@ -431,7 +440,7 @@ pub(crate) fn incoming_one_way(
 ) -> Result<bool> {
     match env.t.as_str() {
         // A PC's text focus: heard only where input isn't injected.
-        types::REMOTE_TEXT_FOCUS => {
+        types::INPUT_TEXT_FOCUS => {
             if !shared.we_offer(INPUT_INJECT) {
                 let RemoteTextFocus { editable } = env.body()?;
                 shared.emit(NodeEvent::PcTextFocus { device: peer, editable });
@@ -439,7 +448,7 @@ pub(crate) fn incoming_one_way(
         }
         // The PC's focused field: heard only where input isn't injected, and
         // dropped when it isn't newer than one already given.
-        types::REMOTE_TEXT_STATE => {
+        types::INPUT_TEXT_STATE => {
             if !shared.we_offer(INPUT_INJECT) {
                 let state: RemoteTextState = env.body()?;
                 let fresh = state.is_valid()
@@ -455,7 +464,7 @@ pub(crate) fn incoming_one_way(
         }
         // A phone's typing box opened or closed: only phones that may
         // control this PC are heard. Its states go on the path this came on.
-        types::REMOTE_TEXT_WATCH => {
+        types::INPUT_TEXT_WATCH => {
             if shared.we_offer(INPUT_TEXT_MIRROR) {
                 let RemoteTextWatch { on } = env.body()?;
                 if !on {
@@ -473,20 +482,25 @@ pub(crate) fn incoming_one_way(
 }
 
 /// Handles incoming `remote.*` requests on the control stream.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     if incoming_one_way(shared, session.peer, env, RemotePath::Session)? {
         return Ok(true);
     }
     let reply = match env.t.as_str() {
-        types::REMOTE_CHECK => run_check(shared, &session.peer),
-        types::REMOTE_APP_ICON => serve_app_icon(shared, &session.peer, env),
-        types::REMOTE_INPUT => match env.body::<RemoteInput>() {
+        types::INPUT_CHECK => run_check(shared, &session.peer),
+        types::INPUT_APP_ICON => serve_app_icon(shared, &session.peer, env),
+        types::INPUT_EVENT => match env.body::<RemoteInput>() {
             Ok(event) => run_control(shared, session.peer, event).await,
             Err(_) => Envelope::error(ErrorCode::BadMessage, "invalid remote input"),
         },
         _ => return Ok(false),
     };
-    session.send(reply.reply_to(env.id)).await?;
+    rsp.send(reply).await?;
     Ok(true)
 }
 
@@ -496,7 +510,7 @@ pub(crate) async fn run_control(shared: &Arc<Shared>, peer: DeviceId, event: Rem
     if let Err((code, msg)) = check_allowed(shared, &peer) {
         return Envelope::error(code, msg);
     }
-    if !event.is_control_allowed() || !event.is_valid() {
+    if !event.is_lane_allowed() || !event.is_valid() {
         return Envelope::error(ErrorCode::BadMessage, "invalid remote input");
     }
     let allowed = shared.remote.lock().unwrap_or_else(|e| e.into_inner()).allow_control(peer, Instant::now());
@@ -524,12 +538,164 @@ pub(crate) fn run_motion(shared: &Arc<Shared>, peer: DeviceId, event: RemoteInpu
     }
 }
 
-/// Handles an incoming QUIC datagram from `peer`.
-pub(crate) fn handle_datagram(shared: &Arc<Shared>, peer: DeviceId, bytes: &[u8]) {
-    let Ok(event) = RemoteInput::from_datagram(bytes) else {
-        return;
+/// Pointer motion from one peer waiting to be run (`plans/protocol-v1-contract.md`
+/// §2.6): the session's datagrams and its `input/motion` stream put it in, and
+/// the session's motion worker takes it out on a blocking thread, so a slow
+/// platform never holds up the session.
+#[derive(Debug, Default)]
+pub(crate) struct MotionQueue {
+    state: std::sync::Mutex<MotionState>,
+    ready: std::sync::Condvar,
+}
+
+#[derive(Debug, Default)]
+struct MotionState {
+    items: VecDeque<RemoteInput>,
+    closed: bool,
+}
+
+impl MotionQueue {
+    fn state(&self) -> std::sync::MutexGuard<'_, MotionState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queues `event`; with the queue full, adds it into the last motion of
+    /// its kind instead.
+    pub(crate) fn push(&self, event: RemoteInput, counters: &Counters) {
+        Counters::add(&counters.motion_received, 1);
+        let mut state = self.state();
+        if state.closed {
+            return;
+        }
+        if state.items.len() >= MOTION_QUEUE && merge_into_last(&mut state.items, &event) {
+            Counters::add(&counters.motion_summed, 1);
+        } else {
+            state.items.push_back(event);
+        }
+        drop(state);
+        self.ready.notify_one();
+    }
+
+    /// Ends the worker once it has run what waits.
+    pub(crate) fn close(&self) {
+        self.state().closed = true;
+        self.ready.notify_all();
+    }
+
+    /// Everything waiting, once there's something; `None` once closed, or
+    /// once nothing else holds the queue (the session was dropped without
+    /// ending, as when its runtime goes): a blocking thread left waiting
+    /// would keep the runtime from shutting down.
+    fn take(self: &Arc<Self>) -> Option<Vec<RemoteInput>> {
+        let mut state = self.state();
+        loop {
+            if !state.items.is_empty() {
+                return Some(state.items.drain(..).collect());
+            }
+            if state.closed || Arc::strong_count(self) == 1 {
+                return None;
+            }
+            state = self.ready.wait_timeout(state, ABANDONED_CHECK).unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+}
+
+/// Adds `event` into the last waiting motion of its kind; false if none waits.
+fn merge_into_last(items: &mut VecDeque<RemoteInput>, event: &RemoteInput) -> bool {
+    let same_kind = |e: &RemoteInput| std::mem::discriminant(e) == std::mem::discriminant(event);
+    let Some(last) = items.iter_mut().rev().find(|e| same_kind(e)) else { return false };
+    match (last, event) {
+        (RemoteInput::Move { dx, dy }, RemoteInput::Move { dx: x, dy: y })
+        | (RemoteInput::Scroll { dx, dy }, RemoteInput::Scroll { dx: x, dy: y }) => {
+            *dx += x;
+            *dy += y;
+            true
+        }
+        (last @ RemoteInput::Laser { .. }, RemoteInput::Laser { .. }) => {
+            *last = event.clone();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `batch` with consecutive moves, and consecutive scrolls, added up, and
+/// sums too large for one event split back into events that fit.
+fn coalesce(batch: Vec<RemoteInput>, counters: &Counters) -> Vec<RemoteInput> {
+    let mut out: Vec<RemoteInput> = Vec::with_capacity(batch.len());
+    for event in batch {
+        match (out.last_mut(), &event) {
+            (Some(RemoteInput::Move { dx, dy }), RemoteInput::Move { dx: x, dy: y })
+            | (Some(RemoteInput::Scroll { dx, dy }), RemoteInput::Scroll { dx: x, dy: y }) => {
+                *dx += x;
+                *dy += y;
+                Counters::add(&counters.motion_summed, 1);
+            }
+            _ => out.push(event),
+        }
+    }
+    out.into_iter().flat_map(split_motion).collect()
+}
+
+/// `event`, as as many events as it takes to stay within the motion limits.
+fn split_motion(event: RemoteInput) -> Vec<RemoteInput> {
+    let (dx, dy, max, scroll) = match event {
+        RemoteInput::Move { dx, dy } => (dx, dy, remote::MAX_MOVE_DELTA, false),
+        RemoteInput::Scroll { dx, dy } => (dx, dy, remote::MAX_SCROLL_DELTA, true),
+        other => return vec![other],
     };
-    run_motion(shared, peer, event);
+    let largest = dx.abs().max(dy.abs());
+    if !largest.is_finite() {
+        return Vec::new();
+    }
+    let pieces = (largest / max).ceil().max(1.0) as usize;
+    let (dx, dy) = (dx / pieces as f32, dy / pieces as f32);
+    let piece = if scroll { RemoteInput::Scroll { dx, dy } } else { RemoteInput::Move { dx, dy } };
+    vec![piece; pieces]
+}
+
+/// The session's motion worker: runs `peer`'s queued motion on this blocking
+/// thread until the queue closes.
+pub(crate) fn run_motion_worker(
+    shared: std::sync::Weak<Shared>,
+    peer: DeviceId,
+    queue: Arc<MotionQueue>,
+    counters: Arc<Counters>,
+) {
+    let mut inject_max = Duration::ZERO;
+    let mut reported = Instant::now();
+    while let Some(batch) = queue.take() {
+        let Some(shared) = shared.upgrade() else { break };
+        if check_allowed(&shared, &peer).is_err() {
+            Counters::add(&counters.motion_refused, batch.len() as u64);
+            continue;
+        }
+        for event in coalesce(batch, &counters) {
+            if !event.is_datagram_allowed() || !event.is_valid() {
+                Counters::add(&counters.motion_refused, 1);
+                continue;
+            }
+            let allowed =
+                shared.remote.lock().unwrap_or_else(|e| e.into_inner()).allow_datagram(peer, Instant::now());
+            if !allowed {
+                Counters::add(&counters.motion_refused, 1);
+                continue;
+            }
+            let started = Instant::now();
+            let _ = shared.platform.remote_input(&peer, event);
+            inject_max = inject_max.max(started.elapsed());
+        }
+        if reported.elapsed() >= Duration::from_secs(1) {
+            let counted = counters.snapshot();
+            crate::wire_stats::motion(
+                counted.motion_received,
+                counted.motion_summed,
+                counted.motion_refused,
+                inject_max,
+            );
+            (reported, inject_max) = (Instant::now(), Duration::ZERO);
+        }
+    }
 }
 
 /// Handles a fallback `remote/motion` stream when QUIC datagrams aren't used.
@@ -544,15 +710,13 @@ pub(crate) async fn receive_motion(
             break;
         }
         let Ok(env) = Envelope::from_cbor(&bytes) else { break };
-        let Ok(event) = env.expect_body::<RemoteInput>(types::REMOTE_INPUT) else { break };
+        let Ok(event) = env.expect_body::<RemoteInput>(types::INPUT_EVENT) else { break };
         if !event.is_datagram_allowed() || !event.is_valid() {
             break;
         }
-        let allowed =
-            shared.remote.lock().unwrap_or_else(|e| e.into_inner()).allow_datagram(peer, Instant::now());
-        if allowed {
-            let _ = shared.platform.remote_input(&peer, event);
-        }
+        // Run by the session's motion worker, as datagrams are.
+        let Some(session) = shared.session(&peer) else { break };
+        session.motion.push(event, &session.counters);
     }
     let _ = send.finish();
 }

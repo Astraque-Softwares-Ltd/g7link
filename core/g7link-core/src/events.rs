@@ -98,6 +98,12 @@ pub enum NodeEvent {
         device: DeviceId,
         power: PowerLevel,
     },
+    /// A paired `device` tried to connect with an older protocol: it needs
+    /// an update of G7 Link before the two can talk. At most once a minute
+    /// per device.
+    PeerNeedsUpdate {
+        device: DeviceId,
+    },
     /// What works with a device changed (see `docs/architecture/capabilities.md`).
     Capabilities(CapabilityMatrix),
     Battery {
@@ -325,11 +331,16 @@ pub enum NodeEvent {
     TimelineChanged,
     /// LocalSend interop state or discovered LocalSend peers changed.
     LocalSendChanged,
-    /// A PCM audio frame arrived from a paired PC (`audio.pcm`).
+    /// A piece of PC sound arrived from a paired PC (`docs/protocol/v1.md`
+    /// §5). `seq` counts up by one per piece and wraps: a player drops one
+    /// older than the last it played. `ts_ms` is when its first sample was
+    /// captured, in ms since the PC's sound began, for a jitter buffer.
     PcAudioFrame {
         device: DeviceId,
         sample_rate: u32,
         channels: u8,
+        seq: u16,
+        ts_ms: u32,
         pcm: Vec<u8>,
     },
     /// The persistent outgoing send queue changed.

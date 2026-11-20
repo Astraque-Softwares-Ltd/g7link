@@ -14,6 +14,7 @@ use iroh::endpoint::{RecvStream, SendStream, VarInt};
 
 use crate::{
     Error, MirrorStream, Result,
+    dispatch::Responder,
     events::NodeEvent,
     node::Shared,
     session::{FIRST_CONFIG_TIMEOUT, Session},
@@ -125,7 +126,12 @@ pub(crate) async fn receive(shared: Arc<Shared>, peer: DeviceId, mut send: SendS
 
 // ---- The phone ----
 
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     let platform = shared.platform.clone();
     match env.t.as_str() {
@@ -146,7 +152,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     }
                 }
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         types::MIC_STOP => {
             // The PC's side: stop listening; the phone's: stop recording. A phone that
@@ -157,7 +163,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             }
             tokio::task::spawn_blocking(move || platform.mic_stop_requested(&peer));
             if env.id.is_some() {
-                session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
+                rsp.send(Envelope::empty(types::OK)).await?;
             }
         }
         _ => return Ok(false),
@@ -172,6 +178,7 @@ pub(crate) async fn open(shared: &Arc<Shared>, session: &Session) -> Result<Mirr
         return Err(Error::Denied);
     }
     let (mut send, recv) = session.conn.open_bi().await.map_err(crate::error::net)?;
+    let _ = send.set_priority(crate::lane::priority_of(mic::SERVICE, mic::OP_PCM));
     let header = StreamHeader { svc: mic::SERVICE.into(), op: mic::OP_PCM.into(), v: mic::VERSION };
     write_frame(&mut send, &Envelope::new(types::STREAM, &header)?.to_cbor()).await?;
     let on_end = shared

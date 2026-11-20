@@ -22,6 +22,7 @@ use g7link_protocol::{
 
 use crate::{
     Result,
+    dispatch::Responder,
     events::NodeEvent,
     features::{Role, role_of},
     node::Shared,
@@ -353,7 +354,12 @@ impl Shared {
 }
 
 /// Handles a `notify.*` message on a session. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
         // ---- On the PC ----
@@ -447,7 +453,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     }
                 }
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         types::NOTIFY_ACTION => {
             let NotifyAction { key, action, reply } = env.body()?;
@@ -473,7 +479,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     }
                 }
             };
-            session.send(answer.reply_to(env.id)).await?;
+            rsp.send(answer).await?;
         }
         _ => return Ok(false),
     }

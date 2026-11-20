@@ -16,7 +16,7 @@ use std::{
 use g7link_protocol::{
     DeviceId, Envelope,
     ble::{self, LinkError, MAX_HANDSHAKE_RECORD, MAX_PLAIN, MAX_RECORD, RECORD_OVERHEAD, Reassembler},
-    messages::{RemoteInput, remote as remote_limits, types},
+    messages::{RemoteInput, input as remote_limits, types},
 };
 
 use super::crypto::{Cipher, CryptoError, Initiator, Responder};
@@ -88,9 +88,9 @@ fn budget_for(env: &Envelope) -> Budget {
         return Budget::None;
     }
     match env.t.as_str() {
-        types::REMOTE_INPUT if env.id.is_none() => Budget::None,
-        types::REMOTE_INPUT | types::REMOTE_TEXT_WATCH | types::BLE_USE | types::PING => Budget::Input,
-        types::REMOTE_TEXT_STATE | types::REMOTE_TEXT_FOCUS => Budget::State,
+        types::INPUT_EVENT if env.id.is_none() => Budget::None,
+        types::INPUT_EVENT | types::INPUT_TEXT_WATCH | types::BLE_USE | types::PING => Budget::Input,
+        types::INPUT_TEXT_STATE | types::INPUT_TEXT_FOCUS => Budget::State,
         _ => Budget::Records,
     }
 }
@@ -227,7 +227,7 @@ impl BleEndpoint {
         let mut inner = self.lock();
         if inner.outbox.is_empty() && matches!(inner.phase, Phase::Up { .. }) {
             let plain = match inner.motion.take() {
-                Some(event) => Envelope::new(types::REMOTE_INPUT, &event).ok().map(|env| env.to_cbor()),
+                Some(event) => Envelope::new(types::INPUT_EVENT, &event).ok().map(|env| env.to_cbor()),
                 None => inner.pending_state.take(),
             };
             if let Some(plain) = plain
@@ -465,7 +465,7 @@ fn internal(error: CryptoError) -> Error {
 mod tests {
     use std::time::Duration;
 
-    use g7link_protocol::messages::{RemoteTextWatch, remote as limits};
+    use g7link_protocol::messages::{RemoteTextWatch, input as limits};
 
     use super::*;
 
@@ -561,7 +561,7 @@ mod tests {
             more_after: false,
             icon: None,
         };
-        Envelope::new(types::REMOTE_TEXT_STATE, &state).unwrap()
+        Envelope::new(types::INPUT_TEXT_STATE, &state).unwrap()
     }
 
     #[test]
@@ -605,7 +605,7 @@ mod tests {
     fn the_typing_box_and_the_hold_draw_from_the_input_budget() {
         let (phone, pc) = linked();
         let now = Instant::now();
-        let watch = Envelope::new(types::REMOTE_TEXT_WATCH, &RemoteTextWatch { on: true }).unwrap();
+        let watch = Envelope::new(types::INPUT_TEXT_WATCH, &RemoteTextWatch { on: true }).unwrap();
         for _ in 0..25 {
             phone.send(&watch).unwrap();
         }
@@ -616,9 +616,9 @@ mod tests {
         assert_eq!(deliver(&phone, &pc, now).unwrap().len(), RECORD_BURST as usize);
         assert_eq!(budget_for(&Envelope::empty(types::BLE_USE).with_id(1)), Budget::Input);
         assert_eq!(budget_for(&Envelope::empty(types::PING).with_id(1)), Budget::Input);
-        assert_eq!(budget_for(&Envelope::empty(types::REMOTE_TEXT_FOCUS)), Budget::State);
+        assert_eq!(budget_for(&Envelope::empty(types::INPUT_TEXT_FOCUS)), Budget::State);
         assert_eq!(budget_for(&Envelope::empty(types::CLIP_SET).with_id(1)), Budget::Records);
-        assert_eq!(budget_for(&Envelope::empty(types::REMOTE_INPUT)), Budget::None);
+        assert_eq!(budget_for(&Envelope::empty(types::INPUT_EVENT)), Budget::None);
         assert_eq!(budget_for(&Envelope::empty(types::OK).reply_to(Some(1))), Budget::None);
     }
 }

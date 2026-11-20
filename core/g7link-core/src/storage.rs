@@ -22,7 +22,7 @@ pub use g7link_protocol::messages::{
     storage::{MOUNT as STORAGE_MOUNT, READ as STORAGE_READ, WRITE as STORAGE_WRITE},
 };
 use g7link_protocol::{
-    DeviceId, Envelope, ErrorCode, MAX_FRAME_LEN,
+    DeviceId, Envelope, ErrorCode,
     messages::{StreamHeader, storage, types},
     read_frame, write_frame,
 };
@@ -31,6 +31,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use crate::{
     Error, NodeEvent, Result,
+    dispatch::Responder,
     node::Shared,
     session::{REQUEST_TIMEOUT, Session},
     transfer::FileSource,
@@ -248,21 +249,24 @@ async fn notify_parent_changed(shared: &Arc<Shared>, path: &str) {
 }
 
 /// Handles incoming `storage.*` messages on the control stream.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
         types::STORAGE_LIST => {
             let req = match env.body::<StorageList>() {
                 Ok(r) if r.is_valid() => r,
                 _ => {
-                    let reply =
-                        Envelope::error(ErrorCode::BadMessage, "invalid storage.list path").reply_to(env.id);
-                    session.send(reply).await?;
+                    rsp.send(Envelope::error(ErrorCode::BadMessage, "invalid storage.list path")).await?;
                     return Ok(true);
                 }
             };
             if let Err((code, msg)) = check_phone_allowed(shared, &peer, STORAGE_READ) {
-                session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                rsp.send(Envelope::error(code, msg)).await?;
                 return Ok(true);
             }
             shared.storage.lock().unwrap_or_else(|e| e.into_inner()).record_open_folder(peer, &req.path);
@@ -282,28 +286,14 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
                             .then_with(|| a.name.cmp(&b.name))
                     });
-                    // From `offset`, as many as fit one frame; the rest are
-                    // another page (`more`).
-                    let mut entries: Vec<StorageEntry> =
+                    // From `offset`, all of them: a long list goes in parts.
+                    let entries: Vec<StorageEntry> =
                         entries.into_iter().skip(usize::try_from(req.offset).unwrap_or(usize::MAX)).collect();
-                    let left = entries.len();
-                    let reply = loop {
-                        let more = entries.len() < left;
-                        let body = StorageEntries { entries: entries.clone(), more };
-                        let candidate = Envelope::new(types::STORAGE_ENTRIES, &body)?.reply_to(env.id);
-                        if candidate.to_cbor().len() <= MAX_FRAME_LEN || entries.is_empty() {
-                            break candidate;
-                        }
-                        // A quarter at a time: one at a time meant thousands of
-                        // 1 MiB encodings for a big folder.
-                        let new_len = (entries.len() * 3 / 4).min(entries.len().saturating_sub(1));
-                        entries.truncate(new_len);
-                    };
-                    session.send(reply).await?;
+                    rsp.paged(StorageEntries { entries, more: false }).await?;
                 }
                 Err(err) => {
                     let (code, msg) = err.into_code_and_msg();
-                    session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                    rsp.send(Envelope::error(code, msg)).await?;
                 }
             }
             Ok(true)
@@ -312,14 +302,12 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             let req = match env.body::<StorageMkdir>() {
                 Ok(r) if r.is_valid() => r,
                 _ => {
-                    let reply =
-                        Envelope::error(ErrorCode::BadMessage, "invalid storage.mkdir path").reply_to(env.id);
-                    session.send(reply).await?;
+                    rsp.send(Envelope::error(ErrorCode::BadMessage, "invalid storage.mkdir path")).await?;
                     return Ok(true);
                 }
             };
             if let Err((code, msg)) = check_phone_allowed(shared, &peer, STORAGE_WRITE) {
-                session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                rsp.send(Envelope::error(code, msg)).await?;
                 return Ok(true);
             }
             let platform = shared.platform.clone();
@@ -329,12 +317,12 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 .unwrap_or_else(|e| Err(StorageError::Failed(e.to_string())));
             match res {
                 Ok(()) => {
-                    session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
+                    rsp.send(Envelope::empty(types::OK)).await?;
                     notify_parent_changed(shared, &req.path).await;
                 }
                 Err(err) => {
                     let (code, msg) = err.into_code_and_msg();
-                    session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                    rsp.send(Envelope::error(code, msg)).await?;
                 }
             }
             Ok(true)
@@ -343,14 +331,12 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             let req = match env.body::<StorageRename>() {
                 Ok(r) if r.is_valid() => r,
                 _ => {
-                    let reply = Envelope::error(ErrorCode::BadMessage, "invalid storage.rename paths")
-                        .reply_to(env.id);
-                    session.send(reply).await?;
+                    rsp.send(Envelope::error(ErrorCode::BadMessage, "invalid storage.rename paths")).await?;
                     return Ok(true);
                 }
             };
             if let Err((code, msg)) = check_phone_allowed(shared, &peer, STORAGE_WRITE) {
-                session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                rsp.send(Envelope::error(code, msg)).await?;
                 return Ok(true);
             }
             let platform = shared.platform.clone();
@@ -361,7 +347,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 .unwrap_or_else(|e| Err(StorageError::Failed(e.to_string())));
             match res {
                 Ok(()) => {
-                    session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
+                    rsp.send(Envelope::empty(types::OK)).await?;
                     notify_parent_changed(shared, &req.from).await;
                     if parent_dir_of(&req.from) != parent_dir_of(&req.to) {
                         notify_parent_changed(shared, &req.to).await;
@@ -369,7 +355,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 }
                 Err(err) => {
                     let (code, msg) = err.into_code_and_msg();
-                    session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                    rsp.send(Envelope::error(code, msg)).await?;
                 }
             }
             Ok(true)
@@ -378,14 +364,12 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             let req = match env.body::<StorageDelete>() {
                 Ok(r) if r.is_valid() => r,
                 _ => {
-                    let reply = Envelope::error(ErrorCode::BadMessage, "invalid storage.delete path")
-                        .reply_to(env.id);
-                    session.send(reply).await?;
+                    rsp.send(Envelope::error(ErrorCode::BadMessage, "invalid storage.delete path")).await?;
                     return Ok(true);
                 }
             };
             if let Err((code, msg)) = check_phone_allowed(shared, &peer, STORAGE_WRITE) {
-                session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                rsp.send(Envelope::error(code, msg)).await?;
                 return Ok(true);
             }
             let platform = shared.platform.clone();
@@ -396,12 +380,12 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 .unwrap_or_else(|e| Err(StorageError::Failed(e.to_string())));
             match res {
                 Ok(()) => {
-                    session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
+                    rsp.send(Envelope::empty(types::OK)).await?;
                     notify_parent_changed(shared, &req.path).await;
                 }
                 Err(err) => {
                     let (code, msg) = err.into_code_and_msg();
-                    session.send(Envelope::error(code, msg).reply_to(env.id)).await?;
+                    rsp.send(Envelope::error(code, msg)).await?;
                 }
             }
             Ok(true)
@@ -747,8 +731,7 @@ pub(crate) async fn list(
     loop {
         let offset = all.len() as u64;
         let req = Envelope::new(types::STORAGE_LIST, &StorageList { path: path.clone(), offset })?;
-        let reply = session.request(req, REQUEST_TIMEOUT).await?;
-        let body: StorageEntries = reply.expect_body(types::STORAGE_ENTRIES)?;
+        let body: StorageEntries = session.request_paged(req, REQUEST_TIMEOUT).await?;
         let got = body.entries.len();
         all.extend(body.entries);
         if !body.more || got == 0 || all.len() >= MAX_LISTED {

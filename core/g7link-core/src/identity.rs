@@ -13,7 +13,13 @@ use iroh::SecretKey;
 use crate::{Error, Result};
 
 pub(crate) const FILE_NAME: &str = "identity.key";
+/// The key file's magic. Kept as it is: a key file this release wrote must
+/// still open in the release before it, so a rollback never loses the
+/// device's identity.
 const MAGIC: &[u8; 4] = b"NLK1";
+/// The magic a later release may write, with the same layout after it. Read
+/// here already, so that release can be rolled back to this one.
+const NEXT_MAGIC: &[u8; 4] = b"G7K1";
 
 /// The method byte of a key sealed with the desktop's Secret Service. 1 is
 /// retired and 2 is the Android Keystore.
@@ -153,7 +159,8 @@ fn private_to_owner(path: &Path) -> bool {
 }
 
 fn method_and_payload(bytes: &[u8]) -> Option<(u8, &[u8])> {
-    let (&method, payload) = bytes.strip_prefix(MAGIC.as_slice())?.split_first()?;
+    let rest = bytes.strip_prefix(MAGIC.as_slice()).or_else(|| bytes.strip_prefix(NEXT_MAGIC.as_slice()))?;
+    let (&method, payload) = rest.split_first()?;
     Some((method, payload))
 }
 
@@ -224,6 +231,8 @@ pub fn install_id_from(platform_id: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use g7link_protocol::DeviceId;
+
     use super::*;
 
     /// Stands in for a platform protector so tests never touch a real
@@ -283,6 +292,59 @@ mod tests {
         wrong_method.extend_from_slice(&[0; 32]);
         fs::write(dir.path().join(FILE_NAME), wrong_method).unwrap();
         assert!(matches!(load_or_create(dir.path(), &PlainKeyProtector), Err(Error::Storage(_))));
+    }
+
+    /// A key file as 0.1.17 wrote it: `NLK1`, the method, the sealed key.
+    fn fixture(magic: &[u8; 4]) -> (Vec<u8>, DeviceId) {
+        let key = SecretKey::from_bytes(&[7; 32]);
+        let mut file = magic.to_vec();
+        file.push(TestProtector.id());
+        file.extend(key.to_bytes().iter().map(|b| b ^ 0xA5));
+        (file, crate::device_id(&key.public()))
+    }
+
+    #[test]
+    fn a_key_file_from_0_1_17_loads_and_is_left_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let (file, id) = fixture(b"NLK1");
+        fs::write(&path, &file).unwrap();
+        let key = load_or_create(dir.path(), &TestProtector).unwrap();
+        assert_eq!(crate::device_id(&key.public()), id);
+        assert_eq!(fs::read(&path).unwrap(), file, "the file's bytes are unchanged");
+    }
+
+    #[test]
+    fn a_key_file_with_the_next_magic_loads_to_the_same_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let (file, id) = fixture(b"G7K1");
+        fs::write(&path, &file).unwrap();
+        let key = load_or_create(dir.path(), &TestProtector).unwrap();
+        assert_eq!(crate::device_id(&key.public()), id);
+        assert_eq!(fs::read(&path).unwrap(), file, "not rewritten");
+        assert!(protector_for_data(dir.path(), Arc::new(TestProtector)).id() == TestProtector.id());
+    }
+
+    #[test]
+    fn another_magic_fails_without_making_a_new_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        for magic in [b"NLK2", b"G7K2", b"NLQU", &[0; 4]] {
+            let (file, _) = fixture(magic);
+            fs::write(&path, &file).unwrap();
+            assert!(matches!(load_or_create(dir.path(), &TestProtector), Err(Error::Storage(_))));
+            assert_eq!(fs::read(&path).unwrap(), file, "{magic:?} is left as it was");
+        }
+    }
+
+    #[test]
+    fn a_new_key_is_written_with_the_old_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create(dir.path(), &TestProtector).unwrap();
+        let file = fs::read(dir.path().join(FILE_NAME)).unwrap();
+        assert_eq!(&file[..4], b"NLK1");
+        assert_eq!(file[4], TestProtector.id());
     }
 
     #[test]

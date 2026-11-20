@@ -15,7 +15,10 @@ use g7link_protocol::{
     },
 };
 
-use crate::{Error, Result, events::NodeEvent, node::Shared, session::Session, transfer::safe_file_name};
+use crate::{
+    Error, Result, dispatch::Responder, events::NodeEvent, node::Shared, session::Session,
+    transfer::safe_file_name,
+};
 
 /// The device toggle that allows photos and gallery access for a device.
 pub(crate) const TOGGLE: &str = "photos";
@@ -71,10 +74,7 @@ fn allowed(shared: &Shared, peer: &DeviceId) -> Result<()> {
 pub(crate) async fn albums(shared: &Shared, session: &Session) -> Result<Vec<PhotoAlbum>> {
     allowed(shared, &session.peer)?;
     let env = Envelope::new(types::PHOTOS_ALBUMS, &PhotoAlbumsGet {})?;
-    let PhotoAlbumsList { albums } = session
-        .request(env, crate::session::REQUEST_TIMEOUT)
-        .await?
-        .expect_body(types::PHOTOS_ALBUMS_LIST)?;
+    let PhotoAlbumsList { albums } = session.request_paged(env, crate::session::REQUEST_TIMEOUT).await?;
     Ok(sanitize_albums(albums))
 }
 
@@ -91,8 +91,7 @@ pub(crate) async fn list(
     let (before, before_id) = before.map_or((None, None), |(date, id)| (Some(date), Some(id)));
     let limit = limit.clamp(1, photos::MAX_PAGE);
     let env = Envelope::new(types::PHOTOS_LIST, &PhotoListGet { album, before, before_id, limit })?;
-    let PhotoItems { items } =
-        session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::PHOTOS_ITEMS)?;
+    let PhotoItems { items } = session.request_paged(env, crate::session::REQUEST_TIMEOUT).await?;
     let mut items = sanitize_items(items);
     items.truncate(limit as usize);
     Ok(items)
@@ -106,10 +105,8 @@ pub(crate) async fn delete(shared: &Shared, session: &Session, mut ids: Vec<Stri
     let mut deleted = 0;
     for batch in ids.chunks(photos::MAX_THUMB_BATCH) {
         let env = Envelope::new(types::PHOTOS_DELETE, &PhotoDelete { ids: batch.to_vec() })?;
-        let PhotosDeleted { count } = session
-            .request(env, crate::session::REQUEST_TIMEOUT)
-            .await?
-            .expect_body(types::PHOTOS_DELETED)?;
+        let PhotosDeleted { count } =
+            session.request(env, crate::session::REQUEST_TIMEOUT).await?.expect_body(types::OK)?;
         deleted += count;
     }
     Ok(deleted)
@@ -128,10 +125,7 @@ pub(crate) async fn thumbs(
         return Ok(Vec::new());
     }
     let env = Envelope::new(types::PHOTOS_THUMBS, &PhotoThumbsGet { ids })?;
-    let PhotoThumbsList { thumbs } = session
-        .request(env, crate::session::REQUEST_TIMEOUT)
-        .await?
-        .expect_body(types::PHOTOS_THUMBS_LIST)?;
+    let PhotoThumbsList { thumbs } = session.request_paged(env, crate::session::REQUEST_TIMEOUT).await?;
     let mut thumbs = sanitize_thumbs(thumbs);
     thumbs.truncate(photos::MAX_THUMB_BATCH);
     Ok(thumbs)
@@ -167,7 +161,7 @@ async fn fetch_inner(
     let id = if ids.len() == 1 { ids[0].clone() } else { String::new() };
     let env = Envelope::new(types::PHOTOS_GET, &PhotoGet { id, ids })?;
     let reply = session.request(env, crate::session::REQUEST_TIMEOUT).await?;
-    let PhotoSending { transfer } = reply.expect_body(types::PHOTOS_SENDING)?;
+    let PhotoSending { transfer } = reply.expect_body(types::OK)?;
     if quiet {
         crate::transfer::mark_quiet_transfer(shared, &transfer);
     } else {
@@ -179,7 +173,12 @@ async fn fetch_inner(
 // ---- The phone answering ----
 
 /// Handles `photos.*`. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
         types::PHOTOS_NEW => {
@@ -206,7 +205,7 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                 let platform = shared.platform.clone();
                 let done = tokio::task::spawn_blocking(move || platform.photo_delete(&ids)).await;
                 match done.unwrap_or_else(|e| Err(e.to_string())) {
-                    Ok(count) => Envelope::new(types::PHOTOS_DELETED, &PhotosDeleted { count })?,
+                    Ok(count) => Envelope::new(types::OK, &PhotosDeleted { count })?,
                     Err(reason) => {
                         tracing::warn!(reason, "can't delete photos");
                         Envelope::error(ErrorCode::Internal, "the phone couldn't delete them")
@@ -215,21 +214,26 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
             } else {
                 Envelope::error(ErrorCode::Denied, "photos are off for this device")
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
             Ok(true)
         }
         types::PHOTOS_ALBUMS | types::PHOTOS_LIST | types::PHOTOS_THUMBS => {
-            let reply = answer_query(shared, peer, env).await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "bad photos request");
-                Envelope::error(ErrorCode::BadMessage, "invalid request")
-            });
-            session.send(reply.reply_to(env.id)).await?;
+            match answer_query(shared, peer, env).await {
+                Ok(Answer::Albums(albums)) => rsp.paged(albums).await?,
+                Ok(Answer::Items(items)) => rsp.paged(items).await?,
+                Ok(Answer::Thumbs(thumbs)) => rsp.paged(thumbs).await?,
+                Ok(Answer::Refused(refusal)) => rsp.send(refusal).await?,
+                Err(e) => {
+                    tracing::debug!(error = %e, "bad photos request");
+                    rsp.error(ErrorCode::BadMessage, "invalid request").await?;
+                }
+            }
             Ok(true)
         }
         types::PHOTOS_GET => {
             let get: PhotoGet = env.body()?;
             let reply = match send_photos(shared, peer, get).await {
-                Ok(transfer) => Envelope::new(types::PHOTOS_SENDING, &PhotoSending { transfer })?,
+                Ok(transfer) => Envelope::new(types::OK, &PhotoSending { transfer })?,
                 Err(Error::Denied) => {
                     Envelope::error(ErrorCode::Denied, "photos or files are off for this device")
                 }
@@ -243,19 +247,30 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
                     Envelope::error(ErrorCode::Internal, "can't send it")
                 }
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
             Ok(true)
         }
         _ => Ok(false),
     }
 }
 
-async fn answer_query(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Result<Envelope> {
+/// The phone's answer to a listing: a list, or the `error` that says why not.
+enum Answer {
+    Albums(PhotoAlbumsList),
+    Items(PhotoItems),
+    Thumbs(PhotoThumbsList),
+    Refused(Envelope),
+}
+
+async fn answer_query(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> Result<Answer> {
     if !shared.toggle_on(&peer, TOGGLE) {
-        return Ok(Envelope::error(ErrorCode::Denied, "photos are off for this device"));
+        return Ok(Answer::Refused(Envelope::error(ErrorCode::Denied, "photos are off for this device")));
     }
     if !shared.we_offer(photos::READ) {
-        return Ok(Envelope::error(ErrorCode::Unsupported, "this phone doesn't share photos"));
+        return Ok(Answer::Refused(Envelope::error(
+            ErrorCode::Unsupported,
+            "this phone doesn't share photos",
+        )));
     }
     let platform = shared.platform.clone();
     let result = match env.t.as_str() {
@@ -263,9 +278,7 @@ async fn answer_query(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> R
             let PhotoAlbumsGet {} = env.body()?;
             tokio::task::spawn_blocking(move || {
                 let albums = sanitize_albums(platform.photo_albums()?);
-                crate::sms::fit(albums, |albums| {
-                    Envelope::new(types::PHOTOS_ALBUMS_LIST, &PhotoAlbumsList { albums })
-                })
+                Ok(Answer::Albums(PhotoAlbumsList { albums }))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
@@ -280,7 +293,7 @@ async fn answer_query(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> R
             tokio::task::spawn_blocking(move || {
                 let before = before.map(|date| (date, before_id.as_str()));
                 let items = sanitize_items(platform.photo_list(album.as_deref(), before, limit)?);
-                crate::sms::fit(items, |items| Envelope::new(types::PHOTOS_ITEMS, &PhotoItems { items }))
+                Ok(Answer::Items(PhotoItems { items }))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
@@ -290,23 +303,20 @@ async fn answer_query(shared: &Arc<Shared>, peer: DeviceId, env: &Envelope) -> R
             ids.retain(|id| is_valid_photo_id(id));
             ids.truncate(photos::MAX_THUMB_BATCH);
             if ids.is_empty() {
-                return Envelope::new(types::PHOTOS_THUMBS_LIST, &PhotoThumbsList { thumbs: Vec::new() })
-                    .map_err(Into::into);
+                return Ok(Answer::Thumbs(PhotoThumbsList { thumbs: Vec::new() }));
             }
             tokio::task::spawn_blocking(move || {
                 let thumbs = sanitize_thumbs(platform.photo_thumbs(&ids)?);
-                crate::sms::fit(thumbs, |thumbs| {
-                    Envelope::new(types::PHOTOS_THUMBS_LIST, &PhotoThumbsList { thumbs })
-                })
+                Ok(Answer::Thumbs(PhotoThumbsList { thumbs }))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
         }
-        _ => unreachable!(),
+        other => return Err(Error::Protocol(format!("{other} isn't a photos listing"))),
     };
-    Ok(result.unwrap_or_else(|reason| {
+    Ok(result.unwrap_or_else(|reason: String| {
         tracing::warn!(reason, "a photos request failed");
-        Envelope::error(ErrorCode::Internal, "the phone couldn't read photos")
+        Answer::Refused(Envelope::error(ErrorCode::Internal, "the phone couldn't read photos"))
     }))
 }
 

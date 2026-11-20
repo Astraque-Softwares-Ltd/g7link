@@ -16,19 +16,21 @@ use std::{
 pub use g7link_protocol::messages::{
     AudioOutputDevice, DeckLayout, DeckPage, DeckPress, DeckState, DeckTile, KeyMod, PcAudioSet,
     deck::{
-        ACTIONS as DECK_ACTIONS, MAX_ID_BYTES as MAX_DECK_ID_BYTES, MAX_LABEL_BYTES as MAX_DECK_LABEL_BYTES,
-        MAX_PAGES as MAX_DECK_PAGES, MAX_TILES_PER_PAGE as MAX_DECK_TILES_PER_PAGE, PC_AUDIO,
+        ACTIONS as DECK_ACTIONS, AUDIO as PC_AUDIO, MAX_ID_BYTES as MAX_DECK_ID_BYTES,
+        MAX_LABEL_BYTES as MAX_DECK_LABEL_BYTES, MAX_PAGES as MAX_DECK_PAGES,
+        MAX_TILES_PER_PAGE as MAX_DECK_TILES_PER_PAGE,
     },
     deck_colors, deck_icons, deck_kinds, is_valid_deck_id, remote_keys,
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode,
-    messages::{remote, types},
+    messages::{input as remote, types},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Error, Result,
+    dispatch::Responder,
     events::NodeEvent,
     node::Shared,
     session::{REQUEST_TIMEOUT, Session},
@@ -674,13 +676,18 @@ async fn send_pc_audio(shared: &Arc<Shared>, session: &Arc<Session>, req: PcAudi
     if !peer_caps.contains(PC_AUDIO) && !peer_caps.contains(DECK_ACTIONS) {
         return Err(Error::Unsupported);
     }
-    let env = Envelope::new(types::PC_AUDIO_SET, &req)?;
+    let env = Envelope::new(types::DECK_AUDIO_SET, &req)?;
     session.request(env, REQUEST_TIMEOUT).await?.expect(types::OK)?;
     Ok(())
 }
 
 /// Handles `deck.layout`, `deck.state`, `deck.press`, and `pc.audio.set`.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
         types::DECK_LAYOUT => {
@@ -700,14 +707,14 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         types::DECK_PRESS => {
             let req: DeckPress = env.body()?;
             let reply = run_press(shared, &peer, req).await;
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
-        types::PC_AUDIO_SET => {
+        types::DECK_AUDIO_SET => {
             let reply = match env.body::<PcAudioSet>() {
                 Ok(req) => run_pc_audio_set(shared, &peer, req).await,
                 Err(_) => Envelope::error(ErrorCode::BadMessage, "invalid pc.audio.set body"),
             };
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         _ => return Ok(false),
     }

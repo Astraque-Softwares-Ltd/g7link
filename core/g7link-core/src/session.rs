@@ -6,24 +6,33 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use g7link_protocol::{
-    DeviceId, Envelope, ErrorCode, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION, ProtocolError, messages::*,
-    negotiate_version, read_frame, write_frame,
+    DeviceId, Envelope, ErrorCode, PROTOCOL_VERSION, ProtocolError, SoundDatagram,
+    lanes::{self, Lane, lane_of},
+    messages::*,
+    read_frame, write_frame,
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream, VarInt};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::{
+    sync::{Notify, Semaphore, mpsc, oneshot},
+    task::JoinSet,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     Error, Result,
+    dispatch::Responder,
     error::Side,
     events::{ConnectionPath, NodeEvent},
+    lane::{CONTROL_PRIORITY, LARGE_FRAME, LaneSet},
     node::Shared,
+    rpc::MAX_INCOMING_RPCS,
+    wire_stats::{self, Counters, LaneKind},
 };
 
 #[path = "wake.rs"]
@@ -40,7 +49,13 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const INTERACTIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(3000);
 const HEARTBEAT_RETRY_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Control messages waiting to be written at most.
 const OUTBOX_CAPACITY: usize = 256;
+/// Store work from control messages waiting at most (`hello.update`,
+/// `device.info`, `pair.revoke`, …), run in order off the control reader.
+const CORE_QUEUE: usize = 64;
+/// How long the session's tasks get to finish once it ends, before they're stopped.
+const WIND_DOWN: Duration = Duration::from_secs(2);
 
 /// QUIC close code used when a duplicate connection is dropped.
 pub(crate) const CLOSE_DUPLICATE: u32 = 100;
@@ -102,7 +117,6 @@ pub(crate) fn local_hello(shared: &Shared) -> Hello {
     let local = shared.local.read().unwrap_or_else(|e| e.into_inner());
     Hello {
         proto: PROTOCOL_VERSION,
-        min: MIN_PROTOCOL_VERSION,
         app: local.app_version.clone(),
         device: local.device.clone(),
         caps: local.capabilities(),
@@ -153,13 +167,16 @@ async fn check_versions(
     local: &Hello,
     remote: &Hello,
 ) -> Result<()> {
-    if negotiate_version((local.proto, local.min), (remote.proto, remote.min)).is_some() {
+    if remote.proto == local.proto {
         return Ok(());
     }
     // Tell the peer why before closing; best effort.
     let msg = format!("protocol {} is not compatible with {}", remote.proto, local.proto);
     let _ = write_frame(send, &Envelope::error(ErrorCode::VersionTooOld, msg).to_cbor()).await;
-    let side = if remote.proto < local.min { Side::Remote } else { Side::Local };
+    // A moment for the reason to reach the peer before the close discards it.
+    let _ = send.finish();
+    let _ = tokio::time::timeout(Duration::from_millis(500), send.stopped()).await;
+    let side = if remote.proto < local.proto { Side::Remote } else { Side::Local };
     conn.close(VarInt::from_u32(ErrorCode::VersionTooOld.close_code()), b"version");
     Err(Error::VersionTooOld { side })
 }
@@ -168,13 +185,30 @@ async fn check_versions(
 /// the connection (call [`Session::close`]).
 pub(crate) struct Session {
     pub peer: DeviceId,
+    /// Tells this session from any other this process had.
+    pub(crate) serial: u64,
     /// Who opened the connection; used to resolve duplicate connections.
     pub dialer: DeviceId,
     pub conn: Connection,
     pub(crate) ring_command: tokio::sync::Mutex<()>,
+    /// Control messages to write, in order.
     outbox: mpsc::Sender<Envelope>,
+    /// Control requests waiting for their answer, by `id`.
     pending: Mutex<HashMap<u64, oneshot::Sender<Envelope>>>,
     next_id: AtomicU64,
+    /// Store work from control messages, run in order.
+    core: mpsc::Sender<Envelope>,
+    pub(crate) lanes: Arc<LaneSet>,
+    /// Turns for RPCs this side opens, first come first served.
+    pub(crate) rpc_out: Arc<Semaphore>,
+    pub(crate) rpc_limit: usize,
+    /// Slots for RPCs, and for media and bulk streams, the peer opens.
+    rpc_in: Arc<Semaphore>,
+    streams_in: Arc<Semaphore>,
+    pub(crate) counters: Arc<Counters>,
+    /// Where the session's tasks run, also when a message is queued from
+    /// outside the runtime.
+    pub(crate) runtime: tokio::runtime::Handle,
     rtt_ms: AtomicU32,
     pub(crate) started: Instant,
     last_rx_ms: AtomicU64,
@@ -187,6 +221,26 @@ pub(crate) struct Session {
     /// This peer asked for no notifications for now. Ends with the session: a
     /// PC that's still locked says so again when it reconnects.
     notifications_held: std::sync::atomic::AtomicBool,
+    /// Numbers and times the PC sound sent to this peer.
+    pub(crate) sound_clock: Mutex<crate::sound::SoundClock>,
+    /// PC sound that datagrams couldn't carry, on its stream.
+    pub(crate) sound_out: Arc<crate::sound::SoundStream>,
+    /// The PC sound that came from this peer, to drop what's late.
+    sound_in: Mutex<crate::sound::SoundReceived>,
+    /// Whether this device plays the peer's sound (`media::TOGGLE`).
+    sound_toggle: Arc<CachedToggle>,
+    /// Pointer motion from the peer, for the session's motion worker.
+    pub(crate) motion: Arc<crate::remote::MotionQueue>,
+    /// The address this peer was reached at on a LAN path that is also this
+    /// device's default gateway: the peer is our router (its hotspot).
+    reached_at_gateway: Mutex<Option<std::net::IpAddr>>,
+    /// Set once the node has registered the session and said it's online:
+    /// what the peer sends is handled from then on.
+    ready: AtomicBool,
+    ready_notify: Notify,
+    /// Wakes the heartbeat to ping now, and when it last was.
+    ping_now: Notify,
+    heartbeat_woken: Mutex<Option<Instant>>,
     pub(crate) cancel: CancellationToken,
 }
 
@@ -218,14 +272,26 @@ impl Session {
             .find(|p| p.is_selected())
             .map_or(0, |p| p.rtt().as_millis().min(u128::from(u32::MAX)) as u32);
         let (outbox, outbox_rx) = mpsc::channel(OUTBOX_CAPACITY);
+        let (core, core_rx) = mpsc::channel(CORE_QUEUE);
+        let rpc_limit = shared.outgoing_rpc_limit.load(Ordering::Relaxed).max(1);
+        static SERIAL: AtomicU64 = AtomicU64::new(1);
         let session = Arc::new(Session {
             peer,
+            serial: SERIAL.fetch_add(1, Ordering::Relaxed),
             dialer,
             conn,
             ring_command: Default::default(),
             outbox,
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            core,
+            lanes: Default::default(),
+            rpc_out: Arc::new(Semaphore::new(rpc_limit)),
+            rpc_limit,
+            rpc_in: Arc::new(Semaphore::new(MAX_INCOMING_RPCS)),
+            streams_in: Arc::new(Semaphore::new(MAX_INCOMING_STREAMS)),
+            counters: Default::default(),
+            runtime: tokio::runtime::Handle::current(),
             rtt_ms: AtomicU32::new(initial_rtt),
             started: Instant::now(),
             last_rx_ms: AtomicU64::new(0),
@@ -234,35 +300,63 @@ impl Session {
             sent_icons: Default::default(),
             sent_art: Default::default(),
             notifications_held: Default::default(),
+            sound_clock: Default::default(),
+            sound_out: Default::default(),
+            sound_in: Default::default(),
+            sound_toggle: Default::default(),
+            motion: Default::default(),
+            reached_at_gateway: Mutex::new(None),
+            ready: AtomicBool::new(false),
+            ready_notify: Notify::new(),
+            ping_now: Notify::new(),
+            heartbeat_woken: Mutex::new(None),
             cancel: shared.cancel.child_token(),
         });
 
         let weak = Arc::downgrade(shared);
-        let s = session.clone();
-        tokio::spawn(async move {
-            let cancel = s.cancel.clone();
-            tokio::select! {
-                _ = cancel.cancelled() => {}
-                _ = writer(send, outbox_rx) => {}
-                _ = reader(&s, recv, &weak) => {}
-                _ = heartbeat(&s, &weak) => {}
-                _ = streams(&s, &weak) => {}
-                _ = datagrams(&s, &weak) => {}
-                _ = s.conn.closed() => {}
-            }
-            cancel.cancel();
-            // Fail any requests still waiting for a reply.
-            s.pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            tracing::debug!(peer = %s.peer.short(), "session ended");
-            let ended = s.clone();
-            on_end(s);
-            // Streams the peer opened run on tasks of their own, holding the
-            // connection: closing it ends them with the session.
-            if ended.conn.close_reason().is_none() {
-                ended.conn.close(VarInt::from_u32(CLOSE_NORMAL), b"session ended");
-            }
+        let count = shared.session_tasks.clone();
+        let mut tasks = JoinSet::new();
+        let s = &session;
+        tasks.spawn(counted(&count, control_writer(send, outbox_rx)));
+        tasks.spawn(counted(&count, control_reader(s.clone(), recv, weak.clone())));
+        tasks.spawn(counted(&count, core_queue(s.clone(), core_rx, weak.clone())));
+        tasks.spawn(counted(&count, heartbeat(s.clone(), weak.clone())));
+        tasks.spawn(counted(&count, acceptor(s.clone(), weak.clone())));
+        tasks.spawn(counted(&count, datagrams(s.clone(), weak.clone())));
+        let closed = s.conn.clone();
+        tasks.spawn(counted(&count, async move {
+            closed.closed().await;
+        }));
+        let (queue, counters, live) = (s.motion.clone(), s.counters.clone(), Live::new(&count));
+        tasks.spawn_blocking(move || {
+            let _live = live;
+            crate::remote::run_motion_worker(weak, peer, queue, counters);
         });
+        tokio::spawn(supervise(session.clone(), tasks, on_end));
         session
+    }
+
+    /// Up for longer than two dials racing take, and heard from within a
+    /// heartbeat period: a session a new connection mustn't replace.
+    pub(crate) fn is_settled_and_heard(&self) -> bool {
+        const SETTLED: Duration = Duration::from_secs(3);
+        let now = Instant::now();
+        self.is_alive()
+            && self.started.elapsed() >= SETTLED
+            && self.rx_since(now.checked_sub(INTERACTIVE_HEARTBEAT_INTERVAL).unwrap_or(self.started))
+    }
+
+    pub(crate) fn note_reached_at_gateway(&self, ip: std::net::IpAddr) {
+        *self.reached_at_gateway.lock().unwrap_or_else(|e| e.into_inner()) = Some(ip);
+    }
+
+    pub(crate) fn reached_at_gateway(&self) -> Option<std::net::IpAddr> {
+        *self.reached_at_gateway.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// QUIC's own round-trip estimate on the selected path.
+    pub(crate) fn path_rtt(&self) -> Duration {
+        self.conn.paths().iter().find(|p| p.is_selected()).map_or(Duration::ZERO, |p| p.rtt())
     }
 
     pub fn rtt_ms(&self) -> u32 {
@@ -371,7 +465,7 @@ impl Session {
         !self.cancel.is_cancelled() && self.conn.close_reason().is_none()
     }
 
-    /// Sends a QUIC datagram (protocol v0 §4).
+    /// Sends a QUIC datagram (`docs/protocol/v1.md` §5).
     pub fn send_datagram(&self, data: bytes::Bytes) -> Result<()> {
         self.conn.send_datagram(data).map_err(crate::error::net)
     }
@@ -381,35 +475,53 @@ impl Session {
         self.conn.open_bi().await.map_err(crate::error::net)
     }
 
-    /// Queues a one-way message.
+    pub(crate) fn next_request_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Sends a one-way message on the stream its type goes on: control, or
+    /// its service's lane (`docs/protocol/v1.md` §4).
     pub async fn send(&self, env: Envelope) -> Result<()> {
-        self.outbox.send(env).await.map_err(|_| Error::Offline)
+        match lane_of(&env.t) {
+            Some(Lane::Control) => self.send_control(env).await,
+            Some(Lane::Service(svc)) => self.lane_send(svc, env).await,
+            _ => Err(Error::Protocol(format!("{} isn't sent one way", env.t))),
+        }
     }
 
     /// Queues a one-way message without waiting, so messages queued one after
     /// another from outside the runtime keep their order. Fails when the
-    /// connection is gone or its outbox is full.
+    /// connection is gone, or with [`Error::QueueFull`] when its stream has
+    /// a backlog.
     pub(crate) fn send_now(&self, env: Envelope) -> Result<()> {
-        self.outbox.try_send(env).map_err(|_| Error::Offline)
-    }
-
-    /// Best-effort non-blocking enqueue for loss-tolerant real-time media frames
-    /// (such as live PCM audio fallback).
-    ///
-    /// Returns `Ok(())` even when a frame is dropped because the outbox is past half
-    /// capacity or full, so real-time media never fills the control stream outbox and
-    /// starves heartbeats or RPCs. Do not use this for messages that must arrive.
-    pub fn try_send_realtime(&self, env: Envelope) -> Result<()> {
-        if self.outbox.capacity() <= OUTBOX_CAPACITY / 2 {
-            return Ok(());
-        }
-        match self.outbox.try_send(env) {
-            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(Error::Offline),
+        match lane_of(&env.t) {
+            Some(Lane::Control) => self.outbox.try_send(env).map_err(|e| match e {
+                mpsc::error::TrySendError::Full(_) => Error::QueueFull("the control stream is full".into()),
+                mpsc::error::TrySendError::Closed(_) => Error::Offline,
+            }),
+            Some(Lane::Service(svc)) => self.lane_send_now(svc, env),
+            _ => Err(Error::Protocol(format!("{} isn't sent one way", env.t))),
         }
     }
 
-    /// Sends a request and waits for the reply with the matching `re`.
+    /// Queues a loss-tolerant lane message (a text delta, a text state that
+    /// a newer one replaces) without waiting; dropped while its lane is stuck.
+    pub(crate) fn send_lossy(&self, env: Envelope) -> Result<()> {
+        match lane_of(&env.t) {
+            Some(Lane::Service(svc)) => self.lane_send_lossy(svc, env),
+            _ => self.send_now(env),
+        }
+    }
+
+    /// Writes a control message (or an answer on control).
+    pub(crate) async fn send_control(&self, env: Envelope) -> Result<()> {
+        wire_stats::control_depth(OUTBOX_CAPACITY.saturating_sub(self.outbox.capacity()));
+        self.outbox.send(env).await.map_err(|_| Error::Offline)
+    }
+
+    /// Sends a request on the stream its type goes on, and waits up to
+    /// `timeout` for the answer: the `ok` or `error` (or, on control, the
+    /// typed reply). A paged RPC goes through [`Session::request_paged`].
     pub async fn request(&self, env: Envelope, timeout: Duration) -> Result<Envelope> {
         self.request_tracked(env, timeout).await.0
     }
@@ -418,21 +530,55 @@ impl Session {
     /// sent. A request that went out may have run on the peer even if no
     /// reply came back, so only an unsent one is safe to send again.
     pub async fn request_tracked(&self, env: Envelope, timeout: Duration) -> (Result<Envelope>, bool) {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        match lane_of(&env.t) {
+            Some(Lane::Rpc { .. }) => {
+                let Some(op) = lanes::rpc_of(&env.t) else {
+                    return (Err(Error::Internal("an RPC without an op".into())), false);
+                };
+                let (answer, sent) = self.rpc_tracked(op, env, timeout).await;
+                let answer = answer.and_then(|answer| {
+                    if answer.parts.is_empty() {
+                        Ok(answer.last)
+                    } else {
+                        Err(Error::Protocol(format!("{} answered in parts", op.t)))
+                    }
+                });
+                (answer, sent)
+            }
+            Some(Lane::Service(svc)) => self.lane_request(svc, env, timeout).await,
+            Some(Lane::Control) => self.control_request(env, timeout).await,
+            _ => (Err(Error::Protocol(format!("{} isn't a request", env.t))), false),
+        }
+    }
+
+    async fn control_request(&self, env: Envelope, timeout: Duration) -> (Result<Envelope>, bool) {
+        let started = Instant::now();
+        let t = env.t.clone();
+        let id = self.next_request_id();
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
         let mut sent = false;
-        let result = match tokio::time::timeout(timeout, async {
-            self.send(env.with_id(id)).await?;
+        let exchange = async {
+            self.send_control(env.with_id(id)).await?;
             sent = true;
             rx.await.map_err(|_| Error::Offline)
-        })
-        .await
-        {
-            Ok(inner) => inner,
-            Err(_) => Err(Error::Timeout),
+        };
+        let result = tokio::select! {
+            r = tokio::time::timeout(timeout, exchange) => r.unwrap_or(Err(Error::Timeout)),
+            () = self.cancel.cancelled() => Err(Error::Offline),
         };
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        if t != types::PING {
+            wire_stats::request(wire_stats::RequestStats {
+                svc: "control",
+                op: &t,
+                lane: LaneKind::Control,
+                took: started.elapsed(),
+                outcome: wire_stats::Outcome::of(&result),
+                parts: 0,
+                bytes: 0,
+            });
+        }
         (result, sent)
     }
 
@@ -442,6 +588,7 @@ impl Session {
         self.cancel.cancel();
     }
 
+    /// Hands a control answer to the request waiting for it, if one is.
     fn complete(&self, env: Envelope) -> std::result::Result<(), Envelope> {
         let Some(re) = env.re else { return Err(env) };
         match self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&re) {
@@ -452,40 +599,148 @@ impl Session {
             None => Err(env),
         }
     }
+
+    /// Fails every request still waiting, on control, lanes and RPCs.
+    fn fail_waiting(&self) {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.lanes.fail_all();
+        self.rpc_out.close();
+    }
+
+    /// The session's wire counters (`plans/protocol-v1-contract.md` §3).
+    pub(crate) fn wire_counters(&self) -> wire_stats::WireCounters {
+        self.counters.snapshot()
+    }
 }
 
-/// Whether `mac` is the Wake-on-LAN address of a PC paired with this device.
-/// 16-bit PCM the player can take: a sane rate, mono or stereo, and whole
-/// frames. A rate or layout out of range would play at the wrong speed, and
-/// a ragged length makes a misaligned write to the audio device.
-fn pcm_frame_ok(sample_rate: u32, channels: u8, len: usize) -> bool {
-    (8_000..=96_000).contains(&sample_rate)
-        && (1..=2).contains(&channels)
-        && len > 0
-        && len.is_multiple_of(2 * usize::from(channels))
+/// A session task, counted while it runs, so ending sessions can be seen to
+/// leave none behind.
+struct Live(Arc<AtomicUsize>);
+
+impl Live {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Live(count.clone())
+    }
 }
 
-/// The wake info a paired PC gave with `mac` among its addresses, if any.
-fn known_wake_info(shared: &Shared, mac: &[u8; 6]) -> Option<g7link_protocol::messages::PcWakeInfo> {
-    let mac = g7link_protocol::messages::format_mac(mac);
-    shared
-        .store
-        .list_peers()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|p| p.wake_info)
-        .find(|w| w.macs.iter().any(|m| m.eq_ignore_ascii_case(&mac)))
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
-/// The control stream goes out before media streams ([`crate::mirror`]):
-/// with a few app windows filling the link, heartbeats queued behind video
-/// timed out and closed a live session.
-const CONTROL_PRIORITY: i32 = 8;
-const _: () = assert!(
-    CONTROL_PRIORITY > crate::mirror::AUDIO_PRIORITY && CONTROL_PRIORITY > crate::mirror::VIDEO_PRIORITY
-);
+fn counted<F>(count: &Arc<AtomicUsize>, task: F) -> impl std::future::Future<Output = ()> + Send + 'static
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let live = Live::new(count);
+    async move {
+        let _live = live;
+        task.await
+    }
+}
 
-async fn writer(mut send: SendStream, mut outbox: mpsc::Receiver<Envelope>) {
+/// Waits for the first of the session's tasks to end (or the session to be
+/// cancelled), then winds the session down (`plans/protocol-v1-contract.md`
+/// §2.1): every waiting request fails `Offline`, the lanes go, `on_end`
+/// runs once, the tasks get a moment to finish, and the connection closes.
+async fn supervise(session: Arc<Session>, mut tasks: JoinSet<()>, on_end: impl FnOnce(Arc<Session>)) {
+    tokio::select! {
+        () = session.cancel.cancelled() => {}
+        _ = tasks.join_next() => {}
+    }
+    session.cancel.cancel();
+    session.fail_waiting();
+    session.motion.close();
+    tracing::debug!(peer = %session.peer.short(), "session ended");
+    on_end(session.clone());
+    let finished =
+        tokio::time::timeout(WIND_DOWN, async { while tasks.join_next().await.is_some() {} }).await;
+    if finished.is_err() {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+    // Streams the peer opened run on tasks of their own, holding the
+    // connection: closing it ends them with the session.
+    if session.conn.close_reason().is_none() {
+        session.conn.close(VarInt::from_u32(CLOSE_NORMAL), b"session ended");
+    }
+}
+
+/// A device toggle read per datagram: from memory, read again on a blocking
+/// thread at most once a second.
+#[derive(Debug, Default)]
+pub(crate) struct CachedToggle {
+    on: AtomicBool,
+    /// When it was last read, in ms since the session started, plus one (0: never).
+    read_at: AtomicU64,
+    reading: AtomicBool,
+}
+
+impl CachedToggle {
+    const FRESH_MS: u64 = 1000;
+
+    fn get(self: &Arc<Self>, shared: &Arc<Shared>, session: &Session, toggle: &'static str) -> bool {
+        let now = session.started.elapsed().as_millis().min(u128::from(u64::MAX - 1)) as u64 + 1;
+        let read_at = self.read_at.load(Ordering::Relaxed);
+        if read_at == 0 {
+            // The first time only: one read here.
+            let on = shared.toggle_on(&session.peer, toggle);
+            self.on.store(on, Ordering::Relaxed);
+            self.read_at.store(now, Ordering::Relaxed);
+            return on;
+        }
+        if now.saturating_sub(read_at) >= Self::FRESH_MS && !self.reading.swap(true, Ordering::AcqRel) {
+            let (cached, shared, peer) = (self.clone(), shared.clone(), session.peer);
+            tokio::task::spawn_blocking(move || {
+                cached.on.store(shared.toggle_on(&peer, toggle), Ordering::Relaxed);
+                cached.read_at.store(now, Ordering::Relaxed);
+                cached.reading.store(false, Ordering::Release);
+            });
+        }
+        self.on.load(Ordering::Relaxed)
+    }
+}
+
+/// PC sound in a datagram from the peer of `session`.
+fn sound_datagram(shared: &Arc<Shared>, session: &Session, bytes: &[u8]) {
+    // A rate or layout out of range would play at the wrong speed: dropped.
+    let Ok(sound) = SoundDatagram::decode(bytes) else { return };
+    emit_sound(shared, session, sound);
+}
+
+/// Hands PC sound from the peer of `session` to the app, unless it's older
+/// than what came last.
+pub(crate) fn emit_sound(shared: &Arc<Shared>, session: &Session, sound: SoundDatagram) {
+    if !session.sound_toggle.get(shared, session, crate::media::TOGGLE) {
+        return;
+    }
+    if !session.sound_in.lock().unwrap_or_else(|e| e.into_inner()).take(sound.seq, &session.counters) {
+        return;
+    }
+    shared.emit(NodeEvent::PcAudioFrame {
+        device: session.peer,
+        sample_rate: sound.rate,
+        channels: sound.channels,
+        seq: sound.seq,
+        ts_ms: sound.ts_ms,
+        pcm: sound.payload,
+    });
+}
+
+/// Decodes a frame's envelope, on a blocking thread when it's large.
+pub(crate) async fn decode_frame(frame: Vec<u8>) -> std::result::Result<Envelope, ProtocolError> {
+    if frame.len() < LARGE_FRAME {
+        return Envelope::from_cbor(&frame);
+    }
+    tokio::task::spawn_blocking(move || Envelope::from_cbor(&frame))
+        .await
+        .map_err(|e| ProtocolError::BadMessage(e.to_string()))?
+}
+
+/// Writes the control outbox, in order. Waits on nothing but the stream.
+async fn control_writer(mut send: SendStream, mut outbox: mpsc::Receiver<Envelope>) {
     let _ = send.set_priority(CONTROL_PRIORITY);
     while let Some(env) = outbox.recv().await {
         if let Err(e) = write_frame(&mut send, &env.to_cbor()).await {
@@ -496,8 +751,11 @@ async fn writer(mut send: SendStream, mut outbox: mpsc::Receiver<Envelope>) {
     let _ = send.finish();
 }
 
-async fn reader(session: &Arc<Session>, mut recv: RecvStream, shared: &Weak<Shared>) {
-    let background = Arc::new(tokio::sync::Semaphore::new(MAX_BACKGROUND_RPCS));
+/// Reads control: answers go to the requests waiting for them, `ping` and
+/// a few events are handled here, and everything that touches the store
+/// goes to the core queue. Never waits on a platform call or the disk.
+async fn control_reader(session: Arc<Session>, mut recv: RecvStream, shared: Weak<Shared>) {
+    session.wait_ready().await;
     loop {
         let frame = match read_frame(&mut recv).await {
             Ok(Some(frame)) => {
@@ -515,126 +773,111 @@ async fn reader(session: &Arc<Session>, mut recv: RecvStream, shared: &Weak<Shar
                 return;
             }
         };
-        let env = match Envelope::from_cbor(&frame) {
+        let env = match decode_frame(frame).await {
             Ok(env) => env,
             Err(e) => {
                 tracing::warn!(peer = %session.peer.short(), error = %e, "dropping malformed message");
                 continue;
             }
         };
-        let env = if env.re.is_some() {
-            match session.complete(env) {
-                Ok(()) => continue,
-                Err(env) => env,
-            }
-        } else {
-            env
-        };
-        let Some(shared) = shared.upgrade() else { return };
-        if is_background_rpc(&env.t) {
-            // Waiting for a slot would hold up heartbeats behind slow
-            // requests, so past the limit a request is turned away instead.
-            let Ok(permit) = background.clone().try_acquire_owned() else {
-                tracing::warn!(peer = %session.peer.short(), t = %env.t, "too many requests at once");
-                if env.id.is_some() {
-                    let reply = Envelope::error(ErrorCode::Busy, "too many requests at once");
-                    let _ = session.send(reply.reply_to(env.id)).await;
-                }
+        if env.re.is_some() {
+            if let Some(id) = env.id {
+                let refusal = Envelope::error(ErrorCode::BadMessage, "a request can't also be an answer");
+                let _ = session.send_control(refusal.reply_to(Some(id))).await;
                 continue;
-            };
-            let session = session.clone();
-            tokio::spawn(async move {
-                if let Err(e) = handle(&shared, &session, env).await {
-                    tracing::warn!(peer = %session.peer.short(), error = %e, "failed to handle message");
+            }
+            if let Err(late) = session.complete(env) {
+                wire_stats::late_reply(&session.counters, LaneKind::Control, &late.t);
+            }
+            continue;
+        }
+        let Some(shared) = shared.upgrade() else { return };
+        on_control(&shared, &session, env).await;
+    }
+}
+
+/// A control message that isn't an answer.
+async fn on_control(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) {
+    let peer = session.peer;
+    if lane_of(&env.t) != Some(Lane::Control) {
+        wire_stats::wrong_lane(&session.counters, LaneKind::Control, &env.t);
+        if env.id.is_some() {
+            let reply = Envelope::error(ErrorCode::BadMessage, format!("{} doesn't go on control", env.t));
+            let _ = session.send_control(reply.reply_to(env.id)).await;
+        }
+        return;
+    }
+    match env.t.as_str() {
+        types::PING => match env.body::<Ping>() {
+            Ok(ping) => {
+                // Never waits: a pong held up behind a full outbox is a missed heartbeat.
+                if let Ok(pong) = Envelope::new(types::PONG, &ping)
+                    && session.outbox.try_send(pong.reply_to(env.id)).is_err()
+                {
+                    tracing::debug!(peer = %peer.short(), "the control outbox is full; no pong");
                 }
-                drop(permit);
-            });
-        } else if let Err(e) = handle(&shared, session, env).await {
-            tracing::warn!(peer = %session.peer.short(), error = %e, "failed to handle message");
+            }
+            Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed ping"),
+        },
+        types::DEVICE_BATTERY => match env.body::<Battery>() {
+            Ok(battery) => shared.emit(NodeEvent::Battery { device: peer, battery: battery.sanitized() }),
+            Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed device.battery"),
+        },
+        types::DEVICE_UPDATE => match env.body::<UpdateHint>().ok().and_then(UpdateHint::sanitized) {
+            Some(hint) => shared.emit(NodeEvent::UpdateHint {
+                device: peer,
+                channel: hint.channel,
+                version: hint.version,
+            }),
+            None => tracing::debug!(peer = %peer.short(), "ignored a malformed update hint"),
+        },
+        types::DEVICE_RING_STOPPED => match env.body::<RingStopped>() {
+            Ok(stopped) => shared.clear_remote_ring(peer, Some(stopped.token)),
+            Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed device.ring_stopped"),
+        },
+        types::HELLO => tracing::debug!(peer = %peer.short(), "ignored a second hello"),
+        types::PONG => {}
+        _ => {
+            // Store and platform work, in order, off this reader.
+            let id = env.id;
+            if let Err(e) = session.core.try_send(env) {
+                tracing::warn!(peer = %peer.short(), "control work is backed up; refusing a message");
+                if id.is_some() {
+                    let busy = Envelope::error(ErrorCode::Busy, "too much at once");
+                    let _ = session.send_control(busy.reply_to(id)).await;
+                }
+                drop(e);
+            }
         }
     }
 }
 
-/// Requests that can take a while (the phone's user or apps, a whole photo
-/// to send) run on a task of their own so they never stall the control
-/// stream (heartbeats, and other messages). Ones whose order matters
-/// (clipboard, media and call commands: pause after play, unmute after
-/// mute) stay in order on the stream.
-fn is_background_rpc(t: &str) -> bool {
-    matches!(
-        t,
-        types::NOTIFY_DISMISS
-            | types::NOTIFY_ACTION
-            | types::PC_POWER
-            | types::LINK_OPEN
-            | types::PHOTOS_ALBUMS
-            | types::PHOTOS_LIST
-            | types::PHOTOS_THUMBS
-            | types::PHOTOS_GET
-            | types::CALL_LOG
-            | types::CALL_DIAL
-            | types::CALL_SIMS
-            | types::CONTACTS_LIST
-            | types::SMS_THREADS
-            | types::SMS_MESSAGES
-            | types::SMS_SEND
-            | types::SMS_PART
-            | types::MIRROR_START
-            | types::MIRROR_APPS
-            | types::WEBCAM_START
-            | types::CAMERA_CAPTURE_REQUEST
-            | types::PC_CAPTURE_SHOT
-            | types::PC_CAPTURE_RECORD_START
-            | types::PC_CAPTURE_RECORD_STOP
-            | types::STORAGE_LIST
-            | types::STORAGE_MKDIR
-            | types::STORAGE_RENAME
-            | types::STORAGE_DELETE
-            | types::WAKE_RELAY
-            | types::AGENT_THREADS
-            | types::AGENT_START
-            | types::AGENT_SEND
-            | types::AGENT_CANCEL
-            | types::AGENT_READ
-            | types::AGENT_SESSIONS
-            | types::AGENT_SESSION_READ
-            | types::AGENT_SESSION_CONTINUE
-            | types::AGENT_ANSWER
-            | types::AGENT_CONFIGURE
-            | types::AGENT_QUEUE
-            | types::AGENT_REPLY
-            | types::AGENT_IMPLEMENT
-            | types::AGENT_FILES
-            | types::AGENT_COMMANDS
-            | types::AGENT_DRAFT_GET
-            | types::AGENT_DRAFT_SET
-    )
-}
-
-/// Handles one incoming message that isn't a reply.
-async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> Result<()> {
-    let peer = session.peer;
-    match env.t.as_str() {
-        types::PING => {
-            let ping: Ping = env.body()?;
-            session.send(Envelope::new(types::PONG, &ping)?.reply_to(env.id)).await?;
-        }
-        types::EVENT_BATTERY => {
-            let battery = env.body::<Battery>()?.sanitized();
-            shared.emit(NodeEvent::Battery { device: peer, battery });
-        }
-        types::EVENT_UPDATE => {
-            let hint = env.body::<g7link_protocol::messages::UpdateHint>()?;
-            match hint.sanitized() {
-                Some(hint) => shared.emit(NodeEvent::UpdateHint {
-                    device: peer,
-                    channel: hint.channel,
-                    version: hint.version,
-                }),
-                None => tracing::debug!(peer = %peer.short(), "ignored a malformed update hint"),
+/// Runs the store and platform work of control messages, one at a time, in
+/// the order they came.
+async fn core_queue(session: Arc<Session>, mut queue: mpsc::Receiver<Envelope>, shared: Weak<Shared>) {
+    while let Some(env) = queue.recv().await {
+        let Some(shared) = shared.upgrade() else { return };
+        let rsp = Responder::control(&session, env.id);
+        let started = Instant::now();
+        if let Err(e) = on_core(&shared, &session, &env, &rsp).await {
+            tracing::warn!(peer = %session.peer.short(), t = %env.t, error = %e, "failed to handle message");
+            if !rsp.answered() {
+                let _ = rsp.send(crate::dispatch::error_reply(&e)).await;
             }
         }
-        types::EVENT_DEVICE => {
+        wire_stats::handler("core", &env.t, LaneKind::Control, started.elapsed());
+    }
+}
+
+async fn on_core(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<()> {
+    let peer = session.peer;
+    match env.t.as_str() {
+        types::DEVICE_INFO => {
             let info = env.body::<DeviceInfo>()?.sanitized();
             let effective = store_blocking(shared, move |shared| update_info(shared, peer, info)).await?;
             shared.emit(NodeEvent::PeerInfoChanged { device: peer, info: effective });
@@ -650,7 +893,9 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             let had_caps = caps.is_some();
             if caps.is_some() || power.is_some() {
                 store_blocking(shared, move |shared| {
-                    shared.store.update_capabilities(&peer, caps.as_ref(), power)
+                    shared.store.update_capabilities(&peer, caps.as_ref(), power)?;
+                    shared.refresh_peer_caps(&peer);
+                    Ok(())
                 })
                 .await?;
             }
@@ -668,113 +913,32 @@ async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: Envelope) -> 
             let ring: Ring = env.body()?;
             let alive = Arc::downgrade(session);
             shared.receive_ring(peer, move || alive.upgrade().is_some_and(|s| s.is_alive()), ring).await;
-            session.send(Envelope::empty(types::OK).reply_to(env.id)).await?;
-        }
-        types::DEVICE_RING_STOPPED => {
-            let stopped: RingStopped = env.body()?;
-            shared.clear_remote_ring(peer, Some(stopped.token));
+            rsp.ok().await?;
         }
         types::PAIR_REVOKE => {
             tracing::info!(peer = %peer.short(), "peer unpaired this device");
-            // Forgetting the peer closes this session before its cleanup finishes.
-            // Keep the cleanup alive when closing the session drops the reader.
+            // Forgetting the peer ends this session, and this task with it:
+            // the cleanup runs on a task of its own.
             let shared = shared.clone();
             tokio::spawn(async move { shared.forget_peer(&peer).await })
                 .await
                 .map_err(|err| Error::Internal(err.to_string()))??;
         }
-        t if t.starts_with("notify.") && crate::notifications::handle(shared, session, &env).await? => {}
-        t if t.starts_with("media.") && crate::media::handle(shared, session, &env).await? => {}
-        t if t.starts_with("pc.capture.") && crate::pc_capture::handle(shared, session, &env).await? => {}
-        t if (t.starts_with("pc.") || t.starts_with("link.") || t.starts_with("task."))
-            && crate::actions::handle(shared, session, &env).await? => {}
-        t if t.starts_with("clip.") && crate::clipboard::handle(shared, session, &env).await? => {}
-        t if t.starts_with("photos.") && crate::photos::handle(shared, session, &env).await? => {}
-        t if t.starts_with("call.") && crate::calls::handle(shared, session, &env).await? => {}
-        t if t.starts_with("contacts.") && crate::contacts::handle(shared, session, &env).await? => {}
-        t if t.starts_with("sms.") && crate::sms::handle(shared, session, &env).await? => {}
-        t if t.starts_with("mirror.") && crate::mirror::handle(shared, session, &env).await? => {}
-        t if t.starts_with("webcam.") && crate::webcam::handle(shared, session, &env).await? => {}
-        t if t.starts_with("mic.") && crate::mic::handle(shared, session, &env).await? => {}
-        t if t.starts_with("elevated.usb") && crate::elevated_usb::handle(shared, session, &env).await? => {}
-        t if t.starts_with("camera.capture.")
-            && crate::continuity_camera::handle(shared, session, &env).await? => {}
-        t if t.starts_with("remote.") && crate::remote::handle(shared, session, &env).await? => {}
-        t if t.starts_with("phone.toggle") && crate::toggles::handle(shared, session, &env).await? => {}
-        t if (t.starts_with("deck.") || t == types::PC_AUDIO_SET)
-            && crate::deck::handle(shared, session, &env).await? => {}
-        t if t.starts_with("storage.") && crate::storage::handle(shared, session, &env).await? => {}
-        t if t.starts_with("agent.") && crate::agents::handle(shared, session, &env).await? => {}
-        t if (t == types::FILES_RESUME || t == types::FILES_CANCEL)
-            && crate::transfer::handle_control(shared, peer, &env).await? => {}
-        types::WAKE_RELAY => {
-            let req = env.body::<WakeRelay>().ok();
-            let shared_clone = shared.clone();
-            let known = tokio::task::spawn_blocking(move || {
-                // Only for a PC paired with this device, by an address it gave as its own.
-                let info = req.as_ref().and_then(|r| known_wake_info(&shared_clone, &r.mac));
-                let known = info.is_some();
-                if let (Some(req), Some(info)) = (req, info) {
-                    // Only to a subnet that PC gave as its own; anything else goes
-                    // to this network's broadcast, never to an address a peer picks.
-                    let bcast = req
-                        .broadcast
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|b| info.broadcasts.iter().any(|own| own.trim() == *b))
-                        .and_then(|b| b.parse().ok());
-                    let _ = wake::send_magic_packet(req.mac, bcast);
-                }
-                known
-            })
-            .await
-            .unwrap_or(false);
-            if !known {
-                tracing::debug!(peer = %peer.short(), "refusing to wake an address no paired PC gave");
-            }
-            if env.id.is_some() {
-                let reply = if known {
-                    Envelope::empty(types::OK)
-                } else {
-                    Envelope::error(ErrorCode::Denied, "not a paired PC's wake address")
-                };
-                session.send(reply.reply_to(env.id)).await?;
-            }
-        }
-        types::AUDIO_PCM => {
-            // A rate or layout out of range would play at the wrong speed: dropped.
-            if shared.toggle_on(&peer, crate::media::TOGGLE)
-                && let Ok(frame) = env.body::<AudioPcmFrame>()
-                && pcm_frame_ok(frame.sample_rate, frame.channels, frame.pcm.len())
-            {
-                shared.emit(NodeEvent::PcAudioFrame {
-                    device: peer,
-                    sample_rate: frame.sample_rate,
-                    channels: frame.channels,
-                    pcm: frame.pcm,
-                });
-            }
-        }
-        types::AUDIO_BT_MEDIA => match env.body::<AudioBtMedia>() {
-            Ok(body) => shared.bt_media_from_peer(peer, body)?,
-            Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed audio.bt_media"),
-        },
         types::BLE_KEY => match env.body::<BleKey>() {
-            Ok(body) => shared.ble_key_from_peer(peer, body)?,
+            Ok(body) => {
+                store_blocking(shared, move |shared| shared.ble_key_from_peer(peer, body)).await?;
+            }
             Err(_) => tracing::debug!(peer = %peer.short(), "ignored a malformed ble.key"),
         },
         types::BLE_USE => {
-            let reply = shared.ble_use_reply(peer, &env);
-            if env.id.is_some() {
-                session.send(reply.reply_to(env.id)).await?;
-            }
+            let (shared, env) = (shared.clone(), env.clone());
+            let reply = tokio::task::spawn_blocking(move || shared.ble_use_reply(peer, &env))
+                .await
+                .map_err(|e| Error::Internal(e.to_string()))?;
+            rsp.send(reply).await?;
         }
         other => {
-            if env.id.is_some() {
-                let reply = Envelope::error(ErrorCode::Unsupported, format!("unknown message type {other}"));
-                session.send(reply.reply_to(env.id)).await?;
-            }
-            // Unknown one-way messages are ignored (forward compatibility).
+            rsp.error(ErrorCode::Unsupported, format!("unknown message type {other}")).await?;
         }
     }
     Ok(())
@@ -797,52 +961,117 @@ fn update_info(shared: &Shared, peer: DeviceId, info: DeviceInfo) -> Result<Devi
     Ok(shared.store.get_peer(&peer).ok().flatten().map(|p| p.info).unwrap_or(info))
 }
 
-/// Background requests one peer may have running at a time.
-const MAX_BACKGROUND_RPCS: usize = 32;
-
-/// Concurrent incoming data streams allowed from one peer at a time.
-const MAX_INCOMING_STREAMS: usize = 32;
+/// Concurrent incoming media and bulk streams allowed from one peer at a time.
+pub(crate) const MAX_INCOMING_STREAMS: usize = 32;
+/// The message of the BUSY a stream past [`MAX_INCOMING_STREAMS`] is
+/// answered with: a sender tells it from a full disk by it, and tries again.
+pub(crate) const TOO_MANY_STREAMS: &str = "too many streams at once";
 
 /// How long a webcam or microphone stream may take to say its format.
 pub(crate) const FIRST_CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Streams the other device opens (file transfers), each handled on its own.
-async fn streams(session: &Arc<Session>, shared: &Weak<Shared>) {
-    let limit = Arc::new(tokio::sync::Semaphore::new(MAX_INCOMING_STREAMS));
-    while let Ok((send, recv)) = session.conn.accept_bi().await {
-        session.touch_rx();
-        let Some(shared) = shared.upgrade() else { return };
-        let Ok(permit) = limit.clone().acquire_owned().await else { return };
-        let session = session.clone();
-        tokio::spawn(async move {
-            crate::transfer::accept_stream(shared, session, send, recv).await;
-            drop(permit);
-        });
+/// Accepts the streams the peer opens and hands each to a task of its own:
+/// lanes and RPCs end with the session, media and bulk streams with the
+/// connection.
+async fn acceptor(session: Arc<Session>, shared: Weak<Shared>) {
+    session.wait_ready().await;
+    let mut streams = JoinSet::new();
+    loop {
+        tokio::select! {
+            accepted = session.conn.accept_bi() => {
+                let Ok((send, recv)) = accepted else { break };
+                session.touch_rx();
+                let Some(shared) = shared.upgrade() else { break };
+                streams.spawn(route_stream(shared, session.clone(), send, recv));
+            }
+            Some(_) = streams.join_next(), if !streams.is_empty() => {}
+        }
     }
 }
 
-async fn datagrams(session: &Arc<Session>, shared: &Weak<Shared>) {
+/// Reads a stream's header and serves it as what it says it is.
+async fn route_stream(
+    shared: Arc<Shared>,
+    session: Arc<Session>,
+    mut send: SendStream,
+    mut recv: RecvStream,
+) {
+    let Some(header) = crate::transfer::read_header(&mut recv).await else {
+        crate::transfer::refuse_unknown(send).await;
+        return;
+    };
+    if header.op == lanes::OP_LANE {
+        match lanes::LANE_SERVICES.iter().find(|svc| **svc == header.svc) {
+            Some(svc) if header.v == lanes::VERSION => {
+                crate::lane::serve(shared, session, svc, send, recv).await
+            }
+            _ => crate::transfer::refuse_unknown(send).await,
+        }
+        return;
+    }
+    if let Some(op) = lanes::rpc_by_header(&header.svc, &header.op) {
+        if header.v != lanes::VERSION {
+            return crate::transfer::refuse_unknown(send).await;
+        }
+        match session.rpc_in.clone().try_acquire_owned() {
+            Ok(slot) => crate::rpc::serve(shared, session, op, send, recv, slot).await,
+            Err(_) => crate::rpc::refuse_busy(&session, op, send).await,
+        }
+        return;
+    }
+    let Ok(slot) = session.streams_in.clone().try_acquire_owned() else {
+        wire_stats::busy(&session.counters, &header.svc, &header.op, LaneKind::Stream, true);
+        let busy = Envelope::error(ErrorCode::Busy, TOO_MANY_STREAMS);
+        let _ = write_frame(&mut send, &busy.to_cbor()).await;
+        let _ = send.finish();
+        return;
+    };
+    // Media and bulk streams hold the connection and end with it, not with
+    // the session's tasks: a transfer cleans up after itself when its stream fails.
+    let peer = session.peer;
+    let counters = session.counters.clone();
+    let conn = session.conn.clone();
+    tokio::spawn(async move {
+        if counters.streams_in.fetch_add(1, Ordering::Relaxed) == 0 {
+            tokio::spawn(report_conn(conn, counters.clone()));
+        }
+        let _ = send.set_priority(crate::lane::priority_of(&header.svc, &header.op));
+        crate::transfer::serve_stream(shared, peer, header, send, recv).await;
+        counters.streams_in.fetch_sub(1, Ordering::Relaxed);
+        drop(slot);
+    });
+    drop(session);
+}
+
+/// Every 5 s while a media or bulk stream from the peer runs: how the
+/// connection carries it (`plans/protocol-v1-contract.md` §3, `conn`).
+async fn report_conn(conn: Connection, counters: Arc<Counters>) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if counters.streams_in.load(Ordering::Relaxed) == 0 || conn.close_reason().is_some() {
+            return;
+        }
+        let stats = conn.stats();
+        let rtt = conn.paths().iter().find(|p| p.is_selected()).map_or(Duration::ZERO, |p| p.rtt());
+        wire_stats::conn(stats.lost_packets, 0, rtt, stats.udp_tx.bytes);
+    }
+}
+
+/// Reads datagrams: pointer motion and PC sound. Calls nothing that waits.
+async fn datagrams(session: Arc<Session>, shared: Weak<Shared>) {
+    session.wait_ready().await;
     loop {
         match session.conn.read_datagram().await {
             Ok(bytes) => {
                 session.touch_rx();
                 let Some(shared) = shared.upgrade() else { return };
-                if bytes.len() > 10 && &bytes[0..4] == b"NLPA" {
-                    let sample_rate = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-                    let channels = bytes[8];
-                    let pcm = bytes[10..].to_vec();
-                    if shared.toggle_on(&session.peer, crate::media::TOGGLE)
-                        && pcm_frame_ok(sample_rate, channels, pcm.len())
-                    {
-                        shared.emit(NodeEvent::PcAudioFrame {
-                            device: session.peer,
-                            sample_rate,
-                            channels,
-                            pcm,
-                        });
-                    }
-                } else {
-                    crate::remote::handle_datagram(&shared, session.peer, &bytes);
+                match bytes.first() {
+                    Some(&g7link_protocol::DATAGRAM_SOUND) => sound_datagram(&shared, &session, &bytes),
+                    Some(&g7link_protocol::DATAGRAM_INPUT) => match RemoteInput::from_datagram(&bytes) {
+                        Ok(event) => session.motion.push(event, &session.counters),
+                        Err(_) => Counters::add(&session.counters.unknown_datagrams, 1),
+                    },
+                    _ => Counters::add(&session.counters.unknown_datagrams, 1),
                 }
             }
             Err(_) => {
@@ -851,23 +1080,6 @@ async fn datagrams(session: &Arc<Session>, shared: &Weak<Shared>) {
                 std::future::pending::<()>().await;
             }
         }
-    }
-}
-
-pub(crate) async fn probe_after_network_change(shared: &Arc<Shared>, session: &Arc<Session>) {
-    if !session.is_alive() {
-        return;
-    }
-    if !shared.is_connection_allowed(&session.conn) {
-        tracing::info!(peer = %session.peer.short(), "closing non-LAN session after network change");
-        session.close(CLOSE_NORMAL, b"away mode disabled");
-        return;
-    }
-    let probe_start = Instant::now();
-    let Ok(ping) = Envelope::new(types::PING, &Ping { ts: 0 }) else { return };
-    if session.request(ping, Duration::from_millis(2000)).await.is_err() && !session.rx_since(probe_start) {
-        tracing::info!(peer = %session.peer.short(), "closing unreachable session after network change");
-        session.close(CLOSE_NORMAL, b"network lost");
     }
 }
 
@@ -908,56 +1120,227 @@ impl Interactive {
     }
 }
 
-async fn heartbeat(session: &Arc<Session>, shared: &Weak<Shared>) {
+/// The heartbeat's view of whether the session still has a direct path this
+/// device allows (`plans/disconnects.md` cause 2). Paths come and go while
+/// QUIC moves between them, so one look without one is no reason to close:
+/// it takes two heartbeats and at least [`PathWatch::CLOSE_AFTER`].
+#[derive(Debug, Default)]
+pub(crate) struct PathWatch {
+    missing_since: Option<Instant>,
+    misses: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathVerdict {
+    Allowed,
+    /// The first look without an allowed path: worth asking QUIC to look again.
+    FirstMiss,
+    Missing,
+    Close,
+}
+
+impl PathWatch {
+    pub(crate) const CLOSE_AFTER: Duration = Duration::from_secs(10);
+
+    pub(crate) fn observe(&mut self, allowed: bool, now: Instant) -> PathVerdict {
+        if allowed {
+            *self = PathWatch::default();
+            return PathVerdict::Allowed;
+        }
+        self.misses += 1;
+        let since = *self.missing_since.get_or_insert(now);
+        if self.misses >= 2 && now.saturating_duration_since(since) >= Self::CLOSE_AFTER {
+            PathVerdict::Close
+        } else if self.misses == 1 {
+            PathVerdict::FirstMiss
+        } else {
+            PathVerdict::Missing
+        }
+    }
+
+    fn missing(&self) -> bool {
+        self.missing_since.is_some()
+    }
+}
+
+/// The heartbeat's two strikes (`plans/disconnects.md` cause 3): a round
+/// with no answer and nothing received is a strike, and the session closes
+/// only when the next round also gets nothing, with no bytes in between.
+#[derive(Debug, Default)]
+pub(crate) struct Strikes {
+    /// The bytes received when the strike was given.
+    struck_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Liveness {
+    Alive,
+    Strike,
+    Dead,
+}
+
+impl Strikes {
+    /// After a round of pings: whether anything answered, and the bytes
+    /// received on the connection so far.
+    pub(crate) fn round(&mut self, answered: bool, received: u64) -> Liveness {
+        if answered {
+            self.struck_at = None;
+            return Liveness::Alive;
+        }
+        match self.struck_at {
+            Some(before) if received <= before => Liveness::Dead,
+            _ => {
+                self.struck_at = Some(received);
+                Liveness::Strike
+            }
+        }
+    }
+
+    fn struck(&self) -> bool {
+        self.struck_at.is_some()
+    }
+}
+
+/// How soon the heartbeat pings again after a strike.
+const STRIKE_RETRY: Duration = Duration::from_secs(2);
+/// How soon it looks again while no allowed path is left.
+const PATH_RECHECK: Duration = Duration::from_secs(5);
+
+impl Session {
+    /// The node registered the session: what the peer sends may be handled.
+    pub(crate) fn mark_ready(&self) {
+        self.ready.store(true, Ordering::Release);
+        self.ready_notify.notify_waiters();
+    }
+
+    /// Waits until [`Session::mark_ready`], so the apps hear the peer is
+    /// online before they hear anything from it.
+    async fn wait_ready(&self) {
+        loop {
+            let notified = self.ready_notify.notified();
+            if self.ready.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Has the heartbeat ping now (a network change here). A wake while a
+    /// ping is out is absorbed, and wakes come at most once per
+    /// [`WAKE_EVERY`] per session, so a burst of changes costs one ping.
+    pub(crate) fn wake_heartbeat(&self) {
+        let now = Instant::now();
+        let mut last = self.heartbeat_woken.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| now.saturating_duration_since(at) < WAKE_EVERY) {
+            return;
+        }
+        *last = Some(now);
+        drop(last);
+        self.ping_now.notify_waiters();
+    }
+}
+
+/// How often a network change may wake one session's heartbeat, at most.
+const WAKE_EVERY: Duration = Duration::from_secs(5);
+
+/// One round of pings: whether the peer answered, or anything at all came
+/// from it while it ran. The pong's round trip, when one came.
+async fn ping_round(session: &Session, started: Instant) -> (bool, Option<Duration>) {
+    let sent_at = Instant::now();
+    let received = received_bytes(session);
+    let ts = sent_at.duration_since(started).as_millis() as u64;
+    let Ok(ping) = Envelope::new(types::PING, &Ping { ts }) else { return (true, None) };
+    Counters::add(&session.counters.heartbeat_pings, 1);
+    match session.request(ping, HEARTBEAT_TIMEOUT).await {
+        Ok(reply) if reply.t == types::PONG => return (true, Some(sent_at.elapsed())),
+        Ok(_) => return (true, None),
+        Err(_) => {}
+    }
+    // No answer, but the peer's packets arriving still count: a slow link is
+    // full of what's being sent, and the answer is queued behind it.
+    if session.rx_since(sent_at) || received_bytes(session) > received {
+        return (true, None);
+    }
+    let retry_ts = started.elapsed().as_millis() as u64;
+    Counters::add(&session.counters.heartbeat_pings, 1);
+    if let Ok(retry) = Envelope::new(types::PING, &Ping { ts: retry_ts })
+        && matches!(session.request(retry, HEARTBEAT_RETRY_TIMEOUT).await, Ok(r) if r.t == types::PONG)
+    {
+        return (true, None);
+    }
+    (session.rx_since(sent_at) || received_bytes(session) > received, None)
+}
+
+async fn heartbeat(session: Arc<Session>, shared: Weak<Shared>) {
+    let (session, shared) = (&session, &shared);
     let started = Instant::now();
     let interactive = shared.upgrade().map(|s| s.interactive.clone()).unwrap_or_default();
+    let mut paths = PathWatch::default();
+    let mut strikes = Strikes::default();
     // The first ping goes out right away, for the round-trip time.
     let mut first = true;
     loop {
         if !first {
-            interactive.wait_for_next_ping().await;
-        }
-        first = false;
-        if let Some(shared_arc) = shared.upgrade()
-            && !shared_arc.is_connection_allowed(&session.conn)
-        {
-            tracing::info!(peer = %session.peer.short(), "closing session on disallowed non-LAN path");
-            session.close(CLOSE_NORMAL, b"away mode disabled");
-            return;
-        }
-        let sent_at = Instant::now();
-        let received = received_bytes(session);
-        let ts = sent_at.duration_since(started).as_millis() as u64;
-        let Ok(ping) = Envelope::new(types::PING, &Ping { ts }) else { continue };
-        match session.request(ping, HEARTBEAT_TIMEOUT).await {
-            Ok(reply) if reply.t == types::PONG => {
-                if let Some(shared_arc) = shared.upgrade() {
-                    let rtt = sent_at.elapsed().as_millis().min(u32::MAX as u128) as u32;
-                    let previous = session.rtt_ms.swap(rtt, Ordering::Relaxed);
-                    if previous.abs_diff(rtt) >= 5 {
-                        shared_arc.publish_online(session);
-                    }
+            let woken = session.ping_now.notified();
+            if strikes.struck() {
+                tokio::time::sleep(STRIKE_RETRY).await;
+            } else if paths.missing() {
+                tokio::time::sleep(PATH_RECHECK.min(heartbeat_period(interactive.get()))).await;
+            } else {
+                tokio::select! {
+                    () = interactive.wait_for_next_ping() => {}
+                    () = woken => {}
                 }
             }
-            Ok(_) => {}
-            Err(_) if session.rx_since(sent_at) => {}
-            // No answer, but the peer's packets are arriving: a slow link is full
-            // of what's being sent, and the answer is queued behind it.
-            Err(_) if received_bytes(session) > received => {}
-            Err(e) => {
-                // Retry once; if still unreachable and no frames arrived, close.
-                let retry_ts = started.elapsed().as_millis() as u64;
-                let alive = if let Ok(retry_ping) = Envelope::new(types::PING, &Ping { ts: retry_ts }) {
-                    matches!(session.request(retry_ping, HEARTBEAT_RETRY_TIMEOUT).await, Ok(r) if r.t == types::PONG)
-                        || session.rx_since(sent_at)
-                } else {
-                    session.rx_since(sent_at)
+        }
+        first = false;
+        if let Some(shared) = shared.upgrade() {
+            let allowed = shared.session_path_allowed(session) && !shared.debug_paths_refused();
+            if allowed == paths.missing() {
+                let all = session.conn.paths();
+                let selected = match all.iter().find(|p| p.is_selected()) {
+                    Some(p) if p.is_relay() => "relay",
+                    Some(_) => "direct",
+                    None => "none",
                 };
-                if !alive && received_bytes(session) <= received {
-                    tracing::info!(peer = %session.peer.short(), error = %e, "heartbeat timed out; closing dead session");
-                    session.close(CLOSE_NORMAL, b"heartbeat timeout");
+                wire_stats::path_policy(allowed, all.len(), selected);
+            }
+            match paths.observe(allowed, Instant::now()) {
+                PathVerdict::Allowed | PathVerdict::Missing => {}
+                PathVerdict::FirstMiss => {
+                    tracing::debug!(peer = %session.peer.short(), "no allowed path for now; looking again");
+                    shared.endpoint.network_change().await;
+                }
+                PathVerdict::Close => {
+                    tracing::info!(peer = %session.peer.short(), "closing session on disallowed non-LAN path");
+                    wire_stats::liveness("path", session.started.elapsed());
+                    session.close(CLOSE_NORMAL, b"away mode disabled");
                     return;
                 }
+            }
+        }
+        let (answered, rtt) = ping_round(session, started).await;
+        if let Some(rtt) = rtt
+            && let Some(shared) = shared.upgrade()
+        {
+            let rtt_ms = rtt.as_millis().min(u128::from(u32::MAX)) as u32;
+            let path = session.path_rtt();
+            wire_stats::rtt(rtt, path);
+            let previous = session.rtt_ms.swap(rtt_ms, Ordering::Relaxed);
+            if previous.abs_diff(rtt_ms) >= 5 {
+                shared.publish_online(session);
+            }
+        }
+        match strikes.round(answered, received_bytes(session)) {
+            Liveness::Alive => {}
+            Liveness::Strike => {
+                tracing::debug!(peer = %session.peer.short(), "no answer to a heartbeat; one more try");
+            }
+            Liveness::Dead => {
+                tracing::info!(peer = %session.peer.short(), "heartbeat timed out; closing dead session");
+                wire_stats::liveness("heartbeat", session.started.elapsed());
+                session.close(CLOSE_NORMAL, b"heartbeat timeout");
+                return;
             }
         }
     }
@@ -972,8 +1355,8 @@ fn received_bytes(session: &Session) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Interactive, heartbeat_period, is_lan_ip, is_lan_peer_ip, is_same_ipv6_subnet, is_tailnet_ip,
-        pcm_frame_ok,
+        Interactive, Liveness, PathVerdict, PathWatch, Strikes, heartbeat_period, is_lan_ip, is_lan_peer_ip,
+        is_same_ipv6_subnet, is_tailnet_ip,
     };
     use std::{
         net::{IpAddr, Ipv6Addr, SocketAddr},
@@ -1051,16 +1434,43 @@ mod tests {
     }
 
     #[test]
-    fn pc_audio_frames_must_be_whole_16_bit_frames_at_a_sane_rate() {
-        assert!(pcm_frame_ok(48_000, 2, 960));
-        assert!(pcm_frame_ok(8_000, 1, 2));
-        assert!(!pcm_frame_ok(48_000, 2, 962), "half a stereo frame");
-        assert!(!pcm_frame_ok(48_000, 1, 3), "half a sample");
-        assert!(!pcm_frame_ok(48_000, 2, 0));
-        assert!(!pcm_frame_ok(7_999, 1, 2));
-        assert!(!pcm_frame_ok(4_000_000_000, 2, 4));
-        assert!(!pcm_frame_ok(48_000, 3, 6));
-        assert!(!pcm_frame_ok(48_000, 0, 4));
+    fn no_allowed_path_must_last_to_close() {
+        let start = std::time::Instant::now();
+        let at = |s: u64| start + Duration::from_secs(s);
+        let mut watch = PathWatch::default();
+        assert_eq!(watch.observe(false, at(0)), PathVerdict::FirstMiss);
+        assert_eq!(watch.observe(false, at(5)), PathVerdict::Missing, "two misses, but only 5 s");
+        assert_eq!(watch.observe(true, at(8)), PathVerdict::Allowed, "a path came back");
+        assert_eq!(watch.observe(false, at(9)), PathVerdict::FirstMiss, "counting starts over");
+        assert_eq!(watch.observe(false, at(14)), PathVerdict::Missing);
+        assert_eq!(watch.observe(false, at(19)), PathVerdict::Close, "10 s across two heartbeats");
+        // One long look alone isn't two heartbeats.
+        let mut watch = PathWatch::default();
+        assert_eq!(watch.observe(false, at(0)), PathVerdict::FirstMiss);
+        assert_eq!(watch.observe(false, at(30)), PathVerdict::Close);
+    }
+
+    #[test]
+    fn one_missed_heartbeat_round_is_a_strike_not_a_close() {
+        let mut strikes = Strikes::default();
+        assert_eq!(strikes.round(false, 100), Liveness::Strike);
+        assert_eq!(strikes.round(true, 100), Liveness::Alive, "answered: the strike is gone");
+        assert_eq!(strikes.round(false, 100), Liveness::Strike);
+    }
+
+    #[test]
+    fn two_missed_rounds_with_no_bytes_close() {
+        let mut strikes = Strikes::default();
+        assert_eq!(strikes.round(false, 100), Liveness::Strike);
+        assert_eq!(strikes.round(false, 100), Liveness::Dead);
+    }
+
+    #[test]
+    fn bytes_arriving_clear_the_strike() {
+        let mut strikes = Strikes::default();
+        assert_eq!(strikes.round(false, 100), Liveness::Strike);
+        assert_eq!(strikes.round(false, 180), Liveness::Strike, "bytes came between the rounds");
+        assert_eq!(strikes.round(false, 180), Liveness::Dead);
     }
 
     #[test]

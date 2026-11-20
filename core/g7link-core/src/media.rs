@@ -23,7 +23,9 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, Result, events::NodeEvent, features::role_of, node::Shared, session::Session};
+use crate::{
+    Error, Result, dispatch::Responder, events::NodeEvent, features::role_of, node::Shared, session::Session,
+};
 
 /// How long a Play on phone offer stays open for the phone to take.
 const WATCH_OFFER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -288,7 +290,7 @@ impl Shared {
         let stamp = self.store.set_toggle_changed(&peer, BT_MEDIA_TOGGLE, on_pc, crate::now_unix_ms())?;
         let Some(session) = self.session(&peer) else { return Ok(()) };
         let body = AudioBtMedia { on_pc, changed_ms: u64::try_from(stamp).ok() };
-        let Ok(env) = Envelope::new(types::AUDIO_BT_MEDIA, &body) else { return Ok(()) };
+        let Ok(env) = Envelope::new(types::MEDIA_BT, &body) else { return Ok(()) };
         if let Err(error) = session.send_now(env) {
             tracing::debug!(peer = %peer.short(), %error, "couldn't send bt_media");
         }
@@ -307,7 +309,7 @@ impl Shared {
         let Ok(Some((on_pc, stamp))) = self.store.stamped_toggle(&peer, BT_MEDIA_TOGGLE) else { return };
         let Ok(stamp) = u64::try_from(stamp) else { return };
         let body = AudioBtMedia { on_pc, changed_ms: Some(stamp) };
-        if let Ok(env) = Envelope::new(types::AUDIO_BT_MEDIA, &body) {
+        if let Ok(env) = Envelope::new(types::MEDIA_BT, &body) {
             let _ = session.send(env).await;
         }
     }
@@ -355,7 +357,12 @@ impl Shared {
 }
 
 /// Handles a `media.*` message on a session. Returns false for other types.
-pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &Envelope) -> Result<bool> {
+pub(crate) async fn handle(
+    shared: &Arc<Shared>,
+    session: &Arc<Session>,
+    env: &Envelope,
+    rsp: &Responder<'_>,
+) -> Result<bool> {
     let peer = session.peer;
     match env.t.as_str() {
         types::MEDIA_STATE => {
@@ -369,18 +376,16 @@ pub(crate) async fn handle(shared: &Arc<Shared>, session: &Arc<Session>, env: &E
         types::MEDIA_SYNC => shared.send_media_state(session).await,
         types::MEDIA_WATCH => {
             let reply = watch_offered(shared, &peer, env.body()?).await;
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         types::MEDIA_COMMAND => {
             let command: MediaCommand = env.body()?;
             let reply = run_command(shared, &peer, command).await;
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
-        // A reply that came after its request gave up.
-        types::MEDIA_ICON if env.re.is_some() => {}
         types::MEDIA_ICON => {
             let reply = serve_icon(shared, &peer, env).await;
-            session.send(reply.reply_to(env.id)).await?;
+            rsp.send(reply).await?;
         }
         _ => return Ok(false),
     }
@@ -662,7 +667,7 @@ async fn serve_icon(shared: &Arc<Shared>, peer: &DeviceId, env: &Envelope) -> En
     let platform = shared.platform.clone();
     let png = tokio::task::spawn_blocking(move || platform.media_icon(&key)).await.ok().flatten();
     match png {
-        Some(png) if is_icon(&png) => Envelope::new(types::MEDIA_ICON, &MediaIcon { png })
+        Some(png) if is_icon(&png) => Envelope::new(types::OK, &MediaIcon { png })
             .unwrap_or_else(|_| Envelope::error(ErrorCode::Internal, "failed")),
         Some(png) => {
             tracing::warn!(bytes = png.len(), "a player's icon isn't a PNG that fits");
@@ -687,7 +692,7 @@ pub(crate) async fn icon(shared: &Arc<Shared>, session: &Session, key: String) -
     }
     let env = Envelope::new(types::MEDIA_ICON, &MediaKey { key })?;
     let reply = session.request(env, crate::session::REQUEST_TIMEOUT).await?;
-    let MediaIcon { png } = reply.expect_body(types::MEDIA_ICON)?;
+    let MediaIcon { png } = reply.expect_body(types::OK)?;
     if !is_icon(&png) {
         return Err(Error::Protocol("media.icon isn't a PNG that fits".into()));
     }

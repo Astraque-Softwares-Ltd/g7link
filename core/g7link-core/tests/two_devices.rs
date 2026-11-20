@@ -121,6 +121,25 @@ struct RecordingPlatform {
     media_art_asks: AtomicUsize,
     /// The icon `media_icon` serves.
     media_icon: Mutex<Option<Vec<u8>>>,
+    /// How long a platform call takes, by hook name: a slow platform, held
+    /// with `std::thread::sleep` inside the call.
+    delays: Mutex<std::collections::HashMap<&'static str, Duration>>,
+    /// When set, what `contacts` lists instead of its fixed few.
+    contacts_list: Mutex<Option<Vec<g7link_core::Contact>>>,
+}
+
+impl RecordingPlatform {
+    /// Takes as long as `hook` was told to.
+    fn slow(&self, hook: &'static str) {
+        let delay = self.delays.lock().unwrap().get(hook).copied();
+        if let Some(delay) = delay {
+            std::thread::sleep(delay);
+        }
+    }
+
+    fn set_delay(&self, hook: &'static str, delay: Duration) {
+        self.delays.lock().unwrap().insert(hook, delay);
+    }
 }
 
 impl Platform for RecordingPlatform {
@@ -151,6 +170,7 @@ impl Platform for RecordingPlatform {
         Ok(())
     }
     fn set_clipboard_rich(&self, text: &str, html: Option<&str>, rtf: Option<&str>) -> Result<(), String> {
+        self.slow("set_clipboard");
         self.clipboard.lock().unwrap().push(text.to_owned());
         self.clipboard_rich.lock().unwrap().push((
             text.to_owned(),
@@ -350,9 +370,14 @@ impl Platform for RecordingPlatform {
         Ok(())
     }
     fn sms_part(&self, id: &str) -> Result<(String, Vec<u8>), String> {
+        self.slow("sms_part");
+        if id == "big" {
+            return Ok(("image/jpeg".into(), vec![7; 900 * 1024]));
+        }
         if id == "p1" { Ok(("image/jpeg".into(), vec![1, 2, 3])) } else { Err("gone".into()) }
     }
     fn call_command(&self, id: &str, command: g7link_core::CallCommand) -> Result<(), String> {
+        self.slow("call_command");
         self.calls.lock().unwrap().push((id.to_owned(), command));
         Ok(())
     }
@@ -407,6 +432,10 @@ impl Platform for RecordingPlatform {
         let gate = self.contacts_gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.pass();
+        }
+        self.slow("contacts");
+        if let Some(list) = self.contacts_list.lock().unwrap().clone() {
+            return Ok(list);
         }
         let all = vec![
             Contact {
@@ -546,6 +575,7 @@ impl Platform for RecordingPlatform {
         Ok(ids.iter().filter(|id| id.as_str() != "gone").count() as u32)
     }
     fn photo_thumbs(&self, ids: &[String]) -> Result<Vec<g7link_core::PhotoThumb>, String> {
+        self.slow("photo_thumbs");
         use g7link_core::PhotoThumb;
         Ok(ids
             .iter()
@@ -571,6 +601,7 @@ impl Platform for RecordingPlatform {
         if player == "gone" {
             return Err(MediaError::NotFound);
         }
+        self.slow("media_command");
         self.media.lock().unwrap().push((player.to_owned(), action, position));
         if let Some(value) = value {
             self.media_values.lock().unwrap().push((player.to_owned(), action, value.to_owned()));
@@ -589,6 +620,7 @@ impl Platform for RecordingPlatform {
         _peer: &g7link_core::DeviceId,
         input: g7link_core::RemoteInput,
     ) -> Result<(), String> {
+        self.slow("remote_input");
         self.remote_inputs.lock().unwrap().push(input);
         Ok(())
     }
@@ -607,6 +639,10 @@ impl Platform for RecordingPlatform {
     ) -> Result<g7link_core::AgentReply, g7link_core::AgentFailure> {
         use g7link_core::{AgentFailure, AgentReply, AgentRequest};
         self.agent_requests.lock().unwrap().push((*from, request.clone()));
+        match request {
+            AgentRequest::SessionRead { .. } | AgentRequest::Read { .. } => self.slow("agent_read"),
+            _ => self.slow("agent_request"),
+        }
         match request {
             AgentRequest::Threads => {
                 Ok(AgentReply::Threads(vec![agent_thread(AGENT_THREAD, "working", true)]))
@@ -2659,8 +2695,9 @@ async fn a_held_pc_gets_no_notifications_and_catches_up_afterwards() {
     .await;
 
     pc.node.hold_notifications(true).await;
-    // A round trip after the hold, so the phone has it before posting.
-    with_timeout("ping", pc.node.run_notification_action(phone_id, "a".into(), "1".into(), None)).await.ok();
+    // The hold travels on the notify lane: wait until the phone has it before posting.
+    let pc_id = pc.node.device_id();
+    until("the phone holds", || phone.node.debug_notifications_held(pc_id)).await;
     phone.node.notification_posted(note("b", "com.chat", "Alex", false)).await;
     phone
         .node
@@ -4319,23 +4356,21 @@ async fn a_pc_cant_keep_more_contact_lookups_running_than_the_background_limit()
             tokio::spawn(async move { pc.contacts(phone_id, None, 0, 10).await })
         })
         .collect();
-    let settled = || gate.held() + asks.iter().filter(|a| a.is_finished()).count() >= asks.len();
-    until("every lookup running or turned away", settled).await;
-    // The ones past the limit are turned away while the others run, not started on the side.
+    // The PC has at most 16 RPCs in flight to a phone; the rest wait their turn.
+    until("the first lookups running", || gate.held() >= 16).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let running = gate.held();
-    assert!(running <= 32, "{running} lookups running at once");
+    assert!(running <= 16, "{running} lookups running at once");
+    assert!(asks.iter().all(|a| !a.is_finished()), "none is turned away");
 
     gate.open();
-    let (mut answered, mut busy) = (0, 0);
     for ask in asks {
-        match with_timeout("contacts lookup", ask).await.unwrap() {
-            Ok(_) => answered += 1,
-            Err(Error::Denied) => busy += 1,
-            Err(e) => panic!("unexpected {e:?}"),
+        if let Err(e) = with_timeout("contacts lookup", ask).await.unwrap() {
+            panic!("unexpected {e:?}");
         }
     }
-    assert_eq!((answered, busy), (running, 40 - running));
+    let counters = pc.node.wire_counters(phone_id).unwrap();
+    assert_eq!(counters.busy_received, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -8496,27 +8531,29 @@ async fn a_lagging_event_subscriber_doesnt_keep_sound_piling_up() {
     pair_qr(&mut pc, &mut phone).await;
     let phone_id = phone.node.device_id();
 
-    // `phone.events` isn't read from here on, so everything sent stays in the ring for it.
-    // A second subscriber that keeps up hears each frame before the next goes.
+    // `phone.events` isn't read from here on. Sound comes in pieces of at most
+    // 960 bytes (`docs/protocol/v1.md` §5), so the event ring holds at most its
+    // 2048 events of it, under 2 MiB: a subscriber that lags loses the oldest
+    // instead of keeping sound piling up. A second subscriber keeps up.
     let mut listener = phone.node.events();
     const FRAME: usize = 64 * 1024;
-    const SENT: usize = 400;
+    const SENT: usize = 64;
     let mut heard = 0;
-    for _ in 0..SENT {
+    for sent in 1..=SENT {
         pc.node.send_pc_audio_pcm(&phone_id, 48_000, 2, vec![0; FRAME]).await.unwrap();
-        let next = tokio::time::timeout(Duration::from_secs(1), async {
-            while !matches!(listener.recv().await, Ok(NodeEvent::PcAudioFrame { .. })) {}
-        })
-        .await;
-        if next.is_err() {
-            break;
+        while heard < sent * FRAME {
+            match tokio::time::timeout(Duration::from_millis(500), listener.recv()).await {
+                Ok(Ok(NodeEvent::PcAudioFrame { pcm, .. })) => heard += pcm.len(),
+                Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+                _ => break,
+            }
         }
-        heard += 1;
     }
-    // Heard until the 16 MiB the ring may hold of sound was reached, and let go after.
-    assert!(heard > 0, "the phone never surfaced the PC's audio");
-    assert!(heard * FRAME <= 16 * 1024 * 1024, "{heard} frames of {FRAME} bytes held");
-    assert!(heard < SENT);
+    assert!(heard > SENT * FRAME / 2, "the phone surfaced {heard} bytes of the PC's audio");
+    assert!(
+        matches!(phone.events.try_recv(), Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))),
+        "the subscriber that didn't read lost the oldest sound rather than holding all of it"
+    );
 
     pc.node.shutdown().await;
     phone.node.shutdown().await;
@@ -9116,7 +9153,7 @@ async fn spoofed_usb_hello_is_not_trusted_without_matching_quic_identity() {
         let json = format!(r#"{{"v":1,"id":"{id}","name":"{name}"}}"#);
         let bytes = json.as_bytes();
         let mut header = [0u8; 6];
-        header[..4].copy_from_slice(b"NLQU");
+        header[..4].copy_from_slice(b"G7QU");
         header[4..6].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
         stream.write_all(&header).await.unwrap();
         stream.write_all(bytes).await.unwrap();
@@ -9126,7 +9163,7 @@ async fn spoofed_usb_hello_is_not_trusted_without_matching_quic_identity() {
     async fn read_usb_hello(stream: &mut tokio::net::TcpStream) {
         let mut header = [0u8; 6];
         stream.read_exact(&mut header).await.unwrap();
-        assert_eq!(&header[..4], b"NLQU");
+        assert_eq!(&header[..4], b"G7QU");
         let len = u16::from_be_bytes([header[4], header[5]]) as usize;
         let mut payload = vec![0u8; len];
         stream.read_exact(&mut payload).await.unwrap();
@@ -11587,4 +11624,769 @@ async fn a_thumbnail_is_a_small_jpeg() {
         "NOT_FOUND",
     );
     assert!(matches!(phone.node.agent_image_thumb(pc_id, "x".into(), None).await, Err(Error::Protocol(_))));
+}
+
+// ---- Protocol v1: lanes, RPC streams, limits, handshake (plans/protocol-v1-contract.md §4) ----
+
+/// How long an answer may take on loopback while another service is busy.
+const SNAPPY: Duration = Duration::from_millis(300);
+
+/// A `ping` on control from `dev` to `peer`: how long its `pong` took.
+async fn ping(dev: &TestDevice, peer: g7link_core::DeviceId) -> Duration {
+    use g7link_protocol::{
+        Envelope,
+        messages::{Ping, types},
+    };
+    let started = std::time::Instant::now();
+    let env = Envelope::new(types::PING, &Ping { ts: 0 }).unwrap();
+    let reply = with_timeout("ping", dev.node.debug_request(peer, env, WAIT)).await.unwrap();
+    assert_eq!(reply.t, types::PONG);
+    started.elapsed()
+}
+
+/// A PC that takes `phone`'s touchpad and keyboard, paired with it.
+async fn input_pair() -> (TestDevice, TestDevice) {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    pc.node
+        .update_power(
+            PowerLevel::NotApplicable,
+            vec!["media.control".into(), g7link_core::INPUT_INJECT.into()],
+        )
+        .await;
+    wait_for(&mut phone, "input available", |e| match e {
+        NodeEvent::Capabilities(m)
+            if m.device == pc_id && m.state("input.remote") == Some(FeatureState::Available) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    pc.node.set_device_toggle(phone_id, "remote_input", true).unwrap();
+    with_timeout("check", phone.node.remote_check(pc_id)).await.unwrap();
+    (pc, phone)
+}
+
+fn enter() -> g7link_core::RemoteInput {
+    g7link_core::RemoteInput::Key { key: "enter".into(), mods: Vec::new() }
+}
+
+fn ringing(id: &str) -> g7link_core::CallState {
+    g7link_core::CallState {
+        id: id.into(),
+        state: "ringing".into(),
+        incoming: true,
+        number: Some("+15550100".into()),
+        name: Some("Sam".into()),
+        photo: None,
+        missed: false,
+        since: None,
+        controls: None,
+    }
+}
+
+/// A PC showing `phone`'s calls, with a call ringing on the phone.
+async fn ringing_call(pc: &mut TestDevice, phone: &TestDevice) {
+    let phone_id = phone.node.device_id();
+    phone.node.call_changed(ringing("c1")).await.unwrap();
+    wait_for(pc, "ringing", |e| match e {
+        NodeEvent::Call { device, call } if *device == phone_id && call.id == "c1" => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_media_command_doesnt_delay_a_key_press() {
+    let (mut pc, phone) = input_pair().await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    phone.node.media_changed(vec![player("com.music", "Song", None)]).await;
+    wait_for(&mut pc, "media", media_of(phone_id)).await;
+
+    phone.platform.set_delay("media_command", Duration::from_secs(2));
+    let slow = {
+        let pc = pc.node.clone();
+        tokio::spawn(
+            async move { pc.media_command(phone_id, "com.music".into(), MediaAction::Pause, None).await },
+        )
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = std::time::Instant::now();
+    with_timeout("key", phone.node.remote_input(pc_id, enter())).await.unwrap();
+    let key = started.elapsed();
+    assert!(key < SNAPPY, "the key took {key:?}");
+    let pong = ping(&phone, pc_id).await;
+    assert!(pong < SNAPPY, "the ping took {pong:?}");
+    assert!(!slow.is_finished(), "the media command is still running");
+    with_timeout("media command", slow).await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_agent_read_doesnt_delay_a_call_action() {
+    use g7link_core::CallCommand;
+    let mut phone = device_with(
+        "Pixel",
+        DeviceKind::Phone,
+        &[g7link_core::agent::FOLLOW, g7link_core::CALLS_STATE, g7link_core::CALLS_CONTROL],
+    )
+    .await;
+    let mut pc = device_with(
+        "Desktop",
+        DeviceKind::Desktop,
+        &[g7link_core::agent::HOST, g7link_core::agent::SESSIONS, g7link_core::CALLS_SHOW],
+    )
+    .await;
+    pc.node.set_agent_catalog(Some(agent_catalog())).await.unwrap();
+    *pc.platform.agent_sessions.lock().unwrap() = vec![agent_session(FOLLOWED_SESSION, "Fix the login test")];
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    allow_sessions(&pc, &mut phone).await;
+    ringing_call(&mut pc, &phone).await;
+
+    pc.platform.set_delay("agent_read", Duration::from_secs(5));
+    let reading = {
+        let phone = phone.node.clone();
+        tokio::spawn(async move { phone.agent_session_read(pc_id, FOLLOWED_SESSION.into(), None, 50).await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = std::time::Instant::now();
+    with_timeout("answer", pc.node.call_command(phone_id, "c1".into(), CallCommand::Answer)).await.unwrap();
+    let answer = started.elapsed();
+    assert!(answer < SNAPPY, "the call action took {answer:?}");
+    with_timeout("read", reading).await.unwrap().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn media_commands_still_run_in_the_order_sent() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    phone.node.media_changed(vec![player("com.music", "Song", None)]).await;
+    wait_for(&mut pc, "media", media_of(phone_id)).await;
+    phone.platform.set_delay("media_command", Duration::from_millis(20));
+
+    let command = |action| pc.node.media_command(phone_id, "com.music".into(), action, None);
+    let (play, pause, again) =
+        tokio::join!(command(MediaAction::Play), command(MediaAction::Pause), command(MediaAction::Play));
+    play.unwrap();
+    pause.unwrap();
+    again.unwrap();
+    let ran: Vec<MediaAction> = phone.platform.media.lock().unwrap().iter().map(|(_, a, _)| *a).collect();
+    assert_eq!(ran, [MediaAction::Play, MediaAction::Pause, MediaAction::Play]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_large_reply_doesnt_delay_control() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::SMS_SHOW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::SMS_READ]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+
+    let parts: Vec<_> = (0..4)
+        .map(|_| {
+            let pc = pc.node.clone();
+            tokio::spawn(async move {
+                for _ in 0..5 {
+                    let (_, data) = pc.sms_part(phone_id, "big".into()).await.unwrap();
+                    assert_eq!(data.len(), 900 * 1024);
+                }
+            })
+        })
+        .collect();
+    let mut slowest = Duration::ZERO;
+    for _ in 0..50 {
+        slowest = slowest.max(ping(&pc, phone_id).await);
+    }
+    assert!(slowest < SNAPPY, "a ping took {slowest:?}");
+    for part in parts {
+        with_timeout("parts", part).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_burst_of_notifications_doesnt_delay_a_reply() {
+    use g7link_core::CallCommand;
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CALLS_SHOW]).await;
+    let mut phone =
+        device_with("Pixel", DeviceKind::Phone, &[g7link_core::CALLS_STATE, g7link_core::CALLS_CONTROL])
+            .await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    // Notification access and calls together (`grant_notification_access` sets only the first).
+    phone
+        .node
+        .update_power(
+            PowerLevel::Basic,
+            vec![
+                "notify.mirror".into(),
+                "notify.reply".into(),
+                g7link_core::CALLS_STATE.into(),
+                g7link_core::CALLS_CONTROL.into(),
+            ],
+        )
+        .await;
+    ringing_call(&mut pc, &phone).await;
+
+    let burst = {
+        let phone = phone.node.clone();
+        tokio::spawn(async move {
+            for i in 0..200 {
+                phone.notification_posted(note(&format!("n{i}"), "com.chat", "Sam", false)).await;
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let started = std::time::Instant::now();
+    with_timeout("answer", pc.node.call_command(phone_id, "c1".into(), CallCommand::Answer)).await.unwrap();
+    let answer = started.elapsed();
+    assert!(answer < SNAPPY, "the call action took {answer:?}");
+    with_timeout("burst", burst).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_list_larger_than_a_frame_arrives_whole() {
+    use g7link_core::{Contact, ContactNumber};
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CONTACTS_SHOW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::CONTACTS_READ]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    // 3 MiB of 16 KiB photos: three times what one frame holds.
+    let list: Vec<Contact> = (0..192)
+        .map(|i| Contact {
+            id: format!("c{i}"),
+            name: format!("Contact {i}"),
+            numbers: vec![ContactNumber { number: format!("+1555{i:07}"), label: None }],
+            starred: false,
+            photo: Some(vec![(i % 251) as u8; 16 * 1024]),
+        })
+        .collect();
+    *phone.platform.contacts_list.lock().unwrap() = Some(list.clone());
+
+    let got = with_timeout("contacts", pc.node.contacts(phone_id, None, 0, 200)).await.unwrap();
+    assert_eq!(got, list, "every contact, in order, photos and all");
+    let parts = pc.node.wire_counters(phone_id).unwrap().parts_received;
+    assert!(parts >= 11, "came in {parts} parts before its ok");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_list_is_one_ok() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CONTACTS_SHOW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::CONTACTS_READ]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    *phone.platform.contacts_list.lock().unwrap() = Some(Vec::new());
+    let got = with_timeout("contacts", pc.node.contacts(phone_id, None, 0, 200)).await.unwrap();
+    assert!(got.is_empty());
+    assert_eq!(pc.node.wire_counters(phone_id).unwrap().parts_received, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dropping_a_request_resets_its_stream_and_frees_the_slot() {
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    let mut pc = agents_pc_with(&mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    allow_agents(&pc, &mut phone).await;
+
+    pc.platform.set_delay("agent_read", Duration::from_secs(5));
+    let read = phone.node.agent_read(pc_id, AGENT_THREAD.into(), None, 20);
+    assert!(tokio::time::timeout(Duration::from_millis(100), read).await.is_err(), "still waiting");
+    let dropped = std::time::Instant::now();
+    until("the PC stops answering it", || pc.node.wire_counters(phone_id).is_some_and(|c| c.rpcs_in == 0))
+        .await;
+    assert!(dropped.elapsed() < Duration::from_millis(500), "freed after {:?}", dropped.elapsed());
+
+    pc.platform.set_delay("agent_read", Duration::ZERO);
+    let page =
+        with_timeout("read", phone.node.agent_read(pc_id, AGENT_THREAD.into(), None, 20)).await.unwrap();
+    assert_eq!(page.items.len(), 1);
+    drain(&mut pc);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_timed_out_lane_request_drops_its_late_reply() {
+    use g7link_protocol::{Envelope, messages::types};
+    let (pc, phone) = input_pair().await;
+    let pc_id = pc.node.device_id();
+
+    pc.platform.set_delay("remote_input", Duration::from_millis(700));
+    let env = Envelope::new(types::INPUT_EVENT, &enter()).unwrap();
+    let late = phone.node.debug_request(pc_id, env, Duration::from_millis(200)).await;
+    assert!(matches!(late, Err(Error::Timeout)), "{late:?}");
+    until("the late answer is dropped", || {
+        phone.node.wire_counters(pc_id).is_some_and(|c| c.late_replies == 1)
+    })
+    .await;
+    assert_eq!(pc.platform.remote_inputs.lock().unwrap().len(), 1, "run once");
+
+    pc.platform.set_delay("remote_input", Duration::ZERO);
+    with_timeout("key", phone.node.remote_input(pc_id, enter())).await.unwrap();
+    assert_eq!(pc.platform.remote_inputs.lock().unwrap().len(), 2, "the lane still works");
+    assert_eq!(phone.node.wire_counters(pc_id).unwrap().late_replies, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_65th_incoming_rpc_is_told_busy() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CONTACTS_SHOW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::CONTACTS_READ]).await;
+    // Past its own limit of 16, as a misbehaving peer would.
+    pc.node.debug_set_outgoing_rpc_limit(100);
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    phone.platform.set_delay("contacts", Duration::from_secs(1));
+
+    let asks: Vec<_> = (0..65)
+        .map(|_| {
+            let pc = pc.node.clone();
+            tokio::spawn(async move { pc.contacts(phone_id, None, 0, 10).await })
+        })
+        .collect();
+    let (mut answered, mut busy) = (0, 0);
+    for ask in asks {
+        match with_timeout("lookup", ask).await.unwrap() {
+            Ok(_) => answered += 1,
+            Err(Error::Busy) => busy += 1,
+            Err(e) => panic!("unexpected {e:?}"),
+        }
+    }
+    assert_eq!((answered, busy), (64, 1));
+    assert_eq!(phone.node.wire_counters(pc.node.device_id()).unwrap().busy_sent, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn callers_past_sixteen_wait_instead_of_failing() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::PHOTOS_SHOW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::PHOTOS_READ]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    phone.platform.set_delay("photo_thumbs", Duration::from_millis(100));
+
+    let asks: Vec<_> = (0..40)
+        .map(|_| {
+            let pc = pc.node.clone();
+            tokio::spawn(async move { pc.photo_thumbs(phone_id, vec!["media:4".into()]).await })
+        })
+        .collect();
+    for ask in asks {
+        let thumbs = with_timeout("thumbs", ask).await.unwrap().unwrap();
+        assert_eq!(thumbs.len(), 1);
+    }
+    let counters = pc.node.wire_counters(phone_id).unwrap();
+    assert_eq!(counters.busy_received, 0);
+    assert_eq!(phone.node.wire_counters(pc.node.device_id()).unwrap().busy_sent, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_33rd_bulk_stream_is_told_busy() {
+    use g7link_protocol::messages::{ErrorBody, files, types};
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+
+    // File streams that say nothing hold their slot while the phone waits for an offer.
+    let held: Vec<_> = (0..32)
+        .map(|_| {
+            let pc = pc.node.clone();
+            tokio::spawn(async move {
+                pc.debug_open_stream(phone_id, files::SERVICE, files::OP_SEND, Duration::from_secs(5)).await
+            })
+        })
+        .collect();
+    for (i, stream) in held.into_iter().enumerate() {
+        let answer = with_timeout("open", stream).await.unwrap().unwrap();
+        assert!(answer.is_none(), "stream {i} was answered: {answer:?}");
+    }
+    let refused = pc
+        .node
+        .debug_open_stream(phone_id, files::SERVICE, files::OP_SEND, Duration::from_secs(5))
+        .await
+        .unwrap()
+        .expect("the 33rd is answered at once");
+    assert_eq!(refused.t, types::ERROR);
+    let body: ErrorBody = refused.body().unwrap();
+    assert_eq!(body.code, g7link_protocol::ErrorCode::Busy);
+    assert_eq!(phone.node.wire_counters(pc.node.device_id()).unwrap().busy_sent, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutting_down_fails_waiting_requests_at_once() {
+    use g7link_core::CallCommand;
+    let mut pc =
+        device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CALLS_SHOW, g7link_core::CONTACTS_SHOW])
+            .await;
+    let mut phone = device_with(
+        "Pixel",
+        DeviceKind::Phone,
+        &[g7link_core::CALLS_STATE, g7link_core::CALLS_CONTROL, g7link_core::CONTACTS_READ],
+    )
+    .await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    ringing_call(&mut pc, &phone).await;
+    phone.platform.set_delay("call_command", Duration::from_secs(5));
+    phone.platform.set_delay("contacts", Duration::from_secs(5));
+
+    let on_lane = {
+        let pc = pc.node.clone();
+        tokio::spawn(async move { pc.call_command(phone_id, "c1".into(), CallCommand::Answer).await })
+    };
+    let on_rpc = {
+        let pc = pc.node.clone();
+        tokio::spawn(async move { pc.contacts(phone_id, None, 0, 10).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let started = std::time::Instant::now();
+    pc.node.shutdown().await;
+    let (lane, rpc) =
+        (with_timeout("lane", on_lane).await.unwrap(), with_timeout("rpc", on_rpc).await.unwrap());
+    assert!(started.elapsed() < Duration::from_secs(1), "took {:?}", started.elapsed());
+    assert!(matches!(lane, Err(Error::Offline)), "{lane:?}");
+    assert!(matches!(rpc, Err(Error::Offline)), "{rpc:?}");
+    until("no session task is left", || pc.node.debug_session_tasks() == 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_peer_going_away_mid_handler_is_harmless() {
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[g7link_core::CONTACTS_SHOW]).await;
+    let mut phone = device_with("Pixel", DeviceKind::Phone, &[g7link_core::CONTACTS_READ]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    phone.platform.set_delay("contacts", Duration::from_secs(1));
+    let asking = {
+        let pc = pc.node.clone();
+        tokio::spawn(async move { pc.contacts(phone_id, None, 0, 10).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    pc.node.shutdown().await;
+    assert!(with_timeout("lookup", asking).await.unwrap().is_err());
+    until("the phone's session tasks end", || phone.node.debug_session_tasks() == 0).await;
+    assert!(phone.node.wire_counters(pc_id).is_none(), "the session is gone");
+
+    // A new PC pairs, and the phone answers it.
+    phone.platform.set_delay("contacts", Duration::ZERO);
+    let mut other = device_with("Laptop", DeviceKind::Desktop, &[g7link_core::CONTACTS_SHOW]).await;
+    pair_qr(&mut other, &mut phone).await;
+    let got = with_timeout("lookup", other.node.contacts(phone_id, None, 0, 10)).await.unwrap();
+    assert!(!got.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lane_reopens_after_its_stream_fails() {
+    let (pc, phone) = input_pair().await;
+    let pc_id = pc.node.device_id();
+    with_timeout("key", phone.node.remote_input(pc_id, enter())).await.unwrap();
+    phone.node.debug_fail_lanes(pc_id);
+    with_timeout("key after", phone.node.remote_input(pc_id, enter())).await.unwrap();
+    assert_eq!(pc.platform.remote_inputs.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn motion_is_summed_not_dropped_when_injection_is_slow() {
+    let (pc, phone) = input_pair().await;
+    let pc_id = pc.node.device_id();
+    pc.platform.set_delay("remote_input", Duration::from_millis(20));
+    for _ in 0..500 {
+        phone.node.remote_move(pc_id, 1.0, 0.0).await.unwrap();
+    }
+    let moved = || -> f32 {
+        pc.platform
+            .remote_inputs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| match e {
+                g7link_core::RemoteInput::Move { dx, .. } => *dx,
+                _ => 0.0,
+            })
+            .sum()
+    };
+    until("every move arrived", || moved() >= 499.5).await;
+    assert!((moved() - 500.0).abs() < 0.5, "moved {}", moved());
+    let counters = pc.node.wire_counters(phone.node.device_id()).unwrap();
+    assert!(counters.motion_summed > 0, "{counters:?}");
+    assert_eq!(counters.motion_refused, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sound_arrives_with_sequence_and_time() {
+    use g7link_core::{DECK_ACTIONS, PC_AUDIO};
+    let mut pc = device_with("Desktop", DeviceKind::Desktop, &[DECK_ACTIONS, PC_AUDIO]).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    // 5 ms of 48 kHz stereo a piece, sent together.
+    for _ in 0..4 {
+        pc.node.send_pc_audio_pcm(&phone_id, 48_000, 2, vec![0; 960]).await.unwrap();
+    }
+    let mut heard = Vec::new();
+    while heard.len() < 4 {
+        let piece = wait_for(&mut phone, "sound", |e| match e {
+            NodeEvent::PcAudioFrame { seq, ts_ms, pcm, channels, sample_rate, .. } => {
+                Some((*seq, *ts_ms, pcm.len(), *channels, *sample_rate))
+            }
+            _ => None,
+        })
+        .await;
+        heard.push(piece);
+    }
+    let seqs: Vec<u16> = heard.iter().map(|h| h.0).collect();
+    assert_eq!(seqs, [0, 1, 2, 3]);
+    let times: Vec<u32> = heard.iter().map(|h| h.1).collect();
+    assert_eq!(times, [0, 5, 10, 15]);
+    assert!(heard.iter().all(|h| h.2 == 960 && h.3 == 2 && h.4 == 48_000));
+    // A long buffer goes in pieces a datagram carries.
+    pc.node.send_pc_audio_pcm(&phone_id, 48_000, 2, vec![0; 4 * 960]).await.unwrap();
+    for expected in 4..8 {
+        let seq = wait_for(&mut phone, "a piece", |e| match e {
+            NodeEvent::PcAudioFrame { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .await;
+        assert_eq!(seq, expected);
+    }
+}
+
+/// The secret key a test device keeps in its data folder (`PlainKeyProtector`).
+fn test_device_key(dev: &TestDevice) -> iroh::SecretKey {
+    let file = std::fs::read(dev.dir.path().join("identity.key")).unwrap();
+    assert_eq!(&file[..5], b"NLK1\0", "a plain key file");
+    let bytes: [u8; 32] = file[5..].try_into().unwrap();
+    iroh::SecretKey::from_bytes(&bytes)
+}
+
+/// An iroh endpoint on loopback that speaks `alpns`, as another build would.
+async fn raw_endpoint(secret: iroh::SecretKey, alpns: Vec<Vec<u8>>) -> iroh::Endpoint {
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(secret)
+        .alpns(alpns)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .clear_ip_transports()
+        .bind_addr(SocketAddr::from(([0, 0, 0, 0], 0)))
+        .unwrap()
+        .bind()
+        .await
+        .unwrap()
+}
+
+/// `node`'s loopback address.
+async fn loopback_addr(node: &Node) -> iroh::EndpointAddr {
+    let id = node.device_id();
+    let port =
+        node.direct_addrs().await.iter().find(|a| a.is_ipv4()).map(SocketAddr::port).expect("an address");
+    let key = iroh::PublicKey::from_bytes(&id.0).unwrap();
+    iroh::EndpointAddr::new(key).with_ip_addr(SocketAddr::from(([127, 0, 0, 1], port)))
+}
+
+/// The application close code a connection ended with.
+async fn close_code(conn: &iroh::endpoint::Connection) -> Option<u64> {
+    match tokio::time::timeout(WAIT, conn.closed()).await.expect("closed") {
+        iroh::endpoint::ConnectionError::ApplicationClosed(close) => Some(close.error_code.into_inner()),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_v0_peer_is_told_to_update() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    let key = test_device_key(&phone);
+    phone.node.shutdown().await;
+    let pc_addr = loopback_addr(&pc.node).await;
+
+    // The paired phone, still on g7link/0.
+    let old = raw_endpoint(key, Vec::new()).await;
+    let conn = with_timeout("dial", old.connect(pc_addr.clone(), b"g7link/0")).await.unwrap();
+    assert_eq!(close_code(&conn).await, Some(3), "VERSION_TOO_OLD");
+    wait_for(&mut pc, "needs update", |e| match e {
+        NodeEvent::PeerNeedsUpdate { device } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    // Again within the minute: closed the same way, said once.
+    let again = with_timeout("dial again", old.connect(pc_addr.clone(), b"g7link/0")).await.unwrap();
+    assert_eq!(close_code(&again).await, Some(3));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!drain(&mut pc).iter().any(|e| matches!(e, NodeEvent::PeerNeedsUpdate { .. })), "said once");
+    old.close().await;
+
+    // A device that isn't paired is told so, and nothing is said.
+    let stranger = raw_endpoint(iroh::SecretKey::generate(), Vec::new()).await;
+    let conn = with_timeout("dial", stranger.connect(pc_addr, b"g7link/0")).await.unwrap();
+    assert_eq!(close_code(&conn).await, Some(2), "UNPAIRED");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!drain(&mut pc).iter().any(|e| matches!(e, NodeEvent::PeerNeedsUpdate { .. })));
+    stranger.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dialing_a_peer_without_v1_says_which_side_is_old() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    let key = test_device_key(&phone);
+    phone.node.shutdown().await;
+
+    // The phone comes back on 0.1.17: it takes only g7link/0.
+    let old = raw_endpoint(key, vec![b"g7link/0".to_vec()]).await;
+    let accepting = old.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = accepting.accept().await {
+            let _ = incoming.await;
+        }
+    });
+    // A peer's loopback address isn't one it's reached at: this machine's
+    // own LAN address, as the PC has it, with the old phone's port.
+    let port = old.bound_sockets().iter().map(SocketAddr::port).next().unwrap();
+    let lan = pc.node.direct_addrs().await.into_iter().find(|a| a.is_ipv4()).expect("a LAN address").ip();
+    drain(&mut pc);
+    pc.node.add_known_addrs(phone_id, &[SocketAddr::new(lan, port)]);
+    let dialed = with_timeout("dial", pc.node.debug_dial(phone_id)).await;
+    assert!(matches!(dialed, Err(Error::VersionTooOld { side: g7link_core::Side::Remote })), "{dialed:?}");
+    // The reconnect loop meets the same and tells the apps, once.
+    wait_for(&mut pc, "needs update", |e| match e {
+        NodeEvent::PeerNeedsUpdate { device } if *device == phone_id => Some(()),
+        _ => None,
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!drain(&mut pc).iter().any(|e| matches!(e, NodeEvent::PeerNeedsUpdate { .. })), "said once");
+    old.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hello_with_another_proto_is_refused() {
+    use g7link_protocol::{
+        Envelope, ErrorCode,
+        messages::{ErrorBody, Hello, types},
+    };
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let key = test_device_key(&phone);
+    phone.node.shutdown().await;
+    let pc_addr = loopback_addr(&pc.node).await;
+    let raw = raw_endpoint(key, Vec::new()).await;
+    for proto in [0, 2] {
+        let conn =
+            with_timeout("dial", raw.connect(pc_addr.clone(), g7link_protocol::ALPN_SESSION)).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        let hello = Hello {
+            proto,
+            app: "9.9.9".into(),
+            device: info("Pixel", DeviceKind::Phone),
+            caps: Vec::new(),
+            power: PowerLevel::Assist,
+            localsend: None,
+        };
+        g7link_protocol::write_frame(&mut send, &Envelope::new(types::HELLO, &hello).unwrap().to_cbor())
+            .await
+            .unwrap();
+        let frame = with_timeout("answer", g7link_protocol::read_frame(&mut recv)).await.unwrap().unwrap();
+        let answer = Envelope::from_cbor(&frame).unwrap();
+        assert_eq!(answer.t, types::ERROR, "proto {proto}");
+        assert_eq!(answer.body::<ErrorBody>().unwrap().code, ErrorCode::VersionTooOld);
+        assert_eq!(close_code(&conn).await, Some(3), "proto {proto}");
+        drop((send, recv));
+    }
+    raw.close().await;
+}
+
+// ---- Disconnects (plans/disconnects.md §5) ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_network_change_doesnt_close_a_session_whose_peer_is_busy() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    phone.platform.set_delay("set_clipboard", Duration::from_secs(3));
+    let copying = {
+        let pc = pc.node.clone();
+        tokio::spawn(async move { pc.send_clipboard(phone_id, "hello".into()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drain(&mut pc);
+    pc.node.network_changed().await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let offline = drain(&mut pc).into_iter().any(|e| {
+        matches!(e, NodeEvent::LinkChanged { device, link: LinkState::Offline { .. } } if device == phone_id)
+    });
+    assert!(!offline, "the session closed");
+    with_timeout("copy", copying).await.unwrap().unwrap();
+    assert!(ping(&pc, phone_id).await < Duration::from_secs(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_of_network_changes_sends_one_ping() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let serials = (pc.node.debug_session_serial(phone_id), phone.node.debug_session_serial(pc_id));
+    let pings = |dev: &TestDevice, peer| dev.node.wire_counters(peer).unwrap().heartbeat_pings;
+    let before = (pings(&pc, phone_id), pings(&phone, pc_id));
+    for _ in 0..20 {
+        pc.node.network_changed().await;
+        phone.node.network_changed().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!((pc.node.debug_session_serial(phone_id), phone.node.debug_session_serial(pc_id)), serials);
+    let after = (pings(&pc, phone_id), pings(&phone, pc_id));
+    assert!(after.0 - before.0 <= 1 && after.1 - before.1 <= 1, "{before:?} → {after:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_survives_a_moment_with_no_direct_path() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    let serial = pc.node.debug_session_serial(phone_id);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    pc.node.debug_refuse_paths(true);
+    pc.node.network_changed().await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    pc.node.debug_refuse_paths(false);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(pc.node.debug_session_serial(phone_id), serial, "the session stayed up");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn three_quick_drops_still_reconnect_at_once() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    for round in 0..3 {
+        drain(&mut pc);
+        pc.node.debug_close_session(phone_id);
+        let started = std::time::Instant::now();
+        wait_online(&mut pc, phone_id).await;
+        assert!(started.elapsed() < Duration::from_secs(3), "round {round}: {:?}", started.elapsed());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dial_that_lands_on_a_live_session_doesnt_replace_it() {
+    let mut pc = device("Desktop", DeviceKind::Desktop).await;
+    let mut phone = device("Pixel", DeviceKind::Phone).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    // Settled, and heard from.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    ping(&pc, phone_id).await;
+    let serial = pc.node.debug_session_serial(phone_id);
+    with_timeout("dial", pc.node.debug_dial(phone_id)).await.unwrap();
+    assert_eq!(pc.node.debug_session_serial(phone_id), serial);
+    assert!(phone.node.debug_session_serial(pc_id).is_some());
+    assert!(ping(&pc, phone_id).await < Duration::from_secs(1));
 }

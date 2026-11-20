@@ -27,7 +27,7 @@ use g7link_protocol::{
     ble::{self, LINK_SECRET_LEN},
     messages::{
         BleKey, BleOtp, ClipSet, Notification, PhoneToggleSet, PhoneToggles, RemoteInput, RemoteTextFocus,
-        RemoteTextState, RemoteTextWatch, Ring, RingStopped, remote as remote_limits, toggle_ids, types,
+        RemoteTextState, RemoteTextWatch, Ring, RingStopped, input as remote_limits, toggle_ids, types,
     },
 };
 use tokio::sync::{Notify, oneshot};
@@ -178,29 +178,6 @@ impl std::fmt::Debug for BleLinks {
     }
 }
 
-/// Messages the Bluetooth channel carries; anything else is refused.
-fn allowed(t: &str) -> bool {
-    matches!(
-        t,
-        types::PING
-            | types::PONG
-            | types::OK
-            | types::ERROR
-            | types::DEVICE_RING
-            | types::DEVICE_RING_STOPPED
-            | types::CLIP_SET
-            | types::BLE_OTP
-            | types::PHONE_TOGGLE_SET
-            | types::PHONE_TOGGLES
-            | types::REMOTE_CHECK
-            | types::REMOTE_INPUT
-            | types::REMOTE_TEXT_WATCH
-            | types::REMOTE_TEXT_STATE
-            | types::REMOTE_TEXT_FOCUS
-            | types::BLE_USE
-    )
-}
-
 impl Shared {
     /// Whether this device may use the Bluetooth channel with `peer`: it's a
     /// phone and a PC, the user turned it on here for `peer`, they share a
@@ -304,7 +281,7 @@ impl Shared {
         endpoint: &Arc<BleEndpoint>,
         env: Envelope,
     ) -> Result<Option<Envelope>> {
-        if !allowed(&env.t) {
+        if !g7link_protocol::ble::carries(&env.t) {
             return Err(Error::Unsupported);
         }
         if !self.toggle_on(&peer, BLE_LINK_TOGGLE) {
@@ -336,14 +313,14 @@ impl Shared {
                 Ok(Some(crate::clipboard::apply_set(self, peer, clip).await))
             }
             // The phone's touchpad and keyboard: the PC's own checks and limits apply.
-            types::REMOTE_CHECK => Ok(Some(crate::remote::run_check(self, &peer))),
+            types::INPUT_CHECK => Ok(Some(crate::remote::run_check(self, &peer))),
             // The typing box, as on a session.
-            types::REMOTE_TEXT_WATCH | types::REMOTE_TEXT_STATE | types::REMOTE_TEXT_FOCUS => {
+            types::INPUT_TEXT_WATCH | types::INPUT_TEXT_STATE | types::INPUT_TEXT_FOCUS => {
                 crate::remote::incoming_one_way(self, peer, &env, RemotePath::Ble)?;
                 Ok(None)
             }
             types::BLE_USE => Ok(Some(self.ble_use_reply(peer, &env))),
-            types::REMOTE_INPUT => {
+            types::INPUT_EVENT => {
                 let event: RemoteInput = env.body()?;
                 if env.id.is_none() {
                     crate::remote::run_motion(self, peer, event);
@@ -351,7 +328,7 @@ impl Shared {
                 }
                 Ok(Some(crate::remote::run_control(self, peer, event).await))
             }
-            types::PHONE_TOGGLE_SET => {
+            types::TOGGLES_SET => {
                 let req: PhoneToggleSet = env.body()?;
                 // Only the hotspot: what a PC with no network needs.
                 if req.id != toggle_ids::HOTSPOT {
@@ -359,7 +336,7 @@ impl Shared {
                 }
                 Ok(Some(crate::toggles::run_set(self, &peer, req).await))
             }
-            types::PHONE_TOGGLES => {
+            types::TOGGLES_STATE => {
                 let state: PhoneToggles = env.body()?;
                 crate::toggles::apply_state(self, peer, state);
                 Ok(None)
@@ -429,7 +406,7 @@ impl Shared {
         // A PC over its budget answers Busy: wait and try again, in order.
         let give_up = Instant::now() + INPUT_RETRY_FOR;
         loop {
-            let env = Envelope::new(types::REMOTE_INPUT, &event)?;
+            let env = Envelope::new(types::INPUT_EVENT, &event)?;
             let request = self.ble_request(peer, env, INPUT_TIMEOUT);
             tokio::pin!(request);
             // No answer for a while: input goes on the session meanwhile. This
@@ -455,7 +432,7 @@ impl Shared {
 
     /// Phone: whether the PC `peer` takes input from this phone, asked over Bluetooth.
     pub(crate) async fn ble_input_check(&self, peer: DeviceId) -> Result<()> {
-        self.ble_request(peer, Envelope::empty(types::REMOTE_CHECK), REQUEST_TIMEOUT)
+        self.ble_request(peer, Envelope::empty(types::INPUT_CHECK), REQUEST_TIMEOUT)
             .await?
             .expect(types::OK)?;
         Ok(())
@@ -471,7 +448,7 @@ impl Shared {
         if !self.peer_offers_ble_remote(&peer) {
             return Err(Error::Offline);
         }
-        self.ble_send(&peer, &Envelope::new(types::REMOTE_TEXT_WATCH, &RemoteTextWatch { on })?)
+        self.ble_send(&peer, &Envelope::new(types::INPUT_TEXT_WATCH, &RemoteTextWatch { on })?)
     }
 
     /// PC: sends the phone `peer` the focused field over the link, cut to
@@ -493,7 +470,7 @@ impl Shared {
             (remote_limits::MAX_BLE_STATE_BEFORE, remote_limits::MAX_BLE_STATE_AFTER)
         };
         loop {
-            let env = Envelope::new(types::REMOTE_TEXT_STATE, &state.trimmed(before, after))?;
+            let env = Envelope::new(types::INPUT_TEXT_STATE, &state.trimmed(before, after))?;
             if env.to_cbor().len() <= endpoint::MAX_MESSAGE {
                 return link.send_state(&env);
             }
@@ -512,7 +489,7 @@ impl Shared {
         if !self.peer_offers_ble_remote(&peer) {
             return Err(Error::Offline);
         }
-        self.ble_send(&peer, &Envelope::new(types::REMOTE_TEXT_FOCUS, &RemoteTextFocus { editable })?)
+        self.ble_send(&peer, &Envelope::new(types::INPUT_TEXT_FOCUS, &RemoteTextFocus { editable })?)
     }
 
     /// Whether paired `peer` offers [`BLE_REMOTE_CAPABILITY`].

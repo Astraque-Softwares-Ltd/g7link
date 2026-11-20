@@ -3484,7 +3484,7 @@ async fn run(cli: &Cli, node: &Node) -> Result<()> {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(*seconds), async {
                 loop {
                     match events.recv().await {
-                        Ok(NodeEvent::PcAudioFrame { device, sample_rate, channels, pcm })
+                        Ok(NodeEvent::PcAudioFrame { device, sample_rate, channels, pcm, .. })
                             if device == id =>
                         {
                             sound_format = Some((sample_rate, channels));
