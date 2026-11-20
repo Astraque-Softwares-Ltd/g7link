@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## Unreleased
+## 0.1.17 (2026-11-20)
 
 You steer the agents now: pick the model, plan before anything changes, send
 a message while one works, answer its questions, and show it a picture, from
