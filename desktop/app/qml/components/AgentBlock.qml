@@ -23,6 +23,8 @@ Item {
     required property bool streaming
     required property real whenMs
     required property bool truncated
+    // "body" inside a plan's card.
+    required property string planPart
 
     // A link in it was clicked: `index` is its number in the markup.
     signal linkActivated(string key, int index)
@@ -30,7 +32,10 @@ Item {
     readonly property bool heading: blockKind === "heading"
     readonly property bool listItem: blockKind === "item"
     readonly property bool alert: ["note", "tip", "important", "warning", "caution"].indexOf(blockKind) >= 0
-    readonly property real indent: depth * 18 + quote * 14 + (listItem ? level * 18 + 20 : 0)
+    readonly property bool inPlan: planPart === "body"
+    // Inside a plan's card, its text keeps clear of the card's sides.
+    readonly property real planInset: inPlan ? 16 : 0
+    readonly property real indent: depth * 18 + quote * 14 + (listItem ? level * 18 + 20 : 0) + planInset
     readonly property color alertColor: {
         switch (blockKind) {
         case "tip": return Theme.tintTeal
@@ -57,7 +62,7 @@ Item {
         }
     }
     // The answer's own footer: its time and Copy, on hover.
-    readonly property bool footed: last && phase !== "interim" && !streaming
+    readonly property bool footed: last && phase !== "interim" && !streaming && !inPlan
 
     width: ListView.view ? ListView.view.width : 0
     height: body.y + body.height + (footer.visible ? footer.height : 0) + (cut.visible ? cut.height : 0)
@@ -65,6 +70,13 @@ Item {
 
     Accessible.role: Accessible.Paragraph
     Accessible.name: text.text
+
+    AgentPlanFrame {
+        visible: block.inPlan
+        x: block.depth * 18
+        width: parent.width - x
+        height: parent.height
+    }
 
     // Block-quote bars, one per level.
     Repeater {
@@ -83,7 +95,7 @@ Item {
         id: body
         x: block.indent
         y: block.heading ? 8 : 3
-        width: parent.width - x
+        width: parent.width - x - block.planInset
         spacing: 2
 
         Txt {

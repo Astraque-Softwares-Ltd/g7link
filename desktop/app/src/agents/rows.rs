@@ -17,7 +17,8 @@ use std::{
 
 use g7_agents_render::{
     Align, Block, BlockKind, CodeLine, DetailOf, DiffDoc, DiffKind, Link, LiveLabel, MarkKind, Marker, Phase,
-    Row, RowKind, RowStatus, Span, Summary, TokClass, ToolClass, bounds::is_stripped_char,
+    PlanState, QuestionState, Row, RowKind, RowStatus, Span, Summary, TokClass, ToolClass, Via,
+    bounds::is_stripped_char,
 };
 use serde_json::{Value, json};
 
@@ -81,10 +82,16 @@ pub(crate) enum Role {
     Truncated,
     Wrapped,
     Lines,
+    /// A row of a plan's card: "head", "body" (its blocks) or "foot".
+    PlanPart,
+    /// A user message sent while the agent worked: "steer" or "queue".
+    Via,
+    /// The images sent with a user message.
+    Images,
 }
 
 impl Role {
-    pub(crate) const ALL: [Role; 50] = [
+    pub(crate) const ALL: [Role; 53] = [
         Role::Key,
         Role::Kind,
         Role::View,
@@ -135,6 +142,9 @@ impl Role {
         Role::Truncated,
         Role::Wrapped,
         Role::Lines,
+        Role::PlanPart,
+        Role::Via,
+        Role::Images,
     ];
 
     pub(crate) fn index(self) -> usize {
@@ -193,6 +203,9 @@ impl Role {
             Role::Truncated => "truncated",
             Role::Wrapped => "wrapped",
             Role::Lines => "lines",
+            Role::PlanPart => "planPart",
+            Role::Via => "via",
+            Role::Images => "images",
         }
     }
 
@@ -211,7 +224,8 @@ impl Role {
             | Role::More
             | Role::Edit
             | Role::Edits
-            | Role::Lines => RoleValue::Int(0),
+            | Role::Lines
+            | Role::Images => RoleValue::Int(0),
             Role::WorkedMs | Role::Ms | Role::SinceMs | Role::WhenMs => RoleValue::Real(0.0),
             Role::Open
             | Role::Last
@@ -352,6 +366,7 @@ fn class_word(class: ToolClass) -> &'static str {
         ToolClass::Agent => "agent",
         ToolClass::Tasks => "tasks",
         ToolClass::Other => "other",
+        ToolClass::Plan => "plan",
     }
 }
 
@@ -502,6 +517,32 @@ fn push_escaped(out: &mut String, c: char, code: bool) {
         c if is_stripped_char(c) => {}
         c => out.push(c),
     }
+}
+
+/// Agent text for one line of the page (a question, an option): every
+/// character escaped, `inline code` coloured as an answer's is, and nothing
+/// else read as Markdown. Cheap enough for the GUI thread: no grammar is
+/// ever loaded for it.
+pub(crate) fn inline_markup(text: &str, palette: &CodePalette) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    // Backticks pair up; one left over is text.
+    let pairs = text.matches('`').count() / 2 * 2;
+    let mut seen = 0;
+    for c in text.chars() {
+        if c == '`' && seen < pairs {
+            seen += 1;
+            if !palette.inline.is_empty() {
+                if seen % 2 == 1 {
+                    out.push_str(&format!("<font color=\"{}\">", palette.inline));
+                } else {
+                    out.push_str("</font>");
+                }
+            }
+            continue;
+        }
+        push_escaped(&mut out, c, false);
+    }
+    out
 }
 
 /// `text` escaped, every character.
@@ -729,6 +770,52 @@ pub(crate) struct Extra {
     pub truncated: bool,
     /// A code block the user set to wrap.
     pub wrapped: bool,
+    /// A block of a plan: drawn inside the plan's card.
+    pub in_plan: bool,
+    /// The images a user message carries.
+    pub images: u8,
+}
+
+fn plan_state_word(state: PlanState) -> &'static str {
+    match state {
+        PlanState::Proposed => "proposed",
+        PlanState::Implemented => "implemented",
+        PlanState::Replaced => "replaced",
+    }
+}
+
+fn question_state_word(state: QuestionState) -> &'static str {
+    match state {
+        QuestionState::Asked => "asked",
+        QuestionState::Answered => "answered",
+        QuestionState::Dismissed => "dismissed",
+        QuestionState::Expired => "expired",
+    }
+}
+
+/// The foot of a plan's card (`pf:<item id>`), after its last block shown:
+/// "Show the whole plan", Change the plan and Implement. The page decides
+/// which of them it offers.
+pub(crate) fn plan_foot(
+    item_id: &str,
+    state: PlanState,
+    more: u16,
+    open: bool,
+    turn: u32,
+    depth: u8,
+) -> ModelRow {
+    let mut m = ModelRow::new();
+    m.set_text(Role::Key, format!("pf:{item_id}"));
+    m.set_text(Role::Kind, "plan_foot");
+    m.set_text(Role::View, "plan_foot");
+    m.set_int(Role::Turn, turn);
+    m.set_int(Role::Depth, depth);
+    m.set_text(Role::ItemId, item_id);
+    m.set_text(Role::Status, plan_state_word(state));
+    m.set_text(Role::PlanPart, "foot");
+    m.set_int(Role::More, more);
+    m.set_flag(Role::IsOpen, open);
+    m
 }
 
 /// A row of the render crate as the model shows it. `source` is what Copy
@@ -744,13 +831,25 @@ pub(crate) fn model_row(row: &Row, extra: Extra, source: &str, palette: &CodePal
     m.set_int(Role::Depth, row.depth);
     m.set_text(Role::ItemId, row.item_id.clone());
     match &row.kind {
-        RowKind::User { text, from, deny_of } => {
+        RowKind::User { text, from, deny_of, via } => {
             m.set_text(Role::Text, text.clone());
             m.set_text(Role::From, from.clone());
             m.set_flag(Role::DenyOf, *deny_of);
+            m.set_text(
+                Role::Via,
+                match via {
+                    Via::Turn => "",
+                    Via::Steer => "steer",
+                    Via::Queue => "queue",
+                },
+            );
+            m.set_int(Role::Images, extra.images);
             m.copy = text.clone();
         }
         RowKind::Block { block, index: _, last, phase } => {
+            if extra.in_plan {
+                m.set_text(Role::PlanPart, "body");
+            }
             let (word, level) = block_word(block.kind);
             let (marker, number) = marker_word(block.marker);
             m.set_text(Role::BlockKind, word);
@@ -895,6 +994,20 @@ pub(crate) fn model_row(row: &Row, extra: Extra, source: &str, palette: &CodePal
         RowKind::Notice { text } => {
             m.set_text(Role::Text, text.clone());
             m.copy = text.clone();
+        }
+        RowKind::Plan { state, shown, more, open } => {
+            m.set_text(Role::Status, plan_state_word(*state));
+            m.set_text(Role::PlanPart, "head");
+            m.set_int(Role::Count, *shown);
+            m.set_int(Role::More, *more);
+            m.set_flag(Role::IsOpen, *open);
+        }
+        RowKind::Question { state, count, by, has_text, open } => {
+            m.set_text(Role::Status, question_state_word(*state));
+            m.set_int(Role::Count, *count);
+            m.set_text(Role::By, by.clone());
+            m.set_flag(Role::HasText, *has_text);
+            m.set_flag(Role::IsOpen, *open);
         }
         RowKind::Live { label, thought, since_ms } => {
             m.set_text(
@@ -1207,6 +1320,76 @@ mod tests {
     }
 
     #[test]
+    fn plans_questions_and_steered_messages_have_their_roles() {
+        let row = |kind| Row { key: "k".into(), kind, turn: 2, depth: 0, item_id: "p1".into(), seq: 1 };
+        let plan = model_row(
+            &row(RowKind::Plan { state: PlanState::Replaced, shown: 0, more: 4, open: false }),
+            Extra::default(),
+            "",
+            &palette(),
+        );
+        assert_eq!(
+            (plan.text(Role::View), plan.text(Role::Status), plan.text(Role::PlanPart)),
+            ("plan", "replaced", "head")
+        );
+        assert_eq!(plan.get(Role::More), &RoleValue::Int(4));
+        let question = model_row(
+            &row(RowKind::Question {
+                state: QuestionState::Answered,
+                count: 3,
+                by: "Pixel".into(),
+                has_text: true,
+                open: true,
+            }),
+            Extra::default(),
+            "",
+            &palette(),
+        );
+        assert_eq!((question.text(Role::Status), question.text(Role::By)), ("answered", "Pixel"));
+        assert_eq!(question.get(Role::Count), &RoleValue::Int(3));
+        let user = model_row(
+            &row(RowKind::User {
+                text: "Leave it".into(),
+                from: String::new(),
+                deny_of: false,
+                via: Via::Steer,
+            }),
+            Extra { images: 2, ..Extra::default() },
+            "",
+            &palette(),
+        );
+        assert_eq!((user.text(Role::Via), user.get(Role::Images)), ("steer", &RoleValue::Int(2)));
+        let foot = plan_foot("p1", PlanState::Proposed, 3, false, 2, 0);
+        assert_eq!(
+            (foot.key(), foot.text(Role::View), foot.text(Role::PlanPart)),
+            ("pf:p1", "plan_foot", "foot")
+        );
+        // A block inside the card says so; the plan's text is its own markup.
+        let mut block = rows_of("Add `DropReason` <b>now</b>").remove(0);
+        assert_eq!(block.text(Role::PlanPart), "");
+        let source = Row {
+            key: "b:p1:0".into(),
+            kind: RowKind::Block {
+                block: markdown("Add it").blocks.remove(0),
+                index: 0,
+                last: true,
+                phase: None,
+            },
+            turn: 1,
+            depth: 0,
+            item_id: "p1".into(),
+            seq: 1,
+        };
+        block = model_row(&source, Extra { in_plan: true, ..Extra::default() }, "", &palette());
+        assert_eq!(block.text(Role::PlanPart), "body");
+        let inline = inline_markup("Use `cargo test` <b>here</b> `", &palette());
+        assert!(inline.contains("&lt;b&gt;here") && !inline.contains("<b>here"), "{inline}");
+        assert_only_our_tags(&inline);
+        assert_eq!(inline.matches("<font").count(), 1, "a lone backtick is text: {inline}");
+        assert!(inline.ends_with('`'), "{inline}");
+    }
+
+    #[test]
     fn a_colour_from_the_page_must_be_a_colour() {
         let p = palette();
         assert_eq!(p.of(TokClass::Keyword), Some("#ff00aa"));
@@ -1230,8 +1413,8 @@ mod tests {
         assert!(styled.contains("&nbsp;&nbsp;&nbsp;&nbsp;"), "{styled}");
         assert!(styled.contains("<font color=\"#ff00aa\">"), "keywords are coloured: {styled}");
         assert_eq!(code.get(Role::Lines), &RoleValue::Int(3));
-        // A language there are no colours for: its source, escaped.
-        let plain = &rows_of("```nix\n{ a = <b>; }\n```")[0];
+        // A language there are no colours for (two-face has Nix now): its source, escaped.
+        let plain = &rows_of("```g7-unknown\n{ a = <b>; }\n```")[0];
         assert_eq!(plain.text(Role::Styled), "{&nbsp;a&nbsp;=&nbsp;&lt;b&gt;;&nbsp;}");
     }
 

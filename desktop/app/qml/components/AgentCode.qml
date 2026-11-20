@@ -16,6 +16,9 @@ Item {
     required property string lang
     required property bool wrapped
     required property int lines
+    // "body" inside a plan's card.
+    required property string planPart
+    readonly property real planInset: planPart === "body" ? 16 : 0
 
     // Past this many lines each line is its own row, so a long block isn't
     // laid out as one text.
@@ -29,11 +32,17 @@ Item {
     Accessible.role: Accessible.Grouping
     Accessible.name: lang.length > 0 ? qsTr("%1 code").arg(lang) : qsTr("Code")
 
+    AgentPlanFrame {
+        visible: code.planInset > 0
+        x: code.depth * 18
+        width: parent.width - x
+        height: parent.height
+    }
     Rectangle {
         id: box
-        x: code.depth * 18 + code.quote * 14
+        x: code.depth * 18 + code.quote * 14 + code.planInset
         y: 5
-        width: parent.width - x
+        width: parent.width - x - code.planInset
         height: head.height + body.height + 10
         radius: Theme.radiusMd
         color: Theme.surfaceContainerHigh

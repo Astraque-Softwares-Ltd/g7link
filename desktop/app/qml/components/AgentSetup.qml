@@ -18,6 +18,13 @@ Column {
     readonly property bool connected: setup.status === "connected"
     readonly property var agents: connected ? (setup.agents || []) : []
     readonly property var folders: connected ? (setup.folders || []) : []
+    // The host has phase 2's settings (keeping awake, MCP per folder).
+    readonly property bool control: connected && setup.control === true
+    // Codex follows a folder's switch too, or always loads its servers.
+    readonly property bool codexSwitch: agents.some((a) => a.id === "codex" && a.mcpSwitch === true)
+    readonly property bool codexShown: agents.some((a) => a.id === "codex" && a.installed)
+    // Tabler's plug (MIT, as Icons.qml credits).
+    readonly property string plugIcon: "M9.8 6l8.2 8.2-2 2.1a5.8 5.8 0 1 1-8.3-8.3zM4 20l3.5-3.5M15 4l-3.5 3.5M20 9l-3.5 3.5"
 
     spacing: 18
 
@@ -44,6 +51,41 @@ Column {
         if (a.problem.length > 0)
             return qsTr("Needs an update")
         return a.signedIn ? qsTr("Ready") : qsTr("Signed out")
+    }
+    // A usage window's name as the CLI gives it: minutes or a word.
+    function windowName(w) {
+        switch (w) {
+        case "300":
+        case "five_hour": return qsTr("5-hour")
+        case "10080":
+        case "seven_day": return qsTr("weekly")
+        default: return w
+        }
+    }
+    // When a window resets: the time today, else the day and the time.
+    function resetsAt(ms) {
+        const when = new Date(ms)
+        const time = when.toLocaleTimeString(Qt.locale(), Locale.ShortFormat)
+        return ms - Date.now() < 86400000 ? time : when.toLocaleDateString(Qt.locale(), "ddd") + " " + time
+    }
+    // "5-hour window: 41% used, resets 18:00 · weekly window: …", as the CLI reported them.
+    function limitsLine(a) {
+        return (a.limits || []).filter((l) => l.usedPct >= 0).map((l) => l.resetsMs > 0
+            ? qsTr("%1 window: %2% used, resets %3").arg(windowName(l.window)).arg(l.usedPct).arg(resetsAt(l.resetsMs))
+            : qsTr("%1 window: %2% used").arg(windowName(l.window)).arg(l.usedPct)).join(" · ")
+    }
+    // The servers the agents last reported in a folder, by name.
+    function mcpLine(f) {
+        const names = []
+        for (const seen of (f.mcpSeen || [])) {
+            for (const n of seen.names) {
+                if (names.indexOf(n) < 0)
+                    names.push(n)
+            }
+        }
+        if (names.length === 0)
+            return qsTr("No thread has run here yet; their names show after one does.")
+        return qsTr("%n MCP server(s): %1.", "", names.length).arg(names.join(", "))
     }
     function toggleOn(deviceId, name) {
         const t = AppController.togglesRevision >= 0
@@ -177,9 +219,13 @@ Column {
                 iconColor: modelData.installed && modelData.signedIn && modelData.problem.length === 0
                     ? Theme.tintTeal : Theme.surfaceContentVariant
                 title: modelData.name
-                description: needsLogin
-                    ? qsTr("Sign in by running %1 in a terminal.").arg(modelData.loginHint)
-                    : area.agentDetail(modelData)
+                description: {
+                    const detail = needsLogin
+                        ? qsTr("Sign in by running %1 in a terminal.").arg(modelData.loginHint)
+                        : area.agentDetail(modelData)
+                    const limits = area.limitsLine(modelData)
+                    return limits.length > 0 ? detail + "\n" + limits : detail
+                }
                 Button {
                     visible: agentLine.needsLogin
                     variant: "text"
@@ -195,6 +241,37 @@ Column {
                     role: "bodySmall"
                     muted: true
                 }
+            }
+        }
+    }
+
+    // ---- While an agent works ----
+    Column {
+        visible: area.control
+        width: parent.width
+        Line {
+            iconPath: Icons.bolt
+            title: qsTr("Keep this PC awake while an agent works")
+            Toggle {
+                enabled: area.setup.keepAwake === true || area.setup.keepAwake === false
+                label: qsTr("Keep this PC awake while an agent works")
+                checked: area.setup.keepAwake !== false
+                onToggled: (on) => Agents.setKeepAwake(on)
+            }
+        }
+        Line {
+            iconPath: Icons.send
+            title: qsTr("While it works, a new message")
+            description: area.setup.followUp === "queue"
+                ? qsTr("Enter queues it for when the turn ends; Alt+Enter sends it into the turn.")
+                : qsTr("Enter sends it into the turn; Alt+Enter queues it for when the turn ends.")
+            Segmented {
+                options: [
+                    { value: "steer", label: qsTr("Steers it") },
+                    { value: "queue", label: qsTr("Waits its turn") }
+                ]
+                value: area.setup.followUp || "steer"
+                onPicked: (value) => Agents.setFollowUp(value)
             }
         }
     }
@@ -231,22 +308,46 @@ Column {
         }
         Repeater {
             model: area.folders
-            delegate: Line {
-                id: folderLine
+            delegate: Column {
+                id: folderItem
                 required property var modelData
-                iconPath: Icons.folder
-                iconColor: modelData.exists ? Theme.tintAmber : Theme.surfaceContentVariant
-                title: modelData.shownPath
-                fullText: modelData.path
-                mono: true
-                description: modelData.exists ? "" : qsTr("Not found")
-                Accessible.name: modelData.path
-                Button {
-                    variant: "text"
-                    size: "sm"
-                    iconPath: Icons.trash
-                    text: qsTr("Remove")
-                    onClicked: Agents.removeFolder(folderLine.modelData.id)
+                width: parent.width
+                Line {
+                    iconPath: Icons.folder
+                    iconColor: folderItem.modelData.exists ? Theme.tintAmber : Theme.surfaceContentVariant
+                    title: folderItem.modelData.shownPath
+                    fullText: folderItem.modelData.path
+                    mono: true
+                    description: folderItem.modelData.exists ? "" : qsTr("Not found")
+                    Accessible.name: folderItem.modelData.path
+                    Button {
+                        variant: "text"
+                        size: "sm"
+                        iconPath: Icons.trash
+                        text: qsTr("Remove")
+                        onClicked: Agents.removeFolder(folderItem.modelData.id)
+                    }
+                }
+                // The user's own MCP servers here: on unless turned off.
+                Line {
+                    visible: area.control
+                    indent: 30
+                    iconPath: area.plugIcon
+                    title: qsTr("Use my MCP servers here")
+                    description: {
+                        const lines = [area.codexSwitch
+                            ? qsTr("Claude and Codex load the MCP servers you set up for them. Each tool still asks first.")
+                            : qsTr("Claude loads the MCP servers you set up for it. Each tool still asks first.")]
+                        if (!area.codexSwitch && area.codexShown)
+                            lines.push(qsTr("Codex always uses the MCP servers set up for it."))
+                        lines.push(area.mcpLine(folderItem.modelData))
+                        return lines.join("\n")
+                    }
+                    Toggle {
+                        label: qsTr("Use my MCP servers here")
+                        checked: folderItem.modelData.mcp !== false
+                        onToggled: (on) => Agents.setFolderMcp(folderItem.modelData.id, on)
+                    }
                 }
             }
         }

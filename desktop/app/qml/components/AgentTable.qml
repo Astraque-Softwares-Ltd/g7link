@@ -12,6 +12,9 @@ Item {
     required property int depth
     required property int quote
     required property string table
+    // "body" inside a plan's card.
+    required property string planPart
+    readonly property real planInset: planPart === "body" ? 16 : 0
 
     signal linkActivated(string key, int index)
 
@@ -27,11 +30,17 @@ Item {
     width: ListView.view ? ListView.view.width : 0
     height: grid.height + (moreText.visible ? moreText.height + 6 : 0) + 12
 
+    AgentPlanFrame {
+        visible: sheet.planInset > 0
+        x: sheet.depth * 18
+        width: parent.width - x
+        height: parent.height
+    }
     Flickable {
         id: scroll
-        x: sheet.depth * 18 + sheet.quote * 14
+        x: sheet.depth * 18 + sheet.quote * 14 + sheet.planInset
         y: 6
-        width: parent.width - x
+        width: parent.width - x - sheet.planInset
         height: grid.height
         contentWidth: Math.max(width, grid.width)
         contentHeight: grid.height

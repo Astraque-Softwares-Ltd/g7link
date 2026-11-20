@@ -53,9 +53,13 @@ FocusScope {
             }
         }
         switch (phase) {
-        case "waiting": return qsTr("needs you")
+        case "waiting":
+            // A question the agent asks, and no request beside it.
+            if ((item.asking || 0) > 0 && (item.pending || 0) === 0)
+                return item.asking > 1 ? qsTr("asks you %n questions", "", item.asking) : qsTr("asks you a question")
+            return qsTr("needs you")
         case "working": return ""
-        case "done": return qsTr("done")
+        case "done": return item.plan_ready === true ? qsTr("plan ready") : qsTr("done")
         case "failed": return item.error_code === "usage_limit" ? qsTr("hit its usage limit") : qsTr("failed")
         case "interrupted": return qsTr("stopped")
         default: return ""

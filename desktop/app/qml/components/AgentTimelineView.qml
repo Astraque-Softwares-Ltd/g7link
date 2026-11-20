@@ -19,11 +19,19 @@ ListView {
     property bool animate: true
     // Keeps the newest in view until the user scrolls up.
     property bool follow: true
+    // A turn runs or waits: a plan can't be implemented or changed now.
+    property bool running: false
 
     // A link was clicked: the page shows where it goes, then opens it.
     signal linkActivated(string key, int index)
     // A "Waiting for you" line was clicked: the page brings the dock into view.
     signal waitingClicked
+    // A plan's Implement ("supervised" or "auto_edit").
+    signal implementPlan(string itemId, string mode)
+    // A plan's mode menu, under its Implement (in the window's coordinates).
+    signal implementMenuRequested(string itemId, real x, real y)
+    // "Change the plan": the page puts the keyboard in the composer.
+    signal changePlan
 
     function jumpToLatest() {
         follow = true
@@ -51,13 +59,19 @@ ListView {
         }
     }
 
-    // What you wrote: on the right, in a bubble; a denial's words say so.
+    // A circled question mark (Tabler's help-circle, MIT, as Icons.qml credits).
+    readonly property string questionIcon: "M3 12a9 9 0 1 0 18 0 9 9 0 1 0-18 0M12 17v.01M12 13.5a1.5 1.5 0 0 1 1-1.5 2.6 2.6 0 1 0-3-4"
+
+    // What you wrote: on the right, in a bubble; a denial's words say so, and
+    // so does a message sent while the agent worked.
     component UserRow: Item {
         id: user
         required property string text
         required property string from
         required property bool denyOf
         required property int depth
+        required property string via
+        required property int images
         width: ListView.view ? ListView.view.width : 0
         height: column.height + 14
         Column {
@@ -68,9 +82,11 @@ ListView {
             spacing: 3
             Txt {
                 id: said
-                visible: user.denyOf
+                visible: user.denyOf || user.via === "steer"
                 anchors.right: parent.right
-                text: user.from.length > 0 ? qsTr("%1 denied it and said").arg(user.from) : qsTr("You denied it and said")
+                text: user.denyOf
+                    ? (user.from.length > 0 ? qsTr("%1 denied it and said").arg(user.from) : qsTr("You denied it and said"))
+                    : qsTr("Sent while it worked")
                 role: "caption"
                 muted: true
             }
@@ -97,6 +113,24 @@ ListView {
                     font.pixelSize: Theme.typography.body.size
                 }
             }
+            Row {
+                visible: user.images > 0
+                anchors.right: parent.right
+                spacing: 4
+                Icon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 13
+                    height: 13
+                    path: Icons.photo
+                    color: Theme.surfaceContentVariant
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("%n image(s)", "", user.images)
+                    role: "caption"
+                    muted: true
+                }
+            }
             Txt {
                 visible: user.from.length > 0 && !user.denyOf
                 anchors.right: parent.right
@@ -104,6 +138,70 @@ ListView {
                 role: "caption"
                 muted: true
             }
+        }
+    }
+
+    // The agent asked: one line, opened to show the answers when it has them.
+    component QuestionRow: Item {
+        id: asked
+        required property string key
+        required property int depth
+        required property string status
+        required property int count
+        required property string by
+        required property bool hasText
+        required property bool isOpen
+        readonly property string line: {
+            switch (status) {
+            case "answered": return by.length > 0 ? qsTr("Answered on %1").arg(by) : qsTr("You answered")
+            case "dismissed":
+            case "expired": return qsTr("Not answered")
+            default: return count > 1 ? qsTr("Asked you %n questions", "", count) : qsTr("Asked you a question")
+            }
+        }
+        width: ListView.view ? ListView.view.width : 0
+        height: 30
+        Accessible.role: asked.hasText ? Accessible.Button : Accessible.StaticText
+        Accessible.name: asked.line
+        Accessible.onPressAction: if (asked.hasText) Agents.toggle(asked.key)
+        Rectangle {
+            visible: asked.depth > 0
+            x: (asked.depth - 1) * 18 + 8
+            width: 1
+            height: parent.height
+            color: Theme.line
+        }
+        Row {
+            x: asked.depth * 18 + 20
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 8
+            Icon {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 16
+                height: 16
+                path: timeline.questionIcon
+                color: asked.status === "asked" ? Theme.tintAmber : Theme.surfaceContentVariant
+            }
+            Txt {
+                anchors.verticalCenter: parent.verticalCenter
+                text: asked.line
+                role: "bodySmall"
+                muted: asked.status !== "asked"
+            }
+            Icon {
+                visible: asked.hasText
+                anchors.verticalCenter: parent.verticalCenter
+                width: 14
+                height: 14
+                path: asked.isOpen ? Icons.chevronUp : Icons.chevronDown
+                color: Theme.surfaceContentVariant
+            }
+        }
+        MouseArea {
+            anchors.fill: parent
+            enabled: asked.hasText
+            cursorShape: Qt.PointingHandCursor
+            onClicked: Agents.toggle(asked.key)
         }
     }
 
@@ -306,6 +404,25 @@ ListView {
         DelegateChoice {
             roleValue: "notice"
             delegate: NoticeRow {}
+        }
+        DelegateChoice {
+            roleValue: "plan"
+            delegate: AgentPlanCard {
+                running: timeline.running
+            }
+        }
+        DelegateChoice {
+            roleValue: "plan_foot"
+            delegate: AgentPlanCard {
+                running: timeline.running
+                onImplement: (itemId, mode) => timeline.implementPlan(itemId, mode)
+                onImplementMenuRequested: (itemId, x, y) => timeline.implementMenuRequested(itemId, x, y)
+                onChangePlan: timeline.changePlan()
+            }
+        }
+        DelegateChoice {
+            roleValue: "question"
+            delegate: QuestionRow {}
         }
         DelegateChoice {
             roleValue: "live"

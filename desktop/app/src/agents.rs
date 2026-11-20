@@ -21,19 +21,24 @@ use std::{
 
 use g7_agents::{
     api::{
-        self, AgentId, AgentInfo, Approval, ApprovalAnswerParams, ApprovalOutcome, ClientKind, Decision,
-        ErrorCode, Event, ExportFormat, Folder, HelloParams, Item, Mode, Origin, OriginKind, Session,
-        SessionContinueParams, SessionReadParams, SessionSource, SessionState, State, SubscribeParams,
-        ThreadExportParams, ThreadExportResult, ThreadInfo, ThreadReadParams, ThreadSelection,
+        self, AgentId, AgentInfo, Approval, ApprovalAnswerParams, ApprovalOutcome, Can, ClientKind, Command,
+        Decision, Dispatch, Draft, DraftSetParams, ErrorCode, Event, ExportFormat, FileHit,
+        FilesSearchParams, Folder, HelloParams, ImageRef, Item, Mode, Origin, OriginKind,
+        PlanImplementParams, Question, QuestionAnswerParams, QuestionOutcome, QueueEditParams,
+        QueueItemParams, Session, SessionContinueParams, SessionReadParams, SessionSource, SessionState,
+        SettingsSetParams, State, SubscribeParams, ThreadConfigureParams, ThreadExportParams,
+        ThreadExportResult, ThreadInfo, ThreadReadParams, ThreadSelection, ThreadSendParams,
         ThreadStartParams, UiViewingParams, cap,
     },
     client::{self, Client, ClientError, Events, Launch, When},
 };
 use g7_agents_render::{self as render, GuardEvent};
 use g7link_core::{
-    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentEvent, AgentExport,
-    AgentFailure, AgentItem, AgentItems, AgentPlanStep, AgentReply, AgentRequest, AgentSession,
-    AgentSessionItems, AgentThread, AgentTool, DeviceId, Node, agent,
+    AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentCommand, AgentContext,
+    AgentDraft, AgentDraftSaved, AgentEvent, AgentExport, AgentFailure, AgentFileHit, AgentFiles, AgentImage,
+    AgentItem, AgentItemQuestion, AgentItems, AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion,
+    AgentQuestionAsk, AgentQuestionOption, AgentQuestioned, AgentQueued, AgentReply, AgentRequest,
+    AgentSession, AgentSessionItems, AgentThread, AgentTool, DeviceId, Node, QueueAction, agent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -41,6 +46,7 @@ use tokio::sync::{Notify, watch};
 
 use crate::{core_host, i18n::tr, state::Changes};
 
+mod control;
 mod rows;
 pub(crate) use rows::{CodePalette, LinkRef, ModelRow, Role, RoleValue, RowOp};
 #[cfg(test)]
@@ -157,6 +163,7 @@ fn render_class(class: api::ToolClass) -> render::ToolClass {
         api::ToolClass::Agent => C::Agent,
         api::ToolClass::Tasks => C::Tasks,
         api::ToolClass::Other => C::Other,
+        api::ToolClass::Plan => C::Plan,
     }
 }
 
@@ -208,6 +215,8 @@ impl Entry {
             api::ItemKind::Tool => render::ItemKind::Tool,
             api::ItemKind::Notice => render::ItemKind::Notice,
             api::ItemKind::Reasoning => render::ItemKind::Reasoning,
+            api::ItemKind::Plan => render::ItemKind::Plan,
+            api::ItemKind::Question => render::ItemKind::Question,
             api::ItemKind::Unknown => return None,
         };
         let tool = item.tool.as_ref().map(|t| render::ToolIn {
@@ -249,6 +258,33 @@ impl Entry {
             deny_of: item.deny_of.as_deref(),
             tool,
             truncated: item.truncated,
+            via: match item.via {
+                Some(api::Via::Steer) => render::Via::Steer,
+                Some(api::Via::Queue) => render::Via::Queue,
+                None => render::Via::Turn,
+            },
+            plan_state: item.plan_state.map(|p| match p {
+                api::PlanState::Proposed => render::PlanState::Proposed,
+                api::PlanState::Implemented => render::PlanState::Implemented,
+                api::PlanState::Replaced => render::PlanState::Replaced,
+            }),
+            question: item.question.map(|q| render::QuestionIn {
+                state: match q.outcome {
+                    None => render::QuestionState::Asked,
+                    Some(QuestionOutcome::Answered) => render::QuestionState::Answered,
+                    Some(QuestionOutcome::Dismissed) => render::QuestionState::Dismissed,
+                    Some(QuestionOutcome::Expired | QuestionOutcome::Cancelled) => {
+                        render::QuestionState::Expired
+                    }
+                },
+                count: q.count,
+                by: item
+                    .origin
+                    .as_ref()
+                    .filter(|o| o.kind == OriginKind::Phone)
+                    .and_then(|o| o.device_name.as_deref())
+                    .unwrap_or_default(),
+            }),
         })
     }
 }
@@ -379,6 +415,92 @@ struct OpenView {
     wraps: Vec<String>,
     /// Holds a request that arrives while the user types (§P8.2).
     guard: render::TypingGuard,
+    /// Questions the agent waits on, shown in the dock in turn with the requests.
+    questions: Vec<Question>,
+    /// The answers being given to the question the dock shows.
+    answering: control::Answering,
+    composer: Composer,
+}
+
+/// The `@` or `/` list over the composer.
+#[derive(Debug)]
+struct Popup {
+    trigger: control::Trigger,
+    cursor: u32,
+    selected: usize,
+    files: Vec<FileHit>,
+    more: bool,
+    /// A file search is waiting or running.
+    loading: bool,
+    /// Counts searches, so only the latest one's files are shown.
+    search: u64,
+}
+
+impl Popup {
+    fn new(trigger: control::Trigger, cursor: u32) -> Self {
+        Self { trigger, cursor, selected: 0, files: Vec::new(), more: false, loading: false, search: 0 }
+    }
+}
+
+/// The open thread's composer as the bridge knows it: its text as the page
+/// last said, the `@` and `/` lists, the images to send, and its draft.
+#[derive(Default)]
+struct Composer {
+    text: String,
+    cursor: u32,
+    focused: bool,
+    popup: Option<Popup>,
+    /// The agent's commands for `/`, read once each time the composer gets
+    /// the keyboard (`None`: not read yet).
+    commands: Option<Vec<Command>>,
+    commands_asked: bool,
+    /// Images to send with the next message.
+    images: Vec<ImageRef>,
+    /// Images being added.
+    adding: u32,
+    /// Why the last image wasn't added ("" for none): "type", "size",
+    /// "model", "count" or "failed".
+    image_error: &'static str,
+    /// The stored draft's revision, as last set or read (0: none).
+    draft_rev: u64,
+    /// The text last saved as the draft.
+    draft_saved: String,
+    /// Counts edits: only the newest one's timer saves the draft.
+    draft_edit: u64,
+    /// A newer draft from another device, offered while the user types,
+    /// and the name of where it came from.
+    offer: Option<(Draft, String)>,
+    /// Text the page must put in the composer: how many times it was set,
+    /// the text, and the cursor.
+    set: (u64, String, i32),
+    /// Prompts sent from this PC, newest first, for Up (`None`: not read).
+    history: Option<Vec<String>>,
+    /// The prompt Up last showed.
+    history_at: Option<usize>,
+}
+
+/// Never prints the text, the draft or the history.
+impl std::fmt::Debug for Composer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Composer")
+            .field("bytes", &self.text.len())
+            .field("focused", &self.focused)
+            .field("popup", &self.popup.as_ref().map(|p| p.trigger.kind))
+            .field("images", &self.images.len())
+            .field("draft_rev", &self.draft_rev)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Composer {
+    /// Puts `text` in the page's composer, the cursor at its end.
+    fn put(&mut self, text: String) {
+        let cursor = i32::try_from(text.encode_utf16().count()).unwrap_or(i32::MAX);
+        self.set = (self.set.0 + 1, text.clone(), cursor);
+        self.text = text;
+        self.cursor = cursor.unsigned_abs();
+        self.popup = None;
+    }
 }
 
 impl OpenView {
@@ -397,7 +519,25 @@ impl OpenView {
             open_keys: Vec::new(),
             wraps: Vec::new(),
             guard: render::TypingGuard::new(),
+            questions: Vec::new(),
+            answering: control::Answering::default(),
+            composer: Composer::default(),
         }
+    }
+
+    /// The question the dock shows, if it shows one.
+    fn shown_question(&self) -> Option<&Question> {
+        let all = control::waiting(&self.asks, &self.questions);
+        match control::shown(&all, |t| self.guard.held(t)).map(|i| all[i]) {
+            Some(control::Waiting::Question(q)) => Some(q),
+            _ => None,
+        }
+    }
+
+    /// The answers follow the question the dock shows.
+    fn follow_question(&mut self) {
+        let shown = self.shown_question().cloned();
+        self.answering.follow(shown.as_ref(), &self.composer.text);
     }
 
     fn is(&self, kind: OpenKind, id: &str) -> bool {
@@ -473,6 +613,11 @@ impl OpenView {
                 Some(render::Mark { item_id: a.item_id.clone()?, kind, by: String::new() })
             })
             .collect();
+        for q in &self.questions {
+            let kind =
+                if self.guard.held(&q.token) { render::MarkKind::Held } else { render::MarkKind::Waiting };
+            marks.push(render::Mark { item_id: q.item_id.clone(), kind, by: String::new() });
+        }
         for mark in &self.resolved {
             if !by_rule(&mark.item_id) && !marks.iter().any(|m| m.item_id == mark.item_id) {
                 marks.push(mark.clone());
@@ -503,15 +648,27 @@ impl OpenView {
         true
     }
 
-    /// The guard heard of the requests now waiting.
+    /// The guard heard of the requests and questions now waiting.
     fn guard_requests(&mut self, now_ms: u64) {
-        let ids: Vec<&str> = self.asks.iter().map(|a| a.token.as_str()).collect();
+        let ids: Vec<&str> = self
+            .asks
+            .iter()
+            .map(|a| a.token.as_str())
+            .chain(self.questions.iter().map(|q| q.token.as_str()))
+            .collect();
         self.guard.on(GuardEvent::Requests { ids: &ids, now_ms });
+        self.follow_question();
     }
 
     /// Tokens the guard holds, in order.
     fn held(&self) -> Vec<String> {
-        self.asks.iter().filter(|a| self.guard.held(&a.token)).map(|a| a.token.clone()).collect()
+        self.asks
+            .iter()
+            .map(|a| &a.token)
+            .chain(self.questions.iter().map(|q| &q.token))
+            .filter(|t| self.guard.held(t))
+            .cloned()
+            .collect()
     }
 }
 
@@ -639,13 +796,32 @@ impl Render {
         };
         let rows = self.timeline.rows(&items, &ctx);
         let mut built = HashMap::with_capacity(rows.len());
-        let mut shown = Vec::with_capacity(rows.len());
+        let mut shown = Vec::with_capacity(rows.len() + 1);
+        // The plan whose blocks follow: its card ends with a foot after them.
+        let mut plan: Option<PlanCard> = None;
         for row in rows {
+            let in_plan = plan.as_ref().is_some_and(|p| p.item_id == row.item_id)
+                && matches!(row.kind, render::RowKind::Block { .. });
+            if !in_plan && let Some(card) = plan.take() {
+                shown.push(Arc::new(card.foot()));
+            }
+            if let render::RowKind::Plan { state, more, open, .. } = &row.kind {
+                plan = Some(PlanCard {
+                    item_id: row.item_id.clone(),
+                    state: *state,
+                    more: *more,
+                    open: *open,
+                    turn: row.turn,
+                    depth: row.depth,
+                });
+            }
             let entry = by_id.get(row.item_id.as_str());
             let extra = rows::Extra {
                 when_ms: entry.map_or(0, |e| e.item.end_ms.unwrap_or(e.item.ts_ms)),
                 truncated: entry.is_some_and(|e| e.item.truncated),
                 wrapped: snap.wraps.contains(&row.key),
+                in_plan,
+                images: entry.map_or(0, |e| u8::try_from(e.item.images.len()).unwrap_or(u8::MAX)),
             };
             let model = match self.built.remove(&row.key) {
                 Some((old, old_extra, model)) if old == row && old_extra == extra => model,
@@ -660,6 +836,9 @@ impl Render {
             shown.push(model.clone());
             built.insert(row.key.clone(), (row, extra, model));
         }
+        if let Some(card) = plan.take() {
+            shown.push(Arc::new(card.foot()));
+        }
         let ops = rows::row_ops(&self.shown, &shown);
         self.shown = shown;
         self.built = built;
@@ -668,6 +847,23 @@ impl Render {
 
     fn row(&self, key: &str) -> Option<&Arc<ModelRow>> {
         self.shown.iter().find(|r| r.key() == key)
+    }
+}
+
+/// A plan's card in the rows: its head (the render crate's `Plan` row),
+/// its blocks, then a foot this adds.
+struct PlanCard {
+    item_id: String,
+    state: render::PlanState,
+    more: u16,
+    open: bool,
+    turn: u32,
+    depth: u8,
+}
+
+impl PlanCard {
+    fn foot(&self) -> ModelRow {
+        rows::plan_foot(&self.item_id, self.state, self.more, self.open, self.turn, self.depth)
     }
 }
 
@@ -915,6 +1111,29 @@ struct BridgeState {
     next_gen: u64,
     /// An export waiting for the page's save dialog.
     export: Option<PendingExport>,
+    /// The host offers phase 2's controls (`cap::CONTROL`): models, the
+    /// queue, questions, plans, files, images, drafts.
+    control: bool,
+    /// Keep this PC awake while an agent works (`None`: not known).
+    keep_awake: Option<bool>,
+    /// Questions waiting, by thread, as the host announced them.
+    questions: HashMap<String, Vec<Question>>,
+    /// The page's own settings (the follow-up key, sticky choices).
+    prefs: control::Prefs,
+    /// The user changed them before the saved ones were read.
+    prefs_set: bool,
+    /// The new-thread form: its agent, folder and setting.
+    new_form: NewForm,
+    /// Image thumbnails as data URLs, by image id.
+    thumbs: HashMap<String, String>,
+}
+
+/// What the new-thread form is set to.
+#[derive(Debug, Clone, Default)]
+struct NewForm {
+    agent: Option<AgentId>,
+    folder: String,
+    setting: control::Setting,
 }
 
 /// Markdown fetched for "Export…", kept until it's saved or the dialog is closed.
@@ -1113,6 +1332,19 @@ pub fn start() {
             drop(s);
             changed();
         }
+        let read = tokio::task::spawn_blocking(|| {
+            core_host::try_data_dir()
+                .map(|dir| crate::atomic_file::read_json::<control::Prefs>(&dir.join(PREFS_FILE)))
+        });
+        if let Ok(Some(mut prefs)) = read.await {
+            prefs.choices.truncate(control::MAX_CHOICES);
+            let mut s = lock();
+            if !s.prefs_set {
+                s.prefs = prefs;
+            }
+            drop(s);
+            changed();
+        }
     });
 }
 
@@ -1190,6 +1422,9 @@ pub(crate) fn catalog(agents: &[AgentInfo], folders: &[Folder]) -> AgentCatalog 
                 signed_in: a.signed_in,
                 login_hint: a.login_hint.clone(),
                 auth: a.auth.as_ref().map(word),
+                models: a.models.iter().take(agent::MAX_MODELS).map(wire_model).collect(),
+                can: a.can.iter().map(word).collect(),
+                limits: a.limits.iter().take(agent::MAX_LIMITS).map(wire_limit).collect(),
             })
             .collect(),
         folders: folders
@@ -1198,6 +1433,64 @@ pub(crate) fn catalog(agents: &[AgentInfo], folders: &[Folder]) -> AgentCatalog 
             .map(|f| AgentCatalogFolder { id: f.id.clone(), label: f.label.clone() })
             .collect(),
         modes: vec![agent::mode::SUPERVISED.to_owned()],
+    }
+}
+
+/// A model as phones get it: the note cut to the wire's limit.
+fn wire_model(m: &api::ModelInfo) -> AgentModel {
+    AgentModel {
+        id: m.id.clone(),
+        name: m.name.clone(),
+        note: m.note.as_deref().map(|n| api::cut(n, agent::MAX_MODEL_NOTE_BYTES).to_owned()),
+        is_default: m.default,
+        efforts: m.efforts.clone(),
+        default_effort: m.default_effort.clone(),
+        images: m.images,
+        short: m.short,
+    }
+}
+
+/// A usage window as phones get it: the window, its use, its reset, its state; nothing else.
+fn wire_limit(l: &api::Limit) -> AgentLimit {
+    AgentLimit { window: l.window.clone(), used_pct: l.used_pct, resets: l.resets_ms, state: word(&l.state) }
+}
+
+fn wire_image(i: &ImageRef) -> AgentImage {
+    AgentImage { id: i.id.clone(), name: i.name.clone(), bytes: i.bytes, w: i.w, h: i.h }
+}
+
+/// A question as phones get it: a secret one without its asks.
+pub(crate) fn wire_question(q: &Question, info: Option<&ThreadInfo>) -> AgentQuestion {
+    let asks = if q.secret {
+        Vec::new()
+    } else {
+        q.asks
+            .iter()
+            .map(|a| AgentQuestionAsk {
+                id: a.id.clone(),
+                header: a.header.clone(),
+                text: a.text.clone(),
+                multi: a.multi,
+                other: a.other,
+                secret: a.secret,
+                options: a
+                    .options
+                    .iter()
+                    .map(|o| AgentQuestionOption { label: o.label.clone(), note: o.note.clone() })
+                    .collect(),
+            })
+            .collect()
+    };
+    AgentQuestion {
+        token: q.token.clone(),
+        thread: q.thread_id.clone(),
+        thread_title: info.map(|t| t.title.clone()).unwrap_or_default(),
+        agent: info.map_or(AgentId::Claude, |t| t.agent).as_str().to_owned(),
+        item: q.item_id.clone(),
+        secret: q.secret,
+        asks,
+        created: q.created_ms,
+        expires: q.expires_ms,
     }
 }
 
@@ -1236,6 +1529,33 @@ pub(crate) fn thread(info: &ThreadInfo, phone: Option<&DeviceId>) -> AgentThread
                 .map(|step| AgentPlanStep { text: step.text.clone(), status: word(&step.status) })
                 .collect()
         }),
+        model: info.model.clone(),
+        effort: info.effort.clone(),
+        answered_model: info.answered_model.clone(),
+        queued: info
+            .queued
+            .iter()
+            .map(|q| AgentQueued {
+                id: q.id.clone(),
+                text: q.text.clone(),
+                truncated: false,
+                by_name: (q.origin.kind == OriginKind::Phone).then(|| q.origin.device_name.clone()).flatten(),
+                images: q.images.iter().map(wire_image).collect(),
+                created: q.created_ms,
+            })
+            .collect(),
+        queue_held: info.queue_held,
+        context: info.context.map(|c| AgentContext { used: c.used, max: c.max }),
+        // Counts only: a server's name never reaches a phone.
+        mcp: info.mcp.as_ref().map(|m| AgentMcp {
+            on: m.on,
+            servers: u16::try_from(m.names.len())
+                .unwrap_or(u16::MAX)
+                .max(m.connected.saturating_add(m.need_login)),
+            connected: m.connected,
+            need_login: m.need_login,
+        }),
+        asking: info.asking,
     }
 }
 
@@ -1265,6 +1585,16 @@ pub(crate) fn item(item: &Item) -> AgentItem {
         end: item.end_ms,
         group: item.group.clone(),
         deny_of: item.deny_of.clone(),
+        via: item.via.as_ref().map(word),
+        images: item.images.iter().map(wire_image).collect(),
+        plan_state: item.plan_state.as_ref().map(word),
+        question: item.question.map(|q| AgentItemQuestion {
+            count: q.count,
+            secret: q.secret,
+            outcome: q.outcome.as_ref().map(word),
+            // Who answered, for a phone: the item's origin.
+            by_name: q.outcome.and(item.origin.as_ref()).and_then(|by| answered_by(by, this_pc_name)),
+        }),
     }
 }
 
@@ -1325,7 +1655,7 @@ pub(crate) fn failure(e: &ClientError) -> AgentFailure {
         Some(ErrorCode::BadRequest) => AgentFailure::BadMessage,
         Some(ErrorCode::NotFound | ErrorCode::AlreadyAnswered) => AgentFailure::NotFound,
         Some(ErrorCode::Denied) => AgentFailure::Denied,
-        Some(ErrorCode::Busy | ErrorCode::Limit) => AgentFailure::Busy,
+        Some(ErrorCode::Busy | ErrorCode::Limit | ErrorCode::Conflict) => AgentFailure::Busy,
         Some(ErrorCode::Unavailable | ErrorCode::UnsupportedVersion) => AgentFailure::Unsupported,
         Some(ErrorCode::Internal) => AgentFailure::Internal,
         None if e.is_unreachable() => AgentFailure::Unsupported,
@@ -1402,6 +1732,20 @@ fn thread_row(t: &ThreadInfo) -> Value {
         "plan": t.plan.as_deref().unwrap_or_default().iter()
             .map(|step| json!({ "text": step.text, "status": word(&step.status) }))
             .collect::<Vec<_>>(),
+        "model": t.model.clone().unwrap_or_default(),
+        "effort": t.effort.clone().unwrap_or_default(),
+        "answered_model": t.answered_model.clone().unwrap_or_default(),
+        "asking": t.asking,
+        "queued": t.queued.len(),
+        // A finished turn in plan mode ends with its plan (or a question).
+        "plan_ready": t.mode == Mode::Plan && t.state == State::Done,
+        "context": control::context_json(t),
+        "mcp": t.mcp.as_ref().map_or_else(|| json!({}), |m| json!({
+            "on": m.on,
+            "connected": m.connected,
+            "needLogin": m.need_login,
+            "names": m.names,
+        })),
     })
 }
 
@@ -1434,6 +1778,8 @@ fn steps_json(entries: &[Arc<Entry>]) -> Value {
         .iter()
         .rev()
         .filter_map(|e| e.item.tool.as_ref().filter(|_| e.item.kind == api::ItemKind::Tool).map(|t| (e, t)))
+        // Not the plan file plan mode writes, nor the agent looking for its tools.
+        .filter(|(e, t)| e.class != render::ToolClass::Plan && t.name != "ToolSearch")
         .take(STEPS_SHOWN)
         .map(|(e, t)| {
             json!({
@@ -1469,6 +1815,7 @@ const ASK_DIFF_ROWS: usize = 2_000;
 /// The request the dock shows (`{}` for none), and how many more wait.
 /// Oldest first; the shown one is the first the typing guard doesn't hold,
 /// or the first when it holds them all. Answering it shows the next.
+#[cfg(test)]
 fn ask_json(asks: &[Approval], held: impl Fn(&str) -> bool) -> (Value, i32) {
     let mut order: Vec<&Approval> = asks.iter().collect();
     order.sort_by_key(|a| a.created_ms);
@@ -1479,9 +1826,14 @@ fn ask_json(asks: &[Approval], held: impl Fn(&str) -> bool) -> (Value, i32) {
     let a = order[position];
     let total = order.len();
     let more = i32::try_from(total - 1).unwrap_or(i32::MAX);
+    (approval_json(a, position + 1, total, held(&a.token)), more)
+}
+
+/// A request as the dock shows it, "`position` of `total`".
+fn approval_json(a: &Approval, position: usize, total: usize, held: bool) -> Value {
     let diff =
         a.diff.as_deref().filter(|d| !d.is_empty()).map(|d| rows::diff_json(&render::diff(d), ASK_DIFF_ROWS));
-    let ask = json!({
+    json!({
         "token": a.token,
         "kind": word(&a.kind),
         "title": a.title,
@@ -1494,12 +1846,11 @@ fn ask_json(asks: &[Approval], held: impl Fn(&str) -> bool) -> (Value, i32) {
         "truncated": a.truncated,
         "can_allow_thread": a.can_allow_thread,
         "created_ms": a.created_ms,
-        "position": position + 1,
+        "position": position,
         "total": total,
-        "held": held(&a.token),
+        "held": held,
         "itemId": a.item_id.clone().unwrap_or_default(),
-    });
-    (ask, more)
+    })
 }
 
 // ---- The connection ----
@@ -1522,6 +1873,11 @@ trait Relay {
     async fn ask(&self, ask: AgentAsk);
     async fn asked(&self, asked: AgentAsked);
     async fn session(&self, session: Option<AgentSession>, removed: Option<String>);
+    /// An agent asks: phones that get it are told (a secret one without its asks).
+    async fn question(&self, question: AgentQuestion);
+    async fn questioned(&self, questioned: AgentQuestioned);
+    /// A draft changed: phones but `except` are told to read it again.
+    async fn draft(&self, key: String, rev: u64, except: Option<DeviceId>);
 }
 
 /// The node: phones get the host's news through the core.
@@ -1570,12 +1926,27 @@ impl Relay for NodeRelay {
             tracing::debug!(error = %e, "a session change wasn't passed on");
         }
     }
+
+    async fn question(&self, question: AgentQuestion) {
+        if let Err(e) = self.0.agent_question(question).await {
+            tracing::debug!(error = %e, "a question wasn't passed on");
+        }
+    }
+
+    async fn questioned(&self, questioned: AgentQuestioned) {
+        let _ = self.0.agent_questioned(questioned).await;
+    }
+
+    async fn draft(&self, key: String, rev: u64, except: Option<DeviceId>) {
+        let _ = self.0.agent_draft(key, rev, except).await;
+    }
 }
 
-/// What G7 Link says to the host: it understands reasoning items and the
-/// fields added with them (phones that don't get them as the core makes them).
+/// What G7 Link says to the host: it understands reasoning items, plans and
+/// questions, and the fields added with them (phones that don't get them as
+/// the core makes them).
 fn hello() -> HelloParams {
-    HelloParams::new(ClientKind::Link, &[cap::ITEMS2])
+    HelloParams::new(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3])
 }
 
 async fn run() {
@@ -1679,10 +2050,10 @@ async fn serve<R: Relay>(
         let folders = client.folders_list().await?;
         let threads = client.threads_list(Some(LISTED_THREADS as u32), None).await.unwrap_or_default();
         let sessions = client.sessions_list(Some(api::MAX_SESSIONS as u32)).await;
-        let following = following::read(&client).await;
-        Ok::<_, ClientError>((agents, folders, threads, sessions, following))
+        let settings = following::read(&client).await;
+        Ok::<_, ClientError>((agents, folders, threads, sessions, settings))
     };
-    let (agents, folders, threads, sessions, following) = match seeded.await {
+    let (agents, folders, threads, sessions, settings) = match seeded.await {
         Ok(seeded) => seeded,
         Err(e) => {
             tracing::warn!(error = %e, "the agent host didn't answer");
@@ -1692,6 +2063,7 @@ async fn serve<R: Relay>(
     };
     let outdated = client.outdated(&launch.version).is_some();
     let says_why = client.host().has(cap::DENY_MESSAGE);
+    let control = client.host().has(cap::CONTROL);
     if outdated {
         tracing::info!(
             host = %client.host().host_version,
@@ -1712,7 +2084,9 @@ async fn serve<R: Relay>(
         s.folders = folders;
         s.threads = threads.into_iter().map(|t| (t.id.clone(), t)).collect();
         s.sessions = sessions.unwrap_or_default();
-        s.following = following;
+        s.following = settings.map(|x| x.follow_sessions);
+        s.keep_awake = settings.filter(|_| control).map(|x| x.keep_awake);
+        s.control = control;
         s.open.as_ref().map(|o| (o.generation, o.kind, o.id.clone()))
     };
     bridge.connected.send_replace(true);
@@ -1762,12 +2136,17 @@ async fn serve<R: Relay>(
         s.says_why = false;
         s.sessions_unsupported = false;
         s.threads.clear();
+        s.questions.clear();
+        s.control = false;
         s.sessions.clear();
         s.following = None;
+        s.keep_awake = None;
         s.open.as_mut().map(|open| {
             open.entries.clear();
             open.asks.clear();
             open.resolved.clear();
+            open.questions.clear();
+            open.answering.reset();
             open.loading = true;
             open.gate = DeltaGate::default();
             open.generation
@@ -1843,6 +2222,7 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             let was_open = {
                 let mut s = bridge.lock();
                 s.threads.remove(&e.thread_id);
+                s.questions.remove(&e.thread_id);
                 if s.open_is(OpenKind::Thread, &e.thread_id) {
                     s.open.take().map(|o| o.generation)
                 } else {
@@ -1919,8 +2299,45 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             relay.catalog(Some(bridge.catalog())).await;
         }
         Event::SettingsChanged(e) => {
-            bridge.lock().following = Some(e.follow_sessions);
+            let mut s = bridge.lock();
+            s.following = Some(e.follow_sessions);
+            if s.control {
+                s.keep_awake = Some(e.keep_awake);
+            }
+            drop(s);
             changed();
+        }
+        Event::QuestionRequested(e) => {
+            let info = bridge.known(&e.question.thread_id);
+            let wire = wire_question(&e.question, info.as_ref());
+            question_requested(bridge, e.question);
+            relay.question(wire).await;
+        }
+        Event::QuestionResolved(e) => {
+            question_resolved(bridge, &e.token, &e.thread_id);
+            let questioned = AgentQuestioned {
+                token: e.token,
+                thread: e.thread_id,
+                outcome: word(&e.outcome),
+                by_name: e.by.as_ref().and_then(|by| answered_by(by, this_pc_name)),
+            };
+            relay.questioned(questioned).await;
+        }
+        Event::DraftChanged(e) => {
+            let generation = bridge
+                .lock()
+                .open
+                .as_ref()
+                .filter(|o| o.is(OpenKind::Thread, &e.key) && o.composer.draft_rev != e.rev)
+                .map(|o| o.generation);
+            if let Some(generation) = generation {
+                core_host::spawn(read_draft(client.clone(), generation, e.key.clone()));
+            }
+            let except =
+                e.by.as_ref()
+                    .filter(|o| o.kind == OriginKind::Phone)
+                    .and_then(|o| o.device_id.as_deref()?.parse().ok());
+            relay.draft(e.key, e.rev, except).await;
         }
         // The host asks the PC to show a thread (a notification's Open).
         Event::UiOpen(e) => {
@@ -2080,6 +2497,7 @@ fn guard_idle(generation: u64, at: u64) {
             return;
         }
         open.guard.on(GuardEvent::Idle);
+        open.follow_question();
     }
     changed();
     rerender();
@@ -2131,23 +2549,145 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             let threads = client.threads_list(Some(agent::MAX_THREADS as u32), None).await.map_err(fail)?;
             AgentReply::Threads(threads.iter().map(|t| thread(t, Some(&from))).collect())
         }
-        AgentRequest::Start { agent: agent_id, folder, prompt, .. } => {
+        AgentRequest::Start {
+            agent: agent_id,
+            folder,
+            prompt,
+            mode,
+            model,
+            effort,
+            images,
+            custom_model,
+        } => {
             let agent_id = AgentId::parse(&agent_id).ok_or(AgentFailure::NotFound)?;
-            let params = ThreadStartParams {
-                agent: agent_id,
-                folder_id: folder,
-                prompt,
-                mode: Mode::Supervised,
-                origin: origin(),
-            };
+            // A phone starts supervised, or in plan mode; never anything else.
+            let mode = if mode == agent::mode::PLAN { Mode::Plan } else { Mode::Supervised };
+            let mut params = ThreadStartParams::new(agent_id, folder, prompt, mode, origin());
+            params.model = model;
+            params.effort = effort;
+            params.images = images;
+            params.custom_model = custom_model;
             let info = client.thread_start(params).await.map_err(fail)?;
             bridge().remember(&info);
             lists_changed();
             AgentReply::Thread(thread(&info, Some(&from)))
         }
-        AgentRequest::Send { thread: thread_id, text } => {
-            client.thread_send(thread_id, text, origin()).await.map_err(fail)?;
+        AgentRequest::Send { thread: thread_id, text, dispatch, images } => {
+            if dispatch.is_none() && images.is_empty() {
+                client.thread_send(thread_id, text, origin()).await.map_err(fail)?;
+            } else {
+                let mut params = ThreadSendParams::new(thread_id, text, origin());
+                params.dispatch = dispatch.as_deref().map(|d| match d {
+                    agent::dispatch::STEER => Dispatch::Steer,
+                    agent::dispatch::QUEUE => Dispatch::Queue,
+                    _ => Dispatch::Auto,
+                });
+                params.images = images;
+                client.thread_send_with(params).await.map_err(fail)?;
+            }
             AgentReply::Ok
+        }
+        AgentRequest::Configure { thread: thread_id, model, effort, mode, custom_model } => {
+            let mode = match mode.as_deref() {
+                None => None,
+                Some(agent::mode::PLAN) => Some(Mode::Plan),
+                Some(agent::mode::SUPERVISED) => Some(Mode::Supervised),
+                Some(_) => return Err(AgentFailure::Denied),
+            };
+            let params =
+                ThreadConfigureParams { thread_id, model, effort, mode, custom_model, by: Some(origin()) };
+            let info = client.thread_configure(params).await.map_err(fail)?;
+            bridge().remember(&info);
+            lists_changed();
+            AgentReply::Thread(thread(&info, Some(&from)))
+        }
+        AgentRequest::Queue { thread: thread_id, id, action } => {
+            let by = Some(origin());
+            match action {
+                QueueAction::Edit(text) => {
+                    client.queue_edit(QueueEditParams { thread_id, id, text, by }).await
+                }
+                QueueAction::Remove => client.queue_remove(QueueItemParams { thread_id, id, by }).await,
+                QueueAction::SendNow => client.queue_send_now(QueueItemParams { thread_id, id, by }).await,
+            }
+            .map_err(fail)?;
+            AgentReply::Ok
+        }
+        AgentRequest::QuestionAnswer { token, answers } => {
+            let answers = answers
+                .into_iter()
+                .map(|a| api::Answer { id: a.id, labels: a.labels, other: a.other })
+                .collect();
+            client
+                .question_answer(QuestionAnswerParams { token, answers, by: origin() })
+                .await
+                .map_err(fail)?;
+            AgentReply::Ok
+        }
+        AgentRequest::QuestionDismiss { token } => {
+            client.question_dismiss(token, origin()).await.map_err(fail)?;
+            AgentReply::Ok
+        }
+        AgentRequest::Implement { thread: thread_id, item } => {
+            // From a phone always supervised.
+            let params =
+                PlanImplementParams { thread_id, item_id: item, mode: Mode::Supervised, by: origin() };
+            client.plan_implement(params).await.map_err(fail)?;
+            AgentReply::Ok
+        }
+        AgentRequest::Files { thread: thread_id, folder, query, limit } => {
+            let params = FilesSearchParams { folder_id: folder, thread_id, query, limit: Some(limit) };
+            let found = client.files_search(params).await.map_err(fail)?;
+            AgentReply::Files(AgentFiles {
+                files: found.files.into_iter().map(|f| AgentFileHit { path: f.path, dir: f.dir }).collect(),
+                more: found.more,
+            })
+        }
+        AgentRequest::Commands { agent: agent_id, folder } => {
+            let agent_id = AgentId::parse(&agent_id).ok_or(AgentFailure::NotFound)?;
+            let commands = client.commands_list(agent_id, folder).await.map_err(fail)?;
+            AgentReply::Commands(
+                commands
+                    .into_iter()
+                    .map(|c| AgentCommand { name: c.name, note: c.note, hint: c.hint, kind: word(&c.kind) })
+                    .collect(),
+            )
+        }
+        AgentRequest::DraftGet { key } => {
+            let draft = client.draft_get(key).await.map_err(fail)?;
+            AgentReply::Draft(draft.as_ref().map(wire_draft))
+        }
+        AgentRequest::DraftSet { key, text, images, rev } => {
+            let params = DraftSetParams { key: key.clone(), text, images, rev, by: Some(origin()) };
+            match client.draft_set(params).await {
+                Ok(rev) => {
+                    // The host tells other connections; this one's page and
+                    // the other phones hear it from here.
+                    draft_changed_here(key, rev, Some(from));
+                    AgentReply::DraftSaved(AgentDraftSaved { rev, conflict: None })
+                }
+                Err(ClientError::Remote(e)) if e.code == ErrorCode::Conflict => {
+                    let stored = e.conflict_draft().ok_or(AgentFailure::Internal)?;
+                    AgentReply::DraftSaved(AgentDraftSaved {
+                        rev: stored.rev,
+                        conflict: Some(wire_draft(&stored)),
+                    })
+                }
+                Err(e) => return Err(fail(e)),
+            }
+        }
+        AgentRequest::ImageAdd { name, bytes } => {
+            AgentReply::Image(wire_image(&upload_image(&client, name, bytes).await?))
+        }
+        AgentRequest::ImageThumb { id, max } => {
+            let max = u16::try_from(max).unwrap_or(api::MAX_THUMB_SIDE).min(api::MAX_THUMB_SIDE);
+            let thumb = client.image_read(id, max).await.map_err(fail)?;
+            let bytes =
+                data_encoding::BASE64.decode(thumb.data.as_bytes()).map_err(|_| AgentFailure::Internal)?;
+            if bytes.len() > api::MAX_THUMB_BYTES {
+                return Err(AgentFailure::Internal);
+            }
+            AgentReply::Thumb(bytes)
         }
         AgentRequest::Cancel { thread: thread_id } => {
             client.thread_interrupt(thread_id).await.map_err(fail)?;
@@ -2162,6 +2702,7 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
                 items: page.items.iter().map(item).collect(),
                 more_before: page.more_before,
                 asks: page.pending.iter().map(|a| ask(a, Some(&page.thread))).collect(),
+                questions: page.questions.iter().map(|q| wire_question(q, Some(&page.thread))).collect(),
             })
         }
         AgentRequest::Answer { token, allow, message } => {
@@ -2205,6 +2746,61 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
             AgentReply::Export(export_reply(client.thread_export(params).await.map_err(fail)?))
         }
     })
+}
+
+/// A draft as phones get it: who wrote it by name only.
+fn wire_draft(d: &Draft) -> AgentDraft {
+    AgentDraft {
+        key: d.key.clone(),
+        text: d.text.clone(),
+        images: d.images.iter().map(wire_image).collect(),
+        rev: d.rev,
+        by_name: d.by.as_ref().and_then(|by| answered_by(by, this_pc_name)),
+    }
+}
+
+/// A draft was set through this connection (the page's own, or a phone's):
+/// the host tells only the others, so phones but `except` hear it from
+/// here, and the open composer reads it.
+fn draft_changed_here(key: String, rev: u64, except: Option<DeviceId>) {
+    if core_host::try_host().is_none() {
+        return;
+    }
+    let reread = {
+        let s = lock();
+        let open = s.open.as_ref().filter(|o| o.is(OpenKind::Thread, &key) && o.composer.draft_rev != rev);
+        open.and_then(|o| Some((s.client.clone()?, o.generation)))
+    };
+    if let Some((client, generation)) = reread {
+        core_host::spawn(read_draft(client, generation, key.clone()));
+    }
+    if let Some(node) = core_host::node() {
+        core_host::spawn(async move {
+            let _ = node.agent_draft(key, rev, except).await;
+        });
+    }
+}
+
+/// A phone's picture, all its bytes, handed to the host in pieces; the
+/// host decodes it with its own limits and re-encodes it.
+async fn upload_image(client: &Client, name: String, bytes: Vec<u8>) -> Result<ImageRef, AgentFailure> {
+    let fail = |e: ClientError| failure(&e);
+    let size = u32::try_from(bytes.len()).map_err(|_| AgentFailure::BadMessage)?;
+    if size > api::MAX_IMAGE_UPLOAD {
+        return Err(AgentFailure::BadMessage);
+    }
+    let upload = client.image_begin(name, size).await.map_err(fail)?;
+    // Base64 of 3 bytes is 4 characters: whole pieces stay under the host's limit.
+    let piece = api::MAX_IMAGE_CHUNK / 4 * 3;
+    for (seq, chunk) in bytes.chunks(piece).enumerate() {
+        let seq = u32::try_from(seq).map_err(|_| AgentFailure::BadMessage)?;
+        let data = data_encoding::BASE64.encode(chunk);
+        client
+            .image_chunk(api::ImageChunkParams { upload: upload.clone(), seq, data })
+            .await
+            .map_err(fail)?;
+    }
+    client.image_end(upload).await.map_err(fail)
 }
 
 /// The host's export as a phone gets it (the core keeps it within the wire's limits).
@@ -2291,10 +2887,24 @@ pub(crate) struct View {
     pub list_hidden: bool,
     /// The user hid the details beside the transcript.
     pub inspector_hidden: bool,
+    /// The question the dock shows, when it shows one rather than a request
+    /// (`{}` for none).
+    pub question: String,
+    /// The open thread's composer: the model control, the queue, the images,
+    /// the limit line, a draft offered (JSON).
+    pub composer: String,
+    /// The `@` or `/` list over the composer (`{}` for none).
+    pub popup: String,
+    /// Text the composer must take: `{ gen, n, text, cursor }`.
+    pub composer_set: String,
+    /// The new-thread form's model control (JSON).
+    pub new_picker: String,
 }
 
 pub(crate) fn view() -> View {
     let home = dirs::home_dir();
+    // Taken first: the rows' lock is never taken while the state's is held.
+    let palette = bridge().render().palette.clone();
     let s = lock();
     let threads = listed_threads(&s.threads);
     let open = s.open.as_ref();
@@ -2308,9 +2918,13 @@ pub(crate) fn view() -> View {
         }),
         None => None,
     };
-    let (ask, asks_waiting) = match open {
-        Some(o) => ask_json(&o.asks, |token| o.guard.held(token)),
-        None => ask_json(&[], |_| false),
+    let (ask, question, asks_waiting) = match open {
+        Some(o) => dock_json(o, &s, &palette),
+        None => (json!({}), json!({}), 0),
+    };
+    let composer = match open.filter(|o| o.kind == OpenKind::Thread) {
+        Some(o) => composer_json(&s, o),
+        None => json!({}),
     };
     View {
         status: word(&s.status),
@@ -2339,13 +2953,112 @@ pub(crate) fn view() -> View {
         can_say_why: s.says_why && open.is_some_and(|o| o.kind == OpenKind::Thread),
         list_hidden: s.panels.list_hidden,
         inspector_hidden: s.panels.inspector_hidden,
+        question: question.to_string(),
+        composer: composer.to_string(),
+        popup: open.map_or_else(|| json!({}), |o| popup_json(&s, o)).to_string(),
+        composer_set: open
+            .map_or_else(
+                || json!({}),
+                |o| {
+                    let (n, text, cursor) = &o.composer.set;
+                    json!({ "gen": o.generation, "n": n, "text": text, "cursor": cursor })
+                },
+            )
+            .to_string(),
+        new_picker: new_picker_json(&s).to_string(),
     }
+}
+
+/// The dock: the request it shows (`{}` when it shows a question or
+/// nothing), the question it shows, and how many more wait behind it.
+/// Requests and questions take turns by when they came.
+fn dock_json(open: &OpenView, s: &BridgeState, palette: &CodePalette) -> (Value, Value, i32) {
+    let all = control::waiting(&open.asks, &open.questions);
+    let held = |t: &str| open.guard.held(t);
+    let Some(at) = control::shown(&all, held) else { return (json!({}), json!({}), 0) };
+    let total = all.len();
+    let more = i32::try_from(total - 1).unwrap_or(i32::MAX);
+    match all[at] {
+        control::Waiting::Approval(a) => (approval_json(a, at + 1, total, held(&a.token)), json!({}), more),
+        control::Waiting::Question(q) => {
+            let mut shown =
+                if open.answering.token() == q.token { open.answering.json(q) } else { json!({}) };
+            if let Some(ask) = q.asks.get(open.answering.at()).filter(|_| shown.is_object()) {
+                // The agent's words as the timeline renders them: escaped, inline code kept.
+                shown["styled"] = json!(rows::inline_markup(&ask.text, palette));
+                if let Some(options) = shown["options"].as_array_mut() {
+                    for (option, o) in options.iter_mut().zip(&ask.options) {
+                        option["styled"] = json!(rows::inline_markup(&o.label, palette));
+                    }
+                }
+            }
+            let info = s.threads.get(&q.thread_id);
+            let question = json!({
+                "token": q.token,
+                "itemId": q.item_id,
+                "secret": q.secret,
+                "created_ms": q.created_ms,
+                "position": at + 1,
+                "total": total,
+                "held": held(&q.token),
+                "agentName": info.map(|t| t.agent.display_name()).unwrap_or_default(),
+                "ask": shown,
+            });
+            (json!({}), question, more)
+        }
+    }
+}
+
+/// The open thread's composer, as the page draws it around the text.
+fn composer_json(s: &BridgeState, open: &OpenView) -> Value {
+    let Some(info) = s.threads.get(&open.id) else { return json!({}) };
+    let agent = s.agents.iter().find(|a| a.id == info.agent);
+    let setting = control::Setting::of_thread(info);
+    let c = &open.composer;
+    let images: Vec<Value> = c
+        .images
+        .iter()
+        .map(|i| json!({ "id": i.id, "name": i.name, "thumb": s.thumbs.get(&i.id).cloned().unwrap_or_default() }))
+        .collect();
+    let hint =
+        c.commands.as_deref().and_then(|cmds| control::command_hint(&c.text, cmds)).unwrap_or_default();
+    json!({
+        "control": s.control,
+        "picker": agent.map_or_else(|| json!({}), |a| control::picker_json(a, &setting)),
+        "canSteer": agent.is_some_and(|a| a.can(Can::Steer)),
+        "images": s.control && agent.is_some_and(|a| control::takes_images(a, info.model.as_deref())),
+        "commands": s.control && agent.is_some_and(|a| a.can(Can::Commands)),
+        "queue": control::queue_json(info),
+        "limit": control::limit_line(agent),
+        "followUp": word(&s.prefs.follow_up),
+        "pending": images,
+        "adding": c.adding,
+        "imageError": c.image_error,
+        "offer": c.offer.as_ref().map(|(_, by)| by.clone()).unwrap_or_default(),
+        "hint": hint,
+        "questionWaits": !open.questions.is_empty(),
+    })
+}
+
+/// The new-thread form's model control, for its agent.
+fn new_picker_json(s: &BridgeState) -> Value {
+    let Some(agent) = s.new_form.agent.and_then(|id| s.agents.iter().find(|a| a.id == id)) else {
+        return json!({});
+    };
+    let mut picker = control::picker_json(agent, &s.new_form.setting);
+    picker["control"] = json!(s.control);
+    picker
 }
 
 /// Whether the host takes a denial with the user's words: phones are then
 /// offered `agent.say_why`.
 pub fn says_why() -> bool {
     lock().says_why
+}
+
+/// The host offers phase 2's controls, so phones may use them (`agent.control`).
+pub fn offers_control() -> bool {
+    lock().control
 }
 
 /// The timeline model is on screen: `waker` queues [`take_ui`] on the GUI
@@ -2380,6 +3093,8 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
                 "plan": a.plan.clone().unwrap_or_default(),
                 "loginHint": a.login_hint,
                 "problem": a.problem.clone().unwrap_or_default(),
+                "limits": control::limits_json(&a.limits),
+                "mcpSwitch": a.can(Can::McpSwitch),
             })
         })
         .collect();
@@ -2393,11 +3108,21 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
                 "path": f.path,
                 "shownPath": shown_path(&f.path, home),
                 "exists": f.exists,
+                "mcp": f.mcp,
+                "mcpSeen": f.mcp_seen.iter().map(|m| json!({ "agent": m.agent.as_str(), "names": m.names })).collect::<Vec<_>>(),
             })
         })
         .collect();
-    json!({ "status": word(&s.status), "following": s.following, "agents": agents, "folders": folders })
-        .to_string()
+    json!({
+        "status": word(&s.status),
+        "following": s.following,
+        "agents": agents,
+        "folders": folders,
+        "control": s.control,
+        "keepAwake": s.keep_awake,
+        "followUp": word(&s.prefs.follow_up),
+    })
+    .to_string()
 }
 
 /// `path` with the home folder written `~`.
@@ -2507,7 +3232,7 @@ pub fn refresh() {
         let folders = client.folders_list().await;
         let threads = client.threads_list(Some(LISTED_THREADS as u32), None).await;
         let sessions = client.sessions_list(Some(api::MAX_SESSIONS as u32)).await;
-        let following = following::read(&client).await;
+        let settings = following::read(&client).await;
         {
             let mut s = lock();
             if let Ok(agents) = agents {
@@ -2523,8 +3248,11 @@ pub fn refresh() {
             if let Ok(sessions) = sessions {
                 s.sessions = sessions;
             }
-            if following.is_some() {
-                s.following = following;
+            if let Some(settings) = settings {
+                s.following = Some(settings.follow_sessions);
+                if s.control {
+                    s.keep_awake = Some(settings.keep_awake);
+                }
             }
         }
         changed();
@@ -2628,9 +3356,9 @@ pub fn set_following(on: bool) {
 mod following {
     use super::*;
 
-    /// `None` from a host that doesn't have the setting.
-    pub(super) async fn read(client: &Client) -> Option<bool> {
-        client.settings_get().await.ok().map(|s| s.follow_sessions)
+    /// `None` from a host that doesn't have the settings.
+    pub(super) async fn read(client: &Client) -> Option<api::HostSettings> {
+        client.settings_get().await.ok()
     }
 
     pub(super) async fn set(client: &Client, on: bool) -> Result<bool, ClientError> {
@@ -2653,7 +3381,11 @@ fn open(kind: OpenKind, id: String) {
             return;
         }
         let generation = s.next_gen();
-        let was = s.open.replace(OpenView::new(generation, kind, id.clone()));
+        let mut view = OpenView::new(generation, kind, id.clone());
+        if kind == OpenKind::Thread {
+            view.questions = s.questions.get(&id).cloned().unwrap_or_default();
+        }
+        let was = s.open.replace(view);
         (generation, was.is_some_and(|o| o.kind == OpenKind::Session), s.client.clone())
     };
     reset_rows(bridge(), generation);
@@ -2672,11 +3404,15 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
             if unwatch {
                 let _ = client.session_watch(None).await;
             }
-            let params = ThreadReadParams { thread_id: id, limit: Some(READ_PAGE), ..Default::default() };
+            if lock().control {
+                core_host::spawn(read_draft(client.clone(), generation, id.clone()));
+            }
+            let params =
+                ThreadReadParams { thread_id: id.clone(), limit: Some(READ_PAGE), ..Default::default() };
             let read = client.thread_read(params).await;
             read.map(|page| {
                 bridge().remember(&page.thread);
-                (page.items, page.more_before, page.pending)
+                (page.items, page.more_before, page.pending, Some(page.questions))
             })
         }
         OpenKind::Session => {
@@ -2688,25 +3424,41 @@ async fn load(client: Client, generation: u64, kind: OpenKind, id: String, unwat
                     "Too many sessions are being followed. New lines show when you open it again."
                 ));
             }
-            let params = SessionReadParams { session_id: id, before_seq: None, limit: Some(READ_PAGE) };
+            let params =
+                SessionReadParams { session_id: id.clone(), before_seq: None, limit: Some(READ_PAGE) };
             let read = client.session_read(params).await;
             read.map(|page| {
                 upsert_session(&mut lock().sessions, page.session);
-                (page.items, page.more_before, Vec::new())
+                (page.items, page.more_before, Vec::new(), None)
             })
         }
     };
     {
         let mut s = lock();
-        let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
+        if s.open.as_ref().is_none_or(|o| o.generation != generation) {
+            return;
+        }
+        // The host's list is the whole truth: questions asked before this PC
+        // connected appear, and ones that ended meanwhile go.
+        if let Ok((_, _, _, Some(questions))) = &read {
+            if questions.is_empty() {
+                s.questions.remove(&id);
+            } else {
+                s.questions.insert(id.clone(), questions.clone());
+            }
+        }
+        let Some(open) = s.open.as_mut() else { return };
         open.loading = false;
         match read {
-            Ok((items, more, asks)) => {
+            Ok((items, more, asks, questions)) => {
                 for item in &items {
                     open.apply(Entry::from_item(item));
                 }
                 open.more |= more;
                 open.asks = asks;
+                if let Some(questions) = questions {
+                    open.questions = questions;
+                }
                 open.guard_requests(now_ms());
             }
             Err(e) => {
@@ -2799,6 +3551,15 @@ enum Request {
     Read,
     Export,
     Continue(SessionSource, AgentId),
+    /// A model, effort or mode for the next turn.
+    Configure,
+    /// Send now, change or remove a queued message.
+    Queue,
+    /// Answer or dismiss a question.
+    Question,
+    Implement,
+    /// A folder's MCP switch, keeping the PC awake.
+    Setting,
 }
 
 /// What an older host that hasn't been replaced yet can't do.
@@ -2844,6 +3605,20 @@ fn request_error(e: &ClientError, request: Request) -> String {
             tr!("Agents", "That agent isn't ready. Check it in Setup.")
         }
         (Some(ErrorCode::NotFound), Request::Start) => tr!("Agents", "That folder is no longer in the list."),
+        (Some(ErrorCode::Limit), Request::Send) => tr!("Agents", "Five messages are waiting already."),
+        (Some(ErrorCode::Busy), Request::Configure | Request::Implement) => {
+            tr!("Agents", "You can change it when the agent stops.")
+        }
+        (Some(ErrorCode::BadRequest | ErrorCode::Unavailable), Request::Configure) => {
+            tr!("Agents", "That isn't available with this agent.")
+        }
+        (Some(ErrorCode::NotFound | ErrorCode::AlreadyAnswered), Request::Question) => {
+            tr!("Agents", "That question was already answered.")
+        }
+        (Some(ErrorCode::BadRequest), Request::Question) => tr!("Agents", "Answer every question first."),
+        (Some(ErrorCode::NotFound), Request::Queue) => tr!("Agents", "It was already sent."),
+        (Some(ErrorCode::NotFound), Request::Implement) => tr!("Agents", "A newer plan took its place."),
+        (Some(ErrorCode::Unavailable), _) => outdated_host(),
         (Some(ErrorCode::NotFound | ErrorCode::AlreadyAnswered), Request::Answer) => {
             tr!("Agents", "That request was already answered.")
         }
@@ -2879,16 +3654,32 @@ fn page_request<T, Fut>(
     });
 }
 
-/// Starts a thread from the page and opens it.
+/// Starts a thread from the page and opens it, with the model and effort
+/// the new-thread form shows for this agent and folder.
 pub fn start_thread(agent: String, folder_id: String, prompt: String, mode: String) {
     let Some(agent) = AgentId::parse(&agent) else { return };
-    let mode = if mode == "auto_edit" { Mode::AutoEdit } else { Mode::Supervised };
+    let params = {
+        let s = lock();
+        let info = s.agents.iter().find(|a| a.id == agent);
+        let plan = s.control && info.is_some_and(|a| a.can(Can::Plan));
+        let mode = match mode.as_str() {
+            "auto_edit" => Mode::AutoEdit,
+            "plan" if plan => Mode::Plan,
+            _ => Mode::Supervised,
+        };
+        let mut params = ThreadStartParams::new(agent, folder_id, prompt, mode, Origin::launcher());
+        if s.control {
+            let setting = new_form_setting(&s, agent, &params.folder_id);
+            params.custom_model =
+                setting.model.as_deref().is_some_and(|m| info.is_none_or(|a| a.model(m).is_none()));
+            params.model = setting.model;
+            params.effort = setting.effort;
+        }
+        params
+    };
     page_request(
         Request::Start,
-        move |client| async move {
-            let params = ThreadStartParams { agent, folder_id, prompt, mode, origin: Origin::launcher() };
-            client.thread_start(params).await
-        },
+        move |client| async move { client.thread_start(params).await },
         |info: ThreadInfo| {
             bridge().remember(&info);
             lists_changed();
@@ -2901,17 +3692,64 @@ fn open_id(kind: OpenKind) -> Option<String> {
     lock().open.as_ref().filter(|o| o.kind == kind).map(|o| o.id.clone())
 }
 
-/// Sends a message to the open thread.
-pub fn send(text: String) {
-    let Some(id) = open_id(OpenKind::Thread) else { return };
+/// Sends the composer's message to the open thread, with its images. While
+/// the agent works it steers the turn or waits its turn: the user's default,
+/// or the other one with Alt+Enter (`other`). Never while a question waits:
+/// the dock answers it.
+pub fn send(text: String, other: bool) {
     if text.trim().is_empty() {
         return;
     }
+    let sending = {
+        let mut s = lock();
+        let follow_up = s.prefs.follow_up;
+        let control = s.control;
+        let running = |id: &str| s.threads.get(id).is_some_and(|t| t.state.is_running());
+        let can_steer = |id: &str| {
+            let agent = s.threads.get(id).map(|t| t.agent);
+            s.agents.iter().find(|a| Some(a.id) == agent).is_some_and(|a| a.can(Can::Steer))
+        };
+        let Some(open) = s.open.as_ref().filter(|o| may_send(o)) else { return };
+        let id = open.id.clone();
+        let dispatch = running(&id).then(|| control::dispatch(follow_up, other, can_steer(&id)));
+        if dispatch.is_some() && !control {
+            return;
+        }
+        let generation = open.generation;
+        let images: Vec<String> = open.composer.images.iter().map(|i| i.id.clone()).collect();
+        if let Some(open) = s.open.as_mut() {
+            // The host drops the draft once its text is sent; nothing saved waits.
+            open.composer.draft_edit += 1;
+            open.composer.draft_rev = 0;
+            open.composer.draft_saved.clear();
+            open.composer.offer = None;
+            open.composer.history_at = None;
+        }
+        (id, dispatch, images, control, generation)
+    };
+    let (id, dispatch, images, control, generation) = sending;
     guard_event(GuardEvent::Sent);
     page_request(
         Request::Send,
-        move |client| async move { client.thread_send(id, text, Origin::launcher()).await },
-        |()| {},
+        move |client| async move {
+            if !control {
+                return client.thread_send(id, text, Origin::launcher()).await.map(|()| None);
+            }
+            let mut params = ThreadSendParams::new(id, text, Origin::launcher());
+            params.dispatch = dispatch;
+            params.images = images;
+            client.thread_send_with(params).await.map(|r| r.queued)
+        },
+        move |_queued| {
+            {
+                let mut s = lock();
+                let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
+                open.composer.images.clear();
+                open.composer.image_error = "";
+                open.composer.history = None;
+            }
+            changed();
+        },
     );
 }
 
@@ -2982,6 +3820,7 @@ fn guard_event(event: GuardEvent<'_>) {
         let Some(open) = s.open.as_mut() else { return };
         let before = open.held();
         open.guard.on(event);
+        open.follow_question();
         (before, open.held(), guard_followup(open))
     };
     followup.run();
@@ -2991,14 +3830,1035 @@ fn guard_event(event: GuardEvent<'_>) {
     }
 }
 
-/// The user typed in the composer (not text set by the page).
-pub fn typed() {
-    guard_event(GuardEvent::Typed { now_ms: now_ms() });
+/// The composer gained or lost the keyboard. Each time it gains it, its
+/// `/` list is read again; losing it saves the draft now.
+pub fn composer_focus(focused: bool) {
+    let generation = {
+        let mut s = lock();
+        let control = s.control;
+        let Some(open) = s.open.as_mut().filter(|o| o.kind == OpenKind::Thread) else { return };
+        open.composer.focused = focused;
+        if focused {
+            open.composer.commands = None;
+            open.composer.commands_asked = false;
+        } else {
+            open.composer.popup = None;
+        }
+        control.then_some(open.generation)
+    };
+    guard_event(if focused { GuardEvent::Focus } else { GuardEvent::Blur });
+    if let Some(generation) = generation {
+        if focused {
+            core_host::spawn(read_history(generation));
+        } else {
+            core_host::spawn(save_draft(generation, None));
+        }
+    }
+    changed();
 }
 
-/// The composer gained or lost the keyboard.
-pub fn composer_focus(focused: bool) {
-    guard_event(if focused { GuardEvent::Focus } else { GuardEvent::Blur });
+// ---- The composer: `@`, `/`, drafts, history ----
+
+/// The page's composer changed: its text, or only its cursor. `typed`:
+/// the user typed it (not text the page set). While a question waits the
+/// composer holds the answer's own words and nothing else happens with
+/// them; otherwise it may open the `@` or `/` list and its draft is saved
+/// half a second after the last change.
+pub fn composer_edited(text: String, cursor: u32, typed: bool) {
+    let mut search = None;
+    let mut commands = None;
+    let mut draft = None;
+    let refresh = {
+        let mut s = lock();
+        let control = s.control;
+        let client = s.client.clone();
+        let (agent, folder) = s
+            .open
+            .as_ref()
+            .and_then(|o| s.threads.get(&o.id))
+            .map(|t| (Some(t.agent), t.folder_id.clone()))
+            .unwrap_or((None, String::new()));
+        let Some(open) = s.open.as_mut().filter(|o| o.kind == OpenKind::Thread) else { return };
+        let edited = open.composer.text != text;
+        let before = composer_shape(open);
+        open.composer.text = text;
+        open.composer.cursor = cursor;
+        if let Some(q) = open.shown_question().cloned() {
+            // The composer is the question's "Something else" field.
+            if edited {
+                open.answering.type_other(&q, &open.composer.text);
+            }
+            open.composer.popup = None;
+        } else {
+            if edited {
+                open.composer.history_at = None;
+                open.composer.draft_edit += 1;
+                if control {
+                    draft = Some((open.generation, open.composer.draft_edit));
+                }
+            }
+            let trigger = control.then(|| control::trigger(&open.composer.text, cursor)).flatten();
+            match trigger {
+                None => open.composer.popup = None,
+                Some(t) => {
+                    let same = open.composer.popup.as_ref().is_some_and(|p| p.trigger == t);
+                    if let Some(p) = open.composer.popup.as_mut().filter(|_| same) {
+                        p.cursor = cursor;
+                    } else {
+                        let old = open.composer.popup.take();
+                        let mut popup = Popup::new(t, cursor);
+                        if let Some(old) = old.filter(|o| o.trigger.kind == popup.trigger.kind) {
+                            popup.files = old.files;
+                            popup.search = old.search;
+                        }
+                        match popup.trigger.kind {
+                            control::TriggerKind::Mention => {
+                                popup.loading = true;
+                                popup.search += 1;
+                                search = Some((
+                                    open.generation,
+                                    popup.search,
+                                    open.id.clone(),
+                                    popup.trigger.query.clone(),
+                                ));
+                            }
+                            control::TriggerKind::Slash => {
+                                if open.composer.commands.is_none() && !open.composer.commands_asked {
+                                    open.composer.commands_asked = true;
+                                    if let Some(agent) = agent {
+                                        commands = Some((open.generation, agent, folder.clone()));
+                                    }
+                                }
+                            }
+                        }
+                        open.composer.popup = Some(popup);
+                    }
+                }
+            }
+        }
+        let after = composer_shape(open);
+        (before != after).then_some(client).flatten()
+    };
+    if typed {
+        guard_event(GuardEvent::Typed { now_ms: now_ms() });
+    }
+    if core_host::try_host().is_none() {
+        return;
+    }
+    if let Some((generation, edit)) = draft {
+        core_host::spawn(async move {
+            tokio::time::sleep(DRAFT_QUIET).await;
+            save_draft(generation, Some(edit)).await;
+        });
+    }
+    if let Some((generation, search, thread_id, query)) = search {
+        core_host::spawn(search_files(generation, search, thread_id, query));
+    }
+    if let Some((generation, agent, folder)) = commands {
+        core_host::spawn(read_commands(generation, agent, folder));
+    }
+    if refresh.is_some() {
+        changed();
+    }
+}
+
+/// How long the composer waits after the last change to save its draft.
+const DRAFT_QUIET: Duration = Duration::from_millis(500);
+/// How long `@` waits after the last change to search.
+const SEARCH_QUIET: Duration = Duration::from_millis(120);
+/// The largest side of a thumbnail the page shows.
+const THUMB_PX: u16 = 160;
+/// Thumbnails kept.
+const THUMBS_KEPT: usize = 32;
+
+/// What of the composer the page shows besides its text: when it changes,
+/// the page reads it again.
+fn composer_shape(open: &OpenView) -> String {
+    let popup = open.composer.popup.as_ref().map(|p| {
+        format!(
+            "{:?}{}{}{}{}{}",
+            p.trigger.kind,
+            p.trigger.start,
+            p.trigger.query,
+            p.selected,
+            p.loading,
+            p.files.len()
+        )
+    });
+    let hint = open.composer.commands.as_deref().and_then(|c| control::command_hint(&open.composer.text, c));
+    let answer = open.shown_question().map(|q| open.answering.json(q).to_string());
+    format!("{popup:?}|{hint:?}|{answer:?}")
+}
+
+/// Searches the thread's folder for `@` once the user paused.
+async fn search_files(generation: u64, search: u64, thread_id: String, query: String) {
+    tokio::time::sleep(SEARCH_QUIET).await;
+    let latest = |s: &BridgeState| {
+        s.open
+            .as_ref()
+            .filter(|o| o.generation == generation)
+            .and_then(|o| o.composer.popup.as_ref())
+            .is_some_and(|p| p.search == search)
+    };
+    let Some(client) = ({
+        let s = lock();
+        latest(&s).then(|| s.client.clone()).flatten()
+    }) else {
+        return;
+    };
+    let params = FilesSearchParams {
+        thread_id: Some(thread_id),
+        query,
+        limit: Some(control::MENTION_ROWS as u32),
+        ..Default::default()
+    };
+    let found = client.files_search(params).await;
+    {
+        let mut s = lock();
+        if !latest(&s) {
+            return;
+        }
+        let Some(p) = s.open.as_mut().and_then(|o| o.composer.popup.as_mut()) else { return };
+        p.loading = false;
+        match found {
+            Ok(found) => {
+                p.files = found.files;
+                p.files.truncate(control::MENTION_ROWS);
+                p.more = found.more;
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "the folder wasn't searched");
+                p.files.clear();
+            }
+        }
+        p.selected = p.selected.min(p.files.len().saturating_sub(1));
+    }
+    changed();
+}
+
+/// Reads the agent's `/` commands for the folder, once per focus.
+async fn read_commands(generation: u64, agent: AgentId, folder: String) {
+    let Some(client) = lock().client.clone() else { return };
+    let commands = client.commands_list(agent, folder).await.unwrap_or_else(|e| {
+        tracing::debug!(error = %e, "the agent's commands weren't read");
+        Vec::new()
+    });
+    {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
+        open.composer.commands = Some(commands);
+    }
+    changed();
+}
+
+/// The rows of the `/` list as it stands.
+fn command_list(s: &BridgeState, open: &OpenView, query: &str) -> Vec<control::CommandRow> {
+    let plan = s
+        .threads
+        .get(&open.id)
+        .and_then(|t| s.agents.iter().find(|a| a.id == t.agent))
+        .is_some_and(|a| a.can(Can::Plan));
+    control::command_rows(open.composer.commands.as_deref().unwrap_or_default(), query, plan)
+}
+
+/// The `@` or `/` list, as the page draws it (`{}` for none).
+fn popup_json(s: &BridgeState, open: &OpenView) -> Value {
+    let Some(p) = open.composer.popup.as_ref() else { return json!({}) };
+    match p.trigger.kind {
+        control::TriggerKind::Mention => json!({
+            "kind": "files",
+            "rows": control::file_rows(&p.files),
+            "selected": p.selected,
+            "loading": p.loading,
+            "more": p.more,
+            "folder": s.threads.get(&open.id).map(|t| t.folder_label.clone()).unwrap_or_default(),
+        }),
+        control::TriggerKind::Slash => {
+            let rows = command_list(s, open, &p.trigger.query);
+            json!({
+                "kind": "commands",
+                "rows": control::command_rows_json(&rows),
+                "selected": p.selected.min(rows.len().saturating_sub(1)),
+                "loading": open.composer.commands.is_none(),
+                "agentName": s.threads.get(&open.id).map(|t| t.agent.display_name()).unwrap_or_default(),
+            })
+        }
+    }
+}
+
+/// Moves the list's selection (up or down, wrapping).
+pub fn popup_move(by: i32) {
+    {
+        let mut s = lock();
+        let len = match s.open.as_ref().and_then(|o| o.composer.popup.as_ref().map(|p| (o, p))) {
+            Some((open, p)) => match p.trigger.kind {
+                control::TriggerKind::Mention => p.files.len(),
+                control::TriggerKind::Slash => command_list(&s, open, &p.trigger.query).len(),
+            },
+            None => return,
+        };
+        let Some(p) = s.open.as_mut().and_then(|o| o.composer.popup.as_mut()) else { return };
+        if len == 0 {
+            return;
+        }
+        let len = i64::try_from(len).unwrap_or(i64::MAX);
+        let at = (i64::try_from(p.selected).unwrap_or(0) + i64::from(by)).rem_euclid(len);
+        p.selected = usize::try_from(at).unwrap_or(0);
+    }
+    changed();
+}
+
+/// Closes the `@` or `/` list.
+pub fn popup_close() {
+    let closed = lock().open.as_mut().and_then(|o| o.composer.popup.take()).is_some();
+    if closed {
+        changed();
+    }
+}
+
+/// What choosing a row of the list did: the composer's new text and
+/// cursor, and G7's own command to run ("model", "effort", "plan"; "" for none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Chosen {
+    pub text: String,
+    pub cursor: u32,
+    pub action: String,
+}
+
+/// Inserts row `index` of the list (the selected one when negative): a
+/// file as `@path ` (a folder as `@path/`, which lists what's in it), a
+/// command as `/name ` to send later. G7's own commands leave the composer
+/// and act at once; nothing is ever sent from here.
+pub(crate) fn popup_choose(index: i32) -> Option<Chosen> {
+    let chosen = {
+        let mut s = lock();
+        let open = s.open.as_ref()?;
+        let p = open.composer.popup.as_ref()?;
+        let rows = command_list(&s, open, &p.trigger.query);
+        let chosen = choose(p, &open.composer.text, &rows, index)?;
+        let open = s.open.as_mut()?;
+        open.composer.popup = None;
+        open.composer.text = chosen.text.clone();
+        open.composer.cursor = chosen.cursor;
+        chosen
+    };
+    changed();
+    Some(chosen)
+}
+
+/// The composer's text after choosing row `index` of the list (the
+/// selected one when negative), and G7's own command to run, if it was one.
+fn choose(p: &Popup, text: &str, commands: &[control::CommandRow], index: i32) -> Option<Chosen> {
+    let index = usize::try_from(index).unwrap_or(p.selected);
+    Some(match p.trigger.kind {
+        control::TriggerKind::Mention => {
+            let hit = p.files.get(index)?;
+            // A folder ends with `/`: it gets no space, and lists what's in it.
+            let path =
+                if hit.dir && !hit.path.ends_with('/') { format!("{}/", hit.path) } else { hit.path.clone() };
+            let (text, cursor) = control::apply(text, &p.trigger, p.cursor, &path);
+            Chosen { text, cursor, action: String::new() }
+        }
+        control::TriggerKind::Slash => {
+            let row = commands.get(index)?;
+            if row.own {
+                let (text, cursor) = control::remove_run(text, &p.trigger, p.cursor);
+                Chosen { text, cursor, action: row.name.clone() }
+            } else {
+                let (text, cursor) = control::apply(text, &p.trigger, p.cursor, &row.name);
+                Chosen { text, cursor, action: String::new() }
+            }
+        }
+    })
+}
+
+/// Walks the prompts sent from this PC with Up (`older`) and Down; `None`
+/// when there's nothing further that way (Down past the newest gives "").
+pub(crate) fn history_step(older: bool) -> Option<String> {
+    let mut s = lock();
+    let open = s.open.as_mut().filter(|o| o.kind == OpenKind::Thread)?;
+    let history = open.composer.history.as_ref()?;
+    let next = match (open.composer.history_at, older) {
+        (None, true) => 0,
+        (Some(at), true) => at + 1,
+        (Some(0), false) => {
+            open.composer.history_at = None;
+            return Some(String::new());
+        }
+        (Some(at), false) => at - 1,
+        (None, false) => return None,
+    };
+    let text = history.get(next)?.clone();
+    open.composer.history_at = Some(next);
+    Some(text)
+}
+
+async fn read_history(generation: u64) {
+    let Some(client) = lock().client.clone() else { return };
+    let Ok(prompts) = client.history_list(Some(api::MAX_HISTORY_LIMIT)).await else { return };
+    let mut s = lock();
+    if let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) {
+        open.composer.history = Some(prompts);
+    }
+}
+
+/// Saves the composer's draft: after the pause following edit `edit`
+/// (dropped when a newer edit came), or now (`None`, the composer lost the
+/// keyboard). Not while a question waits: an answer never travels as a draft.
+async fn save_draft(generation: u64, edit: Option<u64>) {
+    let (client, params) = {
+        let s = lock();
+        let Some(client) = s.client.clone().filter(|_| s.control) else { return };
+        let Some(open) = s.open.as_ref().filter(|o| o.generation == generation) else { return };
+        let Some(params) = draft_due(open, edit) else { return };
+        (client, params)
+    };
+    let text = params.text.clone();
+    match client.draft_set(params).await {
+        Ok(rev) => {
+            let key = {
+                let mut s = lock();
+                s.open.as_mut().filter(|o| o.generation == generation).map(|open| {
+                    open.composer.draft_rev = rev;
+                    open.composer.draft_saved = text;
+                    open.id.clone()
+                })
+            };
+            if let Some(key) = key {
+                draft_changed_here(key, rev, None);
+            }
+        }
+        Err(ClientError::Remote(e)) if e.code == ErrorCode::Conflict => {
+            if let Some(stored) = e.conflict_draft() {
+                take_remote_draft(generation, stored);
+            }
+        }
+        Err(e) => tracing::debug!(error = %e, "the draft wasn't saved"),
+    }
+}
+
+/// The draft to save for the open thread after edit `edit` (now: `None`):
+/// none when a newer edit came, nothing changed, or a question waits (an
+/// answer never travels as a draft).
+fn draft_due(open: &OpenView, edit: Option<u64>) -> Option<DraftSetParams> {
+    let c = &open.composer;
+    if open.kind != OpenKind::Thread
+        || edit.is_some_and(|e| e != c.draft_edit)
+        || !open.questions.is_empty()
+        || c.text == c.draft_saved
+        || (c.text.trim().is_empty() && c.draft_rev == 0)
+    {
+        return None;
+    }
+    Some(DraftSetParams {
+        key: open.id.clone(),
+        text: api::cut(&c.text, api::MAX_PROMPT).to_owned(),
+        images: c.images.iter().map(|i| i.id.clone()).collect(),
+        rev: c.draft_rev,
+        by: None,
+    })
+}
+
+/// A message can be sent from the composer: never while a question waits.
+fn may_send(open: &OpenView) -> bool {
+    open.kind == OpenKind::Thread && open.questions.is_empty()
+}
+
+/// Reads the thread's draft (at open, or another device changed it).
+async fn read_draft(client: Client, generation: u64, key: String) {
+    match client.draft_get(key).await {
+        Ok(Some(draft)) => take_remote_draft(generation, draft),
+        Ok(None) => {}
+        Err(e) => tracing::debug!(error = %e, "the draft wasn't read"),
+    }
+}
+
+/// A draft newer than the composer's: it takes the composer when the user
+/// isn't typing in it, else a line offers it. Never while a question waits.
+fn take_remote_draft(generation: u64, draft: Draft) {
+    let this_pc = this_pc_name();
+    {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) else { return };
+        let c = &mut open.composer;
+        if draft.rev <= c.draft_rev && c.draft_rev != 0 {
+            return;
+        }
+        let busy = c.focused || !open.questions.is_empty();
+        match control::remote_draft(busy, &c.text, &draft, &this_pc) {
+            control::DraftAction::Keep => {}
+            control::DraftAction::Replace(text) => {
+                c.put(text.clone());
+                c.draft_saved = text;
+                c.offer = None;
+            }
+            control::DraftAction::Offer { by } => {
+                let rev = draft.rev;
+                c.offer = Some((draft, by));
+                // Saving now would only meet the same conflict again.
+                c.draft_rev = rev;
+                changed();
+                return;
+            }
+        }
+        c.draft_rev = draft.rev;
+    }
+    changed();
+}
+
+/// The user took the draft another device offered.
+pub fn use_draft() {
+    {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut() else { return };
+        let Some((draft, _)) = open.composer.offer.take() else { return };
+        open.composer.put(draft.text.clone());
+        open.composer.draft_saved = draft.text;
+        open.composer.draft_rev = draft.rev;
+    }
+    changed();
+}
+
+// ---- Images ----
+
+/// The composer can take an image now: a thread is open, the host takes
+/// them and the chosen model reads them; else why not.
+fn image_room(s: &BridgeState) -> Result<(u64, usize), &'static str> {
+    let open = s.open.as_ref().filter(|o| o.kind == OpenKind::Thread).ok_or("failed")?;
+    let info = s.threads.get(&open.id).ok_or("failed")?;
+    let agent = s.agents.iter().find(|a| a.id == info.agent).ok_or("failed")?;
+    if !s.control || !control::takes_images(agent, info.model.as_deref()) {
+        return Err("model");
+    }
+    let used = open.composer.images.len() + open.composer.adding as usize;
+    Ok((open.generation, api::MAX_IMAGES.saturating_sub(used)))
+}
+
+fn image_failed(generation: u64, why: &'static str) {
+    if let Some(open) = lock().open.as_mut().filter(|o| o.generation == generation) {
+        open.composer.image_error = why;
+    }
+    changed();
+}
+
+/// Adds pictures on this PC (picked or dropped) to the next message: up to
+/// four, each read by the host's bounded decoder, never here.
+pub fn add_images(paths: Vec<String>) {
+    let (generation, room) = {
+        let mut s = lock();
+        match image_room(&s) {
+            Ok((generation, room)) => {
+                let n = paths.len().min(room);
+                if let Some(open) = s.open.as_mut() {
+                    open.composer.adding += u32::try_from(n).unwrap_or(0);
+                    open.composer.image_error = if paths.len() > room { "count" } else { "" };
+                }
+                (generation, room)
+            }
+            Err(why) => {
+                if let Some(open) = s.open.as_mut() {
+                    open.composer.image_error = why;
+                }
+                drop(s);
+                changed();
+                return;
+            }
+        }
+    };
+    changed();
+    for path in paths.into_iter().take(room) {
+        core_host::spawn(async move {
+            add_image(generation, path).await;
+        });
+    }
+}
+
+/// An image on the clipboard goes with the next message; true when there
+/// was one (the composer then doesn't paste text). Read on the GUI thread,
+/// as the clipboard must be; the bytes reach the host through a file only
+/// this user can read, removed once the host has them.
+pub fn paste_image() -> bool {
+    let room = image_room(&lock());
+    let Ok((generation, room)) = room else { return false };
+    let Some(png) = crate::sys::clipboard::read_image_png() else { return false };
+    if room == 0 {
+        image_failed(generation, "count");
+        return true;
+    }
+    if png.len() as u64 > api::MAX_IMAGE_FILE {
+        image_failed(generation, "size");
+        return true;
+    }
+    if let Some(open) = lock().open.as_mut() {
+        open.composer.adding += 1;
+        open.composer.image_error = "";
+    }
+    changed();
+    core_host::spawn(async move {
+        let written = tokio::task::spawn_blocking(move || {
+            let dir = control::paste_dir().ok_or_else(|| std::io::Error::other("no runtime directory"))?;
+            control::PastedImage::write(&dir, &png)
+        })
+        .await
+        .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+        match written {
+            Ok(file) => {
+                add_image(generation, file.path().to_string_lossy().into_owned()).await;
+                // The file goes now that the host has read it (or refused it).
+                drop(file);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a pasted image couldn't be passed on");
+                finish_adding(generation, Err("failed"));
+            }
+        }
+    });
+    true
+}
+
+async fn add_image(generation: u64, path: String) {
+    let too_big = tokio::fs::metadata(&path).await.is_ok_and(|m| m.len() > api::MAX_IMAGE_FILE);
+    if too_big {
+        finish_adding(generation, Err("size"));
+        return;
+    }
+    let Some(client) = lock().client.clone() else {
+        finish_adding(generation, Err("failed"));
+        return;
+    };
+    let added = match client.image_add_path(path).await {
+        Ok(image) => Ok(image),
+        Err(e) => Err(match e.code() {
+            Some(ErrorCode::BadRequest) => "type",
+            Some(ErrorCode::Limit) => "size",
+            _ => "failed",
+        }),
+    };
+    if let Ok(image) = &added {
+        core_host::spawn(read_thumb(image.id.clone()));
+    }
+    finish_adding(generation, added);
+}
+
+fn finish_adding(generation: u64, added: Result<ImageRef, &'static str>) {
+    let dropped = {
+        let mut s = lock();
+        match s.open.as_mut().filter(|o| o.generation == generation) {
+            Some(open) => {
+                open.composer.adding = open.composer.adding.saturating_sub(1);
+                match added {
+                    Ok(image) if open.composer.images.len() < api::MAX_IMAGES => {
+                        open.composer.images.push(image);
+                        None
+                    }
+                    Ok(image) => Some(image.id),
+                    Err(why) => {
+                        open.composer.image_error = why;
+                        None
+                    }
+                }
+            }
+            // The thread was closed meanwhile: the host needn't keep it.
+            None => added.ok().map(|i| i.id),
+        }
+    };
+    if let Some(id) = dropped {
+        drop_image_on_host(id);
+    }
+    changed();
+}
+
+fn drop_image_on_host(id: String) {
+    let Some(client) = lock().client.clone() else { return };
+    core_host::spawn(async move {
+        let _ = client.image_drop(id).await;
+    });
+}
+
+/// Takes an image off the next message.
+pub fn remove_image(id: String) {
+    let removed = {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut() else { return };
+        let before = open.composer.images.len();
+        open.composer.images.retain(|i| i.id != id);
+        open.composer.image_error = "";
+        open.composer.images.len() != before
+    };
+    if removed {
+        drop_image_on_host(id);
+    }
+    changed();
+}
+
+/// Reads an image's thumbnail (a JPEG the host made, at most 150 KiB).
+async fn read_thumb(id: String) {
+    if lock().thumbs.contains_key(&id) {
+        return;
+    }
+    let Some(client) = lock().client.clone() else { return };
+    let Ok(thumb) = client.image_read(id.clone(), THUMB_PX).await else { return };
+    let mime_ok = matches!(thumb.mime.as_str(), "image/jpeg" | "image/png");
+    let data_ok = thumb.data.len() <= api::MAX_THUMB_BYTES * 4 / 3 + 4
+        && thumb.data.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='));
+    if !mime_ok || !data_ok {
+        return;
+    }
+    {
+        let mut s = lock();
+        if s.thumbs.len() >= THUMBS_KEPT {
+            let keep: Vec<String> =
+                s.open.iter().flat_map(|o| o.composer.images.iter().map(|i| i.id.clone())).collect();
+            s.thumbs.retain(|k, _| keep.contains(k));
+        }
+        s.thumbs.insert(id, format!("data:{};base64,{}", thumb.mime, thumb.data));
+    }
+    changed();
+}
+
+// ---- Model, effort, mode ----
+
+/// The new-thread form's setting for `agent` in `folder`: what the user
+/// picked there, else what they last chose for them.
+fn new_form_setting(s: &BridgeState, agent: AgentId, folder: &str) -> control::Setting {
+    if s.new_form.agent == Some(agent) && s.new_form.folder == folder {
+        return s.new_form.setting.clone();
+    }
+    s.prefs
+        .choice(agent, folder)
+        .map(|c| control::Setting { model: c.model.clone(), effort: c.effort.clone(), mode: None })
+        .unwrap_or_default()
+}
+
+/// The new-thread form shows `agent` and `folder`: its model control
+/// follows (with what the user chose for them last).
+pub fn new_form(agent: String, folder: String) {
+    let Some(agent) = AgentId::parse(&agent) else { return };
+    {
+        let mut s = lock();
+        if s.new_form.agent == Some(agent) && s.new_form.folder == folder {
+            return;
+        }
+        let setting = new_form_setting(&s, agent, &folder);
+        s.new_form = NewForm { agent: Some(agent), folder, setting };
+    }
+    changed();
+}
+
+/// The user picked in the model control: `what` is "model" (an id from the
+/// list; "" for the CLI's default), "custom" (a typed name), "effort" or
+/// "mode", for the open thread or the new-thread form (`new`). A thread's
+/// takes effect at its next turn; a running thread's can't change.
+pub fn pick(new: bool, what: &str, value: String) {
+    let mut s = lock();
+    let (agent_id, folder, current) = if new {
+        let Some(agent) = s.new_form.agent else { return };
+        (agent, s.new_form.folder.clone(), s.new_form.setting.clone())
+    } else {
+        let Some(info) =
+            s.open.as_ref().filter(|o| o.kind == OpenKind::Thread).and_then(|o| s.threads.get(&o.id))
+        else {
+            return;
+        };
+        if info.state.is_running() || !s.control {
+            return;
+        }
+        (info.agent, info.folder_id.clone(), control::Setting::of_thread(info))
+    };
+    let Some(agent) = s.agents.iter().find(|a| a.id == agent_id) else { return };
+    let next = match what {
+        "model" => Some(control::pick_model(agent, &current, &value)),
+        "custom" => control::type_model(&current, &value),
+        "effort" => control::pick_effort(agent, &current, &value),
+        "mode" => control::mode_of(&value, agent)
+            .map(|mode| control::Setting { mode: Some(mode), ..current.clone() }),
+        _ => None,
+    };
+    let Some(next) = next.filter(|n| *n != current) else { return };
+    let custom = next.model.as_deref().is_some_and(|m| agent.model(m).is_none());
+    if next.model != current.model || next.effort != current.effort {
+        let choice = control::Choice {
+            agent: agent_id,
+            folder,
+            model: next.model.clone(),
+            effort: next.effort.clone(),
+            custom,
+        };
+        if s.prefs.remember(choice) {
+            s.prefs_set = true;
+            core_host::spawn(save_prefs());
+        }
+    }
+    if new {
+        s.new_form.setting = next;
+        drop(s);
+        changed();
+        return;
+    }
+    let Some(thread_id) = s.open.as_ref().map(|o| o.id.clone()) else { return };
+    drop(s);
+    // An empty model or effort goes back to the CLI's default.
+    let params = ThreadConfigureParams {
+        thread_id,
+        model: (next.model != current.model).then(|| next.model.clone().unwrap_or_default()),
+        effort: (next.effort != current.effort).then(|| next.effort.clone().unwrap_or_default()),
+        mode: (next.mode != current.mode).then_some(next.mode).flatten(),
+        custom_model: custom,
+        by: None,
+    };
+    page_request(
+        Request::Configure,
+        move |client| async move { client.thread_configure(params).await },
+        |info: ThreadInfo| {
+            bridge().remember(&info);
+            changed();
+            lists_changed();
+        },
+    );
+}
+
+/// What Enter does while the agent works: "steer" or "queue" (Alt+Enter the other).
+pub fn set_follow_up(word: &str) {
+    let follow_up = if word == "queue" { control::FollowUp::Queue } else { control::FollowUp::Steer };
+    {
+        let mut s = lock();
+        if s.prefs.follow_up == follow_up {
+            return;
+        }
+        s.prefs.follow_up = follow_up;
+        s.prefs_set = true;
+    }
+    changed();
+    core_host::spawn(save_prefs());
+}
+
+const PREFS_FILE: &str = "agents-prefs.json";
+
+/// Saves the page's settings, whole or not at all; one save at a time,
+/// each of the newest state.
+async fn save_prefs() {
+    let Some(dir) = core_host::try_data_dir() else { return };
+    static SAVING: Mutex<()> = Mutex::new(());
+    let written = tokio::task::spawn_blocking(move || {
+        let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+        let prefs = lock().prefs.clone();
+        crate::atomic_file::write_json(&dir.join(PREFS_FILE), &prefs)
+    })
+    .await;
+    if let Ok(Err(error)) = written {
+        tracing::warn!(%error, "the Agents page's settings weren't saved");
+    }
+}
+
+// ---- The queue, plans, questions ----
+
+/// "send_now", "remove" or "edit" (with `text`) a queued message of the open thread.
+pub fn queue(op: &str, id: String, text: String) {
+    let Some(thread_id) = open_id(OpenKind::Thread) else { return };
+    let op = op.to_owned();
+    if op == "edit" && text.trim().is_empty() {
+        return;
+    }
+    page_request(
+        Request::Queue,
+        move |client| async move {
+            match op.as_str() {
+                "send_now" => client.queue_send_now(QueueItemParams { thread_id, id, by: None }).await,
+                "remove" => client.queue_remove(QueueItemParams { thread_id, id, by: None }).await,
+                _ => client.queue_edit(QueueEditParams { thread_id, id, text, by: None }).await,
+            }
+        },
+        |()| {},
+    );
+}
+
+/// Implements the open thread's plan `item_id`, asking before edits and
+/// commands (`supervised`) or before commands only (`auto_edit`).
+pub fn implement(item_id: String, mode: &str) {
+    let Some(thread_id) = open_id(OpenKind::Thread) else { return };
+    let mode = if mode == "auto_edit" { Mode::AutoEdit } else { Mode::Supervised };
+    page_request(
+        Request::Implement,
+        move |client| async move {
+            client
+                .plan_implement(PlanImplementParams { thread_id, item_id, mode, by: Origin::launcher() })
+                .await
+        },
+        |()| {},
+    );
+}
+
+/// A question the host announced: kept for its thread, and in the dock
+/// when its thread is open.
+fn question_requested(bridge: &Bridge, question: Question) {
+    let followup = {
+        let mut s = bridge.lock();
+        let list = s.questions.entry(question.thread_id.clone()).or_default();
+        if !list.iter().any(|q| q.token == question.token) {
+            list.push(question.clone());
+            if list.len() > api::MAX_QUESTIONS_PER_THREAD * 2 {
+                list.remove(0);
+            }
+        }
+        match s.open.as_mut().filter(|o| o.is(OpenKind::Thread, &question.thread_id)) {
+            Some(open) if !open.questions.iter().any(|q| q.token == question.token) => {
+                open.questions.push(question);
+                open.guard_requests(now_ms());
+                Some(guard_followup(open))
+            }
+            _ => None,
+        }
+    };
+    if let Some(followup) = followup {
+        followup.run();
+        changed();
+        rerender();
+    }
+    lists_changed();
+}
+
+/// A question ended (answered here or elsewhere, dismissed, expired).
+fn question_resolved(bridge: &Bridge, token: &str, thread_id: &str) {
+    let open = {
+        let mut s = bridge.lock();
+        if let Some(list) = s.questions.get_mut(thread_id) {
+            list.retain(|q| q.token != token);
+            if list.is_empty() {
+                s.questions.remove(thread_id);
+            }
+        }
+        match s.open.as_mut().filter(|o| o.is(OpenKind::Thread, thread_id)) {
+            Some(open) if open.questions.iter().any(|q| q.token == token) => {
+                open.questions.retain(|q| q.token != token);
+                open.guard_requests(now_ms());
+                true
+            }
+            _ => false,
+        }
+    };
+    if open {
+        changed();
+        rerender();
+    }
+    lists_changed();
+}
+
+/// Applies `change` to the answers of the question the dock shows.
+fn answering(change: impl FnOnce(&mut OpenView, &Question)) {
+    {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut() else { return };
+        let Some(q) = open.shown_question().cloned() else { return };
+        if open.answering.token() != q.token {
+            return;
+        }
+        change(open, &q);
+    }
+    changed();
+}
+
+/// The user picked option `index` of the shown ask (just past the options:
+/// "Something else").
+pub fn question_pick(index: usize) {
+    answering(|open, q| open.answering.pick(q, index));
+}
+
+/// The secret ask's masked field changed. The text is overwritten here once read.
+pub fn question_secret(text: String) {
+    let text = control::Secret::new(text);
+    answering(|open, q| open.answering.type_secret(q, text.reveal()));
+}
+
+/// The next ask, or the one before; the composer holds that ask's own words.
+pub fn question_step(next: bool) {
+    answering(|open, q| {
+        let moved = if next { open.answering.next(q) } else { open.answering.back() };
+        if moved {
+            let text = open.answering.other_text().to_owned();
+            open.composer.put(text);
+        }
+    });
+}
+
+/// Sends the answers to the shown question, once every ask has one.
+pub fn question_send() {
+    let sending = {
+        let mut s = lock();
+        let Some(open) = s.open.as_mut() else { return };
+        let Some(q) = open.shown_question().cloned() else { return };
+        if open.answering.token() != q.token {
+            return;
+        }
+        let Some(answers) = open.answering.answers(&q) else { return };
+        // The composer's words went with an answer (never a secret's).
+        let words = q.asks.iter().zip(&answers).any(|(ask, a)| !ask.secret && a.other.is_some());
+        (q.token, answers, open.generation, words)
+    };
+    let (token, answers, generation, words) = sending;
+    guard_event(GuardEvent::Sent);
+    let answered = token.clone();
+    page_request(
+        Request::Question,
+        move |client| async move {
+            client.question_answer(QuestionAnswerParams { token, answers, by: Origin::launcher() }).await
+        },
+        move |()| {
+            {
+                let mut s = lock();
+                if let Some(open) = s.open.as_mut().filter(|o| o.generation == generation) {
+                    open.questions.retain(|q| q.token != answered);
+                    if words {
+                        open.composer.put(String::new());
+                    }
+                    open.guard_requests(now_ms());
+                }
+            }
+            changed();
+            rerender();
+        },
+    );
+}
+
+/// Dismisses the shown question: the agent hears the user didn't answer.
+pub fn question_dismiss() {
+    let Some(token) = lock().open.as_ref().and_then(|o| o.shown_question()).map(|q| q.token.clone()) else {
+        return;
+    };
+    page_request(
+        Request::Question,
+        move |client| async move { client.question_dismiss(token, Origin::launcher()).await },
+        |()| {},
+    );
+}
+
+// ---- Setup: a folder's MCP servers, keeping the PC awake ----
+
+/// Turns a folder's "Use my MCP servers here" on or off (from each thread's next start).
+pub fn set_folder_mcp(id: String, on: bool) {
+    page_request(
+        Request::Setting,
+        move |client| async move { client.folders_set(id, on).await },
+        |folder: Folder| {
+            let mut s = lock();
+            if let Some(f) = s.folders.iter_mut().find(|f| f.id == folder.id) {
+                *f = folder;
+            }
+            drop(s);
+            changed();
+        },
+    );
+}
+
+/// Keeps this PC from sleeping while an agent works, or stops.
+pub fn set_keep_awake(on: bool) {
+    page_request(
+        Request::Setting,
+        move |client| async move { client.settings_set(SettingsSetParams { keep_awake: Some(on) }).await },
+        |settings: api::HostSettings| {
+            lock().keep_awake = Some(settings.keep_awake);
+            changed();
+        },
+    );
 }
 
 /// Opens or closes a row of the open view.
@@ -3283,6 +5143,8 @@ mod tests {
             path: "/home/me/Code/g7linux".into(),
             exists,
             added_ms: 1,
+            mcp: true,
+            mcp_seen: vec![api::FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
         }
     }
 
@@ -3311,6 +5173,14 @@ mod tests {
             state_since_ms: 5,
             subdir: None,
             continued: false,
+            model: None,
+            effort: None,
+            answered_model: None,
+            queued: Vec::new(),
+            queue_held: false,
+            context: None,
+            mcp: None,
+            asking: 0,
         }
     }
 
@@ -3566,6 +5436,227 @@ mod tests {
             expires_ms: created_ms + 7_200_000,
             item_id: Some(format!("toolu_{token}")),
         }
+    }
+
+    fn a_question(token: &str, created_ms: u64, other: bool) -> Question {
+        Question {
+            token: token.into(),
+            thread_id: "0123456789abcdef0123456789abcdef".into(),
+            item_id: format!("q{token}"),
+            secret: false,
+            asks: vec![api::Ask {
+                id: "0".into(),
+                header: "Test runner".into(),
+                text: "Which `cargo` command?".into(),
+                multi: false,
+                other,
+                secret: false,
+                options: vec![
+                    api::AskOption { label: "`cargo test`".into(), note: None },
+                    api::AskOption { label: "nextest".into(), note: Some("Faster".into()) },
+                ],
+            }],
+            created_ms,
+            expires_ms: created_ms + api::QUESTION_LIFETIME_MS,
+        }
+    }
+
+    #[test]
+    fn while_a_question_waits_nothing_is_sent_and_no_draft_saved() {
+        let mut view = OpenView::new(1, OpenKind::Thread, "0123456789abcdef0123456789abcdef".into());
+        view.composer.text = "Leave the Kotlin side alone".into();
+        view.composer.draft_edit = 3;
+        assert!(may_send(&view));
+        let due = draft_due(&view, Some(3)).expect("a draft is due");
+        assert_eq!((due.key.as_str(), due.rev), ("0123456789abcdef0123456789abcdef", 0));
+        assert!(draft_due(&view, Some(2)).is_none(), "a newer edit came");
+        view.composer.draft_saved = view.composer.text.clone();
+        assert!(draft_due(&view, None).is_none(), "nothing changed");
+        view.composer.draft_saved.clear();
+
+        view.questions.push(a_question("q", 10, true));
+        view.guard_requests(1_000);
+        assert!(!may_send(&view), "no send path while a question waits");
+        assert!(
+            draft_due(&view, Some(3)).is_none() && draft_due(&view, None).is_none(),
+            "an answer is never a draft"
+        );
+        // The words already typed are the first ask's own; typing in the
+        // composer then chooses "Something else".
+        let q = view.questions[0].clone();
+        assert_eq!(view.answering.other_text(), "Leave the Kotlin side alone");
+        view.answering.type_other(&q, "Leave the Kotlin side alone for now");
+        let shown = view.answering.json(&q);
+        assert_eq!((shown["otherOn"].as_bool(), shown["ready"].as_bool()), (Some(true), Some(true)));
+        // Answered: it leaves, and the composer can send again.
+        view.questions.clear();
+        view.guard_requests(2_000);
+        assert!(may_send(&view) && view.answering.token().is_empty());
+    }
+
+    #[test]
+    fn the_dock_shows_requests_and_questions_in_the_order_they_came() {
+        let state = BridgeState::default();
+        let palette = CodePalette::default();
+        let mut view = OpenView::new(1, OpenKind::Thread, "t".into());
+        view.asks.push(command_ask("a", "ls", 30));
+        view.questions.push(a_question("q", 20, false));
+        view.guard_requests(1_000);
+        let (ask, question, more) = dock_json(&view, &state, &palette);
+        assert_eq!((ask, more), (json!({}), 1), "the question came first");
+        assert_eq!(question["token"], "q");
+        assert_eq!((question["position"].as_u64(), question["total"].as_u64()), (Some(1), Some(2)));
+        let shown = &question["ask"];
+        assert_eq!(shown["other"], false, "this one takes no words of its own");
+        assert_eq!(
+            shown["styled"],
+            "Which <font color=\"\">cargo</font> command?"
+                .replace("<font color=\"\">", "")
+                .replace("</font>", "")
+        );
+        assert_eq!(shown["options"][1]["note"], "Faster");
+        // The marks put "Waiting for you" under the question's line.
+        assert!(view.marks().iter().any(|m| m.item_id == "qq" && m.kind == render::MarkKind::Waiting));
+        // Answered: the request takes the dock.
+        view.questions.clear();
+        view.guard_requests(2_000);
+        let (ask, question, more) = dock_json(&view, &state, &palette);
+        assert_eq!((ask["token"].as_str(), question, more), (Some("a"), json!({}), 0));
+    }
+
+    #[test]
+    fn a_command_row_inserts_and_sends_nothing() {
+        let commands =
+            [Command { name: "review".into(), note: None, hint: None, kind: api::CommandKind::Command }];
+        let p = Popup::new(control::trigger("/rev", 4).unwrap(), 4);
+        let rows = control::command_rows(&commands, "rev", true);
+        let chosen = choose(&p, "/rev", &rows, -1).unwrap();
+        assert_eq!((chosen.text.as_str(), chosen.cursor, chosen.action.as_str()), ("/review ", 8, ""));
+        // G7's own act at once and leave the composer.
+        let p = Popup::new(control::trigger("/pl", 3).unwrap(), 3);
+        let rows = control::command_rows(&commands, "pl", true);
+        let chosen = choose(&p, "/pl", &rows, 0).unwrap();
+        assert_eq!((chosen.text.as_str(), chosen.cursor, chosen.action.as_str()), ("", 0, "plan"));
+        // A folder inserts its path and lists what's in it; a file ends with a space.
+        let mut p = Popup::new(control::trigger("see @co", 7).unwrap(), 7);
+        p.files = vec![
+            FileHit { path: "core".into(), dir: true },
+            FileHit { path: "Cargo.toml".into(), dir: false },
+        ];
+        let chosen = choose(&p, "see @co", &[], 0).unwrap();
+        assert_eq!((chosen.text.as_str(), chosen.cursor), ("see @core/", 10));
+        assert!(control::trigger(&chosen.text, chosen.cursor).is_some(), "the list opens again");
+        let chosen = choose(&p, "see @co", &[], 1).unwrap();
+        assert_eq!(chosen.text, "see @Cargo.toml ");
+        assert!(choose(&p, "see @co", &[], 5).is_none());
+    }
+
+    #[test]
+    fn a_plan_is_a_card_with_a_foot_after_its_blocks() {
+        let mut view = OpenView::new(4, OpenKind::Thread, "t".into());
+        let mut render = Render::default();
+        render.reset(4);
+        view.apply(entry(&Item {
+            text: Some("Plan it first.".into()),
+            turn: Some(1),
+            origin: Some(Origin::launcher()),
+            ..Item::new(1, "u1", ItemKind::User, 100)
+        }));
+        view.apply(entry(&Item {
+            text: Some("Each side logs its reason.\n\n1. Add `DropReason`.\n2. Log it.".into()),
+            turn: Some(1),
+            plan_state: Some(api::PlanState::Proposed),
+            end_ms: Some(2_000),
+            ..Item::new(2, "plan1", ItemKind::Plan, 1_000)
+        }));
+        render.update(&snap(&view, render::ThreadState::Done)).expect("its own view");
+        let keys: Vec<&str> = render.shown.iter().map(|r| r.key()).collect();
+        assert_eq!(keys.first(), Some(&"i:u1"));
+        let head = keys.iter().position(|k| *k == "p:plan1").expect("the card's head");
+        let foot = keys.iter().position(|k| *k == "pf:plan1").expect("the card's foot");
+        assert!(foot > head + 1, "its blocks between: {keys:?}");
+        let part = |i: usize| render.shown[i].text(Role::PlanPart).to_owned();
+        assert_eq!(part(head), "head");
+        assert!((head + 1..foot).all(|i| part(i) == "body"));
+        assert_eq!(part(foot), "foot");
+        assert_eq!(render.shown[foot].text(Role::Status), "proposed");
+        assert_eq!(render.shown[foot].key(), "pf:plan1");
+    }
+
+    #[test]
+    fn phones_get_models_limits_and_counts_but_never_server_names() {
+        let mut claude = AgentInfo::missing(AgentId::Claude);
+        claude.can = vec![api::Can::Plan, api::Can::McpSwitch];
+        claude.models = vec![api::ModelInfo {
+            id: "opus".into(),
+            name: "Opus".into(),
+            note: Some("n".repeat(200)),
+            default: false,
+            efforts: vec!["high".into()],
+            default_effort: None,
+            images: true,
+            short: true,
+        }];
+        claude.limits = vec![api::Limit {
+            window: "five_hour".into(),
+            used_pct: Some(91),
+            resets_ms: Some(9),
+            state: api::LimitState::Warn,
+        }];
+        let wire = catalog(&[claude], &[folder("f1", true)]);
+        let agent = &wire.agents[0];
+        assert_eq!(agent.can, ["plan", "mcp_switch"]);
+        assert_eq!(
+            (agent.models[0].id.as_str(), agent.models[0].note.as_ref().map(String::len)),
+            ("opus", Some(120))
+        );
+        assert_eq!((agent.limits[0].state.as_str(), agent.limits[0].used_pct), ("warn", Some(91)));
+        let shown = serde_json::to_string(&wire).unwrap();
+        assert!(!shown.contains("github"), "{shown}");
+
+        let mut t = info(Origin::launcher());
+        t.mode = Mode::Plan;
+        t.model = Some("opus".into());
+        t.asking = 1;
+        t.mcp = Some(api::ThreadMcp {
+            on: true,
+            connected: 2,
+            need_login: 1,
+            names: vec!["github".into(), "linear".into(), "sentry".into()],
+        });
+        t.context = Some(api::ContextUse { used: 120_000, max: 1_000_000 });
+        let wire = thread(&t, None);
+        assert_eq!((wire.mode.as_str(), wire.model.as_deref(), wire.asking), ("plan", Some("opus"), 1));
+        let mcp = wire.mcp.unwrap();
+        assert_eq!((mcp.servers, mcp.connected, mcp.need_login), (3, 2, 1));
+        assert!(
+            !serde_json::to_string(&thread(&t, None)).unwrap().contains("github"),
+            "names stay on the PC"
+        );
+        // The page has them.
+        let row = thread_row(&t);
+        assert_eq!(row["mcp"]["names"][0], "github");
+        assert_eq!(row["context"]["pct"], 12);
+        t.state = State::Done;
+        assert_eq!(thread_row(&t)["plan_ready"], true, "a finished turn in plan mode");
+        let setup = serde_json::from_str::<Value>(&setup_json(&BridgeState::default(), None)).unwrap();
+        assert_eq!(setup["control"], false);
+    }
+
+    #[test]
+    fn phones_get_a_secret_question_without_its_asks() {
+        let mut q = a_question("0123456789abcdef0123456789abcdef", 5, true);
+        let wire = wire_question(&q, Some(&info(Origin::launcher())));
+        assert_eq!(
+            (wire.asks.len(), wire.agent.as_str(), wire.thread_title.as_str()),
+            (1, "codex", "Fix the build")
+        );
+        q.secret = true;
+        q.asks[0].secret = true;
+        let wire = wire_question(&q, None);
+        assert!(wire.secret && wire.asks.is_empty());
+        let shown = format!("{wire:?}");
+        assert!(!shown.contains("cargo"), "{shown}");
     }
 
     #[test]
@@ -4071,6 +6162,15 @@ mod tests {
             self.log.lock().unwrap().push(format!("asked {}", asked.outcome));
         }
         async fn session(&self, _session: Option<AgentSession>, _removed: Option<String>) {}
+        async fn question(&self, question: AgentQuestion) {
+            self.log.lock().unwrap().push(format!("question {}", question.asks.len()));
+        }
+        async fn questioned(&self, questioned: AgentQuestioned) {
+            self.log.lock().unwrap().push(format!("questioned {}", questioned.outcome));
+        }
+        async fn draft(&self, _key: String, rev: u64, _except: Option<DeviceId>) {
+            self.log.lock().unwrap().push(format!("draft {rev}"));
+        }
     }
 
     /// A launch that never starts a host (the fake hosts never look outdated).

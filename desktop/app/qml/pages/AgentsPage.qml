@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQml
 import QtQuick.Dialogs
 import app.g7link
 
@@ -49,7 +50,46 @@ Item {
     }
     readonly property var steps: parse(Agents.steps, [])
     readonly property var changes: parse(Agents.changes, [])
-
+    // The question the dock shows rather than a request ({} for none).
+    readonly property var question: parse(Agents.question, ({}))
+    readonly property bool questioning: isThread && (question.token || "").length > 0
+    // The open thread's composer around its text, its `@`/`/` list, and
+    // text it must take.
+    readonly property var composerState: parse(Agents.composer, ({}))
+    readonly property var popup: parse(Agents.popup, ({}))
+    readonly property var composerSet: parse(Agents.composerSet, ({}))
+    readonly property var newPicker: parse(Agents.newPicker, ({}))
+    // A usage window near its end, or reached: one amber line over the composer.
+    readonly property var limit: composerState.limit || ({})
+    readonly property var context: info.context || ({})
+    readonly property var mcp: info.mcp || ({})
+    // A usage window's name as the CLI gives it: minutes or a word.
+    function windowName(w) {
+        switch (w) {
+        case "300":
+        case "five_hour": return qsTr("5-hour")
+        case "10080":
+        case "seven_day": return qsTr("weekly")
+        default: return w
+        }
+    }
+    readonly property string limitText: {
+        if (!limit.window)
+            return ""
+        const resets = limit.resetsMs > 0 ? clock(limit.resetsMs) : ""
+        if (limit.state === "reached")
+            return resets.length > 0 ? qsTr("Usage limit reached · resets %1").arg(resets) : qsTr("Usage limit reached")
+        const name = windowName(limit.window)
+        return resets.length > 0 ? qsTr("%1 limit almost used · resets %2").arg(name).arg(resets)
+                                 : qsTr("%1 limit almost used").arg(name)
+    }
+    // The thread's model and effort, as the details say them.
+    readonly property string modelLine: {
+        const label = (composerState.picker || {}).label
+        if (!label || label.model.length === 0)
+            return qsTr("Default model")
+        return label.effort.length > 0 ? label.model + " · " + label.effort : label.model
+    }
     readonly property bool connected: Agents.status === "connected"
     readonly property var readyAgents: connected
         ? (setup.agents || []).filter((a) => a.installed && a.signedIn && a.problem.length === 0) : []
@@ -107,6 +147,8 @@ Item {
         else
             detailsOpen = !detailsOpen
     }
+    // Tabler's plug (MIT, as Icons.qml credits).
+    readonly property string plugIcon: "M9.8 6l8.2 8.2-2 2.1a5.8 5.8 0 1 1-8.3-8.3zM4 20l3.5-3.5M15 4l-3.5 3.5M20 9l-3.5 3.5"
     // Tabler's layout-sidebar (MIT, as Icons.qml credits).
     readonly property string listIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 4v16"
 
@@ -350,11 +392,17 @@ Item {
             return { label: qsTr("Add folder…"), keys: "Ctrl O", run: () => folderPicker.open() }
         // With words in the composer, Ctrl+Enter never allows.
         if (canAllow && composer.sayWhy && composer.hasText)
-            return { label: qsTr("Deny and send"), keys: "Enter", run: () => composer.submit() }
+            return { label: qsTr("Deny and send"), keys: "Enter", run: () => composer.submit(false) }
         if (canAllow && !composer.hasText)
             return { label: qsTr("Allow"), keys: "Ctrl Enter", run: () => page.allowShown() }
-        if (isThread && !running)
-            return { label: qsTr("Send"), keys: "Enter", run: () => composer.submit() }
+        // While a question waits only the dock answers it.
+        if (questioning) {
+            const last = (question.ask || {}).last === true
+            return { label: last ? qsTr("Send answers") : qsTr("Next"), keys: "",
+                     run: () => last ? Agents.questionSend() : Agents.questionStep(true) }
+        }
+        if (isThread && (!running || composerState.control === true))
+            return { label: qsTr("Send"), keys: "Enter", run: () => composer.submit(false) }
         if (isSession && info.can_continue === true)
             return { label: qsTr("Continue here"), keys: "Ctrl Enter", run: () => continueSheet.open() }
         return { label: qsTr("New thread"), keys: "Ctrl N", run: () => page.startNew() }
@@ -425,12 +473,32 @@ Item {
                  && !AppController.commandPaletteOpen
         onActivated: page.allowShown()
     }
+    // 1–9 pick a question's answers while the keyboard isn't in a text field.
+    Instantiator {
+        model: 9
+        delegate: Shortcut {
+            required property int index
+            sequence: String(index + 1)
+            enabled: page.active && page.questioning && page.question.held !== true && !composer.inputFocused
+                     && !linkSheet.opened && !dockMenu.opened && !AppController.commandPaletteOpen
+            onActivated: Agents.questionPick(index)
+        }
+    }
     Shortcut {
         sequence: "Esc"
         enabled: page.active && (page.openKind.length > 0 || page.pane.length > 0)
                  && !continueSheet.opened && !folderSheet.opened && !deleteSheet.opened && !restartSheet.opened
-                 && !linkSheet.opened && !dockMenu.opened && !AppController.commandPaletteOpen
+                 && !linkSheet.opened && !dockMenu.opened && !planMenu.opened && !threadPicker.opened
+                 && !newFormPicker.opened && !composer.popupOpen && !AppController.commandPaletteOpen
         onActivated: page.back()
+    }
+
+    FileDialog {
+        id: imagePicker
+        title: qsTr("Add image")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: [qsTr("Images (*.png *.jpg *.jpeg *.webp *.gif)")]
+        onAccepted: Agents.addImages(JSON.stringify(Array.from(selectedFiles, (u) => String(u))))
     }
 
     FolderDialog {
@@ -838,8 +906,16 @@ Item {
                 folder: page.info.folder || ""
                 now: page.now
                 animate: page.active && page.windowActive
+                running: page.running
                 onLinkActivated: (key, index) => linkSheet.ask(key, index)
-                onWaitingClicked: dock.pulse()
+                onWaitingClicked: page.questioning ? questionDock.pulse() : dock.pulse()
+                onImplementPlan: (itemId, mode) => Agents.implement(itemId, mode)
+                onImplementMenuRequested: (itemId, x, y) => {
+                    page.planItem = itemId
+                    const p = page.mapFromItem(null, x, y)
+                    planMenu.openAt(p.x, p.y - 30, true, true)
+                }
+                onChangePlan: composer.focusInput()
                 Connections {
                     target: Agents
                     function onOpenIdChanged() { transcript.follow = true }
@@ -1115,6 +1191,54 @@ Item {
                     }
                 }
 
+                // A usage window near its end: pinned, never a row of the timeline.
+                Row {
+                    visible: page.isThread && page.limitText.length > 0
+                    width: parent.width
+                    spacing: 8
+                    Icon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 14
+                        height: 14
+                        path: Icons.history
+                        color: Theme.tintAmber
+                    }
+                    Txt {
+                        width: parent.width - 22
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: page.limitText
+                        role: "bodySmall"
+                        color: Theme.tintAmber
+                        maximumLineCount: 1
+                    }
+                }
+
+                // The question it waits on: one ask at a time, at most half the column.
+                AgentQuestionDock {
+                    id: questionDock
+                    function pulse() { questionPulse.restart() }
+                    visible: page.questioning
+                    width: parent.width
+                    height: visible ? Math.min(implicitHeight, openView.height / 2) : 0
+                    question: page.question
+                    busy: Agents.busy
+                    onPicked: (index) => Agents.questionPick(index)
+                    onBack: Agents.questionStep(false)
+                    onNext: Agents.questionStep(true)
+                    onSend: Agents.questionSend()
+                    onSecretTyped: (text) => Agents.questionSecret(text)
+                    onOverflowRequested: (x, y) => {
+                        const p = page.mapFromItem(null, x, y)
+                        dockMenu.openAt(p.x, p.y - 30, true, true)
+                    }
+                    SequentialAnimation on opacity {
+                        id: questionPulse
+                        running: false
+                        NumberAnimation { to: 0.55; duration: Theme.reduceMotion ? 0 : 120 }
+                        NumberAnimation { to: 1; duration: Theme.reduceMotion ? 0 : 240 }
+                    }
+                }
+
                 // The request it waits on: one at a time, at most half the column.
                 AgentDock {
                     id: dock
@@ -1152,16 +1276,25 @@ Item {
                     width: parent.width
                     height: visible ? implicitHeight : 0
                     ask: page.ask
+                    question: page.question
+                    controls: page.composerState
+                    popup: page.popup
+                    setText: page.composerSet
                     canSayWhy: Agents.canSayWhy
                     running: page.running
                     busy: Agents.busy
                     agentName: page.agentName
                     agentId: page.info.agent || ""
                     folder: page.info.folder || ""
-                    onSend: (text) => Agents.send(text)
+                    onSend: (text, other) => Agents.send(text, other)
                     onDenySend: (token, text) => Agents.denyWithMessage(token, text)
                     onAllow: page.allowShown()
                     onStop: Agents.stop()
+                    onAttachRequested: imagePicker.open()
+                    onPickerRequested: (x, y) => {
+                        const p = page.mapFromItem(null, x, y)
+                        threadPicker.openAt(p.x, p.y)
+                    }
                 }
                 Column {
                     id: sessionBar
@@ -1458,6 +1591,42 @@ Item {
                         }
                     }
 
+                    // How full its context is, as the CLI last reported.
+                    Column {
+                        visible: page.isThread && page.context.max !== undefined
+                        width: parent.width
+                        spacing: 4
+                        Item {
+                            width: parent.width
+                            height: 28
+                            Txt {
+                                x: Theme.rowPadding
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: qsTr("Context")
+                                role: "label"
+                                muted: true
+                            }
+                        }
+                        Txt {
+                            x: Theme.rowPadding
+                            text: qsTr("Context %1% of %2").arg(page.context.pct || 0).arg(page.context.max || "")
+                            role: "bodySmall"
+                        }
+                        Rectangle {
+                            x: Theme.rowPadding
+                            width: parent.width - 2 * Theme.rowPadding
+                            height: 4
+                            radius: 2
+                            color: Theme.surfaceContainerHigh
+                            Rectangle {
+                                width: parent.width * Math.min(1, (page.context.pct || 0) / 100)
+                                height: parent.height
+                                radius: 2
+                                color: (page.context.pct || 0) >= 80 ? Theme.tintAmber : Theme.surfaceContentVariant
+                            }
+                        }
+                    }
+
                     // Where it runs and since when.
                     Column {
                         width: parent.width
@@ -1480,8 +1649,18 @@ Item {
                                   text: page.originLine },
                                 { icon: Icons.shield, text: page.isSession ? ""
                                       : (page.info.mode === "auto_edit" ? qsTr("Asks before commands")
-                                                                       : qsTr("Asks before edits and commands")) },
-                                { icon: Icons.history, text: page.clockText }
+                                         : page.info.mode === "plan" ? qsTr("Plan")
+                                         : qsTr("Asks before edits and commands")) },
+                                { icon: Icons.sparkle, text: page.isThread && page.composerState.control === true
+                                      ? page.modelLine : "" },
+                                { icon: Icons.sparkle, text: page.isThread && (page.info.answered_model || "").length > 0
+                                      && (page.info.model || "").length > 0 && page.info.answered_model !== page.info.model
+                                      ? qsTr("Answered by %1").arg(page.info.answered_model) : "" },
+                                { icon: Icons.history, text: page.clockText },
+                                { icon: page.plugIcon, text: page.isThread && page.mcp.on === true && (page.mcp.names || []).length > 0
+                                      ? qsTr("%n MCP server(s)", "", page.mcp.names.length) + ": " + page.mcp.names.join(", ") : "" },
+                                { icon: Icons.warning, text: page.isThread && (page.mcp.needLogin || 0) > 0
+                                      ? qsTr("%n need(s) sign-in. Sign in with %1 in a terminal.", "", page.mcp.needLogin).arg(page.agentName) : "" }
                             ].filter((r) => r.text.length > 0)
                             delegate: Item {
                                 id: detailRow
@@ -1533,6 +1712,13 @@ Item {
             property string agent: page.readyAgents.length > 0 ? page.readyAgents[0].id : ""
             property string folder: page.usableFolders.length > 0 ? page.usableFolders[0].id : ""
             property string mode: "supervised"
+            readonly property var agentInfo: page.readyAgents.find((a) => a.id === newView.agent) || ({})
+            // Plan, when the host and the agent can.
+            readonly property bool planAvailable: page.newPicker.control === true && page.newPicker.plan === true
+            onAgentChanged: Agents.newForm(newView.agent, newView.folder)
+            onFolderChanged: Agents.newForm(newView.agent, newView.folder)
+            Component.onCompleted: Agents.newForm(newView.agent, newView.folder)
+            onPlanAvailableChanged: if (!planAvailable && mode === "plan") mode = "supervised"
             function start() {
                 const task = taskInput.text.trim()
                 if (task.length === 0 || newView.agent.length === 0 || newView.folder.length === 0)
@@ -1650,7 +1836,7 @@ Item {
                         options: [
                             { value: "supervised", label: qsTr("Edits and commands") },
                             { value: "auto_edit", label: qsTr("Commands only") }
-                        ]
+                        ].concat(newView.planAvailable ? [{ value: "plan", label: qsTr("Plan") }] : [])
                         value: newView.mode
                         onPicked: (value) => { newView.mode = value }
                     }
@@ -1658,11 +1844,40 @@ Item {
                         width: parent.width
                         text: newView.mode === "auto_edit"
                             ? qsTr("It changes files without asking, and asks before a command that could change something.")
-                            : qsTr("It asks before it changes a file or runs a command that could change something.")
+                            : newView.mode === "plan"
+                                ? qsTr("Plan: it changes nothing until you say so.")
+                                : qsTr("It asks before it changes a file or runs a command that could change something.")
                         role: "bodySmall"
                         muted: true
                         wrapMode: Text.WordWrap
                         elide: Text.ElideNone
+                    }
+                }
+
+                // The model and effort it starts with, from the agent's own list.
+                Column {
+                    width: parent.width
+                    spacing: 6
+                    visible: page.newPicker.control === true
+                    Txt {
+                        text: qsTr("Model")
+                        role: "label"
+                        muted: true
+                    }
+                    Chip {
+                        id: newModelChip
+                        interactive: true
+                        iconPath: Icons.sparkle
+                        text: {
+                            const label = page.newPicker.label
+                            if (!label || label.model.length === 0)
+                                return label && label.effort.length > 0 ? qsTr("Default") + " · " + label.effort : qsTr("Default")
+                            return label.effort.length > 0 ? label.model + " · " + label.effort : label.model
+                        }
+                        onClicked: {
+                            const p = newModelChip.mapToItem(page, 0, 0)
+                            newFormPicker.openAt(p.x, p.y)
+                        }
                     }
                 }
 
@@ -1772,6 +1987,17 @@ Item {
                 role: "body"
                 muted: true
                 text: qsTr("Agents can read, change and run things in this folder, and a command you approve can reach outside it. The folder's own agent settings, such as hooks, also run, so add it only if you trust it. Your phone sees only its name.")
+            }
+            Txt {
+                visible: page.setup.control === true
+                width: parent.width
+                wrapMode: Text.WordWrap
+                elide: Text.ElideNone
+                role: "body"
+                muted: true
+                text: (page.setup.agents ?? []).some((a) => a.id === "codex" && a.mcpSwitch === true)
+                    ? qsTr("The MCP servers you set up for Claude and Codex are used here too; you can turn that off for this folder.")
+                    : qsTr("The MCP servers you set up for Claude and Codex are used here too; you can turn that off for Claude in this folder.")
             }
             Row {
                 anchors.right: parent.right
@@ -1992,13 +2218,46 @@ Item {
         }
     }
 
-    // The dock's "…": always allow (on this PC only) and Stop.
+    // The dock's "…": always allow (on this PC only) and Stop; for a
+    // question, Dismiss and Stop.
     PopupMenu {
         id: dockMenu
-        actions: dock.overflowActions
+        actions: page.questioning
+            ? [{ label: qsTr("Dismiss"), icon: Icons.close, run: () => Agents.questionDismiss() },
+               { label: qsTr("Stop"), icon: Icons.stopSquare, tint: Theme.tintRed, run: () => Agents.stop() }]
+            : dock.overflowActions
         panelWidth: 360
         wrapLabels: true
         z: 20
+    }
+
+    // A plan's Implement, with the mode it runs in.
+    property string planItem: ""
+    PopupMenu {
+        id: planMenu
+        actions: [
+            { label: qsTr("Implement, asking before edits and commands"), checked: true,
+              run: () => Agents.implement(page.planItem, "supervised") },
+            { label: qsTr("Implement, asking before commands"),
+              run: () => Agents.implement(page.planItem, "auto_edit") }
+        ]
+        panelWidth: 360
+        wrapLabels: true
+        z: 20
+    }
+
+    // The model control's panels: the open thread's, and the new-thread form's.
+    AgentModelPicker {
+        id: threadPicker
+        picker: page.composerState.picker || ({})
+        pcName: AppController.deviceName
+        onOpenedChanged: if (!opened) composer.focusInput()
+    }
+    AgentModelPicker {
+        id: newFormPicker
+        newForm: true
+        picker: page.newPicker
+        pcName: AppController.deviceName
     }
 
     // Deleting a thread: it can't be brought back.

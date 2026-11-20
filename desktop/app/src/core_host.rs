@@ -202,6 +202,10 @@ pub fn compute_capabilities(node: Option<&Node>) -> Vec<String> {
         if crate::agents::says_why() {
             caps.push(g7link_core::agent::SAY_WHY.into());
         }
+        // Models, Plan, the queue, questions, pictures, `@`, `/` and drafts.
+        if crate::agents::offers_control() {
+            caps.push(g7link_core::agent::CONTROL.into());
+        }
     }
     caps
 }

@@ -72,6 +72,17 @@ pub mod qobject {
         #[qproperty(bool, list_hidden)]
         /// The user hid the details beside the transcript.
         #[qproperty(bool, inspector_hidden)]
+        /// The question the dock shows rather than a request (JSON, `{}` for none).
+        #[qproperty(QString, question)]
+        /// The open thread's composer around its text: the model control,
+        /// the queue, the images, the limit line, a draft offered (JSON).
+        #[qproperty(QString, composer)]
+        /// The `@` or `/` list over the composer (JSON, `{}` for none).
+        #[qproperty(QString, popup)]
+        /// Text the composer must take: `{ gen, n, text, cursor }` (JSON).
+        #[qproperty(QString, composer_set)]
+        /// The new-thread form's model control (JSON).
+        #[qproperty(QString, new_picker)]
         type Agents = super::AgentsRust;
 
         /// The page is on screen (or left).
@@ -107,9 +118,10 @@ pub mod qobject {
         /// Starts a thread (`mode`: "supervised" or "auto_edit") and opens it.
         #[qinvokable]
         fn start(self: &Agents, agent: &QString, folder_id: &QString, prompt: &QString, mode: &QString);
-        /// Sends a message to the open thread.
+        /// Sends the composer's message; while the agent works it steers or
+        /// waits its turn by the user's setting, `other` (Alt+Enter) the other.
         #[qinvokable]
-        fn send(self: &Agents, text: &QString);
+        fn send(self: &Agents, text: &QString, other: bool);
         /// Stops the open thread's turn.
         #[qinvokable]
         fn stop(self: &Agents);
@@ -149,9 +161,70 @@ pub mod qobject {
         /// `i:<item id>`, a whole message. False when there's nothing.
         #[qinvokable]
         fn copy_text(self: &Agents, key: &QString) -> bool;
-        /// The user typed in the composer (not text the page set).
+        /// The composer's text or cursor changed (`typed`: by the user, not
+        /// the page). The cursor is in UTF-16 units, as QML counts.
         #[qinvokable]
-        fn typed(self: &Agents);
+        fn composer_edited(self: &Agents, text: &QString, cursor: i32, typed: bool);
+        /// Moves the `@` or `/` list's selection.
+        #[qinvokable]
+        fn popup_move(self: &Agents, by: i32);
+        /// Inserts a row of the list (`-1`: the selected one): `{ text,
+        /// cursor, action }` for the composer ("" when nothing was chosen).
+        #[qinvokable]
+        fn popup_choose(self: &Agents, index: i32) -> QString;
+        #[qinvokable]
+        fn popup_close(self: &Agents);
+        /// Up (`older`) or Down through prompts sent from this PC:
+        /// `{ text }`, or "" when there's nothing that way.
+        #[qinvokable]
+        fn history_step(self: &Agents, older: bool) -> QString;
+        /// Takes the draft another device offered.
+        #[qinvokable]
+        fn use_draft(self: &Agents);
+        /// Adds pictures to the next message, as a JSON list of file URLs.
+        #[qinvokable]
+        fn add_images(self: &Agents, urls: &QString);
+        /// Adds the clipboard's image to the next message; false when it has none.
+        #[qinvokable]
+        fn paste_image(self: &Agents) -> bool;
+        #[qinvokable]
+        fn remove_image(self: &Agents, id: &QString);
+        /// The new-thread form shows this agent and folder.
+        #[qinvokable]
+        fn new_form(self: &Agents, agent: &QString, folder: &QString);
+        /// A pick in the model control (`what`: "model", "custom", "effort",
+        /// "mode"), for the new-thread form or the open thread.
+        #[qinvokable]
+        fn pick(self: &Agents, new_form: bool, what: &QString, value: &QString);
+        /// While it works, a new message "steer"s it or "queue"s.
+        #[qinvokable]
+        fn set_follow_up(self: &Agents, word: &QString);
+        /// "send_now", "remove" or "edit" (with `text`) a queued message.
+        #[qinvokable]
+        fn queue(self: &Agents, op: &QString, id: &QString, text: &QString);
+        /// Implements a plan, asking before edits and commands
+        /// ("supervised") or before commands ("auto_edit").
+        #[qinvokable]
+        fn implement(self: &Agents, item_id: &QString, mode: &QString);
+        /// Picks an option of the shown ask (one past them: "Something else").
+        #[qinvokable]
+        fn question_pick(self: &Agents, index: i32);
+        /// The secret ask's masked field changed.
+        #[qinvokable]
+        fn question_secret(self: &Agents, text: &QString);
+        /// The next ask (`next`) or the one before.
+        #[qinvokable]
+        fn question_step(self: &Agents, next: bool);
+        #[qinvokable]
+        fn question_send(self: &Agents);
+        #[qinvokable]
+        fn question_dismiss(self: &Agents);
+        /// A folder's "Use my MCP servers here".
+        #[qinvokable]
+        fn set_folder_mcp(self: &Agents, id: &QString, on: bool);
+        /// "Keep this PC awake while an agent works".
+        #[qinvokable]
+        fn set_keep_awake(self: &Agents, on: bool);
         /// The composer gained or lost the keyboard.
         #[qinvokable]
         fn composer_focus(self: &Agents, focused: bool);
@@ -292,6 +365,11 @@ pub struct AgentsRust {
     can_say_why: bool,
     list_hidden: bool,
     inspector_hidden: bool,
+    question: QString,
+    composer: QString,
+    popup: QString,
+    composer_set: QString,
+    new_picker: QString,
     /// What was last shown, to set only what changed.
     last: Option<agents::View>,
 }
@@ -340,6 +418,21 @@ impl qobject::Agents {
         }
         if differs(|v| &v.changes) {
             self.as_mut().set_changes(QString::from(&view.changes));
+        }
+        if differs(|v| &v.question) {
+            self.as_mut().set_question(QString::from(&view.question));
+        }
+        if differs(|v| &v.composer) {
+            self.as_mut().set_composer(QString::from(&view.composer));
+        }
+        if differs(|v| &v.popup) {
+            self.as_mut().set_popup(QString::from(&view.popup));
+        }
+        if differs(|v| &v.composer_set) {
+            self.as_mut().set_composer_set(QString::from(&view.composer_set));
+        }
+        if differs(|v| &v.new_picker) {
+            self.as_mut().set_new_picker(QString::from(&view.new_picker));
         }
         if differs(|v| &v.export_path) {
             let url = if view.export_path.is_empty() {
@@ -424,8 +517,8 @@ impl qobject::Agents {
         agents::start_thread(String::from(agent), String::from(folder_id), prompt, String::from(mode));
     }
 
-    pub fn send(&self, text: &QString) {
-        agents::send(String::from(text));
+    pub fn send(&self, text: &QString, other: bool) {
+        agents::send(String::from(text), other);
     }
 
     pub fn stop(&self) {
@@ -494,8 +587,108 @@ impl qobject::Agents {
         }
     }
 
-    pub fn typed(&self) {
-        agents::typed();
+    pub fn composer_edited(&self, text: &QString, cursor: i32, typed: bool) {
+        agents::composer_edited(String::from(text), cursor.max(0).unsigned_abs(), typed);
+    }
+
+    pub fn popup_move(&self, by: i32) {
+        agents::popup_move(by.clamp(-1, 1));
+    }
+
+    pub fn popup_choose(&self, index: i32) -> QString {
+        match agents::popup_choose(index) {
+            Some(c) => {
+                QString::from(&json!({ "text": c.text, "cursor": c.cursor, "action": c.action }).to_string())
+            }
+            None => QString::default(),
+        }
+    }
+
+    pub fn popup_close(&self) {
+        agents::popup_close();
+    }
+
+    pub fn history_step(&self, older: bool) -> QString {
+        match agents::history_step(older) {
+            Some(text) => QString::from(&json!({ "text": text }).to_string()),
+            None => QString::default(),
+        }
+    }
+
+    pub fn use_draft(&self) {
+        agents::use_draft();
+    }
+
+    /// Only local files are passed on; the host reads them as images or refuses them.
+    pub fn add_images(&self, urls: &QString) {
+        let urls: Vec<String> = serde_json::from_str(&String::from(urls)).unwrap_or_default();
+        let paths: Vec<String> = urls
+            .iter()
+            .take(g7_agents::api::MAX_IMAGES * 2)
+            .filter_map(|u| QUrl::from(&QString::from(u.as_str())).to_local_file().map(|p| String::from(&p)))
+            .filter(|p| !p.is_empty())
+            .collect();
+        if !paths.is_empty() {
+            agents::add_images(paths);
+        }
+    }
+
+    pub fn paste_image(&self) -> bool {
+        agents::paste_image()
+    }
+
+    pub fn remove_image(&self, id: &QString) {
+        agents::remove_image(String::from(id));
+    }
+
+    pub fn new_form(&self, agent: &QString, folder: &QString) {
+        agents::new_form(String::from(agent), String::from(folder));
+    }
+
+    pub fn pick(&self, new_form: bool, what: &QString, value: &QString) {
+        agents::pick(new_form, &String::from(what), String::from(value));
+    }
+
+    pub fn set_follow_up(&self, word: &QString) {
+        agents::set_follow_up(&String::from(word));
+    }
+
+    pub fn queue(&self, op: &QString, id: &QString, text: &QString) {
+        agents::queue(&String::from(op), String::from(id), String::from(text));
+    }
+
+    pub fn implement(&self, item_id: &QString, mode: &QString) {
+        agents::implement(String::from(item_id), &String::from(mode));
+    }
+
+    pub fn question_pick(&self, index: i32) {
+        if let Ok(index) = usize::try_from(index) {
+            agents::question_pick(index);
+        }
+    }
+
+    pub fn question_secret(&self, text: &QString) {
+        agents::question_secret(String::from(text));
+    }
+
+    pub fn question_step(&self, next: bool) {
+        agents::question_step(next);
+    }
+
+    pub fn question_send(&self) {
+        agents::question_send();
+    }
+
+    pub fn question_dismiss(&self) {
+        agents::question_dismiss();
+    }
+
+    pub fn set_folder_mcp(&self, id: &QString, on: bool) {
+        agents::set_folder_mcp(String::from(id), on);
+    }
+
+    pub fn set_keep_awake(&self, on: bool) {
+        agents::set_keep_awake(on);
     }
 
     pub fn composer_focus(&self, focused: bool) {
