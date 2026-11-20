@@ -30,6 +30,8 @@ use crate::host::{Answered, Host, claude, codex, env};
 pub const CODEX_AUTO_EDIT: bool = false;
 
 const RESTART_NOTICE: &str = "Stopped: the agent host restarted.";
+/// A denial's words that couldn't go to Codex as the next turn.
+pub const REPLY_NOT_SENT: &str = "Your reply wasn't sent.";
 /// A tool step copied from a session that never finished.
 pub const UNFINISHED_OUTPUT: &str = "Stopped before it finished.";
 /// `thread.state` for a change of `step` alone is sent at most this often.
@@ -49,13 +51,30 @@ struct Session {
     bridge_token: Option<String>,
 }
 
-/// Assistant text being streamed.
+/// Assistant text, or thinking, being streamed.
 struct Stream {
     item: Item,
     /// Bytes already sent as deltas.
     sent: usize,
     /// Text not yet sent.
     pending: String,
+    /// Its item went out when it opened (thinking does, so clients without
+    /// `items2` see its step at once): the next version is `rev + 1`.
+    shown: bool,
+}
+
+impl Stream {
+    fn new(item: Item, shown: bool) -> Self {
+        Self { item, sent: 0, pending: String::new(), shown }
+    }
+}
+
+/// A denial's words waiting to go to Codex as the next turn (§P8.3).
+#[derive(Debug, Clone)]
+struct FollowUp {
+    text: String,
+    by: Origin,
+    deny_of: Option<String>,
 }
 
 #[derive(Default)]
@@ -70,6 +89,8 @@ struct Turn {
     refused_tools: HashSet<u64>,
     /// How each running tool step is shown as the thread's `step`.
     tool_steps: HashMap<u64, String>,
+    /// Assistant messages done in this turn whose phase isn't known yet.
+    unphased: BTreeMap<u64, Item>,
     flush_scheduled: bool,
     last_text: Option<String>,
     final_text: Option<String>,
@@ -82,7 +103,12 @@ pub struct Entry {
     cwd: Option<PathBuf>,
     session: Option<Session>,
     turn: Turn,
-    turn_no: u64,
+    /// The running or last turn's number, 1-based; 0 for a thread stored
+    /// before turns were numbered, until its next turn.
+    turn_no: u32,
+    /// Such a thread's `user` items: its next turn is one more.
+    users_before: u32,
+    follow_up: Option<FollowUp>,
     allow_edits: bool,
     allow_commands: HashSet<String>,
     /// When this thread's last agent process exited (Unix ms).
@@ -103,6 +129,8 @@ impl Entry {
             session: None,
             turn: Turn::default(),
             turn_no: 0,
+            users_before: 0,
+            follow_up: None,
             allow_edits: false,
             allow_commands: HashSet::new(),
             process_ended_ms: 0,
@@ -139,6 +167,37 @@ impl Entry {
         self.info.updated_ms = now_ms();
         seq
     }
+
+    /// Starts the next turn: items made from now on carry its number.
+    fn advance_turn(&mut self) {
+        let last = if self.turn_no == 0 { self.users_before } else { self.turn_no };
+        self.turn_no = last.saturating_add(1);
+    }
+
+    /// The `turn` of items made now.
+    fn item_turn(&self) -> Option<u32> {
+        (self.turn_no > 0).then_some(self.turn_no)
+    }
+
+    /// A new item of this thread: the next `seq`, now, this turn.
+    fn new_item(&mut self, id: impl FnOnce(u64) -> String, kind: ItemKind) -> Item {
+        let seq = self.alloc();
+        Item { turn: self.item_turn(), ..Item::new(seq, id(seq), kind, now_ms()) }
+    }
+
+    /// A `user` item: a prompt, or the words a request was denied with.
+    fn user_item(&mut self, text: &str, origin: &Origin, deny_of: Option<String>) -> Item {
+        Item {
+            text: Some(text.to_owned()),
+            origin: Some(origin.clone()),
+            deny_of,
+            ..self.new_item(|seq| format!("user-{seq}"), ItemKind::User)
+        }
+    }
+
+    fn notice(&mut self, text: &str) -> Item {
+        Item { text: Some(text.to_owned()), ..self.new_item(|seq| format!("notice-{seq}"), ItemKind::Notice) }
+    }
 }
 
 /// What `session.continue` hands the registry.
@@ -166,6 +225,8 @@ pub struct PendingApproval {
     generation: u64,
     /// Asking order, for showing the oldest first.
     order: u64,
+    /// Answered by the thread's "Always allow" rule.
+    by_rule: bool,
 }
 
 pub struct Registry {
@@ -205,21 +266,15 @@ impl std::fmt::Debug for Registry {
     }
 }
 
-fn notice_item(seq: u64, text: &str) -> Item {
+fn notice_item(seq: u64, text: &str, turn: Option<u32>) -> Item {
     Item {
-        seq,
-        id: format!("notice-{seq}"),
-        kind: ItemKind::Notice,
-        ts_ms: now_ms(),
-        rev: 0,
         text: Some(text.to_owned()),
-        truncated: false,
-        origin: None,
-        tool: None,
+        turn,
+        ..Item::new(seq, format!("notice-{seq}"), ItemKind::Notice, now_ms())
     }
 }
 
-/// A running tool step for `spec`.
+/// A running tool step for `spec`, in no turn.
 pub(crate) fn tool_item(seq: u64, key: &str, spec: &ToolSpec) -> Item {
     let (detail, was_cut) = match &spec.detail {
         Some(d) => {
@@ -228,22 +283,21 @@ pub(crate) fn tool_item(seq: u64, key: &str, spec: &ToolSpec) -> Item {
         }
         None => (None, false),
     };
+    let path = spec.path.as_deref().map(|p| cut_left(&clean(p), MAX_TOOL_PATH)).filter(|p| !p.is_empty());
     Item {
-        seq,
-        id: cut(key, MAX_ITEM_ID).to_owned(),
-        kind: ItemKind::Tool,
-        ts_ms: now_ms(),
-        rev: 0,
-        text: None,
         truncated: was_cut,
-        origin: None,
         tool: Some(Tool {
             name: clean_cut(&spec.name, MAX_TOOL_NAME).0,
             title: clean_cut(&spec.title, MAX_TOOL_TITLE).0,
             detail,
             status: ToolStatus::Running,
             output: None,
+            class: Some(spec.class),
+            path,
+            by_rule: false,
         }),
+        group: spec.group.as_deref().map(|g| cut(g, MAX_ITEM_ID).to_owned()),
+        ..Item::new(seq, cut(key, MAX_ITEM_ID), ItemKind::Tool, now_ms())
     }
 }
 
@@ -337,6 +391,7 @@ impl Registry {
         for stored in store.load_threads() {
             let mut info = stored.info;
             let mut next_seq = stored.next_seq;
+            let turn = (stored.max_turn > 0).then_some(stored.max_turn);
             info.pending = 0;
             info.step = None;
             if info.state_since_ms == 0 {
@@ -345,7 +400,7 @@ impl Registry {
             if info.state.is_running() {
                 info.state = State::Interrupted;
                 info.state_since_ms = now_ms();
-                let item = notice_item(next_seq, RESTART_NOTICE);
+                let item = notice_item(next_seq, RESTART_NOTICE, turn);
                 next_seq += 1;
                 info.last_seq = item.seq;
                 if let Err(e) = store.append_item(&info.id, &item) {
@@ -359,7 +414,10 @@ impl Registry {
                 .iter()
                 .find(|f| f.id == info.folder_id)
                 .and_then(|f| thread_dir(Path::new(&f.path), info.subdir.as_deref()));
-            threads.insert(info.id.clone(), Entry::new(info, next_seq, cwd));
+            let mut entry = Entry::new(info, next_seq, cwd);
+            entry.turn_no = stored.max_turn;
+            entry.users_before = stored.users;
+            threads.insert(entry.info.id.clone(), entry);
         }
         let mut registry = Registry {
             folder_exists: folders.iter().map(|f| (f.id.clone(), Path::new(&f.path).is_dir())).collect(),
@@ -697,8 +755,8 @@ impl Host {
             continued: false,
         };
         let mut entry = Entry::new(info, 1, Some(cwd));
-        entry.turn_no = 1;
-        let user = self.user_item(&mut entry, &p.prompt, &p.origin);
+        entry.advance_turn();
+        let user = entry.user_item(&p.prompt, &p.origin, None);
         emit_state(self, &mut entry);
         emit_item(self, &id, &user);
         reg.threads.insert(id.clone(), entry);
@@ -710,21 +768,6 @@ impl Host {
             self.remove_thread(&mut reg, &old);
         }
         reg.threads.get(&id).map(|e| e.info.clone()).ok_or_else(|| err(ErrorCode::Internal, "lost"))
-    }
-
-    fn user_item(&self, entry: &mut Entry, text: &str, origin: &Origin) -> Item {
-        let seq = entry.alloc();
-        Item {
-            seq,
-            id: format!("user-{seq}"),
-            kind: ItemKind::User,
-            ts_ms: now_ms(),
-            rev: 0,
-            text: Some(text.to_owned()),
-            truncated: false,
-            origin: Some(origin.clone()),
-            tool: None,
-        }
     }
 
     /// Starts a process for the thread with `text` as the first message;
@@ -868,10 +911,10 @@ impl Host {
         }
         entry.cwd = Some(cwd);
         entry.turn = Turn::default();
-        entry.turn_no += 1;
+        entry.advance_turn();
         entry.set_state(State::Working);
         entry.info.error = None;
-        let user = self.user_item(entry, &p.text, &p.origin);
+        let user = entry.user_item(&p.text, &p.origin, None);
         emit_state(self, entry);
         emit_item(self, &p.thread_id, &user);
         let delivered = alive
@@ -896,6 +939,11 @@ impl Host {
             return Ok(());
         }
         entry.turn.interrupt_requested = true;
+        // Stopped before a denial's words went as the next turn: they don't.
+        if entry.follow_up.take().is_some() {
+            let notice = entry.notice(REPLY_NOT_SENT);
+            emit_item(self, thread_id, &notice);
+        }
         let turn_no = entry.turn_no;
         let sent = entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Interrupt).is_ok());
         if !sent {
@@ -921,7 +969,9 @@ impl Host {
         Ok(())
     }
 
-    pub async fn thread_read(&self, p: ThreadReadParams) -> Result<ThreadReadResult, RpcError> {
+    /// `thread.read`. `items2`: the client understands thinking items; else
+    /// it gets them as tool steps ([`Item::legacy`]).
+    pub async fn thread_read(&self, p: ThreadReadParams, items2: bool) -> Result<ThreadReadResult, RpcError> {
         if !is_valid_id(&p.thread_id) {
             return Err(err(ErrorCode::NotFound, "No such thread."));
         }
@@ -942,6 +992,8 @@ impl Host {
         for item in live {
             items.insert(item.seq, item);
         }
+        let items: BTreeMap<u64, Item> =
+            items.into_iter().filter_map(|(seq, item)| Some((seq, item.for_client(items2)?))).collect();
         let selected: Vec<Item> = match (p.after_seq, p.before_seq) {
             (Some(after), _) => {
                 items.range(after.saturating_add(1)..).take(limit).map(|(_, i)| i.clone()).collect()
@@ -1075,7 +1127,8 @@ impl Host {
             items.push(item);
         }
         let notice_seq = items.len() as u64 + 1;
-        items.push(notice_item(notice_seq, &c.notice));
+        let users = items.iter().filter(|i| i.kind == ItemKind::User).count();
+        items.push(notice_item(notice_seq, &c.notice, None));
         let info = ThreadInfo {
             id: id.clone(),
             agent: c.agent,
@@ -1102,6 +1155,7 @@ impl Host {
             self.store.append_item(&id, item);
         }
         let mut entry = Entry::new(info, notice_seq + 1, Some(cwd));
+        entry.users_before = u32::try_from(users).unwrap_or(u32::MAX);
         emit_state(self, &mut entry);
         let info = entry.info.clone();
         reg.threads.insert(id.clone(), entry);
@@ -1164,7 +1218,15 @@ impl Host {
 
     fn apply_step(self: &Arc<Self>, reg: &mut Registry, thread_id: &str, step: Step) {
         if let Step::TurnEnded(end) = step {
-            self.finish_turn(reg, thread_id, end);
+            let follow_up = reg
+                .threads
+                .get(thread_id)
+                .is_some_and(|e| e.follow_up.is_some() && e.info.state.is_running());
+            if follow_up && end.outcome != Outcome::Failed {
+                self.send_follow_up(reg, thread_id);
+            } else {
+                self.finish_turn(reg, thread_id, end);
+            }
             return;
         }
         let Some(entry) = reg.threads.get_mut(thread_id) else { return };
@@ -1222,22 +1284,27 @@ impl Host {
                 if !entry.info.state.is_running() || entry.turn.keys.contains_key(&key) {
                     return;
                 }
-                let seq = entry.alloc();
-                entry.turn.keys.insert(key.clone(), seq);
                 let item = Item {
-                    seq,
-                    id: cut(&key, MAX_ITEM_ID).to_owned(),
-                    kind: ItemKind::Assistant,
-                    ts_ms: now_ms(),
-                    rev: 0,
                     text: Some(String::new()),
-                    truncated: false,
-                    origin: None,
-                    tool: None,
+                    ..entry.new_item(|_| cut(&key, MAX_ITEM_ID).into(), ItemKind::Assistant)
                 };
-                entry.turn.streams.insert(seq, Stream { item, sent: 0, pending: String::new() });
+                entry.turn.keys.insert(key, item.seq);
+                entry.turn.streams.insert(item.seq, Stream::new(item, false));
             }
-            Step::AssistantDelta { key, text } => {
+            Step::ReasoningOpen { key } => {
+                if !entry.info.state.is_running() || entry.turn.keys.contains_key(&key) {
+                    return;
+                }
+                let item = Item {
+                    text: Some(String::new()),
+                    ..entry.new_item(|_| cut(&key, MAX_ITEM_ID).into(), ItemKind::Reasoning)
+                };
+                entry.turn.keys.insert(key, item.seq);
+                // Shown at once: a client without `items2` gets a running step.
+                emit_item(self, thread_id, &item);
+                entry.turn.streams.insert(item.seq, Stream::new(item, true));
+            }
+            Step::AssistantDelta { key, text } | Step::ReasoningDelta { key, text } => {
                 let Some(&seq) = entry.turn.keys.get(&key) else { return };
                 let Some(stream) = entry.turn.streams.get_mut(&seq) else { return };
                 let cleaned = clean(&text);
@@ -1277,29 +1344,88 @@ impl Host {
                         flush_stream(self, thread_id, &mut stream);
                         stream.item
                     }
-                    None => Item {
-                        seq,
-                        id: cut(&key, MAX_ITEM_ID).to_owned(),
-                        kind: ItemKind::Assistant,
-                        ts_ms: now_ms(),
-                        rev: 0,
-                        text: None,
-                        truncated: false,
-                        origin: None,
-                        tool: None,
+                    None => match entry.turn.unphased.remove(&seq) {
+                        Some(done) => Item { rev: done.rev + 1, ..done },
+                        None => Item {
+                            turn: entry.item_turn(),
+                            ..Item::new(seq, cut(&key, MAX_ITEM_ID), ItemKind::Assistant, now_ms())
+                        },
                     },
                 };
                 let (text, truncated) = clean_cut(&text, MAX_ITEM_TEXT);
+                if final_answer {
+                    item.phase = Some(Phase::Final);
+                }
                 if !text.trim().is_empty() {
                     entry.turn.last_text = Some(text.clone());
-                    if final_answer {
+                    if item.phase == Some(Phase::Final) {
                         entry.turn.final_text = Some(text.clone());
                     }
                 }
+                let now = now_ms();
                 item.text = Some(text);
                 item.truncated = truncated;
-                item.ts_ms = now_ms();
-                entry.info.updated_ms = now_ms();
+                item.ts_ms = now;
+                item.end_ms = Some(now);
+                entry.info.updated_ms = now;
+                emit_item(self, thread_id, &item);
+                if item.phase.is_none() {
+                    entry.turn.unphased.insert(seq, item);
+                }
+            }
+            Step::AssistantPhase { key, phase } => {
+                let Some(&seq) = entry.turn.keys.get(&key) else { return };
+                if let Some(stream) = entry.turn.streams.get_mut(&seq) {
+                    if stream.item.kind == ItemKind::Assistant {
+                        stream.item.phase = Some(phase);
+                    }
+                    return;
+                }
+                // Done already: its phase is an update of it.
+                let Some(mut item) = entry.turn.unphased.remove(&seq) else { return };
+                item.phase = Some(phase);
+                item.rev += 1;
+                if phase == Phase::Final
+                    && let Some(text) = item.text.as_ref().filter(|t| !t.trim().is_empty())
+                {
+                    entry.turn.final_text = Some(text.clone());
+                }
+                emit_item(self, thread_id, &item);
+            }
+            Step::ReasoningDone { key, text } => {
+                let (seq, stream) = match entry.turn.keys.get(&key) {
+                    Some(&seq) => match entry.turn.streams.remove(&seq) {
+                        Some(stream) => (seq, Some(stream)),
+                        // Ended already.
+                        None => return,
+                    },
+                    None => {
+                        let seq = entry.alloc();
+                        entry.turn.keys.insert(key.clone(), seq);
+                        (seq, None)
+                    }
+                };
+                let mut item = match stream {
+                    Some(mut stream) => {
+                        flush_stream(self, thread_id, &mut stream);
+                        let rev = stream.item.rev + u32::from(stream.shown);
+                        Item { rev, ..stream.item }
+                    }
+                    None => Item {
+                        turn: entry.item_turn(),
+                        ..Item::new(seq, cut(&key, MAX_ITEM_ID), ItemKind::Reasoning, now_ms())
+                    },
+                };
+                // The text it ended with, else what streamed.
+                if !text.is_empty() {
+                    let (text, truncated) = clean_cut(&text, MAX_ITEM_TEXT);
+                    item.text = Some(text);
+                    item.truncated = truncated;
+                }
+                item.text.get_or_insert_with(String::new);
+                let now = now_ms();
+                item.end_ms = Some(now);
+                entry.info.updated_ms = now;
                 emit_item(self, thread_id, &item);
             }
             Step::ToolStart { key, tool } => {
@@ -1308,7 +1434,7 @@ impl Host {
                 }
                 let seq = entry.alloc();
                 entry.turn.keys.insert(key.clone(), seq);
-                let item = tool_item(seq, &key, &tool);
+                let item = Item { turn: entry.item_turn(), ..tool_item(seq, &key, &tool) };
                 entry.turn.tools.insert(seq, item.clone());
                 entry.turn.tool_steps.insert(seq, tool.step());
                 emit_item(self, thread_id, &item);
@@ -1326,12 +1452,13 @@ impl Host {
                         item.truncated |= cut;
                     }
                 }
-                entry.info.updated_ms = now_ms();
+                let now = now_ms();
+                item.end_ms = Some(now);
+                entry.info.updated_ms = now;
                 emit_item(self, thread_id, &item);
             }
             Step::Notice(text) => {
-                let seq = entry.alloc();
-                let item = notice_item(seq, &clean_cut(&text, MAX_ITEM_TEXT).0);
+                let item = entry.notice(&clean_cut(&text, MAX_ITEM_TEXT).0);
                 emit_item(self, thread_id, &item);
             }
             Step::Plan(_) | Step::TurnEnded(_) => {}
@@ -1347,10 +1474,8 @@ impl Host {
         }
     }
 
-    /// Ends the running turn: open text is finished, steps still running
-    /// end, pending approvals are cancelled, then `thread.state` and
-    /// `thread.done`.
-    fn finish_turn(self: &Arc<Self>, reg: &mut Registry, thread_id: &str, end: TurnEnd) {
+    /// Cancels the thread's waiting requests: the turn they belong to ended.
+    fn cancel_requests(&self, reg: &mut Registry, thread_id: &str) {
         let tokens: Vec<String> = reg
             .approvals
             .iter()
@@ -1367,24 +1492,47 @@ impl Host {
                 false,
             );
         }
-        let Some(entry) = reg.threads.get_mut(thread_id) else { return };
-        if !entry.info.state.is_running() {
-            return;
-        }
-        let turn = std::mem::take(&mut entry.turn);
-        for (_, mut stream) in turn.streams {
+    }
+
+    /// Ends what the turn left open: text and thinking are finished, steps
+    /// still running end (denied when their request was), each with its end
+    /// time.
+    fn close_turn_items(&self, thread_id: &str, turn: &mut Turn) {
+        let now = now_ms();
+        for (_, mut stream) in std::mem::take(&mut turn.streams) {
             flush_stream(self, thread_id, &mut stream);
-            emit_item(self, thread_id, &stream.item);
+            let mut item = stream.item;
+            item.rev += u32::from(stream.shown);
+            item.end_ms = Some(now);
+            emit_item(self, thread_id, &item);
         }
-        let mut tools: Vec<(u64, Item)> = turn.tools.into_iter().collect();
+        let mut tools: Vec<(u64, Item)> = std::mem::take(&mut turn.tools).into_iter().collect();
         tools.sort_by_key(|(seq, _)| *seq);
         for (seq, mut item) in tools {
             item.rev += 1;
+            item.end_ms = Some(now);
             if let Some(tool) = item.tool.as_mut() {
                 tool.status =
                     if turn.refused_tools.contains(&seq) { ToolStatus::Denied } else { ToolStatus::Error };
             }
             emit_item(self, thread_id, &item);
+        }
+    }
+
+    /// Ends the running turn: open text is finished, steps still running
+    /// end, pending approvals are cancelled, then `thread.state` and
+    /// `thread.done`.
+    fn finish_turn(self: &Arc<Self>, reg: &mut Registry, thread_id: &str, end: TurnEnd) {
+        self.cancel_requests(reg, thread_id);
+        let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+        if !entry.info.state.is_running() {
+            return;
+        }
+        let mut turn = std::mem::take(&mut entry.turn);
+        self.close_turn_items(thread_id, &mut turn);
+        if entry.follow_up.take().is_some() {
+            let notice = entry.notice(REPLY_NOT_SENT);
+            emit_item(self, thread_id, &notice);
         }
         let summary = end
             .summary
@@ -1431,7 +1579,34 @@ impl Host {
         }
     }
 
-    fn schedule_idle_close(self: &Arc<Self>, thread_id: &str, turn_no: u64) {
+    /// The turn a request was denied in with the user's words has ended
+    /// (Codex, §P8.3 step 4): it is not reported as an end. The next turn
+    /// starts with those words, in the same process.
+    fn send_follow_up(self: &Arc<Self>, reg: &mut Registry, thread_id: &str) {
+        self.cancel_requests(reg, thread_id);
+        let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+        let alive = entry.session.as_ref().is_some_and(|s| !s.cmds.is_closed());
+        let Some(follow) = entry.follow_up.take_if(|_| alive) else {
+            // Nothing to send them to: the turn ends, and says so.
+            return self.finish_turn(reg, thread_id, TurnEnd::interrupted());
+        };
+        let mut turn = std::mem::take(&mut entry.turn);
+        self.close_turn_items(thread_id, &mut turn);
+        entry.advance_turn();
+        entry.set_state(State::Working);
+        entry.info.pending = 0;
+        let user = entry.user_item(&follow.text, &follow.by, follow.deny_of);
+        emit_state(self, entry);
+        emit_item(self, thread_id, &user);
+        let sent = entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Send(follow.text)).is_ok());
+        if !sent {
+            let notice = entry.notice(REPLY_NOT_SENT);
+            emit_item(self, thread_id, &notice);
+            self.finish_turn(reg, thread_id, TurnEnd::interrupted());
+        }
+    }
+
+    fn schedule_idle_close(self: &Arc<Self>, thread_id: &str, turn_no: u32) {
         let host = Arc::downgrade(self);
         let thread = thread_id.to_owned();
         let idle = self.config.agent_idle;
@@ -1481,18 +1656,23 @@ impl Host {
         {
             let seq = entry.alloc();
             entry.turn.keys.insert(key.clone(), seq);
-            let item = tool_item(seq, key, tool);
+            let item = Item { turn: entry.item_turn(), ..tool_item(seq, key, tool) };
             entry.turn.tools.insert(seq, item.clone());
             entry.turn.tool_steps.insert(seq, tool.step());
             emit_item(self, thread_id, &item);
         }
         let tool_seq = spec.tool_key.as_ref().and_then(|k| entry.turn.keys.get(k).copied());
+        // Tool items take the agent's key, cut, as their id.
+        let item_id = tool_seq.and(spec.tool_key.as_deref()).map(|k| cut(k, MAX_ITEM_ID).to_owned());
         let allowed = match spec.kind {
             ApprovalKind::Edit => entry.allow_edits,
             ApprovalKind::Command => spec.command.as_ref().is_some_and(|c| entry.allow_commands.contains(c)),
             ApprovalKind::Other => false,
         };
         if allowed {
+            if let Some(seq) = tool_seq {
+                self.tool_allowed(entry, thread_id, seq, true);
+            }
             let _ = reply.send(Answer::Allow);
             return;
         }
@@ -1531,6 +1711,7 @@ impl Host {
             can_allow_thread: spec.kind != ApprovalKind::Other,
             created_ms: now,
             expires_ms: now + lifetime,
+            item_id,
         };
         entry.info.pending = u32::try_from(pending_count + 1).unwrap_or(u32::MAX);
         entry.set_state(State::Waiting);
@@ -1556,6 +1737,7 @@ impl Host {
                 bridge_tool_use_id,
                 generation,
                 order,
+                by_rule: false,
             },
         );
         let host = Arc::downgrade(self);
@@ -1597,6 +1779,10 @@ impl Host {
                 ApprovalRecord { tool_seq: pending.tool_seq, outcome, by: by.clone(), ts_ms: now_ms() },
             );
         }
+        let message = match &answer {
+            Answer::DenySaying(words) => Some(words.clone()),
+            Answer::Allow | Answer::Deny(_) => None,
+        };
         if let Some(reply) = pending.reply.take() {
             let _ = reply.send(answer);
         }
@@ -1607,12 +1793,15 @@ impl Host {
             thread_id: thread_id.clone(),
             outcome,
             by,
+            message,
         }));
         let Some(entry) = reg.threads.get_mut(&thread_id) else { return };
-        if outcome != ApprovalOutcome::Allowed
-            && let Some(seq) = pending.tool_seq
-        {
-            entry.turn.refused_tools.insert(seq);
+        if let Some(seq) = pending.tool_seq {
+            if outcome == ApprovalOutcome::Allowed {
+                self.tool_allowed(entry, &thread_id, seq, pending.by_rule);
+            } else {
+                entry.turn.refused_tools.insert(seq);
+            }
         }
         entry.info.pending = u32::try_from(remaining).unwrap_or(u32::MAX);
         if remaining == 0 && entry.info.state == State::Waiting {
@@ -1634,10 +1823,30 @@ impl Host {
         }
     }
 
-    pub fn approval_answer(&self, token: &str, decision: Decision, by: Origin) -> Result<(), RpcError> {
+    /// `approval.answer`. `message`: the user's words with a denial (§P8.3).
+    pub fn approval_answer(
+        self: &Arc<Self>,
+        token: &str,
+        decision: Decision,
+        by: Origin,
+        message: Option<String>,
+    ) -> Result<(), RpcError> {
         if !by.is_valid() {
             return Err(err(ErrorCode::BadRequest, "Bad origin."));
         }
+        let words = match message {
+            None => None,
+            Some(_) if decision != Decision::Deny => {
+                return Err(err(ErrorCode::BadRequest, "Words go only with a denial."));
+            }
+            Some(m) if m.is_empty() || m.len() > MAX_DENY_MESSAGE => {
+                return Err(err(ErrorCode::BadRequest, "The message must be 1 to 2000 bytes."));
+            }
+            Some(m) => match clean(&m).trim() {
+                "" => return Err(err(ErrorCode::BadRequest, "The message is empty.")),
+                words => Some(words.to_owned()),
+            },
+        };
         let mut reg = self.lock_reg();
         let Some(pending) = reg.approvals.get(token) else {
             return Err(if reg.answered.contains(token) {
@@ -1658,14 +1867,17 @@ impl Host {
             Decision::Allow => {
                 self.resolve(&mut reg, token, ApprovalOutcome::Allowed, Some(by), Answer::Allow, true)
             }
-            Decision::Deny => self.resolve(
-                &mut reg,
-                token,
-                ApprovalOutcome::Denied,
-                Some(by),
-                Answer::Deny(DenyReason::User),
-                true,
-            ),
+            Decision::Deny => match words {
+                Some(words) => self.deny_saying(&mut reg, token, by, words),
+                None => self.resolve(
+                    &mut reg,
+                    token,
+                    ApprovalOutcome::Denied,
+                    Some(by),
+                    Answer::Deny(DenyReason::User),
+                    true,
+                ),
+            },
             Decision::AllowThread => {
                 if let Some(entry) = reg.threads.get_mut(&thread_id) {
                     match kind {
@@ -1698,6 +1910,10 @@ impl Host {
                     .map(|(t, _)| t.clone())
                     .collect();
                 for t in covered {
+                    // The new rule answers these, not the user.
+                    if let Some(pending) = reg.approvals.get_mut(&t) {
+                        pending.by_rule = true;
+                    }
                     self.resolve(
                         &mut reg,
                         &t,
@@ -1710,6 +1926,78 @@ impl Host {
             }
         }
         Ok(())
+    }
+
+    /// A step was allowed: it runs from now, so its time is now (`end_ms −
+    /// ts_ms` is how long it ran, not how long it waited), and it says when
+    /// a rule allowed it. Clients get the update at once.
+    fn tool_allowed(&self, entry: &mut Entry, thread_id: &str, seq: u64, by_rule: bool) {
+        let Some(item) = entry.turn.tools.get_mut(&seq) else { return };
+        item.ts_ms = now_ms();
+        item.rev += 1;
+        if let Some(tool) = item.tool.as_mut() {
+            tool.by_rule |= by_rule;
+        }
+        let item = item.clone();
+        emit_item(self, thread_id, &item);
+    }
+
+    /// Denies a request with the user's words (§P8.3). Claude gets them with
+    /// the denial and goes on in the same turn; Codex declines, its turn is
+    /// stopped, and the words go as the next turn.
+    fn deny_saying(self: &Arc<Self>, reg: &mut Registry, token: &str, by: Origin, words: String) {
+        let Some(pending) = reg.approvals.get(token) else { return };
+        let thread_id = pending.approval.thread_id.clone();
+        let deny_of = pending.approval.item_id.clone();
+        let agent = reg.threads.get(&thread_id).map(|e| e.info.agent);
+        self.resolve(
+            reg,
+            token,
+            ApprovalOutcome::Denied,
+            Some(by.clone()),
+            Answer::DenySaying(words.clone()),
+            true,
+        );
+        let Some(entry) = reg.threads.get_mut(&thread_id).filter(|e| e.info.state.is_running()) else {
+            return;
+        };
+        match agent {
+            Some(AgentId::Claude) => {
+                let item = entry.user_item(&words, &by, deny_of);
+                emit_item(self, &thread_id, &item);
+            }
+            Some(AgentId::Codex) => {
+                entry.follow_up = Some(FollowUp { text: words, by, deny_of });
+                self.schedule_follow_up_check(&thread_id, entry.turn_no);
+            }
+            None => {}
+        }
+    }
+
+    /// The interrupt for a denial's words got no answer in time (§P8.3 step
+    /// 5): the words are dropped and the turn is stopped as Stop would.
+    fn schedule_follow_up_check(self: &Arc<Self>, thread_id: &str, turn_no: u32) {
+        let host = Arc::downgrade(self);
+        let thread = thread_id.to_owned();
+        tokio::spawn(async move {
+            tokio::time::sleep(agents::INTERRUPT_GRACE).await;
+            let Some(host) = host.upgrade() else { return };
+            let mut reg = host.lock_reg();
+            let Some(entry) = reg.threads.get_mut(&thread) else { return };
+            if entry.turn_no != turn_no || !entry.info.state.is_running() || entry.follow_up.take().is_none()
+            {
+                return;
+            }
+            let notice = entry.notice(REPLY_NOT_SENT);
+            emit_item(&host, &thread, &notice);
+            entry.turn.interrupt_requested = true;
+            match &entry.session {
+                Some(session) => {
+                    let _ = session.cmds.send(SessionCmd::Kill);
+                }
+                None => host.finish_turn(&mut reg, &thread, TurnEnd::interrupted()),
+            }
+        });
     }
 
     // ---- The bridge ----
@@ -1733,15 +2021,10 @@ impl Host {
             let spec = ApprovalSpec::from_tool(&tool, key.clone());
             self.request_approval(&mut reg, thread_id, generation, spec, tx, key);
         }
-        match rx.await {
-            Ok(Answer::Allow) => BridgeAskResult { behavior: BridgeBehavior::Allow, message: None },
-            Ok(Answer::Deny(reason)) => {
-                BridgeAskResult { behavior: BridgeBehavior::Deny, message: Some(reason.message().to_owned()) }
-            }
-            Err(_) => BridgeAskResult {
-                behavior: BridgeBehavior::Deny,
-                message: Some(DenyReason::Cancelled.message().to_owned()),
-            },
+        let answer = rx.await.unwrap_or(Answer::Deny(DenyReason::Cancelled));
+        match answer.deny_message() {
+            None => BridgeAskResult { behavior: BridgeBehavior::Allow, message: None },
+            Some(message) => BridgeAskResult { behavior: BridgeBehavior::Deny, message: Some(message) },
         }
     }
 
@@ -1845,13 +2128,18 @@ fn flush_stream(host: &Host, thread_id: &str, stream: &mut Stream) {
             stream.pending.clear();
             break;
         }
-        host.hub.broadcast(&Event::ThreadDelta(ThreadDeltaEvent {
+        let delta = Event::ThreadDelta(ThreadDeltaEvent {
             thread_id: thread_id.to_owned(),
             seq: stream.item.seq,
             item_id: stream.item.id.clone(),
             offset: u32::try_from(stream.sent).unwrap_or(u32::MAX),
             text: chunk.clone(),
-        }));
+        });
+        if stream.item.kind == ItemKind::Reasoning {
+            host.hub.broadcast_items2(&delta);
+        } else {
+            host.hub.broadcast(&delta);
+        }
         stream.sent += chunk.len();
         stream.pending.drain(..chunk.len());
     }
@@ -1890,6 +2178,7 @@ impl Host {
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut entry = Entry::new(info, 1, Some(PathBuf::from("/tmp")));
+        entry.advance_turn();
         entry.session = Some(Session { generation, cmds: tx, bridge_token: None });
         reg.threads.insert(id.clone(), entry);
         (id, generation, rx)
@@ -1919,6 +2208,22 @@ impl Host {
     pub(crate) fn test_state(&self, thread_id: &str) -> ThreadInfo {
         self.lock_reg().threads[thread_id].info.clone()
     }
+
+    /// As if the thread's agent reported `step`.
+    pub(crate) fn test_step(self: &Arc<Self>, thread_id: &str, step: Step) {
+        let mut reg = self.lock_reg();
+        self.apply_step(&mut reg, thread_id, step);
+    }
+
+    /// Every item of the thread, as a client with `items2` reads it.
+    pub(crate) async fn test_items(&self, thread_id: &str) -> Vec<Item> {
+        let read = ThreadReadParams {
+            thread_id: thread_id.to_owned(),
+            limit: Some(MAX_READ_LIMIT),
+            ..Default::default()
+        };
+        self.thread_read(read, true).await.unwrap().items
+    }
 }
 
 #[cfg(test)]
@@ -1944,6 +2249,8 @@ mod tests {
                 diff: None,
                 path: None,
                 description: None,
+                class: ToolClass::Command,
+                group: None,
             }),
         }
     }
@@ -1978,12 +2285,13 @@ mod tests {
         assert_eq!(host.test_state(&id).pending, 1);
         let token = pending[0].token.clone();
         assert!(is_valid_thread_id(&token));
-        host.approval_answer(&token, Decision::Allow, Origin::launcher()).unwrap();
+        host.approval_answer(&token, Decision::Allow, Origin::launcher(), None).unwrap();
         assert_eq!(rx.await.unwrap(), Answer::Allow);
         assert_eq!(host.test_state(&id).state, State::Working);
-        let again = host.approval_answer(&token, Decision::Deny, Origin::launcher()).unwrap_err();
+        let again = host.approval_answer(&token, Decision::Deny, Origin::launcher(), None).unwrap_err();
         assert_eq!(again.code, ErrorCode::AlreadyAnswered);
-        let unknown = host.approval_answer(&"0".repeat(32), Decision::Deny, Origin::launcher()).unwrap_err();
+        let unknown =
+            host.approval_answer(&"0".repeat(32), Decision::Deny, Origin::launcher(), None).unwrap_err();
         assert_eq!(unknown.code, ErrorCode::NotFound);
     }
 
@@ -2016,10 +2324,11 @@ mod tests {
         let same = host.test_ask(&id, generation, command("cargo test"));
         let other = host.test_ask(&id, generation, command("rm -rf target"));
         let token = host.test_pending(&id)[0].token.clone();
-        let refused =
-            host.approval_answer(&token, Decision::AllowThread, Origin::phone("p", "Pixel")).unwrap_err();
+        let refused = host
+            .approval_answer(&token, Decision::AllowThread, Origin::phone("p", "Pixel"), None)
+            .unwrap_err();
         assert_eq!(refused.code, ErrorCode::Denied);
-        host.approval_answer(&token, Decision::AllowThread, Origin::launcher()).unwrap();
+        host.approval_answer(&token, Decision::AllowThread, Origin::launcher(), None).unwrap();
         assert_eq!(first.await.unwrap(), Answer::Allow);
         assert_eq!(same.await.unwrap(), Answer::Allow, "a request already waiting that the rule covers");
         assert_eq!(host.test_pending(&id).len(), 1, "a different command still asks");
@@ -2027,12 +2336,12 @@ mod tests {
         assert_eq!(later.await.unwrap(), Answer::Allow);
         assert_eq!(host.test_pending(&id).len(), 1);
         let other_token = host.test_pending(&id)[0].token.clone();
-        host.approval_answer(&other_token, Decision::Deny, Origin::phone("p", "Pixel")).unwrap();
+        host.approval_answer(&other_token, Decision::Deny, Origin::phone("p", "Pixel"), None).unwrap();
         assert_eq!(other.await.unwrap(), Answer::Deny(DenyReason::User));
 
         let edit_a = host.test_ask(&id, generation, edit("a.txt"));
         let token = host.test_pending(&id)[0].token.clone();
-        host.approval_answer(&token, Decision::AllowThread, Origin::launcher()).unwrap();
+        host.approval_answer(&token, Decision::AllowThread, Origin::launcher(), None).unwrap();
         assert_eq!(edit_a.await.unwrap(), Answer::Allow);
         assert_eq!(host.test_ask(&id, generation, edit("b.txt")).await.unwrap(), Answer::Allow);
     }
@@ -2046,7 +2355,7 @@ mod tests {
         let token = host.test_pending(&id)[0].token.clone();
         assert_eq!(rx.await.unwrap(), Answer::Deny(DenyReason::Expired));
         assert_eq!(
-            host.approval_answer(&token, Decision::Allow, Origin::launcher()).unwrap_err().code,
+            host.approval_answer(&token, Decision::Allow, Origin::launcher(), None).unwrap_err().code,
             ErrorCode::AlreadyAnswered
         );
         assert_eq!(host.test_state(&id).state, State::Working);
@@ -2093,7 +2402,7 @@ mod tests {
         assert_eq!(notes(&mut rx), ["removed", "ask ls"], "only the thread not on screen asks");
         assert_eq!(host.test_state(&id).state, State::Waiting, "the list and badge still change");
         let token = host.test_pending(&id)[0].token.clone();
-        host.approval_answer(&token, Decision::Allow, Origin::launcher()).unwrap();
+        host.approval_answer(&token, Decision::Allow, Origin::launcher(), None).unwrap();
         assert_eq!(notes(&mut rx), ["removed"], "the next request isn't posted either");
         host.test_finish(&id, TurnEnd::done(Some("Checked.".into())));
         assert_eq!(notes(&mut rx), ["gone", "removed"], "the turn ended with one still waiting");
@@ -2104,7 +2413,7 @@ mod tests {
         let _ask = host.test_ask(&id, generation, command("rg --files"));
         assert_eq!(notes(&mut rx), ["ask rg --files"]);
         let token = host.test_pending(&id)[0].token.clone();
-        host.approval_answer(&token, Decision::Deny, Origin::launcher()).unwrap();
+        host.approval_answer(&token, Decision::Deny, Origin::launcher(), None).unwrap();
         host.test_finish(&id, TurnEnd::done(Some("Stopped there.".into())));
         assert_eq!(notes(&mut rx), ["gone", "done Stopped there."]);
     }
@@ -2120,6 +2429,228 @@ mod tests {
         host.hub.test_viewer(ClientKind::Launcher, Some(&id));
         host.test_finish(&id, TurnEnd::done(Some("Listed.".into())));
         assert_eq!(notes(&mut rx), ["gone", "removed"], "the launcher shows it");
+    }
+
+    fn deny_saying(host: &Arc<Host>, token: &str, words: &str) -> Result<(), RpcError> {
+        host.approval_answer(token, Decision::Deny, Origin::phone("p", "Pixel"), Some(words.to_owned()))
+    }
+
+    #[tokio::test]
+    async fn words_go_only_with_a_denial_and_within_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, _cmds) = host.test_thread(AgentId::Claude);
+        let _rx = host.test_ask(&id, generation, command("ls"));
+        let token = host.test_pending(&id)[0].token.clone();
+        let words = |w: &str| Some(w.to_owned());
+        for (decision, message) in [
+            (Decision::Allow, words("fine")),
+            (Decision::AllowThread, words("fine")),
+            (Decision::Deny, words("")),
+            (Decision::Deny, words(&"x".repeat(MAX_DENY_MESSAGE + 1))),
+            (Decision::Deny, words(" \u{1b}\u{202e}\n")),
+        ] {
+            let e = host.approval_answer(&token, decision, Origin::launcher(), message).unwrap_err();
+            assert_eq!(e.code, ErrorCode::BadRequest, "{decision:?}");
+        }
+        assert_eq!(host.test_pending(&id).len(), 1, "nothing was answered");
+        deny_saying(&host, &token, &"é".repeat(MAX_DENY_MESSAGE / 2)).unwrap();
+        assert!(host.test_pending(&id).is_empty());
+    }
+
+    #[tokio::test]
+    async fn claude_gets_the_words_with_the_denial_in_the_same_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut notes_rx) = crate::host::test_host_noting(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, _cmds) = host.test_thread(AgentId::Claude);
+        let rx = host.test_ask(&id, generation, command("rm -rf build"));
+        let asked = host.test_pending(&id)[0].clone();
+        assert_eq!(asked.item_id.as_deref(), Some("tool-rm -rf build"));
+        deny_saying(&host, &asked.token, " Use a temp dir\u{202e}. ").unwrap();
+        assert_eq!(rx.await.unwrap(), Answer::DenySaying("Use a temp dir.".into()));
+        assert_eq!(
+            Answer::DenySaying("Use a temp dir.".into()).deny_message().as_deref(),
+            Some("The user denied this and said: Use a temp dir.")
+        );
+        let items = host.test_items(&id).await;
+        let said = items.last().unwrap();
+        assert_eq!(said.kind, ItemKind::User);
+        assert_eq!(said.text.as_deref(), Some("Use a temp dir."));
+        assert_eq!(said.deny_of.as_deref(), Some("tool-rm -rf build"));
+        assert_eq!(said.origin, Some(Origin::phone("p", "Pixel")));
+        assert_eq!(said.turn, Some(1), "the turn goes on");
+        assert_eq!(items[0].turn, Some(1));
+        let state = host.test_state(&id);
+        assert_eq!(state.state, State::Working);
+        assert!(!notes(&mut notes_rx).iter().any(|n| n.starts_with("done") || n == "failed"));
+    }
+
+    #[tokio::test]
+    async fn codex_gets_the_words_as_the_next_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut notes_rx) = crate::host::test_host_noting(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, mut cmds) = host.test_thread(AgentId::Codex);
+        let rx = host.test_ask(&id, generation, command("rm -rf build"));
+        let other = host.test_ask(&id, generation, command("ls"));
+        let token = host.test_pending(&id)[0].token.clone();
+        host.test_step(&id, Step::AssistantOpen { key: "m1".into() });
+        deny_saying(&host, &token, "Use a temp dir").unwrap();
+        assert_eq!(rx.await.unwrap(), Answer::DenySaying("Use a temp dir".into()));
+        assert!(cmds.try_recv().is_err(), "the driver stops the turn itself");
+        notes(&mut notes_rx);
+        // The stopped turn ends: no end is reported, the words start the next.
+        host.test_step(&id, Step::TurnEnded(TurnEnd::interrupted()));
+        assert_eq!(
+            other.await.unwrap(),
+            Answer::Deny(DenyReason::Cancelled),
+            "the stop took the other request"
+        );
+        assert_eq!(cmds.try_recv().unwrap(), SessionCmd::Send("Use a temp dir".into()));
+        let state = host.test_state(&id);
+        assert_eq!((state.state, state.pending), (State::Working, 0));
+        assert!(!notes(&mut notes_rx).iter().any(|n| n.starts_with("done") || n == "removed"));
+        let items = host.test_items(&id).await;
+        let said = items.last().unwrap();
+        assert_eq!((said.kind, said.turn), (ItemKind::User, Some(2)));
+        assert_eq!(said.deny_of.as_deref(), Some("tool-rm -rf build"));
+        let open = items.iter().find(|i| i.id == "m1").unwrap();
+        assert!(open.end_ms.is_some() && open.turn == Some(1), "the stopped turn's text was closed");
+        let tool = items.iter().find(|i| i.id == "tool-rm -rf build").unwrap();
+        assert_eq!(tool.tool.as_ref().unwrap().status, ToolStatus::Denied);
+        assert!(tool.end_ms.is_some());
+        // The next turn ends as any turn does.
+        host.test_step(&id, Step::TurnEnded(TurnEnd::done(Some("Used a temp dir.".into()))));
+        assert_eq!(host.test_state(&id).state, State::Done);
+    }
+
+    #[tokio::test]
+    async fn stop_drops_words_waiting_for_the_next_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, mut cmds) = host.test_thread(AgentId::Codex);
+        let _rx = host.test_ask(&id, generation, command("rm -rf build"));
+        let token = host.test_pending(&id)[0].token.clone();
+        deny_saying(&host, &token, "Use a temp dir").unwrap();
+        host.thread_interrupt(&id).unwrap();
+        assert_eq!(cmds.try_recv().unwrap(), SessionCmd::Interrupt);
+        host.test_step(&id, Step::TurnEnded(TurnEnd::interrupted()));
+        assert!(cmds.try_recv().is_err(), "nothing more was sent");
+        assert_eq!(host.test_state(&id).state, State::Interrupted);
+        let items = host.test_items(&id).await;
+        let notices: Vec<_> =
+            items.iter().filter(|i| i.kind == ItemKind::Notice).map(|i| i.text.as_deref()).collect();
+        assert_eq!(notices, [Some(REPLY_NOT_SENT)]);
+        assert!(!items.iter().any(|i| i.kind == ItemKind::User && i.deny_of.is_some()));
+
+        // A turn that fails meanwhile drops them too.
+        let (id, generation, mut cmds) = host.test_thread(AgentId::Codex);
+        let _rx = host.test_ask(&id, generation, command("ls"));
+        let token = host.test_pending(&id)[0].token.clone();
+        deny_saying(&host, &token, "No").unwrap();
+        host.test_step(&id, Step::TurnEnded(TurnEnd::failed("usage_limit", "Usage limit reached")));
+        assert!(cmds.try_recv().is_err());
+        assert_eq!(host.test_state(&id).state, State::Failed);
+        let items = host.test_items(&id).await;
+        assert_eq!(items.last().unwrap().text.as_deref(), Some(REPLY_NOT_SENT));
+    }
+
+    #[tokio::test]
+    async fn a_step_allowed_by_a_rule_says_so_and_runs_from_its_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, _cmds) = host.test_thread(AgentId::Codex);
+        let ask = |text: &str, key: &str| ApprovalSpec { tool_key: Some(key.into()), ..command(text) };
+        let first = host.test_ask(&id, generation, ask("cargo test", "t1"));
+        let waiting = host.test_ask(&id, generation, ask("cargo test", "t2"));
+        let other = host.test_ask(&id, generation, ask("ls", "t3"));
+        let asked_at = host.test_items(&id).await[0].ts_ms;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let token = host.test_pending(&id)[0].token.clone();
+        host.approval_answer(&token, Decision::AllowThread, Origin::launcher(), None).unwrap();
+        assert_eq!(first.await.unwrap(), Answer::Allow);
+        assert_eq!(waiting.await.unwrap(), Answer::Allow);
+        let later = host.test_ask(&id, generation, ask("cargo test", "t4"));
+        assert_eq!(later.await.unwrap(), Answer::Allow);
+        let token = host.test_pending(&id)[0].token.clone();
+        host.approval_answer(&token, Decision::Allow, Origin::phone("p", "Pixel"), None).unwrap();
+        assert_eq!(other.await.unwrap(), Answer::Allow);
+        let items = host.test_items(&id).await;
+        let by_rule: Vec<(&str, bool, u32)> =
+            items.iter().map(|i| (i.id.as_str(), i.tool.as_ref().unwrap().by_rule, i.rev)).collect();
+        assert_eq!(by_rule, [("t1", false, 1), ("t2", true, 1), ("t3", false, 1), ("t4", true, 1)]);
+        assert!(items[0].ts_ms > asked_at, "the clock starts when it was allowed");
+        assert!(items.iter().all(|i| i.tool.as_ref().unwrap().status == ToolStatus::Running));
+    }
+
+    #[tokio::test]
+    async fn a_sub_agents_steps_name_the_step_they_ran_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, _generation, _cmds) = host.test_thread(AgentId::Claude);
+        let task = ToolSpec { class: ToolClass::Agent, ..command("x").tool.unwrap() };
+        host.test_step(&id, Step::ToolStart { key: "toolu_task".into(), tool: task.clone() });
+        let inner = ToolSpec { group: Some(format!("toolu_task{}", "x".repeat(200))), ..task };
+        host.test_step(&id, Step::ToolStart { key: "toolu_in".into(), tool: inner });
+        let items = host.test_items(&id).await;
+        assert_eq!(items[0].group, None);
+        let group = items[1].group.as_deref().unwrap();
+        assert!(group.starts_with("toolu_task") && group.len() == MAX_ITEM_ID, "cut as item ids are");
+    }
+
+    #[tokio::test]
+    async fn items_carry_their_turn_phase_and_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, _generation, _cmds) = host.test_thread(AgentId::Claude);
+        for step in [
+            Step::ReasoningOpen { key: "m:0".into() },
+            Step::ReasoningDelta { key: "m:0".into(), text: "Look\u{202e} first.".into() },
+            Step::ReasoningDone { key: "m:0".into(), text: String::new() },
+            Step::AssistantOpen { key: "m:1".into() },
+            Step::AssistantDelta { key: "m:1".into(), text: "I'll look.".into() },
+            Step::AssistantPhase { key: "m:1".into(), phase: Phase::Interim },
+            Step::AssistantDone { key: "m:1".into(), text: "I'll look.".into(), final_answer: false },
+            Step::ToolStart { key: "t1".into(), tool: command("ls").tool.unwrap() },
+            Step::ToolEnd { key: "t1".into(), status: ToolStatus::Ok, output: Some("a".into()) },
+            Step::AssistantDone { key: "m2:0".into(), text: "Done.".into(), final_answer: false },
+            Step::AssistantPhase { key: "m2:0".into(), phase: Phase::Final },
+            Step::AssistantPhase { key: "m2:0".into(), phase: Phase::Interim },
+            Step::ReasoningOpen { key: "m3:0".into() },
+        ] {
+            host.test_step(&id, step);
+        }
+        host.flush_deltas(&id);
+        let items = host.test_items(&id).await;
+        let summary: Vec<(ItemKind, u32, Option<Phase>, bool)> =
+            items.iter().map(|i| (i.kind, i.rev, i.phase, i.end_ms.is_some())).collect();
+        assert_eq!(
+            summary,
+            [
+                (ItemKind::Reasoning, 1, None, true),
+                (ItemKind::Assistant, 0, Some(Phase::Interim), true),
+                (ItemKind::Tool, 1, None, true),
+                (ItemKind::Assistant, 1, Some(Phase::Final), true),
+                (ItemKind::Reasoning, 0, None, false),
+            ],
+            "a phase known before the end needs no update; one after is one; a later one is ignored"
+        );
+        assert!(items.iter().all(|i| i.turn == Some(1)));
+        assert_eq!(items[0].text.as_deref(), Some("Look first."), "streamed thinking text, cleaned");
+        assert_eq!(items[2].tool.as_ref().unwrap().class, Some(ToolClass::Command));
+        host.test_step(&id, Step::TurnEnded(TurnEnd::done(None)));
+        let items = host.test_items(&id).await;
+        assert_eq!(
+            (items[4].rev, items[4].end_ms.is_some()),
+            (1, true),
+            "the turn's end closed the thinking"
+        );
+        assert_eq!(host.test_state(&id).summary.as_deref(), Some("Done."), "the answer is the summary");
+        // A client without `items2` reads thinking as steps.
+        let read = ThreadReadParams { thread_id: id.clone(), ..Default::default() };
+        let legacy = host.thread_read(read, false).await.unwrap().items;
+        assert_eq!(legacy[0].kind, ItemKind::Tool);
+        assert_eq!(legacy[0].tool.as_ref().unwrap().title, "Thinking");
+        assert_eq!(legacy.len(), items.len());
     }
 
     #[test]

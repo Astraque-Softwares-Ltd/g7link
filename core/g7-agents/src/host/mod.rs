@@ -239,6 +239,8 @@ struct Subscription {
 
 struct ClientSlot {
     kind: ClientKind,
+    /// It said `items2`: it gets thinking items as they are.
+    items2: bool,
     outbox: Arc<Outbox>,
     subscription: Option<Subscription>,
     viewing: Option<String>,
@@ -248,8 +250,16 @@ struct ClientSlot {
 }
 
 impl ClientSlot {
-    fn new(kind: ClientKind, outbox: Arc<Outbox>) -> Self {
-        Self { kind, outbox, subscription: None, viewing: None, viewing_session: None, watching: None }
+    fn new(kind: ClientKind, items2: bool, outbox: Arc<Outbox>) -> Self {
+        Self {
+            kind,
+            items2,
+            outbox,
+            subscription: None,
+            viewing: None,
+            viewing_session: None,
+            watching: None,
+        }
     }
 
     /// A launcher or G7 Link: a client that shows threads to a person.
@@ -278,8 +288,19 @@ impl Hub {
     /// Sends `event` to every subscribed client it concerns. Session events
     /// go only to clients that asked for them: `session.state` and
     /// `session.removed` to subscriptions with `sessions`, `session.item` to
-    /// the connections watching that session.
+    /// the connections watching that session. A thinking item reaches a
+    /// client without `items2` as [`Item::legacy`].
     pub fn broadcast(&self, event: &Event) {
+        self.send(event, false);
+    }
+
+    /// [`Hub::broadcast`] to the clients that said `items2` only: a delta of
+    /// thinking, which the others never see.
+    pub fn broadcast_items2(&self, event: &Event) {
+        self.send(event, true);
+    }
+
+    fn send(&self, event: &Event, items2_only: bool) {
         let line = event.to_line();
         if let Some(session) = event.session_id() {
             let item = matches!(event, Event::SessionItem(_));
@@ -295,6 +316,20 @@ impl Hub {
             }
             return;
         }
+        // The form a client without `items2` gets, when it differs.
+        let legacy = match event {
+            Event::ThreadItem(e) => match e.item.kind {
+                ItemKind::Unknown => return,
+                ItemKind::Reasoning => {
+                    let item = e.item.legacy();
+                    Some(
+                        Event::ThreadItem(ThreadItemEvent { thread_id: e.thread_id.clone(), item }).to_line(),
+                    )
+                }
+                _ => None,
+            },
+            _ => None,
+        };
         let delta = matches!(event, Event::ThreadDelta(_));
         let thread = event.thread_id();
         for slot in self.lock().values() {
@@ -307,6 +342,11 @@ impl Hub {
             {
                 continue;
             }
+            let line = match (&legacy, slot.items2) {
+                _ if items2_only && !slot.items2 => continue,
+                (Some(legacy), false) => legacy,
+                _ => &line,
+            };
             slot.outbox.push(line.clone(), delta);
         }
     }
@@ -333,7 +373,7 @@ impl Hub {
     pub(crate) fn test_viewer(&self, kind: ClientKind, thread_id: Option<&str>) -> u64 {
         let mut clients = self.lock();
         let id = clients.keys().max().map_or(1, |n| n + 1);
-        let mut slot = ClientSlot::new(kind, Arc::new(Outbox::new()));
+        let mut slot = ClientSlot::new(kind, false, Arc::new(Outbox::new()));
         slot.viewing = thread_id.map(str::to_owned);
         clients.insert(id, slot);
         id
@@ -593,8 +633,12 @@ fn to_value<T: serde::Serialize>(value: &T) -> Result<Value, RpcError> {
 /// What a connection is after `hello`.
 #[derive(Debug, Clone)]
 enum Role {
-    Client(ClientKind),
-    Bridge { thread_id: String, generation: u64 },
+    /// A client; whether it said `items2`.
+    Client(ClientKind, bool),
+    Bridge {
+        thread_id: String,
+        generation: u64,
+    },
 }
 
 impl Host {
@@ -662,7 +706,7 @@ impl Host {
             };
             // Connection state changes run in order; everything else may overlap.
             match (&current, request.method.as_str()) {
-                (Role::Client(_), method::SUBSCRIBE) => {
+                (Role::Client(..), method::SUBSCRIBE) => {
                     let result = parse::<SubscribeParams>(request.params).and_then(|p| {
                         if let ThreadSelection::Ids(ids) = &p.threads
                             && (ids.len() > MAX_SUBSCRIBE_THREADS || ids.iter().any(|id| !is_valid_id(id)))
@@ -681,18 +725,18 @@ impl Host {
                     });
                     Self::reply(&outbox, request.id, result);
                 }
-                (Role::Client(_), method::SESSION_WATCH) => {
+                (Role::Client(..), method::SESSION_WATCH) => {
                     let result = match parse::<SessionWatchParams>(request.params) {
                         Ok(p) => self.session_watch(client_id, p.session_id).await.map(|()| json!({})),
                         Err(e) => Err(e),
                     };
                     Self::reply(&outbox, request.id, result);
                 }
-                (Role::Client(_), method::UNSUBSCRIBE) => {
+                (Role::Client(..), method::UNSUBSCRIBE) => {
                     self.hub.set(client_id, |slot| slot.subscription = None);
                     Self::reply(&outbox, request.id, Ok(json!({})));
                 }
-                (Role::Client(_), method::UI_VIEWING) => {
+                (Role::Client(..), method::UI_VIEWING) => {
                     let result = parse::<UiViewingParams>(request.params).map(|p| {
                         self.hub.set(client_id, |slot| {
                             slot.viewing = p.thread_id;
@@ -737,6 +781,10 @@ impl Host {
                 return None;
             }
         };
+        if !params.caps_valid() {
+            Self::reply(outbox, request.id, Err(RpcError::new(ErrorCode::BadRequest, "too many caps")));
+            return None;
+        }
         if params.version != API_VERSION {
             Self::reply(
                 outbox,
@@ -765,17 +813,18 @@ impl Host {
                 );
                 return None;
             }
-            (None, kind) => Role::Client(kind),
+            (None, kind) => Role::Client(kind, params.has(cap::ITEMS2)),
         };
-        let kind = match &role {
-            Role::Client(kind) => *kind,
-            Role::Bridge { .. } => ClientKind::Bridge,
+        let (kind, items2) = match &role {
+            Role::Client(kind, items2) => (*kind, *items2),
+            Role::Bridge { .. } => (ClientKind::Bridge, false),
         };
-        self.hub.lock().insert(client_id, ClientSlot::new(kind, outbox.clone()));
+        self.hub.lock().insert(client_id, ClientSlot::new(kind, items2, outbox.clone()));
         let result = HelloResult {
             version: API_VERSION,
             host_version: env!("CARGO_PKG_VERSION").into(),
             pid: std::process::id(),
+            caps: cap::HOST.map(str::to_owned).to_vec(),
         };
         Self::reply(outbox, request.id, to_value(&result));
         Some(role)
@@ -845,7 +894,8 @@ impl Host {
             }
             method::THREAD_READ => {
                 let p: ThreadReadParams = parse(params)?;
-                to_value(&self.thread_read(p).await?)
+                let items2 = matches!(role, Role::Client(_, true));
+                to_value(&self.thread_read(p, items2).await?)
             }
             method::THREAD_DELETE => {
                 let p: ThreadIdParams = parse(params)?;
@@ -858,7 +908,7 @@ impl Host {
             }
             method::APPROVAL_ANSWER => {
                 let p: ApprovalAnswerParams = parse(params)?;
-                self.approval_answer(&p.token, p.decision, p.by)?;
+                self.approval_answer(&p.token, p.decision, p.by, p.message)?;
                 Ok(json!({}))
             }
             method::SESSIONS_LIST => {
@@ -893,7 +943,7 @@ impl Host {
         match action {
             NoteAction::Answer { token, allow } => {
                 let decision = if allow { Decision::Allow } else { Decision::Deny };
-                if let Err(e) = self.approval_answer(&token, decision, Origin::launcher()) {
+                if let Err(e) = self.approval_answer(&token, decision, Origin::launcher(), None) {
                     tracing::debug!("a notification answer was refused: {}", e.code);
                 }
             }
@@ -1012,6 +1062,45 @@ fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thinking_reaches_each_client_in_the_form_it_understands() {
+        let hub = Hub::default();
+        let mut boxes = Vec::new();
+        for (id, items2) in [(1, false), (2, true)] {
+            let outbox = Arc::new(Outbox::new());
+            let mut slot = ClientSlot::new(ClientKind::Test, items2, outbox.clone());
+            slot.subscription =
+                Some(Subscription { threads: ThreadSelection::All, deltas: true, sessions: false });
+            hub.lock().insert(id, slot);
+            boxes.push(outbox);
+        }
+        let item = Item { text: Some("Look.".into()), ..Item::new(3, "r", ItemKind::Reasoning, 1) };
+        hub.broadcast(&Event::ThreadItem(ThreadItemEvent { thread_id: "t".into(), item: item.clone() }));
+        hub.broadcast_items2(&Event::ThreadDelta(ThreadDeltaEvent {
+            thread_id: "t".into(),
+            seq: 3,
+            item_id: "r".into(),
+            offset: 0,
+            text: "Look.".into(),
+        }));
+        let unknown = Item::new(4, "x", ItemKind::Unknown, 1);
+        hub.broadcast(&Event::ThreadItem(ThreadItemEvent { thread_id: "t".into(), item: unknown }));
+        let events = |outbox: &Outbox| {
+            let mut seen = Vec::new();
+            while let Some(line) = outbox.pop() {
+                let ServerLine::Event(line) = ServerLine::parse(&line.text).unwrap() else { panic!() };
+                seen.push(Event::from_line(&line).unwrap());
+            }
+            seen
+        };
+        let old = events(&boxes[0]);
+        assert_eq!(old, [Event::ThreadItem(ThreadItemEvent { thread_id: "t".into(), item: item.legacy() })]);
+        let new = events(&boxes[1]);
+        assert_eq!(new.len(), 2);
+        assert_eq!(new[0], Event::ThreadItem(ThreadItemEvent { thread_id: "t".into(), item }));
+        assert!(matches!(&new[1], Event::ThreadDelta(d) if d.seq == 3));
+    }
 
     #[test]
     fn a_full_outbox_drops_deltas_first_then_closes() {

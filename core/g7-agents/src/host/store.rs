@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use crate::api::{self, ApprovalOutcome, Folder, HostSettings, Item, Origin, ThreadInfo};
+use crate::api::{self, ApprovalOutcome, Folder, HostSettings, Item, ItemKind, Origin, ThreadInfo};
 
 /// Store format version.
 const VERSION: u32 = 1;
@@ -81,6 +81,17 @@ const MAX_APPROVALS_READ: u64 = 1 << 20;
 pub struct StoredThread {
     pub info: ThreadInfo,
     pub next_seq: u64,
+    /// The largest `turn` among its items: 0 for a thread stored before turns.
+    pub max_turn: u32,
+    /// Its `user` items that start a turn (not denials).
+    pub users: u32,
+}
+
+/// What compaction needs of a stored line.
+#[derive(Deserialize)]
+struct SeqRev {
+    seq: u64,
+    rev: u32,
 }
 
 pub fn now_ms() -> u64 {
@@ -226,11 +237,14 @@ impl Store {
             if meta.thread.id != id {
                 continue;
             }
+            let items = self.read_items(id).unwrap_or_default();
             // The items may be ahead of the meta after a crash.
-            let max_seq =
-                self.read_items(id).ok().and_then(|items| items.keys().next_back().copied()).unwrap_or(0);
+            let max_seq = items.keys().next_back().copied().unwrap_or(0);
             let next_seq = meta.next_seq.max(max_seq + 1).max(1);
-            out.push(StoredThread { info: meta.thread, next_seq });
+            let max_turn = items.values().filter_map(|i| i.turn).max().unwrap_or(0);
+            let users = items.values().filter(|i| i.kind == ItemKind::User && i.deny_of.is_none()).count();
+            let users = u32::try_from(users).unwrap_or(u32::MAX);
+            out.push(StoredThread { info: meta.thread, next_seq, max_turn, users });
         }
         out
     }
@@ -264,13 +278,24 @@ impl Store {
     }
 
     /// Rewrites `items.jsonl` with the newest [`api::MAX_ITEMS_KEPT`] items
-    /// at their highest rev.
+    /// at their highest rev. Lines are kept as they are, so an item of a kind
+    /// or with fields this version doesn't know (a newer host wrote it) stays
+    /// whole.
     pub fn compact(&mut self, thread_id: &str) -> io::Result<()> {
-        let items = self.read_items(thread_id)?;
-        let keep: Vec<&Item> = items.values().rev().take(api::MAX_ITEMS_KEPT).collect();
+        let mut lines: BTreeMap<u64, (u32, Vec<u8>)> = BTreeMap::new();
+        self.each_line(thread_id, |buf| {
+            let Ok(key) = serde_json::from_slice::<SeqRev>(buf) else { return };
+            match lines.get(&key.seq) {
+                Some((rev, _)) if *rev > key.rev => {}
+                _ => {
+                    lines.insert(key.seq, (key.rev, buf.to_vec()));
+                }
+            }
+        })?;
+        let keep: Vec<&Vec<u8>> = lines.values().rev().take(api::MAX_ITEMS_KEPT).map(|(_, l)| l).collect();
         let mut bytes = Vec::new();
-        for item in keep.iter().rev() {
-            serde_json::to_writer(&mut bytes, item).map_err(io::Error::other)?;
+        for line in keep.iter().rev() {
+            bytes.extend_from_slice(line);
             bytes.push(b'\n');
         }
         atomic_write(&self.thread_dir(thread_id)?.join("items.jsonl"), &bytes)?;
@@ -278,37 +303,45 @@ impl Store {
         Ok(())
     }
 
-    /// The thread's items by `seq`, each at its highest rev.
-    pub fn read_items(&self, thread_id: &str) -> io::Result<BTreeMap<u64, Item>> {
+    /// Calls `f` with each line of the thread's `items.jsonl` within
+    /// `MAX_ITEM_LINE`; longer lines are skipped.
+    fn each_line(&self, thread_id: &str, mut f: impl FnMut(&[u8])) -> io::Result<()> {
         let path = self.thread_dir(thread_id)?.join("items.jsonl");
         let file = match File::open(&path) {
             Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e),
         };
         let mut reader = BufReader::new(file);
-        let mut items: BTreeMap<u64, Item> = BTreeMap::new();
         let mut buf = Vec::new();
         loop {
             buf.clear();
             match crate::lines::read_line_blocking(&mut reader, &mut buf, MAX_ITEM_LINE)? {
-                crate::lines::LineRead::Eof => break,
+                crate::lines::LineRead::Eof => return Ok(()),
                 crate::lines::LineRead::TooLong => {
                     // Skip the rest of the oversized line.
                     let mut rest = Vec::new();
                     reader.read_until(b'\n', &mut rest)?;
-                    continue;
                 }
-                crate::lines::LineRead::Line => {}
+                crate::lines::LineRead::Line => f(&buf),
             }
-            let Ok(item) = serde_json::from_slice::<Item>(&buf) else { continue };
+        }
+    }
+
+    /// The thread's items by `seq`, each at its highest rev. A line that
+    /// isn't an item is skipped; an item of a kind this version doesn't know
+    /// is read as [`ItemKind::Unknown`] (and never sent to a client).
+    pub fn read_items(&self, thread_id: &str) -> io::Result<BTreeMap<u64, Item>> {
+        let mut items: BTreeMap<u64, Item> = BTreeMap::new();
+        self.each_line(thread_id, |buf| {
+            let Ok(item) = serde_json::from_slice::<Item>(buf) else { return };
             match items.get(&item.seq) {
                 Some(old) if old.rev > item.rev => {}
                 _ => {
                     items.insert(item.seq, item);
                 }
             }
-        }
+        })?;
         Ok(items)
     }
 
@@ -519,17 +552,7 @@ mod tests {
     }
 
     fn item(seq: u64, rev: u32, text: &str) -> Item {
-        Item {
-            seq,
-            id: format!("i{seq}"),
-            kind: ItemKind::Assistant,
-            ts_ms: 1,
-            rev,
-            text: Some(text.into()),
-            truncated: false,
-            origin: None,
-            tool: None,
-        }
+        Item { rev, text: Some(text.into()), ..Item::new(seq, format!("i{seq}"), ItemKind::Assistant, 1) }
     }
 
     #[test]
@@ -640,6 +663,52 @@ mod tests {
             count_lines(&dir.path().join("threads").join(&id).join("items.jsonl")),
             api::MAX_ITEMS_KEPT
         );
+    }
+
+    #[test]
+    fn an_item_of_a_later_kind_is_read_and_kept_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_owned()).unwrap();
+        let id = "ba".repeat(16);
+        store.save_meta(&info(&id, State::Done), 2).unwrap();
+        store.append_item(&id, &item(1, 0, "a")).unwrap();
+        let path = dir.path().join("threads").join(&id).join("items.jsonl");
+        let later = r#"{"seq":2,"id":"x","kind":"hologram","ts_ms":1,"rev":0,"turn":4,"shape":[1]}"#;
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{later}").unwrap();
+        writeln!(file, "not json").unwrap();
+        store.append_item(&id, &Item { turn: Some(5), ..item(3, 0, "c") }).unwrap();
+        let items = store.read_items(&id).unwrap();
+        assert_eq!(items.len(), 3, "the read doesn't fail");
+        assert_eq!(items[&2].kind, ItemKind::Unknown);
+        let threads = store.load_threads();
+        assert_eq!((threads[0].next_seq, threads[0].max_turn, threads[0].users), (4, 5, 0));
+        store.compact(&id).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.lines().any(|l| l == later), "compaction keeps the line whole: {text}");
+        assert!(!text.contains("not json"));
+        assert_eq!(store.read_items(&id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn turns_are_restored_from_the_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().to_owned()).unwrap();
+        let id = "ac".repeat(16);
+        store.save_meta(&info(&id, State::Done), 1).unwrap();
+        let user = |seq: u64| Item {
+            text: Some("q".into()),
+            ..Item::new(seq, format!("user-{seq}"), ItemKind::User, 1)
+        };
+        store.append_item(&id, &user(1)).unwrap();
+        store.append_item(&id, &item(2, 0, "a")).unwrap();
+        store.append_item(&id, &user(3)).unwrap();
+        let threads = store.load_threads();
+        assert_eq!((threads[0].max_turn, threads[0].users), (0, 2), "stored before turns");
+        store.append_item(&id, &Item { turn: Some(3), ..user(4) }).unwrap();
+        store.append_item(&id, &Item { turn: Some(3), deny_of: Some("t".into()), ..user(5) }).unwrap();
+        let threads = store.load_threads();
+        assert_eq!((threads[0].max_turn, threads[0].users), (3, 3), "a denial doesn't start a turn");
     }
 
     #[test]

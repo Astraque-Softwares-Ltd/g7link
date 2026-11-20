@@ -84,6 +84,15 @@ pub const AGENT_IDLE_MS: u64 = 600_000;
 pub const PROBE_CACHE_MS: u64 = 60_000;
 /// An error message from the host.
 pub const MAX_RPC_ERROR_MESSAGE: usize = 200;
+/// The words a user denies a request with (`approval.answer` `message`).
+pub const MAX_DENY_MESSAGE: usize = 2000;
+/// Capabilities in one `hello`, and the length of each.
+pub const MAX_CAPS: usize = 16;
+pub const MAX_CAP: usize = 32;
+/// The file a tool step is about (`Tool.path`).
+pub const MAX_TOOL_PATH: usize = 512;
+/// What the host tells the agent when the user denied a request and said why.
+pub const DENY_SAID_PREFIX: &str = "The user denied this and said: ";
 
 // ---- Sessions started elsewhere (0.1.14) ----
 
@@ -154,6 +163,18 @@ pub mod method {
     pub const SESSIONS_SET_FOLLOWING: &str = "sessions.set_following";
     pub const SETTINGS_GET: &str = "settings.get";
     pub const THREAD_EXPORT: &str = "thread.export";
+}
+
+/// What a client says it understands (`HelloParams.caps`) and what a host
+/// offers (`HelloResult.caps`).
+pub mod cap {
+    /// The client understands item kind `reasoning` and the item fields
+    /// added with it; a client without it gets reasoning as a tool step.
+    pub const ITEMS2: &str = "items2";
+    /// The host takes `message` with a `deny` answer.
+    pub const DENY_MESSAGE: &str = "deny_message";
+    /// What this host offers.
+    pub const HOST: [&str; 2] = [ITEMS2, DENY_MESSAGE];
 }
 
 pub mod event {
@@ -336,6 +357,38 @@ pub enum ItemKind {
     Assistant,
     Tool,
     Notice,
+    /// The agent's thinking. Sent only to clients that said `items2`; see
+    /// [`Item::legacy`].
+    Reasoning,
+    /// A kind this version doesn't know (written by a newer host). Kept in
+    /// the store as it is, never sent to a client.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where an assistant message stands in its turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    /// Said on the way (before a tool call, commentary).
+    Interim,
+    /// The turn's answer.
+    Final,
+}
+
+/// What a tool step does, for its icon and its words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolClass {
+    Command,
+    Edit,
+    Read,
+    Search,
+    Web,
+    Mcp,
+    Agent,
+    Tasks,
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -675,6 +728,79 @@ pub struct Item {
     /// Kind `tool`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<Tool>,
+    /// The turn it belongs to, 1-based per thread; absent on items stored
+    /// before turns were numbered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    /// Kind `assistant`: whether this is the turn's answer, once known.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    /// When it finished (an answer done, a tool ended, thinking ended).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<u64>,
+    /// The id of the tool item this was produced inside (a sub-agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Kind `user`: the tool item this message was a denial of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_of: Option<String>,
+}
+
+impl Item {
+    /// An item with only the fields every kind has.
+    pub fn new(seq: u64, id: impl Into<String>, kind: ItemKind, ts_ms: u64) -> Self {
+        Self {
+            seq,
+            id: id.into(),
+            kind,
+            ts_ms,
+            rev: 0,
+            text: None,
+            truncated: false,
+            origin: None,
+            tool: None,
+            turn: None,
+            phase: None,
+            end_ms: None,
+            group: None,
+            deny_of: None,
+        }
+    }
+
+    /// The item as a client that didn't say `items2` gets it: thinking
+    /// becomes a tool step titled "Thinking" (running until it ends), with
+    /// no text, so that client's item numbers stay unbroken. Other kinds are
+    /// unchanged.
+    pub fn legacy(&self) -> Item {
+        if self.kind != ItemKind::Reasoning {
+            return self.clone();
+        }
+        let status = if self.end_ms.is_some() { ToolStatus::Ok } else { ToolStatus::Running };
+        Item {
+            tool: Some(Tool {
+                name: "reasoning".into(),
+                title: "Thinking".into(),
+                detail: None,
+                status,
+                output: None,
+                class: None,
+                path: None,
+                by_rule: false,
+            }),
+            rev: self.rev,
+            ..Item::new(self.seq, self.id.clone(), ItemKind::Tool, self.ts_ms)
+        }
+    }
+
+    /// The item as a client gets it: `None` for a kind no client may see,
+    /// the [`Item::legacy`] form for one without `items2`.
+    pub fn for_client(&self, items2: bool) -> Option<Item> {
+        match self.kind {
+            ItemKind::Unknown => None,
+            ItemKind::Reasoning if !items2 => Some(self.legacy()),
+            _ => Some(self.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -688,6 +814,17 @@ pub struct Tool {
     /// The tail of the output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// What kind of step it is; absent on steps stored before classes.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub class: Option<ToolClass>,
+    /// The file an edit or read is about: relative to the thread's folder
+    /// when inside it, else absolute and cut from the left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The host allowed it from the thread's "Always allow" rule, without
+    /// asking ("Allowed by your rule for this thread").
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub by_rule: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -711,6 +848,9 @@ pub struct Approval {
     pub can_allow_thread: bool,
     pub created_ms: u64,
     pub expires_ms: u64,
+    /// The tool item the request belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
 }
 
 // ---- Wire envelope ----
@@ -783,6 +923,31 @@ pub struct HelloParams {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_token: Option<String>,
+    /// What this client understands ([`cap`]): at most [`MAX_CAPS`], each at
+    /// most [`MAX_CAP`] bytes. Absent: none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caps: Vec<String>,
+}
+
+impl HelloParams {
+    /// A client of `kind` speaking this version, understanding `caps`.
+    pub fn new(client: ClientKind, caps: &[&str]) -> Self {
+        Self {
+            client,
+            version: API_VERSION,
+            bridge_token: None,
+            caps: caps.iter().map(|c| (*c).to_owned()).collect(),
+        }
+    }
+
+    /// Within the limits.
+    pub fn caps_valid(&self) -> bool {
+        self.caps.len() <= MAX_CAPS && self.caps.iter().all(|c| c.len() <= MAX_CAP)
+    }
+
+    pub fn has(&self, cap: &str) -> bool {
+        self.caps.iter().any(|c| c == cap)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -790,6 +955,15 @@ pub struct HelloResult {
     pub version: u32,
     pub host_version: String,
     pub pid: u32,
+    /// What this host offers ([`cap`]); empty from a host older than them.
+    #[serde(default)]
+    pub caps: Vec<String>,
+}
+
+impl HelloResult {
+    pub fn has(&self, cap: &str) -> bool {
+        self.caps.iter().any(|c| c == cap)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -896,6 +1070,11 @@ pub struct ApprovalAnswerParams {
     pub token: String,
     pub decision: Decision,
     pub by: By,
+    /// With `deny` only: what the user wants instead, 1 to
+    /// [`MAX_DENY_MESSAGE`] bytes. Only to a host that offers
+    /// [`cap::DENY_MESSAGE`]; an older one drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Which threads a subscription covers: `"all"` or a list of ids.
@@ -1089,6 +1268,9 @@ pub struct ApprovalResolvedEvent {
     pub outcome: ApprovalOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<By>,
+    /// What the user said when denying it, cleaned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1275,6 +1457,19 @@ pub fn tail(s: &str, max: usize) -> &str {
     &s[start..]
 }
 
+/// `s` cut to at most `max` bytes by dropping its start: `…` and its end,
+/// at a character boundary (a long path keeps its file name).
+pub fn cut_left(s: &str, max: usize) -> String {
+    const MORE: &str = "…";
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    if max < MORE.len() {
+        return String::new();
+    }
+    format!("{MORE}{}", tail(s, max - MORE.len()))
+}
+
 /// Whether `c` is stripped from agent-produced text before it leaves the
 /// host: C0 and C1 controls except `\n` and `\t`, and the bidi controls.
 pub fn is_stripped_char(c: char) -> bool {
@@ -1311,6 +1506,17 @@ pub fn collapse_whitespace(s: &str) -> String {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// An optional field whose value a later version may widen: a value this
+/// version doesn't know reads as absent instead of failing the whole record.
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 #[cfg(test)]
@@ -1390,6 +1596,7 @@ mod tests {
             can_allow_thread: true,
             created_ms: 5,
             expires_ms: 5 + APPROVAL_LIFETIME_MS,
+            item_id: Some("toolu_1".into()),
         }
     }
 
@@ -1412,25 +1619,50 @@ mod tests {
         });
         round_trip(&thread());
         round_trip(&Item {
-            seq: 1,
-            id: "toolu_1".into(),
-            kind: ItemKind::Tool,
-            ts_ms: 3,
             rev: 1,
-            text: None,
             truncated: true,
-            origin: None,
             tool: Some(Tool {
                 name: "Bash".into(),
                 title: "Run command".into(),
                 detail: Some("ls".into()),
                 status: ToolStatus::Denied,
                 output: Some("x".into()),
+                class: Some(ToolClass::Command),
+                path: None,
+                by_rule: true,
             }),
+            turn: Some(2),
+            end_ms: Some(4),
+            group: Some("toolu_0".into()),
+            ..Item::new(1, "toolu_1", ItemKind::Tool, 3)
         });
+        round_trip(&Item {
+            text: Some("Done.".into()),
+            phase: Some(Phase::Final),
+            turn: Some(1),
+            ..Item::new(2, "m:0", ItemKind::Assistant, 3)
+        });
+        round_trip(&Item {
+            text: Some("Use a temp dir".into()),
+            origin: Some(Origin::phone("p", "Pixel")),
+            deny_of: Some("toolu_1".into()),
+            ..Item::new(3, "user-3", ItemKind::User, 3)
+        });
+        round_trip(&Item { text: Some(String::new()), ..Item::new(4, "rs_1", ItemKind::Reasoning, 3) });
         round_trip(&approval());
-        round_trip(&HelloParams { client: ClientKind::Bridge, version: 1, bridge_token: Some("aa".into()) });
-        round_trip(&HelloResult { version: 1, host_version: "0.1.12".into(), pid: 7 });
+        round_trip(&HelloParams {
+            client: ClientKind::Bridge,
+            version: 1,
+            bridge_token: Some("aa".into()),
+            caps: vec![],
+        });
+        round_trip(&HelloParams::new(ClientKind::Link, &[cap::ITEMS2]));
+        round_trip(&HelloResult {
+            version: 1,
+            host_version: "0.1.12".into(),
+            pid: 7,
+            caps: cap::HOST.map(str::to_owned).to_vec(),
+        });
         round_trip(&ThreadStartParams {
             agent: AgentId::Claude,
             folder_id: "f0123456789ab".into(),
@@ -1454,6 +1686,13 @@ mod tests {
             token: "a".into(),
             decision: Decision::AllowThread,
             by: Origin::cli(),
+            message: None,
+        });
+        round_trip(&ApprovalAnswerParams {
+            token: "a".into(),
+            decision: Decision::Deny,
+            by: Origin::launcher(),
+            message: Some("Use a temp dir".into()),
         });
         round_trip(&SubscribeParams { threads: ThreadSelection::All, deltas: true, sessions: true });
         round_trip(&SubscribeParams {
@@ -1504,6 +1743,14 @@ mod tests {
                 thread_id: "b".into(),
                 outcome: ApprovalOutcome::Expired,
                 by: None,
+                message: None,
+            }),
+            Event::ApprovalResolved(ApprovalResolvedEvent {
+                token: "a".into(),
+                thread_id: "b".into(),
+                outcome: ApprovalOutcome::Denied,
+                by: Some(Origin::phone("p", "Pixel")),
+                message: Some("Use a temp dir".into()),
             }),
             Event::ThreadDone(ThreadDoneEvent {
                 thread_id: "a".into(),
@@ -1517,17 +1764,7 @@ mod tests {
             Event::SettingsChanged(HostSettings { follow_sessions: false }),
             Event::SessionItem(SessionItemEvent {
                 session_id: session().id,
-                item: Item {
-                    seq: 65,
-                    id: "u-1".into(),
-                    kind: ItemKind::User,
-                    ts_ms: 1,
-                    rev: 0,
-                    text: Some("hi".into()),
-                    truncated: false,
-                    origin: None,
-                    tool: None,
-                },
+                item: Item { text: Some("hi".into()), ..Item::new(65, "u-1", ItemKind::User, 1) },
             }),
         ] {
             round_trip(&ev);
@@ -1668,6 +1905,106 @@ mod tests {
         assert!(!is_valid_session_id(&format!("sc{}", "0A".repeat(16))));
         assert!(!is_valid_session_id(&format!("sc{}", "0a".repeat(15))));
         assert!(!is_valid_session_id("sc../../etc/passwd/000000000000000"));
+    }
+
+    #[test]
+    fn thinking_reaches_an_older_client_as_a_tool_step() {
+        let open = Item {
+            text: Some(String::new()),
+            turn: Some(3),
+            ..Item::new(7, "msg_1:0", ItemKind::Reasoning, 11)
+        };
+        let legacy = open.legacy();
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap(),
+            json!({"seq": 7, "id": "msg_1:0", "kind": "tool", "ts_ms": 11, "rev": 0,
+                   "tool": {"name": "reasoning", "title": "Thinking", "status": "running"}})
+        );
+        let done = Item {
+            rev: 1,
+            end_ms: Some(20),
+            text: Some("Look first.".into()),
+            truncated: true,
+            ..open.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(done.legacy()).unwrap(),
+            json!({"seq": 7, "id": "msg_1:0", "kind": "tool", "ts_ms": 11, "rev": 1,
+                   "tool": {"name": "reasoning", "title": "Thinking", "status": "ok"}})
+        );
+        assert_eq!(done.for_client(true), Some(done.clone()));
+        assert_eq!(done.for_client(false), Some(done.legacy()));
+        let user = Item { text: Some("hi".into()), ..Item::new(1, "user-1", ItemKind::User, 1) };
+        assert_eq!(user.legacy(), user);
+        assert_eq!(user.for_client(false), Some(user.clone()));
+        assert_eq!(Item::new(2, "x", ItemKind::Unknown, 1).for_client(true), None);
+    }
+
+    #[test]
+    fn later_words_read_as_absent_not_as_errors() {
+        let item: Item = serde_json::from_value(json!({
+            "seq": 1, "id": "a", "kind": "assistant", "ts_ms": 1, "rev": 0, "phase": "draft",
+        }))
+        .unwrap();
+        assert_eq!(item.phase, None);
+        let item: Item = serde_json::from_value(json!({
+            "seq": 1, "id": "a", "kind": "assistant", "ts_ms": 1, "rev": 0, "phase": "interim",
+        }))
+        .unwrap();
+        assert_eq!(item.phase, Some(Phase::Interim));
+        let tool: Tool = serde_json::from_value(json!({
+            "name": "x", "title": "x", "status": "ok", "class": "teleport", "path": "a.rs"
+        }))
+        .unwrap();
+        assert_eq!((tool.class, tool.path.as_deref()), (None, Some("a.rs")));
+        let item: Item = serde_json::from_value(json!({
+            "seq": 4, "id": "a", "kind": "hologram", "ts_ms": 1, "rev": 0, "text": "x"
+        }))
+        .unwrap();
+        assert_eq!(item.kind, ItemKind::Unknown);
+        // An item from before this release has none of the new fields.
+        let old: Item = serde_json::from_value(json!({
+            "seq": 1, "id": "user-1", "kind": "user", "ts_ms": 1, "rev": 0, "text": "hi"
+        }))
+        .unwrap();
+        assert_eq!((old.turn, old.phase, old.end_ms, old.group, old.deny_of), (None, None, None, None, None));
+        assert_eq!(serde_json::to_value(ToolClass::Mcp).unwrap(), json!("mcp"));
+        assert_eq!(serde_json::to_value(ItemKind::Reasoning).unwrap(), json!("reasoning"));
+    }
+
+    #[test]
+    fn hello_caps_are_optional_and_bounded() {
+        let old: HelloParams = serde_json::from_value(json!({"client": "launcher", "version": 1})).unwrap();
+        assert!(old.caps.is_empty() && old.caps_valid() && !old.has(cap::ITEMS2));
+        assert_eq!(
+            serde_json::to_value(HelloParams::new(ClientKind::Test, &[])).unwrap(),
+            json!({"client": "test", "version": 1}),
+            "no caps: the line an older host has always read"
+        );
+        let new = HelloParams::new(ClientKind::Link, &[cap::ITEMS2, "later"]);
+        assert!(new.has(cap::ITEMS2) && new.caps_valid());
+        let too_many = HelloParams { caps: vec!["x".into(); MAX_CAPS + 1], ..new.clone() };
+        assert!(!too_many.caps_valid());
+        let too_long = HelloParams { caps: vec!["x".repeat(MAX_CAP + 1)], ..new };
+        assert!(!too_long.caps_valid());
+        let old_host: HelloResult =
+            serde_json::from_value(json!({"version": 1, "host_version": "0.1.15", "pid": 3})).unwrap();
+        assert!(!old_host.has(cap::DENY_MESSAGE));
+        let answer: ApprovalAnswerParams =
+            serde_json::from_value(json!({"token": "a", "decision": "deny", "by": {"kind": "launcher"}}))
+                .unwrap();
+        assert_eq!(answer.message, None);
+    }
+
+    #[test]
+    fn long_paths_keep_their_end() {
+        assert_eq!(cut_left("src/a.rs", 512), "src/a.rs");
+        let long = format!("/{}/file.rs", "d".repeat(600));
+        let cut = cut_left(&long, MAX_TOOL_PATH);
+        assert!(cut.len() <= MAX_TOOL_PATH && cut.starts_with('…') && cut.ends_with("/file.rs"));
+        let wide = "é".repeat(400);
+        assert!(cut_left(&wide, 11).len() <= 11);
+        assert_eq!(cut_left("abcdef", 2), "");
     }
 
     #[test]

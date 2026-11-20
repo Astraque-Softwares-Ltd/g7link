@@ -489,7 +489,13 @@ pub mod calls {
     }
 
     pub fn approval_answer(token: String, decision: Decision, by: By) -> Call<()> {
-        Call::new(method::APPROVAL_ANSWER, &ApprovalAnswerParams { token, decision, by }, unit)
+        Call::new(method::APPROVAL_ANSWER, &ApprovalAnswerParams { token, decision, by, message: None }, unit)
+    }
+
+    /// `approval.answer` with every field: a denial with the user's words.
+    /// Send `message` only to a host that offers [`cap::DENY_MESSAGE`].
+    pub fn approval_answer_with(params: ApprovalAnswerParams) -> Call<()> {
+        Call::new(method::APPROVAL_ANSWER, &params, unit)
     }
 
     pub fn subscribe(threads: ThreadSelection, deltas: bool) -> Call<()> {
@@ -562,6 +568,7 @@ macro_rules! with_calls {
             thread_delete(thread_id: String) -> ();
             thread_terminal_command(thread_id: String) -> TerminalCommandResult;
             approval_answer(token: String, decision: Decision, by: By) -> ();
+            approval_answer_with(params: ApprovalAnswerParams) -> ();
             subscribe(threads: ThreadSelection, deltas: bool) -> ();
             subscribe_with(params: SubscribeParams) -> ();
             unsubscribe() -> ();
@@ -617,7 +624,11 @@ fn into_result(response: Response) -> Result<Value, ClientError> {
 }
 
 fn hello_params(client: ClientKind) -> HelloParams {
-    HelloParams { client, version: API_VERSION, bridge_token: None }
+    HelloParams::new(client, &[])
+}
+
+fn no_hello() -> HelloResult {
+    HelloResult { version: 0, host_version: String::new(), pid: 0, caps: Vec::new() }
 }
 
 // ---- Async client ----
@@ -662,7 +673,8 @@ impl Events {
 #[derive(Clone)]
 pub struct Client {
     shared: Arc<Shared>,
-    kind: ClientKind,
+    /// What this client said, for saying it again to a replacement host.
+    params: HelloParams,
     hello: HelloResult,
     /// The host process, when it could be told for sure.
     process: Option<HostProcess>,
@@ -695,12 +707,7 @@ impl Client {
         });
         let reader = tokio::spawn(read_loop(BufReader::new(read), Arc::downgrade(&shared), events_tx));
         *shared.reader.lock().unwrap_or_else(|e| e.into_inner()) = Some(reader);
-        let mut client = Client {
-            shared,
-            kind: hello.client,
-            hello: HelloResult { version: 0, host_version: String::new(), pid: 0 },
-            process: None,
-        };
+        let mut client = Client { shared, params: hello.clone(), hello: no_hello(), process: None };
         let value = client
             .call_value(
                 method::HELLO,
@@ -729,11 +736,20 @@ impl Client {
         launch: &Launch,
         kind: ClientKind,
     ) -> Result<(Client, Events), ClientError> {
-        let (client, events) = match Client::connect(&launch.socket, hello_params(kind)).await {
+        Client::connect_or_spawn_as(launch, hello_params(kind)).await
+    }
+
+    /// [`Client::connect_or_spawn_with`] saying `hello` (its capabilities,
+    /// say), to this host and to one that replaces it.
+    pub async fn connect_or_spawn_as(
+        launch: &Launch,
+        hello: HelloParams,
+    ) -> Result<(Client, Events), ClientError> {
+        let (client, events) = match Client::connect(&launch.socket, hello.clone()).await {
             Err(ClientError::Io(e)) if is_not_running(&e) => {
                 launch.spawn()?;
                 // A host just started is the one this build finds; it isn't replaced again.
-                return Client::connect_started(launch, kind).await;
+                return Client::connect_started(launch, &hello).await;
             }
             other => other?,
         };
@@ -748,11 +764,11 @@ impl Client {
     }
 
     /// Connects to a host that was just started, retrying for [`SPAWN_WAIT`].
-    async fn connect_started(launch: &Launch, kind: ClientKind) -> Result<(Client, Events), ClientError> {
+    async fn connect_started(launch: &Launch, hello: &HelloParams) -> Result<(Client, Events), ClientError> {
         let deadline = Instant::now() + SPAWN_WAIT;
         loop {
             tokio::time::sleep(SPAWN_RETRY).await;
-            match Client::connect(&launch.socket, hello_params(kind)).await {
+            match Client::connect(&launch.socket, hello.clone()).await {
                 Err(ClientError::Io(e)) if is_not_running(&e) && Instant::now() < deadline => continue,
                 Err(ClientError::Io(e)) if is_not_running(&e) => return Err(ClientError::NotStarted),
                 other => return other,
@@ -826,7 +842,7 @@ impl Client {
             return Err(ClientError::NotStopped);
         }
         launch.spawn()?;
-        Client::connect_started(launch, self.kind).await.map(Some)
+        Client::connect_started(launch, &self.params).await.map(Some)
     }
 
     /// Sends a request and waits for its result, at most `timeout` (none:
@@ -965,7 +981,7 @@ impl BlockingClient {
             partial: Vec::new(),
             next_id: 1,
             events: VecDeque::new(),
-            hello: HelloResult { version: 0, host_version: String::new(), pid: 0 },
+            hello: no_hello(),
             timeout: REQUEST_TIMEOUT,
         };
         let value = client.call_value(method::HELLO, serde_json::to_value(&hello).unwrap_or_default())?;
@@ -1157,9 +1173,7 @@ mod tests {
             write.write_all(reply.as_bytes()).await.unwrap();
         });
         let (client, mut events) =
-            Client::connect(&path, HelloParams { client: ClientKind::Test, version: 1, bridge_token: None })
-                .await
-                .unwrap();
+            Client::connect(&path, HelloParams::new(ClientKind::Test, &[])).await.unwrap();
         assert_eq!(client.host().pid, 3);
         let err = client.folders_remove("f000000000000".into()).await.unwrap_err();
         assert_eq!(err.code(), Some(ErrorCode::NotFound));
@@ -1192,11 +1206,7 @@ mod tests {
                 write.write_all(reply.as_bytes()).unwrap();
             }
         });
-        let mut client = BlockingClient::connect(
-            &path,
-            HelloParams { client: ClientKind::Test, version: 1, bridge_token: None },
-        )
-        .unwrap();
+        let mut client = BlockingClient::connect(&path, HelloParams::new(ClientKind::Test, &[])).unwrap();
         assert!(client.agents_list(false).unwrap().is_empty());
         server.join().unwrap();
         let first = client.next_event(Some(Duration::from_secs(1))).unwrap().unwrap();
@@ -1237,9 +1247,7 @@ mod tests {
             let _ = lines.next_line().await;
         });
         let (client, _events) =
-            Client::connect(&path, HelloParams { client: ClientKind::Test, version: 1, bridge_token: None })
-                .await
-                .unwrap();
+            Client::connect(&path, HelloParams::new(ClientKind::Test, &[])).await.unwrap();
         let export = client
             .thread_export(ThreadExportParams {
                 thread_id: Some("0123456789abcdef0123456789abcdef".into()),
@@ -1307,7 +1315,18 @@ mod tests {
         let exe = dir.join("g7-agents");
         std::fs::copy(&sh, &exe).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let mut child = Command::new(&exe).args(["-c", "read line"]).stdin(Stdio::piped()).spawn().unwrap();
+        // Another test forking while the copy was open for writing leaves
+        // that child holding it until it execs: "text file busy" for a moment.
+        let mut tries = 0;
+        let mut child = loop {
+            match Command::new(&exe).args(["-c", "read line"]).stdin(Stdio::piped()).spawn() {
+                Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                other => break other.unwrap(),
+            }
+        };
         let stdin = child.stdin.take().unwrap();
         (child, stdin)
     }

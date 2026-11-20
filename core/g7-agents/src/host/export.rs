@@ -128,6 +128,18 @@ fn status_note(status: ToolStatus) -> &'static str {
     }
 }
 
+/// `text` as a block quote under a bold heading.
+fn quoted(heading: &str, text: &str) -> String {
+    let mut out = format!("> **{heading}**\n>\n");
+    for line in text.lines() {
+        out.push_str(if line.is_empty() { ">" } else { "> " });
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push('\n');
+    out
+}
+
 /// One item as Markdown.
 fn item_markdown(
     item: &Item,
@@ -138,15 +150,14 @@ fn item_markdown(
     let text = item.text.as_deref().map(clean).unwrap_or_default();
     let mut out = String::new();
     match item.kind {
-        ItemKind::User => {
-            out.push_str(&format!("> **{}**\n>\n", clean(&who(item.origin.as_ref()))));
-            for line in text.lines() {
-                out.push_str(if line.is_empty() { ">" } else { "> " });
-                out.push_str(line);
-                out.push('\n');
+        ItemKind::User if item.deny_of.is_some() => out.push_str(&quoted("Denied, and said:", &text)),
+        ItemKind::User => out.push_str(&quoted(&clean(&who(item.origin.as_ref())), &text)),
+        ItemKind::Reasoning => {
+            if !text.trim().is_empty() {
+                out.push_str(&quoted("Thinking", text.trim_end()));
             }
-            out.push('\n');
         }
+        ItemKind::Unknown => {}
         ItemKind::Assistant => {
             if !text.trim().is_empty() {
                 out.push_str(&close_fences(text.trim_end()));
@@ -308,17 +319,7 @@ mod tests {
         tool: Option<Tool>,
         origin: Option<Origin>,
     ) -> Item {
-        Item {
-            seq,
-            id: format!("i{seq}"),
-            kind,
-            ts_ms: 1,
-            rev: 0,
-            text: text.map(str::to_owned),
-            truncated: false,
-            origin,
-            tool,
-        }
+        Item { text: text.map(str::to_owned), origin, tool, ..Item::new(seq, format!("i{seq}"), kind, 1) }
     }
 
     fn tool(name: &str, title: &str, detail: Option<&str>, status: ToolStatus, output: Option<&str>) -> Tool {
@@ -328,6 +329,9 @@ mod tests {
             detail: detail.map(str::to_owned),
             status,
             output: output.map(str::to_owned),
+            class: None,
+            path: None,
+            by_rule: false,
         }
     }
 
@@ -477,6 +481,40 @@ _Stopped: the agent host restarted._
         assert_eq!(
             file_name(header.agent, &header.title, header.started_ms),
             "claude-fix-the-login-test-2026-11-19.md"
+        );
+    }
+
+    #[test]
+    fn thinking_and_a_denial_with_words() {
+        let (header, _, _) = fixture();
+        let items = vec![
+            Item { text: Some(String::new()), end_ms: Some(2), ..Item::new(1, "r1", ItemKind::Reasoning, 1) },
+            Item {
+                text: Some("**Plan**\nRead first.\n".into()),
+                ..Item::new(2, "r2", ItemKind::Reasoning, 1)
+            },
+            item(
+                3,
+                ItemKind::Tool,
+                None,
+                Some(tool("Bash", "Run command", Some("rm -rf build"), ToolStatus::Denied, None)),
+                None,
+            ),
+            Item {
+                text: Some("Use a temp dir\u{202e} instead.".into()),
+                origin: Some(Origin::phone("p", "Pixel")),
+                deny_of: Some("i3".into()),
+                ..Item::new(4, "user-4", ItemKind::User, 1)
+            },
+            Item::new(5, "x", ItemKind::Unknown, 1),
+        ];
+        let (text, _) = render(&header, &items, &[], &who, &pc);
+        let body = text.split("---\n\n").nth(1).unwrap();
+        assert_eq!(
+            body,
+            "> **Thinking**\n>\n> **Plan**\n> Read first.\n\n\
+             **Ran** `rm -rf build` (denied)\n\n\
+             > **Denied, and said:**\n>\n> Use a temp dir instead.\n\n"
         );
     }
 

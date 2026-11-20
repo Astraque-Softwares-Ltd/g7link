@@ -135,12 +135,7 @@ impl TestHost {
     }
 
     async fn client(&self) -> (Client, Events) {
-        Client::connect(
-            &self.socket,
-            HelloParams { client: ClientKind::Test, version: 1, bridge_token: None },
-        )
-        .await
-        .unwrap()
+        Client::connect(&self.socket, HelloParams::new(ClientKind::Test, &[])).await.unwrap()
     }
 
     async fn sessions_client(&self) -> (Client, Events) {

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::api::{self, ApprovalKind, Mode, ToolStatus};
+use crate::api::{self, ApprovalKind, Mode, Phase, ToolClass, ToolStatus};
 use crate::host::agents::{
     AgentProcess, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path, plan_of,
     prefixed_lines,
@@ -99,6 +99,21 @@ pub fn write_mcp_config(
     file.sync_all()
 }
 
+/// What kind of step a Claude tool is.
+pub fn tool_class(name: &str) -> ToolClass {
+    match name {
+        "Bash" => ToolClass::Command,
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => ToolClass::Edit,
+        "Read" => ToolClass::Read,
+        "Grep" | "Glob" | "LS" => ToolClass::Search,
+        "WebSearch" | "WebFetch" => ToolClass::Web,
+        "Task" | "Agent" => ToolClass::Agent,
+        "TodoWrite" => ToolClass::Tasks,
+        _ if name.starts_with("mcp__") => ToolClass::Mcp,
+        _ => ToolClass::Other,
+    }
+}
+
 /// How a Claude tool call is shown and asked about.
 pub fn tool_spec(name: &str, input: &Value, cwd: &Path) -> ToolSpec {
     let s = |key: &str| input.get(key).and_then(Value::as_str);
@@ -115,6 +130,8 @@ pub fn tool_spec(name: &str, input: &Value, cwd: &Path) -> ToolSpec {
                 diff: None,
                 path: None,
                 description: s("description").map(str::to_owned),
+                class: ToolClass::Command,
+                group: None,
             }
         }
         "Write" => {
@@ -155,14 +172,9 @@ pub fn tool_spec(name: &str, input: &Value, cwd: &Path) -> ToolSpec {
             edit_spec(name, path, prefixed_lines(s("new_source").unwrap_or_default(), '+'))
         }
         _ => ToolSpec {
-            name: name.into(),
-            title: name.into(),
             detail: Some(input.to_string()),
-            kind: ApprovalKind::Other,
-            command: None,
-            diff: None,
-            path: None,
-            description: None,
+            path: if name == "Read" { path_of("file_path") } else { None },
+            ..ToolSpec::other(name, name, tool_class(name))
         },
     }
 }
@@ -192,6 +204,8 @@ fn edit_spec(name: &str, path: String, diff: String) -> ToolSpec {
         diff: Some(diff),
         path: Some(path),
         description: None,
+        class: ToolClass::Edit,
+        group: None,
     }
 }
 
@@ -237,6 +251,13 @@ pub struct ClaudeMapper {
     assistant_error: Option<String>,
     last_text: Option<String>,
     tool_names: HashMap<String, String>,
+    /// Thinking blocks opened by the stream and not yet finished: the key
+    /// and the text so far. Their signatures are never kept.
+    open_thinking: Vec<(String, String)>,
+    /// Text items of the current message, in order.
+    message_texts: Vec<String>,
+    /// Text items of the turn, in order, and whether each has its phase.
+    turn_texts: Vec<(String, bool)>,
 }
 
 impl ClaudeMapper {
@@ -253,6 +274,9 @@ impl ClaudeMapper {
             assistant_error: None,
             last_text: None,
             tool_names: HashMap::new(),
+            open_thinking: Vec::new(),
+            message_texts: Vec::new(),
+            turn_texts: Vec::new(),
         }
     }
 
@@ -277,13 +301,62 @@ impl ClaudeMapper {
         self.interrupt_sent = false;
         self.open_text.clear();
         self.tool_names.clear();
+        self.open_thinking.clear();
+        self.message_texts.clear();
+        self.turn_texts.clear();
         Step::TurnEnded(end)
+    }
+
+    /// Gives a text item its phase, unless it has one.
+    fn set_phase(&mut self, key: &str, phase: Phase, steps: &mut Vec<Step>) {
+        if let Some((_, phased)) = self.turn_texts.iter_mut().find(|(k, phased)| k == key && !*phased) {
+            *phased = true;
+            steps.push(Step::AssistantPhase { key: key.to_owned(), phase });
+        }
+    }
+
+    /// How a message ended places its texts: before a tool call they were
+    /// said on the way; at the end of the turn its last one is the answer.
+    fn message_ended(&mut self, stop_reason: Option<&str>, steps: &mut Vec<Step>) {
+        let keys = self.message_texts.clone();
+        let last = keys.len().saturating_sub(1);
+        for (i, key) in keys.iter().enumerate() {
+            match stop_reason {
+                Some("tool_use") => self.set_phase(key, Phase::Interim, steps),
+                Some("end_turn") if i == last => self.set_phase(key, Phase::Final, steps),
+                Some("end_turn") => self.set_phase(key, Phase::Interim, steps),
+                _ => {}
+            }
+        }
+    }
+
+    /// The turn succeeded: a text still without a phase is the answer when
+    /// it is the turn's last, else said on the way.
+    fn settle_phases(&mut self, steps: &mut Vec<Step>) {
+        let keys: Vec<String> = self.turn_texts.iter().map(|(k, _)| k.clone()).collect();
+        let last = keys.len().saturating_sub(1);
+        for (i, key) in keys.iter().enumerate() {
+            self.set_phase(key, if i == last { Phase::Final } else { Phase::Interim }, steps);
+        }
+    }
+
+    /// A text item is done.
+    fn text_done(&mut self, key: &str) {
+        self.message_texts.push(key.to_owned());
+        if !self.turn_texts.iter().any(|(k, _)| k == key) {
+            self.turn_texts.push((key.to_owned(), false));
+        }
     }
 
     pub fn feed(&mut self, line: &Value) -> Vec<Step> {
         let mut steps = Vec::new();
-        if line.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
-            return steps;
+        match line.get("parent_tool_use_id") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(parent)) if !parent.is_empty() => {
+                self.subagent(parent, line, &mut steps);
+                return steps;
+            }
+            Some(_) => return steps,
         }
         let kind = line.get("type").and_then(Value::as_str).unwrap_or_default();
         let subtype = line.get("subtype").and_then(Value::as_str).unwrap_or_default();
@@ -326,6 +399,9 @@ impl ClaudeMapper {
             ("user", _) => self.user(line, &mut steps),
             ("result", _) if self.turn_running => {
                 let end = self.result(line);
+                if end.outcome == crate::api::Outcome::Done {
+                    self.settle_phases(&mut steps);
+                }
                 steps.push(self.end_turn(end));
             }
             _ => {}
@@ -333,37 +409,71 @@ impl ClaudeMapper {
         steps
     }
 
+    /// The key of the block an event is about: `<message id>:<index>`.
+    fn block_key(&self, event: &Value) -> Option<String> {
+        let msg = self.current_message.as_ref()?;
+        let index = event.get("index").and_then(Value::as_u64)?;
+        Some(format!("{msg}:{index}"))
+    }
+
     fn stream_event(&mut self, event: &Value, steps: &mut Vec<Step>) {
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 self.current_message =
                     event.get("message").and_then(|m| m.get("id")).and_then(Value::as_str).map(str::to_owned);
+                self.message_texts.clear();
             }
             Some("content_block_start") => {
-                let is_text = event.get("content_block").and_then(|b| b.get("type")).and_then(Value::as_str)
-                    == Some("text");
-                if let (true, Some(msg), Some(index)) =
-                    (is_text, self.current_message.as_ref(), event.get("index").and_then(Value::as_u64))
-                {
-                    let key = format!("{msg}:{index}");
-                    self.open_text.push(key.clone());
-                    steps.push(Step::AssistantOpen { key });
+                let block = event.get("content_block").and_then(|b| b.get("type")).and_then(Value::as_str);
+                let Some(key) = self.block_key(event) else { return };
+                match block {
+                    Some("text") => {
+                        self.open_text.push(key.clone());
+                        steps.push(Step::AssistantOpen { key });
+                    }
+                    Some("thinking" | "redacted_thinking")
+                        if !self.open_thinking.iter().any(|(k, _)| *k == key) =>
+                    {
+                        self.open_thinking.push((key.clone(), String::new()));
+                        steps.push(Step::ReasoningOpen { key });
+                    }
+                    _ => {}
                 }
             }
             Some("content_block_delta") => {
                 let delta = event.get("delta");
-                if delta.and_then(|d| d.get("type")).and_then(Value::as_str) != Some("text_delta") {
-                    return;
-                }
-                let text = delta.and_then(|d| d.get("text")).and_then(Value::as_str).unwrap_or_default();
-                if let (Some(msg), Some(index)) =
-                    (self.current_message.as_ref(), event.get("index").and_then(Value::as_u64))
-                {
-                    let key = format!("{msg}:{index}");
-                    if self.open_text.contains(&key) && !text.is_empty() {
-                        steps.push(Step::AssistantDelta { key, text: text.to_owned() });
+                let field = |name: &str| delta.and_then(|d| d.get(name)).and_then(Value::as_str);
+                let Some(key) = self.block_key(event) else { return };
+                match field("type") {
+                    Some("text_delta") => {
+                        let text = field("text").unwrap_or_default();
+                        if self.open_text.contains(&key) && !text.is_empty() {
+                            steps.push(Step::AssistantDelta { key, text: text.to_owned() });
+                        }
                     }
+                    Some("thinking_delta") => {
+                        let text = field("thinking").unwrap_or_default();
+                        if let Some((_, so_far)) = self.open_thinking.iter_mut().find(|(k, _)| *k == key)
+                            && !text.is_empty()
+                        {
+                            so_far.push_str(text);
+                            steps.push(Step::ReasoningDelta { key, text: text.to_owned() });
+                        }
+                    }
+                    // `signature_delta` and anything else: not ours to keep.
+                    _ => {}
                 }
+            }
+            Some("content_block_stop") => {
+                let Some(key) = self.block_key(event) else { return };
+                if let Some(pos) = self.open_thinking.iter().position(|(k, _)| *k == key) {
+                    let (key, text) = self.open_thinking.remove(pos);
+                    steps.push(Step::ReasoningDone { key, text });
+                }
+            }
+            Some("message_delta") => {
+                let reason = event.get("delta").and_then(|d| d.get("stop_reason")).and_then(Value::as_str);
+                self.message_ended(reason, steps);
             }
             _ => {}
         }
@@ -393,7 +503,31 @@ impl ClaudeMapper {
                     if !text.trim().is_empty() {
                         self.last_text = Some(text.clone());
                     }
+                    self.text_done(&key);
                     steps.push(Step::AssistantDone { key, text, final_answer: false });
+                }
+                Some(kind @ ("thinking" | "redacted_thinking")) => {
+                    let given = if kind == "thinking" {
+                        block.get("thinking").and_then(Value::as_str).unwrap_or_default()
+                    } else {
+                        ""
+                    };
+                    let prefix = format!("{id}:");
+                    match self.open_thinking.iter().position(|(k, _)| k.starts_with(&prefix)) {
+                        Some(pos) => {
+                            let (key, so_far) = self.open_thinking.remove(pos);
+                            let text = if so_far.is_empty() { given.to_owned() } else { so_far };
+                            steps.push(Step::ReasoningDone { key, text });
+                        }
+                        // Streamed and already done: nothing more.
+                        None if self.current_message.as_deref() == Some(id.as_str()) => {}
+                        None => {
+                            self.synthesized += 1;
+                            let key = format!("{id}:r{}", self.synthesized);
+                            steps.push(Step::ReasoningOpen { key: key.clone() });
+                            steps.push(Step::ReasoningDone { key, text: given.to_owned() });
+                        }
+                    }
                 }
                 Some("tool_use") => {
                     let Some(key) = block.get("id").and_then(Value::as_str) else { continue };
@@ -410,6 +544,31 @@ impl ClaudeMapper {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// A line of a sub-agent's work (`parent_tool_use_id` names the tool
+    /// it runs inside): its tool calls and their results only, as steps of
+    /// that tool's group. Its text, thinking and plan stay its own.
+    fn subagent(&mut self, parent: &str, line: &Value, steps: &mut Vec<Step>) {
+        match line.get("type").and_then(Value::as_str) {
+            Some("assistant") => {
+                let blocks = line.pointer("/message/content").and_then(Value::as_array);
+                for block in blocks.into_iter().flatten() {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                        continue;
+                    }
+                    let Some(key) = block.get("id").and_then(Value::as_str) else { continue };
+                    let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let input = block.get("input").unwrap_or(&Value::Null);
+                    self.tool_names.insert(key.to_owned(), name.to_owned());
+                    let tool =
+                        ToolSpec { group: Some(parent.to_owned()), ..tool_spec(name, input, &self.cwd) };
+                    steps.push(Step::ToolStart { key: key.to_owned(), tool });
+                }
+            }
+            Some("user") => self.user(line, steps),
+            _ => {}
         }
     }
 
@@ -743,12 +902,257 @@ pub(crate) mod tests {
         assert_eq!(ends[0].outcome, Outcome::Interrupted);
     }
 
+    fn reasoning(steps: &[Step]) -> (Vec<&str>, Vec<&str>, Vec<(&str, &str)>) {
+        let mut opened = Vec::new();
+        let mut deltas = Vec::new();
+        let mut done = Vec::new();
+        for step in steps {
+            match step {
+                Step::ReasoningOpen { key } => opened.push(key.as_str()),
+                Step::ReasoningDelta { text, .. } => deltas.push(text.as_str()),
+                Step::ReasoningDone { key, text } => done.push((key.as_str(), text.as_str())),
+                _ => {}
+            }
+        }
+        (opened, deltas, done)
+    }
+
+    fn phases(steps: &[Step]) -> Vec<(&str, Phase)> {
+        steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::AssistantPhase { key, phase } => Some((key.as_str(), *phase)),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn subagent_lines_are_skipped() {
+    fn thinking_in_the_captures_has_no_text() {
+        for name in [
+            "claude-02-followup-approve.jsonl",
+            "claude-03-resume-deny.jsonl",
+            "claude-04-resume-interrupt.jsonl",
+        ] {
+            let steps = run(name);
+            let (opened, deltas, done) = reasoning(&steps);
+            assert_eq!(opened.len(), 1, "{name}");
+            assert!(deltas.is_empty(), "{name}: the CLI sent no thinking text");
+            assert_eq!(done.len(), 1, "{name}");
+            assert_eq!(done[0], (opened[0], ""), "{name}");
+            // It opens before what follows it in its message.
+            let open = steps.iter().position(|s| matches!(s, Step::ReasoningOpen { .. })).unwrap();
+            let end = steps.iter().position(|s| matches!(s, Step::ReasoningDone { .. })).unwrap();
+            assert!(open < end);
+        }
+        for name in ["claude-01-list.jsonl", "claude-05-interrupt-while-waiting.jsonl"] {
+            let steps = run(name);
+            let (opened, deltas, done) = reasoning(&steps);
+            assert!(opened.is_empty() && deltas.is_empty() && done.is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn no_step_carries_a_signature() {
+        for name in [
+            "claude-02-followup-approve.jsonl",
+            "claude-03-resume-deny.jsonl",
+            "claude-04-resume-interrupt.jsonl",
+        ] {
+            let mut signatures = Vec::new();
+            for line in fixture_lines(name) {
+                let event = line.get("event");
+                for sig in [
+                    event.and_then(|e| e.pointer("/delta/signature")),
+                    event.and_then(|e| e.pointer("/content_block/signature")),
+                ]
+                .into_iter()
+                .flatten()
+                .chain(
+                    line.pointer("/message/content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|b| b.get("signature")),
+                ) {
+                    if let Some(sig) = sig.as_str().filter(|s| !s.is_empty()) {
+                        signatures.push(sig.to_owned());
+                    }
+                }
+            }
+            assert!(!signatures.is_empty(), "{name} has signatures to look for");
+            let steps = format!("{:?}", run(name));
+            for sig in &signatures {
+                assert!(!steps.contains(sig.as_str()), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_turns_last_text_is_its_answer() {
+        let steps = run("claude-02-followup-approve.jsonl");
+        let texts: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| if let Step::AssistantDone { key, .. } = s { Some(key.as_str()) } else { None })
+            .collect();
+        assert_eq!(texts.len(), 2);
+        assert_eq!(phases(&steps), [(texts[0], Phase::Final), (texts[1], Phase::Final)]);
+        // Each phase comes after its text and before its turn ends.
+        let first_phase = steps.iter().position(|s| matches!(s, Step::AssistantPhase { .. })).unwrap();
+        let first_end = steps.iter().position(|s| matches!(s, Step::TurnEnded(_))).unwrap();
+        let first_done = steps.iter().position(|s| matches!(s, Step::AssistantDone { .. })).unwrap();
+        assert!(first_done < first_phase && first_phase < first_end);
+        // An interrupted turn leaves its texts without a phase.
+        assert!(phases(&run("claude-05-interrupt-while-waiting.jsonl")).is_empty());
+    }
+
+    fn stream(event: Value) -> Value {
+        json!({"type": "stream_event", "event": event, "parent_tool_use_id": null, "session_id": "s"})
+    }
+
+    #[test]
+    fn thinking_with_text_and_texts_said_on_the_way() {
         let mut mapper = ClaudeMapper::new(PathBuf::from("/w"), None);
         mapper.turn_started();
-        let line = json!({"type":"assistant","parent_tool_use_id":"toolu_x","message":{"id":"m","content":[{"type":"text","text":"inner"}]}});
+        let mut steps = Vec::new();
+        let lines = [
+            stream(json!({"type": "message_start", "message": {"id": "msg_a"}})),
+            stream(
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+            ),
+            stream(
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "**Look first**\n"}}),
+            ),
+            stream(
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Then edit."}}),
+            ),
+            stream(
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "c2lnbmF0dXJl"}}),
+            ),
+            json!({"type": "assistant", "message": {"id": "msg_a", "content": [
+                {"type": "thinking", "thinking": "**Look first**\nThen edit.", "signature": "c2lnbmF0dXJl"}]}}),
+            stream(json!({"type": "content_block_stop", "index": 0})),
+            stream(
+                json!({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+            ),
+            stream(
+                json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "I'll look."}}),
+            ),
+            json!({"type": "assistant", "message": {"id": "msg_a", "content": [{"type": "text", "text": "I'll look."}]}}),
+            stream(json!({"type": "content_block_stop", "index": 1})),
+            stream(
+                json!({"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "id": "toolu_r", "name": "Read", "input": {}}}),
+            ),
+            json!({"type": "assistant", "message": {"id": "msg_a", "content": [
+                {"type": "tool_use", "id": "toolu_r", "name": "Read", "input": {"file_path": "/w/src/a.rs"}}]}}),
+            stream(json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}})),
+            stream(json!({"type": "message_start", "message": {"id": "msg_b"}})),
+            stream(
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "redacted_thinking", "data": "x"}}),
+            ),
+            json!({"type": "assistant", "message": {"id": "msg_b", "content": [{"type": "redacted_thinking", "data": "x"}]}}),
+            stream(json!({"type": "content_block_stop", "index": 0})),
+            json!({"type": "assistant", "message": {"id": "msg_b", "content": [{"type": "text", "text": "Done."}]}}),
+            json!({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 5}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Done."}),
+        ];
+        for line in &lines {
+            steps.extend(mapper.feed(line));
+        }
+        let (opened, deltas, done) = reasoning(&steps);
+        assert_eq!(opened, ["msg_a:0", "msg_b:0"]);
+        assert_eq!(deltas, ["**Look first**\n", "Then edit."]);
+        assert_eq!(done, [("msg_a:0", "**Look first**\nThen edit."), ("msg_b:0", "")]);
+        assert!(!format!("{steps:?}").contains("c2lnbmF0dXJl"));
+        // The text before the tool was said on the way; the result made the
+        // last one, which had no stop reason, the answer.
+        assert_eq!(phases(&steps), [("msg_a:1", Phase::Interim), ("msg_b:t1", Phase::Final)]);
+        let read = steps
+            .iter()
+            .find_map(|s| if let Step::ToolStart { tool, .. } = s { Some(tool) } else { None })
+            .unwrap();
+        assert_eq!((read.class, read.path.as_deref()), (ToolClass::Read, Some("src/a.rs")));
+        assert!(matches!(steps.last(), Some(Step::TurnEnded(_))));
+    }
+
+    #[test]
+    fn thinking_without_the_stream_still_shows() {
+        let mut mapper = ClaudeMapper::new(PathBuf::from("/w"), None);
+        mapper.turn_started();
+        let steps = mapper.feed(&json!({"type": "assistant", "message": {"id": "msg_c", "content": [
+            {"type": "thinking", "thinking": "Short.", "signature": "zz"}, {"type": "text", "text": "Hi."}]}}));
+        let (opened, _, done) = reasoning(&steps);
+        assert_eq!(opened, ["msg_c:r1"]);
+        assert_eq!(done, [("msg_c:r1", "Short.")]);
+        // A failed turn leaves its text without a phase.
+        let steps = mapper.feed(&json!({"type": "result", "subtype": "error_max_turns", "is_error": true}));
+        assert!(phases(&steps).is_empty());
+    }
+
+    #[test]
+    fn tool_classes() {
+        for (name, class) in [
+            ("Bash", ToolClass::Command),
+            ("Edit", ToolClass::Edit),
+            ("MultiEdit", ToolClass::Edit),
+            ("Write", ToolClass::Edit),
+            ("NotebookEdit", ToolClass::Edit),
+            ("Read", ToolClass::Read),
+            ("Grep", ToolClass::Search),
+            ("Glob", ToolClass::Search),
+            ("LS", ToolClass::Search),
+            ("WebSearch", ToolClass::Web),
+            ("WebFetch", ToolClass::Web),
+            ("Task", ToolClass::Agent),
+            ("Agent", ToolClass::Agent),
+            ("TodoWrite", ToolClass::Tasks),
+            ("mcp__github__search", ToolClass::Mcp),
+            ("Skill", ToolClass::Other),
+        ] {
+            assert_eq!(tool_spec(name, &json!({}), Path::new("/w")).class, class, "{name}");
+        }
+        let write = tool_spec("Write", &json!({"file_path": "/w/a/b.txt", "content": "x"}), Path::new("/w"));
+        assert_eq!(write.path.as_deref(), Some("a/b.txt"));
+        let read = tool_spec("Read", &json!({"file_path": "/etc/hosts"}), Path::new("/w"));
+        assert_eq!((read.path.as_deref(), read.kind), (Some("/etc/hosts"), ApprovalKind::Other));
+    }
+
+    #[test]
+    fn a_subagents_text_is_skipped_and_its_tools_are_grouped() {
+        let mut mapper = ClaudeMapper::new(PathBuf::from("/w"), None);
+        mapper.turn_started();
+        let line = json!({"type":"assistant","parent_tool_use_id":"toolu_x","message":{"id":"m","content":[
+            {"type":"text","text":"inner"},{"type":"thinking","thinking":"inner"}]}});
         assert!(mapper.feed(&line).is_empty());
+        let todo = json!({"type":"assistant","parent_tool_use_id":"toolu_task","message":{"id":"m2","content":[
+            {"type":"tool_use","id":"toolu_todo","name":"TodoWrite","input":{"todos":[{"content":"x","status":"pending"}]}},
+            {"type":"tool_use","id":"toolu_in","name":"Read","input":{"file_path":"/w/a.rs"}}]}});
+        let steps = mapper.feed(&todo);
+        assert!(!steps.iter().any(|s| matches!(s, Step::Plan(_))), "a sub-agent's plan isn't the thread's");
+        let starts: Vec<(&str, Option<&str>, ToolClass)> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::ToolStart { key, tool } => Some((key.as_str(), tool.group.as_deref(), tool.class)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            [
+                ("toolu_todo", Some("toolu_task"), ToolClass::Tasks),
+                ("toolu_in", Some("toolu_task"), ToolClass::Read)
+            ]
+        );
+        let result = json!({"type":"user","parent_tool_use_id":"toolu_task","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"toolu_in","content":"fn a() {}"}]}});
+        assert_eq!(tool_ends(&mapper.feed(&result)), [("toolu_in", ToolStatus::Ok)]);
+        assert!(
+            mapper
+                .feed(&json!({"type":"result","parent_tool_use_id":"toolu_task","is_error":false}))
+                .is_empty()
+        );
+        assert!(mapper.feed(&json!({"type":"assistant","parent_tool_use_id":7,"message":{}})).is_empty());
+        assert!(mapper.turn_running(), "only the top-level result ends the turn");
     }
 
     #[test]

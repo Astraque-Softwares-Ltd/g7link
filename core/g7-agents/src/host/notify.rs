@@ -400,6 +400,7 @@ mod tests {
             can_allow_thread: true,
             created_ms: 0,
             expires_ms: 0,
+            item_id: None,
         }
     }
 

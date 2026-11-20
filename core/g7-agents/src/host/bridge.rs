@@ -153,11 +153,8 @@ pub async fn run() -> std::io::Result<()> {
     let token = std::env::var(TOKEN_ENV).ok();
     let client = match (socket, token) {
         (Some(socket), Some(token)) => {
-            let hello = HelloParams {
-                client: ClientKind::Bridge,
-                version: api::API_VERSION,
-                bridge_token: Some(token),
-            };
+            let hello =
+                HelloParams { bridge_token: Some(token), ..HelloParams::new(ClientKind::Bridge, &[]) };
             match Client::connect(&socket, hello).await {
                 Ok((client, _events)) => Some(client),
                 Err(e) => {

@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::api::{ApprovalKind, Mode, ToolStatus};
+use crate::api::{ApprovalKind, Mode, Phase, ToolClass, ToolStatus};
 use crate::host::agents::{
-    Answer, ApprovalSpec, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path,
+    Answer, ApprovalSpec, Driver, Output, SessionCmd, Step, ToolSpec, TurnEnd, code, display_path, file_diff,
     parse_codex_account, plan_of,
 };
 use crate::host::claude::usage_limit_message;
@@ -33,6 +33,36 @@ pub fn approval_policy(mode: Mode) -> &'static str {
 }
 
 pub const SANDBOX: &str = "workspace-write";
+
+/// `turn/start` asks for reasoning summaries (`ReasoningSummary`), so the
+/// thinking line can show what the model thinks about when Codex sends it.
+pub const REASONING_SUMMARY: &str = "auto";
+
+/// Denying with the user's words: after the decline, the turn is
+/// interrupted so the words go as the next turn at once (§P8.3). Off: the
+/// turn finishes by itself first.
+pub const INTERRUPT_FOR_REPLY: bool = true;
+
+/// Codex's `phase` of an agent message.
+fn phase_of(item: &Value) -> Option<Phase> {
+    match s(item, "phase") {
+        Some("commentary") => Some(Phase::Interim),
+        Some("final_answer") => Some(Phase::Final),
+        _ => None,
+    }
+}
+
+/// A reasoning item's summary as text: its entries, each a string or an
+/// object with a string `text`, a blank line between them.
+fn summary_text(item: &Value) -> String {
+    let Some(entries) = item.get("summary").and_then(Value::as_array) else { return String::new() };
+    entries
+        .iter()
+        .filter_map(|e| e.as_str().or_else(|| s(e, "text")))
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
 
 fn s<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
@@ -63,34 +93,40 @@ fn command_tool(item: &Value) -> ToolSpec {
         diff: None,
         path: None,
         description: None,
+        class: ToolClass::Command,
+        group: None,
     }
 }
 
-fn file_tool(item: &Value, cwd: &Path) -> ToolSpec {
+/// A `fileChange` item as a step; whether it changes one file.
+fn file_tool(item: &Value, cwd: &Path) -> (ToolSpec, bool) {
     let changes = item.get("changes").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut detail = String::new();
     let mut paths = Vec::new();
     for change in &changes {
         let path = display_path(s(change, "path").unwrap_or_default(), cwd);
         let kind = change.get("kind").and_then(|k| s(k, "type")).unwrap_or("update");
+        let moved = change.get("kind").and_then(|k| s(k, "move_path")).map(|m| display_path(m, cwd));
         if !detail.is_empty() {
             detail.push('\n');
         }
-        detail.push_str(&format!("{path} ({kind})\n"));
-        detail.push_str(s(change, "diff").unwrap_or_default());
+        detail.push_str(&file_diff(&path, kind, moved.as_deref(), s(change, "diff").unwrap_or_default()));
         paths.push(path);
     }
-    let path = if paths.len() == 1 { paths.pop() } else { None };
-    ToolSpec {
+    let single = paths.len() == 1;
+    let spec = ToolSpec {
         name: "apply_patch".into(),
         title: "Edit files".into(),
         detail: Some(detail.clone()),
         kind: ApprovalKind::Edit,
         command: None,
         diff: Some(detail),
-        path,
+        path: paths.into_iter().next(),
         description: None,
-    }
+        class: ToolClass::Edit,
+        group: None,
+    };
+    (spec, single)
 }
 
 /// A request Codex sent us.
@@ -104,13 +140,18 @@ pub enum ServerRequest {
 #[derive(Debug)]
 pub struct CodexMapper {
     cwd: PathBuf,
-    /// File changes by item id: their approvals carry no diff.
-    file_changes: HashMap<String, ToolSpec>,
+    /// File changes by item id (their approvals carry no diff), and whether
+    /// each changes one file.
+    file_changes: HashMap<String, (ToolSpec, bool)>,
     last_final: Option<String>,
     last_text: Option<String>,
     turn_id: Option<String>,
     turn_running: bool,
     rate_limits: Option<Value>,
+    /// Reasoning items started and not completed, and whether each has text.
+    reasoning: HashMap<String, bool>,
+    /// Agent messages of the turn, in order, and whether each has its phase.
+    turn_texts: Vec<(String, bool)>,
 }
 
 impl CodexMapper {
@@ -123,6 +164,29 @@ impl CodexMapper {
             turn_id: None,
             turn_running: false,
             rate_limits: None,
+            reasoning: HashMap::new(),
+            turn_texts: Vec::new(),
+        }
+    }
+
+    /// A message's phase, when Codex gave one; records that it has it.
+    fn note_text(&mut self, id: &str, phase: Option<Phase>) {
+        match self.turn_texts.iter_mut().find(|(k, _)| k == id) {
+            Some((_, phased)) => *phased |= phase.is_some(),
+            None => self.turn_texts.push((id.to_owned(), phase.is_some())),
+        }
+    }
+
+    /// The turn completed: a message still without a phase is the answer
+    /// when it is the turn's last, else said on the way.
+    fn settle_phases(&mut self, steps: &mut Vec<Step>) {
+        let last = self.turn_texts.len().saturating_sub(1);
+        for (i, (key, phased)) in self.turn_texts.iter_mut().enumerate() {
+            if !*phased {
+                *phased = true;
+                let phase = if i == last { Phase::Final } else { Phase::Interim };
+                steps.push(Step::AssistantPhase { key: key.clone(), phase });
+            }
         }
     }
 
@@ -150,6 +214,8 @@ impl CodexMapper {
         self.turn_running = false;
         self.turn_id = None;
         self.file_changes.clear();
+        self.reasoning.clear();
+        self.turn_texts.clear();
         Step::TurnEnded(end)
     }
 
@@ -168,11 +234,22 @@ impl CodexMapper {
                 let item = params.get("item").unwrap_or(&Value::Null);
                 let Some(id) = s(item, "id").map(str::to_owned) else { return steps };
                 match s(item, "type").unwrap_or_default() {
-                    "agentMessage" => steps.push(Step::AssistantOpen { key: id }),
+                    "agentMessage" => {
+                        let phase = phase_of(item);
+                        self.note_text(&id, phase);
+                        steps.push(Step::AssistantOpen { key: id.clone() });
+                        if let Some(phase) = phase {
+                            steps.push(Step::AssistantPhase { key: id, phase });
+                        }
+                    }
+                    "reasoning" => {
+                        self.reasoning.insert(id.clone(), false);
+                        steps.push(Step::ReasoningOpen { key: id });
+                    }
                     "commandExecution" => steps.push(Step::ToolStart { key: id, tool: command_tool(item) }),
                     "fileChange" => {
-                        let tool = file_tool(item, &self.cwd);
-                        self.file_changes.insert(id.clone(), tool.clone());
+                        let (tool, single) = file_tool(item, &self.cwd);
+                        self.file_changes.insert(id.clone(), (tool.clone(), single));
                         steps.push(Step::ToolStart { key: id, tool });
                     }
                     kind @ ("mcpToolCall"
@@ -180,22 +257,32 @@ impl CodexMapper {
                     | "webSearch"
                     | "imageView"
                     | "collabAgentToolCall") => {
-                        let title = s(item, "tool").unwrap_or(kind).to_owned();
-                        steps.push(Step::ToolStart {
-                            key: id,
-                            tool: ToolSpec {
-                                name: kind.to_owned(),
-                                title,
-                                detail: None,
-                                kind: ApprovalKind::Other,
-                                command: None,
-                                diff: None,
-                                path: None,
-                                description: None,
-                            },
-                        });
+                        let title = s(item, "tool").unwrap_or(kind);
+                        let class = match kind {
+                            "mcpToolCall" => ToolClass::Mcp,
+                            "webSearch" => ToolClass::Web,
+                            "collabAgentToolCall" => ToolClass::Agent,
+                            _ => ToolClass::Other,
+                        };
+                        steps.push(Step::ToolStart { key: id, tool: ToolSpec::other(kind, title, class) });
                     }
                     _ => {}
+                }
+            }
+            "item/reasoning/summaryTextDelta" => {
+                if let (Some(key), Some(text)) = (s(params, "itemId"), s(params, "delta"))
+                    && !text.is_empty()
+                    && let Some(has_text) = self.reasoning.get_mut(key)
+                {
+                    *has_text = true;
+                    steps.push(Step::ReasoningDelta { key: key.to_owned(), text: text.to_owned() });
+                }
+            }
+            "item/reasoning/summaryPartAdded" => {
+                if let Some(key) = s(params, "itemId")
+                    && self.reasoning.get(key) == Some(&true)
+                {
+                    steps.push(Step::ReasoningDelta { key: key.to_owned(), text: "\n\n".to_owned() });
                 }
             }
             "item/agentMessage/delta" => {
@@ -212,14 +299,23 @@ impl CodexMapper {
                 match s(item, "type").unwrap_or_default() {
                     "agentMessage" => {
                         let text = s(item, "text").unwrap_or_default().to_owned();
-                        let final_answer = s(item, "phase") == Some("final_answer");
+                        let phase = phase_of(item);
+                        let final_answer = phase == Some(Phase::Final);
                         if final_answer {
                             self.last_final = Some(text.clone());
                         }
                         if !text.trim().is_empty() {
                             self.last_text = Some(text.clone());
                         }
-                        steps.push(Step::AssistantDone { key: id, text, final_answer });
+                        self.note_text(&id, phase);
+                        steps.push(Step::AssistantDone { key: id.clone(), text, final_answer });
+                        if let Some(phase) = phase {
+                            steps.push(Step::AssistantPhase { key: id, phase });
+                        }
+                    }
+                    "reasoning" => {
+                        self.reasoning.remove(&id);
+                        steps.push(Step::ReasoningDone { key: id, text: summary_text(item) });
                     }
                     "commandExecution" => {
                         let status = match status {
@@ -275,6 +371,7 @@ impl CodexMapper {
                 let turn = params.get("turn").unwrap_or(&Value::Null);
                 let end = match s(turn, "status") {
                     Some("completed") => {
+                        self.settle_phases(&mut steps);
                         TurnEnd::done(self.last_final.clone().or_else(|| self.last_text.clone()))
                     }
                     Some("interrupted") => TurnEnd::interrupted(),
@@ -333,19 +430,20 @@ impl CodexMapper {
                 ServerRequest::Approval { spec: Box::new(spec), decline_ok }
             }
             "item/fileChange/requestApproval" => {
-                let tool =
-                    item_id.as_ref().and_then(|id| self.file_changes.get(id)).cloned().unwrap_or(ToolSpec {
-                        name: "apply_patch".into(),
-                        title: "Edit files".into(),
-                        detail: None,
-                        kind: ApprovalKind::Edit,
-                        command: None,
-                        diff: None,
-                        path: None,
-                        description: None,
+                let (tool, single) =
+                    item_id.as_ref().and_then(|id| self.file_changes.get(id)).cloned().unwrap_or_else(|| {
+                        let tool = ToolSpec {
+                            kind: ApprovalKind::Edit,
+                            ..ToolSpec::other("apply_patch", "Edit files", ToolClass::Edit)
+                        };
+                        (tool, false)
                     });
                 let mut spec = ApprovalSpec::from_tool(&tool, item_id);
-                if let Some(path) = &tool.path {
+                // The request names a file only when it changes just that one.
+                if !single {
+                    spec.path = None;
+                }
+                if let Some(path) = &spec.path {
                     spec.title = format!("Edit {path}");
                 }
                 spec.reason = reason;
@@ -433,7 +531,8 @@ impl CodexDriver {
             self.mapper.turn_started();
         }
         self.interrupt_sent = false;
-        let params = json!({"threadId": native, "input": [{"type": "text", "text": text}]});
+        let params = json!({"threadId": native, "input": [{"type": "text", "text": text}],
+            "summary": REASONING_SUMMARY});
         self.request(Pending::TurnStart, "turn/start", params, out);
     }
 
@@ -528,11 +627,11 @@ impl CodexDriver {
     }
 
     /// The `decision` for an answer.
-    pub fn decision(answer: Answer, decline_ok: bool) -> &'static str {
+    pub fn decision(answer: &Answer, decline_ok: bool) -> &'static str {
         match answer {
             Answer::Allow => "accept",
-            Answer::Deny(_) if decline_ok => "decline",
-            Answer::Deny(_) => "cancel",
+            Answer::Deny(_) | Answer::DenySaying(_) if decline_ok => "decline",
+            Answer::Deny(_) | Answer::DenySaying(_) => "cancel",
         }
     }
 }
@@ -610,8 +709,21 @@ impl Driver for CodexDriver {
 
     fn on_answer(&mut self, id: Value, answer: Answer, out: &mut Output) {
         let Some(decline_ok) = self.asks.remove(&id_key(&id)) else { return };
-        let decision = Self::decision(answer, decline_ok);
+        let decision = Self::decision(&answer, decline_ok);
         out.stdin.push(json!({"jsonrpc": "2.0", "id": id, "result": {"decision": decision}}).to_string());
+        // The user's words go as the next turn: stop this one now, without
+        // the registry hearing of a stop (it waits for the turn's end).
+        if matches!(answer, Answer::DenySaying(_))
+            && INTERRUPT_FOR_REPLY
+            && self.mapper.turn_running()
+            && !self.interrupt_sent
+        {
+            if self.mapper.turn_id().is_some() {
+                self.send_interrupt(out);
+            } else {
+                self.interrupt_wanted = true;
+            }
+        }
     }
 
     fn on_too_long(&mut self) -> Vec<Step> {
@@ -706,7 +818,10 @@ mod tests {
         let (steps, requests) = run("codex-02-resume-filechange-decline.jsonl");
         let [ServerRequest::Approval { spec, decline_ok }] = &requests[..] else { panic!("{requests:?}") };
         assert_eq!(spec.kind, ApprovalKind::Edit);
-        assert_eq!(spec.diff.as_deref(), Some("notes.txt (add)\na\n"));
+        assert_eq!(
+            spec.diff.as_deref(),
+            Some("diff --git a/notes.txt b/notes.txt\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1,1 @@\n+a")
+        );
         assert_eq!(spec.path.as_deref(), Some("notes.txt"));
         assert_eq!(spec.title, "Edit notes.txt");
         assert!(decline_ok);
@@ -719,6 +834,201 @@ mod tests {
         let (steps, requests) = run("codex-03-resume-interrupt-while-waiting.jsonl");
         assert_eq!(requests.len(), 1);
         assert_eq!(end(&steps).outcome, Outcome::Interrupted);
+    }
+
+    fn phases(steps: &[Step]) -> Vec<(&str, Phase)> {
+        steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::AssistantPhase { key, phase } => Some((key.as_str(), *phase)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reasoning_and_phases_in_the_captures() {
+        let (steps, _) = run("codex-02-resume-filechange-decline.jsonl");
+        let opened: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| if let Step::ReasoningOpen { key } = s { Some(key.as_str()) } else { None })
+            .collect();
+        let done: Vec<(&str, &str)> = steps
+            .iter()
+            .filter_map(|s| {
+                if let Step::ReasoningDone { key, text } = s {
+                    Some((key.as_str(), text.as_str()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(done, [(opened[0], "")], "summary: [] in the capture");
+        assert!(!steps.iter().any(|s| matches!(s, Step::ReasoningDelta { .. })));
+        let kinds: Vec<Phase> = phases(&steps).into_iter().map(|(_, p)| p).collect();
+        // Each message's phase comes when it starts and again when it ends.
+        assert_eq!(kinds, [Phase::Interim, Phase::Interim, Phase::Final, Phase::Final]);
+
+        let (steps, _) = run("codex-01-create-approve.jsonl");
+        let kinds: Vec<Phase> = phases(&steps).into_iter().map(|(_, p)| p).collect();
+        assert_eq!(kinds, [Phase::Interim, Phase::Interim, Phase::Final, Phase::Final]);
+        assert!(!steps.iter().any(|s| matches!(s, Step::ReasoningOpen { .. })));
+        let command = steps
+            .iter()
+            .find_map(|s| if let Step::ToolStart { tool, .. } = s { Some(tool) } else { None })
+            .unwrap();
+        assert_eq!(command.class, ToolClass::Command);
+    }
+
+    #[test]
+    fn reasoning_summaries_and_their_deltas() {
+        let mut mapper = CodexMapper::new(PathBuf::from("/w"));
+        mapper.turn_started();
+        let mut steps = Vec::new();
+        for msg in [
+            json!({"method": "item/started", "params": {"item": {"type": "reasoning", "id": "rs_1", "summary": [], "content": []}}}),
+            json!({"method": "item/reasoning/summaryPartAdded", "params": {"itemId": "rs_1", "summaryIndex": 0}}),
+            json!({"method": "item/reasoning/summaryTextDelta", "params": {"itemId": "rs_1", "delta": "**Plan**", "summaryIndex": 0}}),
+            json!({"method": "item/reasoning/summaryPartAdded", "params": {"itemId": "rs_1", "summaryIndex": 1}}),
+            json!({"method": "item/reasoning/summaryTextDelta", "params": {"itemId": "rs_1", "delta": "Read it.", "summaryIndex": 1}}),
+            json!({"method": "item/reasoning/textDelta", "params": {"itemId": "rs_1", "delta": "raw"}}),
+            json!({"method": "item/reasoning/summaryTextDelta", "params": {"itemId": "rs_9", "delta": "elsewhere"}}),
+            json!({"method": "item/reasoning/summaryTextDelta", "params": {"itemId": "rs_1", "delta": 7}}),
+            json!({"method": "item/completed", "params": {"item": {"type": "reasoning", "id": "rs_1",
+                "summary": ["**Plan**", "Read it."], "content": []}}}),
+            json!({"method": "item/started", "params": {"item": {"type": "reasoning", "id": "rs_2", "summary": []}}}),
+            json!({"method": "item/completed", "params": {"item": {"type": "reasoning", "id": "rs_2",
+                "summary": [{"type": "summary_text", "text": "Check."}, {"type": "x"}, 3, {"text": "Then fix."}]}}}),
+            json!({"method": "item/completed", "params": {"item": {"type": "reasoning", "id": "rs_3"}}}),
+            json!({"method": "item/started", "params": {"item": {"type": "agentMessage", "id": "m1", "text": ""}}}),
+            json!({"method": "item/completed", "params": {"item": {"type": "agentMessage", "id": "m1", "text": "Looking.", "phase": "later"}}}),
+            json!({"method": "item/completed", "params": {"item": {"type": "agentMessage", "id": "m2", "text": "Fixed."}}}),
+            json!({"method": "turn/completed", "params": {"turn": {"status": "completed"}}}),
+        ] {
+            steps.extend(mapper.notification(&msg));
+        }
+        let deltas: Vec<&str> = steps
+            .iter()
+            .filter_map(
+                |s| if let Step::ReasoningDelta { text, .. } = s { Some(text.as_str()) } else { None },
+            )
+            .collect();
+        assert_eq!(deltas, ["**Plan**", "\n\n", "Read it."], "a part break only once there is text");
+        let done: Vec<(&str, &str)> = steps
+            .iter()
+            .filter_map(|s| {
+                if let Step::ReasoningDone { key, text } = s {
+                    Some((key.as_str(), text.as_str()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(done, [("rs_1", "**Plan**\n\nRead it."), ("rs_2", "Check.\n\nThen fix."), ("rs_3", "")]);
+        // Unknown and missing phases are settled when the turn completes.
+        assert_eq!(phases(&steps), [("m1", Phase::Interim), ("m2", Phase::Final)]);
+        assert!(matches!(steps.last(), Some(Step::TurnEnded(e)) if e.outcome == Outcome::Done));
+    }
+
+    #[test]
+    fn an_interrupted_turn_leaves_its_messages_without_a_phase() {
+        let mut mapper = CodexMapper::new(PathBuf::from("/w"));
+        mapper.turn_started();
+        mapper.notification(&json!({"method": "item/completed", "params": {"item": {"type": "agentMessage", "id": "m1", "text": "On it."}}}));
+        let steps = mapper.notification(
+            &json!({"method": "turn/completed", "params": {"turn": {"status": "interrupted"}}}),
+        );
+        assert!(phases(&steps).is_empty());
+    }
+
+    #[test]
+    fn tool_classes_and_the_first_changed_file() {
+        let mut mapper = CodexMapper::new(PathBuf::from("/w"));
+        mapper.turn_started();
+        let started = |mapper: &mut CodexMapper, item: Value| {
+            let steps = mapper.notification(&json!({"method": "item/started", "params": {"item": item}}));
+            match steps.into_iter().next() {
+                Some(Step::ToolStart { tool, .. }) => tool,
+                other => panic!("{other:?}"),
+            }
+        };
+        for (kind, class) in [
+            ("mcpToolCall", ToolClass::Mcp),
+            ("webSearch", ToolClass::Web),
+            ("collabAgentToolCall", ToolClass::Agent),
+            ("dynamicToolCall", ToolClass::Other),
+            ("imageView", ToolClass::Other),
+        ] {
+            assert_eq!(started(&mut mapper, json!({"type": kind, "id": kind})).class, class, "{kind}");
+        }
+        let two = started(
+            &mut mapper,
+            json!({"type": "fileChange", "id": "fc", "changes": [
+                {"path": "/w/a.txt", "kind": {"type": "add"}, "diff": "x"},
+                {"path": "/w/b.txt", "kind": {"type": "update"}, "diff": "y"}]}),
+        );
+        assert_eq!((two.class, two.path.as_deref()), (ToolClass::Edit, Some("a.txt")));
+        // The request for two files names neither.
+        let ServerRequest::Approval { spec, .. } = mapper.server_request(
+            &json!({"method": "item/fileChange/requestApproval", "id": 3, "params": {"itemId": "fc"}}),
+        ) else {
+            panic!()
+        };
+        assert_eq!((spec.path, spec.title.as_str()), (None, "Edit files"));
+    }
+
+    /// The driver up to its first `turn/start`; the lines it wrote.
+    fn driver_started() -> (CodexDriver, Vec<Value>) {
+        let mut driver = CodexDriver::new(PathBuf::from("/w"), Mode::Supervised, None, "Hi".into());
+        let mut out = Output::default();
+        driver.start(&mut out);
+        for reply in [
+            json!({"id": 1, "result": {}}),
+            json!({"id": 2, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": true}}),
+            json!({"id": 3, "result": {"thread": {"id": "th_1"}}}),
+            json!({"id": 4, "result": {"turn": {"id": "tu_1"}}}),
+        ] {
+            driver.on_line(reply, &mut out);
+        }
+        let lines = out.stdin.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        (driver, lines)
+    }
+
+    #[test]
+    fn a_turn_asks_for_reasoning_summaries() {
+        let (_, lines) = driver_started();
+        let start = lines.iter().find(|l| l["method"] == "turn/start").unwrap();
+        assert_eq!(start["params"]["summary"], REASONING_SUMMARY);
+        assert_eq!(start["params"]["threadId"], "th_1");
+    }
+
+    #[test]
+    fn denying_with_words_declines_then_stops_the_turn() {
+        let (mut driver, _) = driver_started();
+        let mut out = Output::default();
+        driver.on_line(
+            json!({"method": "item/fileChange/requestApproval", "id": 0, "params": {"itemId": "fc", "threadId": "th_1", "turnId": "tu_1"}}),
+            &mut out,
+        );
+        let (id, _) = out.approvals.pop().unwrap();
+        let mut out = Output::default();
+        driver.on_answer(id, Answer::DenySaying("Use a temp dir".into()), &mut out);
+        let lines: Vec<Value> = out.stdin.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines[0], json!({"jsonrpc": "2.0", "id": 0, "result": {"decision": "decline"}}));
+        assert_eq!(lines[1]["method"], "turn/interrupt");
+        assert_eq!(lines[1]["params"], json!({"threadId": "th_1", "turnId": "tu_1"}));
+        assert!(!format!("{lines:?}").contains("temp dir"), "the words go as the next turn, not now");
+        // A plain denial doesn't stop the turn.
+        let mut out = Output::default();
+        driver.on_line(
+            json!({"method": "item/commandExecution/requestApproval", "id": 1, "params": {"itemId": "c", "command": "ls"}}),
+            &mut out,
+        );
+        let (id, _) = out.approvals.pop().unwrap();
+        let mut out = Output::default();
+        driver.on_answer(id, Answer::Deny(crate::host::agents::DenyReason::User), &mut out);
+        assert_eq!(out.stdin.len(), 1);
     }
 
     #[test]
@@ -774,15 +1084,17 @@ mod tests {
 
     #[test]
     fn decisions() {
-        assert_eq!(CodexDriver::decision(Answer::Allow, false), "accept");
+        assert_eq!(CodexDriver::decision(&Answer::Allow, false), "accept");
         assert_eq!(
-            CodexDriver::decision(Answer::Deny(crate::host::agents::DenyReason::User), true),
+            CodexDriver::decision(&Answer::Deny(crate::host::agents::DenyReason::User), true),
             "decline"
         );
         assert_eq!(
-            CodexDriver::decision(Answer::Deny(crate::host::agents::DenyReason::Expired), false),
+            CodexDriver::decision(&Answer::Deny(crate::host::agents::DenyReason::Expired), false),
             "cancel"
         );
+        assert_eq!(CodexDriver::decision(&Answer::DenySaying("x".into()), true), "decline");
+        assert_eq!(CodexDriver::decision(&Answer::DenySaying("x".into()), false), "cancel");
     }
 
     #[test]
@@ -806,7 +1118,7 @@ mod tests {
         for (name, fields) in [
             ("ThreadStartParams", &["cwd", "approvalPolicy", "sandbox", "approvalsReviewer"][..]),
             ("ThreadResumeParams", &["threadId", "cwd", "approvalPolicy", "sandbox", "excludeTurns"][..]),
-            ("TurnStartParams", &["threadId", "input"][..]),
+            ("TurnStartParams", &["threadId", "input", "summary"][..]),
             ("TurnInterruptParams", &["threadId", "turnId"][..]),
             ("InitializeParams", &["clientInfo", "capabilities"][..]),
         ] {
@@ -825,6 +1137,8 @@ mod tests {
             json!(["pending", "inProgress", "completed"])
         );
         let text = v2.to_string();
+        let summaries = v2["definitions"]["ReasoningSummary"].to_string();
+        assert!(summaries.contains(&format!("\"{REASONING_SUMMARY}\"")), "{summaries}");
         for value in [approval_policy(Mode::Supervised), approval_policy(Mode::AutoEdit), SANDBOX] {
             assert!(text.contains(&format!("\"{value}\"")), "{value}");
         }

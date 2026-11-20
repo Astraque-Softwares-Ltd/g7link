@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::api::{self, ApprovalKind, Item, ItemKind, SessionSource, SessionState, ToolStatus};
-use crate::host::agents::{ToolSpec, display_path, prefixed_lines};
+use crate::api::{self, ApprovalKind, Item, ItemKind, SessionSource, SessionState, ToolClass, ToolStatus};
+use crate::host::agents::{ToolSpec, display_path, file_diff};
 use crate::host::sessions::paths::{is_uuid, parse_rfc3339_ms};
 use crate::host::sessions::tail::Line;
 use crate::host::sessions::{MAX_OPEN_TOOLS, block_seq, first_line, is_wrapper, text_item};
@@ -129,29 +129,29 @@ fn command_spec(item: &Value) -> ToolSpec {
         diff: None,
         path: None,
         description: None,
+        class: ToolClass::Command,
+        group: None,
     }
 }
 
 /// A `FileChange` item as a tool step: each file, then its diff.
 fn file_spec(item: &Value, cwd: &Path) -> ToolSpec {
     let mut detail = String::new();
+    let mut first = None;
     if let Some(changes) = item.get("changes").and_then(Value::as_object) {
         let mut paths: Vec<&String> = changes.keys().collect();
         paths.sort();
+        first = paths.first().map(|p| display_path(p, cwd));
         for path in paths {
             let change = &changes[path];
             let kind = str_of(change, "type").unwrap_or("update");
             if !detail.is_empty() {
                 detail.push('\n');
             }
-            detail.push_str(&format!("{} ({kind})\n", display_path(path, cwd)));
-            match (str_of(change, "unified_diff"), str_of(change, "content")) {
-                (Some(diff), _) => detail.push_str(diff.trim_end_matches('\n')),
-                (None, Some(content)) => {
-                    detail.push_str(&prefixed_lines(content, if kind == "delete" { '-' } else { '+' }));
-                }
-                _ => {}
-            }
+            let body =
+                str_of(change, "unified_diff").or_else(|| str_of(change, "content")).unwrap_or_default();
+            let moved = str_of(change, "move_path").map(|m| display_path(m, cwd));
+            detail.push_str(&file_diff(&display_path(path, cwd), kind, moved.as_deref(), body));
         }
     }
     ToolSpec {
@@ -161,8 +161,10 @@ fn file_spec(item: &Value, cwd: &Path) -> ToolSpec {
         kind: ApprovalKind::Edit,
         command: None,
         diff: Some(detail),
-        path: None,
+        path: first,
         description: None,
+        class: ToolClass::Edit,
+        group: None,
     }
 }
 
@@ -393,8 +395,12 @@ mod tests {
         assert_eq!(tools[0].title, "Edit files");
         assert_eq!(
             tools[0].detail.as_deref(),
-            Some("notes.txt (add)\n+first\n+second\nsrc/main.rs (update)\n@@ -1 +1 @@\n-old\n+new")
+            Some(
+                "diff --git a/notes.txt b/notes.txt\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+first\n+second\n\
+                 diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new"
+            )
         );
+        assert_eq!((tools[0].class, tools[0].path.as_deref()), (Some(ToolClass::Edit), Some("notes.txt")));
         assert_eq!(tools[1].status, ToolStatus::Denied);
         assert_eq!(tools[2].status, ToolStatus::Error);
     }

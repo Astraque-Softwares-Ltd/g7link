@@ -59,7 +59,7 @@ async fn no_subscriber_means_no_file_is_opened() {
     while !socket.exists() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let hello = HelloParams { client: ClientKind::Test, version: 1, bridge_token: None };
+    let hello = HelloParams::new(ClientKind::Test, &[]);
     let (client, _events) = Client::connect(&socket, hello).await.unwrap();
     client.subscribe(ThreadSelection::All, true).await.unwrap();
     client.threads_list(None, None).await.unwrap();

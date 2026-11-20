@@ -13,7 +13,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::api::{self, AgentId, AgentInfo, ApprovalKind, AuthKind, Mode, Outcome, ThreadError, ToolStatus};
+use crate::api::{
+    self, AgentId, AgentInfo, ApprovalKind, AuthKind, Mode, Outcome, Phase, ThreadError, ToolClass,
+    ToolStatus,
+};
 use crate::host::env;
 use crate::lines::{self, LineRead};
 
@@ -43,12 +46,34 @@ pub struct ToolSpec {
     pub kind: ApprovalKind,
     pub command: Option<String>,
     pub diff: Option<String>,
+    /// The file the step is about (an edit's, a read's). An approval takes
+    /// it only for an edit of that one file.
     pub path: Option<String>,
     /// The agent's own words for what the call does (Claude's `Bash.description`).
     pub description: Option<String>,
+    /// What kind of step it is, for clients' icons and words.
+    pub class: ToolClass,
+    /// The agent's key of the step this one runs inside (a sub-agent's).
+    pub group: Option<String>,
 }
 
 impl ToolSpec {
+    /// A step with only a name and a title, of `class`, asked about as "other".
+    pub fn other(name: &str, title: &str, class: ToolClass) -> Self {
+        Self {
+            name: name.to_owned(),
+            title: title.to_owned(),
+            detail: None,
+            kind: ApprovalKind::Other,
+            command: None,
+            diff: None,
+            path: None,
+            description: None,
+            class,
+            group: None,
+        }
+    }
+
     /// What a running step is shown as: the agent's description, else the title.
     pub fn step(&self) -> String {
         let text =
@@ -80,7 +105,7 @@ impl ApprovalSpec {
             title: tool.title.clone(),
             command: tool.command.clone(),
             diff: tool.diff.clone(),
-            path: tool.path.clone(),
+            path: tool.path.clone().filter(|_| tool.kind == ApprovalKind::Edit),
             reason: None,
             tool_key,
             tool: Some(tool.clone()),
@@ -137,10 +162,31 @@ pub enum Step {
         key: String,
         text: String,
     },
+    /// An assistant message ended. `final_answer`: it is known now to be
+    /// the turn's answer.
     AssistantDone {
         key: String,
         text: String,
         final_answer: bool,
+    },
+    /// Where an assistant message stands in its turn, once known; it may
+    /// come before or after its `AssistantDone`.
+    AssistantPhase {
+        key: String,
+        phase: Phase,
+    },
+    /// The agent started thinking. Its text, when the CLI gives any, comes
+    /// in deltas or with the end.
+    ReasoningOpen {
+        key: String,
+    },
+    ReasoningDelta {
+        key: String,
+        text: String,
+    },
+    ReasoningDone {
+        key: String,
+        text: String,
     },
     ToolStart {
         key: String,
@@ -176,10 +222,23 @@ pub fn plan_of<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec
 }
 
 /// The user's answer to an approval, as the agent gets it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Allow,
     Deny(DenyReason),
+    /// Denied by the user, who said what to do instead (cleaned).
+    DenySaying(String),
+}
+
+impl Answer {
+    /// What the agent is told when it is a denial.
+    pub fn deny_message(&self) -> Option<String> {
+        match self {
+            Self::Allow => None,
+            Self::Deny(reason) => Some(reason.message().to_owned()),
+            Self::DenySaying(words) => Some(format!("{}{words}", api::DENY_SAID_PREFIX)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -753,9 +812,72 @@ pub fn prefixed_lines(text: &str, prefix: char) -> String {
     out
 }
 
+/// One file's change as a git-style unified diff, so clients can count
+/// its lines and tell its file: `diff --git`, `---`/`+++`, then the hunks.
+/// `body`: an added or deleted file's content, or an update's unified diff
+/// (with or without headers of its own).
+pub fn file_diff(path: &str, kind: &str, move_path: Option<&str>, body: &str) -> String {
+    let body = body.trim_end_matches('\n');
+    let lines = body.lines().count();
+    let (old, new, hunks) = match kind {
+        "add" => {
+            let hunk = format!("@@ -0,0 +1,{lines} @@\n{}", prefixed_lines(body, '+'));
+            ("/dev/null".to_owned(), format!("b/{path}"), (lines > 0).then_some(hunk))
+        }
+        "delete" => {
+            let hunk = format!("@@ -1,{lines} +0,0 @@\n{}", prefixed_lines(body, '-'));
+            (format!("a/{path}"), "/dev/null".to_owned(), (lines > 0).then_some(hunk))
+        }
+        _ => {
+            if body.starts_with("diff --git ") {
+                return body.to_owned();
+            }
+            let new = move_path.filter(|m| !m.is_empty()).unwrap_or(path);
+            let head = format!("diff --git a/{path} b/{new}");
+            if body.starts_with("--- ") {
+                return format!("{head}\n{body}");
+            }
+            (format!("a/{path}"), format!("b/{new}"), (!body.is_empty()).then(|| body.to_owned()))
+        }
+    };
+    let shown = if new == "/dev/null" { path } else { &new[2..] };
+    let mut out = format!("diff --git a/{path} b/{shown}\n--- {old}\n+++ {new}");
+    if let Some(hunks) = hunks {
+        out.push('\n');
+        out.push_str(&hunks);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_changes_as_git_diffs() {
+        assert_eq!(
+            file_diff("notes.txt", "add", None, "a\nb\n"),
+            "diff --git a/notes.txt b/notes.txt\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+a\n+b"
+        );
+        assert_eq!(
+            file_diff("gone.txt", "delete", None, "bye\n"),
+            "diff --git a/gone.txt b/gone.txt\n--- a/gone.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-bye"
+        );
+        assert_eq!(
+            file_diff("src/a.rs", "update", None, "@@ -1 +1 @@\n-old\n+new\n"),
+            "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new"
+        );
+        assert_eq!(
+            file_diff("a.rs", "update", Some("b.rs"), "--- a/a.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y"),
+            "diff --git a/a.rs b/b.rs\n--- a/a.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y"
+        );
+        let whole = "diff --git a/x b/x\n--- a/x\n+++ b/x";
+        assert_eq!(file_diff("x", "update", None, whole), whole);
+        assert_eq!(
+            file_diff("e.txt", "add", None, ""),
+            "diff --git a/e.txt b/e.txt\n--- /dev/null\n+++ b/e.txt"
+        );
+    }
 
     #[test]
     fn versions_parse() {
@@ -828,12 +950,28 @@ mod tests {
             diff: None,
             path: None,
             description: Some("List the files\nand more".into()),
+            class: ToolClass::Command,
+            group: None,
         };
         assert_eq!(spec.step(), "List the files");
         spec.description = Some("  ".into());
         assert_eq!(spec.step(), "Run command");
         spec.description = Some("d".repeat(500));
         assert_eq!(spec.step().len(), api::MAX_STEP);
+    }
+
+    #[test]
+    fn an_approval_takes_the_path_of_an_edit_only() {
+        let read = ToolSpec { path: Some("a.rs".into()), ..ToolSpec::other("Read", "Read", ToolClass::Read) };
+        assert_eq!(ApprovalSpec::from_tool(&read, None).path, None);
+        let edit = ToolSpec { kind: ApprovalKind::Edit, ..read };
+        assert_eq!(ApprovalSpec::from_tool(&edit, None).path.as_deref(), Some("a.rs"));
+        assert_eq!(
+            Answer::DenySaying("Use a temp dir".into()).deny_message().as_deref(),
+            Some("The user denied this and said: Use a temp dir")
+        );
+        assert_eq!(Answer::Deny(DenyReason::User).deny_message().as_deref(), Some("The user denied this."));
+        assert_eq!(Answer::Allow.deny_message(), None);
     }
 
     #[test]

@@ -122,9 +122,7 @@ impl TestHost {
     }
 
     async fn client(&self, kind: ClientKind) -> (Client, Events) {
-        Client::connect(&self.socket, HelloParams { client: kind, version: 1, bridge_token: None })
-            .await
-            .unwrap()
+        Client::connect(&self.socket, HelloParams::new(kind, &[])).await.unwrap()
     }
 
     async fn subscribed(&self) -> (Client, Events) {
@@ -247,16 +245,14 @@ async fn hello_comes_first() {
     assert_eq!(reply["error"]["code"], "BAD_REQUEST");
     assert!(raw_line(&mut raw).await.is_none(), "closed after a request before hello");
 
-    let err = Client::connect(
-        &host.socket,
-        HelloParams { client: ClientKind::Test, version: 2, bridge_token: None },
-    )
-    .await
-    .unwrap_err();
+    let err =
+        Client::connect(&host.socket, HelloParams { version: 2, ..HelloParams::new(ClientKind::Test, &[]) })
+            .await
+            .unwrap_err();
     assert_eq!(err.code(), Some(ErrorCode::UnsupportedVersion));
     let err = Client::connect(
         &host.socket,
-        HelloParams { client: ClientKind::Bridge, version: 1, bridge_token: Some("ab".repeat(16)) },
+        HelloParams { bridge_token: Some("ab".repeat(16)), ..HelloParams::new(ClientKind::Bridge, &[]) },
     )
     .await
     .unwrap_err();
@@ -526,7 +522,12 @@ async fn codex_decline_and_interrupt() {
     let asked = approval(&mut events).await;
     assert_eq!(asked.kind, ApprovalKind::Edit);
     assert_eq!(asked.path.as_deref(), Some("/work/notes.txt"));
-    assert_eq!(asked.diff.as_deref(), Some("/work/notes.txt (add)\na\n"));
+    assert_eq!(
+        asked.diff.as_deref(),
+        Some(
+            "diff --git a//work/notes.txt b//work/notes.txt\n--- /dev/null\n+++ b//work/notes.txt\n@@ -0,0 +1,1 @@\n+a"
+        )
+    );
     client.approval_answer(asked.token, Decision::Deny, Origin::launcher()).await.unwrap();
     let rest = until_done(&mut events, &thread.id).await;
     assert!(tool_items(&rest).iter().any(|i| i.tool.as_ref().unwrap().status == ToolStatus::Denied));
@@ -693,10 +694,7 @@ async fn a_second_host_exits_and_a_restart_interrupts_running_threads() {
         let _ = stopped.await;
     }));
     wait_for(&socket, &mut task).await;
-    let (client, _events) =
-        Client::connect(&socket, HelloParams { client: ClientKind::Test, version: 1, bridge_token: None })
-            .await
-            .unwrap();
+    let (client, _events) = Client::connect(&socket, HelloParams::new(ClientKind::Test, &[])).await.unwrap();
     let threads = client.threads_list(None, None).await.unwrap();
     assert_eq!(threads.len(), 1);
     assert_eq!((threads[0].state, threads[0].pending), (State::Interrupted, 0));
@@ -706,6 +704,335 @@ async fn a_second_host_exits_and_a_restart_interrupts_running_threads() {
     let _ = stop.send(());
     task.await.unwrap().unwrap();
     drop(host.dir);
+}
+
+// ---- Phase 1: thinking, turns, phases, denials with words ----
+
+impl TestHost {
+    /// A client saying `caps`, subscribed to every thread with deltas.
+    async fn subscribed_with(&self, caps: &[&str]) -> (Client, Events) {
+        let (client, events) =
+            Client::connect(&self.socket, HelloParams::new(ClientKind::Test, caps)).await.unwrap();
+        client.subscribe(ThreadSelection::All, true).await.unwrap();
+        (client, events)
+    }
+}
+
+fn items_of(events: &[Event]) -> Vec<&Item> {
+    events.iter().filter_map(|e| if let Event::ThreadItem(i) = e { Some(&i.item) } else { None }).collect()
+}
+
+/// The text the deltas for `seq` spell.
+fn streamed(events: &[Event], seq: u64) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ThreadDelta(d) if d.seq == seq => Some(d.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn read_all(client: &Client, thread_id: &str) -> Vec<Item> {
+    client
+        .thread_read(ThreadReadParams {
+            thread_id: thread_id.to_owned(),
+            limit: Some(200),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hello_says_what_the_host_offers() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, _events) = host.client(ClientKind::Test).await;
+    assert_eq!(client.host().caps, [cap::ITEMS2, cap::DENY_MESSAGE]);
+    let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
+    let err = Client::connect(&host.socket, too_many).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::BadRequest));
+    let (later, _events) = host.subscribed_with(&[cap::ITEMS2, "something-later"]).await;
+    assert!(later.folders_list().await.is_ok(), "a cap this host doesn't know is fine");
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thinking_reaches_old_clients_as_a_step_and_new_ones_as_it_is() {
+    let host =
+        TestHost::start(Options { claude: Some("claude-06-thinking-text.jsonl"), ..Default::default() })
+            .await;
+    let (old, mut old_events) = host.subscribed().await;
+    let (new, mut new_events) = host.subscribed_with(&[cap::ITEMS2]).await;
+    let folder = host.folder(&old).await;
+    let thread = old.thread_start(start(AgentId::Claude, &folder, "What is here?")).await.unwrap();
+    let old_seen = until_done(&mut old_events, &thread.id).await;
+    let new_seen = until_done(&mut new_events, &thread.id).await;
+    const THOUGHT: &str = "**Check the folder**\nList it first.";
+
+    // An old client: a "Thinking" step, no text, no deltas, no gap.
+    let old_items = items_of(&old_seen);
+    assert!(old_items.iter().all(|i| i.kind != ItemKind::Reasoning));
+    let thinking: Vec<(u64, u32, ToolStatus, &str, bool)> = old_items
+        .iter()
+        .filter_map(|i| {
+            let tool = i.tool.as_ref().filter(|t| t.name == "reasoning")?;
+            Some((i.seq, i.rev, tool.status, tool.title.as_str(), i.text.is_none()))
+        })
+        .collect();
+    assert_eq!(
+        thinking,
+        [(2, 0, ToolStatus::Running, "Thinking", true), (2, 1, ToolStatus::Ok, "Thinking", true)]
+    );
+    assert_eq!(streamed(&old_seen, 2), "", "no deltas of thinking");
+    let mut seqs: Vec<u64> = old_items.iter().map(|i| i.seq).collect();
+    seqs.dedup();
+    assert_eq!(seqs, (1..=4).collect::<Vec<u64>>(), "every number, in order");
+    assert!(!format!("{old_seen:?}").contains(THOUGHT));
+
+    // A new client: the thinking, its text and its deltas.
+    let reasoning: Vec<&Item> =
+        items_of(&new_seen).into_iter().filter(|i| i.kind == ItemKind::Reasoning).collect();
+    assert_eq!(reasoning.len(), 2);
+    assert_eq!((reasoning[0].rev, reasoning[0].end_ms), (0, None));
+    assert_eq!(reasoning[1].text.as_deref(), Some(THOUGHT));
+    assert!(reasoning[1].end_ms.is_some() && reasoning[1].turn == Some(1));
+    assert_eq!(streamed(&new_seen, 2), THOUGHT);
+    assert!(!format!("{new_seen:?}").contains("SIGNATURE"), "the signature never leaves the host");
+
+    let old_read = read_all(&old, &thread.id).await;
+    let new_read = read_all(&new, &thread.id).await;
+    assert_eq!(old_read[1].kind, ItemKind::Tool);
+    assert_eq!(old_read[1].tool.as_ref().unwrap().title, "Thinking");
+    assert_eq!((new_read[1].kind, new_read[1].text.as_deref()), (ItemKind::Reasoning, Some(THOUGHT)));
+    let tool = new_read[2].tool.as_ref().unwrap();
+    assert_eq!((tool.class, tool.status), (Some(ToolClass::Command), ToolStatus::Ok));
+    assert!(new_read[2].end_ms.is_some());
+    let answer = &new_read[3];
+    assert_eq!((answer.kind, answer.phase, answer.turn), (ItemKind::Assistant, Some(Phase::Final), Some(1)));
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn items_carry_their_turn_and_what_they_are() {
+    let host =
+        TestHost::start(Options { claude: Some("claude-02-followup-approve.jsonl"), ..Default::default() })
+            .await;
+    let (client, mut events) = host.subscribed_with(&[cap::ITEMS2]).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    client.thread_send(thread.id.clone(), "Create hello.txt".into(), Origin::launcher()).await.unwrap();
+    let asked = approval(&mut events).await;
+    assert_eq!(asked.item_id.as_deref(), Some("toolu_019665aUVn5LSZP1U45iVqz1"));
+    client.approval_answer(asked.token, Decision::Allow, Origin::launcher()).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let items = read_all(&client, &thread.id).await;
+    let shape: Vec<(ItemKind, Option<u32>)> = items.iter().map(|i| (i.kind, i.turn)).collect();
+    assert_eq!(
+        shape,
+        [
+            (ItemKind::User, Some(1)),
+            (ItemKind::Tool, Some(1)),
+            (ItemKind::Assistant, Some(1)),
+            (ItemKind::User, Some(2)),
+            (ItemKind::Reasoning, Some(2)),
+            (ItemKind::Tool, Some(2)),
+            (ItemKind::Assistant, Some(2)),
+        ]
+    );
+    assert!(items.iter().filter(|i| i.kind != ItemKind::User).all(|i| i.end_ms.is_some()), "{items:#?}");
+    assert_eq!(items[2].phase, Some(Phase::Final));
+    assert_eq!(items[6].phase, Some(Phase::Final));
+    assert_eq!(items[4].text.as_deref(), Some(""), "the CLI sent no thinking text");
+    let bash = items[1].tool.as_ref().unwrap();
+    assert_eq!((bash.class, bash.path.as_deref()), (Some(ToolClass::Command), None));
+    let write = items[5].tool.as_ref().unwrap();
+    assert_eq!((write.class, write.path.as_deref()), (Some(ToolClass::Edit), Some("/work/hello.txt")));
+    assert!(!write.by_rule, "allowed by hand");
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_reasoning_summaries_reach_new_clients() {
+    let host =
+        TestHost::start(Options { codex: Some("codex-04-reasoning-summary.jsonl"), ..Default::default() })
+            .await;
+    let (client, mut events) = host.subscribed_with(&[cap::ITEMS2]).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Codex, &folder, "Look, then answer.")).await.unwrap();
+    let seen = until_done(&mut events, &thread.id).await;
+    assert_eq!(done_of(&seen).outcome, Outcome::Done);
+    let items = read_all(&client, &thread.id).await;
+    let thoughts: Vec<(&str, Option<&str>)> = items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Reasoning)
+        .map(|i| (i.id.as_str(), i.text.as_deref()))
+        .collect();
+    assert_eq!(
+        thoughts,
+        [("rs_c4_1", Some("**Look first**\n\nThen answer.")), ("rs_c4_2", Some("Short check."))]
+    );
+    let first = items.iter().find(|i| i.id == "rs_c4_1").unwrap();
+    assert_eq!(streamed(&seen, first.seq), "**Look first**\n\nThen answer.");
+    assert!(!format!("{seen:?}").contains("raw, never shown"));
+    assert_eq!(items.last().unwrap().phase, Some(Phase::Final));
+    assert!(host.log().contains("summary auto"), "{}", host.log());
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_denied_with_words_goes_on_in_the_same_turn() {
+    let host =
+        TestHost::start(Options { claude: Some("claude-03-resume-deny.jsonl"), ..Default::default() }).await;
+    let (client, mut events) = host.subscribed_with(&[cap::ITEMS2]).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "Run: touch denied.txt")).await.unwrap();
+    let asked = approval(&mut events).await;
+    let answer = |decision, message: &str| ApprovalAnswerParams {
+        token: asked.token.clone(),
+        decision,
+        by: Origin::phone("abc", "Pixel"),
+        message: Some(message.to_owned()),
+    };
+    for bad in [answer(Decision::Allow, "fine"), answer(Decision::Deny, &"x".repeat(MAX_DENY_MESSAGE + 1))] {
+        let err = client.approval_answer_with(bad).await.unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::BadRequest));
+    }
+    client.approval_answer_with(answer(Decision::Deny, "Use a temp dir")).await.unwrap();
+    let rest = until_done(&mut events, &thread.id).await;
+    assert!(rest.iter().any(|e| matches!(e, Event::ApprovalResolved(r)
+        if r.token == asked.token && r.outcome == ApprovalOutcome::Denied
+            && r.message.as_deref() == Some("Use a temp dir"))));
+    assert_eq!(rest.iter().filter(|e| matches!(e, Event::ThreadDone(_))).count(), 1);
+    assert_eq!(done_of(&rest).outcome, Outcome::Done);
+    let log = host.log();
+    assert!(
+        log.contains(
+            r#"bridge {"behavior":"deny","message":"The user denied this and said: Use a temp dir"}"#
+        ),
+        "{log}"
+    );
+    let items = read_all(&client, &thread.id).await;
+    let said = items.iter().find(|i| i.deny_of.is_some()).expect("the words are in the thread");
+    assert_eq!(said.kind, ItemKind::User);
+    assert_eq!(said.text.as_deref(), Some("Use a temp dir"));
+    assert_eq!(said.deny_of, asked.item_id);
+    assert_eq!(said.turn, Some(1), "the same turn");
+    assert_eq!(said.origin, Some(Origin::phone("abc", "Pixel")));
+    let tool = items.iter().find(|i| Some(&i.id) == asked.item_id.as_ref()).unwrap();
+    assert!(tool.seq < said.seq);
+    assert_eq!(tool.tool.as_ref().unwrap().status, ToolStatus::Denied);
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_denied_with_words_gets_them_as_the_next_turn() {
+    let host =
+        TestHost::start(Options { codex: Some("codex-05-deny-say-why.jsonl"), ..Default::default() }).await;
+    let (client, mut events) = host.subscribed_with(&[cap::ITEMS2]).await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Codex, &folder, "Create notes.txt")).await.unwrap();
+    let asked = approval(&mut events).await;
+    assert_eq!(asked.item_id.as_deref(), Some("fc_c5"));
+    client
+        .approval_answer_with(ApprovalAnswerParams {
+            token: asked.token.clone(),
+            decision: Decision::Deny,
+            by: Origin::launcher(),
+            message: Some("Use a temp dir".into()),
+        })
+        .await
+        .unwrap();
+    let rest = until_done(&mut events, &thread.id).await;
+    assert_eq!(rest.iter().filter(|e| matches!(e, Event::ThreadDone(_))).count(), 1, "the stop isn't an end");
+    let done = done_of(&rest);
+    assert_eq!((done.outcome, done.summary.as_str()), (Outcome::Done, "Wrote it to a temp dir instead."));
+    let states: Vec<State> = rest
+        .iter()
+        .filter_map(|e| if let Event::ThreadState(s) = e { Some(s.thread.state) } else { None })
+        .collect();
+    assert!(!states[..states.len() - 1].iter().any(|s| !s.is_running()), "{states:?}");
+    assert!(
+        rest.iter().any(
+            |e| matches!(e, Event::ApprovalResolved(r) if r.message.as_deref() == Some("Use a temp dir"))
+        )
+    );
+    let log = host.log();
+    assert!(log.contains("decision decline") && log.contains("method turn/interrupt"), "{log}");
+    assert_eq!(log.lines().filter(|l| *l == "method turn/start").count(), 2, "{log}");
+    let items = read_all(&client, &thread.id).await;
+    let said = items.iter().find(|i| i.deny_of.is_some()).expect("the words are in the thread");
+    assert_eq!(
+        (said.kind, said.turn, said.text.as_deref()),
+        (ItemKind::User, Some(2), Some("Use a temp dir"))
+    );
+    assert_eq!(said.deny_of.as_deref(), Some("fc_c5"));
+    let change = items.iter().find(|i| i.id == "fc_c5").unwrap();
+    assert_eq!((change.turn, change.tool.as_ref().unwrap().status), (Some(1), ToolStatus::Denied));
+    let answer = items.last().unwrap();
+    assert_eq!((answer.turn, answer.phase), (Some(2), Some(Phase::Final)));
+    let read = client
+        .thread_read(ThreadReadParams { thread_id: thread.id.clone(), ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(read.thread.state, State::Done);
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thread_from_before_turns_continues_with_the_next_one() {
+    let mut host = TestHost::start(Options::default()).await;
+    let folder = {
+        let (client, _events) = host.client(ClientKind::Test).await;
+        host.folder(&client).await
+    };
+    let _ = host.stop.take().unwrap().send(());
+    host.task.take().unwrap().await.unwrap().unwrap();
+    let dir = host.dir.path().to_owned();
+    let id = "d".repeat(32);
+    let thread_dir = dir.join("data/g7-agents/threads").join(&id);
+    std::fs::create_dir_all(&thread_dir).unwrap();
+    let meta = json!({"version": 1, "next_seq": 6, "thread": {
+        "id": id, "agent": "claude", "folder_id": folder.id, "folder_label": "work", "title": "t",
+        "state": "done", "mode": "supervised", "origin": {"kind": "launcher"},
+        "created_ms": 1, "updated_ms": 1, "last_seq": 5, "pending": 0}});
+    std::fs::write(thread_dir.join("meta.json"), meta.to_string()).unwrap();
+    let lines = [
+        json!({"seq": 1, "id": "user-1", "kind": "user", "ts_ms": 1, "rev": 0, "text": "a", "origin": {"kind": "launcher"}}),
+        json!({"seq": 2, "id": "m:0", "kind": "assistant", "ts_ms": 2, "rev": 0, "text": "b"}),
+        json!({"seq": 3, "id": "user-3", "kind": "user", "ts_ms": 3, "rev": 0, "text": "c", "origin": {"kind": "launcher"}}),
+        json!({"seq": 4, "id": "m:1", "kind": "assistant", "ts_ms": 4, "rev": 0, "text": "d"}),
+        json!({"seq": 5, "id": "later", "kind": "hologram", "ts_ms": 5, "rev": 0}),
+    ];
+    let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(thread_dir.join("items.jsonl"), text).unwrap();
+    let opts = Options::default();
+    let config = TestHost::config(&dir, &opts, &host.log);
+    let socket = config.socket.clone();
+    let (stop, stopped) = oneshot::channel::<()>();
+    let mut task = tokio::spawn(host::serve(config, async move {
+        let _ = stopped.await;
+    }));
+    wait_for(&socket, &mut task).await;
+    host.stop = Some(stop);
+    host.task = Some(task);
+    let (client, mut events) = host.subscribed_with(&[cap::ITEMS2]).await;
+    let before = read_all(&client, &id).await;
+    assert_eq!(before.iter().map(|i| i.seq).collect::<Vec<_>>(), [1, 2, 3, 4], "a later kind is left out");
+    assert!(before.iter().all(|i| i.turn.is_none()));
+    client.thread_send(id.clone(), "Again.".into(), Origin::launcher()).await.unwrap();
+    assert_eq!(done_of(&until_done(&mut events, &id).await).outcome, Outcome::Done);
+    let after = read_all(&client, &id).await;
+    let new: Vec<(u64, ItemKind, Option<u32>)> =
+        after.iter().filter(|i| i.seq > 5).map(|i| (i.seq, i.kind, i.turn)).collect();
+    assert_eq!(
+        new,
+        [(6, ItemKind::User, Some(3)), (7, ItemKind::Tool, Some(3)), (8, ItemKind::Assistant, Some(3))],
+        "the next turn after two"
+    );
+    host.stop().await;
 }
 
 // ---- Replacing an outdated host ----
@@ -841,12 +1168,8 @@ async fn a_busy_outdated_host_is_kept_until_its_threads_finish() {
     let hosts = RealHosts::new(dir.path(), Some(codex));
     let old = hosts.start(Path::new(env!("CARGO_BIN_EXE_g7-agents"))).unwrap();
     hosts.listening().await;
-    let (user, mut events) = Client::connect(
-        &hosts.socket(),
-        HelloParams { client: ClientKind::Test, version: 1, bridge_token: None },
-    )
-    .await
-    .unwrap();
+    let (user, mut events) =
+        Client::connect(&hosts.socket(), HelloParams::new(ClientKind::Test, &[])).await.unwrap();
     user.subscribe(ThreadSelection::All, false).await.unwrap();
     let work = dir.path().join("work").to_string_lossy().into_owned();
     let folder = user.folders_add(work, Some("work".into())).await.unwrap();
@@ -880,12 +1203,8 @@ async fn the_user_can_restart_a_busy_outdated_host() {
     let hosts = RealHosts::new(dir.path(), Some(codex));
     let old = hosts.start(Path::new(env!("CARGO_BIN_EXE_g7-agents"))).unwrap();
     hosts.listening().await;
-    let (client, mut events) = Client::connect(
-        &hosts.socket(),
-        HelloParams { client: ClientKind::Test, version: 1, bridge_token: None },
-    )
-    .await
-    .unwrap();
+    let (client, mut events) =
+        Client::connect(&hosts.socket(), HelloParams::new(ClientKind::Test, &[])).await.unwrap();
     client.subscribe(ThreadSelection::All, false).await.unwrap();
     let work = dir.path().join("work").to_string_lossy().into_owned();
     let folder = client.folders_add(work, Some("work".into())).await.unwrap();

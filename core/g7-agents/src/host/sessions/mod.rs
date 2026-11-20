@@ -69,17 +69,7 @@ pub(crate) fn first_line(text: &str) -> Option<String> {
 
 pub(crate) fn text_item(seq: u64, id: &str, kind: ItemKind, text: &str, ts_ms: u64) -> Item {
     let (text, truncated) = clean_cut(text, MAX_ITEM_TEXT);
-    Item {
-        seq,
-        id: cut(id, MAX_ITEM_ID).to_owned(),
-        kind,
-        ts_ms,
-        rev: 0,
-        text: Some(text),
-        truncated,
-        origin: None,
-        tool: None,
-    }
+    Item { text: Some(text), truncated, ..Item::new(seq, cut(id, MAX_ITEM_ID), kind, ts_ms) }
 }
 
 /// Where a session is open, in words: "a terminal", "the Claude app".

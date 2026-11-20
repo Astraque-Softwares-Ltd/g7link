@@ -6,8 +6,9 @@
 //!
 //! `g7-agents-fake-cli claude <args…>` and `g7-agents-fake-cli codex <args…>`.
 //! `$FAKE_CLI_LOG`, when set, gets a line per run with the arguments and
-//! the working directory, and for Codex a line per request method, resumed
-//! thread and approval decision received.
+//! the working directory; for Claude a line per answer the approval bridge
+//! gave; for Codex a line per request method, resumed thread, `turn/start`
+//! summary setting and approval decision received.
 //! `$FAKE_CLI_RESUME_SCRIPT` is the Claude fixture for `--resume` runs.
 
 use std::collections::{HashMap, VecDeque};
@@ -258,7 +259,10 @@ fn claude(args: &[String]) -> ExitCode {
             asked.push(id.clone());
             if let Some(mut bridge) = Bridge::start(&mcp_config) {
                 bridge.call(&tool, &id);
-                let _ = bridge.reply();
+                if let Some(text) = bridge.reply().as_ref().and_then(|r| r.pointer("/result/content/0/text"))
+                {
+                    log_line(&format!("bridge {}", text.as_str().unwrap_or_default()));
+                }
                 bridge.finish();
             }
         }
@@ -298,6 +302,11 @@ fn codex(args: &[String]) -> ExitCode {
                         && let Some(id) = got.pointer("/params/threadId").and_then(Value::as_str)
                     {
                         log_line(&format!("resume {id}"));
+                    }
+                    if got_method == "turn/start"
+                        && let Some(summary) = got.pointer("/params/summary").and_then(Value::as_str)
+                    {
+                        log_line(&format!("summary {summary}"));
                     }
                     // thread/start and thread/resume answer alike: a script
                     // that started a thread also serves a resume.
