@@ -3300,6 +3300,8 @@ mod tests {
         let (_dir, path) = host_dir();
         let log = Arc::new(Mutex::new(Vec::new()));
         let server = tokio::spawn(fake_host(path.clone(), Arc::new(Notify::new()), log));
+        // Looking doesn't retry, so the host must be listening before the bridge looks.
+        until("listening", || path.exists()).await;
         let bridge: &'static Bridge = Box::leak(Box::new(Bridge::new()));
         let relay: &'static TestRelay = Box::leak(Box::new(TestRelay::new(Want::Look)));
         let spawned = Arc::new(Mutex::new(0));
