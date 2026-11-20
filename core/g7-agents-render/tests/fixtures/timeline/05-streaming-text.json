@@ -1,0 +1,13 @@
+{
+  "ctx": {"marks":[],"now_ms":3000,"open":[],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"id":"a1","kind":"assistant","seq":2,"streaming":true,"text":"I found the cause.\n\nThe parser drops the last line when the inp","ts_ms":1200,"turn":1}
+  ],
+  "note": "Text still arriving: no live line; only the block being written is open.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"block":{"kind":"paragraph","text":"I found the cause."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","seq":2,"turn":1},
+    {"block":{"kind":"paragraph","open":true,"text":"The parser drops the last line when the inp"},"depth":0,"index":1,"item_id":"a1","key":"b:a1:1","kind":"block","last":true,"seq":2,"turn":1}
+  ]
+}

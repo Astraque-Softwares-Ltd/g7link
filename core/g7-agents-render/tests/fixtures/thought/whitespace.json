@@ -1,0 +1,4 @@
+{
+  "in": "  lots   of\n\n spaces\there  ",
+  "out": "lots of spaces here"
+}

@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":3,"dels":2,"files":[{"adds":1,"dels":1,"path":"a.py","rows":[{"kind":"hunk","text":"@@ def f():"},{"kind":"del","marks":[[11,1]],"text":"    return 1"},{"kind":"add","marks":[[11,1]],"text":"    return 2"}]},{"adds":1,"dels":0,"path":"b.py","rows":[{"kind":"add","text":"print('hi')"}]},{"adds":0,"dels":0,"path":"c.py","rows":[]},{"adds":1,"dels":1,"path":"e.py","rows":[{"kind":"hunk","text":"@@"},{"kind":"del","text":"x"},{"kind":"add","text":"y"}]}]},
+  "in": "*** Begin Patch\n*** Update File: a.py\n@@ def f():\n-    return 1\n+    return 2\n*** Add File: b.py\n+print('hi')\n*** Delete File: c.py\n*** Update File: d.py\n*** Move to: e.py\n@@\n-x\n+y\n*** End Patch"
+}

@@ -1,0 +1,10 @@
+{
+  "summary": {"first":{"class":"edit","count":4}},
+  "tools": [
+    {"class":"edit","name":"edit","path":"a","status":"ok","title":""},
+    {"class":"edit","name":"edit","path":"a","status":"ok","title":""},
+    {"class":"edit","name":"edit","path":"b","status":"ok","title":""},
+    {"class":"edit","name":"edit","status":"ok","title":""},
+    {"class":"edit","name":"edit","status":"ok","title":""}
+  ]
+}

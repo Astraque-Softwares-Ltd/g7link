@@ -18,7 +18,7 @@ env:
   CARGO_TERM_COLOR: always
   QT_VERSION: "6.12.0"
   # The crates that build without Qt or the Android NDK.
-  CORE_CRATES: -p g7link-protocol -p g7link-core -p g7link-ffi -p g7link-cli -p g7link-adb -p g7-agents -p xtask
+  CORE_CRATES: -p g7link-protocol -p g7link-core -p g7link-ffi -p g7link-cli -p g7link-adb -p g7-agents -p g7-agents-render -p xtask
 
 jobs:
   # Whether anything but docs changed (docs-only.sh). A push or pull request

@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":3,"dels":2,"files":[{"adds":3,"dels":2,"path":"","rows":[{"kind":"del","marks":[[11,1]],"text":"    if end < len {"},{"kind":"del","marks":[[15,2]],"text":"        end += 1;"},{"kind":"add","marks":[[11,2]],"text":"    if end <= len {"},{"kind":"add","marks":[[15,2]],"text":"        end += 2;"},{"kind":"add","text":"    }"}]}]},
+  "in": "-    if end < len {\n-        end += 1;\n+    if end <= len {\n+        end += 2;\n+    }"
+}

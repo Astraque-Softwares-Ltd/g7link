@@ -1,0 +1,14 @@
+*** Begin Patch
+*** Update File: a.py
+@@ def f():
+-    return 1
++    return 2
+*** Add File: b.py
++print('hi')
+*** Delete File: c.py
+*** Update File: d.py
+*** Move to: e.py
+@@
+-x
++y
+*** End Patch

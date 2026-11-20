@@ -1,0 +1,4 @@
+{
+  "label": {"class":"agent","object":"Explore the parser"},
+  "tool": {"class":"agent","name":"Task","status":"ok","title":"Explore the parser"}
+}

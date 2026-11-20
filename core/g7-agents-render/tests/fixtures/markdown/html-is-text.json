@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","text":"<img src=x onerror=alert(1)>"},{"kind":"paragraph","text":"<script>alert(1)</script>"},{"kind":"paragraph","text":"<iframe src=\"https://evil.example\"></iframe>"},{"kind":"paragraph","text":"Inline <b onclick=\"x()\">bold</b> and <span>span</span>."}]},
+  "in": "<img src=x onerror=alert(1)>\n\n<script>alert(1)</script>\n\n<iframe src=\"https://evil.example\"></iframe>\n\nInline <b onclick=\"x()\">bold</b> and <span>span</span>."
+}

@@ -1,0 +1,7 @@
+Fix the failing parser test**Finding the bug**
+The last line is dropped.-    if end < len {
++    if end <= len {
++        // keep the last linecargo testThe tests pass now.Fixed: `parse_line` stopped one byte early.
+
+- The bound is now inclusive.
+- A test covers the last line.

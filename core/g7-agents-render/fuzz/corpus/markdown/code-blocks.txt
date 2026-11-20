@@ -1,0 +1,15 @@
+```rust title=src/main.rs
+fn main() {
+    println!("hi");
+}
+```
+
+~~~
+no language
+~~~
+
+    indented code
+
+```mermaid
+graph TD; A-->B
+```

@@ -1,0 +1,1 @@
+List the fileslsThere are three files.Now count lineswc -l *120 lines in all.

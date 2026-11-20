@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":3,"dels":0,"files":[{"adds":3,"dels":0,"path":"","rows":[{"kind":"add","text":"line one"},{"kind":"add","text":"line two"},{"kind":"add","text":""}]}]},
+  "in": "+line one\n+line two\n+"
+}

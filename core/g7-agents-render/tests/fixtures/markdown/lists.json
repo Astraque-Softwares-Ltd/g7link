@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"list_item","marker":"bullet","text":"one"},{"kind":"list_item","marker":"bullet","text":"two"},{"depth":1,"kind":"list_item","marker":{"number":1},"text":"nested a"},{"depth":1,"kind":"list_item","marker":{"number":2},"text":"nested b"},{"depth":1,"kind":"list_item","text":"second paragraph of b"},{"kind":"list_item","marker":"todo","text":"todo"},{"kind":"list_item","marker":"done","text":"done"},{"kind":"list_item","marker":{"number":7},"text":"seven"},{"kind":"list_item","marker":{"number":8},"text":"eight"}]},
+  "in": "- one\n- two\n  1. nested a\n  2. nested b\n\n     second paragraph of b\n- [ ] todo\n- [x] done\n\n7. seven\n8. eight"
+}

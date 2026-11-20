@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","quote":1,"text":"quoted"},{"kind":"paragraph","quote":2,"text":"deeper"},{"kind":{"alert":"tip"},"quote":1,"text":"Use the cache."},{"kind":{"alert":"caution"},"quote":1,"text":""},{"kind":"list_item","marker":"bullet","quote":1,"text":"a list first"},{"kind":{"alert":"note"},"quote":1,"text":""}]},
+  "in": "> quoted\n> > deeper\n\n> [!TIP]\n> Use the cache.\n\n> [!CAUTION]\n> - a list first\n\n> [!NOTE]"
+}

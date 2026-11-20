@@ -1,0 +1,1 @@
+[docs](https://docs.example/a) [mail](mailto:me@x.example) <https://auto.example> <me@x.example> [rel](./a.md) ![logo](https://x.example/l.png) [![badge](https://b.example/b.svg)](https://ci.example) ![bad](javascript:x)

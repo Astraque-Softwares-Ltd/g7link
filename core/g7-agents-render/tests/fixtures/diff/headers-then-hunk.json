@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"notes.md","rows":[{"kind":"hunk","text":"@@ -1 +1 @@"},{"kind":"del","marks":[[0,2],[3,3]],"old_no":1,"text":"-- old rule"},{"kind":"add","marks":[[0,2],[3,3]],"new_no":1,"text":"++ new rule"}]}]},
+  "in": "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n--- old rule\n+++ new rule\n"
+}

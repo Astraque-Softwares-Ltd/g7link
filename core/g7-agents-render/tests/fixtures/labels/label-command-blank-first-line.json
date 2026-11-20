@@ -1,0 +1,4 @@
+{
+  "label": {"class":"command","object":"ls -la"},
+  "tool": {"class":"command","detail":"\n\n  ls -la","name":"command","status":"ok","title":"Bash"}
+}

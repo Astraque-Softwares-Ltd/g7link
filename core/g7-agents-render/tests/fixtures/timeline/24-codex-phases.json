@@ -1,0 +1,20 @@
+{
+  "ctx": {"marks":[],"now_ms":2200,"open":[],"state":"working","state_since_ms":2000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Add a flag","ts_ms":1000,"turn":1},
+    {"id":"a1","kind":"assistant","phase":"interim","seq":2,"text":"Looking at the CLI.","ts_ms":1100,"turn":1},
+    {"end_ms":1300,"id":"t1","kind":"tool","seq":3,"tool":{"class":"edit","detail":"src/cli.rs (update)\n@@ -1 +1,2 @@\n fn main() {\n+    flag();\n","name":"apply_patch","status":"ok","title":"Edit files"},"ts_ms":1200,"turn":1},
+    {"end_ms":1500,"id":"a2","kind":"assistant","phase":"final","seq":4,"text":"Added `--flag`.","ts_ms":1400,"turn":1},
+    {"id":"u2","kind":"user","seq":5,"text":"Thanks","ts_ms":2000,"turn":2},
+    {"id":"a3","kind":"assistant","phase":"final","seq":6,"streaming":true,"text":"You're welcome.","ts_ms":2100,"turn":2}
+  ],
+  "note": "Codex shape: commentary is interim, the final answer folds the turn; earlier turns fold too.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Add a flag","turn":1},
+    {"depth":0,"hidden":2,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":500},
+    {"block":{"kind":"paragraph","spans":[{"len":6,"start":6,"style":{"code":true}}],"text":"Added --flag."},"depth":0,"index":0,"item_id":"a2","key":"b:a2:0","kind":"block","last":true,"phase":"final","seq":4,"turn":1},
+    {"adds":1,"dels":0,"depth":0,"files":[{"adds":1,"dels":0,"path":"src/cli.rs"}],"item_id":"a2","key":"c:1","kind":"changes","seq":4,"turn":1},
+    {"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":5,"text":"Thanks","turn":2},
+    {"block":{"kind":"paragraph","open":true,"text":"You're welcome."},"depth":0,"index":0,"item_id":"a3","key":"b:a3:0","kind":"block","last":true,"phase":"final","seq":6,"turn":2}
+  ]
+}

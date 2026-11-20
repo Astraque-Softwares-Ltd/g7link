@@ -1,0 +1,20 @@
+{
+  "events": [
+    {"type":"focus"},
+    {"type":"typed","now_ms":0},
+    {"type":"requests","ids":["a"],"now_ms":1499},
+    {"type":"requests","ids":["a","b"],"now_ms":1500}
+  ],
+  "held_after": [
+    [],
+    [],
+    ["a"],
+    ["a"]
+  ],
+  "idle_at_after": [
+    null,
+    null,
+    1500,
+    1500
+  ]
+}

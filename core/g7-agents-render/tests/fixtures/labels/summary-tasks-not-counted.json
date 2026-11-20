@@ -1,0 +1,8 @@
+{
+  "summary": {"first":{"class":"search","count":1}},
+  "tools": [
+    {"class":"tasks","name":"tasks","status":"ok","title":""},
+    {"class":"search","detail":"x","name":"search","status":"ok","title":""},
+    {"class":"tasks","name":"tasks","status":"ok","title":""}
+  ]
+}

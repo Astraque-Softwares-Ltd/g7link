@@ -1,0 +1,16 @@
+{
+  "ctx": {"marks":[{"by":"Pixel 8","item_id":"t1","kind":"denied"}],"now_ms":1400,"open":[],"state":"working","state_since_ms":1300},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1300,"id":"t1","kind":"tool","seq":2,"tool":{"class":"command","detail":"rm -rf build","name":"command","status":"denied","title":"Bash"},"ts_ms":1100,"turn":1},
+    {"deny_of":"t1","from":"Pixel 8","id":"u2","kind":"user","seq":3,"text":"Don't delete build, run make clean","ts_ms":1300,"turn":2}
+  ],
+  "note": "Codex: the denial's words start the next turn; the earlier turn has no answer and stays open. Denied on a phone: a mark row.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"rm -rf build"},"ms":200,"seq":2,"status":"denied","turn":1},
+    {"by":"Pixel 8","depth":0,"item_id":"t1","key":"m:t1","kind":"mark","mark_kind":"denied","seq":2,"turn":1},
+    {"deny_of":true,"depth":0,"from":"Pixel 8","item_id":"u2","key":"i:u2","kind":"user","seq":3,"text":"Don't delete build, run make clean","turn":2},
+    {"depth":0,"item_id":"","key":"live","kind":"live","label":"starting","seq":0,"since_ms":1300,"turn":2}
+  ]
+}

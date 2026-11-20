@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"","rows":[{"kind":"del","text":"abc"},{"kind":"add","text":"abc"}]}]},
+  "in": "-a\u0000b\u202ec\n+a\u0085b\u202ec"
+}

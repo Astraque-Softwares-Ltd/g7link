@@ -1,0 +1,53 @@
+{
+  "events": [
+    {"type":"requests","ids":["r1"],"now_ms":1},
+    {"type":"typed","now_ms":2},
+    {"type":"typed","now_ms":3},
+    {"type":"focus"},
+    {"type":"requests","ids":["r1","r2"],"now_ms":3703},
+    {"type":"requests","ids":["r1","r2","r3"],"now_ms":3803},
+    {"type":"typed","now_ms":4503},
+    {"type":"focus"},
+    {"type":"typed","now_ms":6702},
+    {"type":"typed","now_ms":6703},
+    {"type":"typed","now_ms":6803},
+    {"type":"typed","now_ms":8302},
+    {"type":"sent"},
+    {"type":"typed","now_ms":9803},
+    {"type":"requests","ids":["r1","r2","r3","r4"],"now_ms":10503}
+  ],
+  "held_after": [
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    ["r4"]
+  ],
+  "idle_at_after": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    11303
+  ]
+}

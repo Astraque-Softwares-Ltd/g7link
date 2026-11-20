@@ -1,0 +1,7 @@
+<img src=x onerror=alert(1)>
+
+<script>alert(1)</script>
+
+<iframe src="https://evil.example"></iframe>
+
+Inline <b onclick="x()">bold</b> and <span>span</span>.

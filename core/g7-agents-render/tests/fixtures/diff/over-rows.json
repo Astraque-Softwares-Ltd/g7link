@@ -1,0 +1,4 @@
+{
+  "in": {"before":"@@ -1,6000 +1,6000 @@\n","repeat":"-old\n+new\n","times":3000},
+  "shape": {"adds":3000,"dels":3000,"files":1,"more":true,"rows":4999}
+}

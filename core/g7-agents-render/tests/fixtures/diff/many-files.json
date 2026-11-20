@@ -1,0 +1,4 @@
+{
+  "in": {"repeat":"diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+y\n","times":2000},
+  "shape": {"adds":2000,"dels":2000,"files":1250,"more":true,"rows":3750}
+}

@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"code","lang":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","text":"code"}]},
+  "in": {"after":" tail\ncode\n```","before":"```","repeat":"x","times":10240}
+}

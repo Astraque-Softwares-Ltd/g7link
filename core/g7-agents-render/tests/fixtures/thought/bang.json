@@ -1,0 +1,4 @@
+{
+  "in": "Wow! [x](y) ok. z",
+  "out": "Wow!"
+}

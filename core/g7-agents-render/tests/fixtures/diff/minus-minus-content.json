@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":2,"dels":2,"files":[{"adds":2,"dels":2,"path":"","rows":[{"kind":"del","marks":[[0,2],[5,7],[18,7]],"text":"-- a comment line removed"},{"kind":"add","marks":[[0,2],[5,7],[18,5]],"text":"++ a counter line added"},{"kind":"del","text":"x"},{"kind":"add","text":"y"}]}]},
+  "in": "--- a comment line removed\n+++ a counter line added\n-x\n+y"
+}

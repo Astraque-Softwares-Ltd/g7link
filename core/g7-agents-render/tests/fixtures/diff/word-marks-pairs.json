@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":3,"dels":2,"files":[{"adds":3,"dels":2,"path":"","rows":[{"kind":"del","marks":[[6,4]],"text":"alpha beta gamma"},{"kind":"del","marks":[[4,3]],"text":"one two"},{"kind":"add","marks":[[6,4]],"text":"alpha BETA gamma"},{"kind":"add","marks":[[4,5]],"text":"one three"},{"kind":"add","text":"extra line"}]}]},
+  "in": "-alpha beta gamma\n-one two\n+alpha BETA gamma\n+one three\n+extra line"
+}

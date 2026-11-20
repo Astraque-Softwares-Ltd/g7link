@@ -1,0 +1,4 @@
+{
+  "label": {"class":"command","object":"Run the build"},
+  "tool": {"class":"command","name":"command","status":"ok","title":"Run the build"}
+}

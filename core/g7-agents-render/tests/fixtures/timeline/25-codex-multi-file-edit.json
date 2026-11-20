@@ -1,0 +1,16 @@
+{
+  "ctx": {"marks":[],"now_ms":1500,"open":["c:1:1"],"state":"done","state_since_ms":1400},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"edit","detail":"diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/src/b.rs b/src/b.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/b.rs\n@@ -0,0 +1,2 @@\n+one\n+two\n","name":"apply_patch","path":"src/a.rs","status":"ok","title":"Edit files"},"ts_ms":1100,"turn":1},
+    {"end_ms":1400,"id":"a1","kind":"assistant","phase":"final","seq":3,"text":"Split the module.","ts_ms":1300,"turn":1}
+  ],
+  "note": "A Codex edit of several files: its path is the first file; the changes row counts each file from the diff, and a file opens that file's part.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":400},
+    {"block":{"kind":"paragraph","text":"Split the module."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"final","seq":3,"turn":1},
+    {"adds":3,"dels":1,"depth":0,"files":[{"adds":1,"dels":1,"path":"src/a.rs"},{"adds":2,"dels":0,"open":true,"path":"src/b.rs"}],"item_id":"a1","key":"c:1","kind":"changes","seq":3,"turn":1},
+    {"depth":1,"item_id":"t1","key":"d:t1:e1","kind":"detail","of":{"doc":{"adds":2,"dels":0,"files":[{"adds":2,"dels":0,"path":"src/b.rs","rows":[{"kind":"hunk","text":"@@ -0,0 +1,2 @@"},{"kind":"add","new_no":1,"text":"one"},{"kind":"add","new_no":2,"text":"two"}]}]},"edit":1,"edits":1,"type":"diff"},"seq":2,"turn":1}
+  ]
+}

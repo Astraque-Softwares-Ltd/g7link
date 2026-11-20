@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","text":"Text"},{"kind":"code","lang":"python","lines":[{"text":"def f():","toks":[{"class":"keyword","len":3},{"class":"plain","len":1},{"class":"function","len":1},{"class":"punctuation","len":3}]},{"text":"    return 1","toks":[{"class":"plain","len":4},{"class":"keyword","len":6},{"class":"plain","len":1},{"class":"number","len":1}]}],"text":"def f():\n    return 1"}]},
+  "in": "Text\n\n```python\ndef f():\n    return 1"
+}

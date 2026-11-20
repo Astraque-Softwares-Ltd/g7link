@@ -1,0 +1,2 @@
+Fix the failing parser testfn parse_linecargo test-    if end < len {
++    if end <= len {cargo test

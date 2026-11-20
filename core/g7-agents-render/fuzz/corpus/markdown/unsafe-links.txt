@@ -1,0 +1,1 @@
+[x](javascript:alert(1)) [y](data:text/html;base64,PHNjcmlwdD4=) [z](file:///etc/passwd) [w](  JaVaScRiPt:alert(2)) [v](vbscript:msgbox) [u](//no-scheme.example)

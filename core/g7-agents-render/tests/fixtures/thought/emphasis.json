@@ -1,0 +1,4 @@
+{
+  "in": "This is *very* _important_ and **bold** text. More",
+  "out": "This is very important and bold text."
+}

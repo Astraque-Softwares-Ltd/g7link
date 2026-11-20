@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"table","table":{"align":["left","right","center"],"cells":[{"header":true,"text":"Name"},{"header":true,"text":"Size"},{"header":true,"text":"Done"},{"text":"a.rs"},{"text":"10"},{"spans":[{"len":3,"start":0,"style":{"strong":true}}],"text":"yes"},{"text":"b.rs"},{"text":"2"},{"text":""},{"text":"c.rs"},{"text":"3"},{"text":"no"}],"columns":3},"text":""}]},
+  "in": "| Name | Size | Done |\n|:-----|-----:|:----:|\n| a.rs | 10 | **yes** |\n| b.rs | 2 |\n| c.rs | 3 | no | extra |"
+}

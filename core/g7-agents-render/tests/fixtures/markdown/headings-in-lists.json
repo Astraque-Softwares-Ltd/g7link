@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"list_item","marker":"bullet","text":""},{"kind":{"heading":1},"text":"heading in item"},{"kind":"list_item","marker":"bullet","text":""},{"kind":"code","text":"code in item"},{"kind":"list_item","marker":"bullet","text":""},{"kind":"list_item","marker":"bullet","text":"last"}]},
+  "in": "- # heading in item\n- ```\n  code in item\n  ```\n-\n- last"
+}

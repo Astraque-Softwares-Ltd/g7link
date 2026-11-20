@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","spans":[{"len":7,"start":55,"style":{"strong":true}}],"text":"lone \\ud800 escape, a replacement � char and 😀 astral bold 😀"}]},
+  "in": "lone \\ud800 escape, a replacement � char and 😀 astral **bold 😀**"
+}

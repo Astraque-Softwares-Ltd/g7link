@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"","rows":[{"kind":"hunk","text":"@@ -1,2 +1,2 @@"},{"kind":"del","marks":[[8,2]],"old_no":1,"text":"let a = 1;"},{"kind":"add","marks":[[8,2]],"new_no":1,"text":"let a = 2;"},{"kind":"context","new_no":2,"old_no":2,"text":"same"}]}]},
+  "in": "@@ -1,2 +1,2 @@\n-let a = 1;\n+let a = 2;\n same\n"
+}

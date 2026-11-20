@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":2,"dels":1,"files":[{"adds":2,"dels":0,"path":"new.txt","rows":[{"kind":"hunk","text":"@@ -0,0 +1,2 @@"},{"kind":"add","new_no":1,"text":"one"},{"kind":"add","new_no":2,"text":"two"}]},{"adds":0,"dels":1,"path":"old.txt","rows":[{"kind":"hunk","text":"@@ -1 +0,0 @@"},{"kind":"del","old_no":1,"text":"gone"}]},{"adds":0,"dels":0,"path":"y","rows":[]}]},
+  "in": "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+one\n+two\ndiff --git a/old.txt b/old.txt\ndeleted file mode 100644\n--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\ndiff --git a/x b/y\nsimilarity index 90%\nrename from x\nrename to y\n"
+}

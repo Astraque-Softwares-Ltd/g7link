@@ -1,0 +1,21 @@
+{
+  "ctx": {"marks":[],"now_ms":9500,"open":["i:t1","g:s1"],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"id":"t1","kind":"tool","seq":2,"tool":{"class":"agent","name":"Task","status":"running","title":"Explore the parser"},"ts_ms":1100,"turn":1},
+    {"end_ms":1210,"group":"t1","id":"s1","kind":"tool","seq":3,"tool":{"class":"read","name":"read","path":"src/parse.rs","status":"ok","title":"Read"},"ts_ms":1200,"turn":1},
+    {"end_ms":1310,"group":"t1","id":"s2","kind":"tool","seq":4,"tool":{"class":"search","detail":"parse_line","name":"search","status":"ok","title":"Grep"},"ts_ms":1300,"turn":1},
+    {"end_ms":1410,"group":"nowhere","id":"s3","kind":"tool","seq":5,"tool":{"class":"read","name":"read","path":"src/lib.rs","status":"ok","title":"Read"},"ts_ms":1400,"turn":1},
+    {"id":"a1","kind":"assistant","phase":"interim","seq":6,"text":"The parser is in two files.","ts_ms":9100,"turn":1}
+  ],
+  "note": "Work inside a running sub-agent follows its tool, one level deeper, when the tool is open (here grouped, and the group open); an item naming no known tool stays in line.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"agent","object":"Explore the parser"},"open":true,"seq":2,"status":"running","turn":1},
+    {"count":2,"depth":1,"item_id":"s1","key":"g:s1","kind":"group","open":true,"seq":3,"summary":{"first":{"class":"read","count":1},"second":{"class":"search","count":1}},"turn":1},
+    {"depth":2,"item_id":"s1","key":"i:s1","kind":"tool","label":{"class":"read","object":"src/parse.rs"},"ms":10,"seq":3,"status":"ok","turn":1},
+    {"depth":2,"item_id":"s2","key":"i:s2","kind":"tool","label":{"class":"search","object":"parse_line"},"ms":10,"seq":4,"status":"ok","turn":1},
+    {"depth":0,"item_id":"s3","key":"i:s3","kind":"tool","label":{"class":"read","object":"src/lib.rs"},"ms":10,"seq":5,"status":"ok","turn":1},
+    {"block":{"kind":"paragraph","text":"The parser is in two files."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"interim","seq":6,"turn":1}
+  ]
+}

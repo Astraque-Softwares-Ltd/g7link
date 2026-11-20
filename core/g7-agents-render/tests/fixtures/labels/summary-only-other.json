@@ -1,0 +1,7 @@
+{
+  "summary": {"first":{"class":"other","count":2}},
+  "tools": [
+    {"class":"mcp","name":"mcp","status":"ok","title":""},
+    {"class":"other","name":"other","status":"ok","title":""}
+  ]
+}

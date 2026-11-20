@@ -1,0 +1,14 @@
+{
+  "ctx": {"marks":[],"now_ms":2500,"open":[],"state":"interrupted","state_since_ms":2000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"id":"t1","kind":"tool","seq":2,"tool":{"class":"command","detail":"sleep 100","name":"command","status":"running","title":"Bash"},"ts_ms":1100,"turn":1},
+    {"id":"a1","kind":"assistant","seq":3,"text":"Waiting for the build.","ts_ms":1050,"turn":1}
+  ],
+  "note": "A turn the user stopped: nothing folds; the tool that was running reads Stopped.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"sleep 100"},"seq":2,"status":"stopped","turn":1},
+    {"block":{"kind":"paragraph","text":"Waiting for the build."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"seq":3,"turn":1}
+  ]
+}

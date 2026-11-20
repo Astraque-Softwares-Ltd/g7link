@@ -1,0 +1,12 @@
+# Title
+
+A paragraph with **bold**, *em*, ~~strike~~ and `code`.
+Soft break and a hard  
+break.
+
+---
+
+Setext
+======
+
+###### Six

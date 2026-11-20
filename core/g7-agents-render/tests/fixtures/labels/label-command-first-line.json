@@ -1,0 +1,4 @@
+{
+  "label": {"class":"command","object":"cargo test \\"},
+  "tool": {"class":"command","detail":"cargo   test \\\n  --all-targets","name":"command","status":"ok","title":"Bash"}
+}

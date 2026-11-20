@@ -1,0 +1,17 @@
+{
+  "ctx": {"marks":[],"now_ms":6000,"open":[],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1110,"id":"t1","kind":"tool","seq":2,"tool":{"class":"read","name":"read","path":"src/parse.rs","status":"ok","title":"Read"},"ts_ms":1100,"turn":1},
+    {"end_ms":1210,"id":"t2","kind":"tool","seq":3,"tool":{"class":"search","detail":"fn parse_line","name":"search","status":"ok","title":"Grep"},"ts_ms":1200,"turn":1},
+    {"end_ms":3400,"id":"t3","kind":"tool","seq":4,"tool":{"class":"command","detail":"cargo test","name":"command","output":"test parse::last_line ... FAILED","status":"error","title":"Bash"},"ts_ms":1300,"turn":1},
+    {"end_ms":3600,"id":"t4","kind":"tool","seq":5,"tool":{"class":"edit","detail":"-    if end < len {\n+    if end <= len {","name":"edit","path":"src/parse.rs","status":"ok","title":"Edit src/parse.rs"},"ts_ms":3500,"turn":1},
+    {"end_ms":5900,"id":"t5","kind":"tool","seq":6,"tool":{"class":"command","detail":"cargo test","name":"command","output":"test result: ok. 12 passed","status":"ok","title":"Bash"},"ts_ms":3700,"turn":1}
+  ],
+  "note": "Five finished tools in a row make one group: commands first, then edits; a failed member marks the group.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"count":5,"depth":0,"failed":true,"item_id":"t1","key":"g:t1","kind":"group","seq":2,"summary":{"first":{"class":"command","count":2},"others":2,"second":{"class":"edit","count":1}},"turn":1},
+    {"depth":0,"item_id":"","key":"live","kind":"live","label":"thinking","seq":0,"since_ms":1000,"turn":1}
+  ]
+}

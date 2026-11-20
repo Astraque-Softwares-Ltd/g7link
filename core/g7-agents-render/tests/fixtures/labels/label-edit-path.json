@@ -1,0 +1,4 @@
+{
+  "label": {"class":"edit","object":"src/parse.rs"},
+  "tool": {"class":"edit","detail":"-a\n+b","name":"edit","path":"src/parse.rs","status":"ok","title":"Edit src/parse.rs"}
+}

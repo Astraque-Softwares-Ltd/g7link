@@ -62,6 +62,7 @@ pub fn run(args: &[&str]) -> Result<()> {
     write_qt(&mut text, &root)?;
     write_fonts(&mut text, &root)?;
     write_icons(&mut text, &root)?;
+    write_agents_render(&mut text, &root)?;
     writeln!(text, "\nRust crates ({} in this build)\n{}", crates.len(), "-".repeat(30))?;
     for c in &crates {
         writeln!(text, "\n{} {}  ·  {}", c.name, c.version, c.license)?;
@@ -206,6 +207,18 @@ fn write_icons(text: &mut String, root: &Path) -> Result<()> {
     let mit = fs::read_to_string(root.join("LICENSES/MIT-Tabler-Icons.txt"))
         .context("reading the Tabler Icons license")?;
     writeln!(text, "\n{}", mit.trim_end())?;
+    Ok(())
+}
+
+/// The agents' timeline rules are ported from t3code, and code is coloured with the syntax
+/// definitions syntect bundles; both carry notices of their own.
+fn write_agents_render(text: &mut String, root: &Path) -> Result<()> {
+    writeln!(text, "\nAgents timeline and code colouring\n{}", "-".repeat(34))?;
+    for name in ["THIRD-PARTY-T3CODE.md", "THIRD-PARTY-SYNTAXES.md"] {
+        let path = root.join("core/g7-agents-render").join(name);
+        let body = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        writeln!(text, "\n{}", body.trim_end())?;
+    }
     Ok(())
 }
 

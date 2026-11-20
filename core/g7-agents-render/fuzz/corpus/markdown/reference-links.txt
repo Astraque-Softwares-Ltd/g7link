@@ -1,0 +1,5 @@
+See [the docs][d] and [here] and [x][].
+
+[d]: https://docs.example
+[here]: https://here.example
+[x]: https://x.example

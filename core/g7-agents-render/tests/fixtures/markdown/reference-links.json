@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","text":"See [the docs][d] and [here] and [x][]."}]},
+  "in": "See [the docs][d] and [here] and [x][].\n\n[d]: https://docs.example\n[here]: https://here.example\n[x]: https://x.example"
+}

@@ -1,0 +1,4 @@
+{
+  "label": {"class":"search","object":"**/*.rs"},
+  "tool": {"class":"search","detail":"{\"pattern\":\"**/*.rs\"}","name":"search","status":"ok","title":"Glob"}
+}

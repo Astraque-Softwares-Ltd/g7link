@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","spans":[{"href":"https://docs.example/a","len":4,"start":0,"style":{"link":"web"}},{"href":"mailto:me@x.example","len":4,"start":5,"style":{"link":"mail"}},{"href":"https://auto.example","len":20,"start":10,"style":{"link":"shown"}},{"href":"mailto:me@x.example","len":12,"start":31,"style":{"link":"shown"}},{"href":"https://x.example/l.png","len":4,"start":48,"style":{"image":true,"link":"web"}},{"href":"https://ci.example","len":5,"start":53,"style":{"image":true,"link":"web"}}],"text":"docs mail https://auto.example me@x.example rel logo badge bad"}]},
+  "in": "[docs](https://docs.example/a) [mail](mailto:me@x.example) <https://auto.example> <me@x.example> [rel](./a.md) ![logo](https://x.example/l.png) [![badge](https://b.example/b.svg)](https://ci.example) ![bad](javascript:x)"
+}

@@ -1,0 +1,4 @@
+{
+  "label": {"class":"edit","more":2,"object":"Edit files"},
+  "tool": {"class":"edit","detail":"a.txt (add)\nhello\nb.txt (update)\n@@ -1 +1 @@\n-x\n+y\nc.txt (delete)\nbye","name":"apply_patch","status":"ok","title":"Edit files"}
+}

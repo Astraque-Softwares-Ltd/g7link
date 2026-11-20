@@ -1,0 +1,4 @@
+{
+  "label": {"class":"web","object":"WebFetch"},
+  "tool": {"class":"web","detail":"{\"prompt\":\"no url\"}","name":"web","status":"ok","title":"WebFetch"}
+}

@@ -1,0 +1,11 @@
+{
+  "ctx": {"marks":[],"now_ms":1500,"open":[],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1}
+  ],
+  "note": "A running turn with nothing after the user's message: the live line says Starting.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"item_id":"","key":"live","kind":"live","label":"starting","seq":0,"since_ms":1000,"turn":1}
+  ]
+}

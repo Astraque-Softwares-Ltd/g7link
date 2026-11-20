@@ -1,0 +1,4 @@
+{
+  "in": {"after":"```","before":"```rust\n","repeat":"let x = 1;\n","times":480000},
+  "shape": {"blocks":[{"depth":0,"kind":"code","lines":0,"more_rows":null,"quote":0,"rows":null,"spans":0,"text_bytes":65528}],"plain":false}
+}

@@ -1,0 +1,28 @@
+{
+  "ctx": {"marks":[],"now_ms":140000,"open":["f:1","g:r1","i:t2"],"state":"done","state_since_ms":135000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"r1","kind":"reasoning","seq":2,"text":"**Finding the bug**\nThe last line is dropped.","ts_ms":1100,"turn":1},
+    {"end_ms":1310,"id":"t1","kind":"tool","seq":3,"tool":{"class":"read","name":"read","path":"src/parse.rs","status":"ok","title":"Read"},"ts_ms":1300,"turn":1},
+    {"end_ms":1500,"id":"t2","kind":"tool","seq":4,"tool":{"class":"edit","detail":"-    if end < len {\n+    if end <= len {\n+        // keep the last line","name":"edit","path":"src/parse.rs","status":"ok","title":"Edit src/parse.rs"},"ts_ms":1400,"turn":1},
+    {"end_ms":4200,"id":"t3","kind":"tool","seq":5,"tool":{"class":"command","detail":"cargo test","name":"command","output":"test result: ok","status":"ok","title":"Bash"},"ts_ms":1600,"turn":1},
+    {"end_ms":4310,"id":"a1","kind":"assistant","phase":"interim","seq":6,"text":"The tests pass now.","ts_ms":4300,"turn":1},
+    {"end_ms":135000,"id":"a2","kind":"assistant","phase":"final","seq":7,"text":"Fixed: `parse_line` stopped one byte early.\n\n- The bound is now inclusive.\n- A test covers the last line.","ts_ms":4400,"turn":1}
+  ],
+  "note": "The same with the fold and its group open: hidden rows at depth 1, the group's members at 2.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"hidden":7,"item_id":"u1","key":"f:1","kind":"fold","open":true,"seq":1,"turn":1,"worked_ms":134000},
+    {"count":4,"depth":1,"item_id":"r1","key":"g:r1","kind":"group","open":true,"seq":2,"summary":{"first":{"class":"command","count":1},"others":1,"second":{"class":"edit","count":1}},"turn":1},
+    {"count":1,"depth":2,"has_text":true,"item_id":"r1","key":"t:r1","kind":"thought","preview":"Finding the bug","seq":2,"turn":1},
+    {"depth":2,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"src/parse.rs"},"ms":10,"seq":3,"status":"ok","turn":1},
+    {"adds":2,"dels":1,"depth":2,"has_detail":true,"item_id":"t2","key":"i:t2","kind":"tool","label":{"class":"edit","object":"src/parse.rs"},"ms":100,"open":true,"seq":4,"status":"ok","turn":1},
+    {"depth":3,"item_id":"t2","key":"d:t2:f","kind":"detail","of":{"doc":{"adds":2,"dels":1,"files":[{"adds":2,"dels":1,"path":"","rows":[{"kind":"del","marks":[[11,1]],"text":"    if end < len {"},{"kind":"add","marks":[[11,2]],"text":"    if end <= len {"},{"kind":"add","text":"        // keep the last line"}]}]},"type":"diff"},"seq":4,"turn":1},
+    {"depth":2,"has_detail":true,"has_output":true,"item_id":"t3","key":"i:t3","kind":"tool","label":{"class":"command","object":"cargo test"},"ms":2600,"seq":5,"status":"ok","turn":1},
+    {"block":{"kind":"paragraph","text":"The tests pass now."},"depth":1,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"interim","seq":6,"turn":1},
+    {"block":{"kind":"paragraph","spans":[{"len":10,"start":7,"style":{"code":true}}],"text":"Fixed: parse_line stopped one byte early."},"depth":0,"index":0,"item_id":"a2","key":"b:a2:0","kind":"block","phase":"final","seq":7,"turn":1},
+    {"block":{"kind":"list_item","marker":"bullet","text":"The bound is now inclusive."},"depth":0,"index":1,"item_id":"a2","key":"b:a2:1","kind":"block","phase":"final","seq":7,"turn":1},
+    {"block":{"kind":"list_item","marker":"bullet","text":"A test covers the last line."},"depth":0,"index":2,"item_id":"a2","key":"b:a2:2","kind":"block","last":true,"phase":"final","seq":7,"turn":1},
+    {"adds":2,"dels":1,"depth":0,"files":[{"adds":2,"dels":1,"path":"src/parse.rs"}],"item_id":"a2","key":"c:1","kind":"changes","seq":7,"turn":1}
+  ]
+}

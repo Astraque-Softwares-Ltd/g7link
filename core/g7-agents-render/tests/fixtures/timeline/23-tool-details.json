@@ -1,0 +1,20 @@
+{
+  "ctx": {"marks":[],"now_ms":3500,"open":["g:t1","i:t1","i:t2"],"state":"working","state_since_ms":1000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":3100,"id":"t1","kind":"tool","seq":2,"tool":{"class":"command","detail":"cargo test \\\n  --all","name":"command","output":"...\ntest result: ok","status":"ok","title":"Bash"},"truncated":true,"ts_ms":1100,"turn":1},
+    {"end_ms":3300,"id":"t2","kind":"tool","seq":3,"tool":{"class":"edit","detail":"diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -10,2 +10,2 @@\n fn a() {\n-    old();\n+    new();\n","name":"edit","path":"src/a.rs","status":"ok","title":"Edit src/a.rs"},"ts_ms":3200,"turn":1},
+    {"id":"t3","kind":"tool","seq":4,"tool":{"class":"command","detail":"cargo build","name":"command","status":"running","title":"Bash"},"ts_ms":3400,"turn":1}
+  ],
+  "note": "Opened tools show their command, diff (with line numbers from the hunk) and output.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"count":2,"depth":0,"item_id":"t1","key":"g:t1","kind":"group","open":true,"seq":2,"summary":{"first":{"class":"command","count":1},"second":{"class":"edit","count":1}},"turn":1},
+    {"depth":1,"has_detail":true,"has_output":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo test \\"},"ms":2000,"open":true,"seq":2,"status":"ok","turn":1},
+    {"depth":2,"item_id":"t1","key":"d:t1:c","kind":"detail","of":{"text":"cargo test \\\n  --all","type":"command"},"seq":2,"turn":1},
+    {"depth":2,"item_id":"t1","key":"d:t1:o","kind":"detail","of":{"cut":true,"text":"...\ntest result: ok","type":"output"},"seq":2,"turn":1},
+    {"adds":1,"dels":1,"depth":1,"has_detail":true,"item_id":"t2","key":"i:t2","kind":"tool","label":{"class":"edit","object":"src/a.rs"},"ms":100,"open":true,"seq":3,"status":"ok","turn":1},
+    {"depth":2,"item_id":"t2","key":"d:t2:f","kind":"detail","of":{"doc":{"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"src/a.rs","rows":[{"kind":"hunk","text":"@@ -10,2 +10,2 @@"},{"kind":"context","new_no":10,"old_no":10,"text":"fn a() {"},{"kind":"del","marks":[[4,6]],"old_no":11,"text":"    old();"},{"kind":"add","marks":[[4,6]],"new_no":11,"text":"    new();"}]}]},"type":"diff"},"seq":3,"turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t3","key":"i:t3","kind":"tool","label":{"class":"command","object":"cargo build"},"seq":4,"status":"running","turn":1}
+  ]
+}

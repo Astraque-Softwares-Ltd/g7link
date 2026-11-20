@@ -1,0 +1,4 @@
+--- a comment line removed
++++ a counter line added
+-x
++y

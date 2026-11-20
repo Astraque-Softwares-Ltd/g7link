@@ -1,0 +1,18 @@
+{
+  "ctx": {"marks":[],"now_ms":1700,"open":["f:1"],"state":"done","state_since_ms":1600},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1101,"id":"t1","kind":"tool","seq":2,"tool":{"class":"tasks","name":"TodoWrite","status":"ok","title":"TodoWrite"},"ts_ms":1100,"turn":1},
+    {"end_ms":1201,"id":"t2","kind":"tool","seq":3,"tool":{"class":"read","name":"read","path":"src/parse.rs","status":"ok","title":"Read"},"ts_ms":1200,"turn":1},
+    {"id":"t3","kind":"tool","seq":4,"tool":{"class":"tasks","name":"TodoWrite","status":"running","title":"TodoWrite"},"ts_ms":1300,"turn":1},
+    {"end_ms":1401,"id":"t4","kind":"tool","seq":5,"tool":{"class":"search","detail":"last_line","name":"search","status":"ok","title":"Grep"},"ts_ms":1400,"turn":1},
+    {"end_ms":1600,"id":"a1","kind":"assistant","phase":"final","seq":6,"text":"Done.","ts_ms":1500,"turn":1}
+  ],
+  "note": "Task lists make no row: not in the group's summary, not counted by the fold.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","open":true,"seq":1,"turn":1,"worked_ms":600},
+    {"count":2,"depth":1,"item_id":"t2","key":"g:t2","kind":"group","seq":3,"summary":{"first":{"class":"read","count":1},"second":{"class":"search","count":1}},"turn":1},
+    {"block":{"kind":"paragraph","text":"Done."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"final","seq":6,"turn":1}
+  ]
+}

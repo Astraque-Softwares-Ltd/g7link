@@ -1,0 +1,17 @@
+{
+  "ctx": {"marks":[{"by":"","item_id":"t4","kind":"held"}],"now_ms":2000,"open":[],"state":"waiting","state_since_ms":1500},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1110,"id":"t1","kind":"tool","seq":2,"tool":{"class":"read","name":"read","path":"src/parse.rs","status":"ok","title":"Read"},"ts_ms":1100,"turn":1},
+    {"end_ms":1210,"id":"t2","kind":"tool","seq":3,"tool":{"class":"search","detail":"fn parse_line","name":"search","status":"ok","title":"Grep"},"ts_ms":1200,"turn":1},
+    {"end_ms":1400,"id":"t3","kind":"tool","seq":4,"tool":{"class":"edit","detail":"-a\n+b","name":"edit","path":"src/parse.rs","status":"ok","title":"Edit src/parse.rs"},"ts_ms":1300,"turn":1},
+    {"id":"t4","kind":"tool","seq":5,"tool":{"class":"command","detail":"rm -rf target && cargo test","name":"command","status":"running","title":"Bash"},"ts_ms":1500,"turn":1}
+  ],
+  "note": "The same request held by the typing guard.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"count":3,"depth":0,"item_id":"t1","key":"g:t1","kind":"group","seq":2,"summary":{"first":{"class":"edit","count":1},"others":1,"second":{"class":"read","count":1}},"turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t4","key":"i:t4","kind":"tool","label":{"class":"command","object":"rm -rf target && cargo test"},"seq":5,"status":"asking","turn":1},
+    {"depth":0,"item_id":"t4","key":"m:t4","kind":"mark","mark_kind":"held","seq":5,"turn":1}
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "ctx": {"marks":[{"by":"","item_id":"t1","kind":"allowed"},{"by":"Pixel 8 Pro","item_id":"t2","kind":"allowed"},{"by":"","item_id":"t3","kind":"rule"},{"by":"","item_id":"t4","kind":"expired"},{"by":"","item_id":"t5","kind":"cancelled"},{"by":"","item_id":"t7","kind":"allowed"},{"by":"","item_id":"gone","kind":"expired"}],"now_ms":2100,"open":[],"state":"working","state_since_ms":2000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"command","detail":"make","name":"command","status":"ok","title":"Bash"},"ts_ms":1100,"turn":1},
+    {"end_ms":1400,"id":"t2","kind":"tool","seq":3,"tool":{"class":"command","detail":"make test","name":"command","status":"ok","title":"Bash"},"ts_ms":1300,"turn":1},
+    {"end_ms":1600,"id":"t3","kind":"tool","seq":4,"tool":{"class":"edit","detail":"+x","name":"edit","path":"a.txt","status":"ok","title":"Edit a.txt"},"ts_ms":1500,"turn":1},
+    {"end_ms":1800,"id":"t4","kind":"tool","seq":5,"tool":{"class":"command","detail":"make install","name":"command","status":"error","title":"Bash"},"ts_ms":1700,"turn":1},
+    {"end_ms":2000,"id":"t5","kind":"tool","seq":6,"tool":{"class":"command","detail":"make deploy","name":"command","status":"error","title":"Bash"},"ts_ms":1900,"turn":1},
+    {"end_ms":2020,"id":"t6","kind":"tool","seq":7,"tool":{"by_rule":true,"class":"command","detail":"make check","name":"command","status":"ok","title":"Bash"},"ts_ms":2010,"turn":1},
+    {"end_ms":2040,"id":"t7","kind":"tool","seq":8,"tool":{"by_rule":true,"class":"command","detail":"make lint","name":"command","status":"ok","title":"Bash"},"ts_ms":2030,"turn":1}
+  ],
+  "note": "Marks only when they say something: none for an answer given here by hand; a row for another device, a rule (from Ctx.marks or the tool's by_rule; an explicit mark wins), expiry, cancellation; a mark whose tool is gone goes last.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"count":2,"depth":0,"item_id":"t1","key":"g:t1","kind":"group","seq":2,"summary":{"first":{"class":"command","count":2}},"turn":1},
+    {"by":"Pixel 8 Pro","depth":0,"item_id":"t2","key":"m:t2","kind":"mark","mark_kind":"allowed","seq":3,"turn":1},
+    {"adds":1,"depth":0,"has_detail":true,"item_id":"t3","key":"i:t3","kind":"tool","label":{"class":"edit","object":"a.txt"},"ms":100,"seq":4,"status":"ok","turn":1},
+    {"depth":0,"item_id":"t3","key":"m:t3","kind":"mark","mark_kind":"rule","seq":4,"turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t4","key":"i:t4","kind":"tool","label":{"class":"command","object":"make install"},"ms":100,"seq":5,"status":"failed","turn":1},
+    {"depth":0,"item_id":"t4","key":"m:t4","kind":"mark","mark_kind":"expired","seq":5,"turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t5","key":"i:t5","kind":"tool","label":{"class":"command","object":"make deploy"},"ms":100,"seq":6,"status":"failed","turn":1},
+    {"depth":0,"item_id":"t5","key":"m:t5","kind":"mark","mark_kind":"cancelled","seq":6,"turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t6","key":"i:t6","kind":"tool","label":{"class":"command","object":"make check"},"ms":10,"seq":7,"status":"ok","turn":1},
+    {"depth":0,"item_id":"t6","key":"m:t6","kind":"mark","mark_kind":"rule","seq":7,"turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t7","key":"i:t7","kind":"tool","label":{"class":"command","object":"make lint"},"ms":10,"seq":8,"status":"ok","turn":1},
+    {"depth":0,"item_id":"gone","key":"m:gone","kind":"mark","mark_kind":"expired","seq":0,"turn":1},
+    {"depth":0,"item_id":"","key":"live","kind":"live","label":"thinking","seq":0,"since_ms":2000,"turn":1}
+  ]
+}

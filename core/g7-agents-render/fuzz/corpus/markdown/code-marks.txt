@@ -1,0 +1,1 @@
+Run `cargo test` and ``x`` then ~~strike~~ it.

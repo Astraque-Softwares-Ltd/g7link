@@ -1,0 +1,4 @@
+{
+  "in": "snake_case_name and a*b*c stay. Ok",
+  "out": "snake_case_name and a*b*c stay."
+}

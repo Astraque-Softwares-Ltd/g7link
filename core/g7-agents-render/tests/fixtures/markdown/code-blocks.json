@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"code","lang":"rust","lines":[{"text":"fn main() {","toks":[{"class":"keyword","len":2},{"class":"plain","len":1},{"class":"function","len":4},{"class":"punctuation","len":2},{"class":"plain","len":1},{"class":"punctuation","len":1}]},{"text":"    println!(\"hi\");","toks":[{"class":"plain","len":12},{"class":"punctuation","len":2},{"class":"string","len":2},{"class":"punctuation","len":3}]},{"text":"}","toks":[{"class":"punctuation","len":1}]}],"text":"fn main() {\n    println!(\"hi\");\n}"},{"kind":"code","text":"no language"},{"kind":"code","text":"indented code"},{"kind":"code","lang":"mermaid","text":"graph TD; A-->B"}]},
+  "in": "```rust title=src/main.rs\nfn main() {\n    println!(\"hi\");\n}\n```\n\n~~~\nno language\n~~~\n\n    indented code\n\n```mermaid\ngraph TD; A-->B\n```"
+}

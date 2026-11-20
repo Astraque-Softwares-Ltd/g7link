@@ -1,0 +1,20 @@
+{
+  "ctx": {"marks":[],"now_ms":2100,"open":["c:1:0"],"state":"done","state_since_ms":2000},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Fix the failing parser test","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"edit","detail":"-x\n+y","name":"edit","path":"src/a.rs","status":"ok","title":"Edit src/a.rs"},"ts_ms":1100,"turn":1},
+    {"end_ms":1400,"id":"t2","kind":"tool","seq":3,"tool":{"class":"edit","detail":"+z","name":"edit","path":"src/a.rs","status":"ok","title":"Edit src/a.rs"},"ts_ms":1300,"turn":1},
+    {"end_ms":1600,"id":"t3","kind":"tool","seq":4,"tool":{"class":"edit","detail":"+one\n+two","name":"edit","path":"src/b.rs","status":"ok","title":"Write src/b.rs"},"ts_ms":1500,"turn":1},
+    {"end_ms":1800,"id":"t4","kind":"tool","seq":5,"tool":{"class":"edit","detail":"+no","name":"edit","path":"src/c.rs","status":"error","title":"Edit src/c.rs"},"ts_ms":1700,"turn":1},
+    {"end_ms":2000,"id":"a1","kind":"assistant","phase":"final","seq":6,"text":"Changed two files.","ts_ms":1900,"turn":1}
+  ],
+  "note": "A file in the changes row opens that turn's edits to it, one diff per edit, numbered.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":1000},
+    {"block":{"kind":"paragraph","text":"Changed two files."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"final","seq":6,"turn":1},
+    {"adds":4,"dels":1,"depth":0,"files":[{"adds":2,"dels":1,"open":true,"path":"src/a.rs"},{"adds":2,"dels":0,"path":"src/b.rs"}],"item_id":"a1","key":"c:1","kind":"changes","seq":6,"turn":1},
+    {"depth":1,"item_id":"t1","key":"d:t1:e0","kind":"detail","of":{"doc":{"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"","rows":[{"kind":"del","text":"x"},{"kind":"add","text":"y"}]}]},"edit":1,"edits":2,"type":"diff"},"seq":2,"turn":1},
+    {"depth":1,"item_id":"t2","key":"d:t2:e0","kind":"detail","of":{"doc":{"adds":1,"dels":0,"files":[{"adds":1,"dels":0,"path":"","rows":[{"kind":"add","text":"z"}]}]},"edit":2,"edits":2,"type":"diff"},"seq":3,"turn":1}
+  ]
+}

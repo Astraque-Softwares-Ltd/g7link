@@ -1,0 +1,4 @@
+{
+  "label": {"class":"read","object":"README.md"},
+  "tool": {"class":"read","name":"read","path":"README.md","status":"ok","title":"Read"}
+}

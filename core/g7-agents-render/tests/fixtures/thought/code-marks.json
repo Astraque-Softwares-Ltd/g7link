@@ -1,0 +1,4 @@
+{
+  "in": "Run `cargo test` and ``x`` then ~~strike~~ it.",
+  "out": "Run cargo test and x then strike it."
+}

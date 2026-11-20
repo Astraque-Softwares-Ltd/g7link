@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":3,"dels":2,"files":[{"adds":2,"dels":0,"path":"notes.txt","rows":[{"kind":"add","text":"first"},{"kind":"add","text":"second"}]},{"adds":1,"dels":1,"path":"src/x.rs","rows":[{"kind":"hunk","text":"@@ -3,2 +3,2 @@"},{"kind":"context","new_no":3,"old_no":3,"text":"fn x() {"},{"kind":"del","marks":[[4,4]],"old_no":4,"text":"    a();"},{"kind":"add","marks":[[4,4]],"new_no":4,"text":"    b();"}]},{"adds":0,"dels":1,"path":"old.txt","rows":[{"kind":"del","text":"bye"}]}]},
+  "in": "notes.txt (add)\nfirst\nsecond\nsrc/x.rs (update)\n@@ -3,2 +3,2 @@\n fn x() {\n-    a();\n+    b();\nold.txt (delete)\nbye\n"
+}

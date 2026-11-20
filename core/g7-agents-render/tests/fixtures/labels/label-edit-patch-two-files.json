@@ -1,0 +1,4 @@
+{
+  "label": {"class":"edit","more":1,"object":"Edit files"},
+  "tool": {"class":"edit","detail":"*** Begin Patch\n*** Update File: a.py\n@@\n-x\n+y\n*** Add File: b.py\n+z\n*** End Patch","name":"edit","status":"ok","title":"Edit files"}
+}

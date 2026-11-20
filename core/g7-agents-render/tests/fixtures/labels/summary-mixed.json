@@ -1,0 +1,11 @@
+{
+  "summary": {"first":{"class":"command","count":3},"others":2,"second":{"class":"edit","count":1}},
+  "tools": [
+    {"class":"read","name":"read","path":"a","status":"ok","title":""},
+    {"class":"search","detail":"x","name":"search","status":"ok","title":""},
+    {"class":"command","detail":"ls","name":"command","status":"ok","title":""},
+    {"class":"command","detail":"ls","name":"command","status":"error","title":""},
+    {"class":"edit","name":"edit","path":"a","status":"ok","title":""},
+    {"class":"command","detail":"make","name":"command","status":"ok","title":""}
+  ]
+}

@@ -1,0 +1,5 @@
+-    if end < len {
+-        end += 1;
++    if end <= len {
++        end += 2;
++    }

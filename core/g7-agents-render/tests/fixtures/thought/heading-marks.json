@@ -1,0 +1,4 @@
+{
+  "in": "## Section title\nbody",
+  "out": "Section title body"
+}

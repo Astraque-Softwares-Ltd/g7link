@@ -1,0 +1,9 @@
+Inline $x^2$ and
+
+$$
+y = mx
+$$
+
+Note[^1].
+
+[^1]: footnote

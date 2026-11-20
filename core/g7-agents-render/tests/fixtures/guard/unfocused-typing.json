@@ -1,0 +1,14 @@
+{
+  "events": [
+    {"type":"typed","now_ms":10},
+    {"type":"requests","ids":["a"],"now_ms":20}
+  ],
+  "held_after": [
+    [],
+    []
+  ],
+  "idle_at_after": [
+    null,
+    null
+  ]
+}

@@ -1,0 +1,22 @@
+[package]
+name = "g7-agents-render"
+description = "Turns agent thread items into rows, Markdown into blocks and code into coloured spans. No I/O."
+# Ported parts are MIT; see THIRD-PARTY-T3CODE.md.
+license = "MPL-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+pulldown-cmark = { workspace = true }
+syntect = { workspace = true }
+similar = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

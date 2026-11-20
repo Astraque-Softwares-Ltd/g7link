@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":{"heading":1},"text":"Title"},{"kind":"paragraph","spans":[{"len":4,"start":17,"style":{"strong":true}},{"len":2,"start":23,"style":{"em":true}},{"len":6,"start":27,"style":{"strike":true}},{"len":4,"start":38,"style":{"code":true}}],"text":"A paragraph with bold, em, strike and code. Soft break and a hard\nbreak."},{"kind":"rule","text":""},{"kind":{"heading":1},"text":"Setext"},{"kind":{"heading":6},"text":"Six"}]},
+  "in": "# Title\n\nA paragraph with **bold**, *em*, ~~strike~~ and `code`.\nSoft break and a hard  \nbreak.\n\n---\n\nSetext\n======\n\n###### Six"
+}

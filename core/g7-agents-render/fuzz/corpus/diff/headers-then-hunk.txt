@@ -1,0 +1,5 @@
+--- a/notes.md
++++ b/notes.md
+@@ -1 +1 @@
+--- old rule
++++ new rule

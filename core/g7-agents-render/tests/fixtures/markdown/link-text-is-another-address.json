@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","spans":[{"href":"https://evil.example","len":20,"start":0,"style":{"link":"web"}},{"href":"https://good.example/x","len":14,"start":25,"style":{"link":"shown"}},{"href":"HTTPS://Up.Example","len":18,"start":44,"style":{"link":"shown"}}],"text":"https://good.example and good.example/x and HTTPS://Up.Example"}]},
+  "in": "[https://good.example](https://evil.example) and [good.example/x](https://good.example/x) and [HTTPS://Up.Example](HTTPS://Up.Example)"
+}

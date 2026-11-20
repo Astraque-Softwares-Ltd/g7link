@@ -1,0 +1,38 @@
+{
+  "events": [
+    {"type":"requests","ids":[],"now_ms":1},
+    {"type":"sent"},
+    {"type":"idle"},
+    {"type":"requests","ids":[],"now_ms":6002},
+    {"type":"focus"},
+    {"type":"requests","ids":["r2"],"now_ms":9000},
+    {"type":"sent"},
+    {"type":"typed","now_ms":12000},
+    {"type":"typed","now_ms":13499},
+    {"type":"focus"}
+  ],
+  "held_after": [
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [],
+    []
+  ],
+  "idle_at_after": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ]
+}

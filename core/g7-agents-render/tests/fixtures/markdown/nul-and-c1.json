@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","text":"abcde fg"}]},
+  "in": "a\u0000b\u0085c\u009bd\u0007e\r\nf\rg"
+}

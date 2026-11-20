@@ -1,0 +1,10 @@
+notes.txt (add)
+first
+second
+src/x.rs (update)
+@@ -3,2 +3,2 @@
+ fn x() {
+-    a();
++    b();
+old.txt (delete)
+bye

@@ -1,0 +1,4 @@
+{
+  "doc": {"blocks":[{"kind":"paragraph","text":"Inline $x^2$ and"},{"kind":"paragraph","text":"$$ y = mx $$"},{"kind":"paragraph","text":"Note[^1]."}]},
+  "in": "Inline $x^2$ and\n\n$$\ny = mx\n$$\n\nNote[^1].\n\n[^1]: footnote"
+}

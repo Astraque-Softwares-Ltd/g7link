@@ -1,0 +1,17 @@
+diff --git a/src/parse.rs b/src/parse.rs
+index 3b18e51..a9c1f0e 100644
+--- a/src/parse.rs
++++ b/src/parse.rs
+@@ -10,5 +10,5 @@ fn parse_line(s: &str) {
+     let len = s.len();
+     let mut end = 0;
+-    if end < len {
++    if end <= len {
+         end += 1;
+     }
+\ No newline at end of file
+@@ -40,3 +40,4 @@
+ a
++b
+ c
+ d

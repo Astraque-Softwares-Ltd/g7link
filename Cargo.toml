@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "core/g7-agents",
+    "core/g7-agents-render",
     "core/g7link-adb",
     "core/g7link-protocol",
     "core/g7link-core",
@@ -11,8 +12,9 @@ members = [
     "desktop/vcam",
     "tools/xtask",
 ]
-# Patched crates, used through [patch.crates-io] below.
-exclude = ["third_party"]
+# Patched crates, used through [patch.crates-io] below; the render crate's
+# fuzz targets, which need a nightly toolchain.
+exclude = ["third_party", "core/g7-agents-render/fuzz"]
 
 [workspace.package]
 version = "0.1.15"
@@ -28,6 +30,7 @@ name = "Pollen"
 
 [workspace.dependencies]
 g7-agents = { path = "core/g7-agents", version = "0.1.15", default-features = false }
+g7-agents-render = { path = "core/g7-agents-render", version = "0.1.15" }
 g7link-adb = { path = "core/g7link-adb", version = "0.1.15" }
 g7link-protocol = { path = "core/g7link-protocol", version = "0.1.15" }
 g7link-core = { path = "core/g7link-core", version = "0.1.15" }
@@ -62,6 +65,11 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_bytes = "0.11"
+# g7-agents-render: Markdown, code highlighting with the pure-Rust regex
+# engine (no Oniguruma, no theme files), and word marks in diffs.
+pulldown-cmark = { version = "0.13.6", default-features = false }
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "default-syntaxes", "regex-fancy"] }
+similar = { version = "3.2.1", default-features = false, features = ["inline"] }
 blake3 = "1"
 bytes = "1"
 sha2 = "0.11"

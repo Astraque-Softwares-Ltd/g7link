@@ -1,0 +1,10 @@
+{
+  "summary": {"first":{"class":"command","count":1},"others":3,"second":{"class":"edit","count":1}},
+  "tools": [
+    {"class":"web","name":"web","status":"ok","title":""},
+    {"class":"search","name":"search","status":"ok","title":""},
+    {"class":"read","name":"read","path":"r","status":"ok","title":""},
+    {"class":"edit","name":"edit","path":"e","status":"ok","title":""},
+    {"class":"command","name":"command","status":"ok","title":""}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "summary": {"first":{"class":"read","count":2},"others":3,"second":{"class":"web","count":1}},
+  "tools": [
+    {"class":"read","name":"read","path":"a","status":"ok","title":""},
+    {"class":"read","name":"read","path":"b","status":"ok","title":""},
+    {"class":"mcp","name":"mcp","status":"ok","title":""},
+    {"class":"agent","name":"agent","status":"ok","title":""},
+    {"class":"other","name":"other","status":"ok","title":""},
+    {"class":"web","name":"web","status":"ok","title":""}
+  ]
+}
