@@ -4,6 +4,48 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## Unreleased
+
+The phone and the PC stay connected, and talk to each other on G7 Link's own
+protocol: a slow answer no longer holds up a key press, a call or anything
+else.
+
+**Update both together.** This version speaks a new protocol and can't
+connect to 0.1.17 or earlier. The one that's behind says "Update G7 Link on
+…" instead of staying offline. Pairing, your settings and what's stored
+carry over; nothing needs pairing again.
+
+### Changed
+
+- **G7 Link protocol v1.** Every request now travels on its own line instead
+  of waiting behind the others. Each feature (typing, the touchpad, calls,
+  media, the clipboard) keeps its own order, lists and other slow answers go
+  on their own, and a request you no longer need is cancelled on the other
+  device. Long lists arrive in parts, so nothing is cut short to fit.
+- **Sound from the PC is numbered and timed.** The phone drops late pieces
+  and keeps a small cushion sized to the network, so it stutters less on a
+  busy Wi-Fi network.
+- **The PC does more at once.** Its core runs on four threads instead of two.
+
+### Fixed
+
+- **Far fewer disconnects.** Most drops were G7 Link closing a healthy
+  connection itself:
+  - a network change on the laptop (a cable, a VPN, a container's network)
+    closed the link after one missed 2-second check; now it only makes the
+    next check come sooner;
+  - one look at the path that seemed "not local" closed it, which happened
+    on the phone's own hotspot; now it takes 10 seconds without a local
+    path, and the phone's hotspot counts as local;
+  - two missed checks (about 11 seconds), not one, now mean the other device
+    is gone, and the answer to a check never waits behind other traffic;
+  - reconnecting backs off only after a failed attempt, and a working
+    connection is never replaced when both devices dial at once.
+- **A busy device says so.** "The device is busy. Try again in a moment."
+  where it used to say Messages were off, or show nothing.
+- **Sending many files at once** retries the ones over the limit instead of
+  saying there isn't enough space.
+
 ## 0.1.17 (2026-11-20)
 
 You steer the agents now: pick the model, plan before anything changes, send
