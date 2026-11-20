@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## Unreleased
+## 0.1.16 (2026-11-20)
 
 Agent threads read like a conversation: what each turn did folds away behind
 its answer, answers show as formatted text, and you can deny a request and
@@ -46,6 +46,12 @@ tell the agent what to do instead.
 - **A request waits while you type.** One that arrives while you're typing a
   reply shows "Arrived while you were typing" and doesn't take the buttons
   until you pause, so a keystroke never answers it.
+- **A drawer for agents on the phone.** Swipe in from the left edge, or tap
+  the sidebar button, to switch threads, open a session started on the PC,
+  start a new thread or change PC, without going back to the list.
+- **The PC's Agents page folds its side panels away.** Hide the thread list
+  with Ctrl+[ and the details panel with Ctrl+], or with their buttons; the
+  page remembers which you hid.
 
 ### Changed
 
@@ -55,6 +61,11 @@ tell the agent what to do instead.
   for this thread" when an Always allow rule answered it. Requests come one
   at a time, the oldest first, "1 of 3", and Stop stays in reach while one
   waits.
+- **Home keeps Agents to one line.** The phone's Home shows a single Agents
+  row saying what needs you or what's running; the start box and the threads
+  are on the Agents screen it opens.
+- **Thin scroll bars on the Agents page.** They show while you scroll or point
+  at a list, and only where something scrolls, instead of the default bars.
 - **Older phones and PCs keep working.** A phone with 0.1.15 or earlier still
   follows threads from an updated PC; thinking shows there as a step. An
   updated phone works with a PC that isn't updated yet; "deny and say why"
