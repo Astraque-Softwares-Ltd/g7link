@@ -27,7 +27,7 @@ It shows each step as it runs, and `sudo` asks for your password once. It:
 3. Installs it with the libraries and tools it needs, and adds G7 Link to your app menu.
 4. Sets up the phone as a webcam: installs the `v4l2loopback` driver and loads it as **G7 Link Webcam**, now and at every start. On Fedora the driver comes from RPM Fusion, which the installer doesn't add for you; it tells you how. With Secure Boot on, it also tells you how to enroll the driver's key.
 5. Lets the phone type and move the pointer: a udev rule gives the signed-in user access to `/dev/uinput`, as game controller drivers do.
-6. Opens G7 Link's ports (7718, mDNS on 5353, and LocalSend on 53317) in ufw or firewalld, to your local network only.
+6. Opens G7 Link's ports (7718, mDNS on 5353, and LocalSend on 53317) in ufw or firewalld, to your local network only. G7 Link listens on UDP 7718. With ufw and Tailscale, it also allows 7718 on Tailscale's interface, so your phone can reach the PC through Tailscale away from home.
 
 To install only the app, end the command with `sh -s -- --no-extras` instead of `sh`. Without `sudo` or `doas`, it installs the tarball in your home folder and skips steps 4 to 6.
 

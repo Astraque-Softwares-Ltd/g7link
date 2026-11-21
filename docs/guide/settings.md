@@ -188,7 +188,7 @@ Provides network diagnostics, **Connect over mobile data**, Wake-on-LAN readines
 
 | Setting | Default | What It Does |
 | :--- | :--- | :--- |
-| **Connection Doctor** | **Check** button | Runs a live check of the firewall (ufw or firewalld, including NetworkManager's zone for your network), active VPN interfaces, suspected Wi-Fi AP isolation, and what some features need on this desktop (FUSE, `v4l2loopback`, the ScreenCast portal, input access, audio, the tray). It opens the firewall rule with one click where it can, after an administrator password prompt. |
+| **Connection Doctor** | **Check** button | Runs a live check of the firewall (ufw or firewalld, including NetworkManager's zone for your network), active VPN interfaces, whether the firewall may block your phone on Tailscale, suspected Wi-Fi AP isolation, and what some features need on this desktop (FUSE, `v4l2loopback`, the ScreenCast portal, input access, audio, the tray). It opens the firewall rule with one click where it can, after an administrator password prompt. |
 | **Connect over mobile data** | **Off** | Allows this PC and paired phones to stay connected over LTE/5G or across separate networks via end-to-end encrypted relay packets when direct LAN/USB is unavailable. |
 | **Wake from your phone** | Read-only status indicator (`Ready`, `Off in the adapter's settings`, `Check settings`, `No adapter`) | Inspects your active network adapter and tells you whether Wake on Magic Packet is on, so your phone can wake this PC from sleep. Turn it on with NetworkManager or `ethtool`. |
 | **Local automation API** | **Off** (default port `53320`) | Starts the loopback-only HTTP/JSON server (`127.0.0.1:<port>`) for launchers and scripts, and writes the 256-bit Bearer token to `~/.local/share/G7Link/api-token.json`. |
@@ -219,6 +219,7 @@ On Android, tap **Settings** in the floating bottom dock. You can view all setti
 | Setting | Default | What It Does |
 | :--- | :--- | :--- |
 | **Paired PC list & Unpair** | Per paired PC | Shows each paired PC's name and live connection status (`Connected` or `Not connected`) with an **Unpair** button. |
+| **Address** | **Automatic** (per PC) | Where to reach that PC away from home: its Tailscale address (`100.x.y.z`) or name, with an optional port. At home G7 Link finds the PC by itself, and a PC with Tailscale tells the phone its address when they connect, so this is only needed before that has happened. If the short name isn't found, use the full MagicDNS name or the address. The line under it says how the phone can reach the PC away from home: **Away from home: through Tailscale**, **Away from home: over mobile data**, **Away from home: turn on Tailscale on this phone**, or **Only on your home network**. It's what the phone knows, not a live test. See [Connecting over Tailscale](../technical/tailscale.md). |
 | **Browse this phone’s storage in the file manager** | **Off** (per PC) | Allows that specific PC to mount this phone's shared storage (or selected folders) as a folder in its file manager. |
 | **Pair another PC** | Button | Opens the pairing screen to scan a QR code or pair nearby with another PC. |
 | **Connect over mobile data** | **Off** | Allows this phone to stay connected to paired PCs over LTE/5G or across different networks when away from Wi-Fi. |
