@@ -86,6 +86,8 @@ class CoreStateTest {
             Event.AgentCut("a", "t1", 1uL, 2uL, false),
             Event.AgentImport("a", app.g7link.core.AgentImportProgress("j", 0u, 0u, 1u, null)),
             Event.AgentOutbox("a", emptyList()),
+            // The phone beside the PC (§V9.1): the thread screen follows it.
+            Event.AgentBeside("a", "t1", app.g7link.core.AgentPane.PLAN),
         )
         val state = CoreState().reduce(Event.DeviceAdded(pc("a", "Desk", 10)))
         for (event in events) {

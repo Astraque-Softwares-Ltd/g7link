@@ -2126,4 +2126,18 @@
         <item quantity="many">%1$d trabajando</item>
         <item quantity="other">%1$d trabajando</item>
     </plurals>
+    <!-- Phase 5 wave 3 (contract §V9): the phone beside the PC, and a dev server on the phone. -->
+    <string name="agents_beside_offer">%1$s está mostrando este hilo</string>
+    <string name="agents_beside_show">Mostrar al lado</string>
+    <string name="agents_beside_changes">Cambios</string>
+    <string name="agents_beside_plan">Plan</string>
+    <string name="agents_beside_requests">Solicitudes</string>
+    <string name="agents_beside_nothing_changed">Aún no ha cambiado nada.</string>
+    <string name="agents_beside_no_plan">No hay ningún plan en este hilo.</string>
+    <string name="agents_beside_nothing_waiting">No hay nada pendiente.</string>
+    <string name="agents_beside_of">Junto a %1$s</string>
+    <string name="agents_beside_answer_above">Responde primero a la de arriba</string>
+    <string name="agents_port_listening">Hay un servidor escuchando en el puerto %1$d</string>
+    <string name="agents_port_open_on_phone">Abrir en el teléfono</string>
+    <string name="agents_port_pc_only">Solo responde en el propio %1$s. Inícialo con --host para abrirlo aquí.</string>
 </resources>

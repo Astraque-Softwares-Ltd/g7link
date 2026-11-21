@@ -2116,4 +2116,18 @@
     <plurals name="agents_tile_working">
         <item quantity="other">%1$d đang làm</item>
     </plurals>
+    <!-- Phase 5 wave 3 (contract §V9): the phone beside the PC, and a dev server on the phone. -->
+    <string name="agents_beside_offer">%1$s đang hiển thị luồng này</string>
+    <string name="agents_beside_show">Hiện bên cạnh</string>
+    <string name="agents_beside_changes">Thay đổi</string>
+    <string name="agents_beside_plan">Kế hoạch</string>
+    <string name="agents_beside_requests">Yêu cầu</string>
+    <string name="agents_beside_nothing_changed">Chưa có gì thay đổi.</string>
+    <string name="agents_beside_no_plan">Luồng này không có kế hoạch.</string>
+    <string name="agents_beside_nothing_waiting">Không có gì đang chờ.</string>
+    <string name="agents_beside_of">Bên cạnh %1$s</string>
+    <string name="agents_beside_answer_above">Hãy trả lời mục ở trên trước</string>
+    <string name="agents_port_listening">Có máy chủ đang lắng nghe ở cổng %1$d</string>
+    <string name="agents_port_open_on_phone">Mở trên điện thoại</string>
+    <string name="agents_port_pc_only">Máy chủ chỉ phản hồi trên chính %1$s. Hãy khởi động với --host để mở ở đây.</string>
 </resources>

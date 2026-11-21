@@ -112,6 +112,14 @@ internal object AgentGlyphs {
     /** `square`: Stop while hooks or a push run. */
     val stopSquare by lazy { stroke("stopSquare", "M6 6h12v12H6z") }
 
+    /** `server`: a dev server a thread's agent started (contract §V9.2). */
+    val server by lazy {
+        stroke(
+            "server",
+            "M5 2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM5 14h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zM6 6h.01M6 18h.01",
+        )
+    }
+
     /** A 24-grid stroke icon with round caps and joins, as Icons.qml draws them. */
     private fun stroke(name: String, path: String): ImageVector =
         ImageVector.Builder(name = name, defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)

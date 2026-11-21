@@ -40,6 +40,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -329,6 +330,46 @@ fun AgentThreadScreen(
     val drafting = agents.catalog?.canControl == true
     val questionWaiting = questionQueue != null
 
+    // ---- The phone beside the PC (contract §V9.1): a mode of this screen; the PC may switch its pane, never open it ----
+    var beside by rememberSaveable(threadId) { mutableStateOf<BesidePane?>(null) }
+    val offerBeside = remember(presence, threadId) { AgentBeside.offered(presence, threadId, System.currentTimeMillis()) }
+    val shownOnPc = remember(presence, threadId) { AgentBeside.shownOnPc(presence, threadId, System.currentTimeMillis()) }
+    // Shown only while the thread is: otherwise the thread screen says why, and the PC hears "the thread".
+    val besideShown = beside?.takeIf { thread != null && load == ThreadLoad.READY && !offline }
+    LaunchedEffect(besideShown) { core.agentBeside(device.id, threadId, AgentBeside.wire(besideShown)) }
+    // It goes back to the thread once the PC hasn't shown it for more than a minute.
+    var besideStoppedAt by remember(threadId) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(besideShown != null, shownOnPc) {
+        if (besideShown == null) {
+            besideStoppedAt = null
+            return@LaunchedEffect
+        }
+        val stopped = AgentBeside.stoppedAt(besideStoppedAt, shownOnPc, System.currentTimeMillis())
+        besideStoppedAt = stopped
+        val at = AgentBeside.leaveAtMs(stopped) ?: return@LaunchedEffect
+        delay((at - System.currentTimeMillis()).coerceAtLeast(0L) + 1L)
+        beside = null
+    }
+    // The PC's menu switches the pane of a phone beside it; "the thread" takes it back.
+    LaunchedEffect(device.id, threadId, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            core.agentBesideAsks.collect { ask ->
+                if (ask.pcId == device.id) beside = AgentBeside.follow(beside, threadId, ask.threadId, ask.pane)
+            }
+        }
+    }
+    // "Change the plan" or "Something else" from beside: the reply box, once it's back.
+    var focusAfterBeside by remember(threadId) { mutableIntStateOf(0) }
+
+    // ---- A dev server the agent started (contract §V9.2): its address on this link, while the link is on the network ----
+    val ports = thread?.ports.orEmpty()
+    val linkPath = (device.link as? app.g7link.core.Link.Online)?.let { it.relayed to it.usb }
+    val portLine by produceState<PortLine?>(null, ports, linkPath) {
+        val shown = AgentPorts.shown(ports)
+        val url = if (shown != null && shown.lan && linkPath != null) core.agentPortUrl(device.id, shown.port) else null
+        value = AgentPorts.line(ports, online = linkPath != null) { port -> url.takeIf { port == shown } }
+    }
+
     val copy = rememberCopy { core.say(resources.getString(R.string.agents_copied)) }
     val guardChanged: () -> Unit = { guardTick++ }
     val stop: () -> Unit = {
@@ -574,6 +615,11 @@ fun AgentThreadScreen(
     LaunchedEffect(focusReply) {
         if (!focusReply) return@LaunchedEffect
         // Once the reply box is laid out.
+        delay(FOCUS_AFTER_MS)
+        runCatching { focus.requestFocus() }
+    }
+    LaunchedEffect(focusAfterBeside) {
+        if (focusAfterBeside == 0) return@LaunchedEffect
         delay(FOCUS_AFTER_MS)
         runCatching { focus.requestFocus() }
     }
@@ -896,6 +942,8 @@ fun AgentThreadScreen(
     }
 
     val drawer = rememberAgentsDrawer()
+    // Beside the PC, Back goes back to the thread.
+    BackHandler(enabled = besideShown != null && full == null) { beside = null }
     // A full-screen view closes with Back, and an edit request's when the request is no longer shown.
     BackHandler(enabled = full != null) { full = null }
     val fullEdit = full as? FullView.Edit
@@ -1006,6 +1054,116 @@ fun AgentThreadScreen(
         null -> Unit
     }
 
+    // ---- Beside the PC (contract §V9.1): Changes, Plan and Requests; the diffs above open over it ----
+    val besideNow = besideShown
+    if (besideNow != null && thread != null) {
+        val waiting = remember(agents.asks, agents.questions, threadId) { AgentBeside.requests(agents.asksFor(threadId), agents.questionsFor(threadId)) }
+        val besideActions = remember(actions) {
+            RowActions(
+                toggle = actions.toggle,
+                link = actions.link,
+                copy = actions.copy,
+                output = actions.output,
+                diff = actions.diff,
+                mark = actions.mark,
+                implement = actions.implement,
+                changePlan = {
+                    beside = null
+                    focusAfterBeside++
+                },
+                openChanges = actions.openChanges,
+            )
+        }
+        AgentBesideScreen(
+            core = core,
+            pcId = device.id,
+            pcName = device.name,
+            threadId = threadId,
+            title = thread.title,
+            status = status,
+            agentName = agentName,
+            running = running,
+            pane = besideNow,
+            onPane = { beside = it },
+            changes = remember(running, open?.items, open?.turns) { AgentBeside.changes(running, open?.items.orEmpty(), open?.turns.orEmpty()) },
+            plan = remember(thread.plan, open?.items) { AgentBeside.plan(thread.plan, open?.items.orEmpty()) },
+            requests = waiting,
+            buttonsFor = AgentBeside.withButtons(waiting, dock),
+            onBack = { beside = null },
+            onOpenEdit = { title, doc -> full = FullView.Diff(title, doc) },
+            onOpenFile = { turn, path -> full = FullView.Changes(turn, path) },
+            planCard = { itemId ->
+                val unit = remember(rows, itemId) {
+                    AgentPlanCards.units(rows).firstNotNullOfOrNull { (it as? RowUnit.Plan)?.takeIf { plan -> plan.head.itemId == itemId } }
+                }
+                if (unit != null) {
+                    PlanCard(
+                        unit,
+                        RowsContext(itemsById, folder, newestPlan, running, implementing, thumbs, thread = thread, pcName = device.name, nowMs = now),
+                        besideActions,
+                    )
+                } else {
+                    Text(itemsById[itemId]?.text.orEmpty(), style = MaterialTheme.typography.bodyMedium)
+                }
+            },
+            // The dock's own request or question, as a card: its Allow, Deny and answers, with its typing guard.
+            dockCard = { request, position, total, maxHeight ->
+                val shownAsk = queue?.takeIf { request is BesideRequest.Ask && it.shown.token == request.token }
+                val shownQuestion = questionQueue?.takeIf { request is BesideRequest.Question && it.shown.token == request.token }
+                if (shownAsk != null) {
+                    RequestSheet(
+                        queue = shownAsk.copy(position = position, total = total),
+                        agentName = agentName,
+                        folder = folder,
+                        answering = answeringShown,
+                        allowPrimary = true,
+                        collapsed = false,
+                        onToggle = {},
+                        maxHeight = maxHeight,
+                        onAnswer = answer,
+                        onReview = { full = FullView.Edit(shownAsk.shown.token) },
+                        card = true,
+                    )
+                } else if (shownQuestion != null && answers != null) {
+                    QuestionDockSheet(
+                        queue = shownQuestion.copy(position = position, total = total),
+                        answers = answers,
+                        agentName = agentName,
+                        pcName = device.name,
+                        replying = replyingShown,
+                        collapsed = false,
+                        onToggle = {},
+                        maxHeight = maxHeight,
+                        onChoose = { label -> answersState = QuestionDock.choose(shownQuestion.shown, answers, label) },
+                        onChooseOther = {
+                            // "Something else" is typed in the reply box: back to the thread for it.
+                            answersState = QuestionDock.chooseOther(shownQuestion.shown, answers)
+                            beside = null
+                            focusAfterBeside++
+                        },
+                        onBack = { answersState = QuestionDock.back(answers) },
+                        onNext = { answersState = QuestionDock.next(shownQuestion.shown, answers) },
+                        onSend = sendQuestion,
+                        onDismiss = dismissQuestion,
+                        card = true,
+                    )
+                }
+            },
+            modifier = modifier,
+        )
+        link?.let { shown ->
+            LinkSheet(
+                link = shown,
+                onOpen = {
+                    link = null
+                    openLink(context, shown.href)
+                },
+                onDismiss = { link = null },
+            )
+        }
+        return
+    }
+
     AgentsDrawer(
         device = device,
         core = core,
@@ -1030,6 +1188,10 @@ fun AgentThreadScreen(
                 continueOn = if (!offline && load == ThreadLoad.READY) device.name else null,
                 onContinue = handOver,
             )
+            // "Kilele is showing this thread" · Show beside (board 10a): opens on what waits, else the changes.
+            if (offerBeside && thread != null && load == ThreadLoad.READY && !offline) {
+                BesideOfferLine(device.name) { beside = AgentBeside.firstPane(waiting = dock != null) }
+            }
             if (AgentGit.stripShown(strip) && strip != null && !readonly) {
                 GitStripLine(strip = strip, asOfMs = if (offline) gitSavedMs else null, now = now, onOpen = { gitSheet = true })
             }
@@ -1195,6 +1357,16 @@ fun AgentThreadScreen(
                                 ComposerNote(stringResource(R.string.agents_found_copy_note))
                             }
                             if (offline && images.isNotEmpty()) ComposerNote(stringResource(R.string.agents_pictures_wait, device.name), icon = G7Icons.photo, warn = true)
+                            // A dev server the agent started (contract §V9.2): opened in the browser after the link sheet.
+                            portLine?.let { line ->
+                                PortLineView(line, device.name) { open ->
+                                    // Asked again on the tap: the link may have changed since the line was made.
+                                    scope.launch {
+                                        val url = core.agentPortUrl(device.id, open.port.toUShort())?.takeIf(AgentPorts::opens)
+                                        if (url != null) link = PendingLink(url, "")
+                                    }
+                                }
+                            }
                             // Quote chips live in the draft's text, in front of the words (§SC9.1); a question's answer has none.
                             val (quotes, words) = remember(draft) { AgentQuotes.split(draft) }
                             val answering = question != null && answers != null
@@ -1508,15 +1680,7 @@ private fun ThreadHeader(
 @Composable
 private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String, openOn: String?) {
     val scheme = MaterialTheme.colorScheme
-    val word = when (status) {
-        ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting)
-        ThreadStatus.Working -> stringResource(R.string.agents_state_working)
-        ThreadStatus.Done -> stringResource(R.string.agents_state_done)
-        ThreadStatus.PlanReady -> stringResource(R.string.agents_state_plan_ready)
-        ThreadStatus.Stopped -> stringResource(R.string.agents_state_interrupted)
-        is ThreadStatus.Paused -> stringResource(R.string.agents_state_paused)
-        is ThreadStatus.Failed -> stringResource(R.string.agents_state_failed)
-    }
+    val word = threadStateWord(status)
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         // The header's chip (§2.9): a mark of its own shape, then the word.
         ThreadStatusMark(status)
@@ -1530,6 +1694,18 @@ private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String, 
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+/** A thread's state in words, as its header says it. */
+@Composable
+internal fun threadStateWord(status: ThreadStatus): String = when (status) {
+    ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting)
+    ThreadStatus.Working -> stringResource(R.string.agents_state_working)
+    ThreadStatus.Done -> stringResource(R.string.agents_state_done)
+    ThreadStatus.PlanReady -> stringResource(R.string.agents_state_plan_ready)
+    ThreadStatus.Stopped -> stringResource(R.string.agents_state_interrupted)
+    is ThreadStatus.Paused -> stringResource(R.string.agents_state_paused)
+    is ThreadStatus.Failed -> stringResource(R.string.agents_state_failed)
 }
 
 /**
@@ -1697,6 +1873,8 @@ private fun RequestSheet(
     maxHeight: Dp,
     onAnswer: (Boolean) -> Unit,
     onReview: () -> Unit,
+    /** A card in the beside view's Requests (contract §V9.1, board 10d): no handle, edged all round. */
+    card: Boolean = false,
 ) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
@@ -1711,23 +1889,27 @@ private fun RequestSheet(
         val ready = ask.kind != AgentAskKind.EDIT || ask.diff.isNullOrBlank() || doc != null
         val seenHere = rememberSeenToEnd(ask.token, scroll, ready = ready && fitsHere)
         val seenAll = body == null || (fitsHere && seenHere)
+        val shape = if (card) RoundedCornerShape(12.dp) else RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = maxHeight)
-                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                .clip(shape)
                 .background(scheme.surfaceContainer)
-                .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                .then(if (card) Modifier.border(1.dp, scheme.outlineVariant, shape) else Modifier)
+                .padding(start = 14.dp, end = 14.dp, top = if (card) 12.dp else 0.dp, bottom = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(18.dp)
-                    .clickable(role = Role.Button, onClick = onToggle),
-                contentAlignment = Alignment.BottomCenter,
-            ) {
-                Box(Modifier.width(32.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(scheme.outline))
+            if (!card) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(18.dp)
+                        .clickable(role = Role.Button, onClick = onToggle),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    Box(Modifier.width(32.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(scheme.outline))
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val (icon, title) = when (ask.kind) {

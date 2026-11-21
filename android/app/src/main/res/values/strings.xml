@@ -2232,4 +2232,18 @@
         <item quantity="one">%1$d working</item>
         <item quantity="other">%1$d working</item>
     </plurals>
+    <!-- Phase 5 wave 3 (contract §V9): the phone beside the PC, and a dev server on the phone. -->
+    <string name="agents_beside_offer">%1$s is showing this thread</string>
+    <string name="agents_beside_show">Show beside</string>
+    <string name="agents_beside_changes">Changes</string>
+    <string name="agents_beside_plan">Plan</string>
+    <string name="agents_beside_requests">Requests</string>
+    <string name="agents_beside_nothing_changed">Nothing changed yet.</string>
+    <string name="agents_beside_no_plan">No plan in this thread.</string>
+    <string name="agents_beside_nothing_waiting">Nothing is waiting.</string>
+    <string name="agents_beside_of">Beside %1$s</string>
+    <string name="agents_beside_answer_above">Answer the one above first</string>
+    <string name="agents_port_listening">A server is listening on port %1$d</string>
+    <string name="agents_port_open_on_phone">Open on phone</string>
+    <string name="agents_port_pc_only">It only answers on %1$s itself. Start it with --host to open it here.</string>
 </resources>

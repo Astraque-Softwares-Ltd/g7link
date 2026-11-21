@@ -71,26 +71,32 @@ internal fun QuestionDockSheet(
     onNext: () -> Unit,
     onSend: () -> Unit,
     onDismiss: () -> Unit,
+    /** A card in the beside view's Requests (contract §V9.1, board 10d): no handle, edged all round. */
+    card: Boolean = false,
 ) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
     val question = queue.shown
     key(question.token) {
         val ask = QuestionDock.ask(question, answers)
+        val shape = if (card) RoundedCornerShape(12.dp) else RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = maxHeight)
-                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                .clip(shape)
                 .background(scheme.surfaceContainer)
-                .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                .then(if (card) Modifier.border(1.dp, scheme.outlineVariant, shape) else Modifier)
+                .padding(start = 14.dp, end = 14.dp, top = if (card) 12.dp else 0.dp, bottom = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Box(
-                Modifier.fillMaxWidth().height(18.dp).clickable(role = Role.Button, onClick = onToggle),
-                contentAlignment = Alignment.BottomCenter,
-            ) {
-                Box(Modifier.width(32.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(scheme.outline))
+            if (!card) {
+                Box(
+                    Modifier.fillMaxWidth().height(18.dp).clickable(role = Role.Button, onClick = onToggle),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    Box(Modifier.width(32.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(scheme.outline))
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(G7Icons.help, contentDescription = null, tint = tints.amber, modifier = Modifier.size(16.dp))

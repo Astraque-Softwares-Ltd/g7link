@@ -2220,4 +2220,18 @@
         <item quantity="one">%1$d trabalhando</item>
         <item quantity="other">%1$d trabalhando</item>
     </plurals>
+    <!-- Phase 5 wave 3 (contract §V9): the phone beside the PC, and a dev server on the phone. -->
+    <string name="agents_beside_offer">%1$s está mostrando esta conversa</string>
+    <string name="agents_beside_show">Mostrar ao lado</string>
+    <string name="agents_beside_changes">Alterações</string>
+    <string name="agents_beside_plan">Plano</string>
+    <string name="agents_beside_requests">Solicitações</string>
+    <string name="agents_beside_nothing_changed">Nada mudou ainda.</string>
+    <string name="agents_beside_no_plan">Nenhum plano nesta conversa.</string>
+    <string name="agents_beside_nothing_waiting">Nada aguardando.</string>
+    <string name="agents_beside_of">Ao lado de %1$s</string>
+    <string name="agents_beside_answer_above">Responda primeiro à de cima</string>
+    <string name="agents_port_listening">Um servidor está escutando na porta %1$d</string>
+    <string name="agents_port_open_on_phone">Abrir no celular</string>
+    <string name="agents_port_pc_only">Ele só responde no próprio %1$s. Inicie-o com --host para abri-lo aqui.</string>
 </resources>

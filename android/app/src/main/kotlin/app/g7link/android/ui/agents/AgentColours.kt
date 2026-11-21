@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.agents
 
+import android.animation.ValueAnimator
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.padding
@@ -14,6 +20,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -369,10 +376,25 @@ internal fun SessionStatusMark(needsYou: Boolean, mayNeedYou: Boolean, working: 
     }
 }
 
-/** A ring; [open] leaves a quarter out, as a still spinner. */
+/**
+ * A ring; [open] leaves a quarter out and turns, as the working spinner (§2.9).
+ * It stays still when the phone's animations are off (Remove animations).
+ */
 @Composable
 private fun RingMark(color: Color, open: Boolean, modifier: Modifier, size: Dp) {
-    Canvas(modifier.size(size)) {
+    val turning = open && remember { ValueAnimator.areAnimatorsEnabled() }
+    val spin = if (turning) {
+        rememberInfiniteTransition(label = "working").animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(SPIN_MS, easing = LinearEasing)),
+            label = "spin",
+        )
+    } else {
+        null
+    }
+    // Read in the layer, so a turn redraws the ring without recomposing the row.
+    Canvas(modifier.size(size).graphicsLayer { rotationZ = spin?.value ?: 0f }) {
         val stroke = 1.5.dp.toPx()
         val inset = stroke / 2f
         val arc = Size(this.size.width - stroke, this.size.height - stroke)
@@ -400,3 +422,6 @@ private fun BangMark(color: Color, on: Color, modifier: Modifier, size: Dp) {
         drawCircle(on, radius = bar * 0.62f, center = Offset(w / 2f, w * 0.75f))
     }
 }
+
+/** One turn of the working spinner. */
+private const val SPIN_MS = 1_100

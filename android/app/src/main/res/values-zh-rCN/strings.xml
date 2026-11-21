@@ -2047,4 +2047,18 @@
     <plurals name="agents_tile_working">
         <item quantity="other">%1$d 个工作中</item>
     </plurals>
+    <!-- Phase 5 wave 3 (contract §V9): the phone beside the PC, and a dev server on the phone. -->
+    <string name="agents_beside_offer">%1$s 正在显示这个会话</string>
+    <string name="agents_beside_show">在旁边显示</string>
+    <string name="agents_beside_changes">更改</string>
+    <string name="agents_beside_plan">计划</string>
+    <string name="agents_beside_requests">请求</string>
+    <string name="agents_beside_nothing_changed">还没有任何更改。</string>
+    <string name="agents_beside_no_plan">这个会话中没有计划。</string>
+    <string name="agents_beside_nothing_waiting">没有等待处理的内容。</string>
+    <string name="agents_beside_of">在 %1$s 旁边</string>
+    <string name="agents_beside_answer_above">请先回答上面那个</string>
+    <string name="agents_port_listening">有服务器正在监听端口 %1$d</string>
+    <string name="agents_port_open_on_phone">在手机上打开</string>
+    <string name="agents_port_pc_only">它只在 %1$s 本机上响应。用 --host 启动它即可在这里打开。</string>
 </resources>

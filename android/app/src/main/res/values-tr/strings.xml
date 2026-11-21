@@ -2220,4 +2220,18 @@
         <item quantity="one">%1$d çalışıyor</item>
         <item quantity="other">%1$d çalışıyor</item>
     </plurals>
+    <!-- Phase 5 wave 3 (contract §V9): the phone beside the PC, and a dev server on the phone. -->
+    <string name="agents_beside_offer">%1$s bu konuşmayı gösteriyor</string>
+    <string name="agents_beside_show">Yanında göster</string>
+    <string name="agents_beside_changes">Değişiklikler</string>
+    <string name="agents_beside_plan">Plan</string>
+    <string name="agents_beside_requests">İstekler</string>
+    <string name="agents_beside_nothing_changed">Henüz bir şey değişmedi.</string>
+    <string name="agents_beside_no_plan">Bu konuşmada plan yok.</string>
+    <string name="agents_beside_nothing_waiting">Bekleyen bir şey yok.</string>
+    <string name="agents_beside_of">%1$s yanında</string>
+    <string name="agents_beside_answer_above">Önce üsttekini yanıtlayın</string>
+    <string name="agents_port_listening">%1$d numaralı bağlantı noktasında bir sunucu dinliyor</string>
+    <string name="agents_port_open_on_phone">Telefonda aç</string>
+    <string name="agents_port_pc_only">Yalnızca %1$s üzerinde yanıt veriyor. Burada açmak için --host ile başlatın.</string>
 </resources>

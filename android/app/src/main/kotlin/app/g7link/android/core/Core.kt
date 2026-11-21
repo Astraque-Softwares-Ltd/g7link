@@ -3344,6 +3344,19 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     private var agentViewingBeat: Job? = null
     private val agentViewingLock = Any()
 
+    /**
+     * What a thread screen shows beside its PC (contract §V9.1), by
+     * "pc/thread": said with the view; none is the thread itself.
+     */
+    private val agentBesidePanes = java.util.concurrent.ConcurrentHashMap<String, app.g7link.core.AgentPane>()
+
+    /** A PC switching what this phone shows beside it (`Event.AgentBeside`): the thread screen in front follows it. */
+    private val _agentBesideAsks = MutableSharedFlow<app.g7link.android.ui.agents.BesideAsk>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val agentBesideAsks: SharedFlow<app.g7link.android.ui.agents.BesideAsk> = _agentBesideAsks.asSharedFlow()
+
     /** Reading a PC's threads and sessions after its catalog arrives, once at a time per PC. */
     private val agentRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val agentSessionRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
@@ -3373,6 +3386,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             is Event.AgentPresence -> agentPresenceChanged(pcId, app.g7link.android.ui.agents.AgentPresenceFfi.of(event.presence))
             // A thread handed over from the PC, or offered as it locked (contract §V8.5): it only ever opens a view.
             is Event.AgentHandoff -> agentHandoffArrived(pcId, event)
+            // The PC switched what this phone shows beside it (contract §V9.1): only a view changes.
+            is Event.AgentBeside -> if (AgentsModel.isId(event.thread)) {
+                _agentBesideAsks.tryEmit(app.g7link.android.ui.agents.BesideAsk(pcId, event.thread, event.pane))
+            }
             // Lines went missing between a job's updates: read it whole.
             is Event.AgentGitJob -> {
                 val job = app.g7link.android.ui.agents.AgentGitFfi.job(event.job)
@@ -3592,8 +3609,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
      */
     private fun agentViewing(pcId: String, thread: String?, session: String?, visible: Boolean) = synchronized(agentViewingLock) {
         val view = Triple(pcId, thread, session)
-        val pane = if (thread != null) app.g7link.core.AgentPane.THREAD else null
-        runCatching { node?.agentViewing(pcId, thread, session, pane, visible) }
+        runCatching { node?.agentViewing(pcId, thread, session, agentPaneOf(pcId, thread), visible) }
         if (!visible) {
             if (agentViewingNow == view) agentViewingStop()
             return@synchronized
@@ -3603,10 +3619,37 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         agentViewingBeat = scope.launch {
             while (true) {
                 delay(AGENT_VIEWING_BEAT_MS)
-                runCatching { node?.agentViewing(pcId, thread, session, pane, true) }
+                // The pane as it is then: the beside view may have switched it since.
+                runCatching { node?.agentViewing(pcId, thread, session, agentPaneOf(pcId, thread), true) }
             }
         }
     }
+
+    /** The pane said with a view: a thread's beside pane, else the thread; none for a session. */
+    private fun agentPaneOf(pcId: String, thread: String?): app.g7link.core.AgentPane? =
+        thread?.let { agentBesidePanes["$pcId/$it"] ?: app.g7link.core.AgentPane.THREAD }
+
+    /**
+     * The thread screen for [threadId] shows [pane] beside its PC (contract
+     * §V9.1), or the thread again (null). Said to the PC at once while that
+     * screen is in front (the core keeps its 2 s spacing; the newest wins), and
+     * with every view after.
+     */
+    fun agentBeside(pcId: String, threadId: String, pane: app.g7link.core.AgentPane?) {
+        val key = "$pcId/$threadId"
+        val before = agentBesidePanes[key]
+        if (pane == null || pane == app.g7link.core.AgentPane.THREAD) agentBesidePanes.remove(key) else agentBesidePanes[key] = pane
+        if (agentBesidePanes[key] == before) return
+        val shown = synchronized(agentViewingLock) { agentViewingNow == Triple(pcId, threadId, null) }
+        if (shown) agentViewing(pcId, threadId, null, visible = true)
+    }
+
+    /**
+     * Where a dev server of [pcId]'s answers from this phone (contract §V9.2):
+     * `http://<the PC on this link>:<port>/`, only while the link is on the
+     * network (not the relay, not USB); null otherwise.
+     */
+    suspend fun agentPortUrl(pcId: String, port: UShort): String? = runCatching { node?.agentPortUrl(pcId, port) }.getOrNull()
 
     private fun agentViewingStop() = synchronized(agentViewingLock) {
         agentViewingBeat?.cancel()
@@ -3884,8 +3927,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         agentRefreshNotice(pcId, threadId)
     }
 
-    /** Left a thread's screen: its items are dropped. */
-    fun agentClosed(pcId: String, threadId: String) = updateAgents(pcId) { AgentsModel.closed(it, threadId) }
+    /** Left a thread's screen: its items are dropped, and it shows nothing beside the PC. */
+    fun agentClosed(pcId: String, threadId: String) {
+        agentBesidePanes.remove("$pcId/$threadId")
+        updateAgents(pcId) { AgentsModel.closed(it, threadId) }
+    }
 
     /** Shows what a thread's notification should show now. */
     private fun agentRefreshNotice(pcId: String, threadId: String) {

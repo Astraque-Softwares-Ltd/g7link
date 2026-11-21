@@ -636,6 +636,8 @@ data class CoreState(
         is Event.AgentPresence,
         // A thread handed over from a PC (§V8.5): opened or offered by Core, never kept here.
         is Event.AgentHandoff,
+        // A PC switching what this phone shows beside it (§V9.1): followed by the thread screen in front, never kept here.
+        is Event.AgentBeside,
         // A thread's folder and its source-control jobs (§SC6.1): kept by Core.agents with the threads.
         is Event.AgentGit,
         is Event.AgentGitJob,
@@ -749,6 +751,7 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.AgentOutbox,
     is Event.AgentPresence,
     is Event.AgentHandoff,
+    is Event.AgentBeside,
     is Event.AgentGit,
     is Event.AgentGitJob,
     -> false
