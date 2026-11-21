@@ -133,7 +133,10 @@ FocusScope {
     activeFocusOnTab: true
     Accessible.role: Accessible.ListItem
     Accessible.name: row.item.title || ""
-    Accessible.description: [row.item.agent_name, row.item.folder, row.doing].filter((s) => (s || "").length > 0).join(", ")
+    // A thread in its own worktree: the folder, then "worktree".
+    readonly property string where: (row.item.worktree || "").length > 0
+        ? (row.item.folder || "") + " · " + qsTr("worktree") : (row.item.folder || "")
+    Accessible.description: [row.item.agent_name, row.where, row.doing].filter((s) => (s || "").length > 0).join(", ")
     Accessible.onPressAction: row.clicked()
     Keys.onPressed: (event) => {
         if (row.renaming)
@@ -337,7 +340,7 @@ FocusScope {
         }
         Txt {
             width: parent.width
-            text: [row.origin, row.item.agent_name, row.item.folder, row.doing].filter((s) => (s || "").length > 0).join(" · ")
+            text: [row.origin, row.item.agent_name, row.where, row.doing].filter((s) => (s || "").length > 0).join(" · ")
             role: "bodySmall"
             muted: true
             maximumLineCount: 1

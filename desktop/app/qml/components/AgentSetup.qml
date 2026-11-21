@@ -13,7 +13,11 @@ Column {
     id: area
     // Agents.setup, parsed.
     property var setup: ({})
+    // Agents.gitSetup: { available, gh: { gh, version, hosts }, worktreesRead, worktrees: [...] }
+    property var gitSetup: ({})
     signal addFolderRequested
+    // A worktree's Remove: its id, branch and commits on no remote.
+    signal removeWorktree(string id, string branch, int unpushed)
     // "Bring in earlier sessions".
     signal importRequested
 
@@ -422,6 +426,92 @@ Column {
             muted: true
             wrapMode: Text.WordWrap
             elide: Text.ElideNone
+        }
+    }
+
+    // ---- Source control: the GitHub CLI, keep in step, worktrees ----
+    Column {
+        id: sourceSection
+        visible: area.connected && area.gitSetup.available === true
+        width: parent.width
+        readonly property var gh: area.gitSetup.gh || ({})
+        SectionLabel { width: parent.width; text: qsTr("Source control") }
+        Line {
+            iconPath: AgentGitGlyphs.pullRequest
+            title: qsTr("GitHub CLI")
+            description: {
+                const gh = sourceSection.gh
+                switch (gh.gh) {
+                case "ok": return [qsTr("GitHub CLI %1, signed in").arg(gh.version || ""), (gh.hosts || []).join(", ")]
+                    .filter((x) => x.length > 0).join(" · ")
+                case "missing": return qsTr("Pull requests need the GitHub CLI.")
+                case "signed_out": return qsTr("You're signed out of the GitHub CLI. Run:") + " gh auth login"
+                case "old": return qsTr("Your GitHub CLI is too old for this. Update it.")
+                default: return ""
+                }
+            }
+            Button {
+                variant: "text"
+                size: "sm"
+                text: qsTr("Check again")
+                onClicked: Agents.gitSetupRead(true)
+            }
+        }
+        Repeater {
+            model: area.folders
+            delegate: Line {
+                id: followLine
+                required property var modelData
+                required property int index
+                iconPath: Icons.folder
+                title: modelData.label + " · " + qsTr("Keep in step with the remote")
+                description: followLine.index === 0
+                    ? qsTr("Fetches every few minutes while you're looking at a thread here. Uses your git sign-in.") : ""
+                Toggle {
+                    label: qsTr("Keep in step with the remote, %1").arg(followLine.modelData.label)
+                    checked: followLine.modelData.followRemote === true
+                    onToggled: (on) => Agents.setFollowRemote(followLine.modelData.id, on)
+                }
+            }
+        }
+        Txt {
+            x: Theme.rowPadding
+            visible: (area.gitSetup.worktrees || []).length > 0
+            height: visible ? 32 : 0
+            verticalAlignment: Text.AlignVCenter
+            text: qsTr("Worktrees")
+            role: "label"
+            muted: true
+        }
+        Repeater {
+            model: area.gitSetup.worktrees || []
+            delegate: Line {
+                id: worktreeLine
+                required property var modelData
+                iconPath: Icons.folder
+                mono: true
+                title: modelData.branch
+                description: [modelData.folder, modelData.thread.length > 0 ? modelData.thread : qsTr("no thread")]
+                    .join(" · ")
+                Txt {
+                    text: worktreeLine.modelData.missing === true ? qsTr("Missing")
+                        : (worktreeLine.modelData.over === true ? "> " : "") + area.size(worktreeLine.modelData.bytes || 0)
+                    role: "bodySmall"
+                    muted: true
+                }
+                Button {
+                    variant: "text"
+                    size: "sm"
+                    text: worktreeLine.modelData.missing === true ? qsTr("Forget") : qsTr("Remove")
+                    onClicked: {
+                        if (worktreeLine.modelData.missing === true)
+                            Agents.worktreeRemove(worktreeLine.modelData.id, true)
+                        else
+                            area.removeWorktree(worktreeLine.modelData.id, worktreeLine.modelData.branch,
+                                                worktreeLine.modelData.unpushed || 0)
+                    }
+                }
+            }
         }
     }
 

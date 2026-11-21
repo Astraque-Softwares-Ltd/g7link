@@ -672,6 +672,8 @@ impl AppState {
             | NodeEvent::AgentImport { .. }
             | NodeEvent::AgentOutbox { .. }
             | NodeEvent::AgentPresence { .. }
+            | NodeEvent::AgentGit { .. }
+            | NodeEvent::AgentGitJob { .. }
             // What a phone shows; the agents' presence reads it (Node::agent_views).
             | NodeEvent::AgentViewing { .. }
             // Copied and toasted (notifications).

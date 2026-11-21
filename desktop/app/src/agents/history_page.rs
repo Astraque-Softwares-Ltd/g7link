@@ -11,6 +11,7 @@ use g7_agents::api::{
     ThreadRenameParams, ThreadShow, ThreadTurnsParams, ThreadsListParams, ThreadsSearchParams,
     TurnFilesParams, TurnPatchParams,
 };
+use g7_agents::api::{GitChange, GitPatchParams, TurnFile, TurnFilesResult};
 
 use super::*;
 
@@ -686,19 +687,53 @@ fn list_files(seq: u64, thread_id: String, range: api::TurnRange, total: u32) {
     });
 }
 
-/// What to read for the file the diff shows, if it has text: its number,
-/// thread, range and path.
-fn patch_wanted(diff: &mut history::Diff) -> Option<(u64, String, api::TurnRange, String)> {
+/// A file's patch to read: its number, thread, range (`None`: what isn't
+/// committed) and path.
+type PatchRead = (u64, String, Option<api::TurnRange>, String);
+
+/// What to read for the file the diff shows, if it has text.
+fn patch_wanted(diff: &mut history::Diff) -> Option<PatchRead> {
     let path = diff.files.get(diff.selected)?.path.clone();
     diff.patch_seq += 1;
     diff.patch = history::Patch { path: path.clone(), ..Default::default() };
     diff.wants_patch()?;
+    // An untracked folder has no patch; the page names it.
+    if diff.uncommitted && path.ends_with('/') {
+        return None;
+    }
     diff.patch.loading = true;
-    Some((diff.patch_seq, diff.thread_id.clone(), diff.range(), path))
+    let range = (!diff.uncommitted).then(|| diff.range());
+    Some((diff.patch_seq, diff.thread_id.clone(), range, path))
+}
+
+/// A page of a file's patch: of a turn's range, or of what isn't committed.
+async fn patch_page(
+    client: &Client,
+    thread_id: &str,
+    range: Option<api::TurnRange>,
+    path: &str,
+    offset: Option<u64>,
+) -> Result<api::TurnPatchResult, ClientError> {
+    match range {
+        Some(range) => {
+            client
+                .turn_patch(TurnPatchParams::new(thread_id.to_owned(), range, path.to_owned(), offset))
+                .await
+        }
+        None => {
+            let params = GitPatchParams { thread_id: thread_id.to_owned(), path: path.to_owned(), offset };
+            client.git_patch(params).await.map(|p| api::TurnPatchResult {
+                patch: p.patch,
+                next: p.next,
+                truncated: p.truncated,
+                binary: p.binary,
+            })
+        }
+    }
 }
 
 /// Reads a file's patch a page at a time (at most 1 MiB), and parses it on a worker.
-fn read_patch((seq, thread_id, range, path): (u64, String, api::TurnRange, String)) {
+fn read_patch((seq, thread_id, range, path): PatchRead) {
     if core_host::try_host().is_none() {
         return;
     }
@@ -710,8 +745,7 @@ fn read_patch((seq, thread_id, range, path): (u64, String, api::TurnRange, Strin
             let mut pages = 0;
             loop {
                 pages += 1;
-                let params = TurnPatchParams::new(thread_id.clone(), range, path.clone(), offset);
-                match client.turn_patch(params).await {
+                match patch_page(&client, &thread_id, range, &path, offset).await {
                     Ok(page) => {
                         binary |= page.binary;
                         cut |= page.truncated;
@@ -761,12 +795,29 @@ fn read_patch((seq, thread_id, range, path): (u64, String, api::TurnRange, Strin
     });
 }
 
-/// "turn" or "thread".
+/// "uncommitted", "turn" or "thread".
 pub fn diff_scope(word: &str) {
+    if word == "uncommitted" {
+        let want = lock().diff.as_ref().and_then(|d| d.files.get(d.selected)).map(|f| f.path.clone());
+        diff_uncommitted(want.unwrap_or_default());
+        return;
+    }
     let read = {
         let mut s = lock();
+        let turn = s.diff.as_ref().map_or(0, |d| d.turn);
+        let turn_files =
+            s.open.as_ref().and_then(|o| o.turns.iter().find(|t| t.turn == turn)).map_or(0, |t| t.files);
         let Some(diff) = s.diff.as_mut() else { return };
         let whole = word == "thread" && diff.whole.is_some();
+        if diff.uncommitted {
+            if diff.turn == 0 {
+                return;
+            }
+            // From what isn't committed back to the turn's own files.
+            diff.uncommitted = false;
+            diff.total = turn_files;
+            diff.scope_whole = !whole;
+        }
         if whole == diff.scope_whole {
             return;
         }
@@ -800,6 +851,64 @@ fn diff_moved(move_to: impl FnOnce(&mut history::Diff) -> bool) {
             return;
         }
         patch_wanted(diff)
+    };
+    changed();
+    if let Some(read) = read {
+        read_patch(read);
+    }
+}
+
+/// The status's files as the diff lists them.
+fn uncommitted_files(st: &api::GitStatus) -> TurnFilesResult {
+    let files = st
+        .files
+        .iter()
+        .map(|f| TurnFile {
+            path: f.path.clone(),
+            status: match f.status {
+                GitChange::Added | GitChange::Untracked => api::FileStatus::Added,
+                GitChange::Deleted => api::FileStatus::Deleted,
+                GitChange::Renamed => api::FileStatus::Renamed,
+                GitChange::Type => api::FileStatus::Type,
+                GitChange::Modified | GitChange::Conflict => api::FileStatus::Modified,
+            },
+            from: f.from.clone(),
+            adds: f.adds.unwrap_or(0),
+            dels: f.dels.unwrap_or(0),
+            binary: f.binary,
+        })
+        .collect();
+    TurnFilesResult { files, more: st.more, adds: st.adds, dels: st.dels }
+}
+
+/// Opens what the open thread's folder hasn't committed, at `path` ("" for
+/// the first file): the diff's "Uncommitted" scope, from the panel's status.
+pub fn diff_uncommitted(path: String) {
+    let read = {
+        let mut s = lock();
+        let Some(open) = s.open.as_ref().filter(|o| o.kind == OpenKind::Thread) else { return };
+        let thread_id = open.id.clone();
+        let whole = history::whole_span(&open.turns);
+        let Some(st) = s.source.panel.status.as_ref().filter(|_| s.source.panel.thread_id == thread_id)
+        else {
+            return;
+        };
+        let listed = uncommitted_files(st);
+        let total = st.total;
+        let (turn, seq) = s.diff.as_ref().map_or((whole.map_or(0, |w| w.1), 1), |d| (d.turn, d.seq + 1));
+        let mut diff = history::Diff {
+            thread_id,
+            turn,
+            uncommitted: true,
+            want: path,
+            whole,
+            seq,
+            ..Default::default()
+        };
+        diff.listed(seq, Some(listed), total);
+        let read = patch_wanted(&mut diff);
+        s.diff = Some(diff);
+        read
     };
     changed();
     if let Some(read) = read {
@@ -1075,7 +1184,9 @@ pub fn set_folder_checkpoints(id: String, on: bool) {
     page_request(
         Request::Setting,
         move |client| async move {
-            client.folders_set_with(FoldersSetParams { id, mcp: None, checkpoints: Some(on) }).await
+            client
+                .folders_set_with(FoldersSetParams { id, checkpoints: Some(on), ..Default::default() })
+                .await
         },
         |folder: Folder| {
             let mut s = lock();

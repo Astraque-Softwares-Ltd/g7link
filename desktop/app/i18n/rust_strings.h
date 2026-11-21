@@ -4,6 +4,7 @@
 // in Rust is translated like the rest (see desktop/app/src/i18n.rs).
 
 static const char *const g7link_rust_strings[] = {
+    QT_TRANSLATE_NOOP("Agents", "A branch with that name exists."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "A newer plan took its place."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Add its folder to your agent folders first."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Answer every question first."), // desktop/app/src/agents.rs
@@ -22,7 +23,7 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "It was already sent."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "It's no longer there."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Saved %1"), // desktop/app/src/agents.rs
-    QT_TRANSLATE_NOOP("Agents", "Something went wrong. Try again."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Something went wrong. Try again."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "Still open in a terminal. Close it there to continue here."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Still open in a terminal. Close it there to reply here."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Still open in another app. Close it there to continue here."), // desktop/app/src/agents.rs
@@ -32,15 +33,21 @@ static const char *const g7link_rust_strings[] = {
     QT_TRANSLATE_NOOP("Agents", "That folder can't be used. Pick a folder you can read, other than the whole disk."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That folder is no longer in the list."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That folder isn't one of your agent folders."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That is done from G7 Link on this PC."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "That isn't available with this agent."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "That name can't be a branch."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "That question was already answered."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "That request was already answered."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "The agent host is out of date. Restart agents to finish the update."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "The command is copied. Paste it in a terminal."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "The files changed while you were looking."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "The thread was deleted. Its worktree has changes, so it stays in Setup."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "This worktree has uncommitted changes. Commit or delete them first."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "Too many sessions are being followed. New lines show when you open it again."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Too many threads are running. Wait for one to finish."), // desktop/app/src/agents.rs
-    QT_TRANSLATE_NOOP("Agents", "Wait until it finishes."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "Too many worktrees. Remove one in Setup first."), // desktop/app/src/agents/source.rs
+    QT_TRANSLATE_NOOP("Agents", "Up to 5 quotes in a message."), // desktop/app/src/agents/source.rs
+    QT_TRANSLATE_NOOP("Agents", "Wait until it finishes."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "You can add up to 64 folders."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "You can change it when the agent stops."), // desktop/app/src/agents/history_page.rs
     QT_TRANSLATE_NOOP("Agents", "changed after the agent finished"), // desktop/app/src/agents/history.rs

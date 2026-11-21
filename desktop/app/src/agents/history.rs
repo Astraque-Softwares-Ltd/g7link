@@ -21,17 +21,23 @@ use g7link_core::{
 };
 use serde_json::{Value, json};
 
-use super::{rows, shown_path, word};
+use super::{rows, shown_path, source::QuoteRow, word};
 use crate::i18n::tr;
 
 // ---- Turns, for the timeline ----
 
-pub(crate) fn render_notice(notice: api::NoticeKind) -> render::NoticeKind {
+/// The notices a client acts on; source control's are only their text.
+pub(crate) fn render_notice(notice: api::NoticeKind) -> Option<render::NoticeKind> {
     match notice {
-        api::NoticeKind::Rewound => render::NoticeKind::Rewound,
-        api::NoticeKind::EditFromHere => render::NoticeKind::EditFromHere,
-        api::NoticeKind::FilesRestored => render::NoticeKind::FilesRestored,
-        api::NoticeKind::Forked => render::NoticeKind::Forked,
+        api::NoticeKind::Rewound => Some(render::NoticeKind::Rewound),
+        api::NoticeKind::EditFromHere => Some(render::NoticeKind::EditFromHere),
+        api::NoticeKind::FilesRestored => Some(render::NoticeKind::FilesRestored),
+        api::NoticeKind::Forked => Some(render::NoticeKind::Forked),
+        api::NoticeKind::Committed
+        | api::NoticeKind::Pushed
+        | api::NoticeKind::Switched
+        | api::NoticeKind::PrOpened
+        | api::NoticeKind::PrMerged => None,
     }
 }
 
@@ -578,14 +584,19 @@ pub(crate) struct Patch {
     pub truncated: bool,
     /// The file's rows, as the page's diff view reads them (JSON).
     pub doc: String,
+    /// The same rows as plain text, for a quote of the lines picked.
+    pub rows: Vec<QuoteRow>,
 }
 
 /// The diff of a turn, or of the whole thread.
 #[derive(Debug, Default)]
 pub(crate) struct Diff {
     pub thread_id: String,
-    /// The turn the Changes row belongs to.
+    /// The turn the Changes row belongs to (0: none, for a diff of
+    /// what isn't committed in a thread without turns).
     pub turn: u32,
+    /// What isn't committed yet, from the folder's status (§SC3.3).
+    pub uncommitted: bool,
     /// The file to show first once the list is read ("" for the first).
     pub want: String,
     /// What "Whole thread" covers, when anything is recorded.
@@ -686,8 +697,9 @@ impl Diff {
         let selected = self.files.get(self.selected);
         json!({
             "turn": self.turn,
-            "scope": if self.scope_whole { "thread" } else { "turn" },
+            "scope": if self.uncommitted { "uncommitted" } else if self.scope_whole { "thread" } else { "turn" },
             "canWhole": self.whole.is_some(),
+            "canTurn": self.turn > 0,
             "loading": self.loading,
             "unavailable": self.unavailable,
             "files": files,
@@ -714,6 +726,22 @@ pub(crate) fn patch_doc(text: &str, host_cut: bool, binary: bool, palette: &rows
     let truncated =
         host_cut || doc.more || doc.files.iter().any(|f| f.note == Some(render::DiffNote::Truncated));
     let binary = binary || doc.files.iter().any(|f| f.note == Some(render::DiffNote::Binary));
+    let quote_rows = doc
+        .files
+        .first()
+        .map(|f| {
+            f.rows
+                .iter()
+                .take(render::bounds::MAX_DIFF_ROWS)
+                .map(|r| QuoteRow {
+                    old: r.old_no,
+                    new: r.new_no,
+                    hunk: r.kind == render::DiffKind::Hunk,
+                    text: r.text.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Patch {
         path: String::new(),
         loading: false,
@@ -721,6 +749,7 @@ pub(crate) fn patch_doc(text: &str, host_cut: bool, binary: bool, palette: &rows
         binary,
         truncated,
         doc: rows::diff_json(&doc, render::bounds::MAX_DIFF_ROWS, palette).to_string(),
+        rows: quote_rows,
     }
 }
 

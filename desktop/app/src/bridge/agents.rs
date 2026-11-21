@@ -13,7 +13,7 @@ use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QList, QModelIndex
 use serde_json::json;
 
 use crate::{
-    agents::{self, ModelRow, Role, RoleValue, RowOp, UiUpdate},
+    agents::{self, ModelRow, Role, RoleValue, RowOp, UiUpdate, source},
     state::Changes,
 };
 
@@ -95,6 +95,12 @@ pub mod qobject {
         #[qproperty(QString, rewind)]
         /// The message to scroll to and light up: `{ gen, n, item }` (JSON).
         #[qproperty(QString, focus)]
+        /// The open thread's source control: strip, panel, dialogs (JSON, `{}` for none).
+        #[qproperty(QString, git)]
+        /// The Pull Requests view (JSON, `{}` while it's closed).
+        #[qproperty(QString, prs)]
+        /// Setup's Source control and the new thread's worktree (JSON).
+        #[qproperty(QString, git_setup)]
         type Agents = super::AgentsRust;
 
         /// The page is on screen (or left).
@@ -142,6 +148,9 @@ pub mod qobject {
         fn answer(self: &Agents, token: &QString, decision: &QString);
         #[qinvokable]
         fn delete_thread(self: &Agents, id: &QString);
+        /// Deletes a thread; `remove_worktree`: its worktree too.
+        #[qinvokable]
+        fn delete_thread_with(self: &Agents, id: &QString, remove_worktree: bool);
         #[qinvokable]
         fn open_in_terminal(self: &Agents);
         #[qinvokable]
@@ -353,6 +362,129 @@ pub mod qobject {
         /// Reads what the host keeps, for Setup.
         #[qinvokable]
         fn store_info(self: &Agents);
+        /// Starts a thread in a new worktree on `branch`, from `base` ("" for
+        /// the folder's current commit).
+        #[qinvokable]
+        fn start_worktree(
+            self: &Agents,
+            agent: &QString,
+            folder_id: &QString,
+            prompt: &QString,
+            mode: &QString,
+            branch: &QString,
+            base: &QString,
+        );
+        /// A worktree branch for a new thread from its first words.
+        #[qinvokable]
+        fn worktree_branch(self: &Agents, words: &QString) -> QString;
+        /// Whether `name` may be a new branch (the host checks again).
+        #[qinvokable]
+        fn branch_name_ok(self: &Agents, name: &QString) -> bool;
+        /// The source-control panel opens (it reads, fetches) or closes.
+        #[qinvokable]
+        fn git_panel(self: &Agents, open: bool);
+        /// Fetches and reads the status and pull request again.
+        #[qinvokable]
+        fn git_refresh(self: &Agents);
+        #[qinvokable]
+        fn git_tick(self: &Agents, path: &QString, on: bool);
+        #[qinvokable]
+        fn git_tick_all(self: &Agents, on: bool);
+        /// A field changed: "message", "title" or "body".
+        #[qinvokable]
+        fn git_field(self: &Agents, which: &QString, text: &QString);
+        /// "Use the thread's title" in the commit message.
+        #[qinvokable]
+        fn git_use_title(self: &Agents);
+        /// "Use <agent>'s message": "message" or "pr".
+        #[qinvokable]
+        fn git_use_offer(self: &Agents, which: &QString);
+        /// "Ask <agent> to write it": "commit" or "pr".
+        #[qinvokable]
+        fn git_ask(self: &Agents, purpose: &QString);
+        /// Commits the ticked files (`all`: every file, past the list's 2,000).
+        #[qinvokable]
+        fn git_commit(self: &Agents, all: bool);
+        /// "Reload" after the files changed.
+        #[qinvokable]
+        fn git_reload(self: &Agents);
+        /// Stops the running commit or push.
+        #[qinvokable]
+        fn git_stop(self: &Agents);
+        /// Pushes, to `remote` ("" for the branch's own).
+        #[qinvokable]
+        fn git_push(self: &Agents, remote: &QString);
+        #[qinvokable]
+        fn git_branch_menu(self: &Agents, open: bool);
+        #[qinvokable]
+        fn git_branch_query(self: &Agents, query: &QString);
+        /// Switches (`create`: a new branch; `carry`: with the changes, confirmed).
+        #[qinvokable]
+        fn git_switch(self: &Agents, branch: &QString, create: bool, carry: bool);
+        /// "New branch first…": the push follows the new branch.
+        #[qinvokable]
+        fn git_new_branch_then_push(self: &Agents);
+        /// The pull request dialog opens or closes.
+        #[qinvokable]
+        fn pr_form(self: &Agents, open: bool);
+        /// Opens a pull request (after a push when the branch isn't pushed).
+        #[qinvokable]
+        fn pr_create(self: &Agents, title: &QString, body: &QString, base: &QString, draft: bool);
+        #[qinvokable]
+        fn pr_merge_open(self: &Agents);
+        /// "squash", "merge" or "rebase".
+        #[qinvokable]
+        fn pr_merge_method(self: &Agents, method: &QString);
+        /// "I've looked".
+        #[qinvokable]
+        fn pr_merge_looked(self: &Agents, on: bool);
+        /// The Merge button gained or lost the keyboard.
+        #[qinvokable]
+        fn pr_merge_focus(self: &Agents, focused: bool);
+        /// Merge: "click", or "key" (counts only on the button reached with Tab).
+        #[qinvokable]
+        fn pr_merge(self: &Agents, how: &QString);
+        #[qinvokable]
+        fn pr_merge_close(self: &Agents);
+        /// Mark ready.
+        #[qinvokable]
+        fn pr_ready(self: &Agents);
+        /// Opens a pull request's or check's page, on a signed-in GitHub host only.
+        #[qinvokable]
+        fn open_pr_url(self: &Agents, url: &QString);
+        /// The Pull Requests list: "mine", "review" or "folder" (`folder_id`, "" for the open thread's).
+        #[qinvokable]
+        fn prs_open(self: &Agents, show: &QString, folder_id: &QString);
+        #[qinvokable]
+        fn prs_close(self: &Agents);
+        #[qinvokable]
+        fn prs_refresh(self: &Agents);
+        /// Setup's Source control: the GitHub CLI (`refresh`: "Check again") and the worktrees.
+        #[qinvokable]
+        fn git_setup_read(self: &Agents, refresh: bool);
+        /// A folder's "Keep in step with the remote".
+        #[qinvokable]
+        fn set_follow_remote(self: &Agents, id: &QString, on: bool);
+        /// Removes a worktree's folder (its branch stays), or forgets a missing one.
+        #[qinvokable]
+        fn worktree_remove(self: &Agents, id: &QString, forget: bool);
+        /// Removes the open thread's worktree.
+        #[qinvokable]
+        fn worktree_remove_open(self: &Agents);
+        /// The branches a new worktree in `folder_id` may start from.
+        #[qinvokable]
+        fn read_bases(self: &Agents, folder_id: &QString);
+        /// The new-thread form drops a failed worktree's lines.
+        #[qinvokable]
+        fn creating_clear(self: &Agents);
+        /// A quote chip of rows `first`..`last` of the diff's file.
+        #[qinvokable]
+        fn quote_add(self: &Agents, first: i32, last: i32);
+        #[qinvokable]
+        fn quote_remove(self: &Agents, index: i32);
+        /// Opens what isn't committed in the open thread's folder, at `path`.
+        #[qinvokable]
+        fn diff_uncommitted(self: &Agents, path: &QString);
     }
 
     impl cxx_qt::Threading for Agents {}
@@ -485,6 +617,9 @@ pub struct AgentsRust {
     diff: QString,
     rewind: QString,
     focus: QString,
+    git: QString,
+    prs: QString,
+    git_setup: QString,
     /// What was last shown, to set only what changed.
     last: Option<agents::View>,
 }
@@ -567,6 +702,15 @@ impl qobject::Agents {
         if differs(|v| &v.focus) {
             self.as_mut().set_focus(QString::from(&view.focus));
         }
+        if differs(|v| &v.git) {
+            self.as_mut().set_git(QString::from(&view.git));
+        }
+        if differs(|v| &v.prs) {
+            self.as_mut().set_prs(QString::from(&view.prs));
+        }
+        if differs(|v| &v.git_setup) {
+            self.as_mut().set_git_setup(QString::from(&view.git_setup));
+        }
         if differs(|v| &v.export_path) {
             let url = if view.export_path.is_empty() {
                 QString::default()
@@ -647,7 +791,7 @@ impl qobject::Agents {
         if prompt.trim().is_empty() {
             return;
         }
-        agents::start_thread(String::from(agent), String::from(folder_id), prompt, String::from(mode));
+        agents::start_thread(String::from(agent), String::from(folder_id), prompt, String::from(mode), None);
     }
 
     pub fn send(&self, text: &QString, other: bool) {
@@ -663,7 +807,11 @@ impl qobject::Agents {
     }
 
     pub fn delete_thread(&self, id: &QString) {
-        agents::delete_thread(String::from(id));
+        agents::delete_thread(String::from(id), false);
+    }
+
+    pub fn delete_thread_with(&self, id: &QString, remove_worktree: bool) {
+        agents::delete_thread(String::from(id), remove_worktree);
     }
 
     pub fn open_in_terminal(&self) {
@@ -1006,6 +1154,193 @@ impl qobject::Agents {
 
     pub fn store_info(&self) {
         agents::store_info();
+    }
+
+    pub fn start_worktree(
+        &self,
+        agent: &QString,
+        folder_id: &QString,
+        prompt: &QString,
+        mode: &QString,
+        branch: &QString,
+        base: &QString,
+    ) {
+        let prompt = String::from(prompt);
+        if prompt.trim().is_empty() {
+            return;
+        }
+        let worktree = Some((String::from(branch).trim().to_owned(), String::from(base)));
+        agents::start_thread(
+            String::from(agent),
+            String::from(folder_id),
+            prompt,
+            String::from(mode),
+            worktree,
+        );
+    }
+
+    pub fn worktree_branch(&self, words: &QString) -> QString {
+        QString::from(&source::worktree_branch(&String::from(words)))
+    }
+
+    pub fn branch_name_ok(&self, name: &QString) -> bool {
+        source::branch_name_ok(&String::from(name))
+    }
+
+    pub fn git_panel(&self, open: bool) {
+        source::panel(open);
+    }
+
+    pub fn git_refresh(&self) {
+        source::refresh();
+    }
+
+    pub fn git_tick(&self, path: &QString, on: bool) {
+        source::tick(String::from(path), on);
+    }
+
+    pub fn git_tick_all(&self, on: bool) {
+        source::tick_all(on);
+    }
+
+    pub fn git_field(&self, which: &QString, text: &QString) {
+        source::field_edited(&String::from(which), String::from(text));
+    }
+
+    pub fn git_use_title(&self) {
+        source::use_title();
+    }
+
+    pub fn git_use_offer(&self, which: &QString) {
+        source::use_offer(&String::from(which));
+    }
+
+    pub fn git_ask(&self, purpose: &QString) {
+        source::ask(&String::from(purpose));
+    }
+
+    pub fn git_commit(&self, all: bool) {
+        source::commit(all);
+    }
+
+    pub fn git_reload(&self) {
+        source::reload();
+    }
+
+    pub fn git_stop(&self) {
+        source::stop();
+    }
+
+    pub fn git_push(&self, remote: &QString) {
+        source::push(String::from(remote));
+    }
+
+    pub fn git_branch_menu(&self, open: bool) {
+        source::branch_menu(open);
+    }
+
+    pub fn git_branch_query(&self, query: &QString) {
+        source::branch_query(String::from(query));
+    }
+
+    pub fn git_switch(&self, branch: &QString, create: bool, carry: bool) {
+        source::switch(String::from(branch).trim().to_owned(), create, carry);
+    }
+
+    pub fn git_new_branch_then_push(&self) {
+        source::new_branch_then_push();
+    }
+
+    pub fn pr_form(&self, open: bool) {
+        source::pr_form(open);
+    }
+
+    pub fn pr_create(&self, title: &QString, body: &QString, base: &QString, draft: bool) {
+        source::pr_create(String::from(title), String::from(body), String::from(base), draft);
+    }
+
+    pub fn pr_merge_open(&self) {
+        source::merge_open();
+    }
+
+    pub fn pr_merge_method(&self, method: &QString) {
+        source::merge_method(&String::from(method));
+    }
+
+    pub fn pr_merge_looked(&self, on: bool) {
+        source::merge_looked(on);
+    }
+
+    pub fn pr_merge_focus(&self, focused: bool) {
+        source::merge_focus(focused);
+    }
+
+    pub fn pr_merge(&self, how: &QString) {
+        source::merge(&String::from(how));
+    }
+
+    pub fn pr_merge_close(&self) {
+        source::merge_close();
+    }
+
+    pub fn pr_ready(&self) {
+        source::ready();
+    }
+
+    pub fn open_pr_url(&self, url: &QString) {
+        source::open_url(String::from(url));
+    }
+
+    pub fn prs_open(&self, show: &QString, folder_id: &QString) {
+        source::prs_open(&String::from(show), String::from(folder_id));
+    }
+
+    pub fn prs_close(&self) {
+        source::prs_close();
+    }
+
+    pub fn prs_refresh(&self) {
+        source::prs_refresh();
+    }
+
+    pub fn git_setup_read(&self, refresh: bool) {
+        source::setup_read(refresh);
+    }
+
+    pub fn set_follow_remote(&self, id: &QString, on: bool) {
+        source::set_follow_remote(String::from(id), on);
+    }
+
+    pub fn worktree_remove(&self, id: &QString, forget: bool) {
+        source::worktree_remove(String::from(id), forget);
+    }
+
+    pub fn worktree_remove_open(&self) {
+        source::worktree_remove_open();
+    }
+
+    pub fn read_bases(&self, folder_id: &QString) {
+        source::read_bases(String::from(folder_id));
+    }
+
+    pub fn creating_clear(&self) {
+        source::creating_clear();
+    }
+
+    pub fn quote_add(&self, first: i32, last: i32) {
+        if let (Ok(first), Ok(last)) = (usize::try_from(first), usize::try_from(last)) {
+            source::quote_add(first, last);
+        }
+    }
+
+    pub fn quote_remove(&self, index: i32) {
+        if let Ok(index) = usize::try_from(index) {
+            source::quote_remove(index);
+        }
+    }
+
+    pub fn diff_uncommitted(&self, path: &QString) {
+        agents::diff_uncommitted(String::from(path));
     }
 }
 

@@ -38,6 +38,8 @@ Item {
     // The folder it runs in, shown under the box.
     property string folder
 
+    // Quote chips of diff lines (§SC9.1): [{ path, first, last }].
+    property var quotes: []
     signal send(string text, bool other)
     signal denySend(string token, string text)
     signal allow
@@ -66,7 +68,7 @@ Item {
     readonly property bool sayWhy: asking && canSayWhy
     // A message sent now reaches a running turn (steered or queued).
     readonly property bool followUp: running && control
-    readonly property bool canSend: !questionShown && hasText && !busy && (!running || control)
+    readonly property bool canSend: !questionShown && (hasText || quotes.length > 0) && !busy && (!running || control)
     readonly property bool canDenySend: sayWhy && hasText && typedFor === (ask.token || "")
         && ask.held !== true && !busy
     readonly property bool canAllow: asking && ask.held !== true && !busy && !hasText
@@ -223,7 +225,7 @@ Item {
         id: box
         y: offer.height
         width: parent.width
-        height: editing.height + queue.height + strip.height + inputArea.height + actions.height + 12
+        height: editing.height + queue.height + strip.height + quoteRow.height + inputArea.height + actions.height + 12
         radius: Theme.rowRadius
         color: Theme.raised
         border.width: input.activeFocus ? 1 : 0
@@ -298,9 +300,32 @@ Item {
             onRemoved: (id) => Agents.removeImage(id)
         }
 
+        // The quote chips; on send their lines go before the words.
+        Flow {
+            id: quoteRow
+            x: 12
+            anchors.top: strip.bottom
+            anchors.topMargin: visible ? 8 : 0
+            width: parent.width - 24
+            height: visible ? implicitHeight : 0
+            visible: composer.quotes.length > 0
+            spacing: 6
+            Repeater {
+                model: composer.quotes
+                delegate: AgentQuoteChip {
+                    required property var modelData
+                    required property int index
+                    path: modelData.path
+                    first: modelData.first
+                    last: modelData.last
+                    onRemoved: Agents.quoteRemove(index)
+                }
+            }
+        }
+
         Item {
             id: inputArea
-            anchors.top: strip.bottom
+            anchors.top: quoteRow.bottom
             anchors.topMargin: 8
             x: 12
             width: parent.width - 24

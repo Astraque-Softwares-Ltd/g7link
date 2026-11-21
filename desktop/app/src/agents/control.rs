@@ -1049,6 +1049,10 @@ mod tests {
             found: false,
             readonly: None,
             undo: None,
+            branch: None,
+            worktree: None,
+            changed: None,
+            wrote: None,
         }
     }
 

@@ -506,6 +506,7 @@ Item {
         bt_media: qsTr("Phone media on this PC"),
         ble_link: qsTr("Bluetooth link"),
         agents: qsTr("Agents"),
+        agent_push: qsTr("Push and open pull requests"),
         agent_sessions: qsTr("Sessions on this PC")
     })
     readonly property var toggleDetails: ({
@@ -531,6 +532,7 @@ Item {
         bt_media: qsTr("Over Bluetooth. Off: it keeps playing on the phone's own speaker or headphones"),
         ble_link: qsTr("Its touchpad and keyboard, ringing it, its hotspot and small copied text over Bluetooth. Turn it on on the phone too"),
         agents: qsTr("Start and answer coding agents from this phone"),
+        agent_push: qsTr("This phone can push commits and open pull requests from your threads. It asks on the phone each time and tells you here."),
         agent_sessions: qsTr("See Claude and Codex sessions you started on this PC yourself")
     })
     readonly property var toggleTints: ({
@@ -556,10 +558,11 @@ Item {
         bt_media: Theme.tintBlue,
         ble_link: Theme.tintBlue,
         agents: Theme.tintLavender,
+        agent_push: Theme.tintLavender,
         agent_sessions: Theme.tintLavender
     })
     // Higher-trust access: off until the user turns it on.
-    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage", "ble_link", "agents", "agent_sessions"]
+    readonly property var optInKeys: ["remote_input", "remote_files", "pc_mirror", "pc_actions", "commands", "storage", "ble_link", "agents", "agent_push", "agent_sessions"]
 
     readonly property var toggleIcons: ({
         notifications: Icons.bell,
@@ -584,6 +587,7 @@ Item {
         bt_media: Icons.bluetooth,
         ble_link: Icons.bluetooth,
         agents: Icons.terminal,
+        agent_push: AgentGitGlyphs.up,
         agent_sessions: Icons.terminal
     })
 

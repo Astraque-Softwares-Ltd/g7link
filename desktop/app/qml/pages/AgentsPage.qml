@@ -66,6 +66,27 @@ Item {
     readonly property var searchState: parse(Agents.search, ({}))
     readonly property var importState: parse(Agents.bringIn, ({}))
     readonly property var diffState: parse(Agents.diff, ({}))
+    // Source control: the open thread's strip and panel, the Pull Requests
+    // list, Setup's part and the new thread's worktree.
+    readonly property var gitState: parse(Agents.git, ({}))
+    readonly property var prsState: parse(Agents.prs, ({}))
+    readonly property var gitSetup: parse(Agents.gitSetup, ({}))
+    readonly property bool gitOn: isThread && gitState.available === true
+    // The panel sits beside the transcript in a window of 1,000 px or more;
+    // otherwise it lies over the thread.
+    readonly property bool gitInline: Window.width >= 1000
+    readonly property bool gitShown: gitOn && gitState.shown === true && !diffShown
+    readonly property real gitWidth: gitShown && gitInline ? 360 : 0
+    function toggleGit() {
+        if (page.gitOn)
+            Agents.gitPanel(page.gitState.shown !== true)
+    }
+    function openPrs() {
+        Agents.close()
+        Agents.importClose()
+        page.pane = "prs"
+        Agents.prsOpen("mine", "")
+    }
     readonly property var rewindState: parse(Agents.rewind, ({}))
     readonly property var focusState: parse(Agents.focus, ({}))
     // "all", "archived" or "snoozed".
@@ -129,6 +150,7 @@ Item {
     readonly property bool isSession: openKind === "session"
     readonly property string shown: openKind.length > 0 ? openKind
         : pane === "import" ? "import"
+        : pane === "prs" ? "prs"
         : (pane === "setup" || (pane !== "new" && !ready) ? "setup" : "new")
     readonly property bool narrow: width < 720
     // On a narrow page the list fills it until something is picked.
@@ -153,7 +175,7 @@ Item {
     // They sit beside it when they fit, unless the user hid them (Ctrl+]);
     // otherwise they fold into Details, over the transcript.
     readonly property bool inspectorInline: inspectorFits && !Agents.inspectorHidden
-    property real inspectorWidth: (isThread || isSession) && inspectorInline ? 250 : 0
+    property real inspectorWidth: (isThread || isSession) && inspectorInline && !gitShown ? 250 : 0
     Behavior on inspectorWidth {
         enabled: !Theme.reduceMotion
         NumberAnimation {
@@ -452,6 +474,8 @@ Item {
         Agents.close()
         if (page.pane === "import")
             Agents.importClose()
+        if (page.pane === "prs")
+            Agents.prsClose()
         page.pane = ""
     }
     // "Bring in 1" from a preview: back to the list, where it shows how it goes.
@@ -470,7 +494,12 @@ Item {
     readonly property bool windowActive: Window.active
     onActiveChanged: Agents.pageVisible(active)
     // Setup's History line: what the host keeps, read when it shows.
-    onShownChanged: if (shown === "setup") Agents.storeInfo()
+    onShownChanged: {
+        if (shown === "setup") {
+            Agents.storeInfo()
+            Agents.gitSetupRead(false)
+        }
+    }
     onWindowActiveChanged: Agents.windowActive(windowActive)
     // Code, tool targets, outputs and diff words, coloured by the agent
     // palette (plans/agent-colour.md §2).
@@ -556,6 +585,12 @@ Item {
         sequences: [StandardKey.New]
         enabled: page.active
         onActivated: page.startNew()
+    }
+    // The source-control panel.
+    Shortcut {
+        sequence: "Ctrl+Shift+G"
+        enabled: page.active && page.gitOn
+        onActivated: page.toggleGit()
     }
     Shortcut {
         sequence: "Ctrl+["
@@ -764,6 +799,16 @@ Item {
                     selected: page.shown === "new" && !page.listOnly
                     onClicked: page.startNew()
                 }
+            }
+            // The Pull Requests list, read through the GitHub CLI.
+            ActionRow {
+                visible: page.gitSetup.available === true
+                width: parent.width
+                height: visible ? Theme.rowHeight : 0
+                iconPath: AgentGitGlyphs.pullRequest
+                title: qsTr("Pull requests")
+                selected: page.shown === "prs" && !page.listOnly
+                onClicked: page.openPrs()
             }
             Field {
                 id: search
@@ -1179,7 +1224,7 @@ Item {
             height: 56
             IconButton {
                 id: backButton
-                visible: page.narrow || page.diffShown || page.isPreview || page.shown === "import"
+                visible: page.narrow || page.diffShown || page.isPreview || page.shown === "import" || page.shown === "prs"
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 iconPath: Icons.back
@@ -1209,6 +1254,7 @@ Item {
                     text: page.diffShown ? qsTr("Changes")
                         : page.shown === "setup" ? qsTr("Setup")
                         : page.shown === "import" ? qsTr("Bring in earlier sessions")
+                        : page.shown === "prs" ? qsTr("Pull requests")
                         : page.shown === "new" ? qsTr("New thread") : (page.info.title || "")
                     role: "title"
                     maximumLineCount: 1
@@ -1239,7 +1285,8 @@ Item {
                         id: stateLine
                         width: Math.min(implicitWidth, parent.width - 18 - (forkLink.visible ? forkLink.width + 6 : 0))
                         anchors.verticalCenter: parent.verticalCenter
-                        text: [page.stateWord, page.agentName, page.isSession ? page.info.shown_cwd : page.info.folder,
+                        text: [page.stateWord, page.agentName, page.isSession ? page.info.shown_cwd
+                               : (page.info.worktree || "").length > 0 ? page.info.folder + " · " + qsTr("worktree") : page.info.folder,
                                page.info.found === true ? qsTr("Brought in") : page.originText, page.openOnText]
                             .filter((s) => (s || "").length > 0).join(" · ")
                         role: "bodySmall"
@@ -1287,13 +1334,20 @@ Item {
                 spacing: 8
                 // The diff's scope: this turn, or the whole thread.
                 Segmented {
-                    visible: page.diffShown && page.diffState.canWhole === true
-                    options: [
-                        { value: "turn", label: qsTr("This turn") },
-                        { value: "thread", label: qsTr("Whole thread") }
-                    ]
+                    visible: page.diffShown && (page.diffState.canWhole === true || page.diffState.scope === "uncommitted")
+                    options: (page.gitOn ? [{ value: "uncommitted", label: qsTr("Uncommitted") }] : [])
+                        .concat(page.diffState.canTurn === true ? [{ value: "turn", label: qsTr("This turn") }] : [])
+                        .concat(page.diffState.canWhole === true ? [{ value: "thread", label: qsTr("Whole thread") }] : [])
                     value: page.diffState.scope || "turn"
                     onPicked: (value) => Agents.diffScope(value)
+                }
+                AgentGitStrip {
+                    id: headStrip
+                    visible: page.gitOn && !page.diffShown && headStrip.repo
+                    anchors.verticalCenter: parent.verticalCenter
+                    info: page.gitState.strip || ({})
+                    open: page.gitShown
+                    onClicked: page.toggleGit()
                 }
                 Button {
                     visible: (page.isThread || page.isSession) && !page.diffShown
@@ -1321,7 +1375,7 @@ Item {
             anchors.bottom: parent.bottom
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.rightMargin: page.inspectorWidth
+            anchors.rightMargin: page.inspectorWidth + page.gitWidth
             onVisibleChanged: transcript.follow = true
 
             AgentTimelineView {
@@ -1793,6 +1847,7 @@ Item {
                     agentName: page.agentName
                     agentId: page.info.agent || ""
                     folder: page.info.folder || ""
+                    quotes: page.gitState.quotes || []
                     onSend: (text, other) => Agents.send(text, other)
                     onDenySend: (token, text) => Agents.denyWithMessage(token, text)
                     onAllow: page.allowShown()
@@ -1932,7 +1987,8 @@ Item {
         Rectangle {
             id: inspector
             readonly property bool overlay: page.detailsOpen && !page.inspectorFits
-            visible: (page.isThread || page.isSession) && !page.diffShown && (page.inspectorWidth > 0 || overlay)
+            visible: (page.isThread || page.isSession) && !page.diffShown && !page.gitShown
+                     && (page.inspectorWidth > 0 || overlay)
             anchors.top: headLine.bottom
             anchors.bottom: parent.bottom
             anchors.right: parent.right
@@ -2207,6 +2263,59 @@ Item {
             }
         }
 
+        // ---- Source control, beside the transcript or over it ----
+        Rectangle {
+            id: gitPane
+            readonly property bool overlay: !page.gitInline
+            visible: page.gitShown
+            anchors.top: headLine.bottom
+            anchors.bottom: parent.bottom
+            anchors.right: parent.right
+            width: overlay ? Math.min(360, mainPane.width - 40) : page.gitWidth
+            color: Theme.surface
+            clip: true
+            z: 3
+            Rectangle {
+                width: 1
+                height: parent.height
+                color: Theme.line
+            }
+            AgentGitPanel {
+                x: 1
+                width: parent.width - 1
+                height: parent.height
+                git: page.gitState
+                now: page.now
+                onClosed: Agents.gitPanel(false)
+                onBranchMenuAt: (x, y) => {
+                    const p = page.mapFromItem(null, x, y)
+                    branchMenu.anchorX = p.x
+                    branchMenu.anchorY = p.y
+                    Agents.gitBranchMenu(true)
+                }
+                onSwitchAsked: (branch, files) => switchDialog.ask(branch, files)
+                onPushMenuAt: (x, y, actions) => {
+                    const p = page.mapFromItem(null, x, y)
+                    gitMenu.actions = actions
+                    gitMenu.openAt(p.x, p.y, false, false)
+                }
+                onRemoveWorktree: (branch, unpushed, dirty) => worktreeDialog.ask("", branch, unpushed, dirty)
+                onOpenFile: (path) => Agents.diffUncommitted(path)
+            }
+        }
+
+        // ---- Pull requests ----
+        AgentPrList {
+            visible: page.shown === "prs"
+            anchors.top: headLine.bottom
+            anchors.bottom: parent.bottom
+            width: parent.width
+            prs: page.prsState
+            folders: page.setup.folders || []
+            now: page.now
+            onOpenThread: (id) => page.openRow("thread", id)
+        }
+
         // ---- A new thread ----
         Flickable {
             id: newView
@@ -2231,7 +2340,14 @@ Item {
                 const task = taskInput.text.trim()
                 if (task.length === 0 || newView.agent.length === 0 || newView.folder.length === 0)
                     return
-                Agents.start(newView.agent, newView.folder, task, newView.mode)
+                if (worktreeFields.worktree) {
+                    if (!worktreeFields.branchOk)
+                        return
+                    Agents.startWorktree(newView.agent, newView.folder, task, newView.mode,
+                                         worktreeFields.branch, worktreeFields.base)
+                } else {
+                    Agents.start(newView.agent, newView.folder, task, newView.mode)
+                }
                 taskInput.text = ""
             }
 
@@ -2332,6 +2448,20 @@ Item {
                     }
                 }
 
+                // Work in this folder, or in a new worktree on its own branch.
+                AgentWorktreeFields {
+                    id: worktreeFields
+                    width: parent.width
+                    folderId: newView.folder
+                    gitSetup: page.gitSetup
+                    words: taskInput.text
+                    onBasesMenu: (x, y, actions) => {
+                        const p = page.mapFromItem(null, x, y)
+                        gitMenu.actions = actions
+                        gitMenu.openAt(p.x, p.y, false, false)
+                    }
+                }
+
                 Column {
                     width: parent.width
                     spacing: 6
@@ -2407,8 +2537,9 @@ Item {
                         id: startButton
                         anchors.right: parent.right
                         text: qsTr("Start")
-                        busy: Agents.busy
+                        busy: Agents.busy || (page.gitSetup.creating || {}).running === true
                         enabled: page.ready && taskInput.text.trim().length > 0
+                                 && (!worktreeFields.worktree || worktreeFields.branchOk)
                         onClicked: newView.start()
                     }
                 }
@@ -2534,6 +2665,9 @@ Item {
                     paged: true
                     showPaths: false
                     diff: diffView.patch.doc || ""
+                    // Lines picked here become a quote chip in the composer.
+                    selectable: page.gitOn
+                    onComment: (first, last) => Agents.quoteAdd(first, last)
                 }
                 // Loading, binary, not recorded, nothing to show.
                 Column {
@@ -2627,8 +2761,10 @@ Item {
                 y: 12
                 width: Math.min(960, setupView.width - 2 * Theme.rowPadding)
                 setup: page.setup
+                gitSetup: page.gitSetup
                 onAddFolderRequested: page.addFolder("")
                 onImportRequested: page.openImport()
+                onRemoveWorktree: (id, branch, unpushed) => worktreeDialog.ask(id, branch, unpushed, 0)
             }
             TouchpadGlide { view: setupView }
         }
@@ -3002,6 +3138,48 @@ Item {
         rewind: page.rewindState
     }
 
+    // ---- Source control's menus and dialogs ----
+    AgentBranchMenu {
+        id: branchMenu
+        branches: page.gitState.branches || ({})
+        agentName: page.agentName
+        locked: page.running ? "running" : ((page.gitState.status || {}).worktree || {}).id !== undefined ? "worktree" : ""
+        changed: ((page.gitState.status || {}).files || []).length
+        onSwitchAsked: (branch) => {
+            Agents.gitBranchMenu(false)
+            switchDialog.ask(branch, branchMenu.changed)
+        }
+    }
+    AgentSwitchDialog {
+        id: switchDialog
+    }
+    AgentWorktreeDialog {
+        id: worktreeDialog
+    }
+    AgentMergeDialog {
+        merge: page.gitState.merge || ({})
+        pr: (page.gitState.pr || {}).pr || ({})
+    }
+    AgentPrDialog {
+        form: page.gitState.form || ({})
+        agentName: page.agentName
+        defaultBranch: (page.gitState.status || {}).defaultBranch || ""
+        pushed: ((page.gitState.status || {}).upstream || "").length > 0 && ((page.gitState.status || {}).ahead || 0) <= 0
+        busy: ((page.gitState.job || {}).running === true)
+        canAsk: !page.running
+        problem: {
+            const r = (page.gitState.refused || {}).reason || ""
+            return r === "pr_exists" ? qsTr("This branch already has a pull request.")
+                : r === "not_pushed" ? qsTr("Push this branch to open a pull request.")
+                : r === "not_github" ? qsTr("This folder's remote isn't on GitHub.")
+                : ""
+        }
+    }
+    PopupMenu {
+        id: gitMenu
+        panelWidth: 240
+    }
+
     // A plan's Implement, with the mode it runs in.
     property string planItem: ""
     PopupMenu {
@@ -3037,8 +3215,13 @@ Item {
         cardWidth: 420
         // The threads it deletes.
         property var ids: []
+        // "Also remove its worktree", for threads that work in one.
+        property bool withWorktree: false
+        readonly property bool hasWorktree: deleteSheet.ids.some((id) =>
+            (((page.shelfRows || page.threads).find((t) => t.id === id) || page.threads.find((t) => t.id === id) || {}).worktree || "").length > 0)
         function ask(ids) {
             deleteSheet.ids = ids
+            deleteSheet.withWorktree = false
             open()
         }
         Column {
@@ -3060,6 +3243,21 @@ Item {
                 elide: Text.ElideNone
             }
             Row {
+                visible: deleteSheet.hasWorktree
+                spacing: 8
+                Toggle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    label: qsTr("Also remove its worktree")
+                    checked: deleteSheet.withWorktree
+                    onToggled: (on) => deleteSheet.withWorktree = on
+                }
+                Txt {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Also remove its worktree")
+                    role: "body"
+                }
+            }
+            Row {
                 anchors.right: parent.right
                 spacing: 10
                 Button {
@@ -3072,7 +3270,7 @@ Item {
                     text: qsTr("Delete")
                     onClicked: {
                         for (const id of deleteSheet.ids)
-                            Agents.deleteThread(id)
+                            Agents.deleteThreadWith(id, deleteSheet.hasWorktree && deleteSheet.withWorktree)
                         page.picked = page.picked.filter((x) => deleteSheet.ids.indexOf(x) < 0)
                         deleteSheet.close()
                     }

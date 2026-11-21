@@ -15,6 +15,18 @@ Item {
     // One file filling the view, its lines made as they scroll into view
     // (the diff screen); otherwise every line is laid out (under a step).
     property bool paged: false
+    // Lines can be picked (a click or a drag on the gutter, Shift+click to
+    // extend) and quoted into the composer with Comment (paged only).
+    property bool selectable: false
+    property int pickFirst: -1
+    property int pickLast: -1
+    readonly property int pickFrom: Math.min(pickFirst, pickLast)
+    readonly property int pickTo: Math.max(pickFirst, pickLast)
+    signal comment(int first, int last)
+    onDiffChanged: {
+        pickFirst = -1
+        pickLast = -1
+    }
 
     readonly property var doc: {
         try {
@@ -66,12 +78,58 @@ Item {
             delegate: Rectangle {
                 id: pagedLine
                 required property var modelData
+                required property int index
                 readonly property string kind: modelData.k
+                readonly property bool picked: diffView.pickFirst >= 0
+                    && index >= diffView.pickFrom && index <= diffView.pickTo
                 width: pagedRows.width
                 height: pagedText.height + 2
                 color: kind === "add" ? AgentPalette.addRow
                     : kind === "del" ? AgentPalette.delRow
                     : kind === "hunk" ? AgentPalette.hunkGround : "transparent"
+                Rectangle {
+                    anchors.fill: parent
+                    visible: pagedLine.picked
+                    color: Theme.selection
+                    opacity: 0.6
+                }
+                // The gutter picks lines: a click, Shift+click, or a drag.
+                MouseArea {
+                    id: gutter
+                    enabled: diffView.selectable && pagedLine.kind !== "hunk"
+                    width: sideways.gutter + 20
+                    height: parent.height
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onPressed: (mouse) => {
+                        if ((mouse.modifiers & Qt.ShiftModifier) && diffView.pickFirst >= 0)
+                            diffView.pickLast = pagedLine.index
+                        else {
+                            diffView.pickFirst = pagedLine.index
+                            diffView.pickLast = pagedLine.index
+                        }
+                    }
+                    onPositionChanged: (mouse) => {
+                        const p = gutter.mapToItem(pagedRows.contentItem, mouse.x, mouse.y)
+                        const at = pagedRows.indexAt(0, p.y)
+                        if (gutter.pressed && at >= 0)
+                            diffView.pickLast = at
+                    }
+                }
+                Button {
+                    visible: diffView.selectable && diffView.pickFirst >= 0 && pagedLine.index === diffView.pickTo
+                    // At the right of what shows, however far it scrolled sideways.
+                    x: sideways.contentX + sideways.width - width - 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    z: 2
+                    size: "sm"
+                    variant: "tonal"
+                    text: qsTr("Comment")
+                    onClicked: {
+                        diffView.comment(diffView.pickFrom, diffView.pickTo)
+                        diffView.pickFirst = -1
+                        diffView.pickLast = -1
+                    }
+                }
                 Row {
                     visible: sideways.file.numbered === true && pagedLine.kind !== "hunk"
                     x: 4

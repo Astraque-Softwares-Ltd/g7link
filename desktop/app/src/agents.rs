@@ -57,12 +57,16 @@ mod history_page;
 mod history_tests;
 mod presence;
 mod rows;
+pub(crate) mod source;
+mod source_relay;
+#[cfg(test)]
+mod source_tests;
 pub(crate) use history_page::{
-    diff_close, diff_open, diff_scope, diff_select, diff_step, edit_from_here, fork_turn, import_agent,
-    import_cancel, import_clear, import_close, import_more, import_open, import_pick, import_pick_group,
-    import_query, import_start, mark, open_hit, preview_close, preview_open, rename, rewind_apply,
-    rewind_choose, rewind_close, rewind_focus, rewind_later, rewind_open, search, set_folder_checkpoints,
-    show_shelf, store_info, undo_rewind,
+    diff_close, diff_open, diff_scope, diff_select, diff_step, diff_uncommitted, edit_from_here, fork_turn,
+    import_agent, import_cancel, import_clear, import_close, import_more, import_open, import_pick,
+    import_pick_group, import_query, import_start, mark, open_hit, preview_close, preview_open, rename,
+    rewind_apply, rewind_choose, rewind_close, rewind_focus, rewind_later, rewind_open, search,
+    set_folder_checkpoints, show_shelf, store_info, undo_rewind,
 };
 pub(crate) use rows::{CodePalette, LinkRef, ModelRow, Role, RoleValue, RowOp};
 #[cfg(test)]
@@ -301,7 +305,7 @@ impl Entry {
                     .and_then(|o| o.device_name.as_deref())
                     .unwrap_or_default(),
             }),
-            notice: item.notice.map(history::render_notice),
+            notice: item.notice.and_then(history::render_notice),
         })
     }
 }
@@ -1243,6 +1247,9 @@ struct BridgeState {
     rewind: Option<history::Rewind>,
     /// What the host keeps (`store.info`), for Setup.
     store: Option<api::StoreInfo>,
+    /// Source control: the open thread's panel, the Pull Requests list,
+    /// worktrees (`cap::GIT`).
+    source: source::Source,
 }
 
 /// What the new-thread form is set to.
@@ -1437,6 +1444,7 @@ pub fn host_installed() -> bool {
 pub fn start() {
     core_host::spawn(run());
     presence::start();
+    source::load_prefs();
     core_host::spawn(async {
         let read = tokio::task::spawn_blocking(|| {
             core_host::try_data_dir()
@@ -1555,9 +1563,12 @@ pub(crate) fn catalog(agents: &[AgentInfo], folders: &[Folder]) -> AgentCatalog 
                 id: f.id.clone(),
                 label: f.label.clone(),
                 checkpoints: f.checkpoints,
+                follow_remote: f.follow_remote,
             })
             .collect(),
         modes: vec![agent::mode::SUPERVISED.to_owned()],
+        // Each phone's own `agent_push`: the core sets it for the phone it sends to.
+        push: false,
     }
 }
 
@@ -1845,6 +1856,9 @@ fn thread_row(t: &ThreadInfo) -> Value {
         "agent": t.agent.as_str(),
         "agent_name": t.agent.display_name(),
         "folder": t.folder_label,
+        "folder_id": t.folder_id,
+        "branch": t.branch.clone().unwrap_or_default(),
+        "worktree": t.worktree.as_ref().map(|w| w.label.clone()).unwrap_or_default(),
         "title": t.title,
         "state": word(&t.state),
         "mode": word(&t.mode),
@@ -2042,6 +2056,10 @@ trait Relay {
     /// Who is at this PC and what it shows, for phones (never another
     /// phone's view).
     async fn presence(&self, told: AgentPresence);
+    /// A thread's folder changed (`git.changed`): the phones' strip.
+    async fn git_changed(&self, change: g7link_core::AgentGitChanged);
+    /// A source-control job's new lines (`git.progress`); `by`: the device that asked.
+    async fn git_progress(&self, job: g7link_core::AgentJob, by: Option<DeviceId>);
 }
 
 /// The node: phones get the host's news through the core.
@@ -2125,6 +2143,16 @@ impl Relay for NodeRelay {
 
     async fn presence(&self, told: AgentPresence) {
         presence::tell_phones(&self.0, told);
+    }
+    async fn git_changed(&self, change: g7link_core::AgentGitChanged) {
+        if let Err(e) = self.0.agent_git_changed(change).await {
+            tracing::debug!(error = %e, "a folder's change wasn't relayed");
+        }
+    }
+    async fn git_progress(&self, job: g7link_core::AgentJob, by: Option<DeviceId>) {
+        if let Err(e) = self.0.agent_git_progress(job, by).await {
+            tracing::debug!(error = %e, "a job's lines weren't relayed");
+        }
     }
 }
 
@@ -2259,6 +2287,7 @@ async fn serve<R: Relay>(
     let history = client.host().has(cap::HISTORY);
     let undo = client.host().has(cap::UNDO);
     let presence = client.host().has(cap::PRESENCE);
+    let git = client.host().has(cap::GIT);
     if outdated {
         tracing::info!(
             host = %client.host().host_version,
@@ -2289,6 +2318,7 @@ async fn serve<R: Relay>(
     };
     presence::connected(conn, presence);
     bridge.connected.send_replace(true);
+    source::connected(git);
     changed();
     core_host::refresh_capabilities();
     relay.catalog(Some(bridge.catalog())).await;
@@ -2410,6 +2440,7 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
         Event::ThreadState(e) => {
             bridge.remember(&e.thread);
             history_page::shelf_update(bridge, &e.thread);
+            source::thread_state(&e.thread);
             relay.event(AgentEvent::state(thread(&e.thread, None)), started_by(&e.thread)).await;
             if bridge.lock().open_is(OpenKind::Thread, &e.thread.id) {
                 changed();
@@ -2426,6 +2457,7 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             relay.event(AgentEvent::delta(e.thread_id, e.seq, e.item_id, e.offset, e.text), None).await;
         }
         Event::ThreadDone(e) => {
+            source::turn_ended(&e.thread_id);
             if let Some(info) = bridge.known(&e.thread_id) {
                 let outcome = word(&e.outcome);
                 relay
@@ -2621,6 +2653,14 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
         }
         // Only the session the page shows: phones watch on their own connections.
         Event::SessionItem(e) => open_item(bridge, OpenKind::Session, &e.session_id, &e.item),
+        Event::GitChanged(e) => {
+            relay.git_changed(source_relay::wire_changed(&e)).await;
+            source::git_changed(e);
+        }
+        Event::GitProgress(e) => {
+            relay.git_progress(source_relay::wire_job(&e.job), source_relay::job_by(&e.job)).await;
+            source::git_progress(e.job);
+        }
     }
 }
 
@@ -3030,6 +3070,20 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
         | AgentRequest::FoundPreview { .. }
         | AgentRequest::Import { .. }
         | AgentRequest::ImportCancel { .. }) => return history_page::phone(from, &client, request).await,
+        request @ (AgentRequest::GitStatus { .. }
+        | AgentRequest::GitPatch { .. }
+        | AgentRequest::GitReview { .. }
+        | AgentRequest::GitCommit { .. }
+        | AgentRequest::GitPush { .. }
+        | AgentRequest::GitFetch { .. }
+        | AgentRequest::GitBranches { .. }
+        | AgentRequest::GitSwitch { .. }
+        | AgentRequest::GitJob { .. }
+        | AgentRequest::GitStop { .. }
+        | AgentRequest::PrView { .. }
+        | AgentRequest::PrCreate { .. }
+        | AgentRequest::PrList { .. }
+        | AgentRequest::Ask { .. }) => return source_relay::phone(from, &client, request).await,
     })
 }
 
@@ -3196,6 +3250,12 @@ pub(crate) struct View {
     pub rewind: String,
     /// The message the page scrolls to and lights up: `{ gen, n, item }`.
     pub focus: String,
+    /// The open thread's source control: its strip, panel and dialogs (JSON).
+    pub git: String,
+    /// The Pull Requests view (JSON, `{}` while it's closed).
+    pub prs: String,
+    /// Setup's Source control and the new thread's worktree fields (JSON).
+    pub git_setup: String,
 }
 
 pub(crate) fn view() -> View {
@@ -3303,6 +3363,9 @@ pub(crate) fn view() -> View {
             })
             .unwrap_or_else(|| json!({}))
             .to_string(),
+        git: source::git_json(&s).to_string(),
+        prs: source::prs_json(&s).to_string(),
+        git_setup: source::setup_json(&s).to_string(),
     }
 }
 
@@ -3411,7 +3474,7 @@ fn editing(open: &OpenView, info: &ThreadInfo) -> bool {
             .entries
             .iter()
             .rev()
-            .find_map(|e| e.item.notice.filter(|n| rows::is_undoable(history::render_notice(*n))))
+            .find_map(|e| e.item.notice.filter(|n| history::render_notice(*n).is_some_and(rows::is_undoable)))
             .is_some_and(|n| n == api::NoticeKind::EditFromHere)
 }
 
@@ -3486,6 +3549,7 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
                 "mcp": f.mcp,
                 "mcpSeen": f.mcp_seen.iter().map(|m| json!({ "agent": m.agent.as_str(), "names": m.names })).collect::<Vec<_>>(),
                 "checkpoints": f.checkpoints,
+                "followRemote": f.follow_remote,
             })
         })
         .collect();
@@ -3807,6 +3871,10 @@ fn open_at(kind: OpenKind, id: String, focus: Option<u64>) {
     reset_rows(bridge(), generation);
     changed();
     sync_viewing();
+    if kind == OpenKind::Thread {
+        let shown = lock().source.shown;
+        source::read_status(shown);
+    }
     // Without a host it's read once one is reached.
     if let Some(client) = client {
         core_host::spawn(load(client, generation, kind, id, was_session));
@@ -4108,7 +4176,15 @@ fn page_request<T, Fut>(
 
 /// Starts a thread from the page and opens it, with the model and effort
 /// the new-thread form shows for this agent and folder.
-pub fn start_thread(agent: String, folder_id: String, prompt: String, mode: String) {
+/// `worktree`: a new worktree's branch and what it starts from ("" for the
+/// folder's current commit).
+pub fn start_thread(
+    agent: String,
+    folder_id: String,
+    prompt: String,
+    mode: String,
+    worktree: Option<(String, String)>,
+) {
     let Some(agent) = AgentId::parse(&agent) else { return };
     let params = {
         let s = lock();
@@ -4129,6 +4205,10 @@ pub fn start_thread(agent: String, folder_id: String, prompt: String, mode: Stri
         }
         params
     };
+    if let Some((branch, base)) = worktree {
+        source::start_in_worktree(params, branch, base);
+        return;
+    }
     page_request(
         Request::Start,
         move |client| async move { client.thread_start(params).await },
@@ -4149,11 +4229,13 @@ fn open_id(kind: OpenKind) -> Option<String> {
 /// or the other one with Alt+Enter (`other`). Never while a question waits:
 /// the dock answers it.
 pub fn send(text: String, other: bool) {
-    if text.trim().is_empty() {
-        return;
-    }
     let sending = {
         let mut s = lock();
+        let quoted =
+            s.open.as_ref().is_some_and(|o| s.source.quotes.get(&o.id).is_some_and(|q| !q.is_empty()));
+        if text.trim().is_empty() && !quoted {
+            return;
+        }
         let follow_up = s.prefs.follow_up;
         let control = s.control;
         let running = |id: &str| s.threads.get(id).is_some_and(|t| t.state.is_running());
@@ -4177,9 +4259,11 @@ pub fn send(text: String, other: bool) {
             open.composer.offer = None;
             open.composer.history_at = None;
         }
-        (id, dispatch, images, control, generation)
+        // Quote chips go before the words (§SC9.1).
+        let text = source::take_quotes(&mut s, &id, &text);
+        (id, dispatch, images, control, generation, text)
     };
-    let (id, dispatch, images, control, generation) = sending;
+    let (id, dispatch, images, control, generation, text) = sending;
     guard_event(GuardEvent::Sent);
     page_request(
         Request::Send,
@@ -5400,12 +5484,26 @@ pub fn set_code_colors(json: &str) {
 }
 
 /// Deletes a thread (and closes it when it's open).
-pub fn delete_thread(id: String) {
+/// Deletes a thread (`remove_worktree`: its worktree too, when it has one
+/// and nothing in it is uncommitted; else the worktree stays, in Setup).
+pub fn delete_thread(id: String, remove_worktree: bool) {
     let deleted = id.clone();
     page_request(
         Request::Delete,
-        move |client| async move { client.thread_delete(id).await },
-        move |()| {
+        move |client| async move {
+            if !remove_worktree {
+                return client.thread_delete(id).await.map(|()| None);
+            }
+            let params = api::ThreadDeleteParams { thread_id: id, remove_worktree };
+            client.thread_delete_with(params).await.map(|r| r.worktree_left)
+        },
+        move |left: Option<String>| {
+            if left.is_some() {
+                crate::bridge::app::show_message(tr!(
+                    "Agents",
+                    "The thread was deleted. Its worktree has changes, so it stays in Setup."
+                ));
+            }
             let open = lock().open_is(OpenKind::Thread, &deleted);
             lock().threads.remove(&deleted);
             if open {
@@ -5618,6 +5716,7 @@ mod tests {
             mcp: true,
             mcp_seen: vec![api::FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
             checkpoints: true,
+            follow_remote: false,
         }
     }
 
@@ -5663,6 +5762,10 @@ mod tests {
             found: false,
             readonly: None,
             undo: None,
+            branch: None,
+            worktree: None,
+            changed: None,
+            wrote: None,
         }
     }
 
@@ -6740,6 +6843,12 @@ mod tests {
         }
         async fn presence(&self, told: AgentPresence) {
             self.log.lock().unwrap().push(format!("presence {}", told.at_pc));
+        }
+        async fn git_changed(&self, change: g7link_core::AgentGitChanged) {
+            self.log.lock().unwrap().push(format!("git {}", change.changed));
+        }
+        async fn git_progress(&self, job: g7link_core::AgentJob, _by: Option<DeviceId>) {
+            self.log.lock().unwrap().push(format!("job {}", job.phase));
         }
     }
 
