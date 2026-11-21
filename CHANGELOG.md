@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## 0.1.19 (unreleased)
+## 0.1.19 (2026-11-21)
 
 Agent threads keep their whole history: search them, rewind to any turn
 with your files put back, fork from any point, and bring in sessions you
