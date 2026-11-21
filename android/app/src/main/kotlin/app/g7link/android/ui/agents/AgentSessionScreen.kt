@@ -3,6 +3,7 @@ package app.g7link.android.ui.agents
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,26 +13,35 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
@@ -52,6 +62,8 @@ import app.g7link.android.ui.theme.G7Header
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
+import app.g7link.android.ui.theme.G7RaisedButton
+import app.g7link.android.ui.theme.G7RowAction
 import app.g7link.android.ui.theme.LocalAppFonts
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.android.ui.theme.mono
@@ -61,6 +73,7 @@ import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionSource
 import app.g7link.core.AgentSessionState
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** How far opening the session got. */
@@ -68,10 +81,12 @@ private enum class SessionLoad { LOADING, READY, NOT_ALLOWED, UNAVAILABLE, UNREA
 
 /**
  * A session started on a PC outside G7 (in a terminal or the agent's own app),
- * followed read-only: its transcript with what it does now, where it runs, and
- * Keep in status bar. Nothing here types into it or answers it; once it's no
- * longer open anywhere it can be continued here as a thread. Nothing is
- * written to disk; leaving drops the transcript.
+ * followed: its transcript with what it does now, where it runs, and Keep in
+ * status bar. Where the PC offers it, a reply typed here goes into the
+ * session's own window on the PC (plans/reply-on-pc.md); the PC decides each
+ * time, and nothing is sent unless the user sends it. Once it's no longer open
+ * anywhere it can be continued here as a thread. Nothing is written to disk;
+ * leaving drops the transcript and the draft.
  *
  * Its header is two rows (owner's feedback, 2026-11-21): Back, the title and
  * its actions (Keep in status bar as a toggle, More), then one line with its
@@ -196,6 +211,57 @@ fun AgentSessionScreen(
         }
     }
 
+    // Reply on the PC (plans/reply-on-pc.md §6): the PC says whether it can, and does it; this screen keeps the draft.
+    var reply by remember(sessionId) { mutableStateOf(ReplyState()) }
+    var checkTick by remember(sessionId) { mutableIntStateOf(0) }
+    var lastCheckMs by remember(sessionId) { mutableLongStateOf(0L) }
+    var why by remember(sessionId) { mutableStateOf(false) }
+    val presence by core.agentPresence.collectAsStateWithLifecycle()
+    val pcLocked = presence[device.id]?.locked
+    val pcInUse = presence[device.id]?.atPc
+    val currentSession by rememberUpdatedState(session)
+    // Asked when the view comes into view, when the session's state or the PC's lock changes, and when the box gains focus.
+    LaunchedEffect(device.id, sessionId, load, device.online, session?.state, session?.guess, pcLocked, pcInUse, checkTick, lifecycle) {
+        if (load != SessionLoad.READY || !device.online) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (!AgentReplyModel.shouldCheck(reply, currentSession)) return@repeatOnLifecycle
+            delay((lastCheckMs + AgentReplyModel.CHECK_GAP_MS - System.currentTimeMillis()).coerceIn(CHECK_SETTLE_MS, AgentReplyModel.CHECK_GAP_MS))
+            val epoch = reply.epoch
+            lastCheckMs = System.currentTimeMillis()
+            val answer = core.agentSessionReplyCheck(device.id, sessionId)
+            currentSession?.let { reply = AgentReplyModel.checked(reply, epoch, answer, it) }
+        }
+    }
+    // In use or too fast: asked again once the PC says it may be worth it, while it keeps saying so.
+    LaunchedEffect(reply.retryMs, reply.note, lastCheckMs) {
+        val wait = reply.retryMs ?: return@LaunchedEffect
+        delay(wait.coerceAtLeast(RETRY_LEAST_MS))
+        checkTick++
+    }
+    LaunchedEffect(open?.items) { open?.items?.let { reply = AgentReplyModel.itemsSeen(reply, it) } }
+    val sendReply: () -> Unit = {
+        val out = AgentReplyModel.outgoing(reply, session)
+        if (out != null) {
+            val (text, confirm) = out
+            val lastSeq = AgentReplyModel.lastSeq(open?.items.orEmpty())
+            reply = AgentReplyModel.sendStarted(reply)
+            scope.launch {
+                // One act of the user's, sent once: never retried here or by the core.
+                val answer = core.agentSessionReply(device.id, sessionId, text, confirm)
+                reply = AgentReplyModel.replied(reply, answer, text, lastSeq, currentSession)
+            }
+        }
+    }
+    val replyFooter = AgentReplyModel.footer(reply, session)
+    reply.confirm?.let { confirm ->
+        ReplyConfirmSheet(confirm = confirm, pcName = device.name, onSend = sendReply, onCancel = { reply = AgentReplyModel.confirmCancelled(reply) })
+    }
+    val cantReply = replyFooter as? ReplyFooter.Cant
+    LaunchedEffect(cantReply == null) { if (cantReply == null) why = false }
+    if (why && cantReply != null) {
+        ReplyWhySheet(cant = cantReply, agentName = agentName, pcName = device.name, onDismiss = { why = false })
+    }
+
     // The same rows as a thread's (contract §P6.1): no turns or phases from a session, so a turn reads as answered once it settles.
     var openKeys by remember(sessionId) { mutableStateOf(emptySet<String>()) }
     val ffiRows = remember(sessionId) { FfiRows() }
@@ -240,6 +306,13 @@ fun AgentSessionScreen(
     }
 
     val listState = rememberLazyListState()
+    // A reply entered on the PC shows at the end, as a new message would.
+    LaunchedEffect(reply.pending) {
+        if (reply.pending == null) return@LaunchedEffect
+        withFrameNanos { }
+        val total = listState.layoutInfo.totalItemsCount
+        if (total > 0) listState.animateScrollToItem(total - 1)
+    }
     val drawer = rememberAgentsDrawer()
     BackHandler(enabled = full != null) { full = null }
     when (val view = full) {
@@ -279,6 +352,7 @@ fun AgentSessionScreen(
                     agentName = agentName,
                     pcName = device.name,
                     now = now,
+                    replies = replyFooter is ReplyFooter.Box,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
                 )
             }
@@ -310,6 +384,14 @@ fun AgentSessionScreen(
                     Text(stringResource(R.string.agents_loading), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 else -> {
+                    val pending = AgentReplyModel.pendingRow(reply, session)
+                    val pendingRows: (LazyListScope.() -> Unit)? = if (pending == null) {
+                        null
+                    } else {
+                        {
+                            item(key = PENDING_KEY, contentType = "pending") { PendingReplyRow(pending, agentName = agentName, pcName = device.name) }
+                        }
+                    }
                     AgentRowsList(
                         rows = rows,
                         context = remember(itemsById, session.folder) { RowsContext(itemsById, session.folder) },
@@ -319,6 +401,7 @@ fun AgentSessionScreen(
                         onLoadEarlier = loadEarlier,
                         listState = listState,
                         modifier = Modifier.weight(1f),
+                        footer = pendingRows,
                     )
                     SessionFooter(
                         session = session,
@@ -329,6 +412,15 @@ fun AgentSessionScreen(
                         running = remember(open.items) { AgentsModel.runningTool(open.items) },
                         continuing = continuing,
                         onContinue = continueHere,
+                        reply = replyFooter,
+                        draft = reply.draft,
+                        onReply = ReplyActions(
+                            text = { reply = AgentReplyModel.typed(reply, it) },
+                            focus = { focused -> if (focused) checkTick++ },
+                            send = sendReply,
+                            dismiss = { reply = AgentReplyModel.dismissed(reply) },
+                            why = { why = true },
+                        ),
                     )
                 }
             }
@@ -336,24 +428,29 @@ fun AgentSessionScreen(
     }
 }
 
-/** "Started in a terminal on guchu. Read only.": where it runs, whole; an ended one can be continued, so it isn't only read. */
+/**
+ * "Started in a terminal on guchu. Read only.": where it runs, whole; an
+ * ended one can be continued, and one the PC takes replies for can be
+ * answered, so neither is only read.
+ */
 @Composable
-private fun startedSentence(session: AgentSession, agentName: String, pcName: String): String {
+private fun startedSentence(session: AgentSession, agentName: String, pcName: String, replies: Boolean): String {
     val where = when (session.source) {
         AgentSessionSource.TERMINAL -> stringResource(R.string.agents_session_started_terminal, pcName)
         AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_started_app, agentName, pcName)
         AgentSessionSource.OTHER -> stringResource(R.string.agents_session_started_other, pcName)
     }
-    return if (session.state == AgentSessionState.ENDED) where else "$where ${stringResource(R.string.agents_session_read_only)}"
+    return if (session.state == AgentSessionState.ENDED || replies) where else "$where ${stringResource(R.string.agents_session_read_only)}"
 }
 
 /**
  * The header's second row: "● Working for 1 h · Claude · g7linux · in the
- * Claude app, read only" on one line; a tap shows where it was started in a
- * whole sentence under it.
+ * Claude app, read only" on one line ("reply on the PC" while the PC takes
+ * replies for it); a tap shows where it was started in a whole sentence
+ * under it.
  */
 @Composable
-private fun SessionLine(session: AgentSession, agentName: String, pcName: String, now: Long, modifier: Modifier = Modifier) {
+private fun SessionLine(session: AgentSession, agentName: String, pcName: String, now: Long, replies: Boolean, modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
     var whole by remember(session.id) { mutableStateOf(false) }
     // A usage limit reads as such, with the still mark (owner's report, 2026-11-21).
@@ -363,9 +460,15 @@ private fun SessionLine(session: AgentSession, agentName: String, pcName: String
         AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_in_app, agentName)
         AgentSessionSource.OTHER -> null
     }
-    val place = where?.let { if (session.state == AgentSessionState.ENDED) it else stringResource(R.string.agents_session_line_read_only, it) }
+    val place = where?.let {
+        when {
+            session.state == AgentSessionState.ENDED -> it
+            replies -> stringResource(R.string.agents_pc_reply_line, it)
+            else -> stringResource(R.string.agents_session_line_read_only, it)
+        }
+    }
     val rest = listOfNotNull(agentName.ifBlank { null }, session.folder.ifBlank { null }, place).joinToString(" · ", prefix = "· ")
-    val sentence = startedSentence(session, agentName, pcName)
+    val sentence = startedSentence(session, agentName, pcName, replies)
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -415,11 +518,22 @@ private fun SessionMenu(canShare: Boolean, onShare: () -> Unit) {
     }
 }
 
+/** What the reply box and its lines do. */
+private class ReplyActions(
+    val text: (String) -> Unit,
+    val focus: (Boolean) -> Unit,
+    val send: () -> Unit,
+    val dismiss: () -> Unit,
+    val why: () -> Unit,
+)
+
 /**
  * Under the transcript, by state: where it waits for you (answered on the PC),
  * what it does now, or how to continue it here (and why not yet). One
  * component for every state, so a reply box can join it in one place
- * ("Reply on the PC", plans/reply-on-pc.md).
+ * ("Reply on the PC", plans/reply-on-pc.md): with the box, "Working · 12 min"
+ * is one line above it and an idle session needs no card; without it, the
+ * quiet line says why when the PC can't take replies for it.
  */
 @Composable
 private fun SessionFooter(
@@ -431,72 +545,364 @@ private fun SessionFooter(
     running: app.g7link.core.AgentItem?,
     continuing: Boolean,
     onContinue: () -> Unit,
+    reply: ReplyFooter,
+    draft: String,
+    onReply: ReplyActions,
 ) {
     val scheme = MaterialTheme.colorScheme
     val tints = g7Tints()
+    val box = reply as? ReplyFooter.Box
     val card = Modifier
         .fillMaxWidth()
         .padding(horizontal = 12.dp, vertical = 8.dp)
         .clip(RoundedCornerShape(12.dp))
         .background(scheme.surfaceContainer)
         .padding(14.dp)
-    when {
-        AgentsModel.needsYouExactly(session) -> Column(card, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(G7Icons.clock, contentDescription = null, tint = tints.amber, modifier = Modifier.size(18.dp))
+    Column(Modifier.fillMaxWidth()) {
+        when {
+            AgentsModel.needsYouExactly(session) -> Column(card, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(G7Icons.clock, contentDescription = null, tint = tints.amber, modifier = Modifier.size(18.dp))
+                    Text(
+                        when (session.source) {
+                            AgentSessionSource.TERMINAL -> stringResource(R.string.agents_session_waiting_terminal, agentName)
+                            AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_waiting_app, agentName)
+                            AgentSessionSource.OTHER -> stringResource(R.string.agents_session_waiting_other, agentName, pcName)
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                RunningCommand(running = running, folder = session.folder)
+                val asked = session.sinceMs?.takeIf { it > 0L }?.let { stringResource(R.string.agents_ask_when, relativeTime(it, now)) }
                 Text(
-                    when (session.source) {
-                        AgentSessionSource.TERMINAL -> stringResource(R.string.agents_session_waiting_terminal, agentName)
-                        AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_waiting_app, agentName)
-                        AgentSessionSource.OTHER -> stringResource(R.string.agents_session_waiting_other, agentName, pcName)
-                    },
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f),
+                    listOfNotNull(asked, stringResource(R.string.agents_session_answer_on, pcName)).joinToString(" "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.onSurfaceVariant,
                 )
             }
-            RunningCommand(running = running, folder = session.folder)
-            val asked = session.sinceMs?.takeIf { it > 0L }?.let { stringResource(R.string.agents_ask_when, relativeTime(it, now)) }
+            AgentsModel.mayNeedYou(session) -> Column(card, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(G7Icons.clock, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    Text(mayWait(session, agentName, pcName), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                }
+                RunningCommand(running = running, folder = session.folder)
+            }
+            // With the box: "Working · 12 min" as one line above it (§6.1).
+            session.state == AgentSessionState.WORKING && box != null -> Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SessionStatusMark(needsYou = false, mayNeedYou = false, working = true)
+                NowLine(step = session.step, sinceMs = session.sinceMs, modifier = Modifier.weight(1f))
+            }
+            session.state == AgentSessionState.WORKING -> Column(card, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SessionStatusMark(needsYou = false, mayNeedYou = false, working = true)
+                    Text(
+                        session.step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) }
+                            ?: stringResource(R.string.agents_state_working),
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    val since = session.sinceMs
+                    if (since != null && since > 0L) {
+                        ElapsedText(since, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
+                    }
+                }
+                RunningCommand(running = running, folder = session.folder)
+            }
+            // Idle and open where it runs: the box is how to answer it, so no card says it can't be continued yet.
+            box != null -> Unit
+            else -> ContinueCard(
+                session = session,
+                agents = agents,
+                agentName = agentName,
+                pcName = pcName,
+                now = now,
+                continuing = continuing,
+                onContinue = onContinue,
+                modifier = card,
+            )
+        }
+        when (reply) {
+            ReplyFooter.None -> Unit
+            is ReplyFooter.Cant -> CantReplyLine(reply, agentName = agentName, pcName = pcName, onWhy = onReply.why, onDismiss = onReply.dismiss)
+            is ReplyFooter.Box -> ReplyBox(reply, draft = draft, agentName = agentName, pcName = pcName, actions = onReply)
+        }
+    }
+}
+
+/**
+ * The reply box (§6.1): above it the target line ("Terminal · Claude ·
+ * g7linux", a tap tells what happens), "Typing on guchu…" while it goes, or
+ * the lock while the PC is locked; then the thread's text field and send
+ * button, without the model, mode, image, `@` or `/` controls; under it the
+ * PC's line for the last answer.
+ */
+@Composable
+private fun ReplyBox(box: ReplyFooter.Box, draft: String, agentName: String, pcName: String, actions: ReplyActions) {
+    val scheme = MaterialTheme.colorScheme
+    var whole by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        val muted = scheme.onSurfaceVariant
+        when {
+            box.sending -> ReplyTargetRow(G7Icons.keyboard, stringResource(R.string.agents_pc_reply_typing, pcName), muted)
+            box.locked -> ReplyTargetRow(G7Icons.lock, stringResource(R.string.agents_pc_reply_unlock, pcName), scheme.onSurface)
+            else -> box.target?.let { target ->
+                val details = stringResource(R.string.agents_pc_reply_where, pcName)
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(role = Role.Button, onClickLabel = details) { whole = !whole },
+                ) {
+                    ReplyTargetRow(if (target.inApp) G7Icons.window else G7Icons.terminal, target.line, muted)
+                    if (whole) Text(details, style = MaterialTheme.typography.bodySmall, color = muted, modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+                }
+            }
+        }
+        if (box.tooLong) {
+            Text(stringResource(R.string.agents_too_long), style = MaterialTheme.typography.bodySmall, color = scheme.error, modifier = Modifier.padding(start = 4.dp))
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(scheme.surfaceContainer)
+                .padding(end = 8.dp)
+                .dimmed(box.locked),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            AgentTextField(
+                value = draft,
+                onValueChange = actions.text,
+                hint = stringResource(R.string.agents_pc_reply_hint, pcName),
+                enabled = !box.locked && !box.sending,
+                maxLines = 5,
+                background = Color.Transparent,
+                onFocus = actions.focus,
+                modifier = Modifier.weight(1f),
+            )
+            Box(Modifier.padding(bottom = 4.dp)) {
+                if (box.sending) {
+                    Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                } else {
+                    G7IconButton(
+                        icon = G7Icons.send,
+                        contentDescription = stringResource(R.string.agents_send),
+                        onClick = actions.send,
+                        enabled = box.canSend,
+                        filled = true,
+                        tint = if (box.canSend) scheme.primary else scheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        box.note?.let { note ->
+            ReplyNoteLine(
+                note = note,
+                agentName = agentName,
+                pcName = pcName,
+                onRetry = if (box.canRetry) actions.send else null,
+                onDismiss = if (box.canDismiss) actions.dismiss else null,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReplyTargetRow(icon: ImageVector, text: String, color: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
+        Text(text, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** The PC's line for the last answer: neutral for "try later", amber for what to do on the PC; Retry or a close where they apply. */
+@Composable
+private fun ReplyNoteLine(note: ReplyNote, agentName: String, pcName: String, onRetry: (() -> Unit)?, onDismiss: (() -> Unit)?) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            if (note.amber) AgentGlyphs.warning else G7Icons.info,
+            contentDescription = null,
+            tint = if (note.amber) g7Tints().amber else scheme.onSurfaceVariant,
+            modifier = Modifier.size(15.dp),
+        )
+        Text(
+            replyNoteText(note, agentName, pcName),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (note.amber) scheme.onSurface else scheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        if (onRetry != null) G7RowAction(label = stringResource(R.string.agents_try_again), onClick = onRetry)
+        if (onDismiss != null) {
+            G7IconButton(icon = G7Icons.close, contentDescription = stringResource(R.string.action_dismiss), onClick = onDismiss, tint = scheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun replyNoteText(note: ReplyNote, agentName: String, pcName: String): String = when (note) {
+    ReplyNote.IN_USE -> stringResource(R.string.agents_pc_reply_in_use, pcName)
+    ReplyNote.BUSY -> stringResource(R.string.agents_pc_reply_busy, agentName)
+    ReplyNote.RATE -> stringResource(R.string.agents_pc_reply_rate)
+    ReplyNote.NEEDS_YOU -> stringResource(R.string.agents_pc_reply_needs_you, pcName)
+    ReplyNote.TAB -> stringResource(R.string.agents_pc_reply_tab, pcName)
+    ReplyNote.AMBIGUOUS -> stringResource(R.string.agents_pc_reply_ambiguous)
+    ReplyNote.CLIPBOARD -> stringResource(R.string.agents_pc_reply_clipboard, pcName)
+    ReplyNote.TEXT -> stringResource(R.string.agents_pc_reply_text, agentName)
+    ReplyNote.FOCUS -> stringResource(R.string.agents_pc_reply_focus)
+    ReplyNote.INTERRUPTED -> stringResource(R.string.agents_pc_reply_interrupted, pcName)
+    ReplyNote.NOT_KNOWN -> stringResource(R.string.agents_pc_reply_not_known)
+    ReplyNote.FAILED -> stringResource(R.string.agents_pc_reply_failed)
+    ReplyNote.UNREACHABLE -> stringResource(R.string.agents_unreachable_title, pcName)
+}
+
+/** No box (§6.4): one quiet line, "Why?" opening the reason; a line still owed for an earlier reply under it. */
+@Composable
+private fun CantReplyLine(cant: ReplyFooter.Cant, agentName: String, pcName: String, onWhy: () -> Unit, onDismiss: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, bottom = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(G7Icons.terminal, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(14.dp))
             Text(
-                listOfNotNull(asked, stringResource(R.string.agents_session_answer_on, pcName)).joinToString(" "),
+                stringResource(R.string.agents_pc_reply_cant),
                 style = MaterialTheme.typography.bodySmall,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Text(
+                stringResource(R.string.agents_pc_reply_why),
+                style = MaterialTheme.typography.labelLarge,
+                color = scheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(role = Role.Button, onClick = onWhy)
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+            )
+        }
+        cant.note?.let { note ->
+            ReplyNoteLine(note, agentName = agentName, pcName = pcName, onRetry = null, onDismiss = if (note == ReplyNote.INTERRUPTED) onDismiss else null)
+        }
+    }
+}
+
+/** What "Why?" opens: the reason in a sentence or two. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReplyWhySheet(cant: ReplyFooter.Cant, agentName: String, pcName: String, onDismiss: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val reason = when (cant.why) {
+        CantReply.AGENT_APP -> listOf(stringResource(R.string.agents_pc_reply_cant_app, agentName, pcName))
+        CantReply.CODEX_WINDOW -> listOf(stringResource(R.string.agents_pc_reply_cant_codex), stringResource(R.string.agents_pc_reply_cant_codex_tip))
+        CantReply.TERMINAL -> listOfNotNull(
+            stringResource(R.string.agents_pc_reply_cant_terminal),
+            cant.app?.let { stringResource(R.string.agents_pc_reply_cant_in, it) },
+        )
+        CantReply.NO_WINDOW -> listOf(stringResource(R.string.agents_pc_reply_cant_window))
+        CantReply.SETUP -> listOf(stringResource(R.string.agents_pc_reply_cant_setup, pcName))
+        CantReply.OFF -> listOf(stringResource(R.string.agents_pc_reply_cant_off, pcName), stringResource(R.string.agents_pc_reply_cant_off_tip))
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, containerColor = scheme.surfaceContainerHigh) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(stringResource(R.string.agents_pc_reply_cant), style = MaterialTheme.typography.titleMedium)
+            reason.forEachIndexed { index, line ->
+                Text(line, style = if (index == 0) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium, color = if (index == 0) scheme.onSurface else scheme.onSurfaceVariant)
+            }
+            G7RaisedButton(label = stringResource(R.string.agents_close), onClick = onDismiss, modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+/**
+ * The first reply to this window (§6.2): where it will type, large, what G7
+ * does, and Send or Cancel. The draft stays in the box behind it.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReplyConfirmSheet(confirm: ReplyConfirm, pcName: String, onSend: () -> Unit, onCancel: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onCancel, sheetState = state, containerColor = scheme.surfaceContainerHigh) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(stringResource(R.string.agents_pc_reply_confirm_title, pcName), style = MaterialTheme.typography.titleMedium)
+            confirm.target?.let { target ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(scheme.surface)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(if (target.inApp) G7Icons.window else G7Icons.terminal, contentDescription = null, tint = scheme.onSurface, modifier = Modifier.size(22.dp))
+                    Text(target.line, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Text(stringResource(R.string.agents_pc_reply_confirm_body), style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+            ButtonPair(
+                secondary = stringResource(R.string.action_cancel),
+                onSecondary = onCancel,
+                secondaryEnabled = true,
+                primary = stringResource(R.string.agents_send),
+                onPrimary = onSend,
+                primaryEnabled = true,
+            )
+        }
+    }
+}
+
+/**
+ * A reply entered on the PC, at the end of the transcript until its own row
+ * arrives (§6.3): the text, and "Entered on guchu", or "Waiting for Claude
+ * to pick it up" while the session works.
+ */
+@Composable
+private fun PendingReplyRow(row: PendingRow, agentName: String, pcName: String) {
+    val scheme = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(start = 48.dp, top = 10.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            row.text,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 12,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .border(1.dp, scheme.outline, RoundedCornerShape(12.dp))
+                .background(scheme.surfaceContainer)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(if (row.waiting) G7Icons.history else G7Icons.check, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(13.dp))
+            Text(
+                if (row.waiting) stringResource(R.string.agents_pc_reply_picking_up, agentName) else stringResource(R.string.agents_pc_reply_entered, pcName),
+                style = MaterialTheme.typography.labelMedium,
                 color = scheme.onSurfaceVariant,
             )
         }
-        AgentsModel.mayNeedYou(session) -> Column(card, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(G7Icons.clock, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                Text(mayWait(session, agentName, pcName), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            }
-            RunningCommand(running = running, folder = session.folder)
-        }
-        session.state == AgentSessionState.WORKING -> Column(card, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SessionStatusMark(needsYou = false, mayNeedYou = false, working = true)
-                Text(
-                    session.step?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.agents_step_now, it) }
-                        ?: stringResource(R.string.agents_state_working),
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                val since = session.sinceMs
-                if (since != null && since > 0L) {
-                    ElapsedText(since, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
-                }
-            }
-            RunningCommand(running = running, folder = session.folder)
-        }
-        else -> ContinueCard(
-            session = session,
-            agents = agents,
-            agentName = agentName,
-            pcName = pcName,
-            now = now,
-            continuing = continuing,
-            onContinue = onContinue,
-            modifier = card,
-        )
     }
 }
 
@@ -597,3 +1003,12 @@ private fun ContinueCard(
         }
     }
 }
+
+/** The pending reply's place at the end of the transcript. */
+private const val PENDING_KEY = "reply-pending"
+
+/** A check waits this long after what asked for it, so a burst of changes asks once. */
+private const val CHECK_SETTLE_MS = 300L
+
+/** The least wait before asking again after "in use" or "too fast". */
+private const val RETRY_LEAST_MS = 1_000L

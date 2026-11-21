@@ -3970,6 +3970,32 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         return result
     }
 
+    // ---- Reply on the PC (docs/protocol/agents.md §9, plans/reply-on-pc.md) ----
+
+    /**
+     * Whether the PC could enter a reply into [sessionId]'s window now; it
+     * enters nothing. Asked when the session's view opens, when its state or
+     * the PC's lock changes, and when the reply box gains focus.
+     */
+    suspend fun agentSessionReplyCheck(pcId: String, sessionId: String): AgentCall<app.g7link.android.ui.agents.ReplyAnswer> =
+        agentCall { app.g7link.android.ui.agents.AgentReplyFfi.of(it.agentSessionReplyCheck(pcId, sessionId)) }
+
+    /**
+     * Has the PC bring [sessionId]'s window forward, paste [text] and press
+     * Enter; [confirm] is the nonce of its earlier "confirm" answer, once the
+     * user said Send. Only for a send the user made in the reply box: sent
+     * once, never held, retried or sent on its own.
+     */
+    suspend fun agentSessionReply(
+        pcId: String,
+        sessionId: String,
+        text: String,
+        confirm: String?,
+    ): AgentCall<app.g7link.android.ui.agents.ReplyAnswer> {
+        if (!AgentsModel.fits(text)) return AgentCall.Failed(AgentFailure.OTHER)
+        return agentCall { app.g7link.android.ui.agents.AgentReplyFfi.of(it.agentSessionReply(pcId, sessionId, text, confirm)) }
+    }
+
     /**
      * A thread ([threadId]) or a followed session ([sessionId]) as Markdown,
      * to share: exactly one of the two. Kept in memory only; the caller hands

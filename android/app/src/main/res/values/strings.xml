@@ -1944,6 +1944,39 @@
     <!-- A followed session that stopped at its agent's usage limit (owner's report, 2026-11-21) -->
     <string name="agents_session_limit">Limit reached</string>
     <string name="agents_session_limit_resets">Limit reached · resets %1$s</string>
+    <!-- Reply on the PC (0.1.21, plans/reply-on-pc.md §6): the followed session's reply box -->
+    <string name="agents_pc_reply_line">%1$s, reply on the PC</string>
+    <string name="agents_pc_reply_hint">Reply on %1$s</string>
+    <string name="agents_pc_reply_where">G7 brings this window forward on %1$s, pastes your message and presses Enter.</string>
+    <string name="agents_pc_reply_typing">Typing on %1$s…</string>
+    <string name="agents_pc_reply_entered">Entered on %1$s</string>
+    <string name="agents_pc_reply_picking_up">Waiting for %1$s to pick it up</string>
+    <string name="agents_pc_reply_unlock">Unlock %1$s to reply</string>
+    <string name="agents_pc_reply_in_use">%1$s is in use. Try again in a moment.</string>
+    <string name="agents_pc_reply_busy">%1$s is mid-turn. Send when it\'s done.</string>
+    <string name="agents_pc_reply_rate">Too many replies at once. Try again in a moment.</string>
+    <string name="agents_pc_reply_needs_you">It\'s waiting for an answer on %1$s.</string>
+    <string name="agents_pc_reply_tab">It\'s in a background tab. Bring it forward on %1$s.</string>
+    <string name="agents_pc_reply_ambiguous">G7 can\'t tell which window it\'s in.</string>
+    <string name="agents_pc_reply_clipboard">Something is copied on %1$s that G7 can\'t put back.</string>
+    <string name="agents_pc_reply_text">Starts with ! or /, which %1$s reads as a command.</string>
+    <string name="agents_pc_reply_focus">The window didn\'t come forward. Nothing was typed.</string>
+    <string name="agents_pc_reply_interrupted">Your message was typed on %1$s but not sent. Check the window.</string>
+    <string name="agents_pc_reply_not_known">Not known if it was sent. Check the session.</string>
+    <string name="agents_pc_reply_failed">Couldn\'t reply.</string>
+    <string name="agents_pc_reply_confirm_title">Type into this window on %1$s?</string>
+    <string name="agents_pc_reply_confirm_body">G7 brings it forward, pastes your message and presses Enter. It won\'t type while someone is using the PC.</string>
+    <string name="agents_pc_reply_cant">Can\'t reply to it from here.</string>
+    <string name="agents_pc_reply_why">Why?</string>
+    <string name="agents_pc_reply_cant_app">Reply in the %1$s app on %2$s.</string>
+    <string name="agents_pc_reply_cant_codex">Can\'t tell which window has this Codex session.</string>
+    <string name="agents_pc_reply_cant_codex_tip">Codex sessions opened with codex resume can be replied to.</string>
+    <string name="agents_pc_reply_cant_terminal">Replies work for sessions in Ptyxis and GNOME Terminal.</string>
+    <string name="agents_pc_reply_cant_in">This one is in %1$s.</string>
+    <string name="agents_pc_reply_cant_window">G7 can\'t find this session\'s window.</string>
+    <string name="agents_pc_reply_cant_setup">Replying needs the G7 Linux Companion 1.4 on %1$s.</string>
+    <string name="agents_pc_reply_cant_off">Replies are off for this phone on %1$s.</string>
+    <string name="agents_pc_reply_cant_off_tip">Turn them on there, in G7 Link\'s settings for this phone.</string>
     <!-- Agents phase 4 (0.1.20): source control on the phone -->
     <string name="agents_git_source_control">Source control</string>
     <string name="agents_git_worktree">Worktree</string>
