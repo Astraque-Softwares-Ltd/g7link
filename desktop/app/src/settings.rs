@@ -181,6 +181,7 @@ fn normalize_webcam_camera(cam: &str) -> String {
 }
 
 static CLIPBOARD_AUTO_COPY_FILES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static COPY_PHONE_SCREENSHOTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static SHARE_PC_STORAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static FORWARD_PC_NOTIFICATIONS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static FLOW_FOLLOW_CLIPBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -203,6 +204,14 @@ pub fn clipboard_auto_copy_received_files() -> bool {
 
 pub fn set_clipboard_auto_copy_received_files(on: bool) {
     CLIPBOARD_AUTO_COPY_FILES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn copy_phone_screenshots() -> bool {
+    COPY_PHONE_SCREENSHOTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_copy_phone_screenshots(on: bool) {
+    COPY_PHONE_SCREENSHOTS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Whether a single file shared from the phone opens in its default app on arrival.
@@ -592,6 +601,10 @@ pub struct Settings {
     /// arrives. Off by default: it's saved in Downloads/G7Link either way.
     #[serde(default, alias = "open_shared_files")]
     pub open_shared_files: bool,
+    /// Put a screenshot taken on the phone on this PC's clipboard as soon as
+    /// the phone has it, as a screenshot taken here is.
+    #[serde(default = "default_true", alias = "copy_phone_screenshots")]
+    pub copy_phone_screenshots: bool,
     /// Folder sync and photo backup wait while the phone is only reachable
     /// through the relay, which may be using its mobile data.
     #[serde(default, alias = "sync_wifi_only")]
@@ -741,6 +754,7 @@ impl Default for Settings {
             local_api_port: default_local_api_port(),
             clipboard_auto_copy_received_files: true,
             open_shared_files: false,
+            copy_phone_screenshots: true,
             sync_wifi_only: false,
             sync_passwords: false,
             mirror_quality: String::new(),
@@ -810,6 +824,7 @@ impl Settings {
     pub fn apply_runtime(&self) {
         set_clipboard_auto_copy_received_files(self.clipboard_auto_copy_received_files);
         set_open_shared_files(self.open_shared_files);
+        set_copy_phone_screenshots(self.copy_phone_screenshots);
         set_sync_wifi_only(self.sync_wifi_only);
         set_sync_passwords(self.sync_passwords);
         set_mirror_quality(&self.mirror_quality);
@@ -1032,6 +1047,7 @@ mod tests {
             local_api_port: 54321,
             clipboard_auto_copy_received_files: false,
             open_shared_files: true,
+            copy_phone_screenshots: false,
             sync_wifi_only: true,
             sync_passwords: true,
             mirror_quality: "sharper".into(),
@@ -1081,6 +1097,7 @@ mod tests {
         let loaded = Settings::load(dir.path());
         assert_eq!(loaded.theme, Theme::Dracula);
         assert_eq!(loaded.color_mode, ColorMode::Dark);
+        assert!(loaded.copy_phone_screenshots);
 
         fs::write(dir.path().join(FILE_NAME), "{ not json").unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());

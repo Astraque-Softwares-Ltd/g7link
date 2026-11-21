@@ -84,6 +84,10 @@ pub fn on_event(event: &NodeEvent) {
     match event {
         NodeEvent::PhotoAdded { device, photo } => {
             show(*device, photo);
+            // As a screenshot taken here is: ready to paste.
+            if photo.screenshot && crate::settings::copy_phone_screenshots() {
+                fetch(*device, photo.id.clone(), Intent::Copy { item_id: Some(photo.id.clone()) });
+            }
             if !photo.thumb.is_empty() {
                 let _ = write_thumb(*device, &photo.id, &photo.thumb);
             }
@@ -220,8 +224,12 @@ pub fn on_toast(key: &str, action: Option<&str>) {
         Some(ACTION_COPY) => Intent::Copy { item_id: Some(photo_id.to_owned()) },
         Some(_) => return,
     };
+    fetch(device, photo_id.to_owned(), intent);
+}
+
+/// Asks `device` for photo `photo_id`, for `intent` once it's here.
+fn fetch(device: DeviceId, photo_id: String, intent: Intent) {
     let Some(node) = core_host::node() else { return };
-    let photo_id = photo_id.to_owned();
     core_host::spawn(async move {
         match node.fetch_photo(device, photo_id).await {
             Ok(transfer) => asked(transfer, intent),

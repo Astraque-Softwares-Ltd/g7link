@@ -1173,6 +1173,17 @@ Item {
                                 onToggled: (on) => Preferences.clipboardAutoCopyReceivedFiles = on
                             }
                         }
+                        SettingRow {
+                            width: parent.width
+                            iconPath: Icons.screenshot
+                            title: qsTr("Copy phone screenshots")
+                            description: qsTr("Ready to paste here")
+                            Toggle {
+                                label: qsTr("Copy phone screenshots")
+                                checked: Preferences.copyPhoneScreenshots
+                                onToggled: (on) => Preferences.copyPhoneScreenshots = on
+                            }
+                        }
 
                         SettingRow {
                             width: parent.width

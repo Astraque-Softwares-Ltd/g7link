@@ -106,6 +106,8 @@ pub mod qobject {
         #[qproperty(bool, clipboard_auto_copy_received_files)]
         /// Open a single file shared from the phone when it arrives.
         #[qproperty(bool, open_shared_files)]
+        /// Put a phone's screenshots on this PC's clipboard as they arrive.
+        #[qproperty(bool, copy_phone_screenshots)]
         #[qproperty(bool, sync_wifi_only)]
         #[qproperty(bool, sync_passwords)]
         #[qproperty(QString, mirror_quality)]
@@ -345,6 +347,7 @@ pub struct PreferencesRust {
     local_api_token_path: QString,
     clipboard_auto_copy_received_files: bool,
     open_shared_files: bool,
+    copy_phone_screenshots: bool,
     sync_wifi_only: bool,
     sync_passwords: bool,
     mirror_quality: QString,
@@ -444,6 +447,7 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut().set_local_api_token_path(QString::from(&token_path.to_string_lossy().into_owned()));
         self.as_mut().set_clipboard_auto_copy_received_files(settings.clipboard_auto_copy_received_files);
         self.as_mut().set_open_shared_files(settings.open_shared_files);
+        self.as_mut().set_copy_phone_screenshots(settings.copy_phone_screenshots);
         self.as_mut().set_sync_wifi_only(settings.sync_wifi_only);
         self.as_mut().set_sync_passwords(settings.sync_passwords);
         self.as_mut().set_mirror_quality(QString::from(crate::settings::mirror_quality().name()));
@@ -713,6 +717,12 @@ impl cxx_qt::Initialize for qobject::Preferences {
         self.as_mut()
             .on_open_shared_files_changed(|p| {
                 crate::settings::set_open_shared_files(p.open_shared_files);
+                p.save();
+            })
+            .release();
+        self.as_mut()
+            .on_copy_phone_screenshots_changed(|p| {
+                crate::settings::set_copy_phone_screenshots(p.copy_phone_screenshots);
                 p.save();
             })
             .release();
@@ -1131,6 +1141,7 @@ impl qobject::Preferences {
                 .unwrap_or(crate::settings::DEFAULT_LOCAL_API_PORT),
             clipboard_auto_copy_received_files: p.clipboard_auto_copy_received_files,
             open_shared_files: p.open_shared_files,
+            copy_phone_screenshots: p.copy_phone_screenshots,
             sync_wifi_only: p.sync_wifi_only,
             sync_passwords: p.sync_passwords,
             mirror_quality: String::from(&p.mirror_quality),
