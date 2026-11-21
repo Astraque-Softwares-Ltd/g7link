@@ -69,6 +69,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import app.g7link.android.R
 import app.g7link.android.core.Core
 import app.g7link.android.core.Device
+import app.g7link.android.notifications.AgentLimitAlarm
 import app.g7link.android.ui.theme.G7IconButton
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.LocalAppFonts
@@ -102,6 +103,9 @@ private const val SHEET_DIFF_ROWS = 60
 /** Pages read back at most to reach a search hit's message. */
 private const val JUMP_PAGES = 10
 
+/** How long after opening the reply box is focused for a limit reset's Open. */
+private const val FOCUS_AFTER_MS = 300L
+
 /**
  * One thread on a PC (contract §P6, the phone board): its rows from the FFI,
  * the request it waits on as a sheet over the reply box with Stop beside send,
@@ -123,6 +127,9 @@ fun AgentThreadScreen(
     val context = LocalContext.current
     val all by core.agents.collectAsStateWithLifecycle()
     val agents = all[device.id] ?: AgentsState()
+    val presences by core.agentPresence.collectAsStateWithLifecycle()
+    val presence = presences[device.id]
+    val openOnPc = remember(presence, threadId) { presence?.shows(threadId, System.currentTimeMillis()) == true }
     val thread = agents.thread(threadId)
     val open = agents.open?.takeIf { it.threadId == threadId }
     val hasCatalog = agents.catalog != null
@@ -224,7 +231,11 @@ fun AgentThreadScreen(
     val settingsNow = remember(control) { AgentSettings.of(control) }
     var stopping by remember(threadId) { mutableStateOf(false) }
     LaunchedEffect(running) { if (!running) stopping = false }
-    var draft by rememberSaveable(threadId) { mutableStateOf("") }
+    // A share from another app (contract §V6): its text goes in the box, its pictures upload as attachments; nothing is sent.
+    val shared = remember(device.id, threadId) { AgentShared.take(device.id, threadId) }
+    // A limit reset's Open: the reply box focused, nothing typed.
+    val focusReply = remember(device.id, threadId) { AgentFocus.take(device.id, threadId) }
+    var draft by rememberSaveable(threadId) { mutableStateOf(shared?.text.orEmpty()) }
     var draftFor by rememberSaveable(threadId) { mutableStateOf<String?>(null) }
     var sending by remember(threadId) { mutableStateOf(false) }
     var loadingEarlier by remember(threadId) { mutableStateOf(false) }
@@ -439,6 +450,33 @@ fun AgentThreadScreen(
         }
     }
     val pickers = rememberImagePickers(onPicked = addImages, onCameraFailed = { core.say(resources.getString(R.string.agents_image_failed)) })
+    var sharedImages by remember(threadId) { mutableStateOf(shared?.images.orEmpty()) }
+    LaunchedEffect(shared) {
+        if (shared == null) return@LaunchedEffect
+        if (shared.text.isNotEmpty()) drafts = AgentDrafts.edited(drafts)
+        if (shared.shortened) core.say(resources.getString(R.string.agents_share_shortened))
+    }
+    // The shared pictures wait for the PC to say what the thread's model takes.
+    LaunchedEffect(sharedImages, thread != null, hasCatalog) {
+        val paths = sharedImages
+        if (paths.isEmpty() || thread == null || !hasCatalog) return@LaunchedEffect
+        sharedImages = emptyList()
+        if (imagesAllowed) {
+            // Each copy goes once it's uploaded (or refused).
+            paths.forEach { path -> addImages(listOf(android.net.Uri.fromFile(java.io.File(path))), path) }
+        } else {
+            paths.forEach(AgentImageIntake::deleteCameraFile)
+            core.say(resources.getString(R.string.agents_image_model, agentName))
+        }
+    }
+    val sharedLeft by rememberUpdatedState(sharedImages)
+    DisposableEffect(threadId) { onDispose { sharedLeft.forEach(AgentImageIntake::deleteCameraFile) } }
+    LaunchedEffect(focusReply) {
+        if (!focusReply) return@LaunchedEffect
+        // Once the reply box is laid out.
+        delay(FOCUS_AFTER_MS)
+        runCatching { focus.requestFocus() }
+    }
     val openSettings: () -> Unit = {
         when (composer.settings) {
             SettingsAccess.OPEN -> settingsOpen = true
@@ -791,6 +829,7 @@ fun AgentThreadScreen(
                 thread = thread,
                 status = status,
                 agentName = agentName,
+                openOn = if (openOnPc) device.name else null,
                 onBack = onBack,
                 canShare = thread != null && load == ThreadLoad.READY && !sharing,
                 onShare = share,
@@ -832,7 +871,10 @@ fun AgentThreadScreen(
                     // The request sheet rests at most at half the thread's height (reconcile file, the dock, item 4).
                     val sheetMax = maxHeight / 2
                     Column(Modifier.fillMaxSize()) {
-                        val end = threadEnd(status, thread, agents, device.name)
+                        val told = remember(device.id, thread, agents.catalog, pausedUntil) {
+                            pausedUntil != null && AgentLimitAlarm.armedFor(context, device.id, thread.agent) != null
+                        }
+                        val end = threadEnd(status, thread, agents, device.name, told)
                         val heldRows: (LazyListScope.() -> Unit)? = if (heldHere.isEmpty()) {
                             null
                         } else {
@@ -1074,6 +1116,7 @@ private fun ThreadHeader(
     thread: AgentThread?,
     status: ThreadStatus?,
     agentName: String,
+    openOn: String?,
     onBack: () -> Unit,
     canShare: Boolean,
     onShare: () -> Unit,
@@ -1096,7 +1139,7 @@ private fun ThreadHeader(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (thread != null && status != null) ThreadMeta(status, agentName, thread.folder)
+                if (thread != null && status != null) ThreadMeta(status, agentName, thread.folder, openOn)
             }
             AgentsDrawerButton(drawer)
             Box {
@@ -1129,9 +1172,13 @@ private fun ThreadHeader(
     }
 }
 
-/** "● Needs you · Claude · g7linux-phone": the state in its colour, then the agent and the folder's label. */
+/**
+ * "● Needs you · Claude · g7linux-phone": the state in its colour, then the
+ * agent and the folder's label, and "open on Kilele" while the PC shows the
+ * thread (contract §V4.4).
+ */
 @Composable
-private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String) {
+private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String, openOn: String?) {
     val scheme = MaterialTheme.colorScheme
     val word = when (status) {
         ThreadStatus.NeedsYou -> stringResource(R.string.agents_state_waiting)
@@ -1146,8 +1193,9 @@ private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String) 
         // The header's chip (§2.9): a mark of its own shape, then the word.
         ThreadStatusMark(status)
         StatusWord(status, word, MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold))
+        val where = openOn?.let { stringResource(R.string.agents_open_on, it) }
         Text(
-            listOf(agentName, folder).filter { it.isNotBlank() }.joinToString(" · ", prefix = "· "),
+            listOfNotNull(agentName, folder, where).filter { it.isNotBlank() }.joinToString(" · ", prefix = "· "),
             style = MaterialTheme.typography.labelMedium,
             color = scheme.onSurfaceVariant,
             maxLines = 1,
@@ -1162,7 +1210,7 @@ private fun ThreadMeta(status: ThreadStatus, agentName: String, folder: String) 
  * or the usage limit and when it resets in amber.
  */
 @Composable
-private fun threadEnd(status: ThreadStatus?, thread: AgentThread?, agents: AgentsState, pcName: String): (LazyListScope.() -> Unit)? {
+private fun threadEnd(status: ThreadStatus?, thread: AgentThread?, agents: AgentsState, pcName: String, told: Boolean): (LazyListScope.() -> Unit)? {
     if (thread == null) return null
     val context = LocalContext.current
     val scheme = MaterialTheme.colorScheme
@@ -1194,12 +1242,17 @@ private fun threadEnd(status: ThreadStatus?, thread: AgentThread?, agents: Agent
             end
         }
         is ThreadStatus.Paused -> {
-            val text = status.resetsMs?.let {
-                stringResource(R.string.agents_paused_resets, DateFormat.getTimeFormat(context).format(Date(it)))
-            } ?: stringResource(R.string.agents_usage_limit)
+            val at = status.resetsMs?.let { DateFormat.getTimeFormat(context).format(Date(it)) }
+            // With the limit alarm set (contract §V5): the bell, and that you'll be told.
+            val text = when {
+                at != null && told -> stringResource(R.string.agents_paused_told, at)
+                at != null -> stringResource(R.string.agents_paused_resets, at)
+                else -> stringResource(R.string.agents_usage_limit)
+            }
+            val icon = if (at != null && told) G7Icons.bell else G7Icons.history
             val end: LazyListScope.() -> Unit = {
                 item(key = "end", contentType = "end") {
-                    Box(Modifier.padding(top = 12.dp)) { EndLine(G7Icons.history, tints.amber, text, tints.amber) }
+                    Box(Modifier.padding(top = 12.dp)) { EndLine(icon, tints.amber, text, tints.amber) }
                 }
             }
             end

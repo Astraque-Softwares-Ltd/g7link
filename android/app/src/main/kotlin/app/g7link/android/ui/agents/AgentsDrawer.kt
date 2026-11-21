@@ -74,7 +74,6 @@ import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.LocalReducedMotion
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentSession
-import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
@@ -463,14 +462,10 @@ private fun DrawerRow(
     }
 }
 
-/** A session's mark, as its status line draws it: needs you, may need you (a hollow amber ring), at work. */
+/** A session's mark, as its status line draws it: needs you, may need you (a hollow amber ring), at work, or still. */
 @Composable
 private fun SessionDot(session: AgentSession) {
-    SessionStatusMark(
-        needsYou = AgentsModel.needsYouExactly(session),
-        mayNeedYou = AgentsModel.mayNeedYou(session),
-        working = session.state == AgentSessionState.WORKING,
-    )
+    SessionLookMark(AgentsModel.sessionLook(session))
 }
 
 /** How wide the strip is that a swipe to open starts in, past the system's back-gesture area. */

@@ -61,6 +61,7 @@ import app.g7link.android.core.PairingState
 import app.g7link.android.mirror.MirrorService
 import app.g7link.android.recorder.RecorderService
 import app.g7link.android.service.ConnectionService
+import app.g7link.android.ui.agents.AgentFocus
 import app.g7link.android.ui.agents.AgentSessionScreen
 import app.g7link.android.ui.agents.AgentThreadScreen
 import app.g7link.android.ui.agents.AgentsModel
@@ -363,9 +364,12 @@ class MainActivity : ComponentActivity() {
     private fun handleAgentIntent(intent: Intent?) {
         val pc = intent?.getStringExtra(EXTRA_OPEN_AGENT_PC)?.takeIf { AgentsModel.isId(it, max = AgentsModel.MAX_PC_ID) } ?: return
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
-        requestedAgentThread = intent.getStringExtra(EXTRA_OPEN_AGENT_THREAD)?.takeIf { AgentsModel.isId(it) }
+        val thread = intent.getStringExtra(EXTRA_OPEN_AGENT_THREAD)?.takeIf { AgentsModel.isId(it) }
+        requestedAgentThread = thread
         requestedAgentSession = intent.getStringExtra(EXTRA_OPEN_AGENT_SESSION)?.takeIf { AgentsModel.isId(it) }
         requestedAgentPc = pc
+        // A limit reset's Open: the thread with its reply box focused, nothing typed.
+        if (thread != null && intent.getBooleanExtra(EXTRA_FOCUS_AGENT_REPLY, false)) AgentFocus.request(pc, thread)
     }
 
     companion object {
@@ -378,6 +382,9 @@ class MainActivity : ComponentActivity() {
 
         /** With [EXTRA_OPEN_AGENT_PC]: a session started on that PC, followed (from its notification). */
         const val EXTRA_OPEN_AGENT_SESSION = "open_agent_session"
+
+        /** With [EXTRA_OPEN_AGENT_THREAD]: its reply box focused (a limit reset's Open). */
+        const val EXTRA_FOCUS_AGENT_REPLY = "focus_agent_reply"
         private const val STATE_PENDING_PAIRING_LINK = "pending_pairing_link"
     }
 }

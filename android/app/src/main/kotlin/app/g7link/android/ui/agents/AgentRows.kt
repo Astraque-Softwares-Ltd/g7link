@@ -215,11 +215,31 @@ internal fun AgentRowsList(
     // Follows new rows while the end is in view; scrolling up stops that, scrolling back down resumes it.
     var follow by remember { mutableStateOf(scrollTo == null) }
     var scrolledTo by remember { mutableStateOf<ULong?>(null) }
+    // The list keeps its place by the first item on screen, which is the Earlier row when
+    // it's tapped: earlier rows would go in below it and the view would stay on it. Hold
+    // the first message on screen instead, at the same height.
+    var anchor by remember { mutableStateOf<EarlierAnchor?>(null) }
+    val loadEarlier: () -> Unit = {
+        val layout = listState.layoutInfo
+        anchor = layout.visibleItemsInfo.firstOrNull { it.key != EARLIER_KEY }?.let {
+            EarlierAnchor(it.key, it.index, it.offset - layout.viewportStartOffset)
+        }
+        onLoadEarlier()
+    }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
             .collect { scroll -> if (scroll.first) follow = !scroll.second }
     }
     LaunchedEffect(rows, scrollTo) {
+        val held = anchor
+        val moved = held?.let { EarlierAnchor.moved(AgentPlanCards.units(rows).map { unit -> unit.key }, it, earlier) }
+        if (held != null && moved != null) {
+            anchor = null
+            follow = false
+            listState.scrollToItem(moved)
+            listState.scrollBy(-held.offset.toFloat())
+            return@LaunchedEffect
+        }
         val target = scrollTo
         if (target != null && scrolledTo != target && rows.isNotEmpty()) {
             val units = AgentPlanCards.units(rows)
@@ -245,12 +265,12 @@ internal fun AgentRowsList(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
     ) {
         if (earlier) {
-            item(key = "earlier", contentType = "earlier") {
+            item(key = EARLIER_KEY, contentType = "earlier") {
                 Box(Modifier.fillMaxWidth().padding(bottom = 12.dp), contentAlignment = Alignment.Center) {
                     if (loadingEarlier) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     } else {
-                        G7RowAction(label = stringResource(R.string.agents_load_earlier), onClick = onLoadEarlier)
+                        G7RowAction(label = stringResource(R.string.agents_load_earlier), onClick = loadEarlier)
                     }
                 }
             }
@@ -1673,3 +1693,26 @@ private const val COPIED_MS = 1_500L
 
 /** More than any row is tall: scrolls to the end of the last one. */
 private const val END_SCROLL = 100_000f
+
+/** The list's key for the Earlier row. */
+private const val EARLIER_KEY = "earlier"
+
+/**
+ * The first message on screen when Earlier was tapped: its key, its index in the list
+ * and how far below the list's top it was, so it can be put back after rows go in above it.
+ */
+internal data class EarlierAnchor(val key: Any, val index: Int, val offset: Int) {
+    companion object {
+        /**
+         * The held message's index now, if earlier rows went in above it; else null (nothing
+         * came, or it's gone). [keys]: the rows' keys in order; [earlier]: the Earlier row
+         * still leads the list.
+         */
+        fun moved(keys: List<Any>, held: EarlierAnchor, earlier: Boolean): Int? {
+            val at = keys.indexOf(held.key)
+            if (at < 0) return null
+            val index = at + if (earlier) 1 else 0
+            return index.takeIf { it > held.index }
+        }
+    }
+}

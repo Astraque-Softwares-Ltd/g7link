@@ -1909,4 +1909,29 @@
     </plurals>
     <string name="agents_found_copy_note">Bu bir kopya olarak devam eder. Asıl oturum olduğu gibi kalır.</string>
     <string name="agents_unsnooze">Ertelemeyi kaldır</string>
+    <!-- Agents phase 5 (0.1.20): answers from a notification, presence, the limit alarm, sharing to an agent -->
+    <string name="agents_notify_say_why">Nedenini yazın</string>
+    <string name="agents_notify_type">Yazın</string>
+    <string name="agents_notify_type_answer">Bir yanıt yazın</string>
+    <string name="agents_notify_open_to_answer">Yanıtlamak için açın</string>
+    <string name="agents_notify_count">%1$d / %2$d</string>
+    <string name="agents_open_on">%1$s üzerinde açık</string>
+    <string name="agents_quiet_at_pc">%1$s başındayken sessiz kal</string>
+    <string name="agents_quiet_at_pc_note">%1$s üzerinde baktığınız bir konuşma, siz uzaklaşana kadar burada bildirim göndermez.</string>
+    <string name="agents_limit_alarm_setting">Bir sınır sıfırlandığında bana haber ver</string>
+    <string name="agents_limit_reset_title">%1$s sınırı sıfırlandı</string>
+    <string name="agents_limit_reset_text">%1$s konuşmasına devam edebilirsiniz.</string>
+    <string name="agents_paused_told">%1$s saatine kadar duraklatıldı · size haber verilecek</string>
+    <string name="agents_share_label">Bir ajana sor</string>
+    <string name="agents_share_add_to">Bir konuşmaya ekle</string>
+    <string name="agents_share_shortened">Sığması için kısaltıldı.</string>
+    <string name="agents_share_refused">%1$s eklenemiyor. Yalnızca görsel ve metin.</string>
+    <string name="agents_share_too_large">%1$s eklemek için çok büyük.</string>
+    <string name="agents_share_too_many">Yalnızca ilk 4 görsel eklenir.</string>
+    <string name="agents_share_unnamed">Paylaşılan bir dosya</string>
+    <string name="agents_settings_notifications">Bildirimler</string>
+    <string name="agents_settings_saved">Kaydedilen konuşmalar</string>
+    <!-- A followed session that stopped at its agent's usage limit (owner's report, 2026-11-21) -->
+    <string name="agents_session_limit">Sınıra ulaşıldı</string>
+    <string name="agents_session_limit_resets">Sınıra ulaşıldı · %1$s sıfırlanır</string>
 </resources>

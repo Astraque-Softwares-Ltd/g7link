@@ -218,6 +218,38 @@
             android:name=".notifications.AgentActionReceiver"
             android:exported="false" />
 
+        <!-- An agent's usage limit has reset: says so; never sends anything. -->
+        <receiver
+            android:name=".notifications.AgentLimitAlarmReceiver"
+            android:exported="false" />
+
+        <!-- Ask an agent: shared text and pictures go in a thread's reply box, never sent from
+             here. Enabled only while a paired PC offers agents to this phone. -->
+        <activity
+            android:name=".ui.agents.AgentShareActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"
+            android:enabled="false"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/agents_share_label"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/jpeg" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="image/gif" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
         <!-- Android's answers while installing an update. -->
         <receiver
             android:name=".update.AppUpdater$InstallResult"

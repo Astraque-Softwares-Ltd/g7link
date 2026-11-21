@@ -354,15 +354,9 @@ private fun startedSentence(session: AgentSession, agentName: String, pcName: St
 @Composable
 private fun SessionLine(session: AgentSession, agentName: String, pcName: String, now: Long, modifier: Modifier = Modifier) {
     val scheme = MaterialTheme.colorScheme
-    val p = agentPalette()
     var whole by remember(session.id) { mutableStateOf(false) }
-    val (word, color) = when {
-        AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_state_waiting) to p.statusNeedsYou
-        AgentsModel.mayNeedYou(session) -> stringResource(R.string.agents_session_state_may_need_you) to p.statusMayNeedYou
-        session.state == AgentSessionState.WORKING -> workingFor(session.sinceMs, now) to p.statusWorking
-        session.state == AgentSessionState.IDLE -> stringResource(R.string.agents_session_state_idle) to scheme.onSurfaceVariant
-        else -> stringResource(R.string.agents_session_state_ended) to scheme.onSurfaceVariant
-    }
+    // A usage limit reads as such, with the still mark (owner's report, 2026-11-21).
+    val (word, color) = sessionWord(session, now)
     val where = when (session.source) {
         AgentSessionSource.TERMINAL -> stringResource(R.string.agents_session_in_terminal)
         AgentSessionSource.DESKTOP_APP -> stringResource(R.string.agents_session_in_app, agentName)
@@ -379,11 +373,7 @@ private fun SessionLine(session: AgentSession, agentName: String, pcName: String
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SessionStatusMark(
-                needsYou = AgentsModel.needsYouExactly(session),
-                mayNeedYou = AgentsModel.mayNeedYou(session),
-                working = session.state == AgentSessionState.WORKING,
-            )
+            SessionLookMark(AgentsModel.sessionLook(session))
             Text(word, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1)
             Text(rest, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }

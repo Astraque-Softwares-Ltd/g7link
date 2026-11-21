@@ -330,7 +330,7 @@ private fun SettingsChip(settings: ComposerSettings, access: SettingsAccess, onC
 
 /** The images going with the message: a thumbnail each once the PC has it, with remove. */
 @Composable
-private fun ImageStrip(images: List<PendingImage>, thumbs: ImageThumbs, onRemove: (String) -> Unit) {
+internal fun ImageStrip(images: List<PendingImage>, thumbs: ImageThumbs, onRemove: (String) -> Unit) {
     val scheme = MaterialTheme.colorScheme
     Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, top = 12.dp),

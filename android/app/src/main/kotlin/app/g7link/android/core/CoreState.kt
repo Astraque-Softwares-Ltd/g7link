@@ -632,6 +632,8 @@ data class CoreState(
         is Event.AgentCut,
         is Event.AgentImport,
         is Event.AgentOutbox,
+        // What a PC says of itself (§V4.4): kept by Core.agentPresence, for holding notifications.
+        is Event.AgentPresence,
         -> this
     }
 
@@ -740,6 +742,7 @@ internal fun Event.affectsCoreState(): Boolean = when (this) {
     is Event.AgentCut,
     is Event.AgentImport,
     is Event.AgentOutbox,
+    is Event.AgentPresence,
     -> false
     else -> true
 }

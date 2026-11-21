@@ -1909,4 +1909,29 @@
     </plurals>
     <string name="agents_found_copy_note">Das geht als Kopie weiter. Die ursprüngliche Sitzung bleibt, wie sie ist.</string>
     <string name="agents_unsnooze">Nicht mehr zurückstellen</string>
+    <!-- Agents phase 5 (0.1.20): answers from a notification, presence, the limit alarm, sharing to an agent -->
+    <string name="agents_notify_say_why">Sag, warum</string>
+    <string name="agents_notify_type">Schreiben</string>
+    <string name="agents_notify_type_answer">Antwort eingeben</string>
+    <string name="agents_notify_open_to_answer">Zum Antworten öffnen</string>
+    <string name="agents_notify_count">%1$d von %2$d</string>
+    <string name="agents_open_on">geöffnet auf %1$s</string>
+    <string name="agents_quiet_at_pc">Still bleiben, während ich an %1$s bin</string>
+    <string name="agents_quiet_at_pc_note">Ein Thread, den du auf %1$s ansiehst, meldet sich hier erst, wenn du weggehst.</string>
+    <string name="agents_limit_alarm_setting">Mir sagen, wenn ein Limit zurückgesetzt wird</string>
+    <string name="agents_limit_reset_title">Das Limit von %1$s ist zurückgesetzt</string>
+    <string name="agents_limit_reset_text">Du kannst %1$s fortsetzen.</string>
+    <string name="agents_paused_told">Pausiert bis %1$s · du wirst benachrichtigt</string>
+    <string name="agents_share_label">Einen Agent fragen</string>
+    <string name="agents_share_add_to">Zu einem Thread hinzufügen</string>
+    <string name="agents_share_shortened">Gekürzt, damit es passt.</string>
+    <string name="agents_share_refused">%1$s kann nicht hinzugefügt werden. Nur Bilder und Text.</string>
+    <string name="agents_share_too_large">%1$s ist zu groß zum Hinzufügen.</string>
+    <string name="agents_share_too_many">Nur die ersten 4 Bilder werden hinzugefügt.</string>
+    <string name="agents_share_unnamed">Eine geteilte Datei</string>
+    <string name="agents_settings_notifications">Benachrichtigungen</string>
+    <string name="agents_settings_saved">Gespeicherte Threads</string>
+    <!-- A followed session that stopped at its agent's usage limit (owner's report, 2026-11-21) -->
+    <string name="agents_session_limit">Limit erreicht</string>
+    <string name="agents_session_limit_resets">Limit erreicht · zurückgesetzt %1$s</string>
 </resources>

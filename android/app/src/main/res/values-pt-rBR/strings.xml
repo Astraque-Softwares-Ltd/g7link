@@ -1909,4 +1909,29 @@
     </plurals>
     <string name="agents_found_copy_note">Isto continua como uma cópia. A sessão original fica como está.</string>
     <string name="agents_unsnooze">Desfazer adiamento</string>
+    <!-- Agents phase 5 (0.1.20): answers from a notification, presence, the limit alarm, sharing to an agent -->
+    <string name="agents_notify_say_why">Diga por quê</string>
+    <string name="agents_notify_type">Digitar</string>
+    <string name="agents_notify_type_answer">Digite uma resposta</string>
+    <string name="agents_notify_open_to_answer">Abra para responder</string>
+    <string name="agents_notify_count">%1$d de %2$d</string>
+    <string name="agents_open_on">aberta em %1$s</string>
+    <string name="agents_quiet_at_pc">Ficar em silêncio enquanto estou em %1$s</string>
+    <string name="agents_quiet_at_pc_note">Uma conversa que você está vendo em %1$s só avisa aqui quando você se afastar.</string>
+    <string name="agents_limit_alarm_setting">Avisar quando um limite renovar</string>
+    <string name="agents_limit_reset_title">O limite de %1$s renovou</string>
+    <string name="agents_limit_reset_text">Você pode continuar %1$s.</string>
+    <string name="agents_paused_told">Pausado até %1$s · você será avisado</string>
+    <string name="agents_share_label">Perguntar a um agente</string>
+    <string name="agents_share_add_to">Adicionar a uma conversa</string>
+    <string name="agents_share_shortened">Encurtado para caber.</string>
+    <string name="agents_share_refused">Não é possível adicionar %1$s. Só imagens e texto.</string>
+    <string name="agents_share_too_large">%1$s é grande demais para adicionar.</string>
+    <string name="agents_share_too_many">Só as 4 primeiras imagens são adicionadas.</string>
+    <string name="agents_share_unnamed">Um arquivo compartilhado</string>
+    <string name="agents_settings_notifications">Notificações</string>
+    <string name="agents_settings_saved">Conversas salvas</string>
+    <!-- A followed session that stopped at its agent's usage limit (owner's report, 2026-11-21) -->
+    <string name="agents_session_limit">Limite atingido</string>
+    <string name="agents_session_limit_resets">Limite atingido · renova %1$s</string>
 </resources>

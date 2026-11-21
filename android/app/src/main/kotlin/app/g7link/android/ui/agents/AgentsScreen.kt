@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package app.g7link.android.ui.agents
 
+import android.text.format.DateFormat
 import android.text.format.DateUtils
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,7 +19,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.border
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -49,12 +50,13 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,8 +78,9 @@ import app.g7link.core.AgentCatalog
 import app.g7link.core.AgentInfo
 import app.g7link.core.AgentSession
 import app.g7link.core.AgentSessionSource
-import app.g7link.core.AgentSessionState
 import app.g7link.core.AgentThread
+import java.util.Date
+import java.util.TimeZone
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -113,7 +116,9 @@ fun AgentsScreen(
     var attempt by remember(device.id) { mutableIntStateOf(0) }
     var filter by rememberSaveable { mutableStateOf(ThreadFilter.ALL) }
     var page by rememberSaveable { mutableStateOf(AgentsPage.LIST) }
-    var newThread by rememberSaveable { mutableStateOf(false) }
+    // Shared from another app to a new thread (contract §V6): the new-thread sheet opens with it in the box.
+    var sharedNew by remember(device.id) { mutableStateOf(AgentShared.take(device.id, null)) }
+    var newThread by rememberSaveable { mutableStateOf(sharedNew != null) }
     var settings by rememberSaveable { mutableStateOf(false) }
     var menuFor by rememberSaveable { mutableStateOf<String?>(null) }
     var snoozeFor by rememberSaveable { mutableStateOf<String?>(null) }
@@ -309,14 +314,19 @@ fun AgentsScreen(
             core = core,
             catalog = catalog,
             threads = agents.threads,
+            shared = sharedNew,
             onStarted = { id ->
                 newThread = false
+                sharedNew = null
                 onOpenThread(id)
             },
-            onDismiss = { newThread = false },
+            onDismiss = {
+                newThread = false
+                sharedNew = null
+            },
         )
     }
-    if (settings) AgentCacheSheet(core = core, pcName = device.name, onDismiss = { settings = false })
+    if (settings) AgentCacheSheet(core = core, pcId = device.id, pcName = device.name, onDismiss = { settings = false })
     menuFor?.let { id -> agents.thread(id) }?.let { thread ->
         ThreadActionsSheet(
             thread = thread,
@@ -533,7 +543,7 @@ private fun SessionRow(session: AgentSession, agentName: String, pcName: String,
         }
         if (line != null) {
             Text(line, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
-        } else if (session.state == AgentSessionState.WORKING) {
+        } else if (AgentsModel.sessionLook(session) == SessionLook.WORKING) {
             NowLine(step = session.step, sinceMs = session.sinceMs)
         }
     }
@@ -571,19 +581,8 @@ internal fun SessionStatusLine(session: AgentSession, now: Long, trailing: Strin
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        val p = agentPalette()
-        val (word, color) = when {
-            AgentsModel.needsYouExactly(session) -> stringResource(R.string.agents_state_waiting) to p.statusNeedsYou
-            AgentsModel.mayNeedYou(session) -> stringResource(R.string.agents_session_state_may_need_you) to p.statusMayNeedYou
-            session.state == AgentSessionState.WORKING -> workingFor(session.sinceMs, now) to p.statusWorking
-            session.state == AgentSessionState.IDLE -> stringResource(R.string.agents_session_state_idle) to scheme.onSurfaceVariant
-            else -> stringResource(R.string.agents_session_state_ended) to scheme.onSurfaceVariant
-        }
-        SessionStatusMark(
-            needsYou = AgentsModel.needsYouExactly(session),
-            mayNeedYou = AgentsModel.mayNeedYou(session),
-            working = session.state == AgentSessionState.WORKING,
-        )
+        val (word, color) = sessionWord(session, now)
+        SessionLookMark(AgentsModel.sessionLook(session))
         Text(word, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1)
         if (!trailing.isNullOrBlank()) {
             Text(
@@ -597,6 +596,48 @@ internal fun SessionStatusLine(session: AgentSession, now: Long, trailing: Strin
             )
         }
     }
+}
+
+/**
+ * A session's state in words and their colour: Needs you, May need you,
+ * Working for 6 min, Limit reached · resets 18:00, Idle, Ended.
+ */
+@Composable
+internal fun sessionWord(session: AgentSession, now: Long): Pair<String, Color> {
+    val scheme = MaterialTheme.colorScheme
+    val p = agentPalette()
+    return when (AgentsModel.sessionLook(session)) {
+        SessionLook.NEEDS_YOU -> stringResource(R.string.agents_state_waiting) to p.statusNeedsYou
+        SessionLook.MAY_NEED_YOU -> stringResource(R.string.agents_session_state_may_need_you) to p.statusMayNeedYou
+        SessionLook.WORKING -> workingFor(session.sinceMs, now) to p.statusWorking
+        SessionLook.LIMITED -> limitReached(AgentsModel.sessionLimitResets(session, now), now) to p.statusPaused
+        SessionLook.IDLE -> stringResource(R.string.agents_session_state_idle) to scheme.onSurfaceVariant
+        SessionLook.ENDED -> stringResource(R.string.agents_session_state_ended) to scheme.onSurfaceVariant
+    }
+}
+
+/** "Limit reached · resets 18:00" (or "· resets Mon 18:00" another day); "Limit reached" when it's not said or past. */
+@Composable
+internal fun limitReached(resetsMs: Long?, now: Long): String {
+    if (resetsMs == null) return stringResource(R.string.agents_session_limit)
+    val context = LocalContext.current
+    val locale = LocalLocale.current.platformLocale
+    val at = if (AgentsModel.sameDay(resetsMs, now, TimeZone.getDefault())) {
+        DateFormat.getTimeFormat(context).format(Date(resetsMs))
+    } else {
+        DateFormat.format(DateFormat.getBestDateTimePattern(locale, "EEE jm"), resetsMs).toString()
+    }
+    return stringResource(R.string.agents_session_limit_resets, at)
+}
+
+/** A session's mark: needs you, may need you (a hollow amber ring), at work, or still (a usage limit, idle, ended). */
+@Composable
+internal fun SessionLookMark(look: SessionLook) {
+    SessionStatusMark(
+        needsYou = look == SessionLook.NEEDS_YOU,
+        mayNeedYou = look == SessionLook.MAY_NEED_YOU,
+        working = look == SessionLook.WORKING,
+    )
 }
 
 /** "Working for 4 min" from when it began working; "Working" when the PC didn't say. */
@@ -656,6 +697,7 @@ internal fun NewThreadSheet(
     threads: List<AgentThread>,
     onStarted: (String) -> Unit,
     onDismiss: () -> Unit,
+    shared: SharedDraft? = null,
 ) {
     val resources = LocalResources.current
     val context = LocalContext.current
@@ -667,8 +709,39 @@ internal fun NewThreadSheet(
     var folderId by rememberSaveable {
         mutableStateOf(saved.second?.takeIf { id -> catalog.folders.any { it.id == id } } ?: catalog.folders.firstOrNull()?.id)
     }
-    var prompt by rememberSaveable { mutableStateOf("") }
+    var prompt by rememberSaveable { mutableStateOf(shared?.text.orEmpty()) }
     var busy by remember { mutableStateOf(false) }
+    // A share's pictures, uploaded as the sheet opens and sent with Start; never anything sent before it.
+    var images by remember { mutableStateOf(emptyList<PendingImage>()) }
+    val thumbs = remember(device.id) { ImageThumbs { id -> (core.agentImageThumb(device.id, id) as? AgentCall.Ok)?.value } }
+    LaunchedEffect(shared) {
+        if (shared == null) return@LaunchedEffect
+        if (shared.shortened) core.say(resources.getString(R.string.agents_share_shortened))
+        for (path in shared.images) {
+            val key = path
+            images = AgentImages.adding(images, key)
+            if (images.none { it.key == key }) {
+                AgentImageIntake.deleteCameraFile(path)
+                continue
+            }
+            val problem = when (val read = AgentImageIntake.read(context, android.net.Uri.fromFile(java.io.File(path)))) {
+                is ImageRead.Problem -> read.problem
+                is ImageRead.Bytes -> when (val sent = core.agentImageSend(device.id, read.name, read.bytes)) {
+                    is AgentCall.Ok -> {
+                        images = AgentImages.uploaded(images, key, sent.value)
+                        null
+                    }
+                    is AgentCall.Failed -> ImageProblem.FAILED
+                }
+            }
+            // The copy lives only until it's on the PC.
+            AgentImageIntake.deleteCameraFile(path)
+            if (problem != null) {
+                images = AgentImages.removed(images, key)
+                core.say(resources.getString(R.string.agents_image_failed))
+            }
+        }
+    }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val agent = ready.firstOrNull { it.id == agentId }
@@ -680,14 +753,15 @@ internal fun NewThreadSheet(
     }
     var settingsOpen by remember { mutableStateOf(false) }
     val tooLong = AgentsModel.tooLong(prompt)
-    val canStart = !busy && agent != null && folder != null && AgentsModel.fits(prompt)
+    val imagesTaken = images.isEmpty() || AgentSettings.takesImages(abilities, chosen)
+    val canStart = !busy && agent != null && folder != null && AgentsModel.fits(prompt) && !AgentImages.uploading(images) && imagesTaken
 
     fun start() {
         if (!canStart || agent == null || folder == null) return
         busy = true
         error = null
         scope.launch {
-            when (val result = core.agentStart(device.id, agent.id, folder.id, prompt.trim(), chosen)) {
+            when (val result = core.agentStart(device.id, agent.id, folder.id, prompt.trim(), chosen, AgentImages.readyIds(images))) {
                 is AgentCall.Ok -> {
                     Preferences.setAgentChoice(context, device.id, agent.id, folder.id)
                     AgentChoices.set(device.id, agent.id, folder.label, chosen)
@@ -742,6 +816,16 @@ internal fun NewThreadSheet(
             )
             if (tooLong) {
                 Text(stringResource(R.string.agents_too_long), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (images.isNotEmpty()) {
+                ImageStrip(images = images, thumbs = thumbs, onRemove = { key -> images = AgentImages.removed(images, key) })
+                if (!imagesTaken && agent != null) {
+                    Text(
+                        stringResource(R.string.agents_image_model, agent.name),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
             if (catalog.agents.size > 1) {
                 Column {

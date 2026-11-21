@@ -342,11 +342,26 @@ enum class AgentFailure {
     OTHER,
 }
 
+/**
+ * How a session started on the PC reads: its mark and word. [LIMITED]: it
+ * stopped at its agent's usage limit ("Limit reached · resets 18:00"), with the
+ * still mark, never the working ring (owner's report, 2026-11-21).
+ */
+enum class SessionLook { NEEDS_YOU, MAY_NEED_YOU, WORKING, LIMITED, IDLE, ENDED }
+
 /** A call's result. */
 sealed interface AgentCall<out T> {
     data class Ok<T>(val value: T) : AgentCall<T>
     data class Failed(val failure: AgentFailure) : AgentCall<Nothing>
 }
+
+/**
+ * How a question is answered from its notification (contract §V3.2): its one
+ * ask, the options as buttons in order, and whether "Type" answers it in the
+ * user's own words. Only the option's index travels in the intent.
+ */
+@Immutable
+data class NoticeAnswers(val askId: String, val options: List<String>, val type: Boolean)
 
 /** The pure part of Agents on the phone: folding events and replies into [AgentsState]. */
 object AgentsModel {
@@ -398,6 +413,7 @@ object AgentsModel {
         is Event.AgentCut -> event.id
         is Event.AgentImport -> event.id
         is Event.AgentOutbox -> event.id
+        is Event.AgentPresence -> event.id
         else -> null
     }
 
@@ -657,6 +673,27 @@ object AgentsModel {
     }
 
     /** Waits for an answer as the agent reported it: counted on Home, unlike a guess ("May need you"). */
+    /** How [session] reads in its status line, list row and the drawer: a usage limit over anything else. */
+    fun sessionLook(session: AgentSession): SessionLook = when {
+        session.limit != null -> SessionLook.LIMITED
+        needsYouExactly(session) -> SessionLook.NEEDS_YOU
+        mayNeedYou(session) -> SessionLook.MAY_NEED_YOU
+        session.state == AgentSessionState.WORKING -> SessionLook.WORKING
+        session.state == AgentSessionState.IDLE -> SessionLook.IDLE
+        else -> SessionLook.ENDED
+    }
+
+    /** When a session's usage limit resets, while that's still ahead; null when it isn't limited, the agent didn't say, or it's past. */
+    fun sessionLimitResets(session: AgentSession, nowMs: Long): Long? = session.limit?.resetsMs?.takeIf { it > nowMs }
+
+    /** Whether [ms] falls on the same local day as [nowMs]: the time alone says when, else the weekday too. */
+    fun sameDay(ms: Long, nowMs: Long, zone: java.util.TimeZone): Boolean {
+        val a = java.util.Calendar.getInstance(zone).apply { timeInMillis = ms }
+        val b = java.util.Calendar.getInstance(zone).apply { timeInMillis = nowMs }
+        return a.get(java.util.Calendar.YEAR) == b.get(java.util.Calendar.YEAR) &&
+            a.get(java.util.Calendar.DAY_OF_YEAR) == b.get(java.util.Calendar.DAY_OF_YEAR)
+    }
+
     fun needsYouExactly(session: AgentSession): Boolean =
         session.state == AgentSessionState.NEEDS_YOU && !session.guess
 
@@ -984,6 +1021,90 @@ object AgentsModel {
         if (ask.kind != AgentAskKind.COMMAND || ask.truncated) return false
         val command = ask.command?.trim() ?: return false
         return command.isNotEmpty() && command.length <= 100 && command.none { it == '\n' || it == '\r' }
+    }
+
+    /** Android lets an action require an unlocked phone from 12 (S) on. */
+    const val NOTICE_AUTH_SDK = 31
+
+    /** The longest option label a notification button takes; longer ones are answered in the app. */
+    const val MAX_NOTICE_OPTION_CHARS = 20
+
+    /** The most a reason given with Deny may be: the wire's `MAX_DENY_MESSAGE`. */
+    const val MAX_DENY_BYTES = 2000
+
+    /**
+     * Whether [question] can be answered from its notification, and how
+     * (contract §V3.2): on Android 12 or later, not secret, exactly one ask
+     * that takes one answer, every option one line of at most 20 characters,
+     * and two options (with "Type" when the ask takes the user's own words) or
+     * three that don't. Anything else is answered in the app.
+     */
+    fun answerableInNotification(question: QuestionInfo, sdkInt: Int): NoticeAnswers? {
+        if (sdkInt < NOTICE_AUTH_SDK || question.secret) return null
+        val ask = question.asks.singleOrNull() ?: return null
+        if (ask.multi || ask.id.isEmpty()) return null
+        val labels = ask.options.map { it.label }
+        val fit = labels.all { label ->
+            label.isNotBlank() &&
+                label.codePointCount(0, label.length) <= MAX_NOTICE_OPTION_CHARS &&
+                label.none { it == '\n' || it == '\r' || it == ' ' || it == ' ' }
+        }
+        if (!fit || labels.toSet().size != labels.size) return null
+        return when {
+            labels.size == 2 -> NoticeAnswers(ask.id, labels, type = ask.other)
+            labels.size == 3 && !ask.other -> NoticeAnswers(ask.id, labels, type = false)
+            else -> null
+        }
+    }
+
+    /**
+     * The reason typed under "Say why", as it's sent: trimmed, cut on a
+     * character boundary at the wire's 2000 bytes; null when nothing was typed
+     * (nothing is sent then).
+     */
+    fun denyReason(typed: CharSequence?): String? =
+        typed?.toString()?.trim()?.ifEmpty { null }?.let { cutUtf8(it, MAX_DENY_BYTES).trimEnd() }
+
+    /** An answer typed under "Type": trimmed, at most the wire's 500 bytes; null when empty. */
+    fun typedAnswer(typed: CharSequence?): String? =
+        typed?.toString()?.trim()?.ifEmpty { null }?.let { cutUtf8(it, QuestionDock.MAX_OTHER_BYTES).trimEnd() }
+
+    /**
+     * The answer an option or typed words from a notification sends, read from
+     * the question as it is now; null when it's gone or changed (the question
+     * is no longer answerable there, its ask isn't [askId], the option isn't
+     * there, or the words don't fit).
+     */
+    fun noticeAnswer(question: QuestionInfo?, askId: String, option: Int?, typed: String?, sdkInt: Int): QuestionAnswer? {
+        val answers = question?.let { answerableInNotification(it, sdkInt) } ?: return null
+        if (answers.askId != askId) return null
+        return when {
+            option != null && typed == null -> answers.options.getOrNull(option)?.let { QuestionAnswer(askId, listOf(it), other = null) }
+            option == null && typed != null && answers.type ->
+                typed.takeIf { it.isNotBlank() && utf8Length(it) <= QuestionDock.MAX_OTHER_BYTES }?.let { QuestionAnswer(askId, emptyList(), other = it) }
+            else -> null
+        }
+    }
+
+    /** [text] cut to at most [maxBytes] of UTF-8, never inside a character. */
+    fun cutUtf8(text: String, maxBytes: Int): String {
+        if (maxBytes <= 0) return ""
+        var bytes = 0
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            val pair = Character.isHighSurrogate(c) && i + 1 < text.length && Character.isLowSurrogate(text[i + 1])
+            val size = when {
+                c.code < 0x80 -> 1
+                c.code < 0x800 -> 2
+                pair -> 4
+                else -> 3
+            }
+            if (bytes + size > maxBytes) return text.substring(0, i)
+            bytes += size
+            i += if (pair) 2 else 1
+        }
+        return text
     }
 
     /** The command or change a request shows; null when it shows only its title. */

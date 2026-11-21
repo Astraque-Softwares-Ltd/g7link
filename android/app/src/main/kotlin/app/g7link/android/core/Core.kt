@@ -83,6 +83,7 @@ import app.g7link.core.TransferDirection
 import app.g7link.core.TransferStatus
 import app.g7link.core.initLogging
 import app.g7link.android.files.transferTitle
+import app.g7link.android.notifications.AgentNoticeSettings
 import app.g7link.android.notifications.AgentNotifications
 import app.g7link.android.ui.agents.AgentCall
 import app.g7link.android.ui.agents.AgentFailure
@@ -498,8 +499,11 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
     fun start() {
         val token = startGuard.beginStart()
         scope.launch(Dispatchers.IO) {
-            // Camera photos for an agent that a previous run never sent.
+            // Camera photos for an agent that a previous run never sent, and pictures shared to one.
             app.g7link.android.ui.agents.AgentImageIntake.sweepCamera(context)
+            app.g7link.android.ui.agents.AgentShareTargets.sweep(context)
+            // Limit alarms don't outlive a restart of the phone (contract §V5).
+            runCatching { app.g7link.android.notifications.AgentLimitAlarm.rearm(context) }
             lifecycleMutex.withLock {
                 if (startGuard.isCancelled(token) || node != null || startJob?.isActive == true) return@withLock
                 activeStartSeq = token.startSeq
@@ -542,6 +546,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             if (paired.isSuccess) {
                 app.g7link.android.ui.Preferences.keepRemoteRoutes(context, devices.map { it.id })
                 app.g7link.android.ui.Preferences.keepAgentChoices(context, devices.map { it.id })
+                AgentNoticeSettings.keepPcs(context, devices.map { it.id })
             }
             val routes = devices.associate { it.id to app.g7link.android.ui.Preferences.remoteRoute(context, it.id) }
             routes.forEach { (id, route) -> runCatching { started.setRemoteRoute(id, route) } }
@@ -793,6 +798,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 // Agent threads are kept in memory only; their notifications go with the run.
                 _agents.value.keys.forEach { AgentNotifications.cancelPc(context, it) }
                 _agents.value = emptyMap()
+                _agentPresence.value = emptyMap()
+                agentPresenceLapses.values.forEach { it.cancel() }
+                agentPresenceLapses.clear()
+                agentViewingStop()
                 agentWatchWanted.clear()
                 agentForeground = null
                 agentSessionWatchWanted.clear()
@@ -1083,6 +1092,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
                 PcAutoStart.set(context, event.id, false)
                 app.g7link.android.ui.Preferences.removeRemoteRoute(context, event.id)
                 app.g7link.android.ui.Preferences.removeAgentChoice(context, event.id)
+                agentsUnpaired(event.id)
                 agentSessionsConsent.forget(event.id)
                 forgetBle(event.id)
                 scope.launch(Dispatchers.Default) {
@@ -3315,6 +3325,23 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         },
     )
 
+    /**
+     * What each PC last said of itself (contract §V4.4): someone at it, locked,
+     * in Do Not Disturb, and which of this phone's threads are on its screen.
+     * For one thing only: holding a notification for a thread you're reading on
+     * the PC, and the "open on <PC>" line. Stale after its `untilMs`.
+     */
+    private val _agentPresence = MutableStateFlow<Map<String, app.g7link.android.ui.agents.PcPresence>>(emptyMap())
+    val agentPresence: StateFlow<Map<String, app.g7link.android.ui.agents.PcPresence>> = _agentPresence.asStateFlow()
+
+    /** Per PC: lets go of held notices when its presence lapses without a word. */
+    private val agentPresenceLapses = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /** The thread or session screen in front (PC, thread, session), said to its PC every 30 s while it shows. */
+    private var agentViewingNow: Triple<String, String?, String?>? = null
+    private var agentViewingBeat: Job? = null
+    private val agentViewingLock = Any()
+
     /** Reading a PC's threads and sessions after its catalog arrives, once at a time per PC. */
     private val agentRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val agentSessionRefreshes = java.util.concurrent.ConcurrentHashMap<String, Job>()
@@ -3341,8 +3368,25 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             is Event.AgentTurn -> if (after.open?.threadId == event.thread) agentReadTurnFiles(pcId, event.thread)
             // A rewind or its undo: the open thread's turns as they are now.
             is Event.AgentCut -> if (after.open?.threadId == event.thread) agentRereadTurns(pcId, event.thread)
+            is Event.AgentPresence -> agentPresenceChanged(pcId, app.g7link.android.ui.agents.AgentPresenceFfi.of(event.presence))
             else -> Unit
         }
+        when (event) {
+            // Agents on or off for this phone: the share target follows (contract §V6).
+            is Event.AgentCatalog -> app.g7link.android.ui.agents.AgentShareTargets.offer(context, pcId, event.catalog != null)
+            else -> Unit
+        }
+        // A limit reached or cleared, or a thread paused by one: the limit alarm follows (contract §V5).
+        val limitsMayChange = when (event) {
+            is Event.AgentCatalog, is Event.AgentDone, is Event.AgentThreadRemoved -> true
+            // Paused by a limit, or no longer: not every step of a working thread.
+            is Event.AgentThreadChanged -> {
+                val was = before.thread(event.thread.id)?.let(AgentsModel::status) as? app.g7link.android.ui.agents.ThreadStatus.Paused
+                was != AgentsModel.status(event.thread) as? app.g7link.android.ui.agents.ThreadStatus.Paused
+            }
+            else -> false
+        }
+        if (limitsMayChange) agentArmLimits(pcId, after)
         val shown = agentForeground?.takeIf { it.first == pcId }?.second
         val shownSession = agentSessionForeground?.takeIf { it.first == pcId }?.second
         val state = after
@@ -3353,6 +3397,8 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             shown,
             shownSession,
             kept = { session -> agentKeeps(pcId, session) },
+            presence = if (agentMayHold(event)) agentPresenceOf(pcId) else null,
+            quietAtPc = AgentNoticeSettings.quietAtPc(context, pcId),
         ) { thread -> agentFollows(pcId, thread, state) }
         if (notices.isNotEmpty()) AgentNotifications.apply(context, agentPcName(pcId), notices)
         // A session that ended or left the list isn't kept in the status bar any more (its notice went above).
@@ -3368,6 +3414,91 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     private fun agentKeeps(pcId: String, sessionId: String): Boolean = "$pcId/$sessionId" in _agentKeptSessions.value
 
+    /** Events whose notice may be held for presence: a request, a question, a turn's end. */
+    private fun agentMayHold(event: Event): Boolean = when (event) {
+        is Event.AgentAsk, is Event.AgentAsked, is Event.AgentQuestion, is Event.AgentQuestioned,
+        is Event.AgentThreadChanged, is Event.AgentDone,
+        -> true
+        else -> false
+    }
+
+    /** What [pcId] says of itself now; null when stale, offline or never said (notify then). */
+    private fun agentPresenceOf(pcId: String): app.g7link.android.ui.agents.PcPresence? =
+        runCatching { node?.agentPresence(pcId) }.getOrNull()?.let(app.g7link.android.ui.agents.AgentPresenceFfi::of)
+
+    /** A PC said what it shows: what it held may go now, and goes when this lapses unrefreshed. */
+    private fun agentPresenceChanged(pcId: String, presence: app.g7link.android.ui.agents.PcPresence) {
+        _agentPresence.update { it + (pcId to presence) }
+        agentReleaseHeld(pcId)
+        agentPresenceLapses.remove(pcId)?.cancel()
+        val wait = presence.untilMs - System.currentTimeMillis()
+        if (wait > 0L) {
+            agentPresenceLapses[pcId] = scope.launch {
+                delay(wait + PRESENCE_LAPSE_SLACK_MS)
+                _agentPresence.update { all -> if (all[pcId]?.untilMs == presence.untilMs) all - pcId else all }
+                agentReleaseHeld(pcId)
+            }
+        }
+    }
+
+    /** Posts what was held for [pcId] and no longer is, if it's still true; the rest stays held. */
+    private fun agentReleaseHeld(pcId: String) {
+        val presence = agentPresenceOf(pcId)
+        val quiet = AgentNoticeSettings.quietAtPc(context, pcId)
+        val now = System.currentTimeMillis()
+        val out = AgentNotifications.releasable(pcId) { AgentNotifications.held(it, presence, quiet, now) is app.g7link.android.notifications.AgentNotice.Held }
+        if (out.isEmpty()) return
+        val state = _agents.value[pcId] ?: return
+        val shown = agentForeground?.takeIf { it.first == pcId }?.second
+        val notices = out.mapNotNull { held -> AgentNotifications.released(pcId, held, state, shown) { agentFollows(pcId, it, state) } }
+        if (notices.isNotEmpty()) AgentNotifications.apply(context, agentPcName(pcId), notices)
+    }
+
+    /** A PC's limit alarms after its agents changed. */
+    private fun agentArmLimits(pcId: String, state: AgentsState) {
+        val name = agentPcName(pcId)
+        scope.launch(Dispatchers.IO) { runCatching { app.g7link.android.notifications.AgentLimitAlarm.update(context, pcId, name, state) } }
+    }
+
+    /** A PC's notification settings changed (contract §V4.4, §V5): what's held may go, and its alarms follow. */
+    fun agentNoticeSettingsChanged(pcId: String) {
+        agentReleaseHeld(pcId)
+        if (AgentNoticeSettings.limitAlarm(context, pcId)) {
+            _agents.value[pcId]?.let { agentArmLimits(pcId, it) }
+        } else {
+            scope.launch(Dispatchers.IO) { runCatching { app.g7link.android.notifications.AgentLimitAlarm.forgetPc(context, pcId) } }
+        }
+    }
+
+    /**
+     * Tells the PC which of its threads or sessions this phone shows (contract
+     * §V4.3), and again every 30 s while it does. Leaving one stops only its
+     * own repeats: another screen may already have taken its place.
+     */
+    private fun agentViewing(pcId: String, thread: String?, session: String?, visible: Boolean) = synchronized(agentViewingLock) {
+        val view = Triple(pcId, thread, session)
+        val pane = if (thread != null) app.g7link.core.AgentPane.THREAD else null
+        runCatching { node?.agentViewing(pcId, thread, session, pane, visible) }
+        if (!visible) {
+            if (agentViewingNow == view) agentViewingStop()
+            return@synchronized
+        }
+        agentViewingBeat?.cancel()
+        agentViewingNow = view
+        agentViewingBeat = scope.launch {
+            while (true) {
+                delay(AGENT_VIEWING_BEAT_MS)
+                runCatching { node?.agentViewing(pcId, thread, session, pane, true) }
+            }
+        }
+    }
+
+    private fun agentViewingStop() = synchronized(agentViewingLock) {
+        agentViewingBeat?.cancel()
+        agentViewingBeat = null
+        agentViewingNow = null
+    }
+
     private fun agentForgetKept(pcId: String, sessionId: String) {
         _agentKeptSessions.update { it - "$pcId/$sessionId" }
     }
@@ -3380,14 +3511,25 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         _agents.update { it - pcId }
         agentWatchWanted.remove(pcId)
         agentSessionWatchWanted.remove(pcId)
+        // What it shows is said again when the screen is back with the PC.
+        if (agentViewingNow?.first == pcId) agentViewingStop()
         if (agentForeground?.first == pcId) agentForeground = null
         if (agentSessionForeground?.first == pcId) agentSessionForeground = null
         _agentKeptSessions.update { kept -> kept.filterNot { it.startsWith("$pcId/") }.toSet() }
         agentRefreshes.remove(pcId)?.cancel()
         agentSessionRefreshes.remove(pcId)?.cancel()
         agentTurnReads.keys.filter { it.startsWith("$pcId/") }.forEach { agentTurnReads.remove(it)?.cancel() }
+        _agentPresence.update { it - pcId }
+        agentPresenceLapses.remove(pcId)?.cancel()
         AgentNotifications.cancelPc(context, pcId)
         AgentChoices.forgetPc(pcId)
+    }
+
+    /** A PC was unpaired: its notification settings, limit alarms and share target go (contract §V5, §V6). */
+    private fun agentsUnpaired(pcId: String) {
+        AgentNoticeSettings.forgetPc(context, pcId)
+        app.g7link.android.ui.agents.AgentShareTargets.offer(context, pcId, false)
+        scope.launch(Dispatchers.IO) { runCatching { app.g7link.android.notifications.AgentLimitAlarm.forgetPc(context, pcId) } }
     }
 
     private fun updateAgents(pcId: String, change: (AgentsState) -> AgentsState) {
@@ -3445,7 +3587,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
             // The main list: neither archived nor snoozed (show, before_ms).
             current.agentThreads(pcId, null, null)
         }
-        if (result is AgentCall.Ok) updateAgents(pcId) { AgentsModel.withThreads(it, result.value, System.currentTimeMillis()) }
+        if (result is AgentCall.Ok) {
+            updateAgents(pcId) { AgentsModel.withThreads(it, result.value, System.currentTimeMillis()) }
+            _agents.value[pcId]?.let { agentArmLimits(pcId, it) }
+        }
         return result
     }
 
@@ -3596,18 +3741,19 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         agentWatchWanted[pcId] = threadId
         val watched = agentSyncWatch(pcId)
         if (watched is AgentCall.Failed) return AgentCall.Failed(watched.failure)
+        // Looked at here: the PC marks it read, and holds its own notification while it shows (contract §V4.2).
+        agentViewing(pcId, threadId, null, visible = true)
         val read = agentRead(pcId, threadId, null)
-        if (read is AgentCall.Ok) {
-            agentRereadTurns(pcId, threadId)
-            // Looked at here: no longer unread on the PC either.
-            if (read.value.thread.unread) scope.launch { agentMark(pcId, listOf(threadId), app.g7link.android.ui.agents.MarkChange.Unread(false)) }
-        }
+        if (read is AgentCall.Ok) agentRereadTurns(pcId, threadId)
         return read
     }
 
     /** A thread's screen went out of view: its text stops, and what waits there notifies again. */
     fun agentHidden(pcId: String, threadId: String) {
-        if (agentForeground == pcId to threadId) agentForeground = null
+        if (agentForeground == pcId to threadId) {
+            agentForeground = null
+            agentViewing(pcId, threadId, null, visible = false)
+        }
         agentWatchWanted.remove(pcId, threadId)
         scope.launch { agentSyncWatch(pcId) }
         agentRefreshNotice(pcId, threadId)
@@ -3621,14 +3767,41 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         val state = _agents.value[pcId] ?: return
         val shown = agentForeground?.takeIf { it.first == pcId }?.second
         val notice = AgentNotifications.threadNotice(pcId, state, threadId, shown) { agentFollows(pcId, it, state) }
+            ?.let { AgentNotifications.held(it, agentPresenceOf(pcId), AgentNoticeSettings.quietAtPc(context, pcId), System.currentTimeMillis()) }
         if (notice != null) AgentNotifications.apply(context, agentPcName(pcId), listOf(notice))
     }
 
-    /** Allow or Deny on a request's notification. */
-    fun agentAnswerFromNotification(pcId: String, threadId: String, token: String, allow: Boolean) {
+    /** Allow, Deny or Deny with a reason ("Say why") on a request's notification. */
+    fun agentAnswerFromNotification(pcId: String, threadId: String, token: String, allow: Boolean, message: String? = null) {
         scope.launch {
-            when (val result = agentAnswer(pcId, token, allow)) {
+            when (val result = agentAnswer(pcId, token, allow, message?.takeIf { !allow })) {
                 // The PC says who answered (AgentAsked), and the notification follows.
+                is AgentCall.Ok -> Unit
+                is AgentCall.Failed ->
+                    if (result.failure == AgentFailure.NOT_FOUND) {
+                        agentRefreshNotice(pcId, threadId)
+                    } else {
+                        AgentNotifications.failed(context, pcId, threadId, R.string.agents_notify_answer_failed)
+                    }
+            }
+        }
+    }
+
+    /**
+     * An option or typed words on a question's notification (contract §V3.2).
+     * The label is read from the question as this phone has it now, by its
+     * index; a question that's gone or changed sends nothing and says so.
+     */
+    fun agentQuestionFromNotification(pcId: String, threadId: String, token: String, askId: String, option: Int?, typed: String?) {
+        val question = _agents.value[pcId]?.questions?.get(token)?.takeIf { it.threadId == threadId }
+        val answer = AgentsModel.noticeAnswer(question, askId, option, typed, android.os.Build.VERSION.SDK_INT)
+        if (answer == null) {
+            AgentNotifications.failed(context, pcId, threadId, R.string.agents_notify_answer_failed)
+            return
+        }
+        scope.launch {
+            when (val result = agentReply(pcId, token, listOf(answer))) {
+                // The PC says how it ended (AgentQuestioned), and the notification follows.
                 is AgentCall.Ok -> Unit
                 is AgentCall.Failed ->
                     if (result.failure == AgentFailure.NOT_FOUND) {
@@ -3731,6 +3904,7 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
      */
     suspend fun agentSessionShown(pcId: String, sessionId: String): AgentCall<AgentSessionPage> {
         agentSessionForeground = pcId to sessionId
+        agentViewing(pcId, null, sessionId, visible = true)
         updateAgents(pcId) { AgentsModel.sessionOpened(it, sessionId) }
         AgentNotifications.cancelSession(context, pcId, sessionId)
         agentSessionWatchWanted[pcId] = sessionId
@@ -3741,7 +3915,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
 
     /** A followed session's view went out of view: its items stop, and a kept one shows in the status bar again. */
     fun agentSessionHidden(pcId: String, sessionId: String) {
-        if (agentSessionForeground == pcId to sessionId) agentSessionForeground = null
+        if (agentSessionForeground == pcId to sessionId) {
+            agentSessionForeground = null
+            agentViewing(pcId, null, sessionId, visible = false)
+        }
         agentSessionWatchWanted.remove(pcId, sessionId)
         scope.launch { agentSessionSyncWatch(pcId) }
         agentRefreshSessionNotice(pcId, sessionId)
@@ -4389,6 +4566,10 @@ class Core(context: Context, private val scope: CoroutineScope) : EventListener 
         /** A PC with too much in flight is asked whether it takes input this many times, this far apart. */
         const val REMOTE_CHECK_BUSY_TRIES = 3
         const val REMOTE_CHECK_BUSY_WAIT_MS = 500L
+        /** A thread or session on screen is said to its PC this often (contract §V4.3). */
+        const val AGENT_VIEWING_BEAT_MS = 30_000L
+        /** Past a presence's end before what it held is looked at again. */
+        const val PRESENCE_LAPSE_SLACK_MS = 250L
         /** Offered while notification access is granted (docs/protocol/capabilities.md). */
         val NOTIFICATION_CAPABILITIES = listOf("notify.mirror", "notify.reply", "notify.live")
         /** Sharing this phone's players, which also needs notification access. */

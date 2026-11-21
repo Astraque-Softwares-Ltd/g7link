@@ -1797,4 +1797,29 @@
     </plurals>
     <string name="agents_found_copy_note">Esto continúa como una copia. La sesión original queda como está.</string>
     <string name="agents_unsnooze">Dejar de posponer</string>
+    <!-- Agents phase 5 (0.1.20): answers from a notification, presence, the limit alarm, sharing to an agent -->
+    <string name="agents_notify_say_why">Di por qué</string>
+    <string name="agents_notify_type">Escribir</string>
+    <string name="agents_notify_type_answer">Escribe una respuesta</string>
+    <string name="agents_notify_open_to_answer">Abre para responder</string>
+    <string name="agents_notify_count">%1$d de %2$d</string>
+    <string name="agents_open_on">abierto en %1$s</string>
+    <string name="agents_quiet_at_pc">No avisar mientras estoy en %1$s</string>
+    <string name="agents_quiet_at_pc_note">Un hilo que estás viendo en %1$s no avisará aquí hasta que te alejes.</string>
+    <string name="agents_limit_alarm_setting">Avisarme cuando se restablezca un límite</string>
+    <string name="agents_limit_reset_title">El límite de %1$s se restableció</string>
+    <string name="agents_limit_reset_text">Puedes continuar %1$s.</string>
+    <string name="agents_paused_told">En pausa hasta las %1$s · te avisaremos</string>
+    <string name="agents_share_label">Preguntar a un agente</string>
+    <string name="agents_share_add_to">Añadir a un hilo</string>
+    <string name="agents_share_shortened">Recortado para que quepa.</string>
+    <string name="agents_share_refused">No se puede añadir %1$s. Solo imágenes y texto.</string>
+    <string name="agents_share_too_large">%1$s es demasiado grande para añadirlo.</string>
+    <string name="agents_share_too_many">Solo se añaden las 4 primeras imágenes.</string>
+    <string name="agents_share_unnamed">Un archivo compartido</string>
+    <string name="agents_settings_notifications">Notificaciones</string>
+    <string name="agents_settings_saved">Hilos guardados</string>
+    <!-- A followed session that stopped at its agent's usage limit (owner's report, 2026-11-21) -->
+    <string name="agents_session_limit">Límite alcanzado</string>
+    <string name="agents_session_limit_resets">Límite alcanzado · se restablece %1$s</string>
 </resources>

@@ -45,10 +45,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.g7link.android.R
 import app.g7link.android.core.Core
+import app.g7link.android.notifications.AgentNoticeSettings
 import app.g7link.android.ui.theme.G7Icons
 import app.g7link.android.ui.theme.G7PrimaryButton
 import app.g7link.android.ui.theme.G7RaisedButton
 import app.g7link.android.ui.theme.G7RowAction
+import app.g7link.android.ui.theme.G7SectionLabel
 import app.g7link.android.ui.theme.G7Switch
 import app.g7link.android.ui.theme.g7Tints
 import app.g7link.core.AgentHeld
@@ -370,11 +372,13 @@ internal fun RewindSheetView(
 }
 
 /**
- * Agent settings on this phone (board 23): keep threads here for reading
- * while the PC is away, and clear what's kept (its size).
+ * Agent settings on this phone (board 23, phase 5 board 02b): this PC's
+ * notifications (quiet while you're at it, a limit's reset), then keep
+ * threads here for reading while the PC is away, and clear what's kept (its
+ * size).
  */
 @Composable
-internal fun AgentCacheSheet(core: Core, pcName: String, onDismiss: () -> Unit) {
+internal fun AgentCacheSheet(core: Core, pcId: String, pcName: String, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var keeps by remember { mutableStateOf<Boolean?>(null) }
     var bytes by remember { mutableStateOf<Long?>(null) }
@@ -384,8 +388,31 @@ internal fun AgentCacheSheet(core: Core, pcName: String, onDismiss: () -> Unit) 
         bytes = (core.agentCacheBytes() as? AgentCall.Ok)?.value
     }
     val context = LocalContext.current
+    var quiet by remember(pcId) { mutableStateOf(AgentNoticeSettings.quietAtPc(context, pcId)) }
+    var limit by remember(pcId) { mutableStateOf(AgentNoticeSettings.limitAlarm(context, pcId)) }
     AgentSheet(onDismiss) {
         SheetHead(stringResource(R.string.agents_phone_settings), pcName)
+        G7SectionLabel(stringResource(R.string.agents_settings_notifications))
+        SheetRow(
+            label = stringResource(R.string.agents_quiet_at_pc, pcName),
+            reason = stringResource(R.string.agents_quiet_at_pc_note, pcName),
+            onClick = {
+                quiet = !quiet
+                AgentNoticeSettings.setQuietAtPc(context, pcId, quiet)
+                core.agentNoticeSettingsChanged(pcId)
+            },
+            trailing = { G7Switch(checked = quiet, onCheckedChange = null) },
+        )
+        SheetRow(
+            label = stringResource(R.string.agents_limit_alarm_setting),
+            onClick = {
+                limit = !limit
+                AgentNoticeSettings.setLimitAlarm(context, pcId, limit)
+                core.agentNoticeSettingsChanged(pcId)
+            },
+            trailing = { G7Switch(checked = limit, onCheckedChange = null) },
+        )
+        G7SectionLabel(stringResource(R.string.agents_settings_saved))
         val keep = keeps
         SheetRow(
             label = stringResource(R.string.agents_cache_keep),

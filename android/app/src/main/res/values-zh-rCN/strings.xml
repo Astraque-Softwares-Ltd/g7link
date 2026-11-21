@@ -1754,4 +1754,29 @@
     </plurals>
     <string name="agents_found_copy_note">这将以副本形式继续。原来的会话保持不变。</string>
     <string name="agents_unsnooze">取消暂缓</string>
+    <!-- Agents phase 5 (0.1.20): answers from a notification, presence, the limit alarm, sharing to an agent -->
+    <string name="agents_notify_say_why">说明原因</string>
+    <string name="agents_notify_type">输入</string>
+    <string name="agents_notify_type_answer">输入回答</string>
+    <string name="agents_notify_open_to_answer">打开以回答</string>
+    <string name="agents_notify_count">第 %1$d 个，共 %2$d 个</string>
+    <string name="agents_open_on">已在 %1$s 上打开</string>
+    <string name="agents_quiet_at_pc">我在 %1$s 前时保持安静</string>
+    <string name="agents_quiet_at_pc_note">你正在 %1$s 上查看的会话，在你离开前不会在这里通知。</string>
+    <string name="agents_limit_alarm_setting">上限重置时通知我</string>
+    <string name="agents_limit_reset_title">%1$s 的用量上限已重置</string>
+    <string name="agents_limit_reset_text">你可以继续 %1$s。</string>
+    <string name="agents_paused_told">已暂停至 %1$s · 届时会通知你</string>
+    <string name="agents_share_label">询问智能体</string>
+    <string name="agents_share_add_to">添加到会话</string>
+    <string name="agents_share_shortened">已截短以适应长度。</string>
+    <string name="agents_share_refused">无法添加 %1$s。只能添加图片和文字。</string>
+    <string name="agents_share_too_large">%1$s 太大，无法添加。</string>
+    <string name="agents_share_too_many">只添加前 4 张图片。</string>
+    <string name="agents_share_unnamed">一个共享的文件</string>
+    <string name="agents_settings_notifications">通知</string>
+    <string name="agents_settings_saved">已保存的会话</string>
+    <!-- A followed session that stopped at its agent's usage limit (owner's report, 2026-11-21) -->
+    <string name="agents_session_limit">已达到上限</string>
+    <string name="agents_session_limit_resets">已达到上限 · %1$s 重置</string>
 </resources>

@@ -10,11 +10,14 @@ import app.g7link.android.G7LinkApplication
 import app.g7link.android.ui.agents.AgentsModel
 
 /**
- * Allow, Deny, Stop and Reply on an agent thread's notification, Stop
- * following on a followed session's, and a Live Update swiped away
- * ([AgentNotifications]). Not exported: only this app's own notifications
- * reach it. Allow and Reply are refused while the phone is locked, even where
- * Android already asked to unlock first.
+ * Allow, Deny, Say why, Stop and Reply on an agent thread's notification, a
+ * question's options and Type, Stop following on a followed session's, and a
+ * Live Update swiped away ([AgentNotifications]). Not exported: only this
+ * app's own notifications reach it. Everything but Deny and Stop is refused
+ * while the phone is locked, even where Android already asked to unlock first.
+ * A tap on Allow, an option or Type within 1.5 s of the notification changing
+ * to that request is ignored (contract §V3.1): it may have been meant for the
+ * one before.
  */
 class AgentActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -37,18 +40,45 @@ class AgentActionReceiver : BroadcastReceiver() {
             }
         }
         val threadId = intent.getStringExtra(EXTRA_THREAD)?.takeIf { AgentsModel.isId(it) } ?: return
+        val restore = { AgentNotifications.restore(context, pcId, threadId) }
+        val tooSoon = { token: String -> kindOf(intent.action)?.let(AgentNotifications::guards) == true && AgentNotifications.guarded(token) }
         when (intent.action) {
             ACTION_ALLOW, ACTION_DENY -> {
                 val token = intent.getStringExtra(EXTRA_TOKEN)?.takeIf { AgentsModel.isId(it) } ?: return
                 val allow = intent.action == ACTION_ALLOW
                 if (allow && locked(context)) return
+                if (tooSoon(token)) return
+                AgentNotifications.answered(pcId, threadId)
                 core.agentAnswerFromNotification(pcId, threadId, token, allow)
+            }
+            ACTION_DENY_WHY -> {
+                val token = intent.getStringExtra(EXTRA_TOKEN)?.takeIf { AgentsModel.isId(it) } ?: return
+                // The reason reaches the agent as an instruction: never from a locked phone.
+                if (locked(context)) return restore()
+                val reason = AgentsModel.denyReason(typed(intent, AgentNotifications.DENY_WHY_KEY)) ?: return restore()
+                AgentNotifications.answered(pcId, threadId)
+                core.agentAnswerFromNotification(pcId, threadId, token, allow = false, message = reason)
+            }
+            ACTION_OPTION -> {
+                val token = intent.getStringExtra(EXTRA_TOKEN)?.takeIf { AgentsModel.isId(it) } ?: return
+                val ask = intent.getStringExtra(EXTRA_ASK)?.takeIf { it.isNotEmpty() && it.length <= MAX_ASK_ID } ?: return
+                val option = intent.getIntExtra(EXTRA_OPTION, -1).takeIf { it >= 0 } ?: return
+                if (locked(context) || tooSoon(token)) return
+                AgentNotifications.answered(pcId, threadId)
+                core.agentQuestionFromNotification(pcId, threadId, token, ask, option = option, typed = null)
+            }
+            ACTION_ANSWER -> {
+                val token = intent.getStringExtra(EXTRA_TOKEN)?.takeIf { AgentsModel.isId(it) } ?: return
+                val ask = intent.getStringExtra(EXTRA_ASK)?.takeIf { it.isNotEmpty() && it.length <= MAX_ASK_ID } ?: return
+                if (locked(context) || tooSoon(token)) return restore()
+                val text = AgentsModel.typedAnswer(typed(intent, AgentNotifications.ANSWER_KEY)) ?: return restore()
+                AgentNotifications.answered(pcId, threadId)
+                core.agentQuestionFromNotification(pcId, threadId, token, ask, option = null, typed = text)
             }
             ACTION_STOP -> core.agentStopFromNotification(pcId, threadId)
             ACTION_REPLY -> {
                 if (locked(context)) return
-                val text = RemoteInput.getResultsFromIntent(intent)
-                    ?.getCharSequence(AgentNotifications.REPLY_KEY)
+                val text = typed(intent, AgentNotifications.REPLY_KEY)
                     ?.toString()
                     ?.takeIf { it.isNotBlank() }
                     ?: return
@@ -57,12 +87,28 @@ class AgentActionReceiver : BroadcastReceiver() {
         }
     }
 
+    private fun kindOf(action: String?): NoticeAction.Kind? = when (action) {
+        ACTION_ALLOW -> NoticeAction.Kind.ALLOW
+        ACTION_DENY -> NoticeAction.Kind.DENY
+        ACTION_DENY_WHY -> NoticeAction.Kind.DENY_WHY
+        ACTION_OPTION -> NoticeAction.Kind.OPTION
+        ACTION_ANSWER -> NoticeAction.Kind.ANSWER
+        ACTION_STOP -> NoticeAction.Kind.STOP
+        ACTION_REPLY -> NoticeAction.Kind.REPLY
+        else -> null
+    }
+
+    private fun typed(intent: Intent, key: String): CharSequence? = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(key)
+
     private fun locked(context: Context): Boolean =
         context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true
 
     companion object {
         const val ACTION_ALLOW = "app.g7link.android.agents.ALLOW"
         const val ACTION_DENY = "app.g7link.android.agents.DENY"
+        const val ACTION_DENY_WHY = "app.g7link.android.agents.DENY_WHY"
+        const val ACTION_OPTION = "app.g7link.android.agents.OPTION"
+        const val ACTION_ANSWER = "app.g7link.android.agents.ANSWER"
         const val ACTION_STOP = "app.g7link.android.agents.STOP"
         const val ACTION_REPLY = "app.g7link.android.agents.REPLY"
         const val ACTION_UNFOLLOW = "app.g7link.android.agents.UNFOLLOW"
@@ -71,5 +117,10 @@ class AgentActionReceiver : BroadcastReceiver() {
         const val EXTRA_THREAD = "agent_thread"
         const val EXTRA_SESSION = "agent_session"
         const val EXTRA_TOKEN = "agent_token"
+        const val EXTRA_ASK = "agent_ask"
+        const val EXTRA_OPTION = "agent_option"
+
+        /** An ask's id is the agent's, not the wire's `[a-z0-9]`: only its length is bounded here. */
+        private const val MAX_ASK_ID = 128
     }
 }
