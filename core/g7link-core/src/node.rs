@@ -3078,6 +3078,9 @@ impl Node {
         if toggle == crate::agents::SESSIONS_TOGGLE {
             crate::agents::sessions_toggled(&self.shared, peer, enabled);
         }
+        if toggle == crate::agent_git::git::PUSH_TOGGLE {
+            crate::agent_git::push_toggled(&self.shared, peer);
+        }
         if toggle == crate::storage::TOGGLE {
             let mut st = self.shared.storage.lock().unwrap_or_else(|e| e.into_inner());
             if enabled {

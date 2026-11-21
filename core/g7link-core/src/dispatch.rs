@@ -110,11 +110,18 @@ impl<'a> Responder<'a> {
     /// [`RPC_PART_TARGET`] bytes and the `ok` (`docs/protocol/v1.md` §4.3),
     /// elsewhere as one `ok`.
     pub(crate) async fn paged<T: Paged + Send + 'static>(&self, body: T) -> Result<()> {
+        self.paged_sent(body).await.map(|_| ())
+    }
+
+    /// [`paged`](Self::paged), and whether all of it was written: false when
+    /// the stream closed before its last part, or an item was too large to
+    /// send (agents §8: a phone's review counts a file read only then).
+    pub(crate) async fn paged_sent<T: Paged + Send + 'static>(&self, body: T) -> Result<bool> {
         let ReplyTo::Rpc { send } = &self.to else {
-            return self.send(Envelope::new(types::OK, &body)?).await;
+            return self.send(Envelope::new(types::OK, &body)?).await.map(|()| true);
         };
         if self.answered.swap(true, Ordering::Relaxed) {
-            return Ok(());
+            return Ok(false);
         }
         let frames = tokio::task::spawn_blocking(move || {
             let parts = body.split(RPC_PART_TARGET);
@@ -130,15 +137,15 @@ impl<'a> Responder<'a> {
         })
         .await
         .map_err(|e| Error::Internal(e.to_string()))??;
-        let frames = if frames.iter().any(|f| f.len() > MAX_FRAME_LEN) {
+        let whole = !frames.iter().any(|f| f.len() > MAX_FRAME_LEN);
+        let frames = if whole {
+            frames
+        } else {
             // An item too large for any frame: the answer can't be sent whole.
             vec![Envelope::error(ErrorCode::FrameTooLarge, "an item is too large to send").to_cbor()]
-        } else {
-            frames
         };
         let mut send = send.lock().await;
-        write_rpc_frames(&mut send, types::PART, frames).await;
-        Ok(())
+        Ok(write_rpc_frames(&mut send, types::PART, frames).await && whole)
     }
 }
 
@@ -158,14 +165,15 @@ async fn encode_blocking(env: Envelope) -> Result<Vec<u8>> {
 }
 
 /// Writes an RPC's answer frames and finishes the stream.
-async fn write_rpc_frames(send: &mut SendStream, t: &str, frames: impl IntoIterator<Item = Vec<u8>>) {
+/// Writes `frames` and finishes the stream; whether every frame was written.
+async fn write_rpc_frames(send: &mut SendStream, t: &str, frames: impl IntoIterator<Item = Vec<u8>>) -> bool {
     for bytes in frames {
         if let Err(e) = write_frame(&mut *send, &bytes).await {
             tracing::debug!(t, error = %e, "the RPC stream closed before its answer");
-            return;
+            return false;
         }
     }
-    let _ = send.finish();
+    send.finish().is_ok()
 }
 
 /// The service a message type belongs to, if it's one a lane or an RPC carries.

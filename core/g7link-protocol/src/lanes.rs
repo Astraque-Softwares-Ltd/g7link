@@ -13,8 +13,9 @@
 use serde::Serialize;
 
 use crate::messages::{
-    AgentCommand, AgentCommands, AgentFileHit, AgentFiles, AgentFound, AgentFoundItems, AgentFoundList,
-    AgentHit, AgentHits, AgentItem, AgentItems, AgentSession, AgentSessionItems, AgentSessions, AgentThread,
+    AgentBranch, AgentBranches, AgentCommand, AgentCommands, AgentFileHit, AgentFiles, AgentFound,
+    AgentFoundItems, AgentFoundList, AgentGitReview, AgentGitReviewFile, AgentHit, AgentHits, AgentItem,
+    AgentItems, AgentPrRow, AgentPrRows, AgentSession, AgentSessionItems, AgentSessions, AgentThread,
     AgentThreads, AgentTurn, AgentTurnFile, AgentTurnFiles, AgentTurns, CallLog, CallLogEntry, Contact,
     ContactsList, PhoneApp, PhoneApps, PhotoAlbum, PhotoAlbumsList, PhotoItem, PhotoItems, PhotoThumb,
     PhotoThumbsList, SmsMessage, SmsMessages, SmsThread, SmsThreads, StorageEntries, StorageEntry, clip,
@@ -213,6 +214,19 @@ pub const RPCS: &[RpcOp] = &[
     rpc(types::AGENT_FOUND_PREVIEW, svc::AGENT, "found.preview", true),
     rpc(types::AGENT_IMPORT, svc::AGENT, "import", false),
     rpc(types::AGENT_VIEWING, svc::AGENT, "viewing", false),
+    rpc(types::AGENT_GIT_STATUS, svc::AGENT, "git.status", true),
+    rpc(types::AGENT_GIT_PATCH, svc::AGENT, "git.patch", true),
+    rpc(types::AGENT_GIT_REVIEW, svc::AGENT, "git.review", true),
+    rpc(types::AGENT_GIT_COMMIT, svc::AGENT, "git.commit", false),
+    rpc(types::AGENT_GIT_PUSH, svc::AGENT, "git.push", false),
+    rpc(types::AGENT_GIT_FETCH, svc::AGENT, "git.fetch", false),
+    rpc(types::AGENT_GIT_BRANCHES, svc::AGENT, "git.branches", true),
+    rpc(types::AGENT_GIT_SWITCH, svc::AGENT, "git.switch", false),
+    rpc(types::AGENT_GIT_JOB, svc::AGENT, "git.job", false),
+    rpc(types::AGENT_PR_VIEW, svc::AGENT, "pr.view", false),
+    rpc(types::AGENT_PR_CREATE, svc::AGENT, "pr.create", false),
+    rpc(types::AGENT_PR_LIST, svc::AGENT, "pr.list", true),
+    rpc(types::AGENT_WRITE, svc::AGENT, "write", false),
 ];
 
 /// The RPC operation whose request frame has type `t`.
@@ -276,7 +290,9 @@ pub fn lane_of(t: &str) -> Option<Lane> {
         | AGENT_TURN
         | AGENT_CUT
         | AGENT_IMPORT_PROGRESS
-        | AGENT_PRESENCE => Lane::Service(svc::AGENT),
+        | AGENT_PRESENCE
+        | AGENT_GIT
+        | AGENT_GIT_PROGRESS => Lane::Service(svc::AGENT),
 
         MEDIA_FILE | MEDIA_FILE_META => Lane::Stream { svc: svc::MEDIA, op: "file" },
         MEDIA_ART | MEDIA_ART_META => Lane::Stream { svc: svc::MEDIA, op: "art" },
@@ -462,6 +478,9 @@ paged!(AgentTurnFiles, AgentTurnFile, files, keep: adds, keep: dels, flag: more)
 paged!(AgentHits, AgentHit, hits, keep: next, flag: titles_only);
 paged!(AgentFoundList, AgentFound, found, keep: next_ms, keep: total, flag: scanning, flag: partial);
 paged!(AgentFoundItems, AgentItem, items);
+paged!(AgentGitReview, AgentGitReviewFile, files, keep: review);
+paged!(AgentBranches, AgentBranch, branches, keep: current, flag: more);
+paged!(AgentPrRows, AgentPrRow, prs, keep: gh, flag: more);
 
 impl Paged for AgentItems {
     type Item = AgentItem;
@@ -589,6 +608,8 @@ mod tests {
             (AGENT_CUT, svc::AGENT),
             (AGENT_IMPORT_PROGRESS, svc::AGENT),
             (AGENT_PRESENCE, svc::AGENT),
+            (AGENT_GIT, svc::AGENT),
+            (AGENT_GIT_PROGRESS, svc::AGENT),
         ];
         for (t, service) in lanes {
             assert_eq!(lane_of(t), Some(Lane::Service(service)), "{t}");
@@ -600,6 +621,8 @@ mod tests {
         assert_eq!(lane_of(AGENT_FOUND_PREVIEW), Some(Lane::Rpc { svc: svc::AGENT, op: "found.preview" }));
         assert_eq!(lane_of(AGENT_REWIND_APPLY), Some(Lane::Rpc { svc: svc::AGENT, op: "rewind.apply" }));
         assert_eq!(lane_of(AGENT_VIEWING), Some(Lane::Rpc { svc: svc::AGENT, op: "viewing" }));
+        assert_eq!(lane_of(AGENT_GIT_JOB), Some(Lane::Rpc { svc: svc::AGENT, op: "git.job" }));
+        assert_eq!(lane_of(AGENT_WRITE), Some(Lane::Rpc { svc: svc::AGENT, op: "write" }));
         assert_eq!(lane_of(AGENT_IMAGE), Some(Lane::Stream { svc: svc::AGENT, op: agent_image::OP_UPLOAD }));
         assert_eq!(
             lane_of(AGENT_IMAGE_THUMB),
@@ -626,7 +649,7 @@ mod tests {
             assert_eq!(rpc_by_header(op.svc, op.op), Some(*op));
             assert_ne!(op.op, OP_LANE);
         }
-        assert_eq!(RPCS.len(), 67);
+        assert_eq!(RPCS.len(), 80);
         let paged: Vec<&str> = RPCS.iter().filter(|op| op.paged).map(|op| op.t).collect();
         assert_eq!(
             paged,
@@ -653,6 +676,11 @@ mod tests {
                 types::AGENT_MARK,
                 types::AGENT_FOUND,
                 types::AGENT_FOUND_PREVIEW,
+                types::AGENT_GIT_STATUS,
+                types::AGENT_GIT_PATCH,
+                types::AGENT_GIT_REVIEW,
+                types::AGENT_GIT_BRANCHES,
+                types::AGENT_PR_LIST,
             ]
         );
         assert_eq!(rpc_of(types::INPUT_EVENT), None, "a lane message");
@@ -936,6 +964,11 @@ mod tests {
             split_once(AgentThreads::default()),
             split_once(AgentFoundList::default()),
             split_once(AgentFoundItems::default()),
+            split_once(crate::messages::AgentGit::default()),
+            split_once(crate::messages::AgentGitPatch::default()),
+            split_once(AgentGitReview::default()),
+            split_once(AgentBranches::default()),
+            split_once(AgentPrRows::default()),
         ];
         assert_eq!(counts.len(), RPCS.iter().filter(|op| op.paged).count());
         assert!(counts.iter().all(|&n| n == 1));

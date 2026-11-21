@@ -113,7 +113,7 @@ capability is missing.
 | `media.sound` | Sends its sound to a phone that plays it, in `0x02` datagrams or on a `media/sound` stream ([media](media.md) §6) | app update |
 | `webcam.addon` | The virtual camera add-on is installed ([webcam](webcam.md)) | installing the add-on |
 | `camera.continuity` | Requests and receives Continuity Camera photos and document scans ([Continuity Camera](v1.md#14-continuity-camera-cameracapture)) | app update |
-| `agent.host` | The agent host is installed: paired phones with the `agents` toggle can follow, start and answer coding-agent threads on this PC, and hear whether someone is at it ([agents](agents.md) §7) | installing G7 Link with its agent host |
+| `agent.host` | The agent host is installed: paired phones with the `agents` toggle can follow, start and answer coding-agent threads on this PC, hear whether someone is at it ([agents](agents.md) §7), and see and commit a thread's changes; with the `agent_push` toggle too, push and open pull requests ([agents](agents.md) §8) | installing G7 Link with its agent host |
 | `agent.sessions` | Lists Claude and Codex sessions started on this PC outside G7 Link to paired phones with the `agents` and `agent_sessions` toggles ([agents](agents.md) §3) | installing G7 Link with its agent host |
 | `agent.say_why` | Takes a denial with the user's words for the agent (`agent.answer`'s `message`, [agents](agents.md) §2.4) | an agent host that can pass the words on |
 

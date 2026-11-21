@@ -899,7 +899,192 @@ Errors as §2.3: `DENIED` with `agents` off, and for a session's view with
 visible view of nothing, a view of both, or one out of its limits. A phone
 drops an `agent.presence` out of its limits.
 
-## 8. Implementation notes
+## 8. Source control
+
+Added in G7 Link 0.1.20. A phone sees a thread's folder as git sees it: its
+branch, what changed and the uncommitted diff, the branch's pull request and
+its checks, and the lists of open pull requests. It can commit files it read
+whole, fetch, switch or create a branch while nothing is changed, ask the
+thread's agent to write a commit message or a pull request, and, only with
+the PC's `agent_push` toggle for it, push and open a pull request. Git and
+the GitHub CLI run on the PC, as the PC's user, with the user's own hooks,
+signing and sign-in. It's plain protocol v1: no capability. Everything
+follows the `agents` toggle (§1). Nothing here travels on Bluetooth.
+
+```
+t = "agent.git"            b = { thread, branch?, detached?, changed, ahead?, behind?, pr?: AgentPrBrief }   PC → phone, agent lane
+t = "agent.git.progress"   b = { job: AgentJob }                                     PC → phone, agent lane
+
+RPC agent/git.status     t = "agent.git.status"     b = { thread }                               → ok AgentGit   paged
+RPC agent/git.patch      t = "agent.git.patch"      b = { thread, path, review? }                → ok { patch, truncated, binary, names?, more_names? }   paged
+RPC agent/git.review     t = "agent.git.review"     b = { thread, paths: [text] }                → ok { review, files: [{ path, readable, why? }] }   paged
+RPC agent/git.commit     t = "agent.git.commit"     b = { thread, review, message }              → ok AgentJob
+RPC agent/git.push       t = "agent.git.push"       b = { thread, remote? }                      → ok AgentJob
+RPC agent/git.fetch      t = "agent.git.fetch"      b = { thread }                               → ok AgentJob
+RPC agent/git.branches   t = "agent.git.branches"   b = { thread, query? }                       → ok { branches: [AgentBranch], more, current? }   paged
+RPC agent/git.switch     t = "agent.git.switch"     b = { thread, branch, create?, track? }      → ok AgentJob
+RPC agent/git.job        t = "agent.git.job"        b = { job, stop? }                           → ok AgentJob
+RPC agent/pr.view        t = "agent.pr.view"        b = { thread, refresh? }                     → ok { pr?: AgentPrInfo, gh: AgentGhState, github?, why? }
+RPC agent/pr.create      t = "agent.pr.create"      b = { thread, title, body, base?, draft? }   → ok AgentJob
+RPC agent/pr.list        t = "agent.pr.list"        b = { show, folder?, refresh? }              → ok { prs: [AgentPrRow], more, gh: AgentGhState }   paged
+RPC agent/write          t = "agent.write"          b = { thread, purpose }                      → ok AgentThread
+```
+
+The job event is `agent.git.progress`, and "ask the agent to write it" is
+`agent/write`: `agent.git.job` is the RPC's request, and `agent.ask` is §2's
+request for permission.
+
+```
+AgentThread += branch?: text,                   // absent: not a repository, or not read yet
+               worktree?: { label, branch },    // it works in a worktree of its own; never its path
+               changed?: uint,                  // files with changes, as last read
+               wrote?: { purpose, turn, text, at_ms }   // what the agent wrote when asked (below)
+AgentCatalog += push?: bool                     // this phone's `agent_push`
+AgentCatalog.folders[] += follow_remote?: bool  // "Keep in step with the remote", set on the PC
+
+AgentGit     = { repo: text,                    // "ok" | "none" | "refused" | "no_git"
+                 branch?, detached?: text,      // detached: the commit's short id
+                 unborn?: bool, upstream?, ahead?: uint, behind?: uint,   // as of the last fetch
+                 remote?, remotes?: [{ name, label?, local? }],           // label: host and path, never a URL
+                 default_branch?, on_default?: bool,
+                 doing?: text,                  // "merge" | "rebase" | "cherry_pick" | "revert" | "bisect"
+                 locked?: bool,                 // git is busy in the folder
+                 files: [AgentGitFile], more?: bool, total, adds, dels, conflicts,
+                 last?: { oid7, subject, ms }, worktree?: { label, branch },
+                 fetched_ms?, checked_ms, github?: { repo, host }, fingerprint }
+AgentGitFile = { path, from?, status?: text,    // "added" | "modified" | "deleted" | "renamed" | "type" | "untracked" | "conflict"
+                 staged?: text,                 // "all" | "part" | "none": what the user staged already
+                 folder?: bool, adds?, dels?, binary? }
+AgentJob     = { id, thread, kind: text,        // "commit" | "push" | "fetch" | "switch" | "worktree" | "pr_create" | "pr_merge"
+                 phase: text,                   // "running" | "done" | "failed" | "stopped"
+                 started_ms, ended_ms?, mine?: bool, lines?: [text], from, dropped,
+                 result?: { oid7?, subject?, files?, branch?, remote?, up_to_date?, created?, pr?: AgentPrInfo, number? },
+                 error?: { reason, message, names?: [text] } }
+AgentBranch  = { name, remote?, current?, upstream?, ahead?, behind?, worktree?, last_ms }
+AgentPrInfo  = { number, title, state: text,    // "open" | "merged" | "closed"
+                 draft?, url, base, head,
+                 review?: text,                 // "approved" | "changes_requested" | "review_required"
+                 mergeable?: text,              // "yes" | "conflicts" | "unknown"
+                 blocked?, updated_ms, checks?: [{ name, state, url? }], pass, fail, pending, read_ms }
+AgentPrBrief = { number, state, draft?, pass, fail, pending }
+AgentGhState = { gh: text,                      // "ok" | "missing" | "signed_out" | "old"
+                 version?, hosts?: [text], checked_ms }
+AgentPrRow   = { number, title, repo, state, draft?, updated_ms, url, branch?, checks?: { pass, fail, pending }, thread? }
+```
+
+- **Status.** `agent.git.status` reads the thread's folder now: at most 500
+  files to a phone (`more` past that; `total`, `adds` and `dels` count them
+  all), each path relative to the folder; an untracked folder is one row
+  ending in `/` (`folder`). `fingerprint` changes when anything listed
+  changes. `agent.git` comes when the folder's branch, changes, ahead or
+  behind, or pull request change: at most one a second per thread; read the
+  status again for the rest. A phone keeps each thread's last `agent.git`
+  (and a status's strip) for reading offline.
+- **The uncommitted diff.** `agent.git.patch` sends one listed file's change
+  against the last commit, at most 1 MiB (`truncated` past that), in pieces
+  the receiver joins as §6's patch; an untracked folder has no patch but the
+  first 50 `names` inside it (`more_names` past them). A path the status
+  doesn't list is `BAD_MESSAGE`.
+- **Review, then commit.** A phone commits only files it was given whole.
+  `agent.git.review` pins 1 to 200 listed files as they are now and answers
+  a `review` token of the PC's own: a file whose size passes 1 MiB is
+  `readable: false, why: "large"`, and an untracked folder is always
+  `readable: false, why: "folder"`: a phone gets its names, never its
+  files' bytes, so it's committed on the PC. `agent.git.patch` with that
+  `review` counts a file read once the last part of its patch was written to
+  the phone, whole: never a cut patch. `agent.git.commit` with the review commits exactly its
+  files, never paths the phone names, and only when every one is readable
+  and was read; otherwise `DENIED`. The PC keeps 4 reviews a phone, each
+  for 10 minutes, and a review commits once; a review it no longer keeps is
+  `NOT_FOUND` (read the files again). If a file changed after it was read,
+  the job fails with `changed`. Another phone can't use a phone's review.
+- **Jobs.** A commit, push, fetch, switch or pull request opened answers at
+  once with its job; `agent.git.progress` brings its new lines (to every
+  phone with the toggle on) and the last one its final `phase`. A phone gets
+  a job's newest 40 lines and 8 KiB (`from` numbers the first one, `dropped`
+  counts those not kept), each line at most 512 characters, with control
+  characters, URLs' user parts and the PC's home folder cleaned out.
+  `agent.git.job` reads one again for 10 minutes after it ends, `stop` stops
+  one the phone started (`mine`). A request the PC refuses before anything
+  runs answers with a job already `failed`, its `error.reason` saying why;
+  `agent.git.job` doesn't know that one.
+- **Reasons** a phone words itself: `git_busy`, `doing`, `detached`,
+  `conflicts`, `nothing`, `identity`, `thread_busy`, `shared_busy`,
+  `changed`, `hook`, `failed`, `stopped`, `behind`, `remote_refused`,
+  `sign_in`, `network`, `pick_remote` (with `names`), `no_remote`,
+  `no_commits`, `dirty`, `would_overwrite`, `in_worktree`, `exists`,
+  `bad_name`, `not_pushed`, `not_github`, `no_gh`, `signed_out`, `old_gh`,
+  `pr_exists`. One it doesn't know reads as `failed`, with `message`.
+- **Push and pull requests need `agent_push`**, a per-device toggle on the
+  PC, **off by default**, that a phone can't turn on. The PC reads it for
+  every `agent.git.push` and `agent.pr.create` and answers `DENIED` while
+  it's off, naming it; it sends `agent.catalog` again when it changes, with
+  `push`. A push sends the current branch to one remote, never forced;
+  `remote` only after a `pick_remote`. `agent.pr.create` opens a pull
+  request from the pushed branch into `base` (a remote branch
+  `agent.git.branches` listed; absent: the repository's default).
+- **Branches.** `agent.git.branches` lists local branches, then those only
+  on a remote (`remote`, named `origin/feat`), each newest first, at most
+  200; `query` matches part of the name. `agent.git.switch` switches to a
+  listed branch, one only on a remote (`track`), or a new one (`create`).
+  A phone switches only while nothing is changed: the job fails with
+  `dirty` otherwise.
+- **Ask the agent to write it.** `agent/write` sends the thread, as an
+  ordinary message from the user, the PC's fixed request for a commit
+  message (`purpose: "commit"`) or a pull request's title and description
+  (`"pr"`); when that turn ends the thread's `wrote` holds the answer until
+  the next commit or pull request, the next ask, or a day. `BUSY` unless the
+  thread is idle with nothing queued.
+- **Pull requests** are read through the GitHub CLI on the PC.
+  `agent.pr.view` answers the branch's pull request, or `why` there's none:
+  `"not_github"`, `"no_upstream"`, `"detached"`, `"not_repo"`; with `"network"`, `pr` is the
+  last one read. A check is `pass`, `fail`, `pending`, `skipped` or
+  `cancelled`; skipped and cancelled ones count in neither `pass`, `fail`
+  nor `pending`. `agent.pr.list` lists at most 50 open ones: `"mine"`,
+  waiting for `"review"`, or of one `"folder"` (with its id); a row's
+  `thread` is a thread on the PC on that branch. A phone opens a `url` only
+  when it's `https` on one of `gh.hosts`.
+- **The PC only.** A merge, marking a pull request ready, a switch that takes
+  changes along, creating or removing a worktree, and "keep in step with the
+  remote" have no message on the wire. `agent.git.switch` with `carry` is
+  `DENIED`. Each commit, push, pull request and switch a phone makes is
+  shown on the PC with the phone's name.
+- **Never to a phone**: a remote's URL (a `label` is host and path; a
+  remote that is a folder on the PC has none, `local`), an absolute path, a
+  worktree's path, an account name. A receiver leaves out a path that isn't
+  relative or climbs out with `..`, a label that could be a URL or a path,
+  and a URL that isn't `https`.
+- A receiver reads a `status`, `staged`, `doing`, `why`, `review` or
+  `mergeable` it doesn't know as absent, a check's `state` as `pending` and
+  never `pass`, and drops a job whose `kind` or `phase` it doesn't know.
+
+Limits (bytes of UTF-8 unless noted):
+
+| Field | Limit |
+|---|---|
+| `agent.git.status` answer | 500 files; `path`, `from` 1 to 512, relative; 8 remotes |
+| `agent.git.patch` | `path` 1 to 512; the answer's `patch` 1 MiB; 50 `names` |
+| `agent.git.review` | 1 to 200 distinct paths |
+| `review`, `job` | 16 lowercase hex digits |
+| `message` | 1 to 8192, not blank, no NUL |
+| `branch`, `base`, `upstream` | 1 to 255, no white space, no `:` or `\`, not starting with `-` or `/` |
+| `remote` | 1 to 64, no white space, `:`, `@` or `\`, not starting with `-`, `/`, `.` or `~` |
+| `query` | 100, one line |
+| `title` | 1 to 256, one line |
+| `body` | 32768, no NUL |
+| job | 40 lines and 8 KiB to a phone, each line 512 characters; `reason` 24; `message` 200 |
+| `agent.git.branches` answer | 200 branches |
+| `agent.pr.list` answer | 50 rows; a pull request's checks 100 |
+| `url` | `https`, 512 |
+
+Errors as §2.3, and: `DENIED` for a push or a pull request with `agent_push`
+off, a commit of a review not read whole here, and a switch with `carry`;
+`BAD_MESSAGE` for a request out of its limits, and a path a status or a
+review doesn't list; `NOT_FOUND` for an unknown thread or job, and a review
+the PC no longer keeps; `BUSY` while git is busy in the folder or the thread
+works.
+
+## 9. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -936,6 +1121,17 @@ drops an `agent.presence` out of its limits.
   (`AgentRequest::ImageAdd`); G7 Link desktop passes them to the host's
   `image.begin`/`image.chunk`/`image.end`. The G7 Link FFI announces
   `agent.control` for the app.
+- The core answers §8's requests after checking the toggles and the
+  limits, and keeps each phone's reviews itself: it hands the platform a
+  commit's paths from the review, never the phone's, with the host's review
+  id (`AgentRequest::GitCommit`), and lets a review commit once. It follows
+  the host's pages of a patch up to 1 MiB, counts a file read only when all
+  of it was written to the phone, and makes every status, job and pull
+  request fit a phone. A refusal from the host before anything ran comes
+  back as `AgentReply::Refused`; the core answers a request that starts a job
+  with a job that already failed. G7 Link desktop passes the host's
+  `git.changed` and `git.progress` on as `agent.git` and `agent.git.progress`
+  (`Node::agent_git_changed`, `Node::agent_git_progress`).
 - G7 Link desktop's second prompt, for `agent_sessions`: title "Let %1 see
   sessions started on this PC?"; body "It will be able to list and read the
   Claude and Codex sessions you start here in a terminal or the Claude app, in

@@ -9,6 +9,7 @@
 mod actions;
 mod adb_wifi;
 mod agent_cache;
+pub mod agent_git;
 pub mod agent_history;
 pub mod agent_presence;
 pub mod agents;
@@ -62,6 +63,13 @@ pub mod webcam;
 mod wire_stats;
 
 pub use actions::{PC_WAKE, PowerAction};
+pub use agent_git::{
+    AgentBranch, AgentBranches, AgentCheck, AgentCheckCounts, AgentGhState, AgentGit, AgentGitChanged,
+    AgentGitFile, AgentGitHub, AgentGitLast, AgentGitPatch, AgentGitPatchPage, AgentGitRemote,
+    AgentGitReview, AgentGitReviewFile, AgentGitReviewed, AgentGitReviewedFile, AgentGitWorktree, AgentJob,
+    AgentJobError, AgentJobResult, AgentPrBrief, AgentPrCreateRequest, AgentPrInfo, AgentPrListRequest,
+    AgentPrRow, AgentPrRows, AgentPrView, AgentWrote, git, pr,
+};
 pub use agent_history::{
     AgentCut, AgentForkedFrom, AgentFound, AgentFoundList, AgentFoundRequest, AgentHeld, AgentHit, AgentHits,
     AgentImportJob, AgentImportProgress, AgentMark, AgentPatch, AgentPatchPage, AgentRewindPlan,

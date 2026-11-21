@@ -19,11 +19,13 @@ use tokio::{runtime::Runtime, sync::broadcast::error::RecvError};
 uniffi::setup_scaffolding!();
 
 mod agent_control;
+mod agent_git;
 mod agent_history;
 mod agent_presence;
 pub mod agent_rows;
 
 pub use agent_control::*;
+pub use agent_git::*;
 pub use agent_history::*;
 pub use agent_presence::*;
 
@@ -1361,6 +1363,28 @@ pub enum Event {
         id: String,
         presence: AgentPresence,
     },
+    /// A thread's folder on a PC changed: its strip. Read `agent_git_status`
+    /// again for the rest while its panel shows; a review on screen starts
+    /// again ("The files changed. Read them again.").
+    AgentGit {
+        id: String,
+        thread: String,
+        branch: Option<String>,
+        detached: bool,
+        /// Files with changes ("%n changed").
+        changed: u32,
+        /// "↑2", "↓1" (as of the last fetch).
+        ahead: Option<u32>,
+        behind: Option<u32>,
+        pr: Option<AgentPrBrief>,
+    },
+    /// A source-control job's new lines and where it stands: append
+    /// `job.lines` (they follow on from what came before; `job.from` is the
+    /// first one's number). The last has its final `phase`.
+    AgentGitJob {
+        id: String,
+        job: AgentJob,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -1792,6 +1816,10 @@ pub struct AgentFolder {
     /// The PC keeps a restore point for each turn in it.
     #[uniffi(default = false)]
     pub checkpoints: bool,
+    /// The PC fetches its remote every few minutes while one of its threads
+    /// is shown ("Keep in step with the remote", set on the PC).
+    #[uniffi(default = false)]
+    pub follow_remote: bool,
 }
 
 impl std::fmt::Debug for AgentFolder {
@@ -1817,6 +1845,11 @@ pub struct AgentCatalog {
     /// commands and drafts. Without it, offer what 0.1.16 did.
     #[uniffi(default = false)]
     pub can_control: bool,
+    /// This phone may push and open pull requests: the PC's "Push and open
+    /// pull requests" switch for it. Off: those rows read "Turn on “Push and
+    /// open pull requests” for this phone in G7 Link on %1."
+    #[uniffi(default = false)]
+    pub push: bool,
 }
 
 impl AgentCatalog {
@@ -1848,12 +1881,18 @@ impl From<core::AgentCatalog> for AgentCatalog {
             folders: c
                 .folders
                 .into_iter()
-                .map(|f| AgentFolder { id: f.id, label: f.label, checkpoints: f.checkpoints })
+                .map(|f| AgentFolder {
+                    id: f.id,
+                    label: f.label,
+                    checkpoints: f.checkpoints,
+                    follow_remote: f.follow_remote,
+                })
                 .collect(),
             // A mode this build doesn't know can't be started from here.
             modes: c.modes.iter().filter_map(|m| AgentMode::from_wire(m)).collect(),
             can_say_why: false,
             can_control: false,
+            push: c.push,
         }
     }
 }
@@ -1942,6 +1981,19 @@ pub struct AgentThread {
     /// The last rewind can be undone until then.
     #[uniffi(default = None)]
     pub undo: Option<AgentUndo>,
+    /// The branch its folder is on (the strip); null: not a repository, or
+    /// not read yet.
+    #[uniffi(default = None)]
+    pub branch: Option<String>,
+    /// It works in a worktree of its own: show the worktree glyph.
+    #[uniffi(default = None)]
+    pub worktree: Option<AgentGitWorktree>,
+    /// Files with changes not committed ("%n changed").
+    #[uniffi(default = None)]
+    pub changed: Option<u32>,
+    /// What its agent wrote when asked ("Ask %1 to write it").
+    #[uniffi(default = None)]
+    pub wrote: Option<AgentWrote>,
 }
 
 /// A plan step's state.
@@ -2035,6 +2087,10 @@ impl AgentThread {
             found: t.found,
             readonly: t.readonly.as_deref().and_then(AgentReadonly::from_wire),
             undo: t.undo.map(Into::into),
+            branch: t.branch,
+            worktree: t.worktree.map(Into::into),
+            changed: t.changed,
+            wrote: t.wrote.and_then(AgentWrote::from_core),
         })
     }
 }
@@ -4314,6 +4370,22 @@ impl Event {
             }
             NodeEvent::AgentPresence { device, presence } => {
                 Event::AgentPresence { id: device.to_string(), presence: presence.into() }
+            }
+            NodeEvent::AgentGit { device, change } => {
+                let strip = AgentGitStrip::from(change.clone());
+                Event::AgentGit {
+                    id: device.to_string(),
+                    thread: change.thread,
+                    branch: strip.branch,
+                    detached: strip.detached,
+                    changed: strip.changed,
+                    ahead: strip.ahead,
+                    behind: strip.behind,
+                    pr: strip.pr,
+                }
+            }
+            NodeEvent::AgentGitJob { device, job } => {
+                Event::AgentGitJob { id: device.to_string(), job: AgentJob::from_core(job)? }
             }
             // Shown on PCs only.
             NodeEvent::AgentsRequested { .. }
@@ -7480,7 +7552,7 @@ mod tests {
     #[test]
     fn a_catalog_says_whether_the_pc_takes_words_with_a_denial() {
         let pc = core::DeviceId([3; 32]);
-        let catalog = core::AgentCatalog { agents: vec![], folders: vec![], modes: vec![] };
+        let catalog = core::AgentCatalog { agents: vec![], folders: vec![], modes: vec![], push: false };
         for (can_say_why, can_control) in [(false, false), (true, false), (false, true)] {
             let event = NodeEvent::AgentCatalog {
                 device: pc,
@@ -7523,9 +7595,12 @@ mod tests {
                 id: "f1".into(),
                 label: "g7linux".into(),
                 checkpoints: true,
+                follow_remote: true,
             }],
             modes: vec!["supervised".into(), "plan".into(), "full_access".into()],
+            push: true,
         });
+        assert!(catalog.push && catalog.folders[0].follow_remote);
         assert_eq!(catalog.modes, vec![AgentMode::Supervised, AgentMode::Plan]);
         assert_eq!(AgentMode::Plan.wire(), "plan");
         assert_eq!(catalog.agents[0].auth.as_deref(), Some("api_key"));

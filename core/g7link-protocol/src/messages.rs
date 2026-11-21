@@ -232,6 +232,22 @@ pub mod types {
     // ---- agent: presence (docs/protocol/agents.md §7) ----
     pub const AGENT_PRESENCE: &str = "agent.presence";
     pub const AGENT_VIEWING: &str = "agent.viewing";
+    // ---- agent: source control (docs/protocol/agents.md §8) ----
+    pub const AGENT_GIT_STATUS: &str = "agent.git.status";
+    pub const AGENT_GIT_PATCH: &str = "agent.git.patch";
+    pub const AGENT_GIT_REVIEW: &str = "agent.git.review";
+    pub const AGENT_GIT_COMMIT: &str = "agent.git.commit";
+    pub const AGENT_GIT_PUSH: &str = "agent.git.push";
+    pub const AGENT_GIT_FETCH: &str = "agent.git.fetch";
+    pub const AGENT_GIT_BRANCHES: &str = "agent.git.branches";
+    pub const AGENT_GIT_SWITCH: &str = "agent.git.switch";
+    pub const AGENT_GIT_JOB: &str = "agent.git.job";
+    pub const AGENT_PR_VIEW: &str = "agent.pr.view";
+    pub const AGENT_PR_CREATE: &str = "agent.pr.create";
+    pub const AGENT_PR_LIST: &str = "agent.pr.list";
+    pub const AGENT_WRITE: &str = "agent.write";
+    pub const AGENT_GIT: &str = "agent.git";
+    pub const AGENT_GIT_PROGRESS: &str = "agent.git.progress";
 }
 
 /// What kind of device this is.
@@ -6064,6 +6080,10 @@ pub struct AgentCatalogFolder {
     /// PC that doesn't say.
     #[serde(default)]
     pub checkpoints: bool,
+    /// The PC fetches its remote every few minutes while a thread of it is
+    /// shown ("Keep in step with the remote", §8). Set on the PC only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub follow_remote: bool,
 }
 
 impl std::fmt::Debug for AgentCatalogFolder {
@@ -6082,6 +6102,10 @@ pub struct AgentCatalog {
     pub folders: Vec<AgentCatalogFolder>,
     #[serde(default)]
     pub modes: Vec<String>,
+    /// This phone may push and open pull requests (§8): the PC's
+    /// `agent_push` toggle for it. The PC's core sets it for each phone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub push: bool,
 }
 
 impl std::fmt::Debug for AgentCatalog {
@@ -6090,6 +6114,7 @@ impl std::fmt::Debug for AgentCatalog {
             .field("agents", &self.agents)
             .field("folders", &self.folders.len())
             .field("modes", &self.modes)
+            .field("push", &self.push)
             .finish()
     }
 }
@@ -6224,6 +6249,19 @@ pub struct AgentThread {
     /// The last rewind can be undone until then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo: Option<AgentUndo>,
+    // ---- Source control (`docs/protocol/agents.md` §8) ----
+    /// The branch its folder is on; absent: not a repository, or not read yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// It works in a worktree of its own: its label and branch, never its path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<AgentGitWorktree>,
+    /// Files with changes not committed, as the PC last read them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<u32>,
+    /// What its agent wrote when asked for a commit message or a pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrote: Option<AgentWrote>,
 }
 
 /// One step of a thread's plan (`AgentThread.plan`).
@@ -6300,6 +6338,7 @@ impl AgentThread {
             && self.queued.len() <= agent::MAX_QUEUED
             && self.queued.iter().all(AgentQueued::is_valid)
             && agent_history::is_valid_thread_history(self)
+            && agent_git::is_valid_thread_git(self)
     }
 
     /// The thread within its limits, or `None` when an id or a wire word is bad.
@@ -6334,6 +6373,7 @@ impl AgentThread {
             std::mem::take(&mut self.queued).into_iter().filter_map(AgentQueued::sanitized).collect();
         self.queued.truncate(agent::MAX_QUEUED);
         agent_history::clean_thread_history(&mut self);
+        agent_git::clean_thread_git(&mut self);
         Some(self)
     }
 
@@ -7581,6 +7621,8 @@ mod agent_history;
 pub use agent_history::*;
 mod agent_presence;
 pub use agent_presence::*;
+mod agent_git;
+pub use agent_git::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).
@@ -10009,8 +10051,10 @@ mod tests {
                 id: "f0123456789ab".into(),
                 label: "g7linux".into(),
                 checkpoints: true,
+                follow_remote: false,
             }],
             modes: vec![agent::mode::SUPERVISED.into()],
+            push: false,
         };
         assert!(catalog.is_valid());
         round_trip(types::AGENT_CATALOG, &catalog);

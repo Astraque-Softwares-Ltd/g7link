@@ -9,7 +9,8 @@
 //! aside and started again, and nothing here needs a migration. Bodies are
 //! the wire structs in CBOR. Kept: each PC's newest 200 threads, and items
 //! for the 20 threads opened last, newest 400 each, 64 MiB in all, the
-//! least recently opened going first.
+//! least recently opened going first; and each kept thread's last
+//! source-control strip (§8).
 
 use std::{
     path::{Path, PathBuf},
@@ -18,7 +19,7 @@ use std::{
 
 use g7link_protocol::{
     DeviceId, Envelope,
-    messages::{AgentItem, AgentItems, AgentThread, types},
+    messages::{AgentGitChanged, AgentItem, AgentItems, AgentThread, types},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -53,6 +54,10 @@ const SCHEMA: &str = "
     ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS opened (
         pc TEXT NOT NULL, thread TEXT NOT NULL, at_ms INTEGER NOT NULL, saved_ms INTEGER NOT NULL,
+        PRIMARY KEY (pc, thread)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS git (
+        pc TEXT NOT NULL, thread TEXT NOT NULL, saved_ms INTEGER NOT NULL, body BLOB NOT NULL,
         PRIMARY KEY (pc, thread)
     ) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS outbox (
@@ -352,8 +357,51 @@ impl AgentCache {
         tx.execute("DELETE FROM threads WHERE pc = ?1 AND id = ?2", params![key, thread])?;
         tx.execute("DELETE FROM items WHERE pc = ?1 AND thread = ?2", params![key, thread])?;
         tx.execute("DELETE FROM opened WHERE pc = ?1 AND thread = ?2", params![key, thread])?;
+        tx.execute("DELETE FROM git WHERE pc = ?1 AND thread = ?2", params![key, thread])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Saves a thread's strip as `agent.git` said it.
+    pub fn save_git(&self, pc: &DeviceId, change: &AgentGitChanged, now_ms: u64) -> Result<()> {
+        if !self.keeps()? {
+            return Ok(());
+        }
+        self.lock().execute(
+            "INSERT INTO git (pc, thread, saved_ms, body) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (pc, thread) DO UPDATE SET saved_ms = excluded.saved_ms, body = excluded.body",
+            params![pc.to_string(), change.thread, ms(now_ms), encode(types::AGENT_GIT, change)?],
+        )?;
+        Ok(())
+    }
+
+    /// Saves a thread's strip as a status read it: a status says nothing of
+    /// the pull request, so the one saved stays.
+    pub fn save_git_status(&self, pc: &DeviceId, strip: &AgentGitChanged, now_ms: u64) -> Result<()> {
+        let mut strip = strip.clone();
+        if strip.pr.is_none() {
+            strip.pr = self.git(pc, &strip.thread)?.value.and_then(|saved| saved.pr);
+        }
+        self.save_git(pc, &strip, now_ms)
+    }
+
+    /// A thread's strip as last saved, and when.
+    pub fn git(&self, pc: &DeviceId, thread: &str) -> Result<Cached<Option<AgentGitChanged>>> {
+        let row: Option<(Vec<u8>, i64)> = self
+            .lock()
+            .query_row(
+                "SELECT body, saved_ms FROM git WHERE pc = ?1 AND thread = ?2",
+                params![pc.to_string(), thread],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let value = row
+            .as_ref()
+            .and_then(|(body, _)| decode::<AgentGitChanged>(body))
+            .and_then(AgentGitChanged::sanitized)
+            .filter(|strip| strip.thread == thread);
+        let saved_ms = value.as_ref().and(row.map(|(_, at)| unms(at)));
+        Ok(Cached { value, saved_ms })
     }
 
     /// Drops items `from` to `to` of a thread (a rewind left them out).
@@ -416,7 +464,7 @@ impl AgentCache {
         let key = pc.to_string();
         let mut conn = self.lock();
         let tx = conn.transaction()?;
-        for table in ["threads", "items", "opened", "outbox"] {
+        for table in ["threads", "items", "opened", "git", "outbox"] {
             tx.execute(&format!("DELETE FROM {table} WHERE pc = ?1"), params![key])?;
         }
         tx.commit()?;
@@ -428,14 +476,16 @@ impl AgentCache {
         let known: Vec<String> = paired.iter().map(DeviceId::to_string).collect();
         let pcs: Vec<String> = {
             let conn = self.lock();
-            let mut stmt = conn
-                .prepare("SELECT pc FROM threads UNION SELECT pc FROM opened UNION SELECT pc FROM outbox")?;
+            let mut stmt = conn.prepare(
+                "SELECT pc FROM threads UNION SELECT pc FROM opened UNION SELECT pc FROM git
+                 UNION SELECT pc FROM outbox",
+            )?;
             stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<_>>()?
         };
         for pc in pcs.iter().filter(|pc| !known.contains(pc)) {
             let mut conn = self.lock();
             let tx = conn.transaction()?;
-            for table in ["threads", "items", "opened", "outbox"] {
+            for table in ["threads", "items", "opened", "git", "outbox"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE pc = ?1"), params![pc])?;
             }
             tx.commit()?;
@@ -447,7 +497,7 @@ impl AgentCache {
     pub fn clear(&self) -> Result<()> {
         let conn = self.lock();
         conn.execute_batch(
-            "BEGIN; DELETE FROM threads; DELETE FROM items; DELETE FROM opened; COMMIT;
+            "BEGIN; DELETE FROM threads; DELETE FROM items; DELETE FROM opened; DELETE FROM git; COMMIT;
              PRAGMA incremental_vacuum;",
         )?;
         Ok(())
@@ -480,6 +530,10 @@ impl AgentCache {
         )?;
         tx.execute(
             "DELETE FROM items WHERE pc = ?1 AND thread NOT IN (SELECT thread FROM opened WHERE pc = ?1)",
+            params![key],
+        )?;
+        tx.execute(
+            "DELETE FROM git WHERE pc = ?1 AND thread NOT IN (SELECT id FROM threads WHERE pc = ?1)",
             params![key],
         )?;
         tx.execute(
@@ -787,6 +841,40 @@ mod tests {
             "clearing saved threads keeps what waits to be sent"
         );
         assert!(cache.bytes().unwrap() > 0);
+    }
+
+    #[test]
+    fn a_threads_strip_is_kept_with_its_thread_and_a_status_keeps_the_pull_request() {
+        use g7link_protocol::messages::AgentPrBrief;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = AgentCache::open(dir.path()).unwrap();
+        let t = thread(1, 1);
+        cache.save_thread(&pc(1), &t, 1).unwrap();
+        let pr = AgentPrBrief { number: 212, state: "open".into(), pass: 7, ..Default::default() };
+        let strip = AgentGitChanged {
+            thread: t.id.clone(),
+            branch: Some("feat/x".into()),
+            changed: 4,
+            ahead: Some(2),
+            pr: Some(pr.clone()),
+            ..Default::default()
+        };
+        cache.save_git(&pc(1), &strip, 10).unwrap();
+        let read = AgentGitChanged { changed: 1, pr: None, ..strip.clone() };
+        cache.save_git_status(&pc(1), &read, 20).unwrap();
+        let saved = cache.git(&pc(1), &t.id).unwrap();
+        assert_eq!(saved.saved_ms, Some(20));
+        assert_eq!(saved.value.as_ref().map(|s| (s.changed, s.pr.clone())), Some((1, Some(pr))));
+        assert_eq!(cache.git(&pc(2), &t.id).unwrap().value, None, "another PC's are its own");
+        cache.remove_thread(&pc(1), &t.id).unwrap();
+        assert_eq!(cache.git(&pc(1), &t.id).unwrap(), Cached { value: None, saved_ms: None });
+        cache.save_thread(&pc(1), &t, 1).unwrap();
+        cache.save_git(&pc(1), &strip, 30).unwrap();
+        cache.drop_pc(&pc(1)).unwrap();
+        assert_eq!(cache.git(&pc(1), &t.id).unwrap().value, None);
+        cache.set_keeps(false).unwrap();
+        cache.save_git(&pc(1), &strip, 40).unwrap();
+        assert_eq!(cache.git(&pc(1), &t.id).unwrap().value, None, "nothing kept");
     }
 
     #[test]

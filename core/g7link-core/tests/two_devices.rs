@@ -4626,7 +4626,19 @@ async fn remote_input_needs_toggle_and_delivers_motion_keys_and_slides() {
         with_timeout("backspace", phone.node.remote_input(pc_id, backspace.clone())).await.unwrap();
     }
     with_timeout("rewritten text", phone.node.remote_input(pc_id, rewrite.clone())).await.unwrap();
-    let recorded = pc.platform.remote_inputs.lock().unwrap().clone();
+    // Pointer and laser events from the first half can still land after the clear
+    // (they go through the motion worker); only the keys and text are checked here.
+    let recorded: Vec<RemoteInput> = pc
+        .platform
+        .remote_inputs
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| {
+            !matches!(e, RemoteInput::Laser { .. } | RemoteInput::Move { .. } | RemoteInput::Scroll { .. })
+        })
+        .cloned()
+        .collect();
     let mut expected = vec![backspace; 80];
     expected.push(rewrite);
     assert_eq!(recorded, expected, "every backspace and the text arrive, in order");
@@ -9600,8 +9612,10 @@ fn agent_catalog() -> g7link_core::AgentCatalog {
             id: AGENT_FOLDER.into(),
             label: "g7linux".into(),
             checkpoints: true,
+            follow_remote: false,
         }],
         modes: vec!["supervised".into(), "auto_edit".into()],
+        push: false,
     }
 }
 
@@ -12323,8 +12337,13 @@ async fn shutting_down_fails_waiting_requests_at_once() {
     let (lane, rpc) =
         (with_timeout("lane", on_lane).await.unwrap(), with_timeout("rpc", on_rpc).await.unwrap());
     assert!(started.elapsed() < Duration::from_secs(1), "took {:?}", started.elapsed());
-    assert!(matches!(lane, Err(Error::Offline)), "{lane:?}");
-    assert!(matches!(rpc, Err(Error::Offline)), "{rpc:?}");
+    // What matters is that they fail at once. Which word wins depends on whether the
+    // closing connection or the shutdown reaches a waiter first, so both are fine.
+    fn ended<T>(r: &Result<T, Error>) -> bool {
+        matches!(r, Err(Error::Offline | Error::Network(_)))
+    }
+    assert!(ended(&lane), "{lane:?}");
+    assert!(ended(&rpc), "{rpc:?}");
     until("no session task is left", || pc.node.debug_session_tasks() == 0).await;
 }
 

@@ -515,4 +515,16 @@ pub enum NodeEvent {
         device: DeviceId,
         view: Option<crate::AgentView>,
     },
+    /// Phone: a PC's thread's folder changed (`agent.git`): its strip.
+    /// Read `agent_git_status` again for the rest.
+    AgentGit {
+        device: DeviceId,
+        change: crate::AgentGitChanged,
+    },
+    /// Phone: a source-control job's new lines and where it stands
+    /// (`agent.git.progress`); the last has its final phase.
+    AgentGitJob {
+        device: DeviceId,
+        job: crate::AgentJob,
+    },
 }

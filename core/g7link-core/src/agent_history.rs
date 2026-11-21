@@ -556,7 +556,7 @@ pub(crate) async fn with_cache<T: Send + 'static>(
 
 /// Like [`with_cache`], for the app's own calls: an error when the cache
 /// can't be used.
-async fn cache_call<T: Send + 'static>(
+pub(crate) async fn cache_call<T: Send + 'static>(
     shared: &Arc<Shared>,
     work: impl FnOnce(&AgentCache) -> Result<T> + Send + 'static,
 ) -> Result<T> {

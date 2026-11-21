@@ -58,6 +58,10 @@ use iroh::endpoint::{RecvStream, SendStream};
 use crate::{
     Error, Result,
     agent_cache::AgentCache,
+    agent_git::{
+        AgentBranches, AgentGit, AgentGitPatchPage, AgentGitReviewed, AgentJob, AgentJobError, AgentPrRows,
+        AgentPrView,
+    },
     agent_history::{
         AgentFoundList, AgentHits, AgentImportJob, AgentPatchPage, AgentRewindPlan, AgentThreadsRequest,
         AgentTurn, AgentTurnFiles, TurnRange,
@@ -268,6 +272,44 @@ pub enum AgentRequest {
     Import { ids: Vec<String> },
     /// `agent.import` with `cancel`. Answered with `Ok`.
     ImportCancel { job: String },
+    // ---- Source control (`docs/protocol/agents.md` §8) ----
+    /// `agent.git.status`: the thread's folder's status. Answered with `Git`.
+    GitStatus { thread: String },
+    /// `agent.git.patch`: the page at `offset` of a listed file's
+    /// uncommitted patch (the core follows the pages up to 1 MiB). Answered
+    /// with `GitPatch`.
+    GitPatch { thread: String, path: String, offset: Option<u64> },
+    /// `agent.git.review`: pins 1 to 200 listed paths as they are now.
+    /// Answered with `Review`.
+    GitReview { thread: String, paths: Vec<String> },
+    /// `agent.git.commit`, after the core checked that the phone was given
+    /// every file of its review whole: `paths` are that review's, `review`
+    /// the host's id of it (`git.review`'s `review`). Answered with `GitJob`,
+    /// or `Refused` when the host refuses before anything runs.
+    GitCommit { thread: String, paths: Vec<String>, message: String, review: String },
+    /// `agent.git.push` (the phone's `agent_push` is on). As `GitCommit`.
+    GitPush { thread: String, remote: Option<String> },
+    /// `agent.git.fetch`. As `GitCommit`.
+    GitFetch { thread: String },
+    /// `agent.git.branches`. Answered with `Branches`.
+    GitBranches { thread: String, query: Option<String> },
+    /// `agent.git.switch`: never with changes taken along (a phone can't).
+    /// As `GitCommit`.
+    GitSwitch { thread: String, branch: String, create: bool, track: bool },
+    /// `agent.git.job`: a job as it stands. Answered with `GitJob`.
+    GitJob { job: String },
+    /// `agent.git.job` with `stop`. Answered with `GitJob`.
+    GitStop { job: String },
+    /// `agent.pr.view`. Answered with `Pr`.
+    PrView { thread: String, refresh: bool },
+    /// `agent.pr.create` (the phone's `agent_push` is on). As `GitCommit`.
+    PrCreate { thread: String, title: String, body: String, base: Option<String>, draft: bool },
+    /// `agent.pr.list`: `show` one of `pr::show`, `folder` with `folder`.
+    /// Answered with `PrRows`.
+    PrList { show: String, folder: Option<String>, refresh: bool },
+    /// `agent.write`: "Ask <agent> to write it", `purpose` one of
+    /// `git::purpose` (the host's `thread.send { purpose }`). Answered with `Thread`.
+    Ask { thread: String, purpose: String },
 }
 
 /// Never prints a prompt, text or token (protocol v0 §11).
@@ -420,6 +462,57 @@ impl std::fmt::Debug for AgentRequest {
             }
             Self::Import { ids } => f.debug_struct("Import").field("ids", &ids.len()).finish(),
             Self::ImportCancel { job } => f.debug_struct("ImportCancel").field("job", job).finish(),
+            Self::GitStatus { thread } => f.debug_struct("GitStatus").field("thread", thread).finish(),
+            Self::GitPatch { thread, offset, .. } => f
+                .debug_struct("GitPatch")
+                .field("thread", thread)
+                .field("offset", offset)
+                .finish_non_exhaustive(),
+            Self::GitReview { thread, paths } => {
+                f.debug_struct("GitReview").field("thread", thread).field("paths", &paths.len()).finish()
+            }
+            Self::GitCommit { thread, paths, message, review } => f
+                .debug_struct("GitCommit")
+                .field("thread", thread)
+                .field("paths", &paths.len())
+                .field("bytes", &message.len())
+                .field("review", review)
+                .finish(),
+            Self::GitPush { thread, remote } => {
+                f.debug_struct("GitPush").field("thread", thread).field("remote", remote).finish()
+            }
+            Self::GitFetch { thread } => f.debug_struct("GitFetch").field("thread", thread).finish(),
+            Self::GitBranches { thread, query } => f
+                .debug_struct("GitBranches")
+                .field("thread", thread)
+                .field("query_bytes", &query.as_ref().map(String::len))
+                .finish(),
+            Self::GitSwitch { thread, create, track, .. } => f
+                .debug_struct("GitSwitch")
+                .field("thread", thread)
+                .field("create", create)
+                .field("track", track)
+                .finish_non_exhaustive(),
+            Self::GitJob { job } => f.debug_struct("GitJob").field("job", job).finish(),
+            Self::GitStop { job } => f.debug_struct("GitStop").field("job", job).finish(),
+            Self::PrView { thread, refresh } => {
+                f.debug_struct("PrView").field("thread", thread).field("refresh", refresh).finish()
+            }
+            Self::PrCreate { thread, body, draft, .. } => f
+                .debug_struct("PrCreate")
+                .field("thread", thread)
+                .field("body_bytes", &body.len())
+                .field("draft", draft)
+                .finish_non_exhaustive(),
+            Self::PrList { show, folder, refresh } => f
+                .debug_struct("PrList")
+                .field("show", show)
+                .field("folder", folder)
+                .field("refresh", refresh)
+                .finish(),
+            Self::Ask { thread, purpose } => {
+                f.debug_struct("Ask").field("thread", thread).field("purpose", purpose).finish()
+            }
         }
     }
 }
@@ -464,6 +557,28 @@ pub enum AgentReply {
     Found(AgentFoundList),
     /// `Import`.
     Job(AgentImportJob),
+    /// `GitStatus`.
+    Git(AgentGit),
+    /// One page of `GitPatch`.
+    GitPatch(AgentGitPatchPage),
+    /// `GitReview`.
+    Review(AgentGitReviewed),
+    /// A job a request started, or `GitJob`/`GitStop` read: `by` is the
+    /// device that asked for it (`None`: this PC).
+    GitJob {
+        job: AgentJob,
+        by: Option<DeviceId>,
+    },
+    /// `GitBranches`.
+    Branches(AgentBranches),
+    /// `PrView`.
+    Pr(AgentPrView),
+    /// `PrList`.
+    PrRows(AgentPrRows),
+    /// The host refused a source-control request before anything ran
+    /// (its error's `data.reason`, the words of §8): for one that starts a
+    /// job the phone gets a job that already failed with it.
+    Refused(AgentJobError),
 }
 
 /// Never prints a thumbnail's bytes.
@@ -491,6 +606,16 @@ impl std::fmt::Debug for AgentReply {
             Self::RewindPlan(plan) => f.debug_tuple("RewindPlan").field(plan).finish(),
             Self::Found(found) => f.debug_tuple("Found").field(&found.found.len()).finish(),
             Self::Job(job) => f.debug_tuple("Job").field(job).finish(),
+            Self::Git(status) => f.debug_tuple("Git").field(status).finish(),
+            Self::GitPatch(page) => f.debug_tuple("GitPatch").field(page).finish(),
+            Self::Review(review) => f.debug_tuple("Review").field(review).finish(),
+            Self::GitJob { job, by } => {
+                f.debug_struct("GitJob").field("job", job).field("by", &by.map(|d| d.short())).finish()
+            }
+            Self::Branches(branches) => f.debug_tuple("Branches").field(&branches.branches.len()).finish(),
+            Self::Pr(view) => f.debug_tuple("Pr").field(view).finish(),
+            Self::PrRows(rows) => f.debug_tuple("PrRows").field(&rows.prs.len()).finish(),
+            Self::Refused(error) => f.debug_tuple("Refused").field(error).finish(),
         }
     }
 }
@@ -695,6 +820,8 @@ pub(crate) struct Agents {
     cache: Mutex<CacheSlot>,
     /// §7: the PC's presence, phones' views.
     pub(crate) presence: crate::agent_presence::Presence,
+    /// §8: the reviews phones read before they commit.
+    pub(crate) git: crate::agent_git::Reviews,
 }
 
 impl Agents {
@@ -724,6 +851,7 @@ impl Agents {
     pub fn remove_peer(&self, peer: &DeviceId) -> bool {
         let watched = self.session_ended(peer);
         self.presence.remove_peer(peer);
+        self.git.forget(peer);
         {
             let mut inner = self.lock();
             inner.prompted.remove(peer);
@@ -930,9 +1058,11 @@ pub(crate) fn unwatch_on_platform(shared: &Shared, peer: DeviceId) {
 }
 
 /// The catalog as a phone takes it: in full with `agent.control`, its
-/// legacy form otherwise; an empty one when there's none.
-fn catalog_env(catalog: Option<&AgentCatalog>, control: bool) -> Option<Envelope> {
-    let catalog = catalog.cloned().unwrap_or_default();
+/// legacy form otherwise; an empty one when there's none. `push`: that
+/// phone's `agent_push` (§8).
+fn catalog_env(catalog: Option<&AgentCatalog>, control: bool, push: bool) -> Option<Envelope> {
+    let mut catalog = catalog.cloned().unwrap_or_default();
+    catalog.push = push && !catalog.agents.is_empty();
     let catalog = if control { catalog } else { catalog.for_legacy() };
     Envelope::new(types::AGENT_CATALOG, &catalog).ok()
 }
@@ -944,10 +1074,11 @@ pub(crate) async fn send_catalog(shared: &Arc<Shared>, session: &Arc<Session>) {
         return;
     }
     let control = shared.control_with(&session.peer);
+    let push = crate::agent_git::may_push(shared, &session.peer);
     let env = {
         let mut inner = shared.agents.lock();
         inner.catalog_forms.insert(session.peer, control);
-        catalog_env(inner.catalog.as_ref(), control)
+        catalog_env(inner.catalog.as_ref(), control, push)
     };
     if let Some(env) = env {
         let _ = session.send(env).await;
@@ -976,6 +1107,9 @@ pub(crate) async fn refresh_catalogs(shared: &Arc<Shared>, only: Option<DeviceId
 
 /// PC: the `agents` toggle for `peer` was turned on or off.
 pub(crate) fn toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
+    if !on {
+        shared.agents.git.forget(&peer);
+    }
     if !on && shared.agents.presence.forget_view(&peer) {
         shared.emit(NodeEvent::AgentViewing { device: peer, view: None });
     }
@@ -1001,7 +1135,7 @@ pub(crate) fn toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
             // The last word: nothing can be started or followed from here now.
             if shared.offers_agents()
                 && shared.peer_offers(&peer, agent::REMOTE)
-                && let Some(env) = catalog_env(None, false)
+                && let Some(env) = catalog_env(None, false, false)
             {
                 let _ = session.send(env).await;
             }
@@ -1134,12 +1268,11 @@ pub(crate) fn set_catalog(shared: &Arc<Shared>, catalog: Option<AgentCatalog>) {
         return;
     }
     inner.catalog = catalog;
-    let full = catalog_env(inner.catalog.as_ref(), true);
-    let legacy = catalog_env(inner.catalog.as_ref(), false);
     for recipient in recipients {
         inner.catalog_forms.insert(recipient.session.peer, recipient.control);
-        if let Some(env) = if recipient.control { &full } else { &legacy } {
-            let _ = recipient.session.send_now(env.clone());
+        let push = crate::agent_git::may_push(shared, &recipient.session.peer);
+        if let Some(env) = catalog_env(inner.catalog.as_ref(), recipient.control, push) {
+            let _ = recipient.session.send_now(env);
         }
     }
 }
@@ -2034,6 +2167,10 @@ pub(crate) async fn handle(
         t if crate::agent_presence::is_message(t) => {
             crate::agent_presence::handle(shared, peer, env, rsp).await?;
         }
+        t if crate::agent_git::is_request(t) => {
+            crate::agent_git::handle_request(shared, peer, env, rsp).await?
+        }
+        t if crate::agent_git::is_event(t) => crate::agent_git::handle_event(shared, peer, env).await,
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };
             if !catalog.is_valid() {

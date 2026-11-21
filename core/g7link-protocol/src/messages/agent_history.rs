@@ -1986,7 +1986,12 @@ mod tests {
         };
         assert!(start.is_valid());
         assert!(!AgentStart { key: Some("x".into()), ..start }.is_valid());
-        let folder = AgentCatalogFolder { id: "f1".into(), label: "g7linux".into(), checkpoints: true };
+        let folder = AgentCatalogFolder {
+            id: "f1".into(),
+            label: "g7linux".into(),
+            checkpoints: true,
+            follow_remote: false,
+        };
         round_trip(
             types::AGENT_CATALOG,
             &crate::messages::AgentCatalog { folders: vec![folder], ..Default::default() },

@@ -1231,6 +1231,7 @@ mod tests {
             }],
             folders: Vec::new(),
             modes: vec![agent::mode::SUPERVISED.into(), agent::mode::PLAN.into()],
+            push: false,
         };
         assert!(catalog.is_valid());
         assert_eq!(catalog.clone().sanitized(), catalog, "nothing to clean");
@@ -1590,6 +1591,7 @@ mod tests {
             }],
             folders: Vec::new(),
             modes: vec![agent::mode::SUPERVISED.into(), agent::mode::PLAN.into()],
+            push: false,
         }
         .for_legacy();
         assert_eq!(catalog.modes, ["supervised"]);
