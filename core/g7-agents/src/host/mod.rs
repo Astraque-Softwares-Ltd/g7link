@@ -23,6 +23,7 @@ pub mod marks;
 pub mod notify;
 pub mod phone;
 pub mod plan;
+pub mod ports;
 pub mod presence;
 pub mod questions;
 pub mod scm;
@@ -294,6 +295,8 @@ struct ClientSlot {
     handoff: bool,
     /// G7 Link that said `photo`: it may get the `ui.photo` event.
     photo: bool,
+    /// G7 Link that said `beside`: it gets the `ui.beside` event.
+    beside: bool,
     /// The one session whose items this connection gets.
     watching: Option<String>,
     /// It called `sessions.scan`: it gets `sessions.scanned`.
@@ -315,6 +318,7 @@ impl ClientSlot {
             presence: false,
             handoff: false,
             photo: false,
+            beside: false,
             watching: None,
             scans: false,
         }
@@ -448,6 +452,17 @@ impl Hub {
         let line = Event::UiHandoff(event.clone()).to_line();
         let mut sent = 0;
         for slot in self.lock().values().filter(|s| s.handoff) {
+            slot.outbox.push(line.clone(), false);
+            sent += 1;
+        }
+        sent
+    }
+
+    /// Sends `ui.beside` to G7 Link's connections that said `beside`; how many got it.
+    pub(crate) fn send_beside(&self, event: &BesideEvent) -> usize {
+        let line = Event::UiBeside(event.clone()).to_line();
+        let mut sent = 0;
+        for slot in self.lock().values().filter(|s| s.beside) {
             slot.outbox.push(line.clone(), false);
             sent += 1;
         }
@@ -693,6 +708,8 @@ pub struct Host {
     limit_alarm: std::sync::atomic::AtomicBool,
     /// The phone photo on its way (`ui.photo`).
     pub(crate) photos: Mutex<phone::Photos>,
+    /// The threads whose ports are looked at (§V9.2).
+    pub(crate) ports: Mutex<ports::Watch>,
     pub awake: awake::Awake,
     pub usage: Mutex<usage::Usage>,
     pub drafts: Mutex<drafts::Drafts>,
@@ -826,6 +843,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         keep_awake: std::sync::atomic::AtomicBool::new(settings.keep_awake),
         limit_alarm: std::sync::atomic::AtomicBool::new(settings.limit_alarm),
         photos: Mutex::new(phone::Photos::default()),
+        ports: Mutex::new(ports::Watch::default()),
         awake: awake::Awake::spawn(awake_source, settings.keep_awake, awake::release_delay()),
         usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
         drafts: Mutex::new(drafts),
@@ -884,6 +902,17 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
                 tokio::time::sleep(source::POLL).await;
                 let Some(host) = host.upgrade() else { break };
                 host.git_poll().await;
+            }
+        })
+    };
+    // The ports each running agent listens on (§V9.2).
+    let ports_poll = {
+        let host = Arc::downgrade(&host);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(ports::FAST_EVERY).await;
+                let Some(host) = host.upgrade() else { break };
+                host.ports_tick().await;
             }
         })
     };
@@ -956,6 +985,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
     };
     accept.abort();
     git_poll.abort();
+    ports_poll.abort();
     let _ = std::fs::remove_file(&host.config.socket);
     host.sessions.stop();
     host.stop_jobs().await;
@@ -1221,6 +1251,7 @@ impl Host {
         slot.presence = matches!(role, Role::Client(..)) && params.has(cap::PRESENCE);
         slot.handoff = kind == ClientKind::Link && params.has(cap::HANDOFF);
         slot.photo = kind == ClientKind::Link && params.has(cap::PHOTO);
+        slot.beside = kind == ClientKind::Link && params.has(cap::BESIDE);
         let presence = slot.presence && slot.shows_threads();
         self.hub.lock().insert(client_id, slot);
         let result = HelloResult {
@@ -1590,6 +1621,12 @@ impl Host {
                 self.ui_photo_stop(kind, client_id)?;
                 Ok(json!({}))
             }
+            // The phone beside the PC (phase 5, wave 3).
+            method::UI_BESIDE => {
+                let p: UiBesideParams = parse(params)?;
+                self.ui_beside(kind, p)?;
+                Ok(json!({}))
+            }
             m if source::METHODS.contains(&m) => self.git_call(kind, m, params).await,
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
             _ => Err(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD)),
@@ -1915,6 +1952,7 @@ fn brought_in_info(id: &str, b: &sessions::import::BroughtIn) -> ThreadInfo {
         worktree: None,
         changed: None,
         wrote: None,
+        ports: Vec::new(),
     }
 }
 
@@ -2059,6 +2097,7 @@ fn test_host_with(
         keep_awake: std::sync::atomic::AtomicBool::new(true),
         limit_alarm: std::sync::atomic::AtomicBool::new(true),
         photos: Mutex::new(phone::Photos::default()),
+        ports: Mutex::new(ports::Watch::default()),
         awake: awake::Awake::spawn(awake::Source::Off, true, awake::release_delay()),
         usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
         drafts: Mutex::new(drafts::Drafts::default()),

@@ -588,6 +588,8 @@ impl Registry {
         info.pending = 0;
         info.asking = 0;
         info.step = None;
+        // Its agent's process is gone, and what it listened on with it.
+        info.ports.clear();
         // A queue that outlived its host waits for the user.
         info.queue_held = !info.queued.is_empty();
         if info.state_since_ms == 0 {
@@ -1164,6 +1166,7 @@ impl Host {
             worktree: prepared.as_ref().map(|w| w.worktree.clone()),
             changed: None,
             wrote: None,
+            ports: Vec::new(),
         };
         let mut entry = Entry::new(info, 1, Some(cwd));
         entry.worktree_dir = prepared.map(|w| w.dir);
@@ -1233,6 +1236,8 @@ impl Host {
         let agent = entry.info.agent;
         let child_env = env::child_env(agent, self.config.env.iter().cloned());
         let mut bridge_token = None;
+        // The agent's pid, read before its process can be reaped.
+        let mut pid = None;
         let forking = entry.pending_fork.is_some();
         let spawned: std::io::Result<()> = match agent {
             AgentId::Claude => {
@@ -1257,6 +1262,7 @@ impl Host {
                     fork: entry.pending_fork.as_deref().map(|hint| fork::launch_fork(&self.config, hint)),
                 };
                 claude::spawn_session(&launch, &settings, input).map(|(process, lines, driver)| {
+                    pid = process.child.id();
                     if !resume && launch.fork.is_none() {
                         entry.info.native_id = Some(session_id.clone());
                         self.store.save_thread(&entry.info, entry.cols());
@@ -1274,6 +1280,7 @@ impl Host {
                 let resume = entry.info.native_id.clone();
                 AgentProcess::spawn(bin, &["app-server".to_owned()], &cwd, &child_env).map(
                     |(process, lines)| {
+                        pid = process.child.id();
                         // A copy is made with `thread/fork` where it would resume.
                         let driver = match entry.pending_fork.as_deref().and_then(fork::codex_fork_start) {
                             Some(start) => codex::CodexDriver::forking(cwd, settings, start, input),
@@ -1295,6 +1302,7 @@ impl Host {
                 if let Some(entry) = reg.threads.get_mut(thread_id) {
                     entry.session = Some(Session { generation, cmds: tx, bridge_token });
                 }
+                self.ports_started(thread_id, generation, pid);
             }
             Err(e) => {
                 tracing::warn!("couldn't start an agent: {e}");
@@ -1588,6 +1596,7 @@ impl Host {
             worktree: None,
             changed: None,
             wrote: None,
+            ports: Vec::new(),
         };
         let mut entry = Entry::new(info, notice_seq + 1, Some(cwd));
         entry.users_before = u32::try_from(users).unwrap_or(u32::MAX);
@@ -1624,6 +1633,10 @@ impl Host {
         match event {
             AgentEvent::Exited { code } => {
                 if !current {
+                    // A process let go when idle, or replaced: what it listened on goes.
+                    if let Some(entry) = reg.threads.get_mut(thread_id) {
+                        self.ports_ended(entry, generation);
+                    }
                     return;
                 }
                 let Some(entry) = reg.threads.get_mut(thread_id) else { return };
@@ -1631,6 +1644,12 @@ impl Host {
                 let token = entry.session.take().and_then(|s| s.bridge_token);
                 let interrupted = entry.turn.interrupt_requested;
                 let running = entry.info.state.is_running();
+                // What its processes listened on goes with them.
+                self.lock_ports().ended(thread_id, generation);
+                let had_ports = !std::mem::take(&mut entry.info.ports).is_empty();
+                if had_ports && !running {
+                    self.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
+                }
                 if let Some(token) = token {
                     reg.bridges.remove(&token);
                 }
@@ -1693,6 +1712,11 @@ impl Host {
             }
             Step::TurnStarted => return self.turn_started(reg, thread_id),
             _ => {}
+        }
+        if let Step::ToolStart { tool, .. } = &step
+            && tool.class == ToolClass::Command
+        {
+            self.lock_ports().command(thread_id, Instant::now());
         }
         let Some(entry) = reg.threads.get_mut(thread_id) else { return };
         if let Step::Plan(plan) = step {
@@ -3241,6 +3265,7 @@ pub(crate) fn test_info(agent: AgentId) -> ThreadInfo {
         worktree: None,
         changed: None,
         wrote: None,
+        ports: Vec::new(),
     }
 }
 
@@ -3302,6 +3327,7 @@ impl Host {
             worktree: None,
             changed: None,
             wrote: None,
+            ports: Vec::new(),
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut entry = Entry::new(info, 1, Some(PathBuf::from("/tmp")));

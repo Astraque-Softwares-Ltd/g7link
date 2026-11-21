@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Phones, through G7 Link (phase 5, §V8.4 and §V8.5). `ui.handoff` asks G7
-//! Link to continue a thread on a phone. `ui.photo` asks it for one photo
-//! from a phone's camera, which comes back with `ui.photo.done` as one of
-//! the launcher's own pending images.
+//! Phones, through G7 Link (phase 5, §V8.4, §V8.5 and §V9.1). `ui.handoff`
+//! asks G7 Link to continue a thread on a phone. `ui.photo` asks it for one
+//! photo from a phone's camera, which comes back with `ui.photo.done` as one
+//! of the launcher's own pending images. `ui.beside` asks it to switch what
+//! a phone that shows a thread beside this PC shows.
 //!
 //! The host only passes these on: it never learns which phones there are,
 //! and nothing here sends a message, starts a thread or answers a request.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
@@ -112,6 +113,34 @@ impl Host {
         let event = HandoffEvent { thread_id: p.thread_id, device_id: p.device_id, seq: p.seq };
         let sent = self.hub.send_handoff(&event);
         Ok(UiHandoffResult { sent: u32::try_from(sent).unwrap_or(u32::MAX) })
+    }
+
+    /// `ui.beside`: the `ui.beside` event to G7 Link's connections that take
+    /// it, for a phone that shows that thread now (G7 Link's fresh `ui.presence`).
+    pub(crate) fn ui_beside(&self, kind: ClientKind, p: UiBesideParams) -> Result<(), RpcError> {
+        if kind != ClientKind::Link {
+            return Err(RpcError::new(ErrorCode::Denied, "Only G7 Link switches what a phone shows."));
+        }
+        if p.device_id.is_empty() || p.device_id.len() > MAX_DEVICE_ID {
+            return Err(RpcError::new(ErrorCode::BadRequest, "Bad device id."));
+        }
+        if !p.by.is_valid() {
+            return Err(RpcError::new(ErrorCode::BadRequest, "Bad origin."));
+        }
+        if !self.lock_reg().threads.contains_key(&p.thread_id) {
+            return Err(RpcError::new(ErrorCode::NotFound, "No such thread."));
+        }
+        let shows = self.hub.lock_presence().fresh(Instant::now()).is_some_and(|presence| {
+            presence
+                .remote
+                .iter()
+                .any(|v| v.device_id == p.device_id && v.thread_id.as_deref() == Some(p.thread_id.as_str()))
+        });
+        if !shows {
+            return Err(RpcError::new(ErrorCode::NotFound, "That phone doesn't show this thread."));
+        }
+        self.hub.send_beside(&BesideEvent { thread_id: p.thread_id, device_id: p.device_id, pane: p.pane });
+        Ok(())
     }
 
     /// `ui.photo`: asks one G7 Link connection for a photo and waits for its
@@ -294,6 +323,71 @@ mod tests {
             0,
             "G7 Link isn't open"
         );
+    }
+
+    #[tokio::test]
+    async fn a_pane_goes_to_g7_link_for_a_phone_that_shows_the_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = crate::host::test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let thread_id = "a".repeat(32);
+        let other = "b".repeat(32);
+        for id in [&thread_id, &other] {
+            let info = ThreadInfo { id: id.clone(), ..crate::host::threads::test_info(AgentId::Claude) };
+            host.lock_reg().threads.insert(id.clone(), crate::host::threads::test_entry(info));
+        }
+        let takes = host.hub.test_link(false, false);
+        host.hub.set(takes, |slot| slot.beside = true);
+        let watch = host.hub.test_link(true, true);
+        let launcher = host.hub.test_viewer(ClientKind::Launcher, None);
+        let params = |thread_id: &str, device_id: &str| UiBesideParams {
+            thread_id: thread_id.to_owned(),
+            device_id: device_id.to_owned(),
+            pane: Pane::Plan,
+            by: Origin::launcher(),
+        };
+        // Nobody has said what the phone shows yet.
+        let err = host.ui_beside(ClientKind::Link, params(&thread_id, "dev1")).unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        let phone = RemoteView {
+            device_id: "dev1".into(),
+            device_name: "Pixel".into(),
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            pane: Some(Pane::Changes),
+            dnd: false,
+        };
+        let presence = UiPresenceParams { at_pc: true, remote: vec![phone], ..Default::default() };
+        host.hub.lock_presence().set(watch, presence, Instant::now());
+
+        host.ui_beside(ClientKind::Link, params(&thread_id, "dev1")).unwrap();
+        let beside = BesideEvent { thread_id: thread_id.clone(), device_id: "dev1".into(), pane: Pane::Plan };
+        assert_eq!(events(host.hub.test_lines(takes)), [Event::UiBeside(beside)]);
+        assert!(host.hub.test_lines(watch).is_empty(), "a connection that didn't say beside");
+        assert!(host.hub.test_lines(launcher).is_empty());
+
+        for kind in [ClientKind::Launcher, ClientKind::Test, ClientKind::Cli, ClientKind::Bridge] {
+            let err = host.ui_beside(kind, params(&thread_id, "dev1")).unwrap_err();
+            assert_eq!(err.code, ErrorCode::Denied, "{kind:?}");
+        }
+        let long = "d".repeat(MAX_DEVICE_ID + 1);
+        for bad in ["", long.as_str()] {
+            let err = host.ui_beside(ClientKind::Link, params(&thread_id, bad)).unwrap_err();
+            assert_eq!(err.code, ErrorCode::BadRequest);
+        }
+        for (thread, device) in [(other.as_str(), "dev1"), (thread_id.as_str(), "dev2")] {
+            let err = host.ui_beside(ClientKind::Link, params(thread, device)).unwrap_err();
+            assert_eq!(err.code, ErrorCode::NotFound, "not on that phone: {thread} {device}");
+        }
+        let gone = params(&"c".repeat(32), "dev1");
+        assert_eq!(host.ui_beside(ClientKind::Link, gone).unwrap_err().code, ErrorCode::NotFound);
+        assert!(host.hub.test_lines(takes).is_empty(), "the refused ones sent nothing");
+        let unknown = serde_json::json!({"thread_id": thread_id, "device_id": "dev1", "pane": "diff", "by": {"kind": "launcher"}});
+        assert!(serde_json::from_value::<UiBesideParams>(unknown).is_err(), "a pane this host doesn't know");
+
+        // The presence went with its connection: the phone shows nothing any more.
+        assert!(host.hub.lock_presence().closed(watch));
+        let err = host.ui_beside(ClientKind::Link, params(&thread_id, "dev1")).unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

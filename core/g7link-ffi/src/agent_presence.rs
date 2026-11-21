@@ -55,7 +55,7 @@ pub enum AgentPane {
 }
 
 impl AgentPane {
-    fn wire(self) -> &'static str {
+    pub(crate) fn wire(self) -> &'static str {
         use core::presence::pane;
         match self {
             Self::Thread => pane::THREAD,

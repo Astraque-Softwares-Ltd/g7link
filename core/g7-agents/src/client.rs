@@ -916,6 +916,17 @@ pub mod calls {
     pub fn ui_photo_stop() -> Call<()> {
         Call::new(method::UI_PHOTO_STOP, &Empty {}, unit)
     }
+
+    // ---- The phone beside the PC (phase 5, wave 3) ----
+
+    /// G7 Link shows `pane` on the phone that shows the thread beside this
+    /// PC: the host sends the `ui.beside` event to G7 Link's connections
+    /// that said `cap::BESIDE`. G7 Link only; `NOT_FOUND` unless that phone
+    /// shows that thread (G7 Link's `ui.presence`). Only to a host that
+    /// offers `cap::BESIDE`.
+    pub fn ui_beside(params: UiBesideParams) -> Call<()> {
+        Call::new(method::UI_BESIDE, &params, unit)
+    }
 }
 
 /// Generates one typed method per call builder, async or blocking.
@@ -1013,6 +1024,7 @@ macro_rules! with_calls {
             ui_photo(by: By) -> UiPhotoResult;
             ui_photo_done(params: UiPhotoDoneParams) -> ();
             ui_photo_stop() -> ();
+            ui_beside(params: UiBesideParams) -> ();
         }
     };
 }

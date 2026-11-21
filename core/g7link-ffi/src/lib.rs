@@ -18,6 +18,7 @@ use tokio::{runtime::Runtime, sync::broadcast::error::RecvError};
 
 uniffi::setup_scaffolding!();
 
+mod agent_beside;
 mod agent_control;
 mod agent_git;
 mod agent_handoff;
@@ -26,6 +27,7 @@ mod agent_presence;
 mod agent_reply;
 pub mod agent_rows;
 
+pub use agent_beside::*;
 pub use agent_control::*;
 pub use agent_git::*;
 pub use agent_handoff::*;
@@ -1402,6 +1404,16 @@ pub enum Event {
         offer: bool,
         expires_ms: i64,
     },
+    /// PC `id` shows `thread` and asks this phone to show `pane` beside it
+    /// (its menu "%1 shows %2"). Act on it only while this phone shows that
+    /// thread beside the PC (`AgentBesideScreen`), and report the new pane
+    /// with `agent_viewing`; otherwise ignore it. `Thread` means the thread
+    /// screen itself.
+    AgentBeside {
+        id: String,
+        thread: String,
+        pane: AgentPane,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -2011,6 +2023,11 @@ pub struct AgentThread {
     /// What its agent wrote when asked ("Ask %1 to write it").
     #[uniffi(default = None)]
     pub wrote: Option<AgentWrote>,
+    /// Ports its agent listens on (dev servers), oldest first, at most 4:
+    /// "A server is listening on port %1". A `lan` one opens here at
+    /// `agent_port_url`.
+    #[uniffi(default = [])]
+    pub ports: Vec<AgentPort>,
 }
 
 /// A plan step's state.
@@ -2108,6 +2125,7 @@ impl AgentThread {
             worktree: t.worktree.map(Into::into),
             changed: t.changed,
             wrote: t.wrote.and_then(AgentWrote::from_core),
+            ports: t.ports.into_iter().map(Into::into).collect(),
         })
     }
 }
@@ -4411,6 +4429,9 @@ impl Event {
                 offer: handoff.offer,
                 expires_ms: handoff.expires_ms,
             },
+            NodeEvent::AgentBeside { device, thread, pane } => {
+                Event::AgentBeside { id: device.to_string(), thread, pane: AgentPane::from_wire(&pane)? }
+            }
             // Shown on PCs only.
             NodeEvent::AgentsRequested { .. }
             | NodeEvent::AgentSessionsRequested { .. }
@@ -7416,6 +7437,20 @@ mod tests {
                 offer: true,
                 expires_ms: 1_795_000_600_000,
             })
+        );
+        let thread = String::from("0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            Event::from_node(NodeEvent::AgentBeside {
+                device: pc,
+                thread: thread.clone(),
+                pane: "plan".into()
+            }),
+            Some(Event::AgentBeside { id: pc.to_string(), thread: thread.clone(), pane: AgentPane::Plan })
+        );
+        assert_eq!(
+            Event::from_node(NodeEvent::AgentBeside { device: pc, thread, pane: "diff_beside".into() }),
+            None,
+            "a pane this build doesn't know"
         );
     }
 

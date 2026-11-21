@@ -788,7 +788,8 @@ async fn hello_says_what_the_host_offers() {
             cap::GIT,
             cap::PLACE,
             cap::HANDOFF,
-            cap::PHOTO
+            cap::PHOTO,
+            cap::BESIDE
         ]
     );
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
@@ -1958,6 +1959,63 @@ async fn a_thread_is_handed_to_a_phone_through_g7_link_after_its_draft() {
     }
     let listed = client.threads_list(None, None).await.unwrap();
     assert!(listed.iter().any(|t| t.id == thread.id && t.state == State::Done), "nothing was sent");
+    host.stop().await;
+}
+
+// ---- The phone beside the PC (phase 5, wave 3, §V9.1) ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn g7_link_switches_the_pane_of_a_phone_that_shows_the_thread() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let connect =
+        |kind: ClientKind, caps: &[&str]| Client::connect(&host.socket, HelloParams::new(kind, caps));
+    let page = [cap::ITEMS2, cap::ITEMS3, cap::PRESENCE, cap::BESIDE];
+    let (link, mut link_events) = connect(ClientKind::Link, &page).await.unwrap();
+    let (watch, mut watch_events) = connect(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3]).await.unwrap();
+    let (launcher, mut launcher_events) = connect(ClientKind::Launcher, &[cap::PRESENCE]).await.unwrap();
+    let to = |pane: Pane| UiBesideParams {
+        thread_id: thread.id.clone(),
+        device_id: "7".into(),
+        pane,
+        by: Origin::launcher(),
+    };
+    let err = link.ui_beside(to(Pane::Plan)).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::NotFound), "no phone shows it yet");
+
+    let shows = RemoteView {
+        device_id: "7".into(),
+        device_name: "Pixel".into(),
+        thread_id: Some(thread.id.clone()),
+        session_id: None,
+        pane: Some(Pane::Changes),
+        dnd: false,
+    };
+    link.ui_presence(UiPresenceParams { at_pc: true, locked: false, dnd: false, remote: vec![shows] })
+        .await
+        .unwrap();
+    link.ui_beside(to(Pane::Plan)).await.unwrap();
+    let got = next(&mut link_events, "ui.beside", |e| matches!(e, Event::UiBeside(_))).await;
+    let expected = BesideEvent { thread_id: thread.id.clone(), device_id: "7".into(), pane: Pane::Plan };
+    assert_eq!(got, Event::UiBeside(expected));
+
+    for who in [&launcher, &client] {
+        let err = who.ui_beside(to(Pane::Requests)).await.unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::Denied), "only G7 Link");
+    }
+    let elsewhere = UiBesideParams { device_id: "8".into(), ..to(Pane::Plan) };
+    assert_eq!(link.ui_beside(elsewhere).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+    // Only the connection that said `beside` heard it, and once.
+    for (who, events) in
+        [(&watch, &mut watch_events), (&launcher, &mut launcher_events), (&link, &mut link_events)]
+    {
+        for event in heard_so_far(who, events).await {
+            assert!(!matches!(event, Event::UiBeside(_)), "{event:?}");
+        }
+    }
     host.stop().await;
 }
 

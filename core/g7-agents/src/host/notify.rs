@@ -503,6 +503,7 @@ mod tests {
             worktree: None,
             changed: None,
             wrote: None,
+            ports: Vec::new(),
         }
     }
 

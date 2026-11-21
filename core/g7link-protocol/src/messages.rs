@@ -253,6 +253,8 @@ pub mod types {
     // ---- agent: hand-off (docs/protocol/agents.md §10) ----
     pub const AGENT_HANDOFF: &str = "agent.handoff";
     pub const AGENT_HANDOFF_OPEN: &str = "agent.handoff.open";
+    // ---- agent: the phone beside the PC (docs/protocol/agents.md §11) ----
+    pub const AGENT_BESIDE: &str = "agent.beside";
 }
 
 /// What kind of device this is.
@@ -6267,6 +6269,10 @@ pub struct AgentThread {
     /// What its agent wrote when asked for a commit message or a pull request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrote: Option<AgentWrote>,
+    // ---- The phone beside the PC (`docs/protocol/agents.md` §11) ----
+    /// TCP ports its agent's processes listen on (dev servers), oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<AgentPort>,
 }
 
 /// One step of a thread's plan (`AgentThread.plan`).
@@ -6344,6 +6350,7 @@ impl AgentThread {
             && self.queued.iter().all(AgentQueued::is_valid)
             && agent_history::is_valid_thread_history(self)
             && agent_git::is_valid_thread_git(self)
+            && agent_beside::is_valid_thread_ports(self)
     }
 
     /// The thread within its limits, or `None` when an id or a wire word is bad.
@@ -6379,6 +6386,7 @@ impl AgentThread {
         self.queued.truncate(agent::MAX_QUEUED);
         agent_history::clean_thread_history(&mut self);
         agent_git::clean_thread_git(&mut self);
+        agent_beside::clean_thread_ports(&mut self);
         Some(self)
     }
 
@@ -7632,6 +7640,8 @@ mod agent_reply;
 pub use agent_reply::*;
 mod agent_handoff;
 pub use agent_handoff::*;
+mod agent_beside;
+pub use agent_beside::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).

@@ -541,4 +541,12 @@ pub enum NodeEvent {
         device: DeviceId,
         handoff: crate::AgentPcHandoff,
     },
+    /// Phone: the PC shows `thread` and asks this phone to show `pane`
+    /// beside it (`agent.beside`): one of `presence::pane`, a word this
+    /// build knows.
+    AgentBeside {
+        device: DeviceId,
+        thread: String,
+        pane: String,
+    },
 }

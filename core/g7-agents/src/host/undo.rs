@@ -766,6 +766,7 @@ impl Host {
                 readonly: None,
                 undo: None,
                 wrote: None,
+                ports: Vec::new(),
                 ..parent.clone()
             };
             // A worktree thread's fork works in the same worktree.

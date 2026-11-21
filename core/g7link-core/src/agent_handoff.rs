@@ -45,8 +45,8 @@ pub struct AgentPcHandoff {
 
 // ---- PC side ----
 
-/// PC: why `phone` can't be handed a thread now.
-fn unreachable(shared: &Shared, phone: &DeviceId) -> Error {
+/// PC: why `phone` can't be sent an agent push now (a hand-off, a pane).
+pub(crate) fn unreachable(shared: &Shared, phone: &DeviceId) -> Error {
     if !shared.we_offer(agent::HOST) {
         return Error::Unsupported;
     }

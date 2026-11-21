@@ -25,7 +25,8 @@
 //!
 //! Presence (§7) is [`crate::agent_presence`]'s; its state lives here, in
 //! `Agents`, so it ends with the session and the toggle. Reply on the PC
-//! (§9) is [`crate::agent_reply`]'s, hand-off (§10) [`crate::agent_handoff`]'s.
+//! (§9) is [`crate::agent_reply`]'s, hand-off (§10) [`crate::agent_handoff`]'s,
+//! the phone beside the PC (§11) [`crate::agent_beside`]'s.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -2218,6 +2219,9 @@ pub(crate) async fn handle(
         }
         t if crate::agent_handoff::is_message(t) => {
             crate::agent_handoff::handle(shared, peer, env, rsp).await?;
+        }
+        t if crate::agent_beside::is_message(t) => {
+            crate::agent_beside::handle(shared, peer, env, rsp).await?;
         }
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };

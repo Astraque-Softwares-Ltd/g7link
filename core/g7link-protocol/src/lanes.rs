@@ -295,7 +295,8 @@ pub fn lane_of(t: &str) -> Option<Lane> {
         | AGENT_PRESENCE
         | AGENT_GIT
         | AGENT_GIT_PROGRESS
-        | AGENT_HANDOFF => Lane::Service(svc::AGENT),
+        | AGENT_HANDOFF
+        | AGENT_BESIDE => Lane::Service(svc::AGENT),
 
         MEDIA_FILE | MEDIA_FILE_META => Lane::Stream { svc: svc::MEDIA, op: "file" },
         MEDIA_ART | MEDIA_ART_META => Lane::Stream { svc: svc::MEDIA, op: "art" },
@@ -614,6 +615,7 @@ mod tests {
             (AGENT_GIT, svc::AGENT),
             (AGENT_GIT_PROGRESS, svc::AGENT),
             (AGENT_HANDOFF, svc::AGENT),
+            (AGENT_BESIDE, svc::AGENT),
         ];
         for (t, service) in lanes {
             assert_eq!(lane_of(t), Some(Lane::Service(service)), "{t}");

@@ -1231,7 +1231,66 @@ off (the first time, the PC asks its user, as for any request of this
 service); `NOT_FOUND` for a thread the PC doesn't have; `BAD_MESSAGE` for a
 request out of its limits.
 
-## 11. Implementation notes
+## 11. The phone beside the PC
+
+Added in G7 Link 0.1.23. Two things for a phone used next to its PC. A phone
+that shows a thread the PC also shows can show that thread's changes, plan or
+requests beside the PC's screen, and the PC can switch which; and a thread
+lists the TCP ports its agent's processes listen on, so a phone can open a dev
+server that already answers on the network. It's plain protocol v1: no
+capability, governed by the `agents` toggle (§1). Nothing here opens,
+forwards or tunnels a port, nothing is probed or connected to, and nothing
+travels on Bluetooth or is retried or queued while offline.
+
+```
+t = "agent.beside"     b = { thread, pane }                                  PC → phone, agent lane
+
+AgentThread += ports?: [{ port: uint, reach: text }]                         // "pc" | "lan"
+```
+
+### 11.1 Second screen
+
+- A phone says what it shows with `agent.viewing` and its `pane` (§7):
+  `"thread"`, or beside the PC `"changes"`, `"plan"` or `"requests"`.
+- **`agent.beside`.** The PC asks the phone to show `pane` beside `thread`: a
+  phone acts on it only while it shows that thread beside the PC, and then
+  reports the new pane with `agent.viewing`; otherwise it ignores it.
+  `"thread"` asks for the thread itself. A PC sends only a pane this
+  version knows, and only to a phone with the toggle on; a phone drops one
+  out of its limits or with a pane it doesn't know.
+- On the phone, requests and questions beside the PC are answered as in the
+  thread (the first waiting one, with the same guards); nothing else there
+  changes anything on the PC.
+
+### 11.2 Dev servers
+
+- **`ports`.** While a thread's agent runs, the PC lists the TCP ports in
+  `LISTEN` held by the agent's process and the processes it started, at
+  most 4, oldest first, none under 1024. `reach` is `"pc"` when every socket
+  on that port is bound to loopback, so it answers on the PC alone; `"lan"`
+  when one is bound to every address or to a network address. A port goes
+  when its socket does, and all go when the agent's process ends. The PC
+  finds them by reading its own process table; it never connects to one.
+- A phone offers to open only a `"lan"` port, and only while its link to the
+  PC is a direct path on the local network (not the relay, not USB):
+  `http://<the PC's address on that link>:<port>/`, in the phone's own
+  browser, after the same confirmation as an opened link. For a `"pc"` port
+  it says how to make the server answer on the network instead. A phone
+  leaves out a port whose `reach` it doesn't know.
+
+Limits:
+
+| Field | Limit |
+|---|---|
+| `thread` | an id (1 to 40, `[a-z0-9]`) |
+| `pane` | 1 to 32, `[a-z0-9_]` |
+| `ports` | 4, distinct ports |
+| `port` | 1024 to 65535 |
+| `reach` | 1 to 32, `[a-z0-9_]` |
+
+There are no requests here, so no errors of their own.
+
+## 12. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -1266,6 +1325,22 @@ request out of its limits.
   page and remembers one hand-off while the PC is locked. On the phone the
   core turns `agent.handoff` into an event with its expiry on the phone's
   clock (`expires_ms`); the PC's clock never matters.
+- The agent host lists a thread's ports in `ThreadInfo.ports` (never
+  stored): while the agent's process runs it reads `/proc` every 5 s for a
+  minute after a command starts, else every 30 s, looking at at most 64 of
+  this user's processes in the agent's tree (256 descriptors each, each
+  process's start time read with its pid and again after) and at
+  `net/tcp` and `net/tcp6` (1 MiB each); never a process's environment or
+  command line. A server in another network namespace (a container) isn't
+  seen. G7 Link desktop passes the ports on in `AgentThread`. The host's
+  `ui.beside` (from G7 Link only, for a phone that shows that thread) comes
+  back to G7 Link as an event, which sends `agent.beside`
+  (`Node::agent_beside`). On the phone the core drops an `agent.beside` with
+  a pane it doesn't know, and `Node::agent_port_url` gives the address in
+  use on a LAN path, IPv4 first, never loopback or a link-local IPv6 one.
+  On the PC, `Node::agent_port_url_for_phone` gives this PC's own address on
+  its LAN path to that phone by the same rules, for G7 Link desktop's "Open
+  on <phone>" (`link.open`).
 - The core answers §5's requests after checking `agent.control` on both
   sides, the toggle, the limits, the mode and secret questions (it remembers
   the last 64 secret tokens it relayed), and makes every thread, item, page

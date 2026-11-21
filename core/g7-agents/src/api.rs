@@ -325,6 +325,13 @@ pub const PHOTO_CALL_MS: u64 = PHOTO_WAIT_MS + 10_000;
 /// A `ui.photo` request, as the host issues it: lowercase hex digits.
 pub const PHOTO_REQUEST_LEN: usize = 16;
 
+// ---- The phone beside the PC (phase 5, wave 3) ----
+
+/// `ThreadInfo.ports`: at most this many, oldest first.
+pub const MAX_PORTS: usize = 4;
+/// Ports under this are never listed.
+pub const MIN_PORT: u16 = 1024;
+
 // ---- Source control (phase 4, §SC7.4) ----
 
 /// Files a status lists; the rest are counted (`GitStatus.more`, `total`).
@@ -496,6 +503,9 @@ pub mod method {
     /// The launcher that asked no longer wants the photo (`{}`): its
     /// `ui.photo` answers `cancelled` and G7 Link gets `ui.photo.cancel`.
     pub const UI_PHOTO_STOP: &str = "ui.photo.stop";
+    /// G7 Link switches what a phone shows beside a thread (phase 5, wave
+    /// 3); only to a host that offers `cap::BESIDE`.
+    pub const UI_BESIDE: &str = "ui.beside";
 }
 
 /// What a client says it understands (`HelloParams.caps`) and what a host
@@ -536,9 +546,13 @@ pub mod cap {
     /// Host: it has `ui.photo` and `ui.photo.done`. Client (G7 Link): it
     /// takes the `ui.photo` and `ui.photo.cancel` events.
     pub const PHOTO: &str = "photo";
+    /// Host: it has `ui.beside`, and lists the ports a thread's agent
+    /// listens on (`ThreadInfo.ports`). Client (G7 Link): it takes the
+    /// `ui.beside` event and sends the pane to the phone.
+    pub const BESIDE: &str = "beside";
     /// What this host offers.
-    pub const HOST: [&str; 10] =
-        [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE, GIT, PLACE, HANDOFF, PHOTO];
+    pub const HOST: [&str; 11] =
+        [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE, GIT, PLACE, HANDOFF, PHOTO, BESIDE];
 }
 
 pub mod event {
@@ -569,6 +583,7 @@ pub mod event {
     pub const UI_HANDOFF: &str = "ui.handoff";
     pub const UI_PHOTO: &str = "ui.photo";
     pub const UI_PHOTO_CANCEL: &str = "ui.photo.cancel";
+    pub const UI_BESIDE: &str = "ui.beside";
 }
 
 // ---- Error codes ----
@@ -1713,6 +1728,34 @@ pub struct ThreadInfo {
     /// The agent's answer to "Ask <agent> to write it" (§SC5.4).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
     pub wrote: Option<Wrote>,
+    /// TCP ports its agent's processes listen on while the agent runs (dev
+    /// servers), oldest first, at most [`MAX_PORTS`], none under
+    /// [`MIN_PORT`]. Never stored: empty after a restart, and when the
+    /// agent's process ends. A port whose `reach` this version doesn't know
+    /// is left out.
+    #[serde(default, deserialize_with = "lenient_list", skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<Port>,
+}
+
+/// Where a listening port answers (`Port.reach`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reach {
+    /// Bound to loopback only: it answers on this PC alone.
+    Pc,
+    /// Bound to every address or to a network one: a phone on the same
+    /// network may open it.
+    Lan,
+}
+
+/// A TCP port a thread's agent or a process it started listens on: a dev
+/// server (`ThreadInfo.ports`). Nothing is probed or connected to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Port {
+    pub port: u16,
+    pub reach: Reach,
+    /// When the host first saw it listen (Unix ms).
+    pub since_ms: u64,
 }
 
 /// Where a fork came from (`ThreadInfo.forked_from`).
@@ -3493,6 +3536,26 @@ pub struct HandoffEvent {
     pub seq: Option<u64>,
 }
 
+/// `ui.beside` (G7 Link only): show `pane` on the phone that shows the
+/// thread beside this PC. Answered `{}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiBesideParams {
+    pub thread_id: String,
+    /// The phone, as [`RemoteView::device_id`] names it: 1 to [`MAX_DEVICE_ID`] bytes.
+    pub device_id: String,
+    pub pane: Pane,
+    pub by: By,
+}
+
+/// The `ui.beside` event, to G7 Link connections that said [`cap::BESIDE`]:
+/// send the pane to the phone (`agent.beside`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BesideEvent {
+    pub thread_id: String,
+    pub device_id: String,
+    pub pane: Pane,
+}
+
 /// `ui.photo` (the launcher only): one photo from a phone's camera, through
 /// G7 Link. The reply waits up to [`PHOTO_WAIT_MS`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4653,6 +4716,8 @@ pub enum Event {
     UiPhoto(PhotoEvent),
     #[serde(rename = "ui.photo.cancel")]
     UiPhotoCancel(PhotoEvent),
+    #[serde(rename = "ui.beside")]
+    UiBeside(BesideEvent),
 }
 
 impl Event {
@@ -4693,6 +4758,7 @@ impl Event {
             Self::UiHandoff(_) => event::UI_HANDOFF,
             Self::UiPhoto(_) => event::UI_PHOTO,
             Self::UiPhotoCancel(_) => event::UI_PHOTO_CANCEL,
+            Self::UiBeside(_) => event::UI_BESIDE,
         }
     }
 
@@ -4714,6 +4780,7 @@ impl Event {
             Self::GitChanged(e) => Some(&e.thread_id),
             Self::GitProgress(e) => Some(&e.job.thread_id),
             Self::UiHandoff(e) => Some(&e.thread_id),
+            Self::UiBeside(e) => Some(&e.thread_id),
             Self::AgentsChanged(_)
             | Self::DraftChanged(_)
             | Self::FoldersChanged(_)
@@ -4986,6 +5053,7 @@ mod tests {
             worktree: None,
             changed: None,
             wrote: None,
+            ports: Vec::new(),
         }
     }
 
