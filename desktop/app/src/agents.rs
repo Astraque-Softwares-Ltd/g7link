@@ -1469,7 +1469,7 @@ pub fn start() {
         if let Ok(Some(panels)) = read.await {
             let mut s = lock();
             if !s.panels_set {
-                s.panels = panels;
+                s.panels = Panels::at_start(panels);
             }
             drop(s);
             changed();
@@ -1491,13 +1491,21 @@ pub fn start() {
 }
 
 /// The page's side panels the user closed: the thread list and the
-/// details beside the transcript. Remembered across restarts.
+/// details beside the transcript.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Panels {
     #[serde(default)]
     list_hidden: bool,
     #[serde(default)]
     inspector_hidden: bool,
+}
+
+impl Panels {
+    /// The panels when the app starts: the thread list always shows (hiding
+    /// it lasts until the app quits); the details are as the user left them.
+    fn at_start(saved: Panels) -> Panels {
+        Panels { list_hidden: false, ..saved }
+    }
 }
 
 const PANELS_FILE: &str = "agents-panels.json";
@@ -7176,6 +7184,14 @@ mod tests {
         std::fs::write(&path, br#"{"inspector_hidden":true}"#).unwrap();
         let read = crate::atomic_file::read_json::<Panels>(&path);
         assert_eq!(read, Panels { list_hidden: false, inspector_hidden: true }, "a missing field is shown");
+    }
+
+    #[test]
+    fn the_thread_list_shows_at_every_start_and_the_details_stay_as_left() {
+        let saved = Panels { list_hidden: true, inspector_hidden: true };
+        assert_eq!(Panels::at_start(saved), Panels { list_hidden: false, inspector_hidden: true });
+        let saved = Panels { list_hidden: true, inspector_hidden: false };
+        assert_eq!(Panels::at_start(saved), Panels::default());
     }
 
     #[test]

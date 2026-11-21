@@ -38,6 +38,8 @@ address, and moves to UDP port 7718 on its first start after the update.
   one. At home the phone finds the new port by itself.
 - Leaving Wi-Fi with Tailscale on reconnects at once instead of after up to
   two minutes.
+- The Agents page's thread list shows whenever G7 Link starts. Hiding it
+  lasts until you quit; the details panel is still remembered.
 
 ### Fixed
 
