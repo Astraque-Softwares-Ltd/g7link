@@ -4,6 +4,32 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.21 (unreleased)
+
+Reply from the phone to a Claude or Codex session running in a terminal on
+the PC: G7 pastes your reply into that window and sends it, after checking
+it's the right window and that nothing else is in the way.
+
+**Update both together**, and update the G7 Linux GNOME extension to 1.5.0:
+replies need its quiet primary-selection paste, which leaves your clipboard
+alone.
+
+### Added
+
+- **Reply on the PC.** A followed session's screen on the phone has a reply
+  box when the PC can reach it: Claude in Ptyxis or GNOME Terminal, and
+  Codex when its window was started with `codex resume <id>`. G7 brings the
+  window forward, pastes the reply and presses Enter, and only after
+  proving the window shows that session. Before Enter it checks again that
+  the focus didn't move, the PC isn't locked and the session is still the
+  one in front. It's off until you allow it per phone on the PC, and the
+  first reply to a window asks you to confirm where it goes. The text is
+  never logged or stored.
+- **What it won't do, and says so:** sessions in the Claude app ("Reply in
+  the Claude app"), Codex sessions not started with `codex resume`, inside
+  tmux, SSH or an editor, a locked PC, someone typing at the PC, and
+  replies that start with `!` or `/`.
+
 ## 0.1.20 (2026-11-21)
 
 Source control comes to the agents: see what a thread changed, commit,
