@@ -1,0 +1,9 @@
+{
+  "lines": [
+    {"text":"Listening on http://localhost:8080/","toks":[{"class":"plain","len":35}]},
+    {"text":"built at 12:30:45","toks":[{"class":"plain","len":17}]},
+    {"text":"see docs/setup.md:4 for more","toks":[{"class":"plain","len":4},{"class":"dir","len":5},{"class":"file","len":8},{"class":"pos","len":2},{"class":"plain","len":9}]}
+  ],
+  "note": "A URL's port and a time are not places; a path with a line is.",
+  "text": "Listening on http://localhost:8080/\nbuilt at 12:30:45\nsee docs/setup.md:4 for more"
+}

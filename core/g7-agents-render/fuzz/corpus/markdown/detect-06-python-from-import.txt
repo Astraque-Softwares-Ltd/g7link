@@ -1,0 +1,6 @@
+```
+from pathlib import Path
+import json
+
+print(json.dumps({"a": 1}))
+```

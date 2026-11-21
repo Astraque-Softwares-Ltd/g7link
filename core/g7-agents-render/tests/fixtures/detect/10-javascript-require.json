@@ -1,0 +1,5 @@
+{
+  "code": "const fs = require('fs');\nmodule.exports = function read(p) {\n  return fs.readFileSync(p, 'utf8');\n};",
+  "hint_ext": null,
+  "lang": "javascript"
+}

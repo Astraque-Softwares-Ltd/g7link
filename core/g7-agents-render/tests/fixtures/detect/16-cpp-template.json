@@ -1,0 +1,5 @@
+{
+  "code": "template <typename T>\nclass Queue {\npublic:\n    void push(const T& t);\nprivate:\n    std::vector<T> items_;\n};",
+  "hint_ext": null,
+  "lang": "c++"
+}

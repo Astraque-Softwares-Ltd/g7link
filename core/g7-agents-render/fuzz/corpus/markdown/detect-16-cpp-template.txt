@@ -1,0 +1,9 @@
+```
+template <typename T>
+class Queue {
+public:
+    void push(const T& t);
+private:
+    std::vector<T> items_;
+};
+```

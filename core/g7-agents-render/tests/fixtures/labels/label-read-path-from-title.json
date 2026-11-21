@@ -1,4 +1,4 @@
 {
-  "label": {"class":"read","object":"docs/protocol/agents.md"},
+  "label": {"class":"read","object":"docs/protocol/agents.md","toks":[{"class":"dir","len":14},{"class":"file","len":9}]},
   "tool": {"class":"read","name":"read","status":"ok","title":"Read docs/protocol/agents.md"}
 }

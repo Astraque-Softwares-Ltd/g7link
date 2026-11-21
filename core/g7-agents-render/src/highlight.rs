@@ -56,6 +56,18 @@ pub enum TokClass {
     Attribute,
     Inserted,
     Deleted,
+    /// The folder part of a path, through its last separator.
+    Dir,
+    /// A path's file name.
+    File,
+    /// `:line:col` after a path.
+    Pos,
+    /// A line of output that reports an error.
+    Error,
+    /// A line of output that warns.
+    Warn,
+    /// A line of output that reports a pass.
+    Ok,
 }
 
 /// The coloured lines of `code` in language `lang` (a fence's word); empty

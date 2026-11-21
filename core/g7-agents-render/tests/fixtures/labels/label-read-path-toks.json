@@ -1,0 +1,4 @@
+{
+  "label": {"class":"read","object":"src/sync/queue.rs","toks":[{"class":"dir","len":9},{"class":"file","len":8}]},
+  "tool": {"class":"read","name":"Read","path":"src/sync/queue.rs","status":"ok","title":"Read"}
+}

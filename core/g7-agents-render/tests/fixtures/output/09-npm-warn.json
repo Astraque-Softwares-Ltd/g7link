@@ -1,0 +1,8 @@
+{
+  "lines": [
+    {"text":"npm WARN deprecated left-pad@1.0.0: use String.prototype.padStart","toks":[{"class":"warn","len":65}]},
+    {"text":"added 120 packages in 3s","toks":[{"class":"plain","len":24}]}
+  ],
+  "note": "npm: a warning line, then a plain one.",
+  "text": "npm WARN deprecated left-pad@1.0.0: use String.prototype.padStart\nadded 120 packages in 3s"
+}

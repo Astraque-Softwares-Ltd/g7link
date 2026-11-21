@@ -1,0 +1,10 @@
+{
+  "lines": [
+    {"text":"src/app.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.","toks":[{"class":"error","len":80}]},
+    {"text":"src/util.ts:10:1 - error TS1005: ';' expected.","toks":[{"class":"dir","len":4},{"class":"file","len":7},{"class":"pos","len":5},{"class":"error","len":30}]},
+    {"text":""},
+    {"text":"Found 2 errors in 2 files.","toks":[{"class":"plain","len":26}]}
+  ],
+  "note": "tsc: both error forms; only the path:line:col form is a place.",
+  "text": "src/app.ts(3,5): error TS2322: Type 'string' is not assignable to type 'number'.\nsrc/util.ts:10:1 - error TS1005: ';' expected.\n\nFound 2 errors in 2 files."
+}

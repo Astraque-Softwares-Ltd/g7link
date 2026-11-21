@@ -1,0 +1,11 @@
+{
+  "marks": [
+    [16,5]
+  ],
+  "note": "C0 and C1 controls are dropped.",
+  "parts": [
+    {"text":"nulhere next "},
+    {"mark":true,"text":"retry"}
+  ],
+  "text": "nul\u0000here \u0085next\u0007 retry\u009b"
+}

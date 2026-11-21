@@ -1,0 +1,5 @@
+{
+  "code": "@media (max-width: 600px) {\n  .row { display: none; }\n}",
+  "hint_ext": null,
+  "lang": "css"
+}

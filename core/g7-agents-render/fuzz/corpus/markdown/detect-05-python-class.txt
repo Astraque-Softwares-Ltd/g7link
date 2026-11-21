@@ -1,0 +1,9 @@
+```
+class Backoff:
+    def __init__(self):
+        self.delay = 1
+
+    def next(self):
+        self.delay *= 2
+        return self.delay
+```

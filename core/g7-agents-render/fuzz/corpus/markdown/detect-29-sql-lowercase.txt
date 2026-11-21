@@ -1,0 +1,4 @@
+```
+select id from sales;
+insert into sales (id) values (1);
+```

@@ -6,15 +6,18 @@
 //! `turn`). A tool is `ToolIn` the same way (`status` required, `class`
 //! defaults to `other`); a question is `QuestionIn` (`state` defaults to
 //! `asked`).
-//! A context is `Ctx` with `marks` and `open` as arrays.
+//! A context is `Ctx` with `marks`, `open` and `turns` as arrays (`turns`
+//! may be left out). A turn is `TurnIn` the same way: `turn` and
+//! `checkpoint` are required, `paths` is an array of `TurnFileIn` (`path`
+//! and `status` required).
 
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
 use g7_agents_render::{
-    Ctx, ItemIn, ItemKind, Mark, Phase, PlanState, QuestionIn, QuestionState, ThreadState, ToolClass, ToolIn,
-    ToolStatus, Via,
+    Checkpoint, CheckpointWhy, Ctx, ItemIn, ItemKind, Mark, Phase, PlanState, QuestionIn, QuestionState,
+    ThreadState, ToolClass, ToolIn, ToolStatus, TurnFileIn, TurnFileStatus, TurnIn, Via,
 };
 use serde::Deserialize;
 
@@ -53,6 +56,9 @@ pub struct ItemJ {
     pub plan_state: Option<PlanState>,
     #[serde(default)]
     pub question: Option<QuestionJ>,
+    /// A word the crate doesn't know reads as absent, as on the wire.
+    #[serde(default)]
+    pub notice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,6 +130,7 @@ impl ItemJ {
                 count: q.count,
                 by: &q.by,
             }),
+            notice: self.notice.clone().and_then(|v| serde_json::from_value(v).ok()),
         }
     }
 }
@@ -139,17 +146,91 @@ pub struct CtxJ {
     pub marks: Vec<Mark>,
     #[serde(default)]
     pub open: Vec<String>,
+    #[serde(default)]
+    pub turns: Vec<TurnJ>,
 }
 
 impl CtxJ {
-    pub fn as_ctx(&self) -> Ctx<'_> {
+    /// Each turn's files in borrowed form, for `turns_in`.
+    pub fn files_in(&self) -> Vec<Vec<TurnFileIn<'_>>> {
+        self.turns.iter().map(|t| t.paths.iter().map(TurnFileJ::as_in).collect()).collect()
+    }
+
+    /// The turns in borrowed form, for `as_ctx`.
+    pub fn turns_in<'a>(&'a self, files: &'a [Vec<TurnFileIn<'a>>]) -> Vec<TurnIn<'a>> {
+        self.turns.iter().zip(files).map(|(t, paths)| t.as_in(paths)).collect()
+    }
+
+    pub fn as_ctx<'a>(&'a self, turns: &'a [TurnIn<'a>]) -> Ctx<'a> {
         Ctx {
             state: self.state,
             state_since_ms: self.state_since_ms,
             now_ms: self.now_ms,
             marks: &self.marks,
             open: &self.open,
+            turns,
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TurnJ {
+    pub turn: u32,
+    pub checkpoint: Checkpoint,
+    #[serde(default)]
+    pub why: Option<CheckpointWhy>,
+    #[serde(default)]
+    pub ended_ms: Option<u64>,
+    #[serde(default)]
+    pub files: u32,
+    #[serde(default)]
+    pub adds: u32,
+    #[serde(default)]
+    pub dels: u32,
+    #[serde(default)]
+    pub skipped: u32,
+    #[serde(default)]
+    pub paths: Vec<TurnFileJ>,
+    #[serde(default)]
+    pub can_fork: bool,
+    #[serde(default)]
+    pub can_rewind: bool,
+    #[serde(default)]
+    pub can_restore: bool,
+}
+
+impl TurnJ {
+    pub fn as_in<'a>(&self, paths: &'a [TurnFileIn<'a>]) -> TurnIn<'a> {
+        TurnIn {
+            turn: self.turn,
+            checkpoint: self.checkpoint,
+            why: self.why,
+            ended_ms: self.ended_ms,
+            files: self.files,
+            adds: self.adds,
+            dels: self.dels,
+            skipped: self.skipped,
+            paths,
+            can_fork: self.can_fork,
+            can_rewind: self.can_rewind,
+            can_restore: self.can_restore,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TurnFileJ {
+    pub path: String,
+    pub status: TurnFileStatus,
+    #[serde(default)]
+    pub adds: u32,
+    #[serde(default)]
+    pub dels: u32,
+}
+
+impl TurnFileJ {
+    pub fn as_in(&self) -> TurnFileIn<'_> {
+        TurnFileIn { path: &self.path, status: self.status, adds: self.adds, dels: self.dels }
     }
 }
 

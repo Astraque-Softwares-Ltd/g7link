@@ -7,6 +7,7 @@
 //! no headers); and what it sends for a Codex file change (a
 //! `<path> (add|delete|update)` line before each file's content). Rows carry
 //! line numbers only where a hunk header gave them; otherwise both are 0.
+//! A file says when git called it binary, or when its text stops short.
 
 use serde::{Deserialize, Serialize};
 use similar::{Algorithm, ChangeTag, TextDiff};
@@ -37,6 +38,8 @@ pub struct DiffFile {
     pub adds: u32,
     pub dels: u32,
     pub rows: Vec<DiffRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<DiffNote>,
 }
 
 impl std::fmt::Debug for DiffFile {
@@ -45,8 +48,22 @@ impl std::fmt::Debug for DiffFile {
             .field("adds", &self.adds)
             .field("dels", &self.dels)
             .field("rows", &self.rows)
+            .field("note", &self.note)
             .finish_non_exhaustive()
     }
+}
+
+/// What a file's rows don't show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffNote {
+    /// Git called it binary ("Binary files … differ", "GIT binary patch"):
+    /// no rows.
+    Binary,
+    /// Its text stops short: it ends inside a hunk, past `MAX_DIFF_BYTES`,
+    /// or past `MAX_DIFF_ROWS`. (A host that cut a patch between two hunks
+    /// says so itself; a client shows either.)
+    Truncated,
 }
 
 #[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -138,6 +155,10 @@ pub fn diff(src: &str) -> DiffDoc {
     let mut i = 0;
     while i < lines.len() {
         i += p.line(lines[i], lines.get(i + 1).copied(), lines.get(i + 2).copied());
+    }
+    let owed = p.hunk.as_ref().and_then(|h| h.left).is_some_and(|(old, new)| old > 0 || new > 0);
+    if owed || over {
+        p.note(DiffNote::Truncated);
     }
     p.end_file();
     let mut doc = p.doc;
@@ -239,6 +260,10 @@ impl Parser {
         if self.git_header {
             if let Some(path) = line.strip_prefix("rename to ") {
                 self.set_path(path.trim().to_owned());
+            } else if line == "GIT binary patch"
+                || (line.starts_with("Binary files ") && line.ends_with(" differ"))
+            {
+                self.note(DiffNote::Binary);
             }
             // Extended headers (index, modes, similarity, binary) are not rows.
             return 1;
@@ -259,6 +284,15 @@ impl Parser {
 
     fn stored_rows(&self) -> usize {
         if self.stored { self.doc.files.last().map_or(0, |f| f.rows.len()) } else { 0 }
+    }
+
+    /// Notes the current file, when it is kept; a first note stays.
+    fn note(&mut self, note: DiffNote) {
+        if self.stored
+            && let Some(file) = self.doc.files.last_mut()
+        {
+            file.note.get_or_insert(note);
+        }
     }
 
     fn set_path(&mut self, path: String) {
@@ -347,6 +381,7 @@ impl Parser {
 
     fn push(&mut self, row: DiffRow, cut: bool) {
         if !self.stored || self.budget >= MAX_DIFF_ROWS {
+            self.note(DiffNote::Truncated);
             self.doc.more = true;
             return;
         }

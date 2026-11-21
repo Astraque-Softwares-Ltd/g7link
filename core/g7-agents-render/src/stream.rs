@@ -15,8 +15,7 @@
 //! the text grows. Open code blocks are not highlighted.
 
 use crate::bounds::{MAX_BLOCKS, MAX_SRC_BYTES, clean, cut_bytes};
-use crate::highlight::highlight;
-use crate::markdown::{Block, BlockKind, parse, plain_doc};
+use crate::markdown::{Block, BlockKind, Hints, finish, parse, plain_doc};
 
 /// Finished pieces of a text kept between updates.
 #[derive(Debug, Default, Clone)]
@@ -25,19 +24,31 @@ pub(crate) struct StreamCache {
     prefix: String,
     /// Each finished piece: where it ends in `prefix`, and its blocks.
     pieces: Vec<(usize, Vec<Block>)>,
+    /// The hints the pieces were finished with.
+    ext: Option<String>,
+    paths: Vec<String>,
 }
 
 /// The blocks of `src` (cut and cleaned here) and whether it fell back to
 /// one plain paragraph. `streaming` marks the blocks that may still change;
-/// `cache` is read and replaced.
-pub(crate) fn blocks(src: &str, streaming: bool, cache: &mut StreamCache) -> (Vec<Block>, bool) {
+/// `cache` is read and replaced. A code block is coloured, and its language
+/// guessed when it names none, once it is no longer open, so its colours
+/// don't change while it grows.
+pub(crate) fn blocks(
+    src: &str,
+    streaming: bool,
+    hints: Hints<'_>,
+    cache: &mut StreamCache,
+) -> (Vec<Block>, bool) {
     let text = clean(cut_bytes(src, MAX_SRC_BYTES));
     let text: &str = &text;
     let Some(starts) = split(text) else {
         *cache = StreamCache::default();
-        return whole(text, streaming);
+        return whole(text, streaming, hints);
     };
-    let reuse = text.starts_with(cache.prefix.as_str());
+    let reuse = text.starts_with(cache.prefix.as_str())
+        && cache.ext.as_deref() == hints.ext
+        && cache.paths.iter().map(String::as_str).eq(hints.paths.iter().copied());
     let old = std::mem::take(cache);
     let mut kept = old.pieces.into_iter().peekable();
     let mut out: Vec<Block> = Vec::new();
@@ -51,20 +62,20 @@ pub(crate) fn blocks(src: &str, streaming: bool, cache: &mut StreamCache) -> (Ve
             let blocks = match cached {
                 Some((_, blocks)) => blocks,
                 None => {
-                    let parsed = parse(piece, false);
+                    let parsed = parse(piece);
                     if parsed.plain {
                         *cache = StreamCache::default();
                         return fallback(text, streaming);
                     }
                     let mut blocks = parsed.blocks;
-                    fill_highlight(&mut blocks);
+                    finish(&mut blocks, hints);
                     blocks
                 }
             };
             out.extend(blocks.iter().cloned());
             cache.pieces.push((end, blocks));
         } else {
-            let parsed = parse(piece, false);
+            let parsed = parse(piece);
             if parsed.plain {
                 *cache = StreamCache::default();
                 return fallback(text, streaming);
@@ -73,7 +84,7 @@ pub(crate) fn blocks(src: &str, streaming: bool, cache: &mut StreamCache) -> (Ve
             if streaming {
                 mark_open(&mut blocks, &parsed.starts, &parsed.ends, piece_start, text);
             }
-            fill_highlight(&mut blocks);
+            finish(&mut blocks, hints);
             out.extend(blocks);
         }
         piece_start = end;
@@ -83,6 +94,8 @@ pub(crate) fn blocks(src: &str, streaming: bool, cache: &mut StreamCache) -> (Ve
         }
     }
     cache.prefix = text[..starts.last().copied().unwrap_or(0)].to_owned();
+    cache.ext = hints.ext.map(str::to_owned);
+    cache.paths = hints.paths.iter().map(|p| (*p).to_owned()).collect();
     (out, false)
 }
 
@@ -118,8 +131,8 @@ fn mark_open(blocks: &mut [Block], starts: &[usize], ends: &[usize], base: usize
 }
 
 /// The whole text parsed in one go (it has syntax that ties blocks together).
-fn whole(text: &str, streaming: bool) -> (Vec<Block>, bool) {
-    let parsed = parse(text, false);
+fn whole(text: &str, streaming: bool, hints: Hints<'_>) -> (Vec<Block>, bool) {
+    let parsed = parse(text);
     if parsed.plain {
         return fallback(text, streaming);
     }
@@ -127,7 +140,7 @@ fn whole(text: &str, streaming: bool) -> (Vec<Block>, bool) {
     if streaming {
         mark_open(&mut blocks, &parsed.starts, &parsed.ends, 0, text);
     }
-    fill_highlight(&mut blocks);
+    finish(&mut blocks, hints);
     (blocks, false)
 }
 
@@ -137,13 +150,6 @@ fn fallback(text: &str, streaming: bool) -> (Vec<Block>, bool) {
         b.open = streaming;
     }
     (blocks, true)
-}
-
-/// Highlights the code blocks that are not open.
-fn fill_highlight(blocks: &mut [Block]) {
-    for b in blocks.iter_mut().filter(|b| b.kind == BlockKind::Code && !b.open && b.lines.is_empty()) {
-        b.lines = highlight(&b.lang, &b.text);
-    }
 }
 
 /// Where a line may still tie a block to others: link definitions and
@@ -282,7 +288,7 @@ mod tests {
         let text =
             "# T\n\npara *one*\n\n1. a\n\n2. b\n\n```rust\nfn x() {}\n\n```\n\n| a |\n|---|\n| 1 |\n\nend\n";
         let mut cache = StreamCache::default();
-        let (blocks, plain) = blocks(text, false, &mut cache);
+        let (blocks, plain) = blocks(text, false, Hints::default(), &mut cache);
         assert!(!plain);
         assert_eq!(blocks, markdown(text).blocks);
     }
@@ -290,15 +296,15 @@ mod tests {
     #[test]
     fn open_blocks_are_the_unfinished_line_and_the_one_before() {
         let mut cache = StreamCache::default();
-        let (b, _) = blocks("one\n\ntwo\nthr", true, &mut cache);
+        let (b, _) = blocks("one\n\ntwo\nthr", true, Hints::default(), &mut cache);
         let open: Vec<_> = b.iter().map(|b| b.open).collect();
         assert_eq!(open, [false, true]);
-        let (b, _) = blocks("one\n\ntw", true, &mut cache);
+        let (b, _) = blocks("one\n\ntw", true, Hints::default(), &mut cache);
         let open: Vec<_> = b.iter().map(|b| b.open).collect();
         assert_eq!(open, [false, true], "a blank line closes a paragraph");
-        let (b, _) = blocks("    code\n\n  ", true, &mut cache);
+        let (b, _) = blocks("    code\n\n  ", true, Hints::default(), &mut cache);
         assert!(b.iter().all(|b| b.open), "an indented code block may go on");
-        let (b, _) = blocks("x\n- -", true, &mut cache);
+        let (b, _) = blocks("x\n- -", true, Hints::default(), &mut cache);
         assert!(b.iter().all(|b| b.open));
     }
 }

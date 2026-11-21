@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Repository automation. Run as `cargo xtask <task>`.
 //!
-//! - `tokens`: generates the desktop theme's tokens (`desktop/app/qml/Tokens.qml`)
-//!   from `docs/design/tokens.json`, the single source of truth.
-//! - `tokens --check`: fails if the generated file is out of date (CI).
+//! - `tokens`: generates the desktop theme's tokens (`desktop/app/qml/Tokens.qml`),
+//!   the phone's agent palette and tints (`AgentPalette.kt`) and the launcher's
+//!   agent palette (`docs/design/agent-palette.json`) from
+//!   `docs/design/tokens.json`, the single source of truth, after checking its
+//!   contrast.
+//! - `tokens --check`: fails if a generated file is out of date (CI).
 //! - `notices <out>`: the third-party notices shipped with the desktop app.
 //! - `strings [--check]`: the desktop app's Rust-built text for Qt's
 //!   translation tools (`desktop/app/i18n/rust_strings.h`).
 
 mod notices;
+mod palette;
 mod strings;
 
 use std::{
@@ -22,6 +26,8 @@ use serde_json::{Map, Value};
 
 const TOKENS: &str = "docs/design/tokens.json";
 const QML_OUT: &str = "desktop/app/qml/Tokens.qml";
+const KOTLIN_OUT: &str = "android/app/src/main/kotlin/app/g7link/android/ui/theme/AgentPalette.kt";
+const LAUNCHER_OUT: &str = "docs/design/agent-palette.json";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -57,7 +63,11 @@ fn tokens(check: bool) -> Result<()> {
     let source = fs::read_to_string(root.join(TOKENS)).with_context(|| format!("reading {TOKENS}"))?;
     let tokens: Value = serde_json::from_str(&source).with_context(|| format!("parsing {TOKENS}"))?;
     validate(&tokens)?;
-    let outputs = [(QML_OUT, render_qml(&tokens)?)];
+    let outputs = [
+        (QML_OUT, render_qml(&tokens)?),
+        (KOTLIN_OUT, palette::render_kotlin(&tokens)?),
+        (LAUNCHER_OUT, palette::render_launcher(&tokens)?),
+    ];
 
     let mut stale = Vec::new();
     for (path, content) in outputs {
@@ -114,7 +124,7 @@ fn validate(tokens: &Value) -> Result<()> {
         check_palette(Some(palette), &name)?;
         check_contrast(Some(palette), Some(palette), &name)?;
     }
-    Ok(())
+    palette::check(tokens)
 }
 
 fn check_palette(palette: Option<&Value>, name: &str) -> Result<()> {
@@ -266,6 +276,86 @@ mod tests {
     fn documentation_keys_are_dropped() {
         let v: Value = serde_json::json!({"$note": 1, "a": {"$x": 2, "b": [ {"$y": 3, "c": 4} ]}});
         assert_eq!(strip_docs(&v), serde_json::json!({"a": {"b": [{"c": 4}]}}));
+    }
+
+    fn checked_in() -> Value {
+        serde_json::from_str(&fs::read_to_string(repo_root().join(TOKENS)).unwrap()).unwrap()
+    }
+
+    /// The checked-in tokens with one value replaced, and the error it gives.
+    fn rejected(pointer: &str, value: Value) -> String {
+        let mut tokens = checked_in();
+        *tokens.pointer_mut(pointer).unwrap_or_else(|| panic!("{pointer}")) = value;
+        validate(&tokens).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn agent_syntax_needs_contrast_on_code_and_chips() {
+        // The light glyph teal is 4.35:1 on code: a glyph, not text.
+        let err = rejected("/themes/quiet/agents/light/syntax/string", "#1E7F64".into());
+        assert!(err.contains("syntax.string on ground.code"), "{err}");
+    }
+
+    #[test]
+    fn agent_pairs_must_differ_in_lightness() {
+        // Red at the light glyph step sits at amber's lightness.
+        let err = rejected("/themes/quiet/agents/light/status/failed", "#B3322D".into());
+        assert!(err.contains("mustDiffer status.needsYou"), "{err}");
+    }
+
+    #[test]
+    fn the_added_row_is_the_lighter_one() {
+        let err = rejected("/themes/quiet/agents/dark/diff/addRow/alpha", 0.05.into());
+        assert!(err.contains("must be lighter"), "{err}");
+    }
+
+    #[test]
+    fn only_links_and_lavender_glyphs_are_the_accent() {
+        let err = rejected("/themes/quiet/agents/dark/syntax/function", "#B292D0".into());
+        assert!(err.contains("syntax.function is the accent"), "{err}");
+    }
+
+    #[test]
+    fn every_class_has_a_colour_and_the_grounds_are_the_themes() {
+        let mut tokens = checked_in();
+        tokens
+            .pointer_mut("/themes/quiet/agents/dark/syntax")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("pos");
+        assert!(validate(&tokens).unwrap_err().to_string().contains("syntax.pos"));
+        let err = rejected("/themes/quiet/agents/light/ground/code", "#FFFFFF".into());
+        assert!(err.contains("ground.code must be the variant's surfaceContainer"), "{err}");
+    }
+
+    #[test]
+    fn diff_inks_hold_on_their_washes() {
+        let err = rejected("/themes/quiet/agents/dark/diff/lineNo", "#6F6F78".into());
+        assert!(err.contains("diff.lineNo on diff.addRow"), "{err}");
+    }
+
+    #[test]
+    fn oklab_lightness_matches_the_plan() {
+        let l = |hex| palette::oklab_l(hex).unwrap();
+        assert!((l("#000000")).abs() < 1e-6 && (l("#FFFFFF") - 1.0).abs() < 1e-3);
+        assert!((l("#97C459") - 0.765).abs() < 0.002 && (l("#E5736F") - 0.687).abs() < 0.002);
+    }
+
+    #[test]
+    fn generated_palettes_carry_every_role() {
+        let tokens = checked_in();
+        let kotlin = palette::render_kotlin(&tokens).unwrap();
+        for class in palette::SYNTAX_CLASSES {
+            let name = format!("syntax{}{}", class[..1].to_ascii_uppercase(), &class[1..]);
+            assert_eq!(kotlin.matches(&format!("{name} = Color(")).count(), 2, "{name}");
+        }
+        assert!(kotlin.contains("diffAddRow = AgentWash(Color(0xFF97C459), 0.24f)"));
+        assert!(kotlin.contains("val lightText = G7Tints("));
+        let launcher: Value = serde_json::from_str(&palette::render_launcher(&tokens).unwrap()).unwrap();
+        assert_eq!(launcher.pointer("/dark/syntax/keyword"), Some(&Value::from("#ED93B1")));
+        assert_eq!(launcher.pointer("/tintsTextLight/teal"), Some(&Value::from("#1C755C")));
+        assert!(launcher.get("$note").is_none());
     }
 
     #[test]

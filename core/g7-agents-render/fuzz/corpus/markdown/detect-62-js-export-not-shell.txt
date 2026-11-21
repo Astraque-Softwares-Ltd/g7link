@@ -1,0 +1,4 @@
+```
+export const total = rows.length;
+export default total;
+```

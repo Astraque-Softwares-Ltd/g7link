@@ -1,0 +1,4 @@
+Stock sync inapoteza rows tukirudi online. Angalia src/sync/queue.rs, nadhani ni ile retry.-        self.items.clear();
++        self.items.retain(|r| !r.acked);Tatizo liko kwenye `drain()`: it emptied the whole queue before the server acknowledged anything.
+
+Sasa row inatoka kwenye queue baada ya ack tu, and a reconnect resends what is left.Rewound to hereRestored 3 filessrc/sync/queue.rssrc/sync/mod.rstests/sync_reconnect.rs

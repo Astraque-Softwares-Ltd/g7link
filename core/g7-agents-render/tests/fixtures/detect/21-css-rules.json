@@ -1,0 +1,5 @@
+{
+  "code": ".row {\n  color: #333;\n  margin: 4px;\n}\n\n#total {\n  font-weight: 600;\n}",
+  "hint_ext": null,
+  "lang": "css"
+}

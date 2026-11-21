@@ -1,0 +1,8 @@
+{
+  "lines": [
+    {"text":"main.c:3:5: warning: unused variable 'x' [-Wunused-variable]","toks":[{"class":"file","len":6},{"class":"pos","len":4},{"class":"warn","len":50}]},
+    {"text":"main.c:7:1: error: expected ';' before '}' token","toks":[{"class":"file","len":6},{"class":"pos","len":4},{"class":"error","len":38}]}
+  ],
+  "note": "gcc: a warning and an error, each with its place.",
+  "text": "main.c:3:5: warning: unused variable 'x' [-Wunused-variable]\nmain.c:7:1: error: expected ';' before '}' token"
+}

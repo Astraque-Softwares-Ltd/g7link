@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"src/a.rs","rows":[{"kind":"hunk","text":"@@ -1 +1 @@"},{"kind":"del","old_no":1,"text":"a"},{"kind":"add","new_no":1,"text":"b"}]},{"adds":0,"dels":0,"note":"binary","path":"logo.png","rows":[]},{"adds":0,"dels":0,"note":"binary","path":"new.bin","rows":[]}]},
+  "in": "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/logo.png b/logo.png\nindex 3..4 100644\nBinary files a/logo.png and b/logo.png differ\ndiff --git a/new.bin b/new.bin\nnew file mode 100644\nindex 0000000..5555555\nBinary files /dev/null and b/new.bin differ\n"
+}

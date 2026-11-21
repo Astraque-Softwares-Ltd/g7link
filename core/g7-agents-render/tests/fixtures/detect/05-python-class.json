@@ -1,0 +1,5 @@
+{
+  "code": "class Backoff:\n    def __init__(self):\n        self.delay = 1\n\n    def next(self):\n        self.delay *= 2\n        return self.delay",
+  "hint_ext": null,
+  "lang": "python"
+}

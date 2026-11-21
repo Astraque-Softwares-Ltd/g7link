@@ -1,0 +1,6 @@
+```
+@@ -10,3 +10,4 @@ fn drain
+     let a = 1;
+-    clear();
++    retain();
+```

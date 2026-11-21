@@ -1,0 +1,15 @@
+{
+  "lines": [
+    {"text":"test parse::empty ... FAILED","toks":[{"class":"error","len":28}]},
+    {"text":""},
+    {"text":"failures:","toks":[{"class":"plain","len":9}]},
+    {"text":""},
+    {"text":"---- parse::empty stdout ----","toks":[{"class":"plain","len":29}]},
+    {"text":"thread 'parse::empty' panicked at src/parse.rs:42:9:","toks":[{"class":"error","len":34},{"class":"dir","len":4},{"class":"file","len":8},{"class":"pos","len":5},{"class":"error","len":1}]},
+    {"text":"assertion failed: rows.is_empty()","toks":[{"class":"plain","len":33}]},
+    {"text":""},
+    {"text":"test result: FAILED. 1 passed; 1 failed","toks":[{"class":"error","len":39}]}
+  ],
+  "note": "A failing test, the panic with its place, and the result.",
+  "text": "test parse::empty ... FAILED\n\nfailures:\n\n---- parse::empty stdout ----\nthread 'parse::empty' panicked at src/parse.rs:42:9:\nassertion failed: rows.is_empty()\n\ntest result: FAILED. 1 passed; 1 failed"
+}

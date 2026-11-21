@@ -1,4 +1,4 @@
 {
   "in": {"repeat":"+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n","times":21000},
-  "shape": {"adds":10382,"dels":0,"files":1,"more":true,"rows":4999}
+  "shape": {"adds":10382,"dels":0,"files":1,"more":true,"notes":[[0,"truncated"]],"rows":4999}
 }

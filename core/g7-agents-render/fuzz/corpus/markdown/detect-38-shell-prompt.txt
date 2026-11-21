@@ -1,0 +1,4 @@
+```
+$ cargo test
+$ git status
+```

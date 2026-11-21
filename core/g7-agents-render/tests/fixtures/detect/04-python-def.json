@@ -1,0 +1,5 @@
+{
+  "code": "def drain(queue):\n    for row in queue:\n        if row.acked:\n            yield row",
+  "hint_ext": null,
+  "lang": "python"
+}

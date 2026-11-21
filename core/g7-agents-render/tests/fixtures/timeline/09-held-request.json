@@ -11,7 +11,7 @@
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
     {"count":3,"depth":0,"item_id":"t1","key":"g:t1","kind":"group","seq":2,"summary":{"first":{"class":"edit","count":1},"others":1,"second":{"class":"read","count":1}},"turn":1},
-    {"depth":0,"has_detail":true,"item_id":"t4","key":"i:t4","kind":"tool","label":{"class":"command","object":"rm -rf target && cargo test"},"seq":5,"status":"asking","turn":1},
+    {"depth":0,"has_detail":true,"item_id":"t4","key":"i:t4","kind":"tool","label":{"class":"command","object":"rm -rf target && cargo test","toks":[{"class":"function","len":2},{"class":"punctuation","len":2},{"class":"variable","len":2},{"class":"plain","len":8},{"class":"operator","len":2},{"class":"plain","len":1},{"class":"function","len":5},{"class":"plain","len":5}]},"seq":5,"status":"asking","turn":1},
     {"depth":0,"item_id":"t4","key":"m:t4","kind":"mark","mark_kind":"held","seq":5,"turn":1}
   ]
 }

@@ -1,0 +1,6 @@
+> Task :app:compileDebugKotlin FAILED
+e: file:///home/u/app/src/Main.kt:12:5 Unresolved reference: foo
+
+FAILURE: Build failed with an exception.
+
+BUILD FAILED in 3s

@@ -1,0 +1,6 @@
+```
+if ready:
+    send()
+else:
+    wait()
+```

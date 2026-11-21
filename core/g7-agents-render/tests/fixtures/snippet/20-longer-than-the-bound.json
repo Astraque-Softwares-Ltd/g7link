@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [478,4],
+    [500,5]
+  ],
+  "note": "Text past MAX_SNIPPET_UNITS (480) is cut; a mark past the cut is dropped, one across it is cut with it.",
+  "parts": [
+    {"text":"abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abcd abc"},
+    {"mark":true,"text":"d"}
+  ],
+  "text": {"after":"retry","repeat":"abcd ","times":100}
+}

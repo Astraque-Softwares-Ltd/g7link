@@ -1,0 +1,4 @@
+Panga mapishi ya wiki hii kwa bajeti ya 3,500, na uandike orodha ya sokoni.+# Wiki 47
++Jumatatu: wali na maharage-unga 2kg
++unga 1kg
++maharage 1kgNimepanga siku saba kwenye `wiki-47.md` and written the market list to `sokoni.md`.

@@ -1,0 +1,6 @@
+{
+  "code": "[1, 2, 3]",
+  "hint_ext": "json",
+  "lang": "json",
+  "note": "The same near miss lifted by a .json file nearby."
+}

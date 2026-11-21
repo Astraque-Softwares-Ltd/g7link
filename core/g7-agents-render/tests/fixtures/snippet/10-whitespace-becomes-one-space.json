@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [31,5]
+  ],
+  "note": "Line breaks, tabs and runs of spaces become one space: the snippet is one line.",
+  "parts": [
+    {"text":"first line second line with "},
+    {"mark":true,"text":"retry"},
+    {"text":" third"}
+  ],
+  "text": "first line\n\n  second line\twith retry\r\nthird"
+}

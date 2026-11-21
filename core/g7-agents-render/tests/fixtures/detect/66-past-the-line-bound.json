@@ -1,0 +1,6 @@
+{
+  "code": {"after":"fn main() {}\nfn x() {}\nlet mut y = 1;","repeat":"a plain line of words\n","times":70},
+  "hint_ext": null,
+  "lang": null,
+  "note": "Markers after the first 64 non-blank lines are not read."
+}

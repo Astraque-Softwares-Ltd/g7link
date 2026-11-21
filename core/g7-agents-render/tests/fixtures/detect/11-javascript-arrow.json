@@ -1,0 +1,5 @@
+{
+  "code": "const sum = (a, b) => a + b;\nconsole.log(sum(1, 2) === 3);",
+  "hint_ext": null,
+  "lang": "javascript"
+}

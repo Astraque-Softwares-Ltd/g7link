@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-//! Markdown, highlighting and the thought line on arbitrary text.
+//! Markdown, highlighting, language guesses, output marks and the thought
+//! line on arbitrary text.
 
 #![no_main]
 
-use g7_agents_render::{ALIASES, Link, highlight, live_thought_line, markdown};
+use g7_agents_render::{ALIASES, Link, guess, highlight, live_thought_line, markdown, output_lines};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -28,6 +29,13 @@ fuzz_target!(|data: &[u8]| {
     }
     let alias = ALIASES[data.first().copied().unwrap_or(0) as usize % ALIASES.len()];
     for line in highlight(alias, &text) {
+        let toks: u32 = line.toks.iter().map(|t| t.len).sum();
+        assert_eq!(toks as usize, line.text.encode_utf16().count());
+    }
+    if let Some(word) = guess(&text, Some("rs")) {
+        assert!(!word.is_empty());
+    }
+    for line in output_lines(&text) {
         let toks: u32 = line.toks.iter().map(|t| t.len).sum();
         assert_eq!(toks as usize, line.text.encode_utf16().count());
     }

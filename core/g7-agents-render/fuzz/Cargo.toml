@@ -1,7 +1,7 @@
 # Fuzz targets for g7-agents-render (cargo-fuzz layout). Outside the main
 # workspace: they need a nightly toolchain and are not run in CI.
 #
-#   cargo +nightly fuzz run markdown   # or diff, timeline
+#   cargo +nightly fuzz run markdown   # or diff, timeline, snippet
 #
 # The seed corpora in corpus/ are the hostile cases of tests/fixtures/.
 
@@ -39,6 +39,13 @@ bench = false
 [[bin]]
 name = "timeline"
 path = "fuzz_targets/timeline.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snippet"
+path = "fuzz_targets/snippet.rs"
 test = false
 doc = false
 bench = false

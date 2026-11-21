@@ -1,0 +1,6 @@
+{
+  "code": "    fn main() {\n        let mut x = 1;\n    }",
+  "hint_ext": null,
+  "lang": "rust",
+  "note": "Leading indentation is ignored."
+}

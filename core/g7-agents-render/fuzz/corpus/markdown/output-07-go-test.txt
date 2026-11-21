@@ -1,0 +1,5 @@
+--- FAIL: TestRetry (0.00s)
+    sync_test.go:21: got 2, want 3
+FAIL
+FAIL	duka/sync	0.004s
+ok  	duka/api	0.010s

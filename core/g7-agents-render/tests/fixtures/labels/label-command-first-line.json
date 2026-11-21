@@ -1,4 +1,4 @@
 {
-  "label": {"class":"command","object":"cargo test \\"},
+  "label": {"class":"command","object":"cargo test \\","toks":[{"class":"function","len":5},{"class":"plain","len":6},{"class":"punctuation","len":1}]},
   "tool": {"class":"command","detail":"cargo   test \\\n  --all-targets","name":"command","status":"ok","title":"Bash"}
 }

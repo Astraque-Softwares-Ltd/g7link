@@ -1,0 +1,5 @@
+{
+  "code": "import QtQuick\n\nRectangle {\n    id: root\n    anchors.fill: parent\n    Text {\n        text: \"Hi\"\n    }\n}",
+  "hint_ext": null,
+  "lang": "qml"
+}

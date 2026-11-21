@@ -1,4 +1,4 @@
 {
-  "label": {"class":"search","object":"fn parse_line"},
+  "label": {"class":"search","object":"fn parse_line","toks":[{"class":"string","len":13}]},
   "tool": {"class":"search","detail":"fn parse_line","name":"search","status":"ok","title":"Grep"}
 }

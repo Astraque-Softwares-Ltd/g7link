@@ -1,0 +1,6 @@
+{
+  "code": "The queue drains after the server acknowledges each row.",
+  "hint_ext": "rs",
+  "lang": null,
+  "note": "A hint never makes prose code."
+}

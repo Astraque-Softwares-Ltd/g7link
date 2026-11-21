@@ -1,0 +1,20 @@
+{
+  "ctx": {"marks":[],"now_ms":10000,"open":[],"state":"done","state_since_ms":9000,"turns":[{"can_fork":true,"can_rewind":true,"checkpoint":"missing","ended_ms":1400,"turn":1,"why":"busy"},{"can_fork":true,"can_rewind":true,"checkpoint":"expired","ended_ms":2400,"turn":2}]},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Run the tests.","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"command","detail":"cargo test","name":"Bash","status":"ok","title":"Bash"},"ts_ms":1100,"turn":1},
+    {"end_ms":1400,"id":"a1","kind":"assistant","seq":3,"text":"All 23 pass.","ts_ms":1300,"turn":1},
+    {"id":"u2","kind":"user","seq":4,"text":"And the clippy run?","ts_ms":2000,"turn":2},
+    {"end_ms":2200,"id":"t2","kind":"tool","seq":5,"tool":{"class":"command","detail":"cargo clippy","name":"Bash","status":"ok","title":"Bash"},"ts_ms":2100,"turn":2},
+    {"end_ms":2400,"id":"a2","kind":"assistant","seq":6,"text":"Clean.","ts_ms":2300,"turn":2}
+  ],
+  "note": "Missing and expired restore points under turns whose tools changed no file (a command ran): no line at all.",
+  "rows": [
+    {"acts":{"edit":"on","fork":"on","restore":"no_restore_point","rewind":"on"},"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Run the tests.","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":400},
+    {"acts":{"fork":"on"},"block":{"kind":"paragraph","text":"All 23 pass."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"seq":3,"turn":1},
+    {"acts":{"edit":"on","fork":"on","restore":"no_restore_point","rewind":"on"},"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":4,"text":"And the clippy run?","turn":2},
+    {"depth":0,"hidden":1,"item_id":"u2","key":"f:2","kind":"fold","seq":4,"turn":2,"worked_ms":400},
+    {"acts":{"fork":"on"},"block":{"kind":"paragraph","text":"Clean."},"depth":0,"index":0,"item_id":"a2","key":"b:a2:0","kind":"block","last":true,"seq":6,"turn":2}
+  ]
+}

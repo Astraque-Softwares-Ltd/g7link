@@ -1,0 +1,5 @@
+{
+  "code": "apiVersion: v1\nkind: Service\nmetadata:\n  name: api\nspec:\n  ports:\n    - port: 80",
+  "hint_ext": null,
+  "lang": "yaml"
+}

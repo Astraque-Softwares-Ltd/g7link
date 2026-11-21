@@ -1,0 +1,5 @@
+{
+  "code": "CREATE TABLE sales (\n  id INTEGER PRIMARY KEY,\n  total INTEGER NOT NULL\n);",
+  "hint_ext": null,
+  "lang": "sql"
+}

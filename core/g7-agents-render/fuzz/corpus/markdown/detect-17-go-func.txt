@@ -1,0 +1,9 @@
+```
+func drain(q *Queue) error {
+	rows, err := q.Pending()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+```

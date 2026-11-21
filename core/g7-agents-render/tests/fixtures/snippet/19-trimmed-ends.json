@@ -1,0 +1,11 @@
+{
+  "marks": [
+    [6,5]
+  ],
+  "note": "Leading and trailing whitespace is trimmed, with the mark kept on its word.",
+  "parts": [
+    {"mark":true,"text":"retry"},
+    {"text":" at the start, and spaces at the end"}
+  ],
+  "text": "   \n  retry at the start, and spaces at the end   \n"
+}

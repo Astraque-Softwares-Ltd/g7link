@@ -1,0 +1,5 @@
+{
+  "code": "sudo apt install ripgrep\nsudo systemctl restart duka",
+  "hint_ext": null,
+  "lang": "bash"
+}

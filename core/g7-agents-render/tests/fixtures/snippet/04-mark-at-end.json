@@ -1,0 +1,11 @@
+{
+  "marks": [
+    [62,5]
+  ],
+  "note": "A match at the very end (after the host's own ellipsis at the start).",
+  "parts": [
+    {"text":"…so each request must carry the same idempotency key on every "},
+    {"mark":true,"text":"retry"}
+  ],
+  "text": "…so each request must carry the same idempotency key on every retry"
+}

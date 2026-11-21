@@ -1,0 +1,4 @@
+{
+  "label": {"class":"web","object":"https://docs.rs/serde/latest/serde/?search=de#x","toks":[{"class":"dir","len":8},{"class":"file","len":7},{"class":"dir","len":32}]},
+  "tool": {"class":"web","detail":"{\"url\":\"https://docs.rs/serde/latest/serde/?search=de#x\"}","name":"WebFetch","status":"ok","title":"WebFetch"}
+}

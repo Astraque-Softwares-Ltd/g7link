@@ -1,4 +1,4 @@
 {
-  "label": {"class":"edit","object":"src/parse.rs"},
+  "label": {"class":"edit","object":"src/parse.rs","toks":[{"class":"dir","len":4},{"class":"file","len":8}]},
   "tool": {"class":"edit","detail":"-a\n+b","name":"edit","path":"src/parse.rs","status":"ok","title":"Edit src/parse.rs"}
 }

@@ -1,0 +1,6 @@
+{
+  "code": {"after":"\nfn main() {}\nfn x() {}\nlet mut y = 1;","repeat":"words ","times":700},
+  "hint_ext": null,
+  "lang": null,
+  "note": "Markers past the first 4 KiB are not read."
+}

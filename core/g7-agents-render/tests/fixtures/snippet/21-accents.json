@@ -1,0 +1,11 @@
+{
+  "marks": [
+    [14,4]
+  ],
+  "note": "Precomposed accented letters are one unit each.",
+  "parts": [
+    {"text":"Ünïcödé retry "},
+    {"mark":true,"text":"ñame"}
+  ],
+  "text": "Ünïcödé retry ñame"
+}

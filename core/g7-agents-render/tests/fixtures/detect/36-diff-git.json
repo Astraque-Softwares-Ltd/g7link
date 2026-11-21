@@ -1,0 +1,5 @@
+{
+  "code": "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,2 @@\n-let x = 1;\n+let x = 2;",
+  "hint_ext": null,
+  "lang": "diff"
+}

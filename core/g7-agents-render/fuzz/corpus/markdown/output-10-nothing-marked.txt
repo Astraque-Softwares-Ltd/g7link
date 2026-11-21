@@ -1,0 +1,2 @@
+   Compiling duka v0.1.0 (/home/u/duka)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.31s

@@ -1,0 +1,3 @@
+```
+The queue drains after the server acknowledges each row.
+```

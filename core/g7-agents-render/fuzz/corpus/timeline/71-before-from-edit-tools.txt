@@ -1,0 +1,6 @@
+Stock sync inapoteza rows tukirudi online. Angalia src/sync/queue.rs, nadhani ni ile retry.-        self.items.clear();
++        self.items.retain(|r| !r.acked);Tatizo liko kwenye `drain()`: it emptied the whole queue before the server acknowledged anything.
+
+Sasa row inatoka kwenye queue baada ya ack tu, and a reconnect resends what is left.Sawa. Sasa ongeza backoff, isijaribu kila sekunde.+pub struct Backoff {
++    next: Duration,
++}Imeongezwa: the retry now waits 1 s, 2 s, 4 s, up to 60 s, and resets after a batch goes through.Pia futa ile retry.rs ya zamani kama haitumiki tena.git rm src/sync/retry.rsNimeifuta `src/sync/retry.rs`; nothing else used it.

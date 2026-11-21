@@ -1,0 +1,14 @@
+{
+  "marks": [
+    [2,0],
+    [40,3],
+    [6,4294967295],
+    [4294967295,4294967295]
+  ],
+  "note": "Empty marks, marks past the text and a mark whose end overflows are ignored or clamped.",
+  "parts": [
+    {"text":"short "},
+    {"mark":true,"text":"text"}
+  ],
+  "text": "short text"
+}

@@ -1,0 +1,6 @@
+```
+type Retry = { delay: number };
+export function next(r: Retry): Promise<void> {
+  return Promise.resolve();
+}
+```

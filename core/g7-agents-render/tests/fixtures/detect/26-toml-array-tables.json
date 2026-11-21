@@ -1,0 +1,5 @@
+{
+  "code": "[[bin]]\nname = \"duka\"\npath = \"src/main.rs\"",
+  "hint_ext": null,
+  "lang": "toml"
+}

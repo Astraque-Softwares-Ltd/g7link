@@ -1,0 +1,5 @@
+{
+  "code": "data class Row(val id: Long, val name: String)\n\nprivate fun Row.label(): String = name",
+  "hint_ext": null,
+  "lang": "kotlin"
+}

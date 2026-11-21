@@ -9,7 +9,7 @@
   "note": "Claude: denied with a message, in the same turn (no mark row: answered here by hand).",
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
-    {"adds":1,"dels":1,"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"edit","object":"src/parse.rs"},"ms":400,"seq":2,"status":"denied","turn":1},
+    {"adds":1,"dels":1,"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"edit","object":"src/parse.rs","toks":[{"class":"dir","len":4},{"class":"file","len":8}]},"ms":400,"seq":2,"status":"denied","turn":1},
     {"deny_of":true,"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":3,"text":"Use the existing helper instead","turn":1},
     {"block":{"kind":"paragraph","spans":[{"len":8,"start":18,"style":{"code":true}}],"text":"Understood, using trim_end."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"interim","seq":4,"turn":1},
     {"depth":0,"item_id":"","key":"live","kind":"live","label":"thinking","seq":0,"since_ms":1000,"turn":1}

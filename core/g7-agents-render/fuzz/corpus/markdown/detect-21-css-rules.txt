@@ -1,0 +1,10 @@
+```
+.row {
+  color: #333;
+  margin: 4px;
+}
+
+#total {
+  font-weight: 600;
+}
+```

@@ -1,4 +1,4 @@
 {
-  "label": {"class":"read","object":"README.md"},
+  "label": {"class":"read","object":"README.md","toks":[{"class":"file","len":9}]},
   "tool": {"class":"read","name":"read","path":"README.md","status":"ok","title":"Read"}
 }

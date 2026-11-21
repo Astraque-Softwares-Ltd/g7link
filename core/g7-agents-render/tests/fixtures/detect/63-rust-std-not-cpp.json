@@ -1,0 +1,5 @@
+{
+  "code": "use std::fs;\n\nfn main() {\n    let s = fs::read_to_string(\"a\").unwrap();\n}",
+  "hint_ext": null,
+  "lang": "rust"
+}

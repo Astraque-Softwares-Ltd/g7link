@@ -1,0 +1,7 @@
+{
+  "lines": [
+    {"text":"{\"ok\": true, \"count\": 3}","toks":[{"class":"punctuation","len":2},{"class":"string","len":2},{"class":"punctuation","len":2},{"class":"plain","len":1},{"class":"constant","len":4},{"class":"punctuation","len":1},{"class":"plain","len":1},{"class":"punctuation","len":1},{"class":"string","len":5},{"class":"punctuation","len":2},{"class":"plain","len":1},{"class":"number","len":1},{"class":"punctuation","len":1}]}
+  ],
+  "note": "Output that guesses as JSON is highlighted as JSON.",
+  "text": "{\"ok\": true, \"count\": 3}"
+}

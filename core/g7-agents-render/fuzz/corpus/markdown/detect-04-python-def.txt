@@ -1,0 +1,6 @@
+```
+def drain(queue):
+    for row in queue:
+        if row.acked:
+            yield row
+```

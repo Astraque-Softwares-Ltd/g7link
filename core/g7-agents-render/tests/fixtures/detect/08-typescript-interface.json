@@ -1,0 +1,5 @@
+{
+  "code": "export interface Row {\n  id: number;\n  name: string;\n}\n\nconst rows: Row[] = [];",
+  "hint_ext": null,
+  "lang": "typescript"
+}

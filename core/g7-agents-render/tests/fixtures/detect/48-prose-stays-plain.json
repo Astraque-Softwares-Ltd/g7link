@@ -1,0 +1,5 @@
+{
+  "code": "The queue drains after the server acknowledges each row.\nA reconnect resends what is left.",
+  "hint_ext": null,
+  "lang": null
+}

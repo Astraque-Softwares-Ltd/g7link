@@ -1,0 +1,4 @@
+```
+export RUST_LOG=debug
+cargo run 2>&1 | tee run.log && echo done
+```

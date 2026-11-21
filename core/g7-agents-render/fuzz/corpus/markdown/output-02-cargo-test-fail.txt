@@ -1,0 +1,9 @@
+test parse::empty ... FAILED
+
+failures:
+
+---- parse::empty stdout ----
+thread 'parse::empty' panicked at src/parse.rs:42:9:
+assertion failed: rows.is_empty()
+
+test result: FAILED. 1 passed; 1 failed

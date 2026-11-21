@@ -1,0 +1,5 @@
+{
+  "code": "use std::collections::HashMap;\n\n#[derive(Debug, Clone)]\npub struct Row {\n    id: u64,\n}",
+  "hint_ext": null,
+  "lang": "rust"
+}

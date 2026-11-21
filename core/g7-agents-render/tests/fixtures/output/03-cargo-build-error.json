@@ -1,0 +1,16 @@
+{
+  "lines": [
+    {"text":"error[E0425]: cannot find value `x` in this scope","toks":[{"class":"error","len":49}]},
+    {"text":"  --> src/main.rs:3:5","toks":[{"class":"plain","len":6},{"class":"dir","len":4},{"class":"file","len":7},{"class":"pos","len":4}]},
+    {"text":"   |","toks":[{"class":"plain","len":4}]},
+    {"text":"3  |     x","toks":[{"class":"plain","len":10}]},
+    {"text":"   |     ^ not found in this scope","toks":[{"class":"plain","len":34}]},
+    {"text":""},
+    {"text":"warning: unused import: `std::fs`","toks":[{"class":"warn","len":33}]},
+    {"text":" --> src/lib.rs:1:5","toks":[{"class":"plain","len":5},{"class":"dir","len":4},{"class":"file","len":6},{"class":"pos","len":4}]},
+    {"text":""},
+    {"text":"error: aborting due to 1 previous error","toks":[{"class":"error","len":39}]}
+  ],
+  "note": "rustc: error and warning lines, and the --> places split into folder, file and position.",
+  "text": "error[E0425]: cannot find value `x` in this scope\n  --> src/main.rs:3:5\n   |\n3  |     x\n   |     ^ not found in this scope\n\nwarning: unused import: `std::fs`\n --> src/lib.rs:1:5\n\nerror: aborting due to 1 previous error"
+}

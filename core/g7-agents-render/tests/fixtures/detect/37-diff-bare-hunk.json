@@ -1,0 +1,5 @@
+{
+  "code": "@@ -10,3 +10,4 @@ fn drain\n     let a = 1;\n-    clear();\n+    retain();",
+  "hint_ext": null,
+  "lang": "diff"
+}

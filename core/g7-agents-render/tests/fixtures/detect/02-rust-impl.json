@@ -1,0 +1,5 @@
+{
+  "code": "impl Queue {\n    pub fn drain(&mut self) -> Result<(), Error> {\n        self.items.retain(|r| !r.acked);\n        Ok(())\n    }\n}",
+  "hint_ext": null,
+  "lang": "rust"
+}

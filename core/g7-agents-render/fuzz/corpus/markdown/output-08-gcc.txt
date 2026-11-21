@@ -1,0 +1,2 @@
+main.c:3:5: warning: unused variable 'x' [-Wunused-variable]
+main.c:7:1: error: expected ';' before '}' token

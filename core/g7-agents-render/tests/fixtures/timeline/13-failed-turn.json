@@ -9,7 +9,7 @@
   "note": "A failed turn does not fold even with text.",
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
-    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"README.md"},"ms":1,"seq":2,"status":"ok","turn":1},
+    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"README.md","toks":[{"class":"file","len":9}]},"ms":1,"seq":2,"status":"ok","turn":1},
     {"block":{"kind":"paragraph","text":"Reading the readme."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"final","seq":4,"turn":1},
     {"depth":0,"item_id":"n1","key":"i:n1","kind":"notice","seq":5,"text":"Usage limit reached.","turn":1}
   ]

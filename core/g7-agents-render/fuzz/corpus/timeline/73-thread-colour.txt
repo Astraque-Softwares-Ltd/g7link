@@ -1,0 +1,36 @@
+Stock sync loses rows after a reconnect. Look at src/sync/queue.rs.cargo test sync::running 3 tests
+test sync::drain ... ok
+test sync::retry ... ok
+test sync::backoff ... ok
+
+test result: ok. 3 passed; 0 failedcargo clippy --all-targets -- -D warnings 2>&1 | tail -n 20error: unused variable: `x`
+  --> src/sync/queue.rs:14:9
+
+error: could not compile `duka` (lib) due to 1 previous error-        self.items.clear();
++        self.items.retain(|r| !r.acked);Checking how the queue drains after a reconnect.## What changed
+
+`drain()` emptied the queue before the server acked. Now it keeps unacked rows; see the [tokio docs](https://docs.rs/tokio).
+
+```rust
+fn drain(&mut self) {
+    self.items.retain(|r| !r.acked);
+}
+```
+
+Run the tests again:
+
+```
+cargo test sync::
+git status
+```
+
+- [x] keep unacked rows
+- [ ] add backoff
+
+| File | Change |
+| --- | --- |
+| `src/sync/queue.rs` | +1 -1 |
+
+> [!WARNING]
+> Clippy still fails on an unused variable.Plan the backoff next.1. Add `Backoff` in `src/sync/backoff.rs`
+2. Wire it into `drain()`

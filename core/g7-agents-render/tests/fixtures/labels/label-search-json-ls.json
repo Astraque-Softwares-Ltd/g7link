@@ -1,4 +1,4 @@
 {
-  "label": {"class":"search","object":"src/host"},
+  "label": {"class":"search","object":"src/host","toks":[{"class":"string","len":8}]},
   "tool": {"class":"search","detail":"{\"path\":\"src/host\"}","name":"search","status":"ok","title":"LS"}
 }

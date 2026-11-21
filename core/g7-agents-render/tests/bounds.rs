@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 //! One test per bound of contract §P2.3 (and phase 2's plan card and
-//! composer): just under it nothing gives, just over it the stated fallback
-//! happens.
+//! composer, phase 3's changes and snippets): just under it nothing gives,
+//! just over it the stated fallback happens.
 
 use g7_agents_render::bounds::*;
 use g7_agents_render::{
-    BlockKind, Ctx, GuardEvent, ItemIn, ItemKind, Link, Phase, Row, RowKind, ThreadState, Timeline, TokClass,
-    ToolClass, ToolIn, ToolStatus, TypingGuard, Via, changed_files, diff, highlight, live_thought_line,
-    markdown, mentions, tool_label, trigger,
+    BlockKind, Checkpoint, Ctx, GuardEvent, Hints, ItemIn, ItemKind, Link, NoteKind, Phase, Row, RowKind,
+    ThreadState, Timeline, TokClass, ToolClass, ToolIn, ToolStatus, TurnFileIn, TurnFileStatus, TurnIn,
+    TypingGuard, Via, changed_files, diff, guess, highlight, live_thought_line, markdown, markdown_with,
+    mentions, output_lines, snippet, tool_label, trigger,
 };
 
 fn item<'a>(seq: u64, id: &'a str, kind: ItemKind, text: &'a str) -> ItemIn<'a> {
@@ -30,6 +31,7 @@ fn item<'a>(seq: u64, id: &'a str, kind: ItemKind, text: &'a str) -> ItemIn<'a> 
         via: Via::Turn,
         plan_state: None,
         question: None,
+        notice: None,
     }
 }
 
@@ -38,7 +40,7 @@ fn tool<'a>(class: ToolClass, detail: &'a str, path: &'a str) -> ToolIn<'a> {
 }
 
 fn ctx(state: ThreadState) -> Ctx<'static> {
-    Ctx { state, state_since_ms: 0, now_ms: 0, marks: &[], open: &[] }
+    Ctx { state, state_since_ms: 0, now_ms: 0, marks: &[], open: &[], turns: &[] }
 }
 
 #[test]
@@ -351,7 +353,14 @@ fn plan_card(lines: usize, open: bool) -> (u16, u16) {
     let keys = if open { vec!["p:p1".to_owned()] } else { Vec::new() };
     let rows = Timeline::new().rows(
         &[plan],
-        &Ctx { state: ThreadState::Working, state_since_ms: 0, now_ms: 0, marks: &[], open: &keys },
+        &Ctx {
+            state: ThreadState::Working,
+            state_since_ms: 0,
+            now_ms: 0,
+            marks: &[],
+            open: &keys,
+            turns: &[],
+        },
     );
     match rows[0].kind {
         RowKind::Plan { shown, more, .. } => (shown, more),
@@ -391,4 +400,131 @@ fn max_mentions() {
     let found = mentions(&over);
     assert_eq!(found.len(), MAX_MENTIONS);
     assert_eq!(found.last(), Some(&(3 * (MAX_MENTIONS as u32 - 1), 2)));
+}
+
+/// A finished turn of one message and one answer, with the host's word on it.
+fn turn_rows(turn: &TurnIn<'_>, now_ms: u64) -> Vec<Row> {
+    let mut answer = item(2, "a", ItemKind::Assistant, "Done.");
+    answer.end_ms = Some(3);
+    let items = [item(1, "u", ItemKind::User, "Go"), answer];
+    let ctx = Ctx { now_ms, turns: std::slice::from_ref(turn), ..ctx(ThreadState::Done) };
+    Timeline::new().rows(&items, &ctx)
+}
+
+fn ready_turn<'a>(files: u32, paths: &'a [TurnFileIn<'a>]) -> TurnIn<'a> {
+    TurnIn {
+        turn: 1,
+        checkpoint: Checkpoint::Ready,
+        why: None,
+        ended_ms: Some(5_000),
+        files,
+        adds: 1,
+        dels: 1,
+        skipped: 0,
+        paths,
+        can_fork: true,
+        can_rewind: true,
+        can_restore: true,
+    }
+}
+
+#[test]
+fn max_changed_files_recorded() {
+    let names: Vec<String> = (0..=MAX_CHANGED_FILES).map(|k| format!("f{k:02}")).collect();
+    let paths: Vec<TurnFileIn<'_>> = names
+        .iter()
+        .map(|p| TurnFileIn { path: p, status: TurnFileStatus::Modified, adds: 1, dels: 0 })
+        .collect();
+    let changes = |turn: &TurnIn<'_>| {
+        turn_rows(turn, 9_000).into_iter().find_map(|r| match r.kind {
+            RowKind::Changes { files, more, recorded: true, .. } => Some((files.len(), more)),
+            _ => None,
+        })
+    };
+    let at = ready_turn(MAX_CHANGED_FILES as u32, &paths[..MAX_CHANGED_FILES]);
+    assert_eq!(changes(&at), Some((MAX_CHANGED_FILES, 0)));
+    let over = ready_turn(MAX_CHANGED_FILES as u32 + 1, &paths);
+    assert_eq!(changes(&over), Some((MAX_CHANGED_FILES, 1)));
+}
+
+#[test]
+fn recording_after_ms() {
+    let pending = TurnIn { checkpoint: Checkpoint::Pending, ..ready_turn(0, &[]) };
+    let recording = |now_ms: u64| {
+        turn_rows(&pending, now_ms)
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::ChangesNote { note: NoteKind::Recording, .. }))
+    };
+    assert!(!recording(5_000 + RECORDING_AFTER_MS - 1));
+    assert!(recording(5_000 + RECORDING_AFTER_MS));
+    // A clock behind the turn's end shows nothing.
+    assert!(!recording(1_000));
+}
+
+#[test]
+fn max_snippet_units() {
+    let units =
+        |text: &str| -> usize { snippet(text, &[]).iter().map(|p| p.text.encode_utf16().count()).sum() };
+    let at = "a".repeat(MAX_SNIPPET_UNITS);
+    assert_eq!(units(&at), MAX_SNIPPET_UNITS);
+    assert_eq!(units(&format!("{at}b")), MAX_SNIPPET_UNITS);
+    // A character across the cut is dropped whole.
+    let straddle = format!("{}😀", "a".repeat(MAX_SNIPPET_UNITS - 1));
+    assert_eq!(units(&straddle), MAX_SNIPPET_UNITS - 1);
+}
+
+#[test]
+fn max_snippet_marks() {
+    let text = "x ".repeat(MAX_SNIPPET_MARKS + 1);
+    let marks: Vec<(u32, u32)> = (0..=MAX_SNIPPET_MARKS as u32).map(|k| (2 * k, 1)).collect();
+    let marked = |marks: &[(u32, u32)]| snippet(&text, marks).iter().filter(|p| p.mark).count();
+    assert_eq!(marked(&marks[..MAX_SNIPPET_MARKS]), MAX_SNIPPET_MARKS);
+    assert_eq!(marked(&marks), MAX_SNIPPET_MARKS);
+}
+
+/// One line that is Rust on its own (5 points).
+const RUST_LINE: &str = "fn main() { println!(\"hi\"); }";
+
+#[test]
+fn max_detect_lines() {
+    let at = format!("{}{RUST_LINE}", "word\n".repeat(MAX_DETECT_LINES - 1));
+    assert_eq!(guess(&at, None), Some("rust"));
+    let over = format!("{}{RUST_LINE}", "word\n".repeat(MAX_DETECT_LINES));
+    assert_eq!(guess(&over, None), None);
+    // Blank lines are not counted.
+    let blanks = format!("{}{RUST_LINE}", "\n \n".repeat(MAX_DETECT_LINES));
+    assert_eq!(guess(&blanks, None), Some("rust"));
+}
+
+#[test]
+fn max_detect_bytes() {
+    let filler = |n: usize| format!("{}\n", "x".repeat(n - 1));
+    let at = format!("{}{RUST_LINE}", filler(MAX_DETECT_BYTES - RUST_LINE.len()));
+    assert_eq!(guess(&at, None), Some("rust"));
+    let over = format!("{}{RUST_LINE}", filler(MAX_DETECT_BYTES));
+    assert_eq!(guess(&over, None), None);
+}
+
+#[test]
+fn max_places_per_line() {
+    let places = |n: usize| {
+        let line = "see src/a.rs:1 ".repeat(n);
+        output_lines(&format!("error: x\n{line}"))
+            .get(1)
+            .map_or(0, |l| l.toks.iter().filter(|t| t.class == TokClass::Pos).count())
+    };
+    assert_eq!(places(MAX_PLACES_PER_LINE), MAX_PLACES_PER_LINE);
+    assert_eq!(places(MAX_PLACES_PER_LINE + 1), MAX_PLACES_PER_LINE);
+}
+
+#[test]
+fn max_path_hints() {
+    let names: Vec<String> = (0..=MAX_PATH_HINTS).map(|k| format!("src/f{k}.rs")).collect();
+    let paths: Vec<&str> = names.iter().map(String::as_str).collect();
+    let marked = |k: usize| {
+        let doc = markdown_with(&format!("see `f{k}.rs`"), Hints { ext: None, paths: &paths });
+        doc.blocks[0].spans.iter().any(|s| s.style.path)
+    };
+    assert!(marked(MAX_PATH_HINTS - 1));
+    assert!(!marked(MAX_PATH_HINTS));
 }

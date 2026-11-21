@@ -7,6 +7,6 @@
   "note": "A tool still running: no live line.",
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
-    {"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo test -p parser"},"seq":2,"status":"running","turn":1}
+    {"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo test -p parser","toks":[{"class":"function","len":5},{"class":"plain","len":5},{"class":"punctuation","len":2},{"class":"variable","len":1},{"class":"plain","len":7}]},"seq":2,"status":"running","turn":1}
   ]
 }

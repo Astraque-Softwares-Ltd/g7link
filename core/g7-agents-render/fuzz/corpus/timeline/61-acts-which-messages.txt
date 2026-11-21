@@ -1,0 +1,5 @@
+Fix the failing parser test.Also keep the old error text.-    if end < len {
++    if end <= len {rm -rf targetDon't delete target, just run the test.Fixed, and the error text is unchanged.
+
+- `end <= len` now
+- one test addedNow update the changelog.+- Parser keeps the last line.Added a line to the changelog.src/parse.rsCHANGELOG.md

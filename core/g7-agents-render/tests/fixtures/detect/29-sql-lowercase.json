@@ -1,0 +1,5 @@
+{
+  "code": "select id from sales;\ninsert into sales (id) values (1);",
+  "hint_ext": null,
+  "lang": "sql"
+}

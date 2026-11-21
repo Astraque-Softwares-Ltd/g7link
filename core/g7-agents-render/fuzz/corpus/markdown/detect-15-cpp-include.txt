@@ -1,0 +1,9 @@
+```
+#include <vector>
+#include "queue.hpp"
+
+int main() {
+    std::vector<int> v;
+    return 0;
+}
+```

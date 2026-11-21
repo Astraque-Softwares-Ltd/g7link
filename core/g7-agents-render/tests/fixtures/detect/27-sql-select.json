@@ -1,0 +1,5 @@
+{
+  "code": "SELECT id, total\nFROM sales\nWHERE day = '2026-11-20'\nORDER BY total DESC;",
+  "hint_ext": null,
+  "lang": "sql"
+}

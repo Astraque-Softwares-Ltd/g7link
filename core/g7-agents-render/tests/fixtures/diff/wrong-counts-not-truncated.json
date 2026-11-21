@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":2,"dels":2,"files":[{"adds":1,"dels":1,"path":"a.txt","rows":[{"kind":"hunk","text":"@@ -1,5 +1,5 @@"},{"kind":"del","old_no":1,"text":"x"},{"kind":"add","new_no":1,"text":"y"}]},{"adds":1,"dels":1,"path":"b.txt","rows":[{"kind":"hunk","text":"@@ -1 +1 @@"},{"kind":"del","old_no":1,"text":"p"},{"kind":"add","new_no":1,"text":"q"}]}]},
+  "in": "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,5 +1,5 @@\n-x\n+y\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-p\n+q\n"
+}

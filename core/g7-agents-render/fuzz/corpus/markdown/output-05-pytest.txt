@@ -1,0 +1,6 @@
+tests/test_sync.py::test_retry PASSED
+tests/test_sync.py::test_drain FAILED
+
+E   AssertionError: assert 2 == 3
+tests/test_sync.py:14: AssertionError
+======== 1 failed, 1 passed in 0.12s ========

@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":2,"dels":1,"files":[{"adds":2,"dels":1,"note":"truncated","path":"src/sync/queue.rs","rows":[{"kind":"hunk","text":"@@ -10,6 +10,7 @@ impl Queue {"},{"kind":"context","new_no":10,"old_no":10,"text":"    fn drain(&mut self) {"},{"kind":"del","marks":[[8,19]],"old_no":11,"text":"        self.items.clear();"},{"kind":"add","marks":[[8,32]],"new_no":11,"text":"        self.items.retain(|r| !r.acked);"},{"kind":"add","new_no":12,"text":"        self.resend();"}]}]},
+  "in": "diff --git a/src/sync/queue.rs b/src/sync/queue.rs\n--- a/src/sync/queue.rs\n+++ b/src/sync/queue.rs\n@@ -10,6 +10,7 @@ impl Queue {\n     fn drain(&mut self) {\n-        self.items.clear();\n+        self.items.retain(|r| !r.acked);\n+        self.resend();\n"
+}

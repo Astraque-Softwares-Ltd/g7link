@@ -1,4 +1,4 @@
 {
-  "label": {"class":"edit","more":1,"object":"a.rs"},
+  "label": {"class":"edit","more":1,"object":"a.rs","toks":[{"class":"file","len":4}]},
   "tool": {"class":"edit","detail":"diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-x\n+y","name":"edit","path":"a.rs","status":"ok","title":"Edit files"}
 }

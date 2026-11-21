@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The timeline on item lists decoded from arbitrary bytes: each item takes
 //! a few bytes for its kind, turn, phase, group and tool, and a slice of the
-//! input as its text.
+//! input as its text; the host's turns take a few more bytes each, and
+//! slices of the input as their files' paths.
 
 #![no_main]
 
 use std::collections::HashSet;
 
 use g7_agents_render::{
-    Ctx, ItemIn, ItemKind, Mark, MarkKind, Phase, PlanState, QuestionIn, QuestionState, ThreadState,
-    Timeline, ToolClass, ToolIn, ToolStatus, Via,
+    Checkpoint, CheckpointWhy, Ctx, ItemIn, ItemKind, Mark, MarkKind, NoticeKind, Phase, PlanState,
+    QuestionIn, QuestionState, RowKind, ThreadState, Timeline, ToolClass, ToolIn, ToolStatus, TurnFileIn,
+    TurnFileStatus, TurnIn, Via,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -59,6 +61,33 @@ const MARKS: [MarkKind; 7] = [
     MarkKind::Rule,
 ];
 
+const NOTICES: [Option<NoticeKind>; 5] = [
+    None,
+    Some(NoticeKind::Rewound),
+    Some(NoticeKind::EditFromHere),
+    Some(NoticeKind::FilesRestored),
+    Some(NoticeKind::Forked),
+];
+const CHECKPOINTS: [Checkpoint; 5] =
+    [Checkpoint::Pending, Checkpoint::Ready, Checkpoint::Missing, Checkpoint::NotGit, Checkpoint::Expired];
+const WHYS: [Option<CheckpointWhy>; 7] = [
+    None,
+    Some(CheckpointWhy::Busy),
+    Some(CheckpointWhy::Slow),
+    Some(CheckpointWhy::Large),
+    Some(CheckpointWhy::Refused),
+    Some(CheckpointWhy::Off),
+    Some(CheckpointWhy::Before),
+];
+const FILE_STATUSES: [TurnFileStatus; 6] = [
+    TurnFileStatus::Added,
+    TurnFileStatus::Modified,
+    TurnFileStatus::Deleted,
+    TurnFileStatus::Renamed,
+    TurnFileStatus::Type,
+    TurnFileStatus::Unrecorded,
+];
+
 fuzz_target!(|data: &[u8]| {
     let text = String::from_utf8_lossy(data);
     let pieces: Vec<&str> = text.split('\u{1e}').collect();
@@ -100,6 +129,7 @@ fuzz_target!(|data: &[u8]| {
                 count: (h >> 13) as u8 % 6,
                 by: if h & 512 == 0 { piece } else { "" },
             }),
+            notice: NOTICES[(h >> 15) % NOTICES.len()],
         });
     }
     let marks: Vec<Mark> = (0..b(1) % 4)
@@ -117,10 +147,51 @@ fuzz_target!(|data: &[u8]| {
         .chain(["f:1".into(), "c:1:0".into()])
         .collect();
     let open = &open[..b(0) % open.len()];
-    let ctx = Ctx { state: STATES[b(5) % STATES.len()], state_since_ms: 0, now_ms: 0, marks: &marks, open };
+    let paths: Vec<TurnFileIn<'_>> = pieces
+        .iter()
+        .take(24)
+        .enumerate()
+        .map(|(k, p)| TurnFileIn {
+            path: p,
+            status: FILE_STATUSES[b(k + 7) % FILE_STATUSES.len()],
+            adds: b(k + 8) as u32,
+            dels: b(k + 9) as u32,
+        })
+        .collect();
+    let turns: Vec<TurnIn<'_>> = (0..b(6) % 6)
+        .map(|k| {
+            let h = b(k * 3 + 10) ^ (b(k * 3 + 11) << 8) ^ (b(k * 3 + 12) << 16);
+            TurnIn {
+                turn: (h % 5) as u32,
+                checkpoint: CHECKPOINTS[(h >> 3) % CHECKPOINTS.len()],
+                why: WHYS[(h >> 6) % WHYS.len()],
+                ended_ms: (h & 512 == 0).then_some((h as u64 >> 10) * 50),
+                files: if h & 1024 == 0 { (h >> 11) as u32 % 30 } else { u32::MAX },
+                adds: h as u32,
+                dels: (h >> 4) as u32,
+                skipped: (h >> 13) as u32 % 3,
+                paths: &paths[..(h >> 2) % (paths.len() + 1)],
+                can_fork: h & 2 == 0,
+                can_rewind: h & 4 == 0,
+                can_restore: h & 8 == 0,
+            }
+        })
+        .collect();
+    let ctx = Ctx {
+        state: STATES[b(5) % STATES.len()],
+        state_since_ms: 0,
+        now_ms: b(4) as u64 * 40,
+        marks: &marks,
+        open,
+        turns: &turns,
+    };
     let mut timeline = Timeline::new();
     let rows = timeline.rows(&items, &ctx);
     let keys: HashSet<&str> = rows.iter().map(|r| r.key.as_str()).collect();
     assert_eq!(keys.len(), rows.len());
+    for row in rows.iter().filter(|r| !r.acts.is_hidden()) {
+        assert_eq!(row.depth, 0);
+        assert!(matches!(row.kind, RowKind::User { .. } | RowKind::Block { last: true, .. }));
+    }
     assert_eq!(timeline.rows(&items, &ctx), rows);
 });

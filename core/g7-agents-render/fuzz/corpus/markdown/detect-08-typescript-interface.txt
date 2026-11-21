@@ -1,0 +1,8 @@
+```
+export interface Row {
+  id: number;
+  name: string;
+}
+
+const rows: Row[] = [];
+```

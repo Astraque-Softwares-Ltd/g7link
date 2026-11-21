@@ -1,0 +1,6 @@
+{
+  "code": "[package]\nname = \"x\"",
+  "hint_ext": null,
+  "lang": "toml",
+  "note": "A TOML section opens with [ but is TOML, not JSON."
+}

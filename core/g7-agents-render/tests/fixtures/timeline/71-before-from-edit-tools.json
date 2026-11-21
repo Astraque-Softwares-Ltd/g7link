@@ -1,0 +1,30 @@
+{
+  "ctx": {"marks":[],"now_ms":10000,"open":["c:1:0"],"state":"done","state_since_ms":9000,"turns":[{"can_fork":true,"can_rewind":true,"checkpoint":"missing","ended_ms":1400,"turn":1,"why":"before"},{"can_fork":true,"can_rewind":true,"checkpoint":"missing","ended_ms":2400,"turn":2,"why":"before"},{"can_fork":true,"can_rewind":true,"checkpoint":"missing","ended_ms":3400,"turn":3,"why":"before"}]},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Stock sync inapoteza rows tukirudi online. Angalia src/sync/queue.rs, nadhani ni ile retry.","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"edit","detail":"-        self.items.clear();\n+        self.items.retain(|r| !r.acked);","name":"Edit","path":"src/sync/queue.rs","status":"ok","title":"Edit src/sync/queue.rs"},"ts_ms":1100,"turn":1},
+    {"end_ms":1400,"id":"a1","kind":"assistant","seq":3,"text":"Tatizo liko kwenye `drain()`: it emptied the whole queue before the server acknowledged anything.\n\nSasa row inatoka kwenye queue baada ya ack tu, and a reconnect resends what is left.","ts_ms":1300,"turn":1},
+    {"id":"u2","kind":"user","seq":4,"text":"Sawa. Sasa ongeza backoff, isijaribu kila sekunde.","ts_ms":2000,"turn":2},
+    {"end_ms":2200,"id":"t2","kind":"tool","seq":5,"tool":{"class":"edit","detail":"+pub struct Backoff {\n+    next: Duration,\n+}","name":"Edit","path":"src/sync/backoff.rs","status":"ok","title":"Edit src/sync/backoff.rs"},"ts_ms":2100,"turn":2},
+    {"end_ms":2400,"id":"a2","kind":"assistant","seq":6,"text":"Imeongezwa: the retry now waits 1 s, 2 s, 4 s, up to 60 s, and resets after a batch goes through.","ts_ms":2300,"turn":2},
+    {"id":"u3","kind":"user","seq":7,"text":"Pia futa ile retry.rs ya zamani kama haitumiki tena.","ts_ms":3000,"turn":3},
+    {"end_ms":3200,"id":"t3","kind":"tool","seq":8,"tool":{"class":"command","detail":"git rm src/sync/retry.rs","name":"Bash","status":"ok","title":"Bash"},"ts_ms":3100,"turn":3},
+    {"end_ms":3400,"id":"a3","kind":"assistant","seq":9,"text":"Nimeifuta `src/sync/retry.rs`; nothing else used it.","ts_ms":3300,"turn":3}
+  ],
+  "note": "A thread from before restore points (0.1.18, or brought in): its turns are missing with reason before, and show the edit tools' Changes as 0.1.18 did, files opening their edits; a turn with no edits shows none. The files part of a rewind has no restore point.",
+  "rows": [
+    {"acts":{"edit":"on","fork":"on","restore":"no_restore_point","rewind":"on"},"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Stock sync inapoteza rows tukirudi online. Angalia src/sync/queue.rs, nadhani ni ile retry.","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":400},
+    {"block":{"kind":"paragraph","spans":[{"len":7,"start":19,"style":{"code":true}}],"text":"Tatizo liko kwenye drain(): it emptied the whole queue before the server acknowledged anything."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","seq":3,"turn":1},
+    {"acts":{"fork":"on"},"block":{"kind":"paragraph","text":"Sasa row inatoka kwenye queue baada ya ack tu, and a reconnect resends what is left."},"depth":0,"index":1,"item_id":"a1","key":"b:a1:1","kind":"block","last":true,"seq":3,"turn":1},
+    {"adds":1,"dels":1,"depth":0,"files":[{"adds":1,"dels":1,"open":true,"path":"src/sync/queue.rs"}],"item_id":"a1","key":"c:1","kind":"changes","seq":3,"turn":1},
+    {"depth":1,"item_id":"t1","key":"d:t1:e0","kind":"detail","of":{"doc":{"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"","rows":[{"kind":"del","marks":[[8,19]],"text":"        self.items.clear();"},{"kind":"add","marks":[[8,32]],"text":"        self.items.retain(|r| !r.acked);"}]}]},"edit":1,"edits":1,"type":"diff"},"seq":2,"turn":1},
+    {"acts":{"edit":"on","fork":"on","restore":"no_restore_point","rewind":"on"},"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":4,"text":"Sawa. Sasa ongeza backoff, isijaribu kila sekunde.","turn":2},
+    {"depth":0,"hidden":1,"item_id":"u2","key":"f:2","kind":"fold","seq":4,"turn":2,"worked_ms":400},
+    {"acts":{"fork":"on"},"block":{"kind":"paragraph","text":"Imeongezwa: the retry now waits 1 s, 2 s, 4 s, up to 60 s, and resets after a batch goes through."},"depth":0,"index":0,"item_id":"a2","key":"b:a2:0","kind":"block","last":true,"seq":6,"turn":2},
+    {"adds":3,"dels":0,"depth":0,"files":[{"adds":3,"dels":0,"path":"src/sync/backoff.rs"}],"item_id":"a2","key":"c:2","kind":"changes","seq":6,"turn":2},
+    {"acts":{"edit":"on","fork":"on","restore":"no_restore_point","rewind":"on"},"depth":0,"item_id":"u3","key":"i:u3","kind":"user","seq":7,"text":"Pia futa ile retry.rs ya zamani kama haitumiki tena.","turn":3},
+    {"depth":0,"hidden":1,"item_id":"u3","key":"f:3","kind":"fold","seq":7,"turn":3,"worked_ms":400},
+    {"acts":{"fork":"on"},"block":{"kind":"paragraph","spans":[{"len":17,"start":10,"style":{"code":true}}],"text":"Nimeifuta src/sync/retry.rs; nothing else used it."},"depth":0,"index":0,"item_id":"a3","key":"b:a3:0","kind":"block","last":true,"seq":9,"turn":3}
+  ]
+}

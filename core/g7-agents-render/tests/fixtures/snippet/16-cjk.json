@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [17,2]
+  ],
+  "note": "CJK text and a CJK match.",
+  "parts": [
+    {"text":"同步队列在重新连接后丢失行。请检查"},
+    {"mark":true,"text":"重试"},
+    {"text":"逻辑。"}
+  ],
+  "text": "同步队列在重新连接后丢失行。请检查重试逻辑。"
+}

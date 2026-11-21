@@ -15,10 +15,13 @@ use pulldown_cmark::{
 };
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashSet;
+
 use crate::bounds::{
-    MAX_BLOCKS, MAX_DEPTH, MAX_HREF_BYTES, MAX_SPANS_PER_BLOCK, MAX_SRC_BYTES, MAX_TABLE_COLS,
-    MAX_TABLE_ROWS, clean, cut_bytes, sat32, units32,
+    MAX_BLOCKS, MAX_DEPTH, MAX_HREF_BYTES, MAX_PATH_HINTS, MAX_SPANS_PER_BLOCK, MAX_SRC_BYTES,
+    MAX_TABLE_COLS, MAX_TABLE_ROWS, clean, cut_bytes, sat32, units32,
 };
+use crate::detect::guess;
 use crate::highlight::{CodeLine, highlight};
 
 /// A parsed Markdown text.
@@ -51,9 +54,13 @@ pub struct Block {
     /// Over `text`, in UTF-16 units: sorted, non-overlapping; gaps are plain.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<Span>,
-    /// Code: the fence's language word, lowercased, at most 32 bytes.
+    /// Code: the fence's language word, lowercased, at most 32 bytes; or,
+    /// for a block that names none, the word [`crate::guess`] found.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub lang: String,
+    /// Code: `lang` is a guess, not the fence's word.
+    #[serde(skip_serializing_if = "is_false")]
+    pub lang_guessed: bool,
     /// Code: the coloured lines; empty when not highlighted.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lines: Vec<CodeLine>,
@@ -158,6 +165,10 @@ pub struct Style {
     /// The alt text of an image that is a link (never loaded).
     #[serde(skip_serializing_if = "is_false")]
     pub image: bool,
+    /// Inline code that names a file the turn changed (its whole path, or
+    /// the end of it after a `/`): the client draws it as a path.
+    #[serde(skip_serializing_if = "is_false")]
+    pub path: bool,
 }
 
 impl Style {
@@ -238,9 +249,78 @@ pub(crate) fn is_zero<T: Default + PartialEq>(n: &T) -> bool {
 /// Parses `src` (cut to `MAX_SRC_BYTES`, cleaned) into blocks, with code
 /// blocks highlighted.
 pub fn markdown(src: &str) -> Doc {
+    markdown_with(src, Hints::default())
+}
+
+/// What a text's surroundings say about it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Hints<'a> {
+    /// The extension of a file the same turn edited or read last: a code
+    /// block that names no language and could be two is taken as this one's.
+    pub ext: Option<&'a str>,
+    /// The files the turn changed: inline code naming one is marked `path`.
+    pub paths: &'a [&'a str],
+}
+
+/// [`markdown`] with what the text's surroundings say.
+pub fn markdown_with(src: &str, hints: Hints<'_>) -> Doc {
     let src = clean(cut_bytes(src, MAX_SRC_BYTES));
-    let parsed = parse(&src, true);
+    let mut parsed = parse(&src);
+    finish(&mut parsed.blocks, hints);
     Doc { blocks: parsed.blocks, plain: parsed.plain }
+}
+
+/// What a parse leaves to the hints: colours code ([`fill_code`]) and
+/// marks inline code that names a file ([`mark_paths`]).
+pub(crate) fn finish(blocks: &mut [Block], hints: Hints<'_>) {
+    fill_code(blocks, hints);
+    mark_paths(blocks, hints.paths);
+}
+
+/// Marks inline code whose text is one of `paths` or ends one after a `/`.
+pub(crate) fn mark_paths(blocks: &mut [Block], paths: &[&str]) {
+    if paths.is_empty() {
+        return;
+    }
+    let mut names: HashSet<&str> = HashSet::new();
+    for path in paths.iter().take(MAX_PATH_HINTS) {
+        names.insert(path);
+        names.extend(path.match_indices('/').map(|(i, _)| &path[i + 1..]).filter(|s| !s.is_empty()));
+    }
+    let mark = |text: &str, spans: &mut [Span]| {
+        if !spans.iter().any(|s| s.style.code) {
+            return;
+        }
+        let units: Vec<u16> = text.encode_utf16().collect();
+        for span in spans.iter_mut().filter(|s| s.style.code) {
+            let (start, end) = (span.start as usize, span.start.saturating_add(span.len) as usize);
+            if let Some(piece) = units.get(start..end) {
+                span.style.path = names.contains(String::from_utf16_lossy(piece).as_str());
+            }
+        }
+    };
+    for block in blocks.iter_mut() {
+        mark(&block.text, &mut block.spans);
+        if let Some(table) = block.table.as_mut() {
+            for cell in &mut table.cells {
+                mark(&cell.text, &mut cell.spans);
+            }
+        }
+    }
+}
+
+/// Colours the code blocks that are not open and not coloured yet, first
+/// guessing the language of one that names none.
+pub(crate) fn fill_code(blocks: &mut [Block], hints: Hints<'_>) {
+    for b in blocks.iter_mut().filter(|b| b.kind == BlockKind::Code && !b.open && b.lines.is_empty()) {
+        if b.lang.is_empty()
+            && let Some(word) = guess(&b.text, hints.ext)
+        {
+            word.clone_into(&mut b.lang);
+            b.lang_guessed = true;
+        }
+        b.lines = highlight(&b.lang, &b.text);
+    }
 }
 
 /// The blocks of `src`, which must already be cut and cleaned, with the
@@ -268,9 +348,10 @@ pub(crate) fn options() -> Options {
     Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_GFM
 }
 
-/// Parses already cut and cleaned text. `highlight` turns code colouring on.
-pub(crate) fn parse(src: &str, highlight: bool) -> Parsed {
-    let mut b = Builder::new(src, highlight);
+/// Parses already cut and cleaned text; code is not coloured ([`fill_code`]
+/// does that).
+pub(crate) fn parse(src: &str) -> Parsed {
+    let mut b = Builder::new(src);
     for (event, range) in Parser::new_ext(src, options()).into_offset_iter() {
         b.event(event, range.start, range.end);
         if b.blocks.len() > MAX_BLOCKS {
@@ -389,7 +470,6 @@ struct TableBuild {
 
 struct Builder<'s> {
     src: &'s str,
-    highlight: bool,
     blocks: Vec<Block>,
     starts: Vec<usize>,
     ends: Vec<usize>,
@@ -412,10 +492,9 @@ struct Builder<'s> {
 }
 
 impl<'s> Builder<'s> {
-    fn new(src: &'s str, highlight: bool) -> Self {
+    fn new(src: &'s str) -> Self {
         Builder {
             src,
-            highlight,
             blocks: Vec::new(),
             starts: Vec::new(),
             ends: Vec::new(),
@@ -449,7 +528,16 @@ impl<'s> Builder<'s> {
             None => (Link::None, String::new(), false),
         };
         let image = image && !link.is_none();
-        (Style { strong: self.strong > 0, em: self.em > 0, strike: self.strike > 0, code, link, image }, href)
+        let style = Style {
+            strong: self.strong > 0,
+            em: self.em > 0,
+            strike: self.strike > 0,
+            code,
+            link,
+            image,
+            path: false,
+        };
+        (style, href)
     }
 
     /// Adds a finished block, applying a pending alert and list marker.
@@ -864,9 +952,8 @@ impl<'s> Builder<'s> {
         if text.ends_with('\n') {
             text.pop();
         }
-        let lines = if self.highlight { highlight(&code.lang, &text) } else { Vec::new() };
         self.push_block(
-            Block { kind: BlockKind::Code, text, lang: code.lang, lines, ..Block::default() },
+            Block { kind: BlockKind::Code, text, lang: code.lang, ..Block::default() },
             code.start,
         );
     }

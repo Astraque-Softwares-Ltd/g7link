@@ -1,4 +1,4 @@
 {
-  "label": {"class":"command","object":"ls -la"},
+  "label": {"class":"command","object":"ls -la","toks":[{"class":"function","len":2},{"class":"punctuation","len":2},{"class":"variable","len":2}]},
   "tool": {"class":"command","detail":"\n\n  ls -la","name":"command","status":"ok","title":"Bash"}
 }

@@ -1,0 +1,17 @@
+{
+  "ctx": {"marks":[],"now_ms":10000,"open":["c:1:0"],"state":"done","state_since_ms":9000,"turns":[{"can_fork":true,"can_rewind":true,"checkpoint":"none","ended_ms":1400,"turn":1}]},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Panga mapishi ya wiki hii kwa bajeti ya 3,500, na uandike orodha ya sokoni.","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"edit","detail":"+# Wiki 47\n+Jumatatu: wali na maharage","name":"Edit","path":"wiki-47.md","status":"ok","title":"Edit wiki-47.md"},"ts_ms":1100,"turn":1},
+    {"end_ms":1300,"id":"t2","kind":"tool","seq":3,"tool":{"class":"edit","detail":"-unga 2kg\n+unga 1kg\n+maharage 1kg","name":"Edit","path":"sokoni.md","status":"ok","title":"Edit sokoni.md"},"ts_ms":1200,"turn":1},
+    {"end_ms":1400,"id":"a1","kind":"assistant","seq":4,"text":"Nimepanga siku saba kwenye `wiki-47.md` and written the market list to `sokoni.md`.","ts_ms":1300,"turn":1}
+  ],
+  "note": "A folder that is not a git repository: Changes from the edit tools as before (not recorded, files open their edits), and the files part of a rewind says why it can't.",
+  "rows": [
+    {"acts":{"edit":"on","fork":"on","restore":"not_git","rewind":"on"},"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Panga mapishi ya wiki hii kwa bajeti ya 3,500, na uandike orodha ya sokoni.","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":400},
+    {"acts":{"fork":"on"},"block":{"kind":"paragraph","spans":[{"len":10,"start":27,"style":{"code":true}},{"len":9,"start":69,"style":{"code":true}}],"text":"Nimepanga siku saba kwenye wiki-47.md and written the market list to sokoni.md."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"seq":4,"turn":1},
+    {"adds":4,"dels":1,"depth":0,"files":[{"adds":2,"dels":1,"open":true,"path":"sokoni.md"},{"adds":2,"dels":0,"path":"wiki-47.md"}],"item_id":"a1","key":"c:1","kind":"changes","seq":4,"turn":1},
+    {"depth":1,"item_id":"t2","key":"d:t2:e0","kind":"detail","of":{"doc":{"adds":2,"dels":1,"files":[{"adds":2,"dels":1,"path":"","rows":[{"kind":"del","marks":[[5,3]],"text":"unga 2kg"},{"kind":"add","marks":[[5,3]],"text":"unga 1kg"},{"kind":"add","text":"maharage 1kg"}]}]},"edit":1,"edits":1,"type":"diff"},"seq":3,"turn":1}
+  ]
+}

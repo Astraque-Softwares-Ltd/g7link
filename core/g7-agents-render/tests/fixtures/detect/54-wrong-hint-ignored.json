@@ -1,0 +1,6 @@
+{
+  "code": "fn main() {\n    let mut x = 1;\n    println!(\"{x}\");\n}",
+  "hint_ext": "py",
+  "lang": "rust",
+  "note": "A clear guess wins over a hint."
+}

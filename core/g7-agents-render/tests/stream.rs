@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! A message streamed one character at a time ends with the same rows as
 //! the whole message, and a block that was shown as final never changes
-//! while the rest arrives.
+//! while the rest arrives (a guessed language included).
 
 use std::collections::HashMap;
 
@@ -22,6 +22,9 @@ const TEXTS: &[&str] = &[
     "1. one\n\n1. two\n\n1) three\n\n- a\n\n+ b\n\n* c",
     "Text\n```\ncode right after text\n```\nmore text\n\n    \n\nfinal",
     "a  \nb\\\nc\n\n***bold em*** and **unclosed",
+    // An untagged fence: its language is guessed once it closes, and the
+    // final block never changes after.
+    "Run:\n\n```\ncargo test\ngit status\n```\n\nThen `git push`.",
 ];
 
 fn assistant<'a>(text: &'a str, streaming: bool, rev: u32) -> [ItemIn<'a>; 2] {
@@ -44,6 +47,7 @@ fn assistant<'a>(text: &'a str, streaming: bool, rev: u32) -> [ItemIn<'a>; 2] {
         via: Via::Turn,
         plan_state: None,
         question: None,
+        notice: None,
     };
     let answer = ItemIn {
         seq: 2,
@@ -59,7 +63,7 @@ fn assistant<'a>(text: &'a str, streaming: bool, rev: u32) -> [ItemIn<'a>; 2] {
 }
 
 fn ctx(state: ThreadState) -> Ctx<'static> {
-    Ctx { state, state_since_ms: 0, now_ms: 0, marks: &[], open: &[] }
+    Ctx { state, state_since_ms: 0, now_ms: 0, marks: &[], open: &[], turns: &[] }
 }
 
 fn blocks(rows: &[Row]) -> Vec<Block> {

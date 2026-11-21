@@ -1,0 +1,5 @@
+{
+  "code": "interface Props {\n  title: string;\n  count: number;\n}",
+  "hint_ext": null,
+  "lang": "typescript"
+}

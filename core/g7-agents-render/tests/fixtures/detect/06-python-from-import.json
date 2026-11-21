@@ -1,0 +1,5 @@
+{
+  "code": "from pathlib import Path\nimport json\n\nprint(json.dumps({\"a\": 1}))",
+  "hint_ext": null,
+  "lang": "python"
+}

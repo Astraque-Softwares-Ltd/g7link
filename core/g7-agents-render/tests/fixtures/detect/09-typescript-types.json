@@ -1,0 +1,5 @@
+{
+  "code": "type Retry = { delay: number };\nexport function next(r: Retry): Promise<void> {\n  return Promise.resolve();\n}",
+  "hint_ext": null,
+  "lang": "typescript"
+}

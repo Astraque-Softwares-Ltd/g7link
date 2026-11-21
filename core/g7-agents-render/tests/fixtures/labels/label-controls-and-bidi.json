@@ -1,4 +1,4 @@
 {
-  "label": {"class":"read","object":"notestxt.exe"},
+  "label": {"class":"read","object":"notestxt.exe","toks":[{"class":"file","len":12}]},
   "tool": {"class":"read","name":"read","path":"notes\u202etxt.exe\u0007","status":"ok","title":"Read"}
 }

@@ -8,7 +8,7 @@
   "note": "The agent asks two questions: one line at its place, kind waiting on its mark; the turn does not fold.",
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Make the reconnect log say which side gave up.","turn":1},
-    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"core/ble/src/lease.rs"},"ms":100,"seq":2,"status":"ok","turn":1},
+    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"core/ble/src/lease.rs","toks":[{"class":"dir","len":13},{"class":"file","len":8}]},"ms":100,"seq":2,"status":"ok","turn":1},
     {"count":2,"depth":0,"item_id":"q1","key":"q:q1","kind":"question","seq":3,"state":"asked","turn":1}
   ]
 }

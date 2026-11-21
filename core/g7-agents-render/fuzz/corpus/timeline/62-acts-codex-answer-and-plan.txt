@@ -1,0 +1,8 @@
+Add a flagLooking at the CLI.src/cli.rs (update)
+@@ -1 +1,2 @@
+ fn main() {
++    flag();
+Added `--flag`.
+
+Run it with `duka --flag`.Plan the export next.1. Add `export.rs`
+2. Wire the routesrc/cli.rs

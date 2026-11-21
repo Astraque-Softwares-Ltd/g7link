@@ -7,10 +7,11 @@ use std::collections::HashSet;
 
 use g7_agents_render::bounds::*;
 use g7_agents_render::{
-    ALIASES, Block, CodeLine, Ctx, DetailOf, DiffDoc, ItemIn, ItemKind, Link, Mark, MarkKind, Phase,
-    PlanState, QuestionIn, QuestionState, Row, RowKind, Span, ThreadState, Timeline, ToolClass, ToolIn,
-    ToolStatus, Via, apply, diff, highlight, languages, live_thought_line, markdown, mentions, summary,
-    tool_label, trigger,
+    ALIASES, Act, Block, Checkpoint, CheckpointWhy, CodeLine, Ctx, DetailOf, DiffDoc, DiffNote, ItemIn,
+    ItemKind, Link, Mark, MarkKind, NoteKind, NoticeKind, Phase, PlanState, QuestionIn, QuestionState, Row,
+    RowKind, Span, ThreadState, Timeline, ToolClass, ToolIn, ToolStatus, TurnFileIn, TurnFileStatus, TurnIn,
+    Via, apply, diff, guess, highlight, languages, live_thought_line, markdown, mentions, output_lines,
+    snippet, summary, tool_label, trigger,
 };
 
 /// Inputs per run, sized to finish well inside 20 s in a debug build
@@ -23,6 +24,8 @@ const INPUTS: usize = 10_000;
 const CODE_INPUTS: usize = 250;
 const HIGHLIGHT_EVERY: usize = 2;
 const TIMELINE_EVERY: usize = 10;
+/// Inputs between language guesses and output marks (each scans the input).
+const GUESS_EVERY: usize = 3;
 /// Inputs per grammar in `torture_every_grammar`.
 const GRAMMAR_INPUTS: usize = 2;
 
@@ -327,6 +330,50 @@ fn check_diff(doc: &DiffDoc, what: &str) {
         }
     }
     assert!(adds <= doc.adds && dels <= doc.dels, "{what}: file counts exceed the totals");
+    for f in &doc.files {
+        if f.note == Some(DiffNote::Binary) {
+            assert!(f.rows.is_empty(), "{what}: rows in a binary file");
+        }
+    }
+}
+
+/// A guess is a language `highlight` knows; output lines cover their text
+/// exactly and are cleaned.
+fn check_guess_and_output(input: &str, n: usize) {
+    let hints = [None, Some("rs"), Some("PY"), Some(".ts"), Some("json"), Some("x")];
+    if let Some(word) = guess(input, hints[n % hints.len()]) {
+        assert!(!highlight(word, "x").is_empty(), "guess {word} has no grammar");
+    }
+    let lines = output_lines(input);
+    assert!(lines.len() <= MAX_CODE_LINES, "output lines");
+    for line in &lines {
+        let total: u32 = line.toks.iter().map(|t| t.len).sum();
+        assert_eq!(total as usize, line.text.encode_utf16().count(), "output toks cover the line");
+        assert!(clean(&line.text), "output line not cleaned");
+    }
+}
+
+/// A snippet: on one line, cleaned, no empty part, neighbours differ, and
+/// no mark at a space's edge.
+fn check_snippet(input: &str, n: usize) {
+    let len = input.encode_utf16().count() as u32;
+    let k = n as u32;
+    let marks = [(k % (len + 1), 1 + k % 7), (k.wrapping_mul(7) % (len + 2), k % 40), (u32::MAX, u32::MAX)];
+    let parts = snippet(input, &marks);
+    let mut units = 0;
+    for (i, p) in parts.iter().enumerate() {
+        assert!(!p.text.is_empty() && clean(&p.text), "snippet part");
+        assert!(!p.text.contains(['\n', '\t']) && !p.text.contains("  "), "snippet on one line");
+        assert!(i == 0 || parts[i - 1].mark != p.mark, "snippet parts alternate");
+        if p.mark {
+            assert!(!p.text.starts_with(' ') && !p.text.ends_with(' '), "a mark at a space");
+        }
+        units += p.text.encode_utf16().count();
+    }
+    assert!(units <= MAX_SNIPPET_UNITS, "snippet length");
+    if let (Some(first), Some(last)) = (parts.first(), parts.last()) {
+        assert!(!first.text.starts_with(' ') && !last.text.ends_with(' '), "snippet trimmed");
+    }
 }
 
 fn check_rows(rows: &[Row], what: &str) {
@@ -339,6 +386,10 @@ fn check_rows(rows: &[Row], what: &str) {
             RowKind::Tool { label, .. } => {
                 assert!(label.object.encode_utf16().count() <= LABEL_UNITS, "{what}: label");
                 assert!(!label.object.contains('\n') && clean(&label.object), "{what}: label line");
+                if !label.toks.is_empty() {
+                    let total: u32 = label.toks.iter().map(|t| t.len).sum();
+                    assert_eq!(total as usize, label.object.encode_utf16().count(), "{what}: label toks");
+                }
             }
             RowKind::Thought { preview, .. } => {
                 assert!(preview.encode_utf16().count() <= THOUGHT_PREVIEW_UNITS, "{what}: preview")
@@ -348,10 +399,16 @@ fn check_rows(rows: &[Row], what: &str) {
             }
             RowKind::Detail { of: DetailOf::Diff { doc, .. } } => check_diff(doc, what),
             RowKind::Changes { files, .. } => {
-                assert!(files.len() <= MAX_CHANGED_FILES, "{what}: changed files")
+                assert!(files.len() <= MAX_CHANGED_FILES, "{what}: changed files");
+                assert!(files.iter().all(|f| clean(&f.path)), "{what}: changed file not cleaned");
+            }
+            RowKind::ChangesNote { note, why, count } => {
+                assert!(why.is_none() || *note == NoteKind::Missing, "{what}: a reason off a missing note");
+                assert_ne!(*why, Some(CheckpointWhy::Before), "{what}: a note for a turn from before");
+                assert_eq!(*count > 0, *note == NoteKind::Unrecorded, "{what}: a note's count");
             }
             RowKind::User { text, from, .. } => assert!(clean(text) && clean(from), "{what}: user text"),
-            RowKind::Notice { text } => assert!(clean(text), "{what}: notice"),
+            RowKind::Notice { text, .. } => assert!(clean(text), "{what}: notice"),
             RowKind::Question { by, .. } => assert!(clean(by), "{what}: question by"),
             _ => {}
         }
@@ -366,6 +423,28 @@ fn check_rows(rows: &[Row], what: &str) {
                     "{what}: plan blocks"
                 );
             }
+        }
+    }
+    // Actions only on a message at depth 0; an answer never rewinds.
+    for r in rows {
+        if r.acts.is_hidden() {
+            continue;
+        }
+        assert_eq!(r.depth, 0, "{what}: actions in a fold");
+        match &r.kind {
+            RowKind::User { deny_of, via, .. } => {
+                assert!(!deny_of && *via != Via::Steer, "{what}: actions on a message that started no turn")
+            }
+            RowKind::Block { last, .. } => {
+                assert!(*last, "{what}: actions on an answer's inner block");
+                assert!(
+                    r.acts.rewind == Act::Hidden
+                        && r.acts.edit == Act::Hidden
+                        && r.acts.restore == Act::Hidden,
+                    "{what}: an answer that rewinds"
+                );
+            }
+            _ => panic!("{what}: actions on a {:?} row", r.kind),
         }
     }
     let live = rows.iter().filter(|r| r.key == "live").count();
@@ -407,6 +486,26 @@ const STATES: &[ThreadState] = &[
     ThreadState::Done,
     ThreadState::Failed,
     ThreadState::Interrupted,
+];
+const NOTICES: &[NoticeKind] =
+    &[NoticeKind::Rewound, NoticeKind::EditFromHere, NoticeKind::FilesRestored, NoticeKind::Forked];
+const CHECKPOINTS: &[Checkpoint] =
+    &[Checkpoint::Pending, Checkpoint::Ready, Checkpoint::Missing, Checkpoint::NotGit, Checkpoint::Expired];
+const WHYS: &[CheckpointWhy] = &[
+    CheckpointWhy::Busy,
+    CheckpointWhy::Slow,
+    CheckpointWhy::Large,
+    CheckpointWhy::Refused,
+    CheckpointWhy::Off,
+    CheckpointWhy::Before,
+];
+const FILE_STATUSES: &[TurnFileStatus] = &[
+    TurnFileStatus::Added,
+    TurnFileStatus::Modified,
+    TurnFileStatus::Deleted,
+    TurnFileStatus::Renamed,
+    TurnFileStatus::Type,
+    TurnFileStatus::Unrecorded,
 ];
 const MARKS: &[MarkKind] = &[
     MarkKind::Waiting,
@@ -467,6 +566,7 @@ fn random_timeline(rng: &mut Rng, texts: &[String], ids: &[String]) {
                 count: rng.below(6) as u8,
                 by: if rng.chance(50) { "Pixel\u{202e}" } else { "" },
             }),
+            notice: rng.chance(30).then(|| NOTICES[rng.below(NOTICES.len())]),
         });
     }
     let marks: Vec<Mark> = (0..rng.below(5))
@@ -492,16 +592,44 @@ fn random_timeline(rng: &mut Rng, texts: &[String], ids: &[String]) {
         };
         open.push(key);
     }
+    let paths: Vec<TurnFileIn<'_>> = (0..rng.below(30))
+        .map(|k| TurnFileIn {
+            path: texts[k % texts.len()].as_str(),
+            status: FILE_STATUSES[rng.below(FILE_STATUSES.len())],
+            adds: rng.below(100) as u32,
+            dels: rng.below(100) as u32,
+        })
+        .collect();
+    let turns: Vec<TurnIn<'_>> = (0..rng.below(turn as usize + 3))
+        .map(|_| TurnIn {
+            turn: rng.below(turn as usize + 2) as u32,
+            checkpoint: CHECKPOINTS[rng.below(CHECKPOINTS.len())],
+            why: rng.chance(50).then(|| WHYS[rng.below(WHYS.len())]),
+            ended_ms: rng.chance(70).then(|| rng.next() % 100_000),
+            files: if rng.chance(20) { u32::MAX } else { rng.below(40) as u32 },
+            adds: rng.next() as u32,
+            dels: rng.below(10) as u32,
+            skipped: if rng.chance(70) { 0 } else { rng.below(300) as u32 },
+            paths: &paths[..rng.below(paths.len() + 1)],
+            can_fork: rng.chance(50),
+            can_rewind: rng.chance(50),
+            can_restore: rng.chance(50),
+        })
+        .collect();
     let ctx = Ctx {
         state: STATES[rng.below(STATES.len())],
         state_since_ms: rng.next() % 100_000,
         now_ms: rng.next() % 100_000,
         marks: &marks,
         open: &open,
+        turns: &turns,
     };
     let mut timeline = Timeline::new();
     let rows = timeline.rows(&items, &ctx);
     check_rows(&rows, "timeline");
+    if matches!(ctx.state, ThreadState::Working | ThreadState::Waiting) {
+        assert!(rows.iter().all(|r| r.acts.is_hidden()), "timeline: actions while it works");
+    }
     assert_eq!(timeline.rows(&items, &ctx), rows, "timeline: cached rows differ");
     let tools: Vec<ToolIn<'_>> = items.iter().filter_map(|i| i.tool).collect();
     let s = summary(&tools);
@@ -607,6 +735,10 @@ fn run(seed: u64, inputs: usize, code: bool) {
             check_lines(&highlight(lang, &input), lang);
         }
         check_composer(&input, n);
+        check_snippet(&input, n);
+        if n % GUESS_EVERY == 0 {
+            check_guess_and_output(&input, n / GUESS_EVERY);
+        }
         // The timeline's pieces parse like the whole text.
         let answer = ItemIn {
             seq: 1,
@@ -627,10 +759,18 @@ fn run(seed: u64, inputs: usize, code: bool) {
             via: Via::Turn,
             plan_state: None,
             question: None,
+            notice: None,
         };
         let rows = timeline.rows(
             &[answer],
-            &Ctx { state: ThreadState::Interrupted, state_since_ms: 0, now_ms: 0, marks: &[], open: &[] },
+            &Ctx {
+                state: ThreadState::Interrupted,
+                state_since_ms: 0,
+                now_ms: 0,
+                marks: &[],
+                open: &[],
+                turns: &[],
+            },
         );
         let blocks: Vec<&Block> = rows
             .iter()

@@ -1,0 +1,5 @@
+{
+  "code": "#!/usr/bin/env node\nconsole.log('hi');",
+  "hint_ext": null,
+  "lang": "javascript"
+}

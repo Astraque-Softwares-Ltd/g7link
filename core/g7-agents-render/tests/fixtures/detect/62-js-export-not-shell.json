@@ -1,0 +1,5 @@
+{
+  "code": "export const total = rows.length;\nexport default total;",
+  "hint_ext": null,
+  "lang": "javascript"
+}

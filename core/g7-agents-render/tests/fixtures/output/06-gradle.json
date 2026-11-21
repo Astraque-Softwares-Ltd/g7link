@@ -1,0 +1,12 @@
+{
+  "lines": [
+    {"text":"> Task :app:compileDebugKotlin FAILED","toks":[{"class":"error","len":37}]},
+    {"text":"e: file:///home/u/app/src/Main.kt:12:5 Unresolved reference: foo","toks":[{"class":"error","len":64}]},
+    {"text":""},
+    {"text":"FAILURE: Build failed with an exception.","toks":[{"class":"error","len":40}]},
+    {"text":""},
+    {"text":"BUILD FAILED in 3s","toks":[{"class":"error","len":18}]}
+  ],
+  "note": "Gradle: the failing task and the build result; a file: URL is not a place.",
+  "text": "> Task :app:compileDebugKotlin FAILED\ne: file:///home/u/app/src/Main.kt:12:5 Unresolved reference: foo\n\nFAILURE: Build failed with an exception.\n\nBUILD FAILED in 3s"
+}

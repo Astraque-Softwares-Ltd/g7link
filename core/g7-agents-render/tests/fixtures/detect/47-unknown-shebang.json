@@ -1,0 +1,6 @@
+{
+  "code": "#!/usr/bin/env awk -f\n{ print $1 }",
+  "hint_ext": null,
+  "lang": null,
+  "note": "An interpreter the table doesn't know: the scores decide, and they don't reach the threshold."
+}

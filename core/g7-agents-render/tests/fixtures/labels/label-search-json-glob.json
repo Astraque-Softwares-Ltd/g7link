@@ -1,4 +1,4 @@
 {
-  "label": {"class":"search","object":"**/*.rs"},
+  "label": {"class":"search","object":"**/*.rs","toks":[{"class":"string","len":7}]},
   "tool": {"class":"search","detail":"{\"pattern\":\"**/*.rs\"}","name":"search","status":"ok","title":"Glob"}
 }

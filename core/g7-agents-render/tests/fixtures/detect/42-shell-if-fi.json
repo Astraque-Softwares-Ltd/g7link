@@ -1,0 +1,5 @@
+{
+  "code": "if [ -f .env ]; then\n  source .env\nfi",
+  "hint_ext": null,
+  "lang": "bash"
+}

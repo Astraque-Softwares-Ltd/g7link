@@ -1,0 +1,14 @@
+{
+  "marks": [
+    [0,4],
+    [2,5],
+    [7,1],
+    [8,5]
+  ],
+  "note": "Overlapping and touching marks merge into one marked part.",
+  "parts": [
+    {"mark":true,"text":"backoff retry"},
+    {"text":" loop"}
+  ],
+  "text": "backoff retry loop"
+}

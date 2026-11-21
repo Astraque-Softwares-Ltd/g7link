@@ -1,0 +1,4 @@
+```
+#!/usr/bin/env awk -f
+{ print $1 }
+```

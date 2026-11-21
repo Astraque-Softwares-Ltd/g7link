@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [20,5]
+  ],
+  "note": "Bidi controls are dropped; the marks still count them where the host did.",
+  "parts": [
+    {"text":"file exe.txt and "},
+    {"mark":true,"text":"retry"},
+    {"text":" logic"}
+  ],
+  "text": "file \u202eexe.txt\u202c and \u2066retry\u2069 logic"
+}

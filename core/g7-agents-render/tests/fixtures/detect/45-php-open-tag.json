@@ -1,0 +1,5 @@
+{
+  "code": "<?php\necho 'hi';",
+  "hint_ext": null,
+  "lang": "php"
+}

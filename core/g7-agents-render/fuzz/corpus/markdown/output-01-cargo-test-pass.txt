@@ -1,0 +1,6 @@
+running 3 tests
+test sync::drain ... ok
+test sync::retry ... ok
+test sync::backoff ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored

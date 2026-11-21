@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [26,5]
+  ],
+  "note": "Emoji before the match count two UTF-16 units each.",
+  "parts": [
+    {"text":"Deploy 🚀 done; the 🐛 in "},
+    {"mark":true,"text":"retry"},
+    {"text":" is fixed"}
+  ],
+  "text": "Deploy 🚀 done; the 🐛 in retry is fixed"
+}

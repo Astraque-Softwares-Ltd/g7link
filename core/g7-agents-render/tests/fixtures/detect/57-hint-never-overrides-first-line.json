@@ -1,0 +1,5 @@
+{
+  "code": "#!/bin/sh\nls",
+  "hint_ext": "py",
+  "lang": "bash"
+}

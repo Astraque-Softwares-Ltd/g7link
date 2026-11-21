@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Every fixture under `tests/fixtures/` is loaded and compared in full.
 //! The launcher re-implements the rules and reads the same `timeline/`,
-//! `labels/`, `thought/`, `guard/` and `composer/` files.
+//! `labels/`, `thought/`, `guard/`, `composer/`, `snippet/`, `detect/` and
+//! `output/` files.
 
 mod common;
 
 use common::{CtxJ, ItemJ, ToolJ, blessing, first_difference, fixtures, load, save, text_input};
 use g7_agents_render::{
-    GuardEvent, Timeline, TypingGuard, apply, diff, live_thought_line, markdown, mentions, summary,
-    tool_label, trigger,
+    GuardEvent, Timeline, TypingGuard, apply, diff, guess, live_thought_line, markdown, mentions,
+    output_lines, snippet, summary, tool_label, trigger,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -33,10 +34,12 @@ fn timeline() {
         let ctx: CtxJ = serde_json::from_value(fixture["ctx"].clone())
             .unwrap_or_else(|e| panic!("{}: ctx: {e}", path.display()));
         let items_in: Vec<_> = items.iter().map(ItemJ::as_in).collect();
+        let files = ctx.files_in();
+        let turns = ctx.turns_in(&files);
         let mut timeline = Timeline::new();
-        let rows = timeline.rows(&items_in, &ctx.as_ctx());
+        let rows = timeline.rows(&items_in, &ctx.as_ctx(&turns));
         // The second call reads the caches; it must give the same rows.
-        let again = timeline.rows(&items_in, &ctx.as_ctx());
+        let again = timeline.rows(&items_in, &ctx.as_ctx(&turns));
         assert_eq!(rows, again, "{}: cached rows differ", path.display());
         let keys: std::collections::HashSet<_> = rows.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys.len(), rows.len(), "{}: duplicate keys", path.display());
@@ -83,6 +86,41 @@ fn composer() {
             got.push(("out", json!(out)));
         }
         check_all(&path, fixture, got);
+    }
+}
+
+/// `{text, marks}` → `parts`: the snippet's text pieces, matches marked.
+#[test]
+fn snippets() {
+    for path in fixtures("snippet") {
+        let fixture = load(&path);
+        let text = text_input(&fixture["text"]);
+        let marks: Vec<(u32, u32)> = serde_json::from_value(fixture["marks"].clone())
+            .unwrap_or_else(|e| panic!("{}: marks: {e}", path.display()));
+        let got = serde_json::to_value(snippet(&text, &marks)).expect("snippets serialize");
+        check(&path, fixture, "parts", got);
+    }
+}
+
+/// `{code, hint_ext}` → `lang`: the language guessed, or null.
+#[test]
+fn detect() {
+    for path in fixtures("detect") {
+        let fixture = load(&path);
+        let code = text_input(&fixture["code"]);
+        let hint = fixture["hint_ext"].as_str().map(str::to_owned);
+        check(&path, fixture, "lang", json!(guess(&code, hint.as_deref())));
+    }
+}
+
+/// `text` → `lines`: a command's output with its marked runs.
+#[test]
+fn output() {
+    for path in fixtures("output") {
+        let fixture = load(&path);
+        let text = text_input(&fixture["text"]);
+        let got = serde_json::to_value(output_lines(&text)).expect("lines serialize");
+        check(&path, fixture, "lines", got);
     }
 }
 
@@ -200,6 +238,13 @@ fn diff_fixtures() {
                 "adds": doc.adds,
                 "dels": doc.dels,
                 "more": doc.more,
+                // `[file index, note]` for each file with one.
+                "notes": doc
+                    .files
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(k, f)| f.note.map(|note| json!([k, note])))
+                    .collect::<Vec<_>>(),
             });
             check(&path, fixture, "shape", got);
         } else {

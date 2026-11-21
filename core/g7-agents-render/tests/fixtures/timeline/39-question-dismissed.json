@@ -9,6 +9,6 @@
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Tidy the logs.","turn":1},
     {"count":1,"depth":0,"item_id":"q1","key":"q:q1","kind":"question","seq":2,"state":"dismissed","turn":1},
-    {"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo fmt"},"seq":3,"status":"running","turn":1}
+    {"depth":0,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo fmt","toks":[{"class":"function","len":5},{"class":"plain","len":4}]},"seq":3,"status":"running","turn":1}
   ]
 }

@@ -1,0 +1,11 @@
+{
+  "marks": [
+    [0,5]
+  ],
+  "note": "A match at the very start.",
+  "parts": [
+    {"mark":true,"text":"retry"},
+    {"text":" now waits 1 s, 2 s, 4 s, up to 60 s."}
+  ],
+  "text": "retry now waits 1 s, 2 s, 4 s, up to 60 s."
+}

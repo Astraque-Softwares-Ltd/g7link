@@ -1,0 +1,5 @@
+{
+  "code": "[package]\nname = \"duka\"\nversion = \"0.1.0\"\n\n[dependencies]\nserde = \"1\"",
+  "hint_ext": null,
+  "lang": "toml"
+}

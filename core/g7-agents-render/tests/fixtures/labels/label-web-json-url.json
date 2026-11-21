@@ -1,4 +1,4 @@
 {
-  "label": {"class":"web","object":"https://docs.example/a"},
+  "label": {"class":"web","object":"https://docs.example/a","toks":[{"class":"dir","len":8},{"class":"file","len":12},{"class":"dir","len":2}]},
   "tool": {"class":"web","detail":"{\"url\":\"https://docs.example/a\",\"prompt\":\"Summarise\"}","name":"web","status":"ok","title":"WebFetch"}
 }

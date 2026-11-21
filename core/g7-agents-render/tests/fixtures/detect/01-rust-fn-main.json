@@ -1,0 +1,6 @@
+{
+  "code": "fn main() {\n    let mut total = 0;\n    println!(\"{total}\");\n}",
+  "hint_ext": null,
+  "lang": "rust",
+  "note": "Rust: fn, let mut, println!."
+}

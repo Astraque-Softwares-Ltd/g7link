@@ -1,0 +1,14 @@
+diff --git a/src/a.rs b/src/a.rs
+index 1..2 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1 +1 @@
+-a
++b
+diff --git a/logo.png b/logo.png
+index 3..4 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/new.bin b/new.bin
+new file mode 100644
+index 0000000..5555555
+Binary files /dev/null and b/new.bin differ

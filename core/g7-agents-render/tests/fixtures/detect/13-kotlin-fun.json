@@ -1,0 +1,5 @@
+{
+  "code": "fun main() {\n    val rows = listOf(1, 2)\n    println(rows)\n}",
+  "hint_ext": null,
+  "lang": "kotlin"
+}

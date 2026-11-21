@@ -1,0 +1,14 @@
+{
+  "ctx": {"marks":[],"now_ms":10000,"open":[],"state":"done","state_since_ms":9000,"turns":[{"can_fork":true,"can_restore":true,"can_rewind":true,"checkpoint":"ready","ended_ms":1400,"files":0,"turn":4}]},
+  "items": [
+    {"id":"u1","kind":"user","seq":11,"text":"Also keep the old error text.","ts_ms":1000,"turn":4,"via":"steer"},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":12,"tool":{"class":"command","detail":"cargo test","name":"Bash","status":"ok","title":"Bash"},"ts_ms":1100,"turn":4},
+    {"end_ms":1400,"id":"a1","kind":"assistant","seq":13,"text":"Kept it.","ts_ms":1300,"turn":4}
+  ],
+  "note": "A page that begins inside a turn, at a message taken into it while it worked: no actions on it.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":11,"text":"Also keep the old error text.","turn":4,"via":"steer"},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:4","kind":"fold","seq":11,"turn":4,"worked_ms":400},
+    {"acts":{"fork":"on"},"block":{"kind":"paragraph","text":"Kept it."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"seq":13,"turn":4}
+  ]
+}

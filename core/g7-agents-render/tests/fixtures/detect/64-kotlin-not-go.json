@@ -1,0 +1,5 @@
+{
+  "code": "suspend fun load(): Unit {\n    val rows = api.rows()\n}",
+  "hint_ext": null,
+  "lang": "kotlin"
+}

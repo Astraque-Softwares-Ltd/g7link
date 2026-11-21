@@ -1,0 +1,6 @@
+{
+  "code": "[1, 2, 3]",
+  "hint_ext": null,
+  "lang": null,
+  "note": "Opens like JSON but has no key: a near miss, plain without a hint."
+}

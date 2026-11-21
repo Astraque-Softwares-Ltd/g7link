@@ -1,0 +1,16 @@
+diff --git a/icon.png b/icon.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111
+GIT binary patch
+literal 12
+TcmZQzU|?imU|?im00Ig?0RR91
+
+literal 0
+HcmV?d00001
+
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-x
++y

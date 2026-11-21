@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [12,7]
+  ],
+  "note": "A mark that takes in the spaces around a word is drawn on the word only.",
+  "parts": [
+    {"text":"wait for the "},
+    {"mark":true,"text":"retry"},
+    {"text":" to end"}
+  ],
+  "text": "wait for the retry to end"
+}

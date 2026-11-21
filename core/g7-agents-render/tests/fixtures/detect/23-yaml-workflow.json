@@ -1,0 +1,5 @@
+{
+  "code": "name: CI\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo test",
+  "hint_ext": null,
+  "lang": "yaml"
+}

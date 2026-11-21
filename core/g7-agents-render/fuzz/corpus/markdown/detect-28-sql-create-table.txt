@@ -1,0 +1,6 @@
+```
+CREATE TABLE sales (
+  id INTEGER PRIMARY KEY,
+  total INTEGER NOT NULL
+);
+```

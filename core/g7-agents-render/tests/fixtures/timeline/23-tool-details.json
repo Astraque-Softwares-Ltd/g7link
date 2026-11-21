@@ -10,11 +10,11 @@
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
     {"count":2,"depth":0,"item_id":"t1","key":"g:t1","kind":"group","open":true,"seq":2,"summary":{"first":{"class":"command","count":1},"second":{"class":"edit","count":1}},"turn":1},
-    {"depth":1,"has_detail":true,"has_output":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo test \\"},"ms":2000,"open":true,"seq":2,"status":"ok","turn":1},
-    {"depth":2,"item_id":"t1","key":"d:t1:c","kind":"detail","of":{"text":"cargo test \\\n  --all","type":"command"},"seq":2,"turn":1},
-    {"depth":2,"item_id":"t1","key":"d:t1:o","kind":"detail","of":{"cut":true,"text":"...\ntest result: ok","type":"output"},"seq":2,"turn":1},
-    {"adds":1,"dels":1,"depth":1,"has_detail":true,"item_id":"t2","key":"i:t2","kind":"tool","label":{"class":"edit","object":"src/a.rs"},"ms":100,"open":true,"seq":3,"status":"ok","turn":1},
+    {"depth":1,"has_detail":true,"has_output":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"command","object":"cargo test \\","toks":[{"class":"function","len":5},{"class":"plain","len":6},{"class":"punctuation","len":1}]},"ms":2000,"open":true,"seq":2,"status":"ok","turn":1},
+    {"depth":2,"item_id":"t1","key":"d:t1:c","kind":"detail","of":{"lines":[{"text":"cargo test \\","toks":[{"class":"function","len":5},{"class":"plain","len":6},{"class":"punctuation","len":1}]},{"text":"  --all","toks":[{"class":"punctuation","len":4},{"class":"variable","len":3}]}],"text":"cargo test \\\n  --all","type":"command"},"seq":2,"turn":1},
+    {"depth":2,"item_id":"t1","key":"d:t1:o","kind":"detail","of":{"cut":true,"lines":[{"text":"...","toks":[{"class":"plain","len":3}]},{"text":"test result: ok","toks":[{"class":"ok","len":15}]}],"text":"...\ntest result: ok","type":"output"},"seq":2,"turn":1},
+    {"adds":1,"dels":1,"depth":1,"has_detail":true,"item_id":"t2","key":"i:t2","kind":"tool","label":{"class":"edit","object":"src/a.rs","toks":[{"class":"dir","len":4},{"class":"file","len":4}]},"ms":100,"open":true,"seq":3,"status":"ok","turn":1},
     {"depth":2,"item_id":"t2","key":"d:t2:f","kind":"detail","of":{"doc":{"adds":1,"dels":1,"files":[{"adds":1,"dels":1,"path":"src/a.rs","rows":[{"kind":"hunk","text":"@@ -10,2 +10,2 @@"},{"kind":"context","new_no":10,"old_no":10,"text":"fn a() {"},{"kind":"del","marks":[[4,6]],"old_no":11,"text":"    old();"},{"kind":"add","marks":[[4,6]],"new_no":11,"text":"    new();"}]}]},"type":"diff"},"seq":3,"turn":1},
-    {"depth":0,"has_detail":true,"item_id":"t3","key":"i:t3","kind":"tool","label":{"class":"command","object":"cargo build"},"seq":4,"status":"running","turn":1}
+    {"depth":0,"has_detail":true,"item_id":"t3","key":"i:t3","kind":"tool","label":{"class":"command","object":"cargo build","toks":[{"class":"function","len":5},{"class":"plain","len":6}]},"seq":4,"status":"running","turn":1}
   ]
 }

@@ -1,0 +1,4 @@
+```
+The queue drains after the server acknowledges each row.
+A reconnect resends what is left.
+```

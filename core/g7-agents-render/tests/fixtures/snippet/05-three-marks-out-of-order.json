@@ -1,0 +1,18 @@
+{
+  "marks": [
+    [64,5],
+    [16,5],
+    [33,5]
+  ],
+  "note": "Several matches, given in any order.",
+  "parts": [
+    {"text":"Imeongezwa: the "},
+    {"mark":true,"text":"retry"},
+    {"text":" now waits; "},
+    {"mark":true,"text":"retry"},
+    {"text":" resets after a batch; no "},
+    {"mark":true,"text":"retry"},
+    {"text":" storms."}
+  ],
+  "text": "Imeongezwa: the retry now waits; retry resets after a batch; no retry storms."
+}

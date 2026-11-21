@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [4,5]
+  ],
+  "note": "A zero-width joiner is kept; a no-break space is whitespace and collapses.",
+  "parts": [
+    {"text":"x‍y "},
+    {"mark":true,"text":"retry"},
+    {"text":" z"}
+  ],
+  "text": "x‍y retry   z"
+}

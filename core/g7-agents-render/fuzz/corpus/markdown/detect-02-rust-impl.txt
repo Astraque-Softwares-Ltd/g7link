@@ -1,0 +1,8 @@
+```
+impl Queue {
+    pub fn drain(&mut self) -> Result<(), Error> {
+        self.items.retain(|r| !r.acked);
+        Ok(())
+    }
+}
+```

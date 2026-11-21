@@ -156,28 +156,11 @@ data class G7Tints(
     val muted: Color,
 ) {
     companion object {
-        val dark = G7Tints(
-            blue = Color(0xFF7CB7EE),
-            teal = Color(0xFF5DCAA5),
-            coral = Color(0xFFF0997B),
-            pink = Color(0xFFED93B1),
-            amber = Color(0xFFEF9F27),
-            green = Color(0xFF97C459),
-            red = Color(0xFFE5736F),
-            lavender = Color(0xFFB292D0),
-            muted = Color(0xFFA1A1A8),
-        )
-        val light = G7Tints(
-            blue = Color(0xFF2F74B5),
-            teal = Color(0xFF1E8A68),
-            coral = Color(0xFFC5532F),
-            pink = Color(0xFFB8436E),
-            amber = Color(0xFFA86400),
-            green = Color(0xFF4F7F1A),
-            red = Color(0xFFB8322E),
-            lavender = Color(0xFF7D5CA9),
-            muted = Color(0xFF5F5F67),
-        )
+        // Read from the generated tokens (AgentPalette.kt), so these can't drift from
+        // docs/design/tokens.json again. Getters, not fields: G7TintTokens builds G7Tints,
+        // so a field here would make the two objects' initialisation depend on each other.
+        val dark: G7Tints get() = G7TintTokens.dark
+        val light: G7Tints get() = G7TintTokens.light
     }
 }
 

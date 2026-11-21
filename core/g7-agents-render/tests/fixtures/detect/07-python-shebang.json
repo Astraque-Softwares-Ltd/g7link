@@ -1,0 +1,6 @@
+{
+  "code": "#!/usr/bin/env python3\nimport sys\nsys.exit(0)",
+  "hint_ext": null,
+  "lang": "python",
+  "note": "A shebang decides on its own."
+}

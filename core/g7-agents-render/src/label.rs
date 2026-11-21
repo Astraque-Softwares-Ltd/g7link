@@ -5,12 +5,15 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bounds::units32;
 use crate::bounds::{
     LABEL_UNITS, MAX_SRC_BYTES, THOUGHT_PREVIEW_UNITS, clean, collapse_whitespace, cut_bytes, ellipsize,
     sat16,
 };
 use crate::diff::file_headers;
+use crate::highlight::{Tok, TokClass, highlight};
 use crate::markdown::is_zero;
+use crate::output::path_runs;
 use crate::timeline::{ToolClass, ToolIn, is_shown_tool};
 
 /// The object of a tool line ("Ran <object>"), one line.
@@ -22,6 +25,12 @@ pub struct ToolLabel {
     /// Further files of a multi-file edit ("and N more").
     #[serde(default, skip_serializing_if = "is_zero")]
     pub more: u16,
+    /// Classed runs over `object`, covering it exactly; empty for plain. A
+    /// command is highlighted as shell; an edited or read path is Dir, File
+    /// and Pos; a search term is String; a web address is its host as File
+    /// and the rest as Dir.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toks: Vec<Tok>,
 }
 
 impl std::fmt::Debug for ToolLabel {
@@ -53,22 +62,75 @@ pub struct Clause {
 /// The label of a tool line.
 pub fn tool_label(tool: &ToolIn<'_>) -> ToolLabel {
     let title = first_line(tool.title);
-    let object = match tool.class {
-        ToolClass::Command => non_empty(first_line(tool.detail), title),
+    // The object, and whether it is the tool's own (its command, term or
+    // path) rather than its title: only its own is classed.
+    let (object, own) = match tool.class {
+        ToolClass::Command => own_or(first_line(tool.detail), title),
         ToolClass::Search | ToolClass::Web => match search_term(tool.detail) {
-            Some(term) => non_empty(first_line(&term), title),
-            None if tool.detail.trim_start().starts_with('{') => title,
-            None => non_empty(first_line(tool.detail), title),
+            Some(term) => own_or(first_line(&term), title),
+            None if tool.detail.trim_start().starts_with('{') => (title, false),
+            None => own_or(first_line(tool.detail), title),
         },
         ToolClass::Edit | ToolClass::Read => {
             let path = first_line(tool.path);
-            if path.is_empty() { path_in(&title).unwrap_or(title) } else { path }
+            if !path.is_empty() {
+                (path, true)
+            } else {
+                match path_in(&title) {
+                    Some(path) => (path, true),
+                    None => (title, false),
+                }
+            }
         }
-        ToolClass::Mcp | ToolClass::Agent | ToolClass::Tasks | ToolClass::Other | ToolClass::Plan => title,
+        ToolClass::Mcp | ToolClass::Agent | ToolClass::Tasks | ToolClass::Other | ToolClass::Plan => {
+            (title, false)
+        }
     };
     let more =
         if tool.class == ToolClass::Edit { sat16(file_headers(tool.detail).saturating_sub(1)) } else { 0 };
-    ToolLabel { class: tool.class, object: ellipsize(&object, LABEL_UNITS), more }
+    let object = ellipsize(&object, LABEL_UNITS);
+    let toks = if own { label_toks(tool.class, &object) } else { Vec::new() };
+    ToolLabel { class: tool.class, object, more, toks }
+}
+
+/// `own` when it is not empty, else the title.
+fn own_or(own: String, title: String) -> (String, bool) {
+    if own.is_empty() { (title, false) } else { (own, true) }
+}
+
+/// The classed runs of a label's object.
+fn label_toks(class: ToolClass, object: &str) -> Vec<Tok> {
+    if object.is_empty() {
+        return Vec::new();
+    }
+    let runs: Vec<(u32, TokClass)> = match class {
+        ToolClass::Command => {
+            let mut lines = highlight("bash", object);
+            return if lines.len() == 1 { lines.swap_remove(0).toks } else { Vec::new() };
+        }
+        ToolClass::Edit | ToolClass::Read => path_runs(object),
+        ToolClass::Web if object.contains("://") => web_runs(object),
+        ToolClass::Search | ToolClass::Web => vec![(units32(object), TokClass::String)],
+        ToolClass::Mcp | ToolClass::Agent | ToolClass::Tasks | ToolClass::Other | ToolClass::Plan => {
+            return Vec::new();
+        }
+    };
+    runs.into_iter().map(|(len, class)| Tok { len, class }).collect()
+}
+
+/// A web address: its host as File, what comes before and after as Dir.
+fn web_runs(url: &str) -> Vec<(u32, TokClass)> {
+    let host_start = url.find("://").map_or(0, |i| i + 3);
+    let host_end = url[host_start..].find(['/', '?', '#']).map_or(url.len(), |i| host_start + i);
+    [
+        (0, host_start, TokClass::Dir),
+        (host_start, host_end, TokClass::File),
+        (host_end, url.len(), TokClass::Dir),
+    ]
+    .into_iter()
+    .filter(|(a, b, _)| b > a)
+    .map(|(a, b, class)| (units32(&url[a..b]), class))
+    .collect()
 }
 
 /// The first line of `s`, cleaned, with whitespace collapsed.
@@ -175,10 +237,6 @@ fn json_unescape(s: &str) -> String {
         }
     }
     out
-}
-
-fn non_empty(s: String, fallback: String) -> String {
-    if s.is_empty() { fallback } else { s }
 }
 
 /// The first word of `title` that looks like a path: it has a slash, or a

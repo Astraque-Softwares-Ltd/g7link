@@ -13,7 +13,7 @@
     {"by":"Pixel 8 Pro","count":2,"depth":1,"has_text":true,"item_id":"q1","key":"q:q1","kind":"question","open":true,"seq":2,"state":"answered","turn":1},
     {"block":{"kind":"list_item","marker":"bullet","text":"Which side logs first?: Both"},"depth":2,"index":0,"item_id":"q1","key":"b:q1:0","kind":"block","seq":2,"turn":1},
     {"block":{"kind":"list_item","marker":"bullet","text":"Keep the lease timings?: Yes"},"depth":2,"index":1,"item_id":"q1","key":"b:q1:1","kind":"block","last":true,"seq":2,"turn":1},
-    {"adds":1,"dels":1,"depth":1,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"edit","object":"core/ble/src/lease.rs"},"ms":1000,"seq":3,"status":"ok","turn":1},
+    {"adds":1,"dels":1,"depth":1,"has_detail":true,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"edit","object":"core/ble/src/lease.rs","toks":[{"class":"dir","len":13},{"class":"file","len":8}]},"ms":1000,"seq":3,"status":"ok","turn":1},
     {"block":{"kind":"paragraph","text":"Done: both sides log why."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"seq":4,"turn":1},
     {"adds":1,"dels":1,"depth":0,"files":[{"adds":1,"dels":1,"path":"core/ble/src/lease.rs"}],"item_id":"a1","key":"c:1","kind":"changes","seq":4,"turn":1}
   ]

@@ -1,0 +1,11 @@
+{
+  "lines": [
+    {"text":"--- FAIL: TestRetry (0.00s)","toks":[{"class":"error","len":27}]},
+    {"text":"    sync_test.go:21: got 2, want 3","toks":[{"class":"plain","len":4},{"class":"file","len":12},{"class":"pos","len":3},{"class":"plain","len":15}]},
+    {"text":"FAIL","toks":[{"class":"error","len":4}]},
+    {"text":"FAIL\tduka/sync\t0.004s","toks":[{"class":"error","len":21}]},
+    {"text":"ok  \tduka/api\t0.010s","toks":[{"class":"ok","len":20}]}
+  ],
+  "note": "go test: FAIL lines, a place in a plain line, and an ok package.",
+  "text": "--- FAIL: TestRetry (0.00s)\n    sync_test.go:21: got 2, want 3\nFAIL\nFAIL\tduka/sync\t0.004s\nok  \tduka/api\t0.010s"
+}

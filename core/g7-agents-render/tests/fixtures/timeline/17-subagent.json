@@ -13,9 +13,9 @@
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
     {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"agent","object":"Explore the parser"},"open":true,"seq":2,"status":"running","turn":1},
     {"count":2,"depth":1,"item_id":"s1","key":"g:s1","kind":"group","open":true,"seq":3,"summary":{"first":{"class":"read","count":1},"second":{"class":"search","count":1}},"turn":1},
-    {"depth":2,"item_id":"s1","key":"i:s1","kind":"tool","label":{"class":"read","object":"src/parse.rs"},"ms":10,"seq":3,"status":"ok","turn":1},
-    {"depth":2,"item_id":"s2","key":"i:s2","kind":"tool","label":{"class":"search","object":"parse_line"},"ms":10,"seq":4,"status":"ok","turn":1},
-    {"depth":0,"item_id":"s3","key":"i:s3","kind":"tool","label":{"class":"read","object":"src/lib.rs"},"ms":10,"seq":5,"status":"ok","turn":1},
+    {"depth":2,"item_id":"s1","key":"i:s1","kind":"tool","label":{"class":"read","object":"src/parse.rs","toks":[{"class":"dir","len":4},{"class":"file","len":8}]},"ms":10,"seq":3,"status":"ok","turn":1},
+    {"depth":2,"item_id":"s2","key":"i:s2","kind":"tool","label":{"class":"search","object":"parse_line","toks":[{"class":"string","len":10}]},"ms":10,"seq":4,"status":"ok","turn":1},
+    {"depth":0,"item_id":"s3","key":"i:s3","kind":"tool","label":{"class":"read","object":"src/lib.rs","toks":[{"class":"dir","len":4},{"class":"file","len":6}]},"ms":10,"seq":5,"status":"ok","turn":1},
     {"block":{"kind":"paragraph","text":"The parser is in two files."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","last":true,"phase":"interim","seq":6,"turn":1}
   ]
 }

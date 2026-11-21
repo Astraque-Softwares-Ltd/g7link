@@ -57,6 +57,22 @@ pub const MAX_MENTIONS: usize = 256;
 /// The timeline's parsed-Markdown cache.
 pub const CACHE_ENTRIES: usize = 256;
 pub const CACHE_BYTES: usize = 4_194_304;
+/// A restore point still being made shows nothing until its turn ended this
+/// long ago; then "Recording changes…".
+pub const RECORDING_AFTER_MS: u64 = 1_000;
+/// A search snippet, in UTF-16 units (the host sends at most 240
+/// characters); longer text is cut.
+pub const MAX_SNIPPET_UNITS: usize = 480;
+/// Marks of one snippet that are read; later ones are not.
+pub const MAX_SNIPPET_MARKS: usize = 8;
+/// A language guess reads at most this much of the code, and at most this
+/// many non-blank lines of it.
+pub const MAX_DETECT_BYTES: usize = 4_096;
+pub const MAX_DETECT_LINES: usize = 64;
+/// `path:line:col` places marked in one line of output; later ones are not.
+pub const MAX_PLACES_PER_LINE: usize = 16;
+/// A turn's files that inline code is matched against; later ones are not.
+pub const MAX_PATH_HINTS: usize = 500;
 
 /// Whether `c` is removed from every input: C0 and C1 controls except `\n`
 /// and `\t`, and the bidi controls. The same set the host strips.

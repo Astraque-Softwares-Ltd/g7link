@@ -1,0 +1,5 @@
+{
+  "code": "package main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}",
+  "hint_ext": null,
+  "lang": "go"
+}

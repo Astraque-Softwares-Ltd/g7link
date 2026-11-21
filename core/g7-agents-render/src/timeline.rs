@@ -3,7 +3,9 @@
 //! A thread's items into the rows a client draws: turns that fold behind
 //! "Worked for …" once answered, runs of finished tools gathered into one
 //! line, thoughts, requests waiting at their tool, plans, questions the
-//! agent asked, and the live line.
+//! agent asked, and the live line. With the host's turns: what each turn
+//! changed (from its restore point when there is one), and what may be done
+//! from your messages and the final answers.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,11 +13,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::bounds::{
     CACHE_BYTES, CACHE_ENTRIES, GROUP_MIN, MAX_CHANGED_FILES, MAX_DEPTH, MAX_ITEMS_IN, MAX_ROWS_OUT,
-    MAX_SRC_BYTES, PLAN_FOLD_LINES, clean, cut_bytes, is_stripped_char, sat16,
+    MAX_SRC_BYTES, PLAN_FOLD_LINES, RECORDING_AFTER_MS, clean, cut_bytes, is_stripped_char, sat16,
 };
 use crate::diff::{DiffDoc, diff};
+use crate::highlight::{CodeLine, highlight};
 use crate::label::{Summary, ToolLabel, live_thought_line, summary, tool_label};
-use crate::markdown::{Block, BlockKind, is_false, is_zero, parse};
+use crate::markdown::{Block, BlockKind, Hints, is_false, is_zero, parse};
+use crate::output::output_lines;
 use crate::stream::{StreamCache, blocks as stream_blocks};
 
 // ── Input ──────────────────────────────────────────────────────────────────
@@ -52,6 +56,9 @@ pub struct ItemIn<'a> {
     /// with no count. A mark on the item overrides its state (see
     /// [`QuestionIn`]).
     pub question: Option<QuestionIn<'a>>,
+    /// A notice item: which notice, for those a client acts on (Undo goes
+    /// on a rewind's); `None` for the rest, and on other kinds.
+    pub notice: Option<NoticeKind>,
 }
 
 impl std::fmt::Debug for ItemIn<'_> {
@@ -66,6 +73,7 @@ impl std::fmt::Debug for ItemIn<'_> {
             .field("via", &self.via)
             .field("plan_state", &self.plan_state)
             .field("question", &self.question)
+            .field("notice", &self.notice)
             .finish_non_exhaustive()
     }
 }
@@ -255,6 +263,105 @@ pub struct Ctx<'a> {
     pub marks: &'a [Mark],
     /// Keys of the rows the user opened.
     pub open: &'a [String],
+    /// The host's turns (`thread.turns`), in any order; empty for a host
+    /// without them. A turn missing here shows its changes from its tool
+    /// items, as before, and offers no actions.
+    pub turns: &'a [TurnIn<'a>],
+}
+
+/// What the timeline needs of a turn: `TurnInfo` as the host sends it, and
+/// the start of its `turn.files` once the client has read them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TurnIn<'a> {
+    /// The turn's number, as the items carry it.
+    pub turn: u32,
+    pub checkpoint: Checkpoint,
+    /// Why a `Missing` restore point is missing, when the host says.
+    pub why: Option<CheckpointWhy>,
+    /// When the turn ended; `None` while it runs.
+    pub ended_ms: Option<u64>,
+    /// Files the restore point recorded as changed, lines added and removed.
+    pub files: u32,
+    pub adds: u32,
+    pub dels: u32,
+    /// Files left out of the restore point (too large).
+    pub skipped: u32,
+    /// The first files of `turn.files` in the host's order; may be empty
+    /// (not read yet). `Unrecorded` ones are passed over.
+    pub paths: &'a [TurnFileIn<'a>],
+    /// The host's verdicts for the turn.
+    pub can_fork: bool,
+    pub can_rewind: bool,
+    pub can_restore: bool,
+}
+
+/// A file of `turn.files`.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TurnFileIn<'a> {
+    pub path: &'a str,
+    pub status: TurnFileStatus,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+impl std::fmt::Debug for TurnFileIn<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnFileIn")
+            .field("status", &self.status)
+            .field("adds", &self.adds)
+            .field("dels", &self.dels)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A turn's restore point (`TurnInfo.checkpoint`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Checkpoint {
+    /// Being made.
+    Pending,
+    Ready,
+    /// Not made; `TurnIn.why` says why.
+    Missing,
+    /// The folder is not in a git work tree (the word is `none`).
+    #[serde(rename = "none")]
+    NotGit,
+    /// Made, and since pruned.
+    Expired,
+}
+
+/// Why a restore point is missing (`TurnInfo.why`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckpointWhy {
+    /// "Git was busy."
+    Busy,
+    /// "It took too long."
+    Slow,
+    /// "Too many large new files."
+    Large,
+    /// "Git refused."
+    Refused,
+    /// "Restore points are off for this folder."
+    Off,
+    /// It ran before G7 kept restore points (an older thread, one brought
+    /// in, a fork's copied turns): no note; its Changes come from its edit
+    /// tools, as for a folder without git.
+    Before,
+}
+
+/// A file's change in a restore point (`TurnFile.status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TurnFileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    /// Its type changed (a file became a link, say).
+    Type,
+    /// Left out of the restore point: too large.
+    Unrecorded,
 }
 
 // ── Output ─────────────────────────────────────────────────────────────────
@@ -270,6 +377,11 @@ pub struct Row {
     pub depth: u8,
     pub item_id: String,
     pub seq: u64,
+    /// What may be done from the row: set on the `User` row that started a
+    /// turn and on the last `Block` of a turn's final answer; all hidden
+    /// elsewhere, and while the thread works or waits.
+    #[serde(default, skip_serializing_if = "Acts::is_hidden")]
+    pub acts: Acts,
 }
 
 impl std::fmt::Debug for Row {
@@ -279,7 +391,58 @@ impl std::fmt::Debug for Row {
             .field("kind", &self.kind)
             .field("turn", &self.turn)
             .field("depth", &self.depth)
+            .field("acts", &self.acts)
             .finish_non_exhaustive()
+    }
+}
+
+/// The actions of a message, each shown as its word says. A client shows
+/// an action that is `On`, shows one with a reason disabled with that
+/// reason, and leaves out a `Hidden` one. Copy is the client's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Acts {
+    /// "Fork from here": your message and the final answer.
+    #[serde(skip_serializing_if = "Act::is_hidden")]
+    pub fork: Act,
+    /// "Rewind to here", your message: on when the conversation or the
+    /// files can go back to before it.
+    #[serde(skip_serializing_if = "Act::is_hidden")]
+    pub rewind: Act,
+    /// "Edit from here", your message: a rewind of the conversation that
+    /// puts the message back in the composer.
+    #[serde(skip_serializing_if = "Act::is_hidden")]
+    pub edit: Act,
+    /// The files part of a rewind, your message: on when G7 Link on this
+    /// PC can put the files back (the rewind dialog's choices).
+    #[serde(skip_serializing_if = "Act::is_hidden")]
+    pub restore: Act,
+}
+
+impl Acts {
+    pub fn is_hidden(&self) -> bool {
+        *self == Acts::default()
+    }
+}
+
+/// One action of [`Acts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Act {
+    #[default]
+    Hidden,
+    On,
+    /// "%1 can only be forked from its latest message." (`%1` the agent.)
+    LatestOnly,
+    /// "No restore point for this turn."
+    NoRestorePoint,
+    /// "This isn't a git repository, so G7 can't undo file changes here."
+    NotGit,
+}
+
+impl Act {
+    pub fn is_hidden(&self) -> bool {
+        *self == Act::Hidden
     }
 }
 
@@ -325,9 +488,7 @@ pub enum RowKind {
         ms: u64,
     },
     /// Under an open tool, or a file of an open `Changes` row.
-    Detail {
-        of: DetailOf,
-    },
+    Detail { of: DetailOf },
     Group {
         summary: Summary,
         count: u16,
@@ -349,12 +510,31 @@ pub enum RowKind {
         #[serde(default, skip_serializing_if = "is_false")]
         open: bool,
     },
+    /// What a turn changed: `files` named (at most `MAX_CHANGED_FILES`)
+    /// and `more` not, with the lines added and removed over all of them.
+    /// `recorded`: from the turn's restore point, in the host's order, and
+    /// it opens the diff (`turn.files`); else (no git, a turn from before
+    /// restore points, no word from the host) from the turn's edit tools,
+    /// by path, and a file opens the edits under it (key `c:<turn>:<index>`).
     Changes {
         files: Vec<FileStat>,
         adds: u32,
         dels: u32,
         #[serde(default, skip_serializing_if = "is_zero")]
         more: u16,
+        #[serde(default, skip_serializing_if = "is_false")]
+        recorded: bool,
+    },
+    /// One line in place of, or under, a turn's `Changes` (key `n:<turn>`).
+    #[serde(rename = "changes_note")]
+    ChangesNote {
+        note: NoteKind,
+        /// With `Missing`, when the host gave one; never `Before`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<CheckpointWhy>,
+        /// With `Unrecorded`: how many files.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        count: u32,
     },
     Mark {
         #[serde(rename = "mark_kind")]
@@ -364,6 +544,9 @@ pub enum RowKind {
     },
     Notice {
         text: String,
+        /// Which notice, when it is one a client acts on.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notice: Option<NoticeKind>,
     },
     /// The head of a plan's card; `shown` of its blocks follow as `Block`
     /// rows (`index` 0 up), and `more` are left out until it is opened
@@ -411,6 +594,7 @@ impl RowKind {
             RowKind::Thought { .. } => "thought",
             RowKind::Fold { .. } => "fold",
             RowKind::Changes { .. } => "changes",
+            RowKind::ChangesNote { .. } => "changes_note",
             RowKind::Mark { .. } => "mark",
             RowKind::Notice { .. } => "notice",
             RowKind::Plan { .. } => "plan",
@@ -442,8 +626,13 @@ pub enum RowStatus {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum DetailOf {
-    /// The whole command.
-    Command { text: String },
+    /// The whole command, with its shell colours (`lines`, empty when it is
+    /// over a bound of `highlight`).
+    Command {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines: Vec<CodeLine>,
+    },
     /// An edit's diff. Under a `Changes` file: `edit` of `edits` (1-based);
     /// both 0 under a tool.
     Diff {
@@ -453,24 +642,32 @@ pub enum DetailOf {
         #[serde(default, skip_serializing_if = "is_zero")]
         edits: u16,
     },
-    /// The output's tail; `cut` when the host dropped its start.
+    /// The output's tail; `cut` when the host dropped its start. `lines`
+    /// marks what reports an error, a warning or a pass and splits places
+    /// (`output_lines`); empty when nothing is marked.
     Output {
         text: String,
         #[serde(default, skip_serializing_if = "is_false")]
         cut: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines: Vec<CodeLine>,
     },
 }
 
 impl std::fmt::Debug for DetailOf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DetailOf::Command { .. } => f.write_str("Command"),
+            DetailOf::Command { lines, .. } => {
+                f.debug_struct("Command").field("lines", &lines.len()).finish()
+            }
             DetailOf::Diff { doc, edit, edits } => {
                 f.debug_struct("Diff").field("doc", doc).field("edit", edit).field("edits", edits).finish()
             }
-            DetailOf::Output { cut, .. } => {
-                f.debug_struct("Output").field("cut", cut).finish_non_exhaustive()
-            }
+            DetailOf::Output { cut, lines, .. } => f
+                .debug_struct("Output")
+                .field("cut", cut)
+                .field("lines", &lines.len())
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -493,6 +690,39 @@ impl std::fmt::Debug for FileStat {
             .field("open", &self.open)
             .finish_non_exhaustive()
     }
+}
+
+/// A notice the host marked (`Item.notice`); the client words the row from
+/// its text as before, and puts Undo on a rewind's while the thread can
+/// undo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// "Rewound to here".
+    Rewound,
+    /// "Rewound to here" after Edit from here: the message went back to the
+    /// composer.
+    EditFromHere,
+    /// Files only: "Restored the files to before this message. …"
+    FilesRestored,
+    /// "Forked from here. …"
+    Forked,
+}
+
+/// What a `ChangesNote` row says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteKind {
+    /// "Recording changes…": the restore point is still being made, a
+    /// second (`RECORDING_AFTER_MS`) after the turn ended.
+    Recording,
+    /// "Changes weren't recorded for this turn." and the reason of `why`.
+    Missing,
+    /// "This restore point is no longer kept."
+    Expired,
+    /// "%n files weren't recorded (too large)." under a recorded turn's
+    /// `Changes`, or alone when nothing else changed.
+    Unrecorded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -563,10 +793,18 @@ struct DocEntry {
     rev: u32,
     len: usize,
     streaming: bool,
+    /// The hints it was finished with: the extension its untagged code was
+    /// guessed with, and the paths its inline code was matched against.
+    ext: Option<String>,
+    paths: Vec<String>,
     seq: u64,
     bytes: usize,
     blocks: Vec<Block>,
 }
+
+/// What a tool's label is made from: (rev, class, title, detail and path
+/// lengths).
+type LabelKey = (u32, ToolClass, usize, usize, usize);
 
 /// Keeps parsed Markdown and diff counts between calls for one thread.
 #[derive(Default)]
@@ -580,6 +818,11 @@ pub struct Timeline {
     edits: HashMap<String, (u32, usize, EditStat)>,
     /// Diffs of opened edit tools: (rev, detail len, doc).
     diffs: HashMap<String, (u32, usize, DiffDoc)>,
+    /// Tool lines' labels, with their shell or path runs.
+    labels: HashMap<String, (LabelKey, ToolLabel)>,
+    /// Opened commands' and outputs' lines: (rev, text len, lines).
+    commands: HashMap<String, (u32, usize, Vec<CodeLine>)>,
+    outputs: HashMap<String, (u32, usize, Vec<CodeLine>)>,
 }
 
 impl std::fmt::Debug for Timeline {
@@ -627,6 +870,9 @@ impl Timeline {
         self.counts.retain(|id, _| present.contains(id.as_str()));
         self.edits.retain(|id, _| present.contains(id.as_str()));
         self.diffs.retain(|id, _| used.contains(id.as_str()));
+        self.labels.retain(|id, _| present.contains(id.as_str()));
+        self.commands.retain(|id, _| used.contains(id.as_str()));
+        self.outputs.retain(|id, _| used.contains(id.as_str()));
         rows
     }
 
@@ -636,17 +882,20 @@ impl Timeline {
         (self.docs.len(), self.doc_bytes)
     }
 
-    fn blocks(&mut self, it: &ItemIn<'_>) -> Vec<Block> {
+    /// An item's blocks, finished with what its turn says (`hints`).
+    fn blocks(&mut self, it: &ItemIn<'_>, hints: Hints<'_>) -> Vec<Block> {
         if let Some(e) = self.docs.get_mut(it.id)
             && e.rev == it.rev
             && e.len == it.text.len()
             && e.streaming == it.streaming
+            && e.ext.as_deref() == hints.ext
+            && e.paths.iter().map(String::as_str).eq(hints.paths.iter().copied())
         {
             e.seq = it.seq;
             return e.blocks.clone();
         }
         let mut cache = self.streams.remove(it.id).unwrap_or_default();
-        let (blocks, _) = stream_blocks(it.text, it.streaming, &mut cache);
+        let (blocks, _) = stream_blocks(it.text, it.streaming, hints, &mut cache);
         if it.streaming {
             self.streams.insert(it.id.to_owned(), cache);
         }
@@ -657,6 +906,8 @@ impl Timeline {
                 rev: it.rev,
                 len: it.text.len(),
                 streaming: it.streaming,
+                ext: hints.ext.map(str::to_owned),
+                paths: hints.paths.iter().map(|p| (*p).to_owned()).collect(),
                 seq: it.seq,
                 bytes,
                 blocks: blocks.clone(),
@@ -691,7 +942,7 @@ impl Timeline {
             return n;
         }
         let text = clean(cut_bytes(it.text, MAX_SRC_BYTES));
-        let parsed = parse(&text, false);
+        let parsed = parse(&text);
         let n = parsed.blocks.len();
         self.counts.insert(it.id.to_owned(), (it.rev, it.text.len(), n));
         n
@@ -707,6 +958,44 @@ impl Timeline {
         let stat = edit_stat(tool);
         self.edits.insert(it.id.to_owned(), (it.rev, tool.detail.len(), stat.clone()));
         stat
+    }
+
+    fn label(&mut self, it: &ItemIn<'_>, tool: &ToolIn<'_>) -> ToolLabel {
+        let key = (it.rev, tool.class, tool.title.len(), tool.detail.len(), tool.path.len());
+        if let Some((k, label)) = self.labels.get(it.id)
+            && *k == key
+        {
+            return label.clone();
+        }
+        let label = tool_label(tool);
+        self.labels.insert(it.id.to_owned(), (key, label.clone()));
+        label
+    }
+
+    /// An opened command's shell colours.
+    fn command_lines(&mut self, it: &ItemIn<'_>, text: &str) -> Vec<CodeLine> {
+        if let Some((rev, len, lines)) = self.commands.get(it.id)
+            && *rev == it.rev
+            && *len == text.len()
+        {
+            return lines.clone();
+        }
+        let lines = highlight("bash", text);
+        self.commands.insert(it.id.to_owned(), (it.rev, text.len(), lines.clone()));
+        lines
+    }
+
+    /// An opened output's marked lines.
+    fn output_marks(&mut self, it: &ItemIn<'_>, text: &str) -> Vec<CodeLine> {
+        if let Some((rev, len, lines)) = self.outputs.get(it.id)
+            && *rev == it.rev
+            && *len == text.len()
+        {
+            return lines.clone();
+        }
+        let lines = output_lines(text);
+        self.outputs.insert(it.id.to_owned(), (it.rev, text.len(), lines.clone()));
+        lines
     }
 
     fn diff_doc(&mut self, it: &ItemIn<'_>, tool: &ToolIn<'_>) -> DiffDoc {
@@ -803,6 +1092,20 @@ struct View<'c, 'a> {
     children: Vec<Vec<usize>>,
     /// Top-level items split into turns: (turn, indices).
     turns: Vec<(u32, Vec<usize>)>,
+    /// The host's turns by number; the first of a number wins.
+    turn_info: HashMap<u32, &'c TurnIn<'c>>,
+    /// The user items that started their turn: the first user item of a
+    /// turn, unless it denied a request or was taken into a running turn.
+    starters: HashSet<usize>,
+    /// Of two or more turns, only the newest can be forked.
+    latest_only: bool,
+    /// Per item: the extension of the file its turn last edited or read
+    /// before it, which untagged code in it is guessed with.
+    ext: Vec<Option<&'a str>>,
+    /// Per item: its turn.
+    turn_of: Vec<u32>,
+    /// The files each turn changed, as the host recorded them.
+    turn_paths: HashMap<u32, Vec<&'c str>>,
 }
 
 /// Whether a mark makes a row of its own (reconcile §7): an answer given here
@@ -819,6 +1122,15 @@ fn mark_shown(mark: &Mark) -> bool {
 /// content to Markdown.
 fn md_blank(s: &str) -> bool {
     s.chars().all(|c| matches!(c, ' ' | '\t' | '\n') || is_stripped_char(c))
+}
+
+/// A path's extension: what follows the last dot of its file name, when
+/// that is not the name's first character; at most 10 letters or digits.
+fn ext_of(path: &str) -> Option<&str> {
+    let name = path.rsplit(['/', '\\']).next()?;
+    let (stem, ext) = name.rsplit_once('.')?;
+    (!stem.is_empty() && !ext.is_empty() && ext.len() <= 10 && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+        .then_some(ext)
 }
 
 fn plain_text(s: &str) -> String {
@@ -871,10 +1183,12 @@ impl<'c, 'a> View<'c, 'a> {
         }
         let mut children = vec![Vec::new(); its.len()];
         let mut turns: Vec<(u32, Vec<usize>)> = Vec::new();
+        let mut turn_of = vec![0u32; its.len()];
         let mut prev = 0u32;
         for (n, it) in its.iter().enumerate() {
             if let Some(p) = parent[n] {
                 children[p].push(n);
+                turn_of[n] = turn_of[p];
                 continue;
             }
             let t = if it.turn > 0 {
@@ -885,11 +1199,39 @@ impl<'c, 'a> View<'c, 'a> {
                 prev.max(1)
             };
             prev = t;
+            turn_of[n] = t;
             match turns.last_mut() {
                 Some((last, members)) if *last == t => members.push(n),
                 _ => turns.push((t, vec![n])),
             }
         }
+        let mut last_ext: HashMap<u32, &'a str> = HashMap::new();
+        let mut ext = Vec::with_capacity(its.len());
+        for (n, it) in its.iter().enumerate() {
+            ext.push(last_ext.get(&turn_of[n]).copied());
+            if let Some(tool) = it.tool.filter(|t| matches!(t.class, ToolClass::Edit | ToolClass::Read))
+                && let Some(e) = ext_of(tool.path)
+            {
+                last_ext.insert(turn_of[n], e);
+            }
+        }
+        let starters = turns
+            .iter()
+            .filter_map(|(_, members)| members.iter().copied().find(|&n| its[n].kind == ItemKind::User))
+            .filter(|&n| its[n].deny_of.is_none() && its[n].via != Via::Steer)
+            .collect();
+        let mut turn_info: HashMap<u32, &TurnIn<'_>> = HashMap::new();
+        for t in ctx.turns {
+            turn_info.entry(t.turn).or_insert(t);
+        }
+        let turn_paths = turn_info
+            .iter()
+            .filter(|(_, t)| !t.paths.is_empty())
+            .map(|(turn, t)| (*turn, t.paths.iter().map(|f| f.path).collect()))
+            .collect();
+        let newest = turn_info.keys().copied().max();
+        let latest_only =
+            turn_info.len() >= 2 && turn_info.values().all(|t| t.can_fork == (Some(t.turn) == newest));
         View {
             its,
             ctx,
@@ -899,7 +1241,53 @@ impl<'c, 'a> View<'c, 'a> {
             orphans,
             children,
             turns,
+            turn_info,
+            starters,
+            latest_only,
+            ext,
+            turn_of,
+            turn_paths,
         }
+    }
+
+    /// What item `n`'s text is finished with: the extension of the file its
+    /// turn last touched, and the files its turn changed.
+    fn hints(&self, n: usize) -> Hints<'_> {
+        let paths = self.turn_paths.get(&self.turn_of[n]).map_or(&[][..], Vec::as_slice);
+        Hints { ext: self.ext[n], paths }
+    }
+
+    /// What may be done from a turn's starting message (`user`) or its final
+    /// answer. Nothing while the thread works or waits, or without the
+    /// host's word on the turn.
+    fn acts(&self, turn: u32, user: bool) -> Acts {
+        if matches!(self.ctx.state, ThreadState::Working | ThreadState::Waiting) {
+            return Acts::default();
+        }
+        let Some(t) = self.turn_info.get(&turn) else { return Acts::default() };
+        let or_latest = |can: bool| match (can, self.latest_only) {
+            (true, _) => Act::On,
+            (false, true) => Act::LatestOnly,
+            (false, false) => Act::Hidden,
+        };
+        let fork = or_latest(t.can_fork);
+        if !user {
+            return Acts { fork, ..Acts::default() };
+        }
+        let restore = if t.can_restore {
+            Act::On
+        } else {
+            match t.checkpoint {
+                Checkpoint::NotGit => Act::NotGit,
+                Checkpoint::Pending | Checkpoint::Missing | Checkpoint::Expired => Act::NoRestorePoint,
+                // Ready, and still not: the host's reason shows in the rewind
+                // dialog (another thread, git busy, a phone).
+                Checkpoint::Ready => Act::Hidden,
+            }
+        };
+        let edit = or_latest(t.can_rewind);
+        let rewind = if t.can_restore { Act::On } else { edit };
+        Acts { fork, rewind, edit, restore }
     }
 
     fn is_open(&self, key: &str) -> bool {
@@ -986,7 +1374,7 @@ impl<'c, 'a> View<'c, 'a> {
 
     fn row(&self, key: String, kind: RowKind, turn: u32, depth: u8, n: Option<usize>) -> Row {
         let (item_id, seq) = n.map_or((String::new(), 0), |n| (self.its[n].id.to_owned(), self.its[n].seq));
-        Row { key, kind, turn, depth, item_id, seq }
+        Row { key, kind, turn, depth, item_id, seq, acts: Acts::default() }
     }
 
     fn emit_all(&self, out: &mut Emit<'_, '_>) {
@@ -1010,6 +1398,7 @@ impl<'c, 'a> View<'c, 'a> {
                     depth: 0,
                     item_id: mark.item_id.clone(),
                     seq: 0,
+                    acts: Acts::default(),
                 });
             }
         }
@@ -1066,6 +1455,7 @@ impl<'c, 'a> View<'c, 'a> {
             depth: 0,
             item_id: String::new(),
             seq: 0,
+            acts: Acts::default(),
         });
     }
 
@@ -1113,12 +1503,22 @@ impl<'c, 'a> View<'c, 'a> {
             return;
         };
         let anchor = units.iter().position(|u| matches!(u, Unit::User(_)));
+        // Notices after the answer or plan (a rewind's, a fork's) are about
+        // the turn as a whole: they follow it, out of the fold.
+        let end_at = units.iter().position(|u| matches!(u, Unit::Assistant(n) | Unit::Plan(n) if *n == end));
+        let after: Vec<usize> = end_at
+            .map(|e| (e + 1..units.len()).filter(|&k| matches!(units[k], Unit::Notice(_))).collect())
+            .unwrap_or_default();
         // After the anchor and without the answer, in order; plans and
         // messages sent while it worked stay out of the fold.
         let rest: Vec<(bool, &Unit)> = units
             .iter()
             .enumerate()
-            .filter(|(k, u)| Some(*k) != anchor && !matches!(u, Unit::Assistant(n) if Some(*n) == answer))
+            .filter(|(k, u)| {
+                Some(*k) != anchor
+                    && !after.contains(k)
+                    && !matches!(u, Unit::Assistant(n) if Some(*n) == answer)
+            })
             .map(|(_, u)| (self.stays_out(u), u))
             .collect();
         if let Some(a) = anchor {
@@ -1137,17 +1537,28 @@ impl<'c, 'a> View<'c, 'a> {
             open = self.is_open(&key);
             let start = anchor.map_or(members.first().copied(), |a| Some(units[a].first()));
             let since = start.map_or(0, |n| self.its[n].ts_ms);
-            let end =
-                all.iter().map(|&n| self.its[n].end_ms.unwrap_or(self.its[n].ts_ms)).max().unwrap_or(since);
+            let end = all
+                .iter()
+                .filter(|&&n| !after.iter().any(|&k| units[k].first() == n))
+                .map(|&n| self.its[n].end_ms.unwrap_or(self.its[n].ts_ms))
+                .max()
+                .unwrap_or(since);
             let worked_ms = end.saturating_sub(since);
             let count = sat16(hidden_rows);
             out.push(|| self.row(key, RowKind::Fold { worked_ms, hidden: count, open }, turn, 0, start));
         }
         self.emit_rest(out, &rest, turn, settled, open);
         if let Some(answer) = answer {
+            let first = out.rows.len();
             self.emit_blocks(out, answer, 0, turn);
+            if let Some(last) = out.rows[first..].last_mut() {
+                last.acts = self.acts(turn, false);
+            }
         }
         self.emit_changes(out, turn, &all, end);
+        for &k in &after {
+            self.emit_unit(out, &units[k], 0, turn, settled);
+        }
     }
 
     /// A unit a fold never hides: a plan, a message sent while it worked.
@@ -1189,8 +1600,86 @@ impl<'c, 'a> View<'c, 'a> {
         }
     }
 
+    /// A recorded turn's `Changes`: the host's counts, and the first files
+    /// the client read of it; none when nothing changed.
+    fn emit_recorded(&self, out: &mut Emit<'_, '_>, turn: u32, t: &TurnIn<'_>, answer: usize) {
+        if t.files == 0 {
+            return;
+        }
+        let total = usize::try_from(t.files).unwrap_or(usize::MAX);
+        let files: Vec<FileStat> = t
+            .paths
+            .iter()
+            .filter(|f| f.status != TurnFileStatus::Unrecorded)
+            .take(total.min(MAX_CHANGED_FILES))
+            .map(|f| FileStat { path: plain_text(f.path), adds: f.adds, dels: f.dels, open: false })
+            .collect();
+        let more = sat16(total.saturating_sub(files.len()));
+        let (adds, dels) = (t.adds, t.dels);
+        out.push(|| {
+            self.row(
+                format!("c:{turn}"),
+                RowKind::Changes { files, adds, dels, more, recorded: true },
+                turn,
+                0,
+                Some(answer),
+            )
+        });
+    }
+
+    /// The turn's changes: from its restore point when the host recorded
+    /// one, a line when it is being made, missing or pruned, and from its
+    /// edit tools otherwise.
     fn emit_changes(&self, out: &mut Emit<'_, '_>, turn: u32, all: &[usize], answer: usize) {
         let edits: Vec<usize> = all.iter().copied().filter(|&n| is_ok_edit(self.its[n])).collect();
+        let note = |out: &mut Emit<'_, '_>, note: NoteKind, why: Option<CheckpointWhy>, count: u32| {
+            out.push(|| {
+                self.row(
+                    format!("n:{turn}"),
+                    RowKind::ChangesNote { note, why, count },
+                    turn,
+                    0,
+                    Some(answer),
+                )
+            });
+        };
+        if let Some(t) = self.turn_info.get(&turn).copied() {
+            match t.checkpoint {
+                Checkpoint::Ready => {
+                    self.emit_recorded(out, turn, t, answer);
+                    if t.skipped > 0 {
+                        note(out, NoteKind::Unrecorded, None, t.skipped);
+                    }
+                    return;
+                }
+                Checkpoint::Pending => {
+                    let ended = t
+                        .ended_ms
+                        .is_some_and(|end| self.ctx.now_ms.saturating_sub(end) >= RECORDING_AFTER_MS);
+                    if ended {
+                        note(out, NoteKind::Recording, None, 0);
+                    }
+                    return;
+                }
+                // A turn from before restore points (an older thread, one
+                // brought in, a fork's copies) shows what its edit tools did.
+                Checkpoint::Missing if t.why == Some(CheckpointWhy::Before) => {}
+                // A line only where the edit tools show that files changed.
+                Checkpoint::Missing => {
+                    if !edits.is_empty() {
+                        note(out, NoteKind::Missing, t.why, 0);
+                    }
+                    return;
+                }
+                Checkpoint::Expired => {
+                    if !edits.is_empty() {
+                        note(out, NoteKind::Expired, None, 0);
+                    }
+                    return;
+                }
+                Checkpoint::NotGit => {}
+            }
+        }
         if edits.is_empty() {
             return;
         }
@@ -1209,7 +1698,13 @@ impl<'c, 'a> View<'c, 'a> {
         let shown: Vec<(usize, FileStat)> =
             files.iter().cloned().enumerate().filter(|(_, f)| f.open).collect();
         out.push(|| {
-            self.row(format!("c:{turn}"), RowKind::Changes { files, adds, dels, more }, turn, 0, Some(answer))
+            self.row(
+                format!("c:{turn}"),
+                RowKind::Changes { files, adds, dels, more, recorded: false },
+                turn,
+                0,
+                Some(answer),
+            )
         });
         for (index, file) in shown {
             let of_file: Vec<usize> = stats
@@ -1334,7 +1829,7 @@ impl<'c, 'a> View<'c, 'a> {
             Unit::User(n) => {
                 let it = self.its[*n];
                 out.push(|| {
-                    self.row(
+                    let mut row = self.row(
                         format!("i:{}", it.id),
                         RowKind::User {
                             text: plain_text(it.text),
@@ -1345,7 +1840,11 @@ impl<'c, 'a> View<'c, 'a> {
                         turn,
                         depth,
                         Some(*n),
-                    )
+                    );
+                    if self.starters.contains(n) {
+                        row.acts = self.acts(turn, true);
+                    }
+                    row
                 });
             }
             Unit::Notice(n) => {
@@ -1353,7 +1852,7 @@ impl<'c, 'a> View<'c, 'a> {
                 out.push(|| {
                     self.row(
                         format!("i:{}", it.id),
-                        RowKind::Notice { text: plain_text(it.text) },
+                        RowKind::Notice { text: plain_text(it.text), notice: it.notice },
                         turn,
                         depth,
                         Some(*n),
@@ -1396,7 +1895,7 @@ impl<'c, 'a> View<'c, 'a> {
         let key = format!("p:{}", it.id);
         let open = self.is_open(&key);
         let state = it.plan_state.unwrap_or_default();
-        let blocks = out.tl.blocks(it);
+        let blocks = out.tl.blocks(it, self.hints(n));
         let total = blocks.len();
         let shown = if open {
             total
@@ -1445,7 +1944,7 @@ impl<'c, 'a> View<'c, 'a> {
             out.count += out.tl.block_count(it);
             return;
         }
-        let blocks = out.tl.blocks(it);
+        let blocks = out.tl.blocks(it, self.hints(n));
         let last = blocks.len().saturating_sub(1);
         let phase = if it.kind == ItemKind::Assistant { it.phase } else { None };
         for (index, block) in blocks.into_iter().enumerate() {
@@ -1473,8 +1972,9 @@ impl<'c, 'a> View<'c, 'a> {
             (0, 0)
         };
         let ms = it.end_ms.map_or(0, |end| end.saturating_sub(it.ts_ms));
+        let label = (!out.count_only).then(|| out.tl.label(it, &tool));
         out.push(|| {
-            let label = tool_label(&tool);
+            let label = label.unwrap_or_else(|| tool_label(&tool));
             self.row(
                 key,
                 RowKind::Tool {
@@ -1495,15 +1995,22 @@ impl<'c, 'a> View<'c, 'a> {
         let inner = depth.saturating_add(1);
         if open {
             if command {
-                out.push(|| {
-                    self.row(
-                        format!("d:{}:c", it.id),
-                        RowKind::Detail { of: DetailOf::Command { text: plain_text(tool.detail) } },
-                        turn,
-                        inner,
-                        Some(n),
-                    )
-                });
+                if out.count_only {
+                    out.count += 1;
+                } else {
+                    out.used.insert(it.id.to_owned());
+                    let text = plain_text(tool.detail);
+                    let lines = out.tl.command_lines(it, &text);
+                    out.push(|| {
+                        self.row(
+                            format!("d:{}:c", it.id),
+                            RowKind::Detail { of: DetailOf::Command { text, lines } },
+                            turn,
+                            inner,
+                            Some(n),
+                        )
+                    });
+                }
             }
             if edit {
                 if out.count_only {
@@ -1523,17 +2030,22 @@ impl<'c, 'a> View<'c, 'a> {
                 }
             }
             if has_output {
-                out.push(|| {
-                    self.row(
-                        format!("d:{}:o", it.id),
-                        RowKind::Detail {
-                            of: DetailOf::Output { text: plain_text(tool.output), cut: it.truncated },
-                        },
-                        turn,
-                        inner,
-                        Some(n),
-                    )
-                });
+                if out.count_only {
+                    out.count += 1;
+                } else {
+                    out.used.insert(it.id.to_owned());
+                    let text = plain_text(tool.output);
+                    let lines = out.tl.output_marks(it, &text);
+                    out.push(|| {
+                        self.row(
+                            format!("d:{}:o", it.id),
+                            RowKind::Detail { of: DetailOf::Output { text, cut: it.truncated, lines } },
+                            turn,
+                            inner,
+                            Some(n),
+                        )
+                    });
+                }
             }
         }
         self.emit_mark(out, n, depth, turn);

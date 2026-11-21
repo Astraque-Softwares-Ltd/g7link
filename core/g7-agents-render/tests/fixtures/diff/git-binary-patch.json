@@ -1,0 +1,4 @@
+{
+  "doc": {"adds":1,"dels":1,"files":[{"adds":0,"dels":0,"note":"binary","path":"icon.png","rows":[]},{"adds":1,"dels":1,"path":"b.txt","rows":[{"kind":"hunk","text":"@@ -1 +1 @@"},{"kind":"del","old_no":1,"text":"x"},{"kind":"add","new_no":1,"text":"y"}]}]},
+  "in": "diff --git a/icon.png b/icon.png\nnew file mode 100644\nindex 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111\nGIT binary patch\nliteral 12\nTcmZQzU|?imU|?im00Ig?0RR91\n\nliteral 0\nHcmV?d00001\n\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-x\n+y\n"
+}

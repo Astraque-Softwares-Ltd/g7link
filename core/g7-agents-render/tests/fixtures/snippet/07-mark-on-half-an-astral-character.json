@@ -1,0 +1,12 @@
+{
+  "marks": [
+    [2,1]
+  ],
+  "note": "A mark that covers half of a surrogate pair takes the whole character.",
+  "parts": [
+    {"text":"a"},
+    {"mark":true,"text":"😀"},
+    {"text":"b"}
+  ],
+  "text": "a😀b"
+}

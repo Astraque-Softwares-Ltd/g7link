@@ -1,0 +1,12 @@
+{
+  "lines": [
+    {"text":"diff --git a/x.txt b/x.txt","toks":[{"class":"plain","len":26}]},
+    {"text":"--- a/x.txt","toks":[{"class":"punctuation","len":3},{"class":"plain","len":8}]},
+    {"text":"+++ b/x.txt","toks":[{"class":"punctuation","len":3},{"class":"plain","len":8}]},
+    {"text":"@@ -1 +1 @@","toks":[{"class":"punctuation","len":2},{"class":"plain","len":7},{"class":"punctuation","len":2}]},
+    {"text":"-a","toks":[{"class":"punctuation","len":1},{"class":"deleted","len":1}]},
+    {"text":"+b","toks":[{"class":"punctuation","len":1},{"class":"inserted","len":1}]}
+  ],
+  "note": "Output that guesses as a diff is highlighted as a diff.",
+  "text": "diff --git a/x.txt b/x.txt\n--- a/x.txt\n+++ b/x.txt\n@@ -1 +1 @@\n-a\n+b"
+}

@@ -1,0 +1,5 @@
+{
+  "code": "func drain(q *Queue) error {\n\trows, err := q.Pending()\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn nil\n}",
+  "hint_ext": null,
+  "lang": "go"
+}

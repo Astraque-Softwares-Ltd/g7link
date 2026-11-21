@@ -1,0 +1,11 @@
+{
+  "marks": [
+    [4,14]
+  ],
+  "note": "A phrase match across a line break stays one mark over the single space.",
+  "parts": [
+    {"text":"the "},
+    {"mark":true,"text":"retry loop"}
+  ],
+  "text": "the retry  \n  loop"
+}

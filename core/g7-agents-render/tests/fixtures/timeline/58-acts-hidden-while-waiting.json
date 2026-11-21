@@ -1,0 +1,21 @@
+{
+  "ctx": {"marks":[{"item_id":"t2","kind":"waiting"}],"now_ms":2500,"open":[],"state":"waiting","state_since_ms":9000,"turns":[{"adds":48,"can_fork":true,"can_restore":true,"can_rewind":true,"checkpoint":"ready","dels":17,"ended_ms":1400,"files":3,"paths":[{"adds":31,"dels":14,"path":"src/sync/queue.rs","status":"modified"},{"adds":3,"dels":3,"path":"src/sync/mod.rs","status":"modified"},{"adds":14,"dels":0,"path":"tests/sync_reconnect.rs","status":"added"}],"turn":1},{"checkpoint":"pending","turn":2}]},
+  "items": [
+    {"id":"u1","kind":"user","seq":1,"text":"Stock sync inapoteza rows tukirudi online. Angalia src/sync/queue.rs, nadhani ni ile retry.","ts_ms":1000,"turn":1},
+    {"end_ms":1200,"id":"t1","kind":"tool","seq":2,"tool":{"class":"edit","detail":"-        self.items.clear();\n+        self.items.retain(|r| !r.acked);","name":"Edit","path":"src/sync/queue.rs","status":"ok","title":"Edit src/sync/queue.rs"},"ts_ms":1100,"turn":1},
+    {"end_ms":1400,"id":"a1","kind":"assistant","seq":3,"text":"Tatizo liko kwenye `drain()`: it emptied the whole queue before the server acknowledged anything.\n\nSasa row inatoka kwenye queue baada ya ack tu, and a reconnect resends what is left.","ts_ms":1300,"turn":1},
+    {"id":"u2","kind":"user","seq":4,"text":"Sawa. Sasa ongeza backoff, isijaribu kila sekunde.","ts_ms":2000,"turn":2},
+    {"id":"t2","kind":"tool","seq":5,"tool":{"class":"command","detail":"cargo test","name":"Bash","status":"running","title":"Bash"},"ts_ms":2100,"turn":2}
+  ],
+  "note": "The thread waits on a request: no actions anywhere.",
+  "rows": [
+    {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Stock sync inapoteza rows tukirudi online. Angalia src/sync/queue.rs, nadhani ni ile retry.","turn":1},
+    {"depth":0,"hidden":1,"item_id":"u1","key":"f:1","kind":"fold","seq":1,"turn":1,"worked_ms":400},
+    {"block":{"kind":"paragraph","spans":[{"len":7,"start":19,"style":{"code":true}}],"text":"Tatizo liko kwenye drain(): it emptied the whole queue before the server acknowledged anything."},"depth":0,"index":0,"item_id":"a1","key":"b:a1:0","kind":"block","seq":3,"turn":1},
+    {"block":{"kind":"paragraph","text":"Sasa row inatoka kwenye queue baada ya ack tu, and a reconnect resends what is left."},"depth":0,"index":1,"item_id":"a1","key":"b:a1:1","kind":"block","last":true,"seq":3,"turn":1},
+    {"adds":48,"dels":17,"depth":0,"files":[{"adds":31,"dels":14,"path":"src/sync/queue.rs"},{"adds":3,"dels":3,"path":"src/sync/mod.rs"},{"adds":14,"dels":0,"path":"tests/sync_reconnect.rs"}],"item_id":"a1","key":"c:1","kind":"changes","recorded":true,"seq":3,"turn":1},
+    {"depth":0,"item_id":"u2","key":"i:u2","kind":"user","seq":4,"text":"Sawa. Sasa ongeza backoff, isijaribu kila sekunde.","turn":2},
+    {"depth":0,"has_detail":true,"item_id":"t2","key":"i:t2","kind":"tool","label":{"class":"command","object":"cargo test","toks":[{"class":"function","len":5},{"class":"plain","len":5}]},"seq":5,"status":"asking","turn":2},
+    {"depth":0,"item_id":"t2","key":"m:t2","kind":"mark","mark_kind":"waiting","seq":5,"turn":2}
+  ]
+}

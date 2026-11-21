@@ -1,0 +1,5 @@
+```
+suspend fun load(): Unit {
+    val rows = api.rows()
+}
+```

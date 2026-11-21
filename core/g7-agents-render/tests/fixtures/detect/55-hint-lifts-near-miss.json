@@ -1,0 +1,6 @@
+{
+  "code": "fn add(a: i32, b: i32) -> i32 { a + b }",
+  "hint_ext": "rs",
+  "lang": "rust",
+  "note": "One marker is a near miss; a .rs file nearby lifts it."
+}

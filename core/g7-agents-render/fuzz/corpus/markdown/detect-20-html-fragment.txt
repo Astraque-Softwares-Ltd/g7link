@@ -1,0 +1,6 @@
+```
+<div class="row">
+  <span>Total</span>
+  <a href="/sales">Sales</a>
+</div>
+```

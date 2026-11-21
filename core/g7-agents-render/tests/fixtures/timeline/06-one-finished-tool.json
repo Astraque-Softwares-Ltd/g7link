@@ -7,7 +7,7 @@
   "note": "One finished tool: no group; the live line follows.",
   "rows": [
     {"depth":0,"item_id":"u1","key":"i:u1","kind":"user","seq":1,"text":"Fix the failing parser test","turn":1},
-    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"src/parse.rs"},"ms":50,"seq":2,"status":"ok","turn":1},
+    {"depth":0,"item_id":"t1","key":"i:t1","kind":"tool","label":{"class":"read","object":"src/parse.rs","toks":[{"class":"dir","len":4},{"class":"file","len":8}]},"ms":50,"seq":2,"status":"ok","turn":1},
     {"depth":0,"item_id":"","key":"live","kind":"live","label":"thinking","seq":0,"since_ms":1000,"turn":1}
   ]
 }

@@ -1,0 +1,12 @@
+{
+  "lines": [
+    {"text":"running 3 tests","toks":[{"class":"plain","len":15}]},
+    {"text":"test sync::drain ... ok","toks":[{"class":"ok","len":23}]},
+    {"text":"test sync::retry ... ok","toks":[{"class":"ok","len":23}]},
+    {"text":"test sync::backoff ... ok","toks":[{"class":"ok","len":25}]},
+    {"text":""},
+    {"text":"test result: ok. 3 passed; 0 failed; 0 ignored","toks":[{"class":"ok","len":46}]}
+  ],
+  "note": "cargo test: each passing test and the result line are ok.",
+  "text": "running 3 tests\ntest sync::drain ... ok\ntest sync::retry ... ok\ntest sync::backoff ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored"
+}

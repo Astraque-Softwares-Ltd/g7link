@@ -1,4 +1,4 @@
 {
-  "label": {"class":"web","object":"rust utf-16 offsets"},
+  "label": {"class":"web","object":"rust utf-16 offsets","toks":[{"class":"string","len":19}]},
   "tool": {"class":"web","detail":"rust utf-16 offsets\nmore","name":"web","status":"ok","title":"WebSearch"}
 }
