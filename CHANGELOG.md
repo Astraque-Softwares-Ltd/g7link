@@ -4,6 +4,43 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.23 (2026-11-21)
+
+Use the phone as a second screen for the thread open on the PC, and open
+a server an agent started straight on the phone.
+
+**Update both together.** The phone and the PC exchange new messages for
+both; each needs the other on 0.1.23.
+
+### Added
+
+- **The phone beside the PC.** When the PC shows a thread that's also open
+  on the phone, the phone offers "Show beside": it then keeps that thread's
+  changes, plan or requests in view while you work on the PC. Switch what
+  it shows from the PC's thread menu ("Pixel shows Plan"), or on the
+  phone.
+- **Dev servers.** When an agent starts a server, the thread says "A server
+  is listening on port 5173". "Open on phone" opens it in the phone's
+  browser over your network, and the PC has "Open in browser" and
+  "Open on Pixel". A server that only answers on the PC itself says so,
+  with how to start it for the network. G7 only looks at which ports the
+  agent's processes listen on; it never connects to them.
+- **Phone screenshots, ready to paste.** A screenshot taken on the phone
+  goes straight onto the PC's clipboard, as one taken on the PC reaches
+  the phone. The "New screenshot" notification still offers Save. Turn it
+  off with "Copy phone screenshots" in the PC's Settings, next to "Sync
+  clipboard to phone". Only the PC needs 0.1.23 for this.
+
+### Fixed
+
+- The working ring on the phone spins; it stood still.
+- Clicking a button on a mirrored notification (Mark as read, Archive,
+  Answer, Decline) no longer leaves a busy pointer for up to 15 seconds on
+  GNOME.
+- Copying a photo from the phone takes about a third of the time, and
+  pasting it into another app no longer freezes G7 Link's window. A copied
+  photo is offered to other apps as PNG.
+
 ## 0.1.22 (2026-11-21)
 
 Talk to your agents and hear back, hand a thread between the PC and the
