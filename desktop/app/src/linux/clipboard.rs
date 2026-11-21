@@ -872,34 +872,50 @@ fn write_text(text: &str, html: Option<&str>, rtf: Option<&str>, kind: Kind) -> 
     Ok(())
 }
 
-pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), String> {
-    let bitmap: Bitmap = image::decode(bytes).map_err(|e| e.to_string())?;
-    let png = if mime == "image/png" && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        bytes.to_vec()
-    } else {
-        // Compressed through Qt where it can: this module's own encoder
-        // stores pixels as they are, and a photo then outgrows what GNOME
-        // Shell's clipboard takes. Quickly first; fully only when that's
-        // what gets it under the Shell's limit.
-        let compressed =
-            if cfg!(test) { Vec::new() } else { crate::bridge::native::ffi::encode_png(bytes, true) };
+/// The PNG `bytes` go onto the clipboard as, and the fingerprint of the
+/// pixels reading it back gives. A PNG goes as it is. Anything else is
+/// decoded once, by Qt where it can (`qt`): this module's own encoder stores
+/// pixels as they are, and a photo then outgrows what GNOME Shell's
+/// clipboard takes. Quickly first; fully only when that's what gets it under
+/// the Shell's limit and the Shell is the only way in (Qt's needs one of our
+/// windows to have the focus).
+fn clipboard_png(mime: &str, bytes: &[u8], qt: bool) -> Result<(Vec<u8>, u64), String> {
+    if mime == "image/png" && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let bitmap = image::decode(bytes).map_err(|e| e.to_string())?;
+        return Ok((bytes.to_vec(), fnv(&bitmap.bgra)));
+    }
+    if qt && let Some((png, pixels)) = qt_png(bytes, true) {
         let limit = super::shell_clipboard::MAX_BYTES;
-        let near_limit = compressed.len() > limit && compressed.len() <= limit / 4 * 5;
-        let compressed = if near_limit && is_gnome_wayland() && !super::data_control::active() {
-            let full = crate::bridge::native::ffi::encode_png(bytes, false);
-            if full.is_empty() { compressed } else { full }
+        let near_limit = png.len() > limit && png.len() <= limit / 4 * 5;
+        let png = if near_limit
+            && is_gnome_wayland()
+            && !super::data_control::active()
+            && !crate::bridge::native::ffi::app_window_active()
+        {
+            qt_png(bytes, false).map_or(png, |(full, _)| full)
         } else {
-            compressed
+            png
         };
-        if compressed.is_empty() {
-            image::encode_png(&bitmap).map_err(|e| e.to_string())?
-        } else {
-            compressed
-        }
-    };
+        return Ok((png, pixels));
+    }
+    let bitmap: Bitmap = image::decode(bytes).map_err(|e| e.to_string())?;
+    let png = image::encode_png(&bitmap).map_err(|e| e.to_string())?;
+    Ok((png, fnv(&bitmap.bgra)))
+}
+
+/// `bytes` as a compressed PNG through Qt, and the fingerprint of its pixels.
+fn qt_png(bytes: &[u8], fast: bool) -> Option<(Vec<u8>, u64)> {
+    let mut pixels = cxx::CxxVector::new();
+    let png = crate::bridge::native::ffi::encode_png(bytes, fast, pixels.pin_mut());
+    let png = png.as_ref().filter(|png| !png.is_empty())?;
+    Some((png.as_slice().to_vec(), fnv(pixels.as_slice())))
+}
+
+pub fn write_image(mime: &str, bytes: &[u8]) -> Result<(), String> {
+    let (png, pixels) = clipboard_png(mime, bytes, !cfg!(test))?;
 
     // Record fingerprint BEFORE updating the system clipboard.
-    *LAST_REPORTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Fingerprint::Image(fnv(&bitmap.bgra)));
+    *LAST_REPORTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Fingerprint::Image(pixels));
     *LAST_WRITTEN_RICH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *LAST_PRIVATE_TEXT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *LAST_CLIP.lock().unwrap_or_else(|e| e.into_inner()) = Clip::Image(Image::Png(png.clone()));
@@ -1280,6 +1296,34 @@ mod tests {
         let read_png = read_image_png().expect("read_image_png");
         let decoded = image::decode(&read_png).expect("decode round-trip png");
         assert_eq!(decoded, bmp);
+    }
+
+    #[test]
+    fn a_copied_photo_is_known_as_ours_when_read_back() {
+        let bmp = Bitmap {
+            width: 64,
+            height: 48,
+            bgra: (0..64 * 48u32)
+                .flat_map(|i| [(i % 251) as u8, (i % 61 * 4) as u8, (i / 64 * 5) as u8, 0xFF])
+                .collect(),
+        };
+        let jpeg = image::encode_jpeg(&bmp, 90).expect("encode jpeg");
+        // Decoded once by Qt: a compressed PNG, and the fingerprint the
+        // watcher gets when it reads that PNG back, so it isn't sent on as
+        // a new copy.
+        let (png, pixels) = clipboard_png("image/jpeg", &jpeg, true).expect("a PNG through Qt");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(fingerprint(&Clip::Image(Image::Png(png))), Some(Fingerprint::Image(pixels)));
+        // Without Qt, the same holds for the PNG this module stores.
+        let (stored, pixels) = clipboard_png("image/jpeg", &jpeg, false).expect("a stored PNG");
+        assert_eq!(fingerprint(&Clip::Image(Image::Png(stored))), Some(Fingerprint::Image(pixels)));
+        // A PNG goes as it is.
+        let as_is = image::encode_png(&bmp).expect("encode png");
+        assert_eq!(clipboard_png("image/png", &as_is, true).map(|(png, _)| png == as_is), Ok(true));
+        // Qt's pixels are this module's bytes, in the same order (B, G, R, A).
+        let (_, through_qt) = qt_png(&as_is, true).expect("Qt reads a PNG");
+        assert_eq!(through_qt, fnv(&bmp.bgra));
+        assert!(clipboard_png("image/jpeg", b"not an image", true).is_err());
     }
 
     #[test]

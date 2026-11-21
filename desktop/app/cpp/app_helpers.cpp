@@ -344,9 +344,11 @@ rust::String translate(rust::Str context, rust::Str text)
     return rust::String(QCoreApplication::translate(c.c_str(), t.c_str()).toStdString());
 }
 
-rust::Vec<uint8_t> decode_image(rust::Slice<const uint8_t> bytes)
+// Bytes go into a std::vector in one copy: a rust::Vec grows a byte at a time
+// through calls into Rust, half a second for a 12 MP photo's pixels.
+std::unique_ptr<std::vector<uint8_t>> decode_image(rust::Slice<const uint8_t> bytes)
 {
-    rust::Vec<uint8_t> result;
+    auto result = std::make_unique<std::vector<uint8_t>>();
     if (bytes.empty())
         return result;
     QImage img;
@@ -356,14 +358,12 @@ rust::Vec<uint8_t> decode_image(rust::Slice<const uint8_t> bytes)
     const uint32_t width = static_cast<uint32_t>(argb.width());
     const uint32_t height = static_cast<uint32_t>(argb.height());
     const size_t byteCount = static_cast<size_t>(argb.sizeInBytes());
-    result.reserve(8 + byteCount);
+    result->reserve(8 + byteCount);
     for (int i = 0; i < 4; ++i)
-        result.push_back(static_cast<uint8_t>((width >> (i * 8)) & 0xFF));
+        result->push_back(static_cast<uint8_t>((width >> (i * 8)) & 0xFF));
     for (int i = 0; i < 4; ++i)
-        result.push_back(static_cast<uint8_t>((height >> (i * 8)) & 0xFF));
-    const uint8_t *bits = argb.constBits();
-    for (size_t i = 0; i < byteCount; ++i)
-        result.push_back(bits[i]);
+        result->push_back(static_cast<uint8_t>((height >> (i * 8)) & 0xFF));
+    result->insert(result->end(), argb.constBits(), argb.constBits() + byteCount);
     return result;
 }
 
@@ -372,12 +372,14 @@ bool app_window_active()
     return QGuiApplication::applicationState() == Qt::ApplicationActive;
 }
 
-rust::Vec<uint8_t> encode_png(rust::Slice<const uint8_t> bytes, bool fast)
+std::unique_ptr<std::vector<uint8_t>> encode_png(rust::Slice<const uint8_t> bytes, bool fast,
+                                                 std::vector<uint8_t> &pixels)
 {
-    // Quality 50 is zlib level 4: a 12 MP photo in about 0.9 s instead of 1.9 s,
-    // some 13% bigger. -1 is libpng's default, level 6.
-    constexpr int FAST_QUALITY = 50;
-    rust::Vec<uint8_t> result;
+    // Quality 80 is zlib level 1: a 12 MP photo in half the time of level 4
+    // (1.2 s against 2.4 to 3 s), 3 to 17% bigger. -1 is libpng's default, level 6.
+    constexpr int FAST_QUALITY = 80;
+    auto result = std::make_unique<std::vector<uint8_t>>();
+    pixels.clear();
     if (bytes.empty())
         return result;
     QImage img;
@@ -387,9 +389,12 @@ rust::Vec<uint8_t> encode_png(rust::Slice<const uint8_t> bytes, bool fast)
     QBuffer buffer(&png);
     if (!buffer.open(QIODevice::WriteOnly) || !img.save(&buffer, "PNG", fast ? FAST_QUALITY : -1))
         return result;
-    result.reserve(static_cast<size_t>(png.size()));
-    for (const char byte : png)
-        result.push_back(static_cast<uint8_t>(byte));
+    // The PNG is lossless: reading it back gives these pixels, so they tell
+    // the clipboard's watcher this copy from a new one without a second decode.
+    const QImage argb = img.convertToFormat(QImage::Format_ARGB32);
+    pixels.assign(argb.constBits(), argb.constBits() + argb.sizeInBytes());
+    const auto *raw = reinterpret_cast<const uint8_t *>(png.constData());
+    result->assign(raw, raw + png.size());
     return result;
 }
 
@@ -1029,15 +1034,15 @@ bool linux_clipboard_write_image_png(rust::Slice<const uint8_t> png)
         return false;
     const QByteArray bytes(reinterpret_cast<const char *>(png.data()), static_cast<qsizetype>(png.size()));
     bool ok = false;
+    // The PNG alone, as the other ways onto the clipboard give it. With the
+    // image set as well, the GUI thread would decode it here, and Qt would
+    // encode it again on the GUI thread for each app that pastes it.
     if (runOnQtMainThreadSync([&]() {
             QClipboard *cb = QGuiApplication::clipboard();
             if (!cb)
                 return;
             auto *mime = new QMimeData();
             mime->setData(QStringLiteral("image/png"), bytes);
-            QImage img;
-            if (img.loadFromData(bytes, "PNG") && !img.isNull())
-                mime->setImageData(img);
             cb->setMimeData(mime, QClipboard::Clipboard);
             ok = true;
         })) {

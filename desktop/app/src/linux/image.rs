@@ -893,7 +893,8 @@ fn decode_bmp(bytes: &[u8]) -> Option<Bitmap> {
 
 /// `QImage` decodes to ARGB32, which is BGRA in memory on little-endian CPUs.
 fn decode_with_qt(bytes: &[u8]) -> Option<Bitmap> {
-    let out = crate::bridge::native::ffi::decode_image(bytes);
+    let decoded = crate::bridge::native::ffi::decode_image(bytes);
+    let out = decoded.as_ref()?.as_slice();
     let width = u32::from_le_bytes(out.get(0..4)?.try_into().ok()?);
     let height = u32::from_le_bytes(out.get(4..8)?.try_into().ok()?);
     let bgra = out.get(8..)?;

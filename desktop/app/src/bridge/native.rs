@@ -75,10 +75,11 @@ pub mod ffi {
         fn translate(context: &str, text: &str) -> String;
 
         /// Decodes image bytes into a byte vector: 4-byte width (LE), 4-byte height (LE), followed by ARGB32 bytes.
-        fn decode_image(bytes: &[u8]) -> Vec<u8>;
-        /// Image bytes (PNG, JPEG...) as a compressed PNG; empty when they don't
-        /// decode. `fast` compresses less, in about half the time.
-        fn encode_png(bytes: &[u8], fast: bool) -> Vec<u8>;
+        fn decode_image(bytes: &[u8]) -> UniquePtr<CxxVector<u8>>;
+        /// Image bytes (PNG, JPEG...) as a compressed PNG, decoded once; empty
+        /// when they don't decode. `fast` compresses less, in under half the
+        /// time. `pixels` gets the ARGB32 bytes `decode_image` gives for the PNG.
+        fn encode_png(bytes: &[u8], fast: bool, pixels: Pin<&mut CxxVector<u8>>) -> UniquePtr<CxxVector<u8>>;
         /// An app's icon (a theme name, or an absolute path) as a PNG of at
         /// most `edge` pixels a side, drawn on the GUI thread; empty when
         /// there's none or it couldn't be drawn. Any thread.
