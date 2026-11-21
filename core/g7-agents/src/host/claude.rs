@@ -144,6 +144,91 @@ pub fn args(settings: &LaunchSettings, mcp_config: &Path, session_id: &str, resu
     args
 }
 
+/// The arguments for a process that continues a copy of a session
+/// (§U6.2): `resume` is the session's id, or the absolute path of a cut
+/// copy of its transcript. `--fork-session` only ever goes with `--resume`.
+pub fn fork_args(settings: &LaunchSettings, mcp_config: &Path, resume: &str) -> Vec<String> {
+    let mut args = args(settings, mcp_config, resume, true);
+    args.push("--fork-session".to_owned());
+    args
+}
+
+/// The arguments of the check that Claude can open a copy (reconcile §5):
+/// the catalog probe's flags with the copy to open, no MCP server and no
+/// message. Nothing is written while no message is sent [spike S-3.6, 3.7].
+pub fn check_args(empty_mcp_config: &Path, resume: &str) -> Vec<String> {
+    let mut args = catalog::claude_probe_args(empty_mcp_config);
+    args.retain(|a| a != "--no-session-persistence");
+    args.extend(["--resume".to_owned(), resume.to_owned(), "--fork-session".to_owned()]);
+    args
+}
+
+/// What the check's answer says: `Some(true)` the copy opened (Claude
+/// answered `request_id`), `Some(false)` it didn't (a `result` came first,
+/// or the answer was an error), `None` not yet [spike S-3.7, 3.8, 3.9].
+pub fn check_answer(line: &Value, request_id: &str) -> Option<bool> {
+    match line.get("type").and_then(Value::as_str) {
+        Some("control_response") => {
+            let response = line.get("response")?;
+            if response.get("request_id").and_then(Value::as_str) != Some(request_id) {
+                return None;
+            }
+            Some(response.get("subtype").and_then(Value::as_str) == Some("success"))
+        }
+        Some("result") => Some(false),
+        _ => None,
+    }
+}
+
+/// A cut copy of a session's transcript (§U6.2 step 2): a 0600 file named
+/// `<16 hex>.jsonl` in the host's runtime directory, removed when this is
+/// dropped. It is never parsed beyond the lines' `uuid` and never logged.
+#[derive(Debug)]
+pub struct CutFile {
+    path: PathBuf,
+}
+
+impl CutFile {
+    /// A new, empty cut file in `dir`, and the file to write it through.
+    /// Never an existing file, nor a link (`create_new` is `O_EXCL`).
+    pub fn create(dir: &Path) -> std::io::Result<(CutFile, std::fs::File)> {
+        let name: u64 = rand::random();
+        let path = dir.join(format!("{name:016x}{CUT_SUFFIX}"));
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+        Ok((CutFile { path }, file))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for CutFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+const CUT_SUFFIX: &str = ".jsonl";
+
+/// A name [`CutFile::create`] makes.
+pub fn is_cut_name(name: &str) -> bool {
+    name.strip_suffix(CUT_SUFFIX).is_some_and(|hex| {
+        hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// How the next process of a thread starts from a copy of a session.
+#[derive(Debug)]
+pub struct ForkStart {
+    /// The session the copy is made from.
+    pub from: String,
+    /// What `--resume` gets: `from`, or the path of `cut`.
+    pub resume: String,
+    /// Removed once Claude reports the copy's id, or when the process ends.
+    pub cut: Option<CutFile>,
+}
+
 /// Writes the MCP config that starts our approval bridge, mode 0600.
 pub fn write_mcp_config(
     path: &Path,
@@ -375,6 +460,8 @@ struct Sent {
     /// Its user item's id.
     id: String,
     steer: bool,
+    /// It starts a turn: its echo's `uuid` is the turn's mark.
+    starts: bool,
 }
 
 /// Turns Claude's stdout lines into steps (§4.4).
@@ -414,6 +501,9 @@ pub struct ClaudeMapper {
     /// Tool calls shown as items of their own (the plan, a question): no
     /// tool step for them or their results.
     hidden: HashSet<String>,
+    /// The process continues a copy of this session (`--fork-session`):
+    /// the copy's id comes with its first `system/init`.
+    forking: Option<String>,
 }
 
 impl ClaudeMapper {
@@ -439,7 +529,15 @@ impl ClaudeMapper {
             turn_model: None,
             mcp: None,
             hidden: HashSet::new(),
+            forking: None,
         }
+    }
+
+    /// The process continues a copy of the session `from`: the first
+    /// `system/init` names the copy ([`Step::NativeId`]).
+    pub fn set_forking(&mut self, from: &str) {
+        self.session_id = None;
+        self.forking = Some(from.to_owned());
     }
 
     /// The process's mode: in plan mode the plan file's write is marked.
@@ -464,12 +562,14 @@ impl ClaudeMapper {
         self.interrupt_sent = true;
     }
 
-    /// A message was written to stdin: `steer` when it went into a running turn.
+    /// A message was written to stdin: `steer` when it went to steer (into
+    /// a running turn, or starting one when none runs).
     pub fn wrote(&mut self, id: &str, steer: bool) {
         if self.pending.len() >= MAX_PENDING {
             self.pending.pop_front();
         }
-        self.pending.push_back(Sent { id: id.to_owned(), steer });
+        let starts = !steer || !self.turn_running;
+        self.pending.push_back(Sent { id: id.to_owned(), steer, starts });
     }
 
     fn end_turn(&mut self, end: TurnEnd) -> Step {
@@ -539,11 +639,19 @@ impl ClaudeMapper {
         let subtype = line.get("subtype").and_then(Value::as_str).unwrap_or_default();
         match (kind, subtype) {
             ("system", "init") => {
-                let ours = line
-                    .get("session_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| self.session_id.as_deref().is_none_or(|s| s == id));
-                if !ours {
+                let reported = line.get("session_id").and_then(Value::as_str);
+                if let Some(from) = self.forking.take() {
+                    match reported.filter(|id| is_session_id(id) && *id != from) {
+                        Some(id) => {
+                            self.session_id = Some(id.to_owned());
+                            steps.push(Step::NativeId(id.to_owned()));
+                        }
+                        None => {
+                            tracing::warn!("Claude didn't report a copy of the session");
+                            self.forking = Some(from);
+                        }
+                    }
+                } else if !reported.is_some_and(|id| self.session_id.as_deref().is_none_or(|s| s == id)) {
                     tracing::warn!("Claude reported a different session id");
                 }
                 let bridge_up = line.get("mcp_servers").and_then(Value::as_array).is_some_and(|servers| {
@@ -588,7 +696,7 @@ impl ClaudeMapper {
             ("stream_event", _) => self.stream_event(line.get("event").unwrap_or(&Value::Null), &mut steps),
             ("assistant", _) => self.assistant(line, &mut steps),
             ("user", _) if line.get("isReplay").and_then(Value::as_bool) == Some(true) => {
-                self.replayed(&mut steps);
+                self.replayed(line, &mut steps);
             }
             ("user", _) => self.user(line, &mut steps),
             ("result", _) if self.turn_running => {
@@ -608,11 +716,17 @@ impl ClaudeMapper {
 
     /// Claude took in a message we wrote. After its `result` that starts a
     /// turn of its own (a steer that came too late for the last one).
-    fn replayed(&mut self, steps: &mut Vec<Step>) {
+    fn replayed(&mut self, line: &Value, steps: &mut Vec<Step>) {
         let Some(sent) = self.pending.pop_front() else { return };
+        let starts = sent.starts || !self.turn_running;
         if !self.turn_running {
             self.turn_started();
             steps.push(Step::TurnStarted);
+        }
+        // The echo's `uuid` is its transcript line's [spike S-3.3]: a cut
+        // made before it leaves this turn out (§U6.2).
+        if starts && let Some(mark) = line.get("uuid").and_then(Value::as_str).filter(|m| is_session_id(m)) {
+            steps.push(Step::TurnMark(mark.to_owned()));
         }
         if sent.steer && !sent.id.is_empty() {
             steps.push(Step::Delivered { id: sent.id });
@@ -951,6 +1065,21 @@ pub struct Launch {
     pub bridge_token: String,
     pub env: Vec<(OsString, OsString)>,
     pub first_text: String,
+    /// The process continues a copy of a session (§U6.2): `session_id`
+    /// and `resume` are then not used. Start it with [`spawn_session`].
+    pub fork: Option<ForkFrom>,
+}
+
+/// A thread's pending copy, for [`Launch::fork`]: made with
+/// [`crate::host::fork::launch_fork`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkFrom {
+    /// [`crate::host::fork::LaunchHint::encode`].
+    pub hint: String,
+    /// Where Claude keeps its transcripts (`$CLAUDE_CONFIG_DIR` or `~/.claude`).
+    pub claude_home: PathBuf,
+    /// Where the cut copy goes: `cut/` in the host's runtime directory.
+    pub cut_dir: PathBuf,
 }
 
 /// Starts a Claude process for a thread with only its mode set.
@@ -960,11 +1089,58 @@ pub fn spawn(
     spawn_with(launch, &LaunchSettings::new(launch.mode))
 }
 
-/// Starts a Claude process for a thread with its settings (§Q4.2).
+/// Starts a Claude process that continues a copy of a session (§U6.2):
+/// `launch.session_id` is what `--resume` gets ([`ForkStart::resume`]).
+pub fn spawn_fork(
+    launch: &Launch,
+    settings: &LaunchSettings,
+) -> std::io::Result<(AgentProcess, tokio::sync::mpsc::Receiver<crate::host::agents::OutLine>)> {
+    write_mcp_config(&launch.mcp_config, &launch.bridge_exe, &launch.socket, &launch.bridge_token)?;
+    let args = fork_args(settings, &launch.mcp_config, &launch.session_id);
+    let spawned = AgentProcess::spawn(&launch.bin, &args, &launch.cwd, &launch.env);
+    if spawned.is_err() {
+        let _ = std::fs::remove_file(&launch.mcp_config);
+    }
+    spawned
+}
+
+/// Starts a Claude process for a thread and its driver, sending `first`
+/// (§Q4.2). With [`Launch::fork`] the process continues a copy of a session
+/// (§U6.2): the cut copy is made first when the copy ends at a mark, the
+/// process runs with `--resume <session or cut> --fork-session`, and the
+/// copy's id comes with Claude's first `system/init` ([`Step::NativeId`]).
+/// A copy that can't be made is an error and starts nothing (its message:
+/// what went wrong, for the user).
+pub fn spawn_session(
+    launch: &Launch,
+    settings: &LaunchSettings,
+    first: UserInput,
+) -> std::io::Result<(AgentProcess, tokio::sync::mpsc::Receiver<crate::host::agents::OutLine>, ClaudeDriver)>
+{
+    let Some(from) = &launch.fork else {
+        let (process, lines) = spawn_with(launch, settings)?;
+        let driver =
+            ClaudeDriver::with_settings(launch.cwd.clone(), launch.session_id.clone(), settings, first);
+        return Ok((process, lines, driver));
+    };
+    let start = crate::host::fork::claude_fork_start(from, &launch.cwd)?;
+    let forked = Launch { session_id: start.resume.clone(), resume: true, fork: None, ..launch.clone() };
+    let (process, lines) = spawn_fork(&forked, settings)?;
+    Ok((process, lines, ClaudeDriver::forking(launch.cwd.clone(), settings, first, start)))
+}
+
+/// Starts a Claude process for a thread with its settings (§Q4.2). Not
+/// for a [`Launch::fork`]: that needs [`spawn_session`].
 pub fn spawn_with(
     launch: &Launch,
     settings: &LaunchSettings,
 ) -> std::io::Result<(AgentProcess, tokio::sync::mpsc::Receiver<crate::host::agents::OutLine>)> {
+    if launch.fork.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a copy starts with spawn_session",
+        ));
+    }
     write_mcp_config(&launch.mcp_config, &launch.bridge_exe, &launch.socket, &launch.bridge_token)?;
     let args = args(settings, &launch.mcp_config, &launch.session_id, launch.resume);
     let spawned = AgentProcess::spawn(&launch.bin, &args, &launch.cwd, &launch.env);
@@ -980,6 +1156,8 @@ pub struct ClaudeDriver {
     mapper: ClaudeMapper,
     first: Option<UserInput>,
     interrupts: u64,
+    /// The cut copy this process was started from, until Claude has read it.
+    cut: Option<CutFile>,
 }
 
 impl ClaudeDriver {
@@ -1002,7 +1180,17 @@ impl ClaudeDriver {
     ) -> Self {
         let mut mapper = ClaudeMapper::new(cwd, Some(session_id));
         mapper.set_mode(settings.mode);
-        Self { mapper, first: Some(first), interrupts: 0 }
+        Self { mapper, first: Some(first), interrupts: 0, cut: None }
+    }
+
+    /// A driver for a process started with [`spawn_fork`] from `start`: the
+    /// copy's id is reported when Claude names it, and the cut file, if
+    /// any, is removed then or when the process ends (§U6.2 step 4).
+    pub fn forking(cwd: PathBuf, settings: &LaunchSettings, first: UserInput, start: ForkStart) -> Self {
+        let mut mapper = ClaudeMapper::new(cwd, None);
+        mapper.set_mode(settings.mode);
+        mapper.set_forking(&start.from);
+        Self { mapper, first: Some(first), interrupts: 0, cut: start.cut }
     }
 
     /// Writes a message; `steer` when it goes into the running turn.
@@ -1021,6 +1209,13 @@ impl Driver for ClaudeDriver {
     }
 
     fn on_line(&mut self, line: Value, out: &mut Output) {
+        if self.cut.is_some()
+            && line.get("type").and_then(Value::as_str) == Some("system")
+            && line.get("subtype").and_then(Value::as_str) == Some("init")
+        {
+            // Claude has loaded the copy and named it: the cut is not needed.
+            self.cut = None;
+        }
         if line.get("type").and_then(Value::as_str) == Some("control_request") {
             if let Some((reply, elicitation)) = cli_request_reply(&line) {
                 out.stdin.push(reply);
@@ -1077,6 +1272,7 @@ impl Driver for ClaudeDriver {
     }
 
     fn on_exit(&mut self, code: Option<i32>) -> Vec<Step> {
+        self.cut = None;
         self.mapper.on_exit(code)
     }
 }
@@ -1580,8 +1776,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// Every flag the host may pass Claude (§Q4.2).
-    const DOCUMENTED: [&str; 14] = [
+    /// Every flag the host may pass Claude (§Q4.2, §U6.2).
+    const DOCUMENTED: [&str; 15] = [
         "-p",
         "--input-format",
         "--output-format",
@@ -1596,6 +1792,7 @@ pub(crate) mod tests {
         "--permission-prompt-tool",
         "--resume",
         "--session-id",
+        "--fork-session",
     ];
 
     #[test]
@@ -1631,6 +1828,19 @@ pub(crate) mod tests {
                             for never in ["--bare", "--disallowedTools", "--dangerously-skip-permissions"] {
                                 assert!(!a.iter().any(|a| a == never), "{never}");
                             }
+                            assert!(!a.iter().any(|a| a == "--fork-session"), "only a fork forks");
+                            let f =
+                                fork_args(&settings(mode, model, effort, mcp), Path::new("/r/m.json"), &id);
+                            for flag in f.iter().filter(|a| a.starts_with('-')) {
+                                assert!(DOCUMENTED.contains(&flag.as_str()), "{flag} in {f:?}");
+                            }
+                            assert_eq!(
+                                &f[..f.len() - 1],
+                                &args(&settings(mode, model, effort, mcp), Path::new("/r/m.json"), &id, true)
+                                    [..]
+                            );
+                            assert_eq!(f.last().map(String::as_str), Some("--fork-session"));
+                            assert!(!f.iter().any(|a| a == "--session-id" || a == "--bare"));
                         }
                     }
                 }
@@ -1790,6 +2000,57 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn each_turn_is_marked_by_the_echo_that_started_it() {
+        let (steps, _) = drive("claude-13-steer.jsonl", Mode::Supervised);
+        let marks: Vec<String> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::TurnMark(m) => Some(format!("mark {m}")),
+                Step::Delivered { id } => Some(format!("delivered {id}")),
+                Step::TurnStarted => Some("started".to_owned()),
+                Step::TurnEnded(_) => Some("ended".to_owned()),
+                _ => None,
+            })
+            .collect();
+        // The first message's echo marks turn 1; a steer inside it makes no
+        // mark; one taken in after the result starts and marks turn 2.
+        assert_eq!(
+            marks,
+            [
+                "mark 13000000-0000-4000-8000-000000000001",
+                "delivered u2",
+                "ended",
+                "started",
+                "mark 13000000-0000-4000-8000-000000000003",
+                "delivered u3",
+                "ended"
+            ]
+        );
+        // An echo without a uuid, or with one that isn't, marks nothing.
+        let mut driver = ClaudeDriver::new(PathBuf::from("/w"), new_session_id(), "Hi".into());
+        let mut out = Output::default();
+        driver.start(&mut out);
+        driver.on_line(
+            json!({"type": "user", "isReplay": true, "uuid": "../x", "message": {"content": []}}),
+            &mut out,
+        );
+        assert!(!out.steps.iter().any(|s| matches!(s, Step::TurnMark(_))));
+        // A steer while idle starts its turn and marks it.
+        driver.on_line(json!({"type": "result", "subtype": "success", "is_error": false}), &mut out);
+        let mut out = Output::default();
+        driver.on_cmd(
+            SessionCmd::Steer(UserInput { id: "u9".into(), text: "More".into(), images: Vec::new() }),
+            &mut out,
+        );
+        let mark = new_session_id();
+        driver.on_line(
+            json!({"type": "user", "isReplay": true, "uuid": mark, "message": {"content": []}}),
+            &mut out,
+        );
+        assert_eq!(out.steps, [Step::TurnStarted, Step::TurnMark(mark), Step::Delivered { id: "u9".into() }]);
+    }
+
+    #[test]
     fn a_steer_while_idle_starts_a_turn() {
         let mut driver = ClaudeDriver::new(PathBuf::from("/w"), new_session_id(), "Hi".into());
         let mut out = Output::default();
@@ -1912,5 +2173,168 @@ pub(crate) mod tests {
         let reply: Value = serde_json::from_str(&out.stdin[0]).unwrap();
         assert_eq!(reply["response"]["subtype"], "error");
         assert!(out.steps.is_empty());
+    }
+
+    #[test]
+    fn a_copy_resumes_by_id_or_by_the_cuts_path() {
+        let cut = "/run/user/1000/g7-agents/cut/0123456789abcdef.jsonl";
+        let a = fork_args(&LaunchSettings::new(Mode::Supervised), Path::new("/r/m.json"), cut);
+        assert!(a.windows(2).any(|w| w == ["--resume", cut]));
+        assert_eq!(a.iter().filter(|a| *a == "--resume").count(), 1);
+        // The check: the probe's flags, the copy, nothing that writes or asks.
+        let c = check_args(Path::new("/r/empty.json"), cut);
+        assert_eq!(c[c.len() - 3..], ["--resume", cut, "--fork-session"]);
+        assert!(c.windows(2).any(|w| w == ["--mcp-config", "/r/empty.json"]));
+        assert!(c.iter().any(|a| a == "--strict-mcp-config"));
+        for flag in c.iter().filter(|a| a.starts_with('-')) {
+            assert!(DOCUMENTED.contains(&flag.as_str()), "{flag} in {c:?}");
+        }
+        for never in
+            ["--bare", "--session-id", "--permission-prompt-tool", "--no-session-persistence", "--model"]
+        {
+            assert!(!c.iter().any(|a| a == never), "{never}");
+        }
+    }
+
+    #[test]
+    fn a_copy_is_started_only_by_spawn_session() {
+        let launch = Launch {
+            bin: PathBuf::from("/nonexistent/claude"),
+            cwd: PathBuf::from("/w"),
+            mode: Mode::Supervised,
+            session_id: new_session_id(),
+            resume: false,
+            mcp_config: PathBuf::from("/nonexistent/mcp.json"),
+            bridge_exe: PathBuf::from("/nonexistent/g7-agents"),
+            socket: PathBuf::from("/nonexistent/host.sock"),
+            bridge_token: "t".into(),
+            env: Vec::new(),
+            first_text: "Hi".into(),
+            fork: Some(ForkFrom {
+                hint: "{}".into(),
+                claude_home: PathBuf::from("/nonexistent"),
+                cut_dir: PathBuf::from("/nonexistent/cut"),
+            }),
+        };
+        let e = spawn_with(&launch, &LaunchSettings::new(Mode::Supervised)).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+        // A hint that isn't one starts nothing.
+        let e = spawn_session(&launch, &LaunchSettings::new(Mode::Supervised), UserInput::text("Hi"))
+            .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn the_checks_answer() {
+        let answer = |subtype: &str, id: &str| json!({"type": "control_response", "response": {"subtype": subtype, "request_id": id, "response": {}}});
+        assert_eq!(check_answer(&answer("success", "c1"), "c1"), Some(true));
+        assert_eq!(check_answer(&answer("error", "c1"), "c1"), Some(false));
+        assert_eq!(check_answer(&answer("success", "other"), "c1"), None);
+        // A copy Claude can't read [spike S-3.8, 3.9].
+        let failed = json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+            "num_turns": 0, "errors": ["No conversation found"], "session_id": new_session_id()});
+        assert_eq!(check_answer(&failed, "c1"), Some(false));
+        assert_eq!(check_answer(&json!({"type": "system", "subtype": "hook_started"}), "c1"), None);
+        assert_eq!(check_answer(&json!({"type": "control_response"}), "c1"), None);
+    }
+
+    #[test]
+    fn a_cut_file_is_private_and_goes_when_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (cut, mut file) = CutFile::create(dir.path()).unwrap();
+        file.write_all(b"{}\n").unwrap();
+        let name = cut.path().file_name().unwrap().to_str().unwrap().to_owned();
+        assert!(is_cut_name(&name), "{name}");
+        assert_eq!(std::fs::metadata(cut.path()).unwrap().permissions().mode() & 0o777, 0o600);
+        let path = cut.path().to_owned();
+        drop(cut);
+        assert!(!path.exists());
+        assert!(is_cut_name("0123456789abcdef.jsonl"));
+        for name in [
+            "0123456789ABCDEF.jsonl",
+            "0123456789abcde.jsonl",
+            "../0123456789abcdef.jsonl",
+            "x.jsonl",
+            "0123456789abcdef.json",
+        ] {
+            assert!(!is_cut_name(name), "{name}");
+        }
+    }
+
+    fn init(session: &str) -> Value {
+        json!({"type": "system", "subtype": "init", "session_id": session,
+            "mcp_servers": [{"name": MCP_SERVER, "status": "connected"}]})
+    }
+
+    #[test]
+    fn a_copy_is_named_by_its_first_init() {
+        let from = new_session_id();
+        let copy = new_session_id();
+        let mut mapper = ClaudeMapper::new(PathBuf::from("/w"), Some(from.clone()));
+        mapper.set_forking(&from);
+        mapper.turn_started();
+        // Claude kept the source's id: not a copy, nothing reported.
+        assert!(!mapper.feed(&init(&from)).iter().any(|s| matches!(s, Step::NativeId(_))));
+        let steps = mapper.feed(&init(&copy));
+        assert_eq!(
+            steps.iter().filter(|s| matches!(s, Step::NativeId(_))).collect::<Vec<_>>(),
+            [&Step::NativeId(copy.clone())]
+        );
+        assert!(matches!(steps[0], Step::NativeId(_)), "before anything that can end the turn");
+        // Once.
+        assert!(!mapper.feed(&init(&copy)).iter().any(|s| matches!(s, Step::NativeId(_))));
+        // A thread that isn't forking never reports an id.
+        let mut plain = ClaudeMapper::new(PathBuf::from("/w"), Some(from.clone()));
+        assert!(!plain.feed(&init(&copy)).iter().any(|s| matches!(s, Step::NativeId(_))));
+        // Not a session id: not taken.
+        let mut odd = ClaudeMapper::new(PathBuf::from("/w"), None);
+        odd.set_forking(&from);
+        assert!(!odd.feed(&init("../x")).iter().any(|s| matches!(s, Step::NativeId(_))));
+    }
+
+    fn forking_driver(dir: &Path) -> (ClaudeDriver, PathBuf) {
+        let (cut, _) = CutFile::create(dir).unwrap();
+        let path = cut.path().to_owned();
+        let from = new_session_id();
+        let start = ForkStart { resume: path.to_string_lossy().into_owned(), from, cut: Some(cut) };
+        let driver = ClaudeDriver::forking(
+            PathBuf::from("/w"),
+            &LaunchSettings::new(Mode::Supervised),
+            UserInput::text("Hi"),
+            start,
+        );
+        (driver, path)
+    }
+
+    #[test]
+    fn the_cut_goes_once_claude_names_the_copy_or_the_process_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut driver, path) = forking_driver(dir.path());
+        let mut out = Output::default();
+        driver.start(&mut out);
+        assert_eq!(out.stdin.len(), 1, "the first message goes at once");
+        driver.on_line(json!({"type": "system", "subtype": "hook_started"}), &mut out);
+        assert!(path.exists(), "kept until Claude names the copy");
+        let copy = new_session_id();
+        driver.on_line(init(&copy), &mut out);
+        assert!(!path.exists());
+        assert!(out.steps.contains(&Step::NativeId(copy)));
+
+        // Claude couldn't open it: it ends with an error and exits.
+        let (mut driver, path) = forking_driver(dir.path());
+        let mut out = Output::default();
+        driver.start(&mut out);
+        driver.on_line(json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "errors": ["No conversation found"]}), &mut out);
+        assert!(path.exists());
+        let steps = driver.on_exit(Some(1));
+        assert!(!path.exists());
+        assert!(steps.is_empty(), "the result already ended the turn");
+        assert!(matches!(out.steps.last(), Some(Step::TurnEnded(end)) if end.outcome == Outcome::Failed));
+
+        // The session ends without either: dropping the driver removes it.
+        let (driver, path) = forking_driver(dir.path());
+        drop(driver);
+        assert!(!path.exists());
     }
 }

@@ -1,0 +1,5 @@
+{"dir":"send","msg":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"G7 Linux","title":"G7 Linux","version":"0.0.0"},"capabilities":{"experimentalApi":true}}}}
+{"dir":"recv","msg":{"id":1,"result":{"userAgent":"G7 Linux/0.170.0 (Ubuntu 26.4.0; x86_64) unknown (G7 Linux; 0.0.0)","codexHome":"/home/USER/.codex","platformFamily":"unix","platformOs":"linux"}}}
+{"dir":"send","msg":{"jsonrpc":"2.0","method":"initialized"}}
+{"dir":"send","msg":{"jsonrpc":"2.0","id":3,"method":"thread/fork","params":{"threadId":"019a7c10-0000-7000-8000-00000000a001","cwd":"/work","approvalPolicy":"untrusted","sandbox":"workspace-write","excludeTurns":true,"lastTurnId":"019a7c10-0000-7000-8000-00000000dead"}}}
+{"dir":"recv","msg":{"id":3,"error":{"code":-32600,"message":"turn not found: 019a7c10-0000-7000-8000-00000000dead"}}}

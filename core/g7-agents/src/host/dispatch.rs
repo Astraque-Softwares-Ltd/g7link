@@ -216,6 +216,7 @@ impl Host {
         message: Message,
         bin: Option<&Path>,
     ) -> Result<(), RpcError> {
+        let placed = self.place_for(reg, thread_id);
         let Some(entry) = reg.threads.get_mut(thread_id) else {
             return Err(err(ErrorCode::NotFound, "No such thread."));
         };
@@ -228,28 +229,112 @@ impl Host {
         emit_state(self, entry);
         emit_item(self, thread_id, &user);
         let input = UserInput { id: user.id, text: message.text, images: message.blocks };
-        let delivered = entry.alive()
-            && entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Send(input.clone())).is_ok());
-        if !delivered {
-            entry.close_session(&mut reg.bridges);
-            let Some(bin) = bin else {
-                self.finish_turn(
-                    reg,
-                    thread_id,
-                    crate::host::agents::TurnEnd::failed(
-                        crate::host::agents::code::START_FAILED,
-                        "The agent isn't available.",
-                    ),
-                );
-                return Ok(());
-            };
-            self.start_session(reg, thread_id, input, bin);
+        // A restore point first, then the message (§U5.3).
+        match self.open_turn(entry, user.seq, Some(placed)) {
+            Some(pre) => self.deliver_after(thread_id, pre, input, bin.map(Path::to_path_buf)),
+            None => self.deliver_input(reg, thread_id, input, bin),
         }
         Ok(())
     }
 
-    /// `thread.send` (§Q3.4). `owner`: whose pending images it may use.
+    /// Gives the running turn's message to the live process, else to a new
+    /// one (`bin`); the turn fails when there is neither.
+    pub(crate) fn deliver_input(
+        self: &Arc<Self>,
+        reg: &mut Registry,
+        thread_id: &str,
+        input: UserInput,
+        bin: Option<&Path>,
+    ) {
+        let Some(entry) = reg.threads.get_mut(thread_id) else { return };
+        let delivered = entry.alive()
+            && entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Send(input.clone())).is_ok());
+        if delivered {
+            return;
+        }
+        entry.close_session(&mut reg.bridges);
+        let Some(bin) = bin else {
+            self.finish_turn(
+                reg,
+                thread_id,
+                crate::host::agents::TurnEnd::failed(
+                    crate::host::agents::code::START_FAILED,
+                    "The agent isn't available.",
+                ),
+            );
+            return;
+        };
+        self.start_session(reg, thread_id, input, bin);
+    }
+
+    /// `thread.send` (§Q3.4). `owner`: whose pending images it may use. A
+    /// thread sent to goes back on the main list.
     pub async fn thread_send(
+        self: &Arc<Self>,
+        p: ThreadSendParams,
+        owner: &str,
+    ) -> Result<ThreadSendResult, RpcError> {
+        let thread_id = p.thread_id.clone();
+        let key = p.key.clone();
+        if let Some(key) = &key {
+            if !is_valid_send_key(key) {
+                return Err(err(ErrorCode::BadRequest, "Bad message key."));
+            }
+            if !self.lock_reg().threads.contains_key(&thread_id) {
+                return Err(err(ErrorCode::NotFound, "No such thread."));
+            }
+            // Taken once: a retry after a lost reply sends nothing.
+            let (thread, key) = (thread_id.clone(), key.clone());
+            let now = crate::host::store::now_ms();
+            let taken = self.store.db(move |db| db.take_send_key(&thread, &key, now)).await;
+            match taken {
+                Ok(true) => {}
+                Ok(false) => return Ok(ThreadSendResult { queued: None, duplicate: true }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(err(ErrorCode::NotFound, "No such thread."));
+                }
+                Err(_) => return Err(err(ErrorCode::Internal, "Couldn't keep the message's key.")),
+            }
+        }
+        let result = self.send_message(p, owner).await;
+        match result {
+            Ok(result) => {
+                self.sent_to(&thread_id);
+                Ok(result)
+            }
+            Err(e) => {
+                // Nothing was sent: the key is free for the retry.
+                if let Some(key) = key {
+                    let thread = thread_id.clone();
+                    self.store
+                        .db_later("give a message key back", move |db| db.release_send_key(&thread, &key));
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// `thread.start`, and whether its key had started a thread already
+    /// (then that thread, and nothing started).
+    pub async fn thread_start_keyed(
+        self: &Arc<Self>,
+        p: ThreadStartParams,
+        owner: &str,
+    ) -> Result<(ThreadInfo, bool), RpcError> {
+        let Some(key) = p.key.clone() else { return Ok((self.thread_start(p, owner).await?, false)) };
+        if !is_valid_send_key(&key) {
+            return Err(err(ErrorCode::BadRequest, "Bad message key."));
+        }
+        let now = crate::host::store::now_ms();
+        if let Some(info) = self.lock_reg().started_by_key(&key, now) {
+            return Ok((info, true));
+        }
+        let info = self.thread_start(p, owner).await?;
+        self.lock_reg().keep_start_key(key, &info.id, now);
+        Ok((info, false))
+    }
+
+    async fn send_message(
         self: &Arc<Self>,
         p: ThreadSendParams,
         owner: &str,
@@ -460,7 +545,7 @@ impl Host {
             Queued { id, text, origin: origin.clone(), images, created_ms: crate::host::store::now_ms() };
         entry.info.queued.push(queued.clone());
         emit_state(self, entry);
-        Ok(ThreadSendResult { queued: Some(queued) })
+        Ok(ThreadSendResult { queued: Some(queued), duplicate: false })
     }
 
     /// The turn ended done: the oldest queued message starts the next one,
@@ -1084,7 +1169,8 @@ mod flow {
     #[tokio::test]
     async fn the_queue_outlives_a_host_restart_held() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path().to_owned()).unwrap();
+        let store = Store::open(dir.path().to_owned()).unwrap();
+        let mut db = crate::host::db::Db::open(dir.path()).unwrap();
         let queued = Queued {
             id: "0123456789abcdef".into(),
             text: "Then run the tests".into(),
@@ -1094,9 +1180,13 @@ mod flow {
         };
         for (id, state) in [("a".repeat(32), State::Done), ("b".repeat(32), State::Working)] {
             let info = ThreadInfo { id, state, queued: vec![queued.clone()], ..test_info(AgentId::Claude) };
-            store.save_meta(&info, 1).unwrap();
+            db.save_thread(
+                &info,
+                &crate::host::db::ThreadCols { next_seq: 1, next_turn: 1, ..Default::default() },
+            )
+            .unwrap();
         }
-        let reg = Registry::load(&mut store, APPROVAL_LIFETIME_MS);
+        let reg = Registry::load(&store, Some(&mut db), APPROVAL_LIFETIME_MS);
         for entry in reg.threads.values() {
             assert_eq!(entry.info.queued, std::slice::from_ref(&queued));
             assert!(entry.info.queue_held, "nothing is sent until the user says");
@@ -1489,7 +1579,7 @@ mod flow {
             [FolderMcp { agent: AgentId::Claude, names: vec!["github".into(), "linear".into()] }]
         );
         // The switch: stored, and used from the next process.
-        let off = host.folders_set("f000000000001", false).await.unwrap();
+        let off = host.folders_set("f000000000001", Some(false), None).await.unwrap();
         assert!(!off.mcp);
         assert_eq!(off.mcp_seen.len(), 1, "what threads reported stays");
     }

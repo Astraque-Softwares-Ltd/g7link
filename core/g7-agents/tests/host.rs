@@ -193,6 +193,14 @@ async fn until_done(events: &mut Events, thread_id: &str) -> Vec<Event> {
     }
 }
 
+/// Removes the thread database a host made, so the next one brings in a
+/// file store planted from an earlier release (it is read only then).
+fn forget_database(dir: &Path) {
+    for name in ["agents.db", "agents.db-wal", "agents.db-shm"] {
+        let _ = std::fs::remove_file(dir.join("data/g7-agents").join(name));
+    }
+}
+
 async fn approval(events: &mut Events) -> Approval {
     match next(events, "approval.requested", |e| matches!(e, Event::ApprovalRequested(_))).await {
         Event::ApprovalRequested(a) => a.approval,
@@ -680,6 +688,7 @@ async fn a_second_host_exits_and_a_restart_interrupts_running_threads() {
     let mut host = host;
     let _ = host.stop.take().unwrap().send(());
     host.task.take().unwrap().await.unwrap().unwrap();
+    forget_database(&dir_path);
     let id = "c".repeat(32);
     let thread_dir = dir_path.join("data/g7-agents/threads").join(&id);
     std::fs::create_dir_all(&thread_dir).unwrap();
@@ -752,7 +761,7 @@ async fn read_all(client: &Client, thread_id: &str) -> Vec<Item> {
 async fn hello_says_what_the_host_offers() {
     let host = TestHost::start(Options::default()).await;
     let (client, _events) = host.client(ClientKind::Test).await;
-    assert_eq!(client.host().caps, [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL]);
+    assert_eq!(client.host().caps, [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL, cap::HISTORY, cap::UNDO]);
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
     let err = Client::connect(&host.socket, too_many).await.unwrap_err();
     assert_eq!(err.code(), Some(ErrorCode::BadRequest));
@@ -994,6 +1003,7 @@ async fn a_thread_from_before_turns_continues_with_the_next_one() {
     let _ = host.stop.take().unwrap().send(());
     host.task.take().unwrap().await.unwrap().unwrap();
     let dir = host.dir.path().to_owned();
+    forget_database(&dir);
     let id = "d".repeat(32);
     let thread_dir = dir.join("data/g7-agents/threads").join(&id);
     std::fs::create_dir_all(&thread_dir).unwrap();
@@ -1313,5 +1323,422 @@ async fn the_lists_come_from_the_clis_and_the_control_methods_answer() {
     client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
     assert_eq!(client.history_list(None).await.unwrap(), ["List the files here."]);
     assert_eq!(client.draft_get(key.clone()).await.unwrap().map(|d| d.text), Some(String::new()), "sent");
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_history_and_undo_methods_are_named_and_the_folder_switch_is_kept() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    assert!(folder.checkpoints, "restore points are on for a new folder");
+    let thread =
+        client.thread_start_with(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    assert!(!thread.duplicate);
+    let id = thread.thread.id.clone();
+    let mut bad_key = start(AgentId::Claude, &folder, "x");
+    bad_key.key = Some("NOT-HEX".into());
+    assert_eq!(client.thread_start(bad_key).await.unwrap_err().code(), Some(ErrorCode::BadRequest));
+
+    // Never "unknown method": a client tells this host from an older one by
+    // its caps, not by guessing.
+    let by = Origin::launcher();
+    let not_yet = |e: ClientError| {
+        assert!(!e.is_unknown_method(), "{e}");
+        e.code()
+    };
+    let unavailable = Some(ErrorCode::Unavailable);
+    // Built: answers of their own, never "not yet".
+    until_done(&mut events, &id).await;
+    let turns = ThreadTurnsParams { thread_id: id.clone(), ..Default::default() };
+    let listed = client.thread_turns(turns).await.unwrap();
+    assert_eq!(listed.iter().map(|t| t.turn).collect::<Vec<_>>(), [1]);
+    assert_eq!(listed[0].checkpoint, Checkpoint::NotGit, "the work folder isn't a git repository");
+    let files = TurnFilesParams::new(id.clone(), TurnRange::One(1));
+    assert_eq!(client.turn_files(files).await.unwrap_err().code(), unavailable, "nothing was recorded");
+    let apply =
+        RewindApplyParams { token: "ab".repeat(16), include_later: false, refill: false, by: by.clone() };
+    assert_eq!(client.rewind_apply(apply).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+    assert_eq!(
+        client.rewind_undo(id.clone(), by.clone()).await.unwrap_err().code(),
+        Some(ErrorCode::NotFound)
+    );
+    // Sessions: served now (each answer is the method's own, never "unknown method").
+    client.sessions_scan(SessionsScanParams::default()).await.unwrap();
+    let found = format!("sc{}", "ab".repeat(16));
+    let _ = client.sessions_import(vec![found.clone()], by.clone()).await.map_err(not_yet);
+    let _ = client.import_cancel("ab".repeat(8)).await.map_err(not_yet);
+    let _ = client.session_preview(found, None).await.map_err(not_yet);
+    // A request of the wrong shape is still the client's mistake.
+    let wrong =
+        client.call_value(method::THREAD_MARK, json!({"thread_ids": 3}), Some(WAIT)).await.unwrap_err();
+    assert!(!wrong.is_unknown_method() && wrong.code() == Some(ErrorCode::BadRequest), "{wrong}");
+
+    // The shelves: an unmarked thread is on the main one only.
+    let main = client.threads_list_with(ThreadsListParams::default()).await.unwrap();
+    assert_eq!(main.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), [id.as_str()]);
+    for show in [ThreadShow::Archived, ThreadShow::Snoozed] {
+        let shelf = ThreadsListParams { show: Some(show), ..Default::default() };
+        assert!(client.threads_list_with(shelf).await.unwrap().is_empty(), "{show:?}");
+    }
+
+    // The restore points switch, apart from the MCP one, and stored.
+    let off = FoldersSetParams { id: folder.id.clone(), mcp: None, checkpoints: Some(false) };
+    let folder_now = client.folders_set_with(off).await.unwrap();
+    assert!(!folder_now.checkpoints && folder_now.mcp);
+    let listed = client.folders_list().await.unwrap();
+    assert!(!listed[0].checkpoints && listed[0].mcp, "stored");
+    let neither = FoldersSetParams { id: folder.id.clone(), ..Default::default() };
+    let same = client.folders_set_with(neither).await.unwrap();
+    assert_eq!((same.mcp, same.checkpoints), (true, false), "nothing named, nothing changed");
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn marks_move_threads_between_shelves_and_the_host_keeps_them() {
+    // A follow-up starts a new process that resumes (the first idles out).
+    let host = TestHost::start(Options {
+        claude_resume: Some("claude-01-list.jsonl"),
+        agent_idle: Some(Duration::from_millis(300)),
+        ..Default::default()
+    })
+    .await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let mut ids = Vec::new();
+    for prompt in ["One", "Two"] {
+        let thread = client.thread_start(start(AgentId::Claude, &folder, prompt)).await.unwrap();
+        until_done(&mut events, &thread.id).await;
+        ids.push(thread.id);
+    }
+    let (one, two) = (ids[0].clone(), ids[1].clone());
+    let by = Origin::launcher();
+    let marks =
+        |ids: &[&String]| ThreadMarkParams::new(ids.iter().map(|s| (*s).clone()).collect(), by.clone());
+    let main = |client: Client| async move {
+        let list = client.threads_list_with(ThreadsListParams::default()).await.unwrap();
+        list.into_iter().map(|t| t.id).collect::<Vec<_>>()
+    };
+    // Nobody looked: both finished threads are unread.
+    let listed = client.threads_list_with(ThreadsListParams::default()).await.unwrap();
+    assert!(listed.iter().all(|t| t.unread), "{listed:#?}");
+    assert_eq!(main(client.clone()).await, [two.clone(), one.clone()], "newest first");
+
+    // Pinned comes before the rest.
+    let pinned = client.thread_mark(ThreadMarkParams { pinned: Some(true), ..marks(&[&one]) }).await.unwrap();
+    assert!(pinned.threads[0].pinned && pinned.busy.is_empty());
+    assert_eq!(main(client.clone()).await, [one.clone(), two.clone()]);
+    let state = next(
+        &mut events,
+        "thread.state for the pin",
+        |e| matches!(e, Event::ThreadState(s) if s.thread.id == one && s.thread.pinned),
+    )
+    .await;
+    assert!(matches!(state, Event::ThreadState(_)));
+
+    // Looking at a thread reads it; "Mark unread" brings it back.
+    let (viewer, _viewer_events) = host.client(ClientKind::Link).await;
+    viewer.ui_viewing(Some(two.clone())).await.unwrap();
+    next(
+        &mut events,
+        "two read",
+        |e| matches!(e, Event::ThreadState(s) if s.thread.id == two && !s.thread.unread),
+    )
+    .await;
+    viewer.ui_viewing(None).await.unwrap();
+    let unread = client.thread_mark(ThreadMarkParams { unread: Some(true), ..marks(&[&two]) }).await.unwrap();
+    assert!(unread.threads[0].unread);
+
+    // Archived: off the main list, on its own shelf; sending brings it back.
+    client.thread_mark(ThreadMarkParams { archived: Some(true), ..marks(&[&two]) }).await.unwrap();
+    assert_eq!(main(client.clone()).await, std::slice::from_ref(&one));
+    let archived = ThreadsListParams { show: Some(ThreadShow::Archived), ..Default::default() };
+    let shelf = client.threads_list_with(archived.clone()).await.unwrap();
+    assert_eq!(shelf.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), [two.as_str()]);
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    client.thread_send(two.clone(), "And again.".into(), Origin::launcher()).await.unwrap();
+    assert!(client.threads_list_with(archived).await.unwrap().is_empty(), "sent to: unarchived");
+    until_done(&mut events, &two).await;
+    // A thread that waits on a request can't be archived; the others in the call are.
+    let waiting = client.thread_start(start(AgentId::Codex, &folder, "Create hello.txt")).await.unwrap();
+    approval(&mut events).await;
+    let both = ThreadMarkParams { archived: Some(true), ..marks(&[&one, &waiting.id]) };
+    let result = client.thread_mark(both).await.unwrap();
+    assert_eq!(result.threads.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), [one.as_str()]);
+    assert_eq!(result.busy, std::slice::from_ref(&waiting.id));
+    let alone = ThreadMarkParams { archived: Some(true), ..marks(&[&waiting.id]) };
+    assert_eq!(client.thread_mark(alone).await.unwrap_err().code(), Some(ErrorCode::Busy));
+    let back =
+        client.thread_mark(ThreadMarkParams { archived: Some(false), ..marks(&[&one]) }).await.unwrap();
+    assert!(!back.threads[0].archived);
+
+    // Snoozed: a time ahead, within 30 days; 0 ends it.
+    let soon = now_ms() + 3_600_000;
+    let snoozed =
+        client.thread_mark(ThreadMarkParams { snooze_until_ms: Some(soon), ..marks(&[&one]) }).await.unwrap();
+    assert_eq!(snoozed.threads[0].snoozed_until_ms, Some(soon));
+    let shelf = ThreadsListParams { show: Some(ThreadShow::Snoozed), ..Default::default() };
+    assert_eq!(client.threads_list_with(shelf).await.unwrap().len(), 1);
+    let past = ThreadMarkParams { snooze_until_ms: Some(1), ..marks(&[&one]) };
+    assert_eq!(client.thread_mark(past).await.unwrap_err().code(), Some(ErrorCode::BadRequest));
+    let unknown = ThreadMarkParams { pinned: Some(true), ..marks(&[&"f".repeat(32)]) };
+    assert_eq!(client.thread_mark(unknown).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+
+    // A name of its own, one clean line.
+    let rename = ThreadRenameParams { thread_id: one.clone(), title: "  Tidy\nthe build ".into(), by: None };
+    assert_eq!(client.thread_rename(rename).await.unwrap().title, "Tidy the build");
+    let empty = ThreadRenameParams { thread_id: one.clone(), title: " ".into(), by: None };
+    assert_eq!(client.thread_rename(empty).await.unwrap_err().code(), Some(ErrorCode::BadRequest));
+    host.stop().await;
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+    }
+}
+
+#[test]
+fn the_fake_claude_forks_as_the_cli_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("cli.log");
+    let run = |resume: &Path| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_g7-agents-fake-cli"))
+            .args(["claude", "-p", "--resume"])
+            .arg(resume)
+            .arg("--fork-session")
+            .env("FAKE_CLI_SCRIPT", fixture("claude-01-list.jsonl"))
+            .env("FAKE_CLI_LOG", &log)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let first_line = |out: &std::process::Output| -> serde_json::Value {
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        serde_json::from_str(text.lines().next().unwrap_or("null")).unwrap()
+    };
+    // Refused as the CLI refuses it: a result, exit 1.
+    let missing = run(&dir.path().join("missing.jsonl"));
+    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(first_line(&missing)["subtype"], "error_during_execution");
+    let garbage = dir.path().join("garbage.jsonl");
+    std::fs::write(&garbage, "{}\n{}\n{}\n").unwrap();
+    assert_eq!(run(&garbage).status.code(), Some(1));
+    // A copy that loads: nothing but its answers, under the fork's id, until stdin closes.
+    let cut = dir.path().join("cut.jsonl");
+    std::fs::write(&cut, "{\"type\":\"user\",\"uuid\":\"u-1\"}\n").unwrap();
+    let loaded = run(&cut);
+    assert_eq!(loaded.status.code(), Some(0));
+    for line in String::from_utf8_lossy(&loaded.stdout).lines() {
+        let line: serde_json::Value = serde_json::from_str(line).unwrap();
+        if let Some(id) = line.get("session_id") {
+            assert_eq!(id, "f0f0f0f0-0000-4000-8000-00000000f0c5");
+        }
+    }
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert!(log.contains(&format!("fork {}", cut.display())), "{log}");
+}
+
+/// Runs git in `dir` with a throwaway identity; never the user's configuration.
+fn git_in(dir: &Path, home: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+/// The newest turn once its restore point settled.
+async fn settled_turn(client: &Client, thread_id: &str) -> TurnInfo {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let params = ThreadTurnsParams { thread_id: thread_id.to_owned(), ..Default::default() };
+        let turns = client.thread_turns(params).await.unwrap();
+        if let Some(turn) = turns.first().filter(|t| t.checkpoint != Checkpoint::Pending && t.ended.is_some())
+        {
+            return turn.clone();
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the restore point never settled: {turns:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn files_go_back_to_a_restore_point_and_undo_brings_them_again() {
+    if std::process::Command::new("git").arg("--version").output().is_err() {
+        assert!(std::env::var_os("CI").is_none(), "CI has git");
+        eprintln!("skipped: no git on PATH");
+        return;
+    }
+    let host = TestHost::start(Options::default()).await;
+    let home = host.dir.path().join("home");
+    git_in(&host.work, &home, &["init", "-q"]);
+    std::fs::write(host.work.join("a.txt"), "1\n").unwrap();
+    git_in(&host.work, &home, &["add", "-A"]);
+    git_in(&host.work, &home, &["commit", "-qm", "one"]);
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let turn = settled_turn(&client, &thread.id).await;
+    assert_eq!(turn.checkpoint, Checkpoint::Ready, "{turn:?}");
+    // Changed after the agent finished: listed apart, left alone unless asked.
+    std::fs::write(host.work.join("a.txt"), "2\n").unwrap();
+    let ask = RewindPreviewParams {
+        thread_id: thread.id.clone(),
+        turn: 1,
+        conversation: false,
+        files: true,
+        by: None,
+    };
+    assert_eq!(
+        client.rewind_preview(ask.clone()).await.unwrap_err().code(),
+        Some(ErrorCode::Denied),
+        "not G7 Link"
+    );
+    let (link, _link_events) = host.client(ClientKind::Link).await;
+    let plan = link.rewind_preview(ask).await.unwrap();
+    let files = plan.files.clone().expect("a files part");
+    assert_eq!(files.change.len(), 1, "{files:?}");
+    assert_eq!(
+        (files.change[0].path.as_str(), files.change[0].action, files.change[0].later),
+        ("a.txt", RewindAction::Restore, true)
+    );
+    assert_eq!(std::fs::read_to_string(host.work.join("a.txt")).unwrap(), "2\n", "a preview changes nothing");
+    // Single use, and only for the connection that asked.
+    let apply = RewindApplyParams {
+        token: plan.token.clone(),
+        include_later: true,
+        refill: false,
+        by: Origin::launcher(),
+    };
+    assert_eq!(client.rewind_apply(apply.clone()).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+    let done = link.rewind_apply(apply.clone()).await.unwrap();
+    assert!(done.left.is_empty(), "{:?}", done.left);
+    assert_eq!(std::fs::read_to_string(host.work.join("a.txt")).unwrap(), "1\n");
+    assert_eq!(done.thread.undo.map(|u| u.files), Some(true));
+    assert_eq!(link.rewind_apply(apply).await.unwrap_err().code(), Some(ErrorCode::NotFound), "used once");
+    let items = read_all(&client, &thread.id).await;
+    assert_eq!(items.last().and_then(|i| i.notice), Some(NoticeKind::FilesRestored));
+    // Undo: the files as they were, and nothing left to undo.
+    let back = link.rewind_undo(thread.id.clone(), Origin::launcher()).await.unwrap();
+    assert_eq!(back.undo, None);
+    assert_eq!(std::fs::read_to_string(host.work.join("a.txt")).unwrap(), "2\n");
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_conversation_rewinds_and_comes_back_and_a_fork_copies_it() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    settled_turn(&client, &thread.id).await;
+    let before = read_all(&client, &thread.id).await;
+    assert!(!before.is_empty());
+    let native = before_native(&client, &thread.id).await;
+    assert!(native.is_some(), "the session has an id");
+
+    // A fork: the items so far, then its notice; nothing runs yet.
+    let fork = ThreadForkParams { thread_id: thread.id.clone(), turn: None, by: Origin::phone("p", "Pixel") };
+    let forked = client.thread_fork(fork).await.unwrap();
+    assert_ne!(forked.id, thread.id);
+    assert_eq!(forked.forked_from.as_ref().map(|f| f.thread_id.as_str()), Some(thread.id.as_str()));
+    assert_eq!((forked.state, forked.native_id.as_deref()), (State::Done, None));
+    let copied = read_all(&client, &forked.id).await;
+    assert_eq!(copied.len(), before.len() + 1);
+    assert_eq!(copied.last().and_then(|i| i.notice), Some(NoticeKind::Forked), "after the copied items");
+
+    // Back to before the first message: the thread's items are cut, and come back.
+    let ask = RewindPreviewParams {
+        thread_id: thread.id.clone(),
+        turn: 1,
+        conversation: true,
+        files: false,
+        by: None,
+    };
+    let plan = client.rewind_preview(ask).await.unwrap();
+    assert_eq!(plan.cut.map(|c| c.turns), Some(1));
+    let apply =
+        RewindApplyParams { token: plan.token, include_later: false, refill: true, by: Origin::launcher() };
+    let rewound = client.rewind_apply(apply).await.unwrap().thread;
+    assert_eq!((rewound.native_id.as_deref(), rewound.undo.map(|u| u.files)), (None, Some(false)));
+    let cut = next(&mut events, "thread.cut", |e| matches!(e, Event::ThreadCut(c) if !c.restored)).await;
+    let Event::ThreadCut(cut) = cut else { unreachable!() };
+    let after = read_all(&client, &thread.id).await;
+    assert!(after.iter().all(|i| i.seq < cut.from_seq || i.seq > cut.to_seq), "cut items aren't read");
+    assert_eq!(after.last().and_then(|i| i.notice), Some(NoticeKind::EditFromHere));
+    let draft = client.draft_get(thread.id.clone()).await.unwrap().map(|d| d.text);
+    assert_eq!(draft.as_deref(), Some("List the files here."), "the message back in the composer");
+    let undone = client.rewind_undo(thread.id.clone(), Origin::launcher()).await.unwrap();
+    assert_eq!(undone.native_id, native, "the session as it was");
+    assert_eq!(
+        read_all(&client, &thread.id).await.len(),
+        before.len(),
+        "the items are back, the notice gone"
+    );
+    host.stop().await;
+}
+
+/// A thread's `native_id` as listed (tests).
+async fn before_native(client: &Client, thread_id: &str) -> Option<String> {
+    let threads = client.threads_list(None, None).await.unwrap();
+    threads.into_iter().find(|t| t.id == thread_id).and_then(|t| t.native_id)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_message_key_is_taken_once_and_a_start_key_too() {
+    let host = TestHost::start(Options {
+        claude_resume: Some("claude-01-list.jsonl"),
+        agent_idle: Some(Duration::from_millis(300)),
+        ..Default::default()
+    })
+    .await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let keyed =
+        ThreadStartParams { key: Some("00000000000000a1".into()), ..start(AgentId::Claude, &folder, "One") };
+    let first = client.thread_start_with(keyed.clone()).await.unwrap();
+    let again = client.thread_start_with(keyed).await.unwrap();
+    assert!(!first.duplicate && again.duplicate);
+    assert_eq!(again.thread.id, first.thread.id, "the retry names the thread it started");
+    let id = first.thread.id;
+    until_done(&mut events, &id).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let send = ThreadSendParams {
+        key: Some("00000000000000b2".into()),
+        ..ThreadSendParams::new(id.clone(), "Again.".into(), Origin::phone("p", "Pixel"))
+    };
+    assert!(!client.thread_send_with(send.clone()).await.unwrap().duplicate);
+    until_done(&mut events, &id).await;
+    let users = |items: &[Item]| items.iter().filter(|i| i.kind == ItemKind::User).count();
+    let sent = users(&read_all(&client, &id).await);
+    assert!(client.thread_send_with(send).await.unwrap().duplicate, "a retry after a lost reply");
+    assert_eq!(users(&read_all(&client, &id).await), sent, "nothing more was sent");
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_launcher_asks_g7_link_to_show_a_thread() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let (launcher, _launcher_events) = host.client(ClientKind::Launcher).await;
+    assert_eq!(
+        launcher.ui_open(thread.id.clone()).await.unwrap_err().code(),
+        Some(ErrorCode::Unavailable),
+        "no G7 Link"
+    );
+    let (_link, mut link_events) = host.client(ClientKind::Link).await;
+    assert_eq!(launcher.ui_open("f".repeat(32)).await.unwrap_err().code(), Some(ErrorCode::NotFound));
+    launcher.ui_open(thread.id.clone()).await.unwrap();
+    let shown = next(&mut link_events, "ui.open", |e| matches!(e, Event::UiOpen(_))).await;
+    assert_eq!(shown, Event::UiOpen(ThreadIdParams { thread_id: thread.id }));
     host.stop().await;
 }

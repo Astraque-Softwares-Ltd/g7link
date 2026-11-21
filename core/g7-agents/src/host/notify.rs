@@ -417,6 +417,15 @@ mod tests {
             context: None,
             mcp: None,
             asking: 0,
+            pinned: false,
+            archived: false,
+            unread: false,
+            snoozed_until_ms: None,
+            turns: 0,
+            forked_from: None,
+            found: false,
+            readonly: None,
+            undo: None,
         }
     }
 

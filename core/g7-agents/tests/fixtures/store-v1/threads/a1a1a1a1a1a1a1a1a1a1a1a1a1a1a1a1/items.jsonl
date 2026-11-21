@@ -1,0 +1,13 @@
+{"seq":1,"id":"user-1","kind":"user","ts_ms":1795080900000,"rev":0,"text":"Fix the login test.\n\nIt fails on CI.","origin":{"kind":"phone","device_id":"p","device_name":"Pixel"},"turn":1}
+{"seq":2,"id":"toolu_01","kind":"tool","ts_ms":1795080901000,"rev":0,"tool":{"name":"Bash","title":"Run command","detail":"cargo test login","status":"running"},"turn":1}
+{"seq":2,"id":"toolu_01","kind":"tool","ts_ms":1795080901000,"rev":1,"tool":{"name":"Bash","title":"Run command","detail":"cargo test login","status":"ok","output":"test login ... ok\n"},"turn":1,"end_ms":1795080903000}
+{"seq":3,"id":"msg_01","kind":"assistant","ts_ms":1795080904000,"rev":0,"text":"The café test","turn":1}
+not json
+{"seq":3,"id":"msg_01","kind":"assistant","ts_ms":1795080904000,"rev":2,"text":"The café test was flaky: see [the CI log](https://ci.example/run/1). Fixed the `login` helper.","turn":1,"phase":"final","end_ms":1795080905000}
+{"seq":3,"id":"msg_01","kind":"assistant","ts_ms":1795080904000,"rev":1,"text":"The café test was","turn":1}
+{"seq":4,"id":"x-1","kind":"hologram","ts_ms":1795080906000,"rev":0,"turn":1,"shape":[1,2,3]}
+{"seq":5,"id":"user-5","kind":"user","ts_ms":1795081000000,"rev":0,"text":"Now make the signup test pass too.","origin":{"kind":"launcher"},"turn":2}
+{"seq":6,"id":"toolu_02","kind":"tool","ts_ms":1795081001000,"rev":0,"tool":{"name":"Edit","title":"Edit src/signup.rs","detail":"-old\n+new","status":"denied"},"turn":2,"end_ms":1795081002000}
+{"seq":7,"id":"user-7","kind":"user","ts_ms":1795081003000,"rev":0,"text":"Use the helper instead.","origin":{"kind":"launcher"},"turn":2,"deny_of":"toolu_02"}
+{"seq":8,"id":"msg_02","kind":"assistant","ts_ms":1795081004000,"rev":1,"text":"Done: the signup test passes with the helper.","turn":2,"phase":"final","end_ms":1795081005000}
+{"seq":9,"id":"notice-9","kind":"notice","ts_ms":1795081500000,"rev":0,"text":"Stopped: the agent host restarted."}

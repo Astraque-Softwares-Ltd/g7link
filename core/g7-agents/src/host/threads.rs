@@ -19,9 +19,10 @@ use crate::host::agents::{
     self, AgentEvent, AgentProcess, Answer, ApprovalSpec, DenyReason, LaunchSettings, Probe, QuestionReply,
     QuestionSpec, SecretAnswers, SessionCmd, Step, ToolSpec, TurnEnd, UserInput, code,
 };
+use crate::host::db::{Db, LoadedThread, ThreadCols};
 use crate::host::notify::Note;
 use crate::host::store::{ApprovalRecord, Store, now_ms};
-use crate::host::{Answered, Host, claude, codex, env};
+use crate::host::{Answered, Host, claude, codex, env, fork};
 
 /// Whether Codex may run `auto_edit`. With `approvalPolicy: "on-request"`
 /// codex-cli 0.170.0 ran a command inside the workspace sandbox without
@@ -128,12 +129,43 @@ pub struct Entry {
     pub(crate) plan: Option<Item>,
     /// The folder's MCP switch when the running process started.
     mcp_on: bool,
+    /// What its `unread` is made of.
+    pub(crate) marks: crate::host::marks::Marks,
+    /// The copy of the agent's session its next process continues
+    /// (`fork::LaunchHint`, encoded), until that process reports its id.
+    /// Never sent to a client.
+    pub(crate) pending_fork: Option<String>,
+    /// What the store keeps beside `info` that the host doesn't change here.
+    pub(crate) kept: Kept,
+    /// The row of the running or last turn, as stored.
+    pub(crate) row: Option<crate::host::db::TurnRow>,
+    /// Held while a restore point of this thread is being taken: the next
+    /// turn's waits for the last one's.
+    pub(crate) captures: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// A thread's stored columns the registry only carries.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Kept {
+    /// A brought-in thread's working directory outside every folder.
+    pub cwd: Option<String>,
+    /// When it was archived.
+    pub archived_ms: Option<u64>,
+    /// The session it was brought in from.
+    pub found_id: Option<String>,
+    /// The native id before the last rewind, while it can be undone.
+    pub prior_native_id: Option<String>,
 }
 
 impl Entry {
     fn new(info: ThreadInfo, next_seq: u64, cwd: Option<PathBuf>) -> Self {
         Self {
             step_announced: info.step.clone(),
+            marks: crate::host::marks::Marks::of(&info),
+            pending_fork: None,
+            kept: Kept::default(),
+            row: None,
+            captures: Arc::new(tokio::sync::Mutex::new(())),
             info,
             next_seq: next_seq.max(1),
             cwd,
@@ -156,6 +188,25 @@ impl Entry {
     /// When this thread's last agent process exited (Unix ms).
     pub(crate) fn process_ended_ms(&self) -> u64 {
         self.process_ended_ms
+    }
+
+    /// What the store keeps beside `info`.
+    pub(crate) fn cols(&self) -> ThreadCols {
+        ThreadCols {
+            next_seq: self.next_seq,
+            next_turn: self.turn_no.max(self.users_before).saturating_add(1),
+            cwd: self.kept.cwd.clone(),
+            archived_ms: self.info.archived.then(|| self.kept.archived_ms.unwrap_or(self.info.updated_ms)),
+            read_seq: self.marks.read_seq,
+            unread_mark: self.marks.unread_mark,
+            found_id: self.kept.found_id.clone(),
+            pending_fork: self.pending_fork.clone(),
+        }
+    }
+
+    /// The turn running or last run, 0 before the first.
+    pub(crate) fn turn_no(&self) -> u32 {
+        self.turn_no
     }
 
     /// The process is running (or starting).
@@ -207,6 +258,7 @@ impl Entry {
     pub(crate) fn advance_turn(&mut self) {
         let last = if self.turn_no == 0 { self.users_before } else { self.turn_no };
         self.turn_no = last.saturating_add(1);
+        self.info.turns = self.turn_no;
     }
 
     /// The `turn` of items made now.
@@ -239,6 +291,11 @@ impl Entry {
         images: Vec<ImageRef>,
     ) -> Item {
         Item { via, images, ..self.user_item(text, origin, None) }
+    }
+
+    /// A notice clients act on (`Item.notice`).
+    pub(crate) fn marked_notice(&mut self, text: &str, kind: NoticeKind) -> Item {
+        Item { notice: Some(kind), ..self.notice(text) }
     }
 
     pub(crate) fn notice(&mut self, text: &str) -> Item {
@@ -301,6 +358,10 @@ pub struct Registry {
     next_generation: u64,
     next_order: u64,
     pub login_blocked: HashMap<AgentId, String>,
+    /// `thread.start` keys taken, with the thread each started and when.
+    start_keys: HashMap<String, (String, u64)>,
+    /// Threads that were running when the host last stopped.
+    pub(crate) recovered: Vec<String>,
     approval_lifetime_ms: u64,
 }
 
@@ -389,11 +450,12 @@ pub(crate) fn emit_item(host: &Host, thread_id: &str, item: &Item) {
 }
 
 pub(crate) fn emit_state(host: &Host, entry: &mut Entry) {
+    crate::host::marks::settle(host, entry);
     host.awake.working(&entry.info.id, entry.info.state == State::Working);
     entry.info.step = entry.current_step();
     entry.step_announced = entry.info.step.clone();
     entry.step_sent = Some(Instant::now());
-    host.store.save_meta(&entry.info, entry.next_seq);
+    host.store.save_thread(&entry.info, entry.cols());
     host.hub.broadcast(&Event::ThreadState(ThreadResult { thread: entry.info.clone() }));
 }
 
@@ -446,44 +508,35 @@ pub(crate) fn err(code: ErrorCode, message: impl AsRef<str>) -> RpcError {
 }
 
 impl Registry {
-    /// Reads the store. Threads that were running become `interrupted`, and
-    /// the oldest threads past [`MAX_THREADS_KEPT`] are pruned.
-    pub fn load(store: &mut Store, approval_lifetime_ms: u64) -> Registry {
+    /// Reads the folders and the thread database (none: no threads). Threads
+    /// that were running become `interrupted`, and the oldest threads past
+    /// [`MAX_THREADS_STORED`] are pruned.
+    pub fn load(store: &Store, mut db: Option<&mut Db>, approval_lifetime_ms: u64) -> Registry {
         let folders = store.load_folders();
+        let stored = match db.as_deref() {
+            Some(db) => db.load_threads().unwrap_or_else(|e| {
+                tracing::warn!("couldn't read the threads: {e}");
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
         let mut threads = HashMap::new();
-        for stored in store.load_threads() {
-            let mut info = stored.info;
-            let mut next_seq = stored.next_seq;
-            let turn = (stored.max_turn > 0).then_some(stored.max_turn);
-            info.pending = 0;
-            info.asking = 0;
-            info.step = None;
-            // A queue that outlived its host waits for the user.
-            info.queue_held = !info.queued.is_empty();
-            if info.state_since_ms == 0 {
-                info.state_since_ms = info.updated_ms;
-            }
-            if info.state.is_running() {
-                info.state = State::Interrupted;
-                info.state_since_ms = now_ms();
-                let item = notice_item(next_seq, RESTART_NOTICE, turn);
-                next_seq += 1;
-                info.last_seq = item.seq;
-                if let Err(e) = store.append_item(&info.id, &item) {
-                    tracing::warn!("couldn't save a thread item: {e}");
-                }
-                if let Err(e) = store.save_meta(&info, next_seq) {
-                    tracing::warn!("couldn't save a thread: {e}");
+        let mut recovered = Vec::new();
+        for loaded in stored {
+            let mut entry = Self::entry_from(loaded, &folders);
+            if entry.info.state.is_running() {
+                recovered.push(entry.info.id.clone());
+                entry.set_state(State::Interrupted);
+                let item = entry.notice(RESTART_NOTICE);
+                if let Some(db) = db.as_deref_mut() {
+                    let saved = db
+                        .append_item(&entry.info.id, &item)
+                        .and_then(|()| db.save_thread(&entry.info, &entry.cols()));
+                    if let Err(e) = saved {
+                        tracing::warn!("couldn't save a thread: {e}");
+                    }
                 }
             }
-            let cwd = folders
-                .iter()
-                .find(|f| f.id == info.folder_id)
-                .and_then(|f| thread_dir(Path::new(&f.path), info.subdir.as_deref()));
-            let mut entry = Entry::new(info, next_seq, cwd);
-            entry.turn_no = stored.max_turn;
-            entry.users_before = stored.users;
-            entry.plan = stored.plan;
             threads.insert(entry.info.id.clone(), entry);
         }
         let mut registry = Registry {
@@ -497,30 +550,77 @@ impl Registry {
             next_generation: 1,
             next_order: 0,
             login_blocked: HashMap::new(),
+            start_keys: HashMap::new(),
+            recovered,
             approval_lifetime_ms,
         };
         for id in registry.prunable() {
             registry.threads.remove(&id);
-            if let Err(e) = store.delete_thread(&id) {
+            if let Some(Err(e)) = db.as_deref_mut().map(|db| db.delete_thread(&id)) {
                 tracing::warn!("couldn't delete a thread: {e}");
             }
         }
         registry
     }
 
+    /// A stored thread as the registry holds it: nothing pending, a queue
+    /// held, an ended snooze over.
+    pub(crate) fn entry_from(loaded: LoadedThread, folders: &[Folder]) -> Entry {
+        let LoadedThread { mut info, cols, prior_native_id, max_turn, users, plan } = loaded;
+        info.pending = 0;
+        info.asking = 0;
+        info.step = None;
+        // A queue that outlived its host waits for the user.
+        info.queue_held = !info.queued.is_empty();
+        if info.state_since_ms == 0 {
+            info.state_since_ms = info.updated_ms;
+        }
+        if info.snoozed_until_ms.is_some_and(|until| until <= now_ms()) {
+            info.snoozed_until_ms = None;
+        }
+        let cwd = folders
+            .iter()
+            .find(|f| f.id == info.folder_id)
+            .and_then(|f| thread_dir(Path::new(&f.path), info.subdir.as_deref()));
+        let mut entry = Entry::new(info, cols.next_seq, cwd);
+        // Turns go on from the next number, which counts rewound ones too.
+        entry.turn_no = cols.next_turn.saturating_sub(1).max(max_turn);
+        entry.users_before = if cols.next_turn > 1 { 0 } else { users };
+        entry.plan = plan;
+        entry.info.turns = max_turn;
+        entry.marks.read_seq = cols.read_seq;
+        entry.marks.unread_mark = cols.unread_mark;
+        entry.info.unread = entry.marks.unread(&entry.info);
+        entry.pending_fork = cols.pending_fork;
+        entry.kept =
+            Kept { cwd: cols.cwd, archived_ms: cols.archived_ms, found_id: cols.found_id, prior_native_id };
+        entry
+    }
+
+    /// The thread a `thread.start` with `key` started within [`SEND_KEY_MS`].
+    pub(crate) fn started_by_key(&mut self, key: &str, now_ms: u64) -> Option<ThreadInfo> {
+        self.start_keys.retain(|_, (_, at)| now_ms.saturating_sub(*at) < SEND_KEY_MS);
+        let (thread, _) = self.start_keys.get(key)?;
+        self.threads.get(thread).map(|e| e.info.clone())
+    }
+
+    pub(crate) fn keep_start_key(&mut self, key: String, thread_id: &str, now_ms: u64) {
+        self.start_keys.insert(key, (thread_id.to_owned(), now_ms));
+    }
+
     /// Threads past the limit, oldest not running first.
     fn prunable(&self) -> Vec<String> {
-        let excess = self.threads.len().saturating_sub(MAX_THREADS_KEPT);
+        let excess = self.threads.len().saturating_sub(MAX_THREADS_STORED);
         if excess == 0 {
             return Vec::new();
         }
-        let mut idle: Vec<(&String, u64)> = self
+        let mut idle: Vec<(&String, (bool, u64))> = self
             .threads
             .iter()
-            .filter(|(_, e)| !e.info.state.is_running())
-            .map(|(id, e)| (id, e.info.updated_ms))
+            .filter(|(_, e)| !e.info.state.is_running() && !e.info.pinned)
+            .map(|(id, e)| (id, (!e.info.archived, e.info.updated_ms)))
             .collect();
-        idle.sort_by_key(|(_, t)| *t);
+        idle.sort_by_key(|(_, key)| *key);
         idle.into_iter().take(excess).map(|(id, _)| id.clone()).collect()
     }
 
@@ -727,6 +827,7 @@ impl Host {
                 added_ms: now_ms(),
                 mcp: true,
                 mcp_seen: Vec::new(),
+                checkpoints: true,
             };
             let mut list = reg.folders.clone();
             list.push(folder.clone());
@@ -740,9 +841,32 @@ impl Host {
             let mut reg = self.lock_reg();
             reg.folder_exists.insert(folder.id.clone(), true);
             reg.folders = list;
+            self.free_brought_in(&mut reg);
         }
         self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
         Ok(folder)
+    }
+
+    /// Threads brought in from outside every folder whose working directory
+    /// a folder now holds: they can continue (§U4.2).
+    fn free_brought_in(&self, reg: &mut Registry) {
+        let folders: Vec<(String, String, PathBuf)> =
+            reg.folders.iter().map(|f| (f.id.clone(), f.label.clone(), PathBuf::from(&f.path))).collect();
+        for entry in reg.threads.values_mut().filter(|e| e.info.readonly == Some(Readonly::OutsideFolders)) {
+            let (Some(at), label) = crate::host::sessions::import::place(entry.kept.cwd.as_deref(), &folders)
+            else {
+                continue;
+            };
+            let (folder_id, subdir) = at;
+            let Some((_, _, path)) = folders.iter().find(|f| f.0 == folder_id) else { continue };
+            entry.cwd = thread_dir(path, subdir.as_deref());
+            entry.info.folder_id = folder_id;
+            entry.info.folder_label = label;
+            entry.info.subdir = subdir;
+            entry.info.readonly = None;
+            entry.kept.cwd = None;
+            emit_state(self, entry);
+        }
     }
 
     pub async fn folders_remove(&self, id: &str) -> Result<(), RpcError> {
@@ -754,6 +878,7 @@ impl Host {
             }
             reg.folders.iter().filter(|f| f.id != id).cloned().collect::<Vec<_>>()
         };
+        let removed = self.lock_reg().folders.iter().find(|f| f.id == id).cloned();
         self.store
             .save_folders(list.clone())
             .await
@@ -764,23 +889,40 @@ impl Host {
             reg.folders = list;
         }
         self.lock_commands().forget_folder(id);
+        if let Some(place) = removed.as_ref().and_then(|f| self.folder_place(f)) {
+            tokio::spawn(async move {
+                let _ = crate::host::git::remove_repo(&place).await;
+            });
+        }
         self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
         Ok(())
     }
 
     /// `folders.set`: the folder's MCP switch, used from each thread's next
-    /// process.
-    pub async fn folders_set(&self, id: &str, mcp: bool) -> Result<Folder, RpcError> {
+    /// process, and its restore points switch, from the next turn. What is
+    /// `None` is unchanged.
+    pub async fn folders_set(
+        &self,
+        id: &str,
+        mcp: Option<bool>,
+        checkpoints: Option<bool>,
+    ) -> Result<Folder, RpcError> {
         let _serial = self.folders_lock.lock().await;
+        let set = |folder: &mut Folder| {
+            if let Some(mcp) = mcp {
+                folder.mcp = mcp;
+            }
+            if let Some(checkpoints) = checkpoints {
+                folder.checkpoints = checkpoints;
+            }
+        };
         let list = {
             let reg = self.lock_reg();
             if !is_valid_folder_id(id) || !reg.folders.iter().any(|f| f.id == id) {
                 return Err(err(ErrorCode::NotFound, "No such folder."));
             }
             let mut list = reg.folders.clone();
-            for folder in list.iter_mut().filter(|f| f.id == id) {
-                folder.mcp = mcp;
-            }
+            list.iter_mut().filter(|f| f.id == id).for_each(set);
             list
         };
         self.store
@@ -790,9 +932,7 @@ impl Host {
         let folder = {
             let mut reg = self.lock_reg();
             // Keep what threads reported meanwhile.
-            for folder in reg.folders.iter_mut().filter(|f| f.id == id) {
-                folder.mcp = mcp;
-            }
+            reg.folders.iter_mut().filter(|f| f.id == id).for_each(set);
             reg.folders.iter().find(|f| f.id == id).cloned()
         };
         self.hub.broadcast(&Event::FoldersChanged(FoldersListResult { folders: self.folders_list() }));
@@ -804,14 +944,31 @@ impl Host {
 
     pub fn threads_list(&self, params: ThreadsListParams) -> Vec<ThreadInfo> {
         let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT) as usize;
+        let show = params.show.unwrap_or_default();
         let reg = self.lock_reg();
         let mut threads: Vec<ThreadInfo> = reg
             .threads
             .values()
+            .filter(|e| match show {
+                ThreadShow::Main => !e.info.archived && e.info.snoozed_until_ms.is_none(),
+                ThreadShow::Archived => e.info.archived,
+                ThreadShow::Snoozed => !e.info.archived && e.info.snoozed_until_ms.is_some(),
+            })
             .filter(|e| params.before_ms.is_none_or(|before| e.info.updated_ms < before))
             .map(|e| e.info.clone())
             .collect();
-        threads.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms).then_with(|| b.id.cmp(&a.id)));
+        let rank = |info: &ThreadInfo| match show {
+            ThreadShow::Main => crate::host::marks::main_rank(info),
+            ThreadShow::Archived | ThreadShow::Snoozed => 0,
+        };
+        // Later pages of the main list (`before_ms`) hold the rest only:
+        // what needs you, works or is pinned is all on the first.
+        if params.before_ms.is_some() && show == ThreadShow::Main {
+            threads.retain(|info| rank(info) == 3);
+        }
+        threads.sort_by(|a, b| {
+            rank(a).cmp(&rank(b)).then(b.updated_ms.cmp(&a.updated_ms)).then_with(|| b.id.cmp(&a.id))
+        });
         threads.truncate(limit);
         threads
     }
@@ -845,6 +1002,9 @@ impl Host {
         }
         if p.images.len() > MAX_IMAGES {
             return Err(err(ErrorCode::BadRequest, "Up to 4 images go with a message."));
+        }
+        if p.key.as_deref().is_some_and(|key| !is_valid_send_key(key)) {
+            return Err(err(ErrorCode::BadRequest, "Bad message key."));
         }
         if p.origin.kind == OriginKind::Phone && !p.mode.phone_may() {
             return Err(err(
@@ -940,6 +1100,15 @@ impl Host {
             context: None,
             mcp: None,
             asking: 0,
+            pinned: false,
+            archived: false,
+            unread: false,
+            snoozed_until_ms: None,
+            turns: 0,
+            forked_from: None,
+            found: false,
+            readonly: None,
+            undo: None,
         };
         let mut entry = Entry::new(info, 1, Some(cwd));
         entry.advance_turn();
@@ -948,7 +1117,13 @@ impl Host {
         emit_item(self, &id, &user);
         reg.threads.insert(id.clone(), entry);
         let input = UserInput { id: user.id.clone(), text: p.prompt.clone(), images: blocks };
-        self.start_session(&mut reg, &id, input, &bin);
+        // A restore point first, then the message (§U5.3).
+        let placed = self.place_for(&reg, &id);
+        let pre = reg.threads.get_mut(&id).and_then(|entry| self.open_turn(entry, user.seq, Some(placed)));
+        match pre {
+            Some(pre) => self.deliver_after(&id, pre, input, Some(bin.clone())),
+            None => self.start_session(&mut reg, &id, input, &bin),
+        }
         if p.origin.kind == OriginKind::Phone {
             notify(self, Note::PhoneStarted { thread: reg.threads[&id].info.clone(), continued: false });
         }
@@ -1002,6 +1177,7 @@ impl Host {
         let agent = entry.info.agent;
         let child_env = env::child_env(agent, self.config.env.iter().cloned());
         let mut bridge_token = None;
+        let forking = entry.pending_fork.is_some();
         let spawned: std::io::Result<()> = match agent {
             AgentId::Claude => {
                 let (session_id, resume) = match &entry.info.native_id {
@@ -1021,14 +1197,15 @@ impl Host {
                     bridge_token: token.clone(),
                     env: child_env,
                     first_text: input.text.clone(),
+                    // A copy's id arrives as `Step::NativeId` from its first `system/init`.
+                    fork: entry.pending_fork.as_deref().map(|hint| fork::launch_fork(&self.config, hint)),
                 };
-                claude::spawn_with(&launch, &settings).map(|(process, lines)| {
-                    if !resume {
+                claude::spawn_session(&launch, &settings, input).map(|(process, lines, driver)| {
+                    if !resume && launch.fork.is_none() {
                         entry.info.native_id = Some(session_id.clone());
-                        self.store.save_meta(&entry.info, entry.next_seq);
+                        self.store.save_thread(&entry.info, entry.cols());
                     }
                     bridge_token = Some(token);
-                    let driver = claude::ClaudeDriver::with_settings(cwd, session_id, &settings, input);
                     let thread = thread_id.to_owned();
                     let mcp = launch.mcp_config.clone();
                     tokio::spawn(async move {
@@ -1041,7 +1218,11 @@ impl Host {
                 let resume = entry.info.native_id.clone();
                 AgentProcess::spawn(bin, &["app-server".to_owned()], &cwd, &child_env).map(
                     |(process, lines)| {
-                        let driver = codex::CodexDriver::with_settings(cwd, settings, resume, input);
+                        // A copy is made with `thread/fork` where it would resume.
+                        let driver = match entry.pending_fork.as_deref().and_then(fork::codex_fork_start) {
+                            Some(start) => codex::CodexDriver::forking(cwd, settings, start, input),
+                            None => codex::CodexDriver::with_settings(cwd, settings, resume, input),
+                        };
                         let thread = thread_id.to_owned();
                         tokio::spawn(agents::run_session(
                             process, lines, driver, thread, generation, rx, events,
@@ -1061,7 +1242,13 @@ impl Host {
             }
             Err(e) => {
                 tracing::warn!("couldn't start an agent: {e}");
-                let message = format!("Couldn't start {}: {}", agent.display_name(), e.kind());
+                // Starting a copy fails in words meant for the user ("Claude
+                // no longer has that message."); the copy stays pending.
+                let message = if forking {
+                    e.to_string()
+                } else {
+                    format!("Couldn't start {}: {}", agent.display_name(), e.kind())
+                };
                 self.finish_turn(reg, thread_id, TurnEnd::failed(code::START_FAILED, message));
             }
         }
@@ -1125,29 +1312,42 @@ impl Host {
             let live: Vec<Item> = entry.turn.streams.values().map(|s| s.item.clone()).collect();
             (entry.info.for_client(caps.items3), live, reg.pending_list(&p.thread_id))
         };
-        let mut items = self
+        // One more than asked, to tell whether there is more; items rewound
+        // away are never read.
+        let fetch = u32::try_from(limit + 1).unwrap_or(u32::MAX);
+        let (thread, after, before) = (p.thread_id.clone(), p.after_seq, p.before_seq);
+        let stored = self
             .store
-            .read_items(&p.thread_id)
+            .db(move |db| match after {
+                Some(after) => {
+                    let page = db.read_items_after(&thread, after, fetch)?;
+                    let earlier = db.read_items(&thread, Some(after.saturating_add(1)), 1)?;
+                    Ok((page, !earlier.is_empty()))
+                }
+                None => Ok((db.read_items(&thread, before, fetch)?, false)),
+            })
             .await
             .map_err(|_| err(ErrorCode::Internal, "Couldn't read the thread."))?;
+        let (stored, earlier) = stored;
+        let mut items: BTreeMap<u64, Item> = stored.into_iter().map(|i| (i.seq, i)).collect();
+        // The window `stored` covers: live items outside it belong to another page.
+        let low = match after {
+            Some(after) => after.saturating_add(1),
+            None if items.len() > limit => items.keys().next().copied().unwrap_or(0),
+            None => 0,
+        };
         for item in live {
-            items.insert(item.seq, item);
+            if item.seq >= low && before.is_none_or(|b| item.seq < b) {
+                items.insert(item.seq, item);
+            }
         }
         let items: BTreeMap<u64, Item> = items
             .into_iter()
             .filter_map(|(seq, item)| Some((seq, item.for_caps(caps.items2, caps.items3)?)))
             .collect();
-        let selected: Vec<Item> = match (p.after_seq, p.before_seq) {
-            (Some(after), _) => {
-                items.range(after.saturating_add(1)..).take(limit).map(|(_, i)| i.clone()).collect()
-            }
-            (None, Some(before)) => {
-                let mut v: Vec<Item> =
-                    items.range(..before).rev().take(limit).map(|(_, i)| i.clone()).collect();
-                v.reverse();
-                v
-            }
-            (None, None) => {
+        let selected: Vec<Item> = match after {
+            Some(_) => items.values().take(limit).cloned().collect(),
+            None => {
                 let mut v: Vec<Item> = items.values().rev().take(limit).cloned().collect();
                 v.reverse();
                 v
@@ -1175,17 +1375,16 @@ impl Host {
         }
         kept.reverse();
         let first = kept.first().map(|i| i.seq);
-        let more_before = match first {
-            Some(first) => items.range(..first).next().is_some(),
-            None => match p.before_seq {
-                Some(before) => items.range(..before).next().is_some(),
-                None => !items.is_empty() && p.after_seq.is_none(),
-            },
-        };
+        let more_before = earlier
+            || match first {
+                Some(first) => items.range(..first).next().is_some(),
+                None => !items.is_empty() && after.is_none(),
+            };
         Ok(ThreadReadResult { thread: info, items: kept, more_before, pending, questions })
     }
 
     fn remove_thread(&self, reg: &mut Registry, thread_id: &str) {
+        let place = self.place_any(reg, thread_id);
         if let Some(entry) = reg.threads.remove(thread_id) {
             if let Some(session) = entry.session {
                 let _ = session.cmds.send(SessionCmd::Close);
@@ -1193,7 +1392,18 @@ impl Host {
                     reg.bridges.remove(&token);
                 }
             }
-            self.store.delete(thread_id);
+            // Its restore points go once its row is gone for good (§U5.6).
+            let store = self.store.clone();
+            let thread = thread_id.to_owned();
+            tokio::spawn(async move {
+                let owned = thread.clone();
+                let gone = store.db(move |db| db.delete_thread(&owned).and_then(|()| db.flush())).await;
+                if gone.is_ok()
+                    && let (Some(place), Some(prefix)) = (place, crate::host::git::thread_refs(&thread))
+                {
+                    let _ = crate::host::git::delete_refs(&place, &prefix).await;
+                }
+            });
             self.awake.working(thread_id, false);
             if let Some(images) = self.images.clone() {
                 let thread = thread_id.to_owned();
@@ -1308,13 +1518,23 @@ impl Host {
             context: None,
             mcp: None,
             asking: 0,
+            pinned: false,
+            archived: false,
+            unread: false,
+            snoozed_until_ms: None,
+            turns: 0,
+            forked_from: None,
+            found: false,
+            readonly: None,
+            undo: None,
         };
+        let mut entry = Entry::new(info, notice_seq + 1, Some(cwd));
+        entry.users_before = u32::try_from(users).unwrap_or(u32::MAX);
+        // The thread's row first: its items belong to it.
+        emit_state(self, &mut entry);
         for item in &items {
             self.store.append_item(&id, item);
         }
-        let mut entry = Entry::new(info, notice_seq + 1, Some(cwd));
-        entry.users_before = u32::try_from(users).unwrap_or(u32::MAX);
-        emit_state(self, &mut entry);
         let info = entry.info.clone();
         reg.threads.insert(id.clone(), entry);
         if c.origin.kind == OriginKind::Phone {
@@ -1462,7 +1682,9 @@ impl Host {
         match step {
             Step::NativeId(id) => {
                 entry.info.native_id = Some(cut(&id, MAX_NATIVE_ID).to_owned());
-                self.store.save_meta(&entry.info, entry.next_seq);
+                // The copy started: the next process resumes it as it is.
+                entry.pending_fork = None;
+                self.store.save_thread(&entry.info, entry.cols());
             }
             Step::AssistantOpen { key } => {
                 if !entry.info.state.is_running() || entry.turn.keys.contains_key(&key) {
@@ -1683,6 +1905,7 @@ impl Host {
                 let item = entry.notice(&clean_cut(&text, MAX_ITEM_TEXT).0);
                 emit_item(self, thread_id, &item);
             }
+            Step::TurnMark(mark) => self.turn_marked(entry, mark),
             Step::Plan(_)
             | Step::TurnEnded(_)
             | Step::TurnStarted
@@ -1771,6 +1994,7 @@ impl Host {
         if !entry.info.state.is_running() {
             return;
         }
+        let outcome = end.outcome;
         let mut turn = std::mem::take(&mut entry.turn);
         self.close_turn_items(thread_id, &mut turn);
         if entry.follow_up.take().is_some() {
@@ -1828,6 +2052,8 @@ impl Host {
         let steering = !entry.steering.is_empty();
         let folder_id = entry.info.folder_id.clone();
         self.schedule_idle_close(thread_id, turn_no);
+        // Its row closes before a queued message can begin the next turn.
+        self.close_turn(reg, thread_id, outcome);
         if let Some(folder) = reg.folders.iter().find(|f| f.id == folder_id) {
             self.files.turn_ended(Path::new(&folder.path));
         }
@@ -1866,6 +2092,7 @@ impl Host {
         let user = entry.user_item(&follow.text, &follow.by, follow.deny_of);
         emit_state(self, entry);
         emit_item(self, thread_id, &user);
+        self.open_turn(entry, user.seq, None);
         let input = UserInput { id: user.id.clone(), text: follow.text, images: Vec::new() };
         let sent = entry.session.as_ref().is_some_and(|s| s.cmds.send(SessionCmd::Send(input)).is_ok());
         if !sent {
@@ -1907,13 +2134,16 @@ impl Host {
         entry.advance_turn();
         entry.set_state(State::Working);
         entry.info.error = None;
+        let mut prompt_seq = entry.info.last_seq;
         if !entry.steering.is_empty() {
             let mut item = entry.steering.remove(0);
             item.turn = entry.item_turn();
             item.rev += 1;
+            prompt_seq = item.seq;
             emit_item(self, thread_id, &item);
         }
         emit_state(self, entry);
+        self.open_turn(entry, prompt_seq, None);
     }
 
     /// The user's MCP servers a thread's process loaded: the thread shows
@@ -2916,7 +3146,23 @@ pub(crate) fn test_info(agent: AgentId) -> ThreadInfo {
         context: None,
         mcp: None,
         asking: 0,
+        pinned: false,
+        archived: false,
+        unread: false,
+        snoozed_until_ms: None,
+        turns: 0,
+        forked_from: None,
+        found: false,
+        readonly: None,
+        undo: None,
     }
+}
+
+/// A stored thread's entry (tests).
+#[cfg(test)]
+pub(crate) fn test_entry(info: ThreadInfo) -> Entry {
+    let next_seq = info.last_seq + 1;
+    Entry::new(info, next_seq, None)
 }
 
 #[cfg(test)]
@@ -2957,11 +3203,22 @@ impl Host {
             context: None,
             mcp: None,
             asking: 0,
+            pinned: false,
+            archived: false,
+            unread: false,
+            snoozed_until_ms: None,
+            turns: 0,
+            forked_from: None,
+            found: false,
+            readonly: None,
+            undo: None,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut entry = Entry::new(info, 1, Some(PathBuf::from("/tmp")));
         entry.advance_turn();
         entry.session = Some(Session { generation, cmds: tx, bridge_token: None });
+        // Its row first: its items belong to it.
+        self.store.save_thread(&entry.info, entry.cols());
         reg.threads.insert(id.clone(), entry);
         (id, generation, rx)
     }
@@ -3008,6 +3265,7 @@ impl Host {
             added_ms: 0,
             mcp: true,
             mcp_seen: Vec::new(),
+            checkpoints: true,
         });
     }
 

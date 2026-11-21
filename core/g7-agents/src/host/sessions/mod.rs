@@ -8,20 +8,30 @@
 //! every 500 ms, with bounded reads, one scan at a time, off the async
 //! threads. Nothing from a session file is written anywhere until
 //! `session.continue` copies items into a thread of ours.
+//!
+//! Separately, the import screen (§U4) lists every session on this PC
+//! ([`scan`]), shows one ([`import::preview`]) and brings sessions in as
+//! threads ([`import::import`]). Those reach the thread store through
+//! [`FoundStore`], which the host attaches with [`Sessions::attach_store`].
 
 pub mod claude_files;
 pub mod codex_files;
+pub mod import;
 pub mod paths;
 pub mod procs;
+pub mod scan;
 pub mod tail;
+pub mod zst;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use crate::api::*;
+use crate::host::db::{FoundFile, FoundPage, FoundQuery, FoundRow};
 use crate::host::store::now_ms;
 use crate::host::threads::{CODEX_AUTO_EDIT, Continued, subdir_of};
 use crate::host::{Config, Host};
@@ -98,6 +108,38 @@ pub(crate) fn still_open_message(agent: AgentId, source: SessionSource) -> Strin
 
 fn not_found() -> RpcError {
     RpcError::new(ErrorCode::NotFound, "No such session.")
+}
+
+/// What the import scan, the preview and the import need from the thread
+/// store (`host/db`). The host implements it over its store and attaches it
+/// with [`Sessions::attach_store`]; until then `sessions.scan`,
+/// `sessions.import` and `session.preview` answer `UNAVAILABLE`.
+///
+/// Every method may block: they are called from the blocking pool, never
+/// from the async threads.
+pub trait FoundStore: Send + Sync {
+    /// [`crate::host::db::Db::found_files`].
+    fn found_files(&self) -> io::Result<Vec<(String, FoundFile)>>;
+    /// [`crate::host::db::Db::found`]: a `sessions.scan` page.
+    fn found(&self, q: &FoundQuery) -> io::Result<FoundPage>;
+    /// One session found, with its files and its link to a thread; `None`
+    /// when there is no such row.
+    fn found_row(&self, id: &str) -> io::Result<Option<FoundRow>>;
+    /// [`crate::host::db::Db::upsert_found`].
+    fn upsert_found(&self, rows: &[FoundRow]) -> io::Result<()>;
+    /// [`crate::host::db::Db::forget_found_files`].
+    fn forget_found_files(&self, files: &[(String, String)]) -> io::Result<()>;
+    /// Makes the thread a session becomes and links the session to it
+    /// (`found.thread_id`), as one change: its row with
+    /// `ThreadCols { found_id, cwd, next_seq, next_turn, read_seq }` from
+    /// `thread`, its items and turns, then `thread.state` to clients.
+    /// Returns the new thread's id.
+    fn bring_in(&self, thread: import::BroughtIn) -> Result<String, RpcError>;
+}
+
+/// `UNAVAILABLE` while no store is attached (§U3.3: no file fallback).
+fn no_store() -> RpcError {
+    RpcError::new(ErrorCode::Unavailable, "G7 couldn't open its thread store.")
 }
 
 // ---- One file's reader ----
@@ -694,7 +736,6 @@ struct Inner {
 }
 
 /// The sessions-started-elsewhere part of the host.
-#[derive(Debug)]
 pub struct Sessions {
     /// Not turned off for this host (`G7_AGENTS_NO_SESSIONS`, or no home).
     enabled: bool,
@@ -704,6 +745,12 @@ pub struct Sessions {
     /// One scan or watch tick at a time.
     scan_lock: tokio::sync::Mutex<()>,
     inner: Mutex<Inner>,
+    /// The thread store, for the import screen.
+    store: OnceLock<Arc<dyn FoundStore>>,
+    /// The import scan: one at a time.
+    found_scan: scan::ScanState,
+    /// The import job: one at a time.
+    job: Mutex<Option<import::JobSlot>>,
 }
 
 impl Sessions {
@@ -714,7 +761,24 @@ impl Sessions {
             roots: config.session_roots(),
             scan_lock: tokio::sync::Mutex::new(()),
             inner: Mutex::new(Inner::default()),
+            store: OnceLock::new(),
+            found_scan: scan::ScanState::default(),
+            job: Mutex::new(None),
         }
+    }
+
+    /// Gives the import screen its store. Only the first call counts.
+    pub fn attach_store(&self, store: Arc<dyn FoundStore>) {
+        let _ = self.store.set(store);
+    }
+
+    fn found_store(&self) -> Result<Arc<dyn FoundStore>, RpcError> {
+        self.store.get().cloned().ok_or_else(no_store)
+    }
+
+    /// Where the session reader and the import scan look.
+    pub fn roots(&self) -> &Roots {
+        &self.roots
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -742,6 +806,22 @@ impl Sessions {
         }
         inner.running = false;
         inner.watches.clear();
+        drop(inner);
+        self.found_scan.stop();
+        if let Some(job) = self.job.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            job.cancel();
+        }
+    }
+}
+
+impl std::fmt::Debug for Sessions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sessions")
+            .field("enabled", &self.enabled)
+            .field("following", &self.following)
+            .field("roots", &self.roots)
+            .field("store", &self.store.get().is_some())
+            .finish_non_exhaustive()
     }
 }
 

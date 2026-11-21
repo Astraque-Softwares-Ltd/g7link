@@ -61,6 +61,17 @@ impl Roots {
             .join(format!("{day:02}"))
     }
 
+    /// `~/.codex/sessions`: `YYYY/MM/DD` day folders.
+    pub fn codex_sessions(&self) -> PathBuf {
+        self.codex_home.join("sessions")
+    }
+
+    /// `~/.codex/archived_sessions`: rollouts directly in it, or under
+    /// `YYYY/MM/DD` (reconcile §7). Only the import scan looks here.
+    pub fn codex_archived(&self) -> PathBuf {
+        self.codex_home.join("archived_sessions")
+    }
+
     /// `~/.codex/session_index.jsonl`: thread names.
     pub fn codex_index(&self) -> PathBuf {
         self.codex_home.join("session_index.jsonl")
@@ -100,17 +111,72 @@ pub fn transcript_uuid(name: &str) -> Option<&str> {
 
 /// A plain Codex rollout:
 /// `^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-<uuid>\.jsonl$`. Gives the
-/// UUID. Compressed (`.zst`) and `<uuid>_<uuid>` names don't match.
+/// UUID. Compressed (`.zst`) and `<uuid>_<uuid>` names don't match: live
+/// following reads plain one-part rollouts only.
 pub fn rollout_uuid(name: &str) -> Option<&str> {
-    let rest = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
-    let (stamp, uuid) = (rest.get(..19)?, rest.get(19..)?);
-    let uuid = uuid.strip_prefix('-')?;
+    match rollout_name(name)? {
+        RolloutName { thread, part: None, packed: false, .. } => Some(thread),
+        _ => None,
+    }
+}
+
+/// A rollout's name as the import scan reads it (reconcile §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RolloutName<'a> {
+    /// `YYYY-MM-DDTHH-MM-SS`: the order of a thread's parts.
+    pub stamp: &'a str,
+    /// The thread's UUID (`session_meta.payload.id`).
+    pub thread: &'a str,
+    /// A later part's own UUID: `rollout-<ts>-<thread>_<part>`.
+    pub part: Option<&'a str>,
+    /// `.jsonl.zst`.
+    pub packed: bool,
+}
+
+impl RolloutName<'_> {
+    /// The id other parts' `history_base.thread_id` names this file by: its
+    /// part's UUID, or the thread's for the first part.
+    pub fn segment(&self) -> &str {
+        self.part.unwrap_or(self.thread)
+    }
+}
+
+/// Any Codex rollout name:
+/// `^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-<uuid>(_<uuid>)?\.jsonl(\.zst)?$`.
+pub fn rollout_name(name: &str) -> Option<RolloutName<'_>> {
+    let rest = name.strip_prefix("rollout-")?;
+    let (rest, packed) = match rest.strip_suffix(".jsonl.zst") {
+        Some(rest) => (rest, true),
+        None => (rest.strip_suffix(".jsonl")?, false),
+    };
+    let (stamp, uuids) = (rest.get(..19)?, rest.get(19..)?);
+    let uuids = uuids.strip_prefix('-')?;
     let stamp_ok = stamp.bytes().enumerate().all(|(i, b)| match i {
         4 | 7 | 13 | 16 => b == b'-',
         10 => b == b'T',
         _ => b.is_ascii_digit(),
     });
-    (stamp_ok && is_uuid(uuid)).then_some(uuid)
+    let (thread, part) = match uuids.split_once('_') {
+        Some((thread, part)) => (thread, Some(part)),
+        None => (uuids, None),
+    };
+    (stamp_ok && is_uuid(thread) && part.is_none_or(is_uuid)).then_some(RolloutName {
+        stamp,
+        thread,
+        part,
+        packed,
+    })
+}
+
+/// A day-folder name in `sessions/`: `YYYY`, `MM` (01-12) or `DD` (01-31) by `depth` 0, 1, 2.
+pub fn is_date_folder(name: &str, depth: usize) -> bool {
+    let digits = |n: usize| name.len() == n && name.bytes().all(|b| b.is_ascii_digit());
+    match depth {
+        0 => digits(4),
+        1 => digits(2) && (1..=12).contains(&name.parse::<u32>().unwrap_or(0)),
+        2 => digits(2) && (1..=31).contains(&name.parse::<u32>().unwrap_or(0)),
+        _ => false,
+    }
 }
 
 /// Our id for an agent's session: `"sc"` or `"sx"` and the UUID without dashes.
@@ -258,6 +324,69 @@ mod tests {
             assert_eq!(transcript_uuid(name), None, "{name}");
             assert_eq!(rollout_uuid(name), None, "{name}");
         }
+    }
+
+    #[test]
+    fn the_import_scan_takes_compressed_and_later_parts_and_nothing_beside_them() {
+        const PART: &str = "019a0000-1111-7222-8333-444444444444";
+        let stamp = "rollout-2026-11-19T09-35-02";
+        let name = format!("{stamp}-{UUID}.jsonl.zst");
+        let r = rollout_name(&name).unwrap();
+        assert_eq!((r.stamp, r.thread, r.part, r.packed), ("2026-11-19T09-35-02", UUID, None, true));
+        assert_eq!(r.segment(), UUID);
+        let name = format!("{stamp}-{UUID}_{PART}.jsonl.zst");
+        let r = rollout_name(&name).unwrap();
+        assert_eq!((r.thread, r.part, r.packed), (UUID, Some(PART), true));
+        assert_eq!(r.segment(), PART);
+        let name = format!("{stamp}-{UUID}_{PART}.jsonl");
+        assert_eq!(rollout_name(&name).unwrap().part, Some(PART));
+        assert_eq!(rollout_uuid(&name), None, "live following keeps refusing a later part");
+        assert_eq!(rollout_uuid(&format!("{stamp}-{UUID}.jsonl.zst")), None, "and a compressed file");
+        assert_eq!(rollout_uuid(&format!("{stamp}-{UUID}.jsonl")), Some(UUID));
+        let neighbours = [
+            format!("{stamp}-{UUID}.jsonl.zst.tmp"),
+            format!("{stamp}-{UUID}.jsonl.zstd"),
+            format!("{stamp}-{UUID}.jsonl.gz"),
+            format!("{stamp}-{UUID}.zst"),
+            format!("{stamp}-{UUID}.json.zst"),
+            format!("{stamp}-{UUID}_.jsonl"),
+            format!("{stamp}-{UUID}__{PART}.jsonl"),
+            format!("{stamp}-{UUID}_{PART}_{PART}.jsonl.zst"),
+            format!("{stamp}-{UUID}_{}.jsonl", PART.to_uppercase()),
+            format!("{stamp}-{UUID}.jsonl.zst/"),
+            format!(".{stamp}-{UUID}.jsonl.zst"),
+            format!("{stamp}-{UUID}.jsonl.zst.lock"),
+            "auth.json".into(),
+            "config.toml".into(),
+            "history.jsonl".into(),
+            "session_index.jsonl".into(),
+            "state_5.sqlite".into(),
+            "state_5.sqlite-wal".into(),
+            "logs_1.sqlite".into(),
+            "rollout-.jsonl.zst".into(),
+        ];
+        for name in &neighbours {
+            assert_eq!(rollout_name(name), None, "{name}");
+            assert_eq!(transcript_uuid(name), None, "{name}");
+        }
+        for (name, depth, ok) in [
+            ("2026", 0, true),
+            ("11", 1, true),
+            ("19", 2, true),
+            ("13", 1, false),
+            ("00", 2, false),
+            ("32", 2, false),
+            ("202", 0, false),
+            ("2026", 1, false),
+            ("1", 2, false),
+            ("..", 0, false),
+            ("rollout-2026", 0, false),
+        ] {
+            assert_eq!(is_date_folder(name, depth), ok, "{name} at {depth}");
+        }
+        let roots = Roots::from_env(&[(OsString::from("HOME"), OsString::from("/h"))]).unwrap();
+        assert_eq!(roots.codex_sessions(), Path::new("/h/.codex/sessions"));
+        assert_eq!(roots.codex_archived(), Path::new("/h/.codex/archived_sessions"));
     }
 
     #[test]

@@ -223,6 +223,13 @@ pub enum Step {
     /// The agent started a turn by itself (Claude: a steer it took in
     /// after its `result`). The registry opens a new turn.
     TurnStarted,
+    /// The agent's own mark of the running turn, once per turn as soon as
+    /// it is known: Claude's `uuid` of the replayed prompt line that
+    /// started it (a steer inside a turn makes none), Codex's turn id. It
+    /// comes after [`Step::TurnStarted`] when the agent started the turn
+    /// itself, and before [`Step::Delivered`]. A fork or rewind continues
+    /// from it.
+    TurnMark(String),
     /// What the thread's context holds now.
     Context {
         used: u64,
@@ -609,7 +616,18 @@ pub async fn probe_claude(overridden: Option<&Path>, host_env: &[(OsString, OsSt
         info.plan = None;
     }
     info.can = crate::host::catalog::can(AgentId::Claude, true);
-    Probe { info, bin: Some(bin), commands: Vec::new() }
+    with_fork(AgentId::Claude, Probe { info, bin: Some(bin), commands: Vec::new() })
+}
+
+/// `probe` with the fork abilities its CLI gives (§U6.2).
+fn with_fork(agent: AgentId, mut probe: Probe) -> Probe {
+    let more = crate::host::fork::can(agent, &probe);
+    for can in more {
+        if !probe.info.can.contains(can) {
+            probe.info.can.push(*can);
+        }
+    }
+    probe
 }
 
 /// Probes Codex: `--version`, then one app-server conversation for the
@@ -643,7 +661,7 @@ pub async fn probe_codex(
     } else {
         info.can = crate::host::catalog::can(AgentId::Codex, false);
     }
-    (Probe { info, bin: Some(bin), commands: Vec::new() }, limits)
+    (with_fork(AgentId::Codex, Probe { info, bin: Some(bin), commands: Vec::new() }), limits)
 }
 
 // ---- One agent process ----

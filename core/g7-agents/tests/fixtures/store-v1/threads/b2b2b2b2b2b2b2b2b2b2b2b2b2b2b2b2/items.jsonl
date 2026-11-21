@@ -1,0 +1,4 @@
+{"seq":1,"id":"user-1","kind":"user","ts_ms":1794000000000,"rev":0,"text":"How does the store keep threads?","origin":{"kind":"launcher"}}
+{"seq":2,"id":"item_1","kind":"reasoning","ts_ms":1794000001000,"rev":0,"text":"**Reading**\nstore.rs first.","end_ms":1794000002000}
+{"seq":3,"id":"item_2","kind":"assistant","ts_ms":1794000003000,"rev":0,"text":"Each thread is a folder with an append-only items file.","end_ms":1794000004000}
+{"seq":4,"id":"user-4","kind":"user","ts_ms":1794000500000,"rev":0,"text":"And approvals?","origin":{"kind":"launcher"}}

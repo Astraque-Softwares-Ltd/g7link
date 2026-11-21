@@ -11,6 +11,13 @@
 //! summary setting and approval decision received.
 //! `$FAKE_CLI_RESUME_SCRIPT` is the Claude fixture for `--resume` runs.
 //!
+//! Claude's `--resume <id or path> --fork-session` logs `fork <id or path>`
+//! and answers as the copy: every `session_id` it prints is the fork's
+//! (`$FAKE_CLI_FORK_ID`, else a fixed one). A transcript path that is
+//! missing, or holds no line with a `uuid`, is refused as the CLI refuses
+//! it (spike S-3.8, S-3.9): one `result` with `error_during_execution`,
+//! nothing read from stdin, exit 1.
+//!
 //! The host's catalog probes are answered without a script: Claude's
 //! `initialize` control request (a run with `--no-session-persistence`)
 //! from `$FAKE_CLI_INITIALIZE` (default: `claude-10-initialize.jsonl` beside
@@ -222,6 +229,37 @@ fn claude_probe(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The fork's session id when `--fork-session` is given.
+const FORK_ID: &str = "f0f0f0f0-0000-4000-8000-00000000f0c5";
+
+/// A transcript copy Claude would load: a file with at least one line that
+/// has a `uuid`.
+fn loads_as_transcript(path: &str) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| {
+        text.lines().any(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v.get("uuid").is_some()))
+    })
+}
+
+/// `--resume … --fork-session`: the fork's id, or the refusal already
+/// printed (`Err` holds the exit code).
+fn claude_fork(args: &[String]) -> Result<Option<String>, ExitCode> {
+    if !args.iter().any(|a| a == "--fork-session") {
+        return Ok(None);
+    }
+    let source = args.windows(2).find(|w| w[0] == "--resume").map(|w| w[1].clone()).unwrap_or_default();
+    log_line(&format!("fork {source}"));
+    let id = std::env::var("FAKE_CLI_FORK_ID").unwrap_or_else(|_| FORK_ID.to_owned());
+    if source.starts_with('/') && !loads_as_transcript(&source) {
+        print(&json!({
+            "type": "result", "subtype": "error_during_execution", "is_error": true, "num_turns": 0,
+            "session_id": id, "errors": ["No conversation found to continue from that transcript file."]
+        }));
+        eprintln!("No conversation found.");
+        return Err(ExitCode::from(1));
+    }
+    Ok(Some(id))
+}
+
 fn claude(args: &[String]) -> ExitCode {
     if args.iter().any(|a| a == "--version") {
         println!("2.1.310 (Claude Code)");
@@ -240,6 +278,10 @@ fn claude(args: &[String]) -> ExitCode {
         eprintln!("fake claude: no --session-id or --resume");
         return ExitCode::from(2);
     }
+    let fork = match claude_fork(args) {
+        Ok(fork) => fork,
+        Err(code) => return code,
+    };
     let mcp_config =
         args.windows(2).find(|w| w[0] == "--mcp-config").map(|w| w[1].clone()).unwrap_or_default();
     let script = match (resume, std::env::var("FAKE_CLI_RESUME_SCRIPT")) {
@@ -317,7 +359,14 @@ fn claude(args: &[String]) -> ExitCode {
                 bridge.finish();
             }
         }
-        print(line);
+        match (&fork, line.get("session_id")) {
+            (Some(id), Some(_)) => {
+                let mut line = line.clone();
+                line["session_id"] = json!(id);
+                print(&line);
+            }
+            _ => print(line),
+        }
     }
     input.wait_eof();
     ExitCode::from(exit_code)

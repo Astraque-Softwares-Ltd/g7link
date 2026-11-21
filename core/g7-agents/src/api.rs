@@ -216,6 +216,78 @@ pub const IMPLEMENT_PLAN_TEXT: &str = "Implement the plan.";
 /// A plan's text, at most.
 pub const MAX_PLAN_ITEM: usize = 16_384;
 
+// ---- History and undo (phase 3) ----
+
+/// Threads the database keeps; past it the oldest archived, unpinned ones
+/// go first, then the oldest idle unpinned ones, never one that runs or is pinned.
+pub const MAX_THREADS_STORED: usize = 5_000;
+/// Items the database keeps per thread; past it the oldest go.
+pub const MAX_ITEMS_STORED: usize = 20_000;
+/// Threads one `thread.mark` names.
+pub const MAX_MARK_THREADS: usize = 50;
+/// A snooze ends at most this far ahead (30 days).
+pub const MAX_SNOOZE_MS: u64 = 2_592_000_000;
+/// `threads.search`: the query in bytes, the terms used, and the page size.
+pub const MAX_SEARCH_QUERY: usize = 200;
+pub const MAX_SEARCH_TERMS: usize = 8;
+pub const MAX_SEARCH_LIMIT: u32 = 50;
+pub const DEFAULT_SEARCH_LIMIT: u32 = 20;
+/// Characters a term needs to search messages; a query of shorter terms
+/// only matches thread titles.
+pub const MIN_INDEXED_TERM: usize = 3;
+/// Hits considered per query, and shown per thread on one page.
+pub const MAX_SEARCH_CANDIDATES: usize = 2_000;
+pub const MAX_HITS_PER_THREAD: usize = 3;
+/// Thread titles a short query looks at.
+pub const MAX_TITLE_SCAN: usize = 5_000;
+/// A `threads.search` cursor.
+pub const MAX_SEARCH_CURSOR: usize = 64;
+/// A hit's snippet: characters in all, before the first match, and its marks.
+pub const MAX_SNIPPET_CHARS: usize = 240;
+pub const SNIPPET_LEAD_CHARS: usize = 24;
+pub const MAX_SNIPPET_MARKS: usize = 8;
+/// `thread.turns`.
+pub const MAX_TURNS_LIMIT: u32 = 100;
+pub const DEFAULT_TURNS_LIMIT: u32 = 30;
+/// Turns per thread whose restore points are kept; older ones read `expired`.
+pub const KEPT_RESTORE_POINTS: u32 = 100;
+/// Files `turn.files` lists, and a rewind plan's `change`.
+pub const MAX_TURN_FILES: usize = 500;
+/// A path in a diff or a rewind plan: relative to the thread's folder.
+pub const MAX_DIFF_PATH: usize = 512;
+/// `turn.patch`: one page at most, and one file's patch in all.
+pub const MAX_PATCH_PAGE: usize = 196_608;
+pub const MAX_PATCH_FILE: usize = 1_048_576;
+/// A rewind plan's token is used once, within this time.
+pub const REWIND_TOKEN_MS: u64 = 120_000;
+/// `rewind.apply`: the files left as they are, listed at most, and each reason.
+pub const MAX_REWIND_LEFT: usize = 100;
+pub const MAX_LEFT_WHY: usize = 40;
+/// A rewind can be undone this long, unless the thread's next turn starts first.
+pub const UNDO_MS: u64 = 86_400_000;
+/// A message's key (`thread.send`, `thread.start`): 16 lowercase hex digits,
+/// taken once per thread within this time.
+pub const SEND_KEY_LEN: usize = 16;
+pub const SEND_KEY_MS: u64 = 86_400_000;
+/// Items a fork copies at most (the newest).
+pub const FORK_ITEMS: usize = 2_000;
+/// `sessions.scan`.
+pub const MAX_SCAN_QUERY: usize = 128;
+pub const MAX_SCAN_LIMIT: u32 = 100;
+pub const DEFAULT_SCAN_LIMIT: u32 = 50;
+/// `sessions.scanned` at most this often.
+pub const SCAN_EVENT_MS: u64 = 1_000;
+/// `sessions.import`: sessions in one job, and a job id's length.
+pub const MAX_IMPORT_IDS: usize = 50;
+pub const IMPORT_JOB_LEN: usize = 16;
+/// Messages a session brought in keeps, the first user message besides.
+pub const IMPORT_KEPT_MESSAGES: usize = 200;
+/// `import.progress` at most this often.
+pub const IMPORT_EVENT_MS: u64 = 250;
+/// `session.preview`.
+pub const MAX_PREVIEW_LIMIT: u32 = 50;
+pub const DEFAULT_PREVIEW_LIMIT: u32 = 20;
+
 // ---- Method and event names ----
 
 pub mod method {
@@ -265,6 +337,25 @@ pub mod method {
     pub const HISTORY_LIST: &str = "history.list";
     pub const FOLDERS_SET: &str = "folders.set";
     pub const SETTINGS_SET: &str = "settings.set";
+    // History and undo (phase 3).
+    pub const THREAD_TURNS: &str = "thread.turns";
+    pub const TURN_FILES: &str = "turn.files";
+    pub const TURN_PATCH: &str = "turn.patch";
+    pub const REWIND_PREVIEW: &str = "rewind.preview";
+    pub const REWIND_APPLY: &str = "rewind.apply";
+    pub const REWIND_UNDO: &str = "rewind.undo";
+    pub const THREAD_FORK: &str = "thread.fork";
+    pub const THREAD_MARK: &str = "thread.mark";
+    pub const THREAD_RENAME: &str = "thread.rename";
+    pub const THREADS_SEARCH: &str = "threads.search";
+    pub const SESSIONS_SCAN: &str = "sessions.scan";
+    pub const SESSIONS_IMPORT: &str = "sessions.import";
+    pub const IMPORT_CANCEL: &str = "import.cancel";
+    pub const SESSION_PREVIEW: &str = "session.preview";
+    pub const STORE_INFO: &str = "store.info";
+    /// Asks G7 Link to show a thread (the launcher's "Rewind in G7 Link"):
+    /// the host sends the `ui.open` event to G7 Link's connections.
+    pub const UI_OPEN: &str = "ui.open";
 }
 
 /// What a client says it understands (`HelloParams.caps`) and what a host
@@ -282,8 +373,15 @@ pub mod cap {
     /// `plan`; a client without it gets them as [`super::Item::legacy`] and
     /// [`super::ThreadInfo::legacy`] make them.
     pub const ITEMS3: &str = "items3";
+    /// The host has the thread database and what it brings: `threads.search`,
+    /// `thread.mark`, `thread.rename`, `store.info`, `sessions.scan`,
+    /// `sessions.import`, `session.preview`, and `threads.list`'s `show`.
+    pub const HISTORY: &str = "history";
+    /// The host keeps restore points and offers `thread.turns`, `turn.files`,
+    /// `turn.patch`, `rewind.*` and `thread.fork`.
+    pub const UNDO: &str = "undo";
     /// What this host offers.
-    pub const HOST: [&str; 3] = [ITEMS2, DENY_MESSAGE, CONTROL];
+    pub const HOST: [&str; 5] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO];
 }
 
 pub mod event {
@@ -304,6 +402,10 @@ pub mod event {
     pub const QUESTION_REQUESTED: &str = "question.requested";
     pub const QUESTION_RESOLVED: &str = "question.resolved";
     pub const DRAFT_CHANGED: &str = "draft.changed";
+    pub const THREAD_TURN: &str = "thread.turn";
+    pub const THREAD_CUT: &str = "thread.cut";
+    pub const IMPORT_PROGRESS: &str = "import.progress";
+    pub const SESSIONS_SCANNED: &str = "sessions.scanned";
 }
 
 // ---- Error codes ----
@@ -676,6 +778,10 @@ pub enum Can {
     McpSwitch,
     /// `commands.list` has its slash commands or skills.
     Commands,
+    /// A thread can continue as a copy of its session from the latest message.
+    Fork,
+    /// … and from any turn that has a native mark.
+    ForkAt,
 }
 
 /// How close a usage window is to its limit.
@@ -736,6 +842,210 @@ pub enum QuestionOutcome {
     Expired,
     /// The turn ended first.
     Cancelled,
+}
+
+/// `as_str` and `parse` for a word enum, matching its serde names (a test
+/// checks they agree). The store keeps these words as text.
+macro_rules! wire_words {
+    ($ty:ty { $($variant:ident => $word:literal),+ $(,)? }) => {
+        impl $ty {
+            /// The word on the wire and in the store.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $word,)+
+                }
+            }
+
+            /// The value of `word`; `None` for a word this version doesn't know.
+            pub fn parse(word: &str) -> Option<Self> {
+                match word {
+                    $($word => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+/// Which threads `threads.list` shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadShow {
+    /// Neither archived nor snoozed: needs you, working, pinned, then the rest.
+    #[default]
+    Main,
+    Archived,
+    Snoozed,
+}
+
+/// Why a thread can be read but not continued (`ThreadInfo.readonly`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Readonly {
+    /// Brought in from a session whose folder is not an agent folder.
+    OutsideFolders,
+    /// Its agent folder is no longer listed.
+    FolderMissing,
+}
+
+/// A turn's restore point (§U5.2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Checkpoint {
+    /// Being recorded.
+    Pending,
+    /// Both captures exist; the turn's files and line counts are set.
+    Ready,
+    /// Not recorded; `why` says why. Also what an unknown word reads as.
+    #[default]
+    Missing,
+    /// The folder is not in a git work tree: no restore points, and the
+    /// changes are shown from the turn's tool steps.
+    #[serde(rename = "none")]
+    NotGit,
+    /// It was recorded but is no longer kept.
+    Expired,
+}
+
+wire_words!(Checkpoint {
+    Pending => "pending",
+    Ready => "ready",
+    Missing => "missing",
+    NotGit => "none",
+    Expired => "expired",
+});
+
+/// Why a turn's changes weren't recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointWhy {
+    /// Git was in the middle of something in the folder.
+    Busy,
+    /// Over the time budget.
+    Slow,
+    /// Too many large or new files.
+    Large,
+    /// Git said no.
+    Refused,
+    /// The folder's switch is off.
+    Off,
+    /// It ran before G7 kept restore points, or was brought in.
+    Before,
+}
+
+wire_words!(CheckpointWhy {
+    Busy => "busy",
+    Slow => "slow",
+    Large => "large",
+    Refused => "refused",
+    Off => "off",
+    Before => "before",
+});
+
+/// How a turn ended (`TurnInfo.ended`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnEnd {
+    Done,
+    Failed,
+    Stopped,
+}
+
+wire_words!(TurnEnd {
+    Done => "done",
+    Failed => "failed",
+    Stopped => "stopped",
+});
+
+/// What happened to a file in a turn (`TurnFile.status`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileStatus {
+    Added,
+    /// Also what an unknown word reads as.
+    #[default]
+    Modified,
+    Deleted,
+    Renamed,
+    /// Its type changed (a file became a link, say).
+    Type,
+    /// Left out of the restore point (too large): no diff, never touched by a rewind.
+    Unrecorded,
+}
+
+wire_words!(FileStatus {
+    Added => "added",
+    Modified => "modified",
+    Deleted => "deleted",
+    Renamed => "renamed",
+    Type => "type",
+    Unrecorded => "unrecorded",
+});
+
+/// What a rewind does to one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RewindAction {
+    /// Changed back.
+    Restore,
+    /// Created after that point: deleted.
+    Delete,
+    /// Deleted after that point: brought back.
+    BringBack,
+}
+
+/// Why part of a rewind can't be done (`RewindPlan.blocked`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RewindBlock {
+    /// Another thread or session worked in the folder since then.
+    Shared,
+    /// Git is in the middle of something in the folder.
+    Busy,
+    /// No restore point for that turn.
+    NoCheckpoint,
+    /// The folder isn't in a git work tree.
+    NotGit,
+    /// The restore point is no longer kept.
+    Expired,
+    /// Restore points are off for the folder.
+    Off,
+    /// The agent can't continue from that turn: only the files can go back.
+    Agent,
+}
+
+impl RewindBlock {
+    /// It blocks the files part (every reason but [`RewindBlock::Agent`],
+    /// which blocks the conversation part).
+    pub fn blocks_files(self) -> bool {
+        !matches!(self, Self::Agent)
+    }
+}
+
+/// Which notice a host-written `notice` item is (`Item.notice`), for the
+/// notices clients act on: the one after a rewind carries Undo while
+/// `ThreadInfo.undo` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// "Rewound to here".
+    Rewound,
+    /// "Rewound to here" after Edit from here: the message went back to the composer.
+    EditFromHere,
+    /// Files only: "Restored the files to before this message. …"
+    FilesRestored,
+    /// "Forked from here. …", written after the items a fork copied.
+    Forked,
+}
+
+/// Which sessions `sessions.scan` lists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoundShow {
+    #[default]
+    All,
+    /// Not brought in yet.
+    New,
 }
 
 // ---- Records ----
@@ -1077,6 +1387,9 @@ pub struct Folder {
     /// The servers each agent last reported here; names only. Never sent to a phone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_seen: Vec<FolderMcp>,
+    /// A restore point is kept for each turn here (from the next turn).
+    #[serde(default = "yes")]
+    pub checkpoints: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1182,6 +1495,54 @@ pub struct ThreadInfo {
     /// Questions waiting (not counted in `pending`).
     #[serde(default)]
     pub asking: u32,
+    /// In the "Pinned" section; never pruned.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    /// On the "Archived" shelf: out of the main list, still searchable.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub archived: bool,
+    /// Marked unread, or something happened in it since anyone looked.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unread: bool,
+    /// Out of the main list until then, or until it needs the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until_ms: Option<u64>,
+    /// The newest turn's number; 0 when none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub turns: u32,
+    /// Made by `thread.fork` from that thread. Boxed: rarely set, and every
+    /// `thread.state` event carries a `ThreadInfo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<Box<ForkedFrom>>,
+    /// Brought in from a session found on this PC (`sessions.import`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub found: bool,
+    /// It can be read but not continued, and why.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<Readonly>,
+    /// The last rewind can be undone until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<UndoInfo>,
+}
+
+/// Where a fork came from (`ThreadInfo.forked_from`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkedFrom {
+    /// Kept when that thread is deleted.
+    pub thread_id: String,
+    /// The turn it continues from; absent: the latest when it was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    /// That thread's title when it was made (clients show "Fork of <title>").
+    pub title: String,
+}
+
+/// A rewind that can still be undone (`ThreadInfo.undo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UndoInfo {
+    pub until_ms: u64,
+    /// It put files back: only G7 Link on this PC can undo it.
+    pub files: bool,
 }
 
 impl ThreadInfo {
@@ -1299,6 +1660,9 @@ pub struct Item {
     /// Kind `question`: how many asks, and how it ended; `origin` is who answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<QuestionInfo>,
+    /// Kind `notice`: which notice, for those clients act on; absent for the rest.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub notice: Option<NoticeKind>,
 }
 
 /// A `question` item's state.
@@ -1336,6 +1700,7 @@ impl Item {
             images: Vec::new(),
             plan_state: None,
             question: None,
+            notice: None,
         }
     }
 
@@ -1457,6 +1822,218 @@ pub struct Approval {
     /// The tool item the request belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
+}
+
+// ---- History and undo records (phase 3) ----
+
+/// One turn of a thread (`thread.turns`, `thread.turn`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnInfo {
+    /// 1-based per thread, never reused, also after a rewind.
+    pub turn: u32,
+    /// The user item that started it.
+    pub prompt_seq: u64,
+    /// Its last item, once it ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seq: Option<u64>,
+    pub started_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_ms: Option<u64>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub ended: Option<TurnEnd>,
+    #[serde(default, deserialize_with = "lenient_or_default")]
+    pub checkpoint: Checkpoint,
+    /// With `checkpoint: missing`.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub why: Option<CheckpointWhy>,
+    /// With `checkpoint: ready`: files changed, lines added and removed.
+    #[serde(default)]
+    pub files: u32,
+    #[serde(default)]
+    pub adds: u32,
+    #[serde(default)]
+    pub dels: u32,
+    /// More than [`MAX_TURN_FILES`] files changed: `turn.files` lists the first.
+    #[serde(default)]
+    pub more_files: bool,
+    /// Large files left out of its restore point.
+    #[serde(default)]
+    pub skipped: u32,
+    /// The host's verdicts for this turn (the agent's abilities, a native
+    /// mark, a restore point, the thread idle), so no client re-derives them.
+    #[serde(default)]
+    pub can_fork: bool,
+    #[serde(default)]
+    pub can_rewind: bool,
+    /// Its files can be put back. Never true to a phone.
+    #[serde(default)]
+    pub can_restore: bool,
+}
+
+/// A file a turn (or a range of turns) changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnFile {
+    /// Relative to the thread's folder, `/` separators, at most [`MAX_DIFF_PATH`] bytes.
+    pub path: String,
+    #[serde(default, deserialize_with = "lenient_or_default")]
+    pub status: FileStatus,
+    /// Its earlier path (`renamed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub adds: u32,
+    #[serde(default)]
+    pub dels: u32,
+    #[serde(default)]
+    pub binary: bool,
+}
+
+/// One `threads.search` hit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub thread_id: String,
+    /// The thread's title, at most [`MAX_TITLE`] bytes.
+    pub title: String,
+    pub agent: AgentId,
+    pub folder_label: String,
+    pub state: State,
+    #[serde(default)]
+    pub archived: bool,
+    /// The item that matched; 0: the thread's title.
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ItemKind>,
+    pub ts_ms: u64,
+    /// At most [`MAX_SNIPPET_CHARS`] characters of the item's own text around the first match.
+    pub snippet: String,
+    /// The matches in `snippet` as (start, length) in UTF-16 units, at most [`MAX_SNIPPET_MARKS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<(u16, u16)>,
+    /// Hits in the same thread left off this page.
+    #[serde(default)]
+    pub more_in_thread: u32,
+}
+
+/// A Claude or Codex session found on this PC (`sessions.scan`), whether or
+/// not anything has it open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Found {
+    /// `"sc"` or `"sx"` and the session's UUID without dashes, as [`Session::id`].
+    pub id: String,
+    pub agent: AgentId,
+    /// At most [`MAX_TITLE`] bytes.
+    pub title: String,
+    /// Its agent folder's label, else the last component of `cwd`.
+    pub folder_label: String,
+    /// Set when `cwd` is inside an agent folder: only then can it continue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    /// Never leaves the PC.
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_ms: Option<u64>,
+    /// Its newest file's last change.
+    pub updated_ms: u64,
+    pub bytes: u64,
+    /// Kept compressed (`.zst`).
+    #[serde(default)]
+    pub packed: bool,
+    pub source: SessionSource,
+    /// Something has it open now.
+    #[serde(default)]
+    pub open: bool,
+    /// The thread brought in from it, while that thread exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// It couldn't be read: it can't be brought in.
+    #[serde(default)]
+    pub damaged: bool,
+}
+
+/// What a rewind would do (`rewind.preview`). Nothing has changed yet.
+/// `cut` is set when the conversation part can be done, `files` when the
+/// files part can; `blocked` names why the other part can't
+/// ([`RewindBlock::blocks_files`] says which part). When neither part can be
+/// done the host answers an error instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindPlan {
+    /// 32 lowercase hex digits: used once, by the connection that asked.
+    pub token: String,
+    pub expires_ms: u64,
+    pub thread_id: String,
+    /// The thread goes back to before this turn.
+    pub turn: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<RewindCut>,
+    /// Never sent to a phone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<RewindFiles>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<RewindBlock>,
+}
+
+/// What leaves the thread when the conversation is rewound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindCut {
+    pub turns: u32,
+    pub messages: u32,
+}
+
+/// The files a rewind would put back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindFiles {
+    /// At most [`MAX_TURN_FILES`].
+    pub change: Vec<RewindFile>,
+    /// Paths left off `change`.
+    #[serde(default)]
+    pub more: u32,
+    /// Paths changed after the agent's last turn: left alone unless `include_later`.
+    #[serde(default)]
+    pub later: u32,
+    /// Large files that weren't recorded and aren't touched.
+    #[serde(default)]
+    pub skipped: u32,
+    /// The branch moved since then: files are restored, the branch is not moved.
+    #[serde(default)]
+    pub head_moved: bool,
+    /// The files as they were at the preview (a tree id, 40 hex digits):
+    /// `rewind.apply` answers `CONFLICT` when they changed since.
+    pub tree: String,
+}
+
+/// One path of a rewind plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindFile {
+    /// Relative to the thread's folder, at most [`MAX_DIFF_PATH`] bytes.
+    pub path: String,
+    pub action: RewindAction,
+    /// Changed after the agent's last turn.
+    #[serde(default)]
+    pub later: bool,
+}
+
+/// A file a rewind left as it was, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindLeft {
+    pub path: String,
+    /// At most [`MAX_LEFT_WHY`] bytes.
+    pub why: String,
+}
+
+/// The size of what the host keeps (`store.info`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreInfo {
+    pub threads: u32,
+    pub archived: u32,
+    pub items: u64,
+    /// The thread database's size on disk.
+    pub bytes: u64,
+    /// Sessions found on this PC.
+    pub found: u32,
+    /// The restore points' size on disk.
+    #[serde(default)]
+    pub checkpoint_bytes: u64,
 }
 
 // ---- Wire envelope ----
@@ -1611,6 +2188,9 @@ pub struct ThreadsListParams {
     pub limit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_ms: Option<u64>,
+    /// Which shelf; absent: `main`. Only to a host that offers [`cap::HISTORY`].
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub show: Option<ThreadShow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1636,6 +2216,10 @@ pub struct ThreadStartParams {
     /// Pending image ids.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// The message's key ([`SEND_KEY_LEN`] lowercase hex digits): a second
+    /// start with it is answered `duplicate` and starts nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl ThreadStartParams {
@@ -1651,6 +2235,7 @@ impl ThreadStartParams {
             effort: None,
             custom_model: false,
             images: Vec::new(),
+            key: None,
         }
     }
 }
@@ -1658,6 +2243,15 @@ impl ThreadStartParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadResult {
     pub thread: ThreadInfo,
+}
+
+/// `thread.start`'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadStartResult {
+    pub thread: ThreadInfo,
+    /// The key was taken already: nothing was started, `thread` is the one it started.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub duplicate: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1680,6 +2274,11 @@ pub struct ThreadSendParams {
     pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub custom_model: bool,
+    /// The message's key ([`SEND_KEY_LEN`] lowercase hex digits): taken
+    /// once per thread within [`SEND_KEY_MS`]; a second send with it is
+    /// answered `duplicate` and sends nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl ThreadSendParams {
@@ -1695,6 +2294,7 @@ impl ThreadSendParams {
             effort: None,
             mode: None,
             custom_model: false,
+            key: None,
         }
     }
 }
@@ -1704,6 +2304,9 @@ pub struct ThreadSendResult {
     /// The message waits in the queue (asked for, or the agent can't be steered).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued: Option<Queued>,
+    /// The key was taken already: nothing was sent.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub duplicate: bool,
 }
 
 /// `thread.configure`: what is absent is unchanged; an empty `model` or
@@ -1896,10 +2499,15 @@ pub struct HistoryListResult {
     pub prompts: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `folders.set`: what is absent is unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoldersSetParams {
     pub id: String,
-    pub mcp: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<bool>,
+    /// Only to a host that offers [`cap::UNDO`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoints: Option<bool>,
 }
 
 /// `settings.set`: what is absent is unchanged.
@@ -2133,6 +2741,334 @@ pub struct BridgeCancelParams {
     pub tool_use_id: String,
 }
 
+// ---- History and undo (phase 3): only to a host that offers `cap::HISTORY` or `cap::UNDO` ----
+
+/// The turns a diff covers: one turn (its `pre` to its `post`), or a span
+/// (the first's `pre` to the last's `post`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TurnRange {
+    One(u32),
+    Span { from: u32, to: u32 },
+}
+
+impl TurnRange {
+    pub fn first(self) -> u32 {
+        match self {
+            Self::One(turn) => turn,
+            Self::Span { from, .. } => from,
+        }
+    }
+
+    pub fn last(self) -> u32 {
+        match self {
+            Self::One(turn) => turn,
+            Self::Span { to, .. } => to,
+        }
+    }
+
+    /// The range the three wire fields name: `turn` alone, or `from_turn`
+    /// and `to_turn` with `0 < from <= to`. `None` for any other shape.
+    pub fn of(turn: Option<u32>, from: Option<u32>, to: Option<u32>) -> Option<TurnRange> {
+        match (turn, from, to) {
+            (Some(turn), None, None) if turn > 0 => Some(Self::One(turn)),
+            (None, Some(from), Some(to)) if 0 < from && from <= to => Some(Self::Span { from, to }),
+            _ => None,
+        }
+    }
+
+    /// The wire fields `(turn, from_turn, to_turn)`.
+    fn fields(self) -> (Option<u32>, Option<u32>, Option<u32>) {
+        match self {
+            Self::One(turn) => (Some(turn), None, None),
+            Self::Span { from, to } => (None, Some(from), Some(to)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadTurnsParams {
+    pub thread_id: String,
+    /// Turns older than this one; absent: from the newest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_turn: Option<u32>,
+    /// At most [`MAX_TURNS_LIMIT`]; absent: [`DEFAULT_TURNS_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadTurnsResult {
+    /// Newest first; turns rewound away are left out.
+    pub turns: Vec<TurnInfo>,
+}
+
+/// `turn.files`: `turn`, or `from_turn` and `to_turn` (see [`TurnRange`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnFilesParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_turn: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_turn: Option<u32>,
+}
+
+impl TurnFilesParams {
+    pub fn new(thread_id: String, range: TurnRange) -> Self {
+        let (turn, from_turn, to_turn) = range.fields();
+        Self { thread_id, turn, from_turn, to_turn }
+    }
+
+    /// `None` when the fields don't name a range.
+    pub fn range(&self) -> Option<TurnRange> {
+        TurnRange::of(self.turn, self.from_turn, self.to_turn)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnFilesResult {
+    /// At most [`MAX_TURN_FILES`]; files that weren't recorded come last.
+    pub files: Vec<TurnFile>,
+    /// More files changed than are listed.
+    pub more: bool,
+    pub adds: u32,
+    pub dels: u32,
+}
+
+/// `turn.patch`: one file's patch in a turn or a range, a page at a time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnPatchParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_turn: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_turn: Option<u32>,
+    /// A path `turn.files` listed for the same range; anything else is refused.
+    pub path: String,
+    /// The `next` of the page before; absent: the first page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+}
+
+impl TurnPatchParams {
+    pub fn new(thread_id: String, range: TurnRange, path: String, offset: Option<u64>) -> Self {
+        let (turn, from_turn, to_turn) = range.fields();
+        Self { thread_id, turn, from_turn, to_turn, path, offset }
+    }
+
+    /// `None` when the fields don't name a range.
+    pub fn range(&self) -> Option<TurnRange> {
+        TurnRange::of(self.turn, self.from_turn, self.to_turn)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnPatchResult {
+    /// At most [`MAX_PATCH_PAGE`] bytes, cut at a line end.
+    pub patch: String,
+    /// The offset of the next page; absent: this was the last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<u64>,
+    /// The file's patch passed [`MAX_PATCH_FILE`]: the rest isn't served.
+    #[serde(default)]
+    pub truncated: bool,
+    /// A binary file: no text.
+    #[serde(default)]
+    pub binary: bool,
+}
+
+/// `rewind.preview`: at least one of `conversation` and `files`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindPreviewParams {
+    pub thread_id: String,
+    /// Back to before this turn.
+    pub turn: u32,
+    pub conversation: bool,
+    pub files: bool,
+    /// Who asks; absent: this PC. A phone may ask for the conversation only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindPreviewResult {
+    pub plan: RewindPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindApplyParams {
+    pub token: String,
+    /// Also undo the changes made after the agent's last turn.
+    #[serde(default)]
+    pub include_later: bool,
+    /// Put the turn's message back in the thread's draft (edit from here).
+    #[serde(default)]
+    pub refill: bool,
+    pub by: By,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindApplyResult {
+    pub thread: ThreadInfo,
+    /// Files left as they were, at most [`MAX_REWIND_LEFT`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<RewindLeft>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindUndoParams {
+    pub thread_id: String,
+    pub by: By,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadForkParams {
+    pub thread_id: String,
+    /// Through this turn; absent: the latest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u32>,
+    pub by: By,
+}
+
+/// `thread.mark`: what is absent is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadMarkParams {
+    /// 1 to [`MAX_MARK_THREADS`].
+    pub thread_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<bool>,
+    /// In the future and within [`MAX_SNOOZE_MS`]; 0 ends a snooze.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snooze_until_ms: Option<u64>,
+    pub by: By,
+}
+
+impl ThreadMarkParams {
+    /// Marks for `thread_ids` that change nothing yet.
+    pub fn new(thread_ids: Vec<String>, by: By) -> Self {
+        Self { thread_ids, pinned: None, archived: None, unread: None, snooze_until_ms: None, by }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadMarkResult {
+    /// The threads as they are now.
+    pub threads: Vec<ThreadInfo>,
+    /// Threads left unarchived because they work or wait. When every thread
+    /// named is, the call fails with `BUSY` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub busy: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadRenameParams {
+    pub thread_id: String,
+    /// At most [`MAX_TITLE`] bytes once trimmed; empty is refused.
+    pub title: String,
+    /// Who renamed it; absent: this PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Origin>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadsSearchParams {
+    /// At most [`MAX_SEARCH_QUERY`] bytes.
+    pub query: String,
+    /// At most [`MAX_SEARCH_LIMIT`]; absent: [`DEFAULT_SEARCH_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// The `next` of the page before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Archived threads too.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadsSearchResult {
+    /// Newest first, at most [`MAX_HITS_PER_THREAD`] per thread.
+    pub hits: Vec<SearchHit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    /// Every term was shorter than [`MIN_INDEXED_TERM`]: only titles were searched.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub titles_only: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsScanParams {
+    /// Matches titles and folders; at most [`MAX_SCAN_QUERY`] bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentId>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub show: Option<FoundShow>,
+    /// Sessions last changed before this; absent: the newest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_ms: Option<u64>,
+    /// At most [`MAX_SCAN_LIMIT`]; absent: [`DEFAULT_SCAN_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsScanResult {
+    /// Newest first.
+    pub found: Vec<Found>,
+    /// `before_ms` for the next page; absent: this was the last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_ms: Option<u64>,
+    /// Matching sessions in all.
+    pub total: u32,
+    /// A scan is still running: more may come (`sessions.scanned`).
+    pub scanning: bool,
+    /// The last scan stopped at a bound before it saw everything.
+    pub partial: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsImportParams {
+    /// 1 to [`MAX_IMPORT_IDS`] ids from `sessions.scan`.
+    pub ids: Vec<String>,
+    pub by: By,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsImportResult {
+    /// [`IMPORT_JOB_LEN`] lowercase hex digits.
+    pub job: String,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportCancelParams {
+    pub job: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPreviewParams {
+    /// A `sessions.scan` id.
+    pub id: String,
+    /// At most [`MAX_PREVIEW_LIMIT`]; absent: [`DEFAULT_PREVIEW_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPreviewResult {
+    /// The newest messages, ascending; read on demand, nothing stored.
+    pub items: Vec<Item>,
+}
+
 // ---- Events ----
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2224,6 +3160,44 @@ pub struct DraftChangedEvent {
     pub by: Option<Origin>,
 }
 
+/// A turn started, ended, or its restore point settled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadTurnEvent {
+    pub thread_id: String,
+    pub turn: TurnInfo,
+}
+
+/// Items `from_seq..=to_seq` left the thread (a rewind) or came back
+/// (`restored`, its undo): clients drop that range, or read it again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadCutEvent {
+    pub thread_id: String,
+    pub from_seq: u64,
+    pub to_seq: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub restored: bool,
+}
+
+/// How a `sessions.import` job goes; the last has `done + failed == total`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportProgressEvent {
+    pub job: String,
+    pub done: u32,
+    pub failed: u32,
+    pub total: u32,
+    /// The thread the newest session became.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+}
+
+/// A scan for sessions found more (to connections that called `sessions.scan`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsScannedEvent {
+    pub total: u32,
+    pub scanning: bool,
+    pub partial: bool,
+}
+
 /// An event from the host, typed. Parse an [`EventLine`] with
 /// [`Event::from_line`]; an unknown event name gives `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2263,6 +3237,14 @@ pub enum Event {
     QuestionResolved(QuestionResolvedEvent),
     #[serde(rename = "draft.changed")]
     DraftChanged(DraftChangedEvent),
+    #[serde(rename = "thread.turn")]
+    ThreadTurn(ThreadTurnEvent),
+    #[serde(rename = "thread.cut")]
+    ThreadCut(ThreadCutEvent),
+    #[serde(rename = "import.progress")]
+    ImportProgress(ImportProgressEvent),
+    #[serde(rename = "sessions.scanned")]
+    SessionsScanned(SessionsScannedEvent),
 }
 
 impl Event {
@@ -2293,6 +3275,10 @@ impl Event {
             Self::QuestionRequested(_) => event::QUESTION_REQUESTED,
             Self::QuestionResolved(_) => event::QUESTION_RESOLVED,
             Self::DraftChanged(_) => event::DRAFT_CHANGED,
+            Self::ThreadTurn(_) => event::THREAD_TURN,
+            Self::ThreadCut(_) => event::THREAD_CUT,
+            Self::ImportProgress(_) => event::IMPORT_PROGRESS,
+            Self::SessionsScanned(_) => event::SESSIONS_SCANNED,
         }
     }
 
@@ -2309,13 +3295,17 @@ impl Event {
             Self::UiOpen(e) => Some(&e.thread_id),
             Self::QuestionRequested(e) => Some(&e.question.thread_id),
             Self::QuestionResolved(e) => Some(&e.thread_id),
+            Self::ThreadTurn(e) => Some(&e.thread_id),
+            Self::ThreadCut(e) => Some(&e.thread_id),
             Self::AgentsChanged(_)
             | Self::DraftChanged(_)
             | Self::FoldersChanged(_)
             | Self::SessionState(_)
             | Self::SessionRemoved(_)
             | Self::SessionItem(_)
-            | Self::SettingsChanged(_) => None,
+            | Self::SettingsChanged(_)
+            | Self::ImportProgress(_)
+            | Self::SessionsScanned(_) => None,
         }
     }
 
@@ -2438,6 +3428,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// An optional field whose value a later version may widen: a value this
 /// version doesn't know reads as absent instead of failing the whole record.
 fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -2476,6 +3470,16 @@ pub fn is_valid_queued_id(id: &str) -> bool {
 /// An image id: [`IMAGE_ID_LEN`] lowercase hex digits.
 pub fn is_valid_image_id(id: &str) -> bool {
     id.len() == IMAGE_ID_LEN && is_valid_id(id)
+}
+
+/// A message's key: [`SEND_KEY_LEN`] lowercase hex digits.
+pub fn is_valid_send_key(key: &str) -> bool {
+    key.len() == SEND_KEY_LEN && is_valid_id(key)
+}
+
+/// An import job's id: [`IMPORT_JOB_LEN`] lowercase hex digits.
+pub fn is_valid_job_id(id: &str) -> bool {
+    id.len() == IMPORT_JOB_LEN && is_valid_id(id)
 }
 
 /// A draft key: a thread id, or `new:` and a folder id.
@@ -2538,6 +3542,15 @@ mod tests {
             context: None,
             mcp: None,
             asking: 0,
+            pinned: false,
+            archived: false,
+            unread: false,
+            snoozed_until_ms: None,
+            turns: 0,
+            forked_from: None,
+            found: false,
+            readonly: None,
+            undo: None,
         }
     }
 
@@ -2600,6 +3613,7 @@ mod tests {
             added_ms: 9,
             mcp: true,
             mcp_seen: Vec::new(),
+            checkpoints: false,
         });
         round_trip(&thread());
         round_trip(&Item {
@@ -2811,6 +3825,418 @@ mod tests {
             .unwrap(),
             json!({"threads": "all", "deltas": false})
         );
+    }
+
+    fn turn() -> TurnInfo {
+        TurnInfo {
+            turn: 3,
+            prompt_seq: 40,
+            last_seq: Some(52),
+            started_ms: 100,
+            ended_ms: Some(200),
+            ended: Some(TurnEnd::Stopped),
+            checkpoint: Checkpoint::Missing,
+            why: Some(CheckpointWhy::Large),
+            files: 0,
+            adds: 0,
+            dels: 0,
+            more_files: false,
+            skipped: 201,
+            can_fork: true,
+            can_rewind: true,
+            can_restore: false,
+        }
+    }
+
+    fn found() -> Found {
+        Found {
+            id: format!("sx{}", "cd".repeat(16)),
+            agent: AgentId::Codex,
+            title: "Port the parser".into(),
+            folder_label: "app".into(),
+            folder_id: None,
+            cwd: "/home/me/elsewhere".into(),
+            first_ms: Some(5),
+            updated_ms: 6,
+            bytes: 7,
+            packed: true,
+            source: SessionSource::Terminal,
+            open: false,
+            thread_id: Some("ab".repeat(16)),
+            damaged: false,
+        }
+    }
+
+    fn plan() -> RewindPlan {
+        RewindPlan {
+            token: "ef".repeat(16),
+            expires_ms: 9 + REWIND_TOKEN_MS,
+            thread_id: "ab".repeat(16),
+            turn: 2,
+            cut: Some(RewindCut { turns: 2, messages: 5 }),
+            files: Some(RewindFiles {
+                change: vec![
+                    RewindFile { path: "src/a.rs".into(), action: RewindAction::Restore, later: false },
+                    RewindFile { path: "new.txt".into(), action: RewindAction::Delete, later: false },
+                    RewindFile { path: "gone.txt".into(), action: RewindAction::BringBack, later: true },
+                ],
+                more: 0,
+                later: 1,
+                skipped: 2,
+                head_moved: true,
+                tree: "0123456789abcdef0123456789abcdef01234567".into(),
+            }),
+            blocked: None,
+        }
+    }
+
+    #[test]
+    fn every_history_and_undo_type_round_trips() {
+        let marked = ThreadInfo {
+            pinned: true,
+            archived: true,
+            unread: true,
+            snoozed_until_ms: Some(77),
+            turns: 4,
+            forked_from: Some(Box::new(ForkedFrom {
+                thread_id: "cd".repeat(16),
+                turn: Some(2),
+                title: "Fix it".into(),
+            })),
+            found: true,
+            readonly: Some(Readonly::OutsideFolders),
+            undo: Some(UndoInfo { until_ms: 88, files: true }),
+            ..thread()
+        };
+        round_trip(&marked);
+        round_trip(&turn());
+        round_trip(&TurnInfo { checkpoint: Checkpoint::NotGit, why: None, ended: None, ..turn() });
+        round_trip(&TurnFile {
+            path: "src/b.rs".into(),
+            status: FileStatus::Renamed,
+            from: Some("src/a.rs".into()),
+            adds: 3,
+            dels: 1,
+            binary: false,
+        });
+        round_trip(&SearchHit {
+            thread_id: "ab".repeat(16),
+            title: "Fix the build".into(),
+            agent: AgentId::Claude,
+            folder_label: "app".into(),
+            state: State::Done,
+            archived: false,
+            seq: 12,
+            kind: Some(ItemKind::Assistant),
+            ts_ms: 3,
+            snippet: "…the build fails on…".into(),
+            marks: vec![(4, 5), (20, 3)],
+            more_in_thread: 2,
+        });
+        round_trip(&found());
+        round_trip(&plan());
+        round_trip(&RewindPlan { cut: None, files: None, blocked: Some(RewindBlock::Shared), ..plan() });
+        round_trip(&RewindLeft { path: "a.txt".into(), why: "changed since you looked".into() });
+        for notice in
+            [NoticeKind::Rewound, NoticeKind::EditFromHere, NoticeKind::FilesRestored, NoticeKind::Forked]
+        {
+            round_trip(&Item {
+                text: Some("Rewound to here".into()),
+                notice: Some(notice),
+                ..Item::new(9, "notice-9", ItemKind::Notice, 1)
+            });
+        }
+        round_trip(&StoreInfo {
+            threads: 3,
+            archived: 1,
+            items: 400,
+            bytes: 4096,
+            found: 330,
+            checkpoint_bytes: 9,
+        });
+        round_trip(&ThreadsListParams {
+            limit: Some(5),
+            before_ms: Some(9),
+            show: Some(ThreadShow::Snoozed),
+        });
+        round_trip(&ThreadStartResult { thread: thread(), duplicate: true });
+        round_trip(&ThreadSendResult { queued: None, duplicate: true });
+        round_trip(&ThreadSendParams {
+            key: Some("0123456789abcdef".into()),
+            ..ThreadSendParams::new("ab".repeat(16), "hi".into(), Origin::phone("p", "Pixel"))
+        });
+        round_trip(&ThreadTurnsParams { thread_id: "a".into(), before_turn: Some(9), limit: Some(30) });
+        round_trip(&ThreadTurnsResult { turns: vec![turn()] });
+        round_trip(&TurnFilesParams::new("a".into(), TurnRange::Span { from: 1, to: 4 }));
+        round_trip(&TurnFilesResult { files: vec![], more: true, adds: 1, dels: 2 });
+        round_trip(&TurnPatchParams::new("a".into(), TurnRange::One(2), "src/a.rs".into(), Some(196_608)));
+        round_trip(&TurnPatchResult { patch: "@@".into(), next: Some(3), truncated: false, binary: false });
+        round_trip(&RewindPreviewParams {
+            thread_id: "a".into(),
+            turn: 2,
+            conversation: true,
+            files: false,
+            by: Some(Origin::phone("p", "Pixel")),
+        });
+        round_trip(&RewindPreviewResult { plan: plan() });
+        round_trip(&RewindApplyParams {
+            token: "a".into(),
+            include_later: true,
+            refill: true,
+            by: Origin::launcher(),
+        });
+        round_trip(&RewindApplyResult {
+            thread: thread(),
+            left: vec![RewindLeft { path: "a".into(), why: "not a file".into() }],
+        });
+        round_trip(&RewindUndoParams { thread_id: "a".into(), by: Origin::launcher() });
+        round_trip(&ThreadForkParams { thread_id: "a".into(), turn: Some(1), by: Origin::launcher() });
+        round_trip(&ThreadMarkParams {
+            pinned: Some(true),
+            snooze_until_ms: Some(0),
+            ..ThreadMarkParams::new(vec!["a".into()], Origin::cli())
+        });
+        round_trip(&ThreadMarkResult { threads: vec![thread()], busy: vec!["b".into()] });
+        round_trip(&ThreadRenameParams { thread_id: "a".into(), title: "New".into(), by: None });
+        round_trip(&ThreadsSearchParams {
+            query: "build".into(),
+            limit: Some(20),
+            cursor: Some("x".into()),
+            archived: true,
+        });
+        round_trip(&ThreadsSearchResult { hits: vec![], next: Some("x".into()), titles_only: true });
+        round_trip(&SessionsScanParams {
+            query: Some("parser".into()),
+            agent: Some(AgentId::Codex),
+            show: Some(FoundShow::New),
+            before_ms: Some(4),
+            limit: Some(100),
+        });
+        round_trip(&SessionsScanResult {
+            found: vec![found()],
+            next_ms: Some(5),
+            total: 330,
+            scanning: true,
+            partial: false,
+        });
+        round_trip(&SessionsImportParams { ids: vec![found().id], by: Origin::phone("p", "Pixel") });
+        round_trip(&SessionsImportResult { job: "0123456789abcdef".into(), total: 1 });
+        round_trip(&ImportCancelParams { job: "0123456789abcdef".into() });
+        round_trip(&SessionPreviewParams { id: found().id, limit: Some(10) });
+        round_trip(&SessionPreviewResult { items: vec![Item::new(1, "u", ItemKind::User, 1)] });
+        round_trip(&FoldersSetParams { id: "f0123456789ab".into(), mcp: None, checkpoints: Some(false) });
+        for ev in [
+            Event::ThreadTurn(ThreadTurnEvent { thread_id: "a".into(), turn: turn() }),
+            Event::ThreadCut(ThreadCutEvent {
+                thread_id: "a".into(),
+                from_seq: 4,
+                to_seq: 9,
+                restored: false,
+            }),
+            Event::ThreadCut(ThreadCutEvent {
+                thread_id: "a".into(),
+                from_seq: 4,
+                to_seq: 9,
+                restored: true,
+            }),
+            Event::ImportProgress(ImportProgressEvent {
+                job: "0123456789abcdef".into(),
+                done: 3,
+                failed: 1,
+                total: 4,
+                thread_id: Some("a".into()),
+            }),
+            Event::SessionsScanned(SessionsScannedEvent { total: 1240, scanning: true, partial: false }),
+        ] {
+            round_trip(&ev);
+            let ServerLine::Event(parsed) = ServerLine::parse(&ev.to_line()).unwrap() else {
+                panic!("not an event")
+            };
+            assert_eq!(parsed.event, ev.name());
+            assert_eq!(Event::from_line(&parsed), Some(ev));
+        }
+    }
+
+    #[test]
+    fn history_and_undo_wire_names_are_the_contracts() {
+        for (name, expected) in [
+            (method::THREAD_TURNS, "thread.turns"),
+            (method::TURN_FILES, "turn.files"),
+            (method::TURN_PATCH, "turn.patch"),
+            (method::REWIND_PREVIEW, "rewind.preview"),
+            (method::REWIND_APPLY, "rewind.apply"),
+            (method::REWIND_UNDO, "rewind.undo"),
+            (method::THREAD_FORK, "thread.fork"),
+            (method::THREAD_MARK, "thread.mark"),
+            (method::THREAD_RENAME, "thread.rename"),
+            (method::THREADS_SEARCH, "threads.search"),
+            (method::SESSIONS_SCAN, "sessions.scan"),
+            (method::SESSIONS_IMPORT, "sessions.import"),
+            (method::IMPORT_CANCEL, "import.cancel"),
+            (method::SESSION_PREVIEW, "session.preview"),
+            (method::STORE_INFO, "store.info"),
+            (event::THREAD_TURN, "thread.turn"),
+            (event::THREAD_CUT, "thread.cut"),
+            (event::IMPORT_PROGRESS, "import.progress"),
+            (event::SESSIONS_SCANNED, "sessions.scanned"),
+            (cap::HISTORY, "history"),
+            (cap::UNDO, "undo"),
+        ] {
+            assert_eq!(name, expected);
+        }
+        assert_eq!(serde_json::to_value(Can::ForkAt).unwrap(), json!("fork_at"));
+        assert_eq!(serde_json::to_value(Can::Fork).unwrap(), json!("fork"));
+        assert_eq!(serde_json::to_value(Checkpoint::NotGit).unwrap(), json!("none"));
+        assert_eq!(serde_json::to_value(RewindAction::BringBack).unwrap(), json!("bring_back"));
+        assert_eq!(serde_json::to_value(RewindBlock::NoCheckpoint).unwrap(), json!("no_checkpoint"));
+        assert_eq!(serde_json::to_value(Readonly::FolderMissing).unwrap(), json!("folder_missing"));
+        assert_eq!(serde_json::to_value(NoticeKind::EditFromHere).unwrap(), json!("edit_from_here"));
+        assert_eq!(serde_json::to_value(NoticeKind::FilesRestored).unwrap(), json!("files_restored"));
+        assert!(RewindBlock::Shared.blocks_files() && !RewindBlock::Agent.blocks_files());
+        // The store's words are serde's words, each way.
+        fn agrees<T: Serialize + Copy + PartialEq + std::fmt::Debug>(
+            all: &[T],
+            as_str: fn(T) -> &'static str,
+            parse: fn(&str) -> Option<T>,
+        ) {
+            for &value in all {
+                assert_eq!(serde_json::to_value(value).unwrap(), json!(as_str(value)));
+                assert_eq!(parse(as_str(value)), Some(value));
+            }
+            assert_eq!(parse("later"), None);
+        }
+        use Checkpoint as C;
+        agrees(&[C::Pending, C::Ready, C::Missing, C::NotGit, C::Expired], C::as_str, C::parse);
+        use CheckpointWhy as W;
+        agrees(&[W::Busy, W::Slow, W::Large, W::Refused, W::Off, W::Before], W::as_str, W::parse);
+        agrees(&[TurnEnd::Done, TurnEnd::Failed, TurnEnd::Stopped], TurnEnd::as_str, TurnEnd::parse);
+        use FileStatus as F;
+        agrees(&[F::Added, F::Modified, F::Deleted, F::Renamed, F::Type, F::Unrecorded], F::as_str, F::parse);
+        // A tuple mark is a two-number array.
+        let hit = serde_json::to_value(SearchHit {
+            marks: vec![(1, 2)],
+            ..serde_json::from_value::<SearchHit>(json!({
+                "thread_id": "a", "title": "t", "agent": "claude", "folder_label": "w", "state": "done",
+                "seq": 0, "ts_ms": 1, "snippet": "t"
+            }))
+            .unwrap()
+        })
+        .unwrap();
+        assert_eq!(hit["marks"], json!([[1, 2]]));
+    }
+
+    #[test]
+    fn a_thread_without_marks_reads_and_writes_as_before() {
+        // Nothing new on the wire (or in meta.json) until a thread has it,
+        // so a launcher one release behind and the old file store see the same line.
+        let value = serde_json::to_value(thread()).unwrap();
+        for key in [
+            "pinned",
+            "archived",
+            "unread",
+            "snoozed_until_ms",
+            "turns",
+            "forked_from",
+            "found",
+            "readonly",
+            "undo",
+        ] {
+            assert!(value.get(key).is_none(), "{key} written for an unmarked thread");
+        }
+        let folder: Folder = serde_json::from_value(json!({
+            "id": "f0123456789ab", "label": "a", "path": "/a", "added_ms": 1
+        }))
+        .unwrap();
+        assert!(folder.checkpoints && folder.mcp, "restore points are on by default");
+        let old: ThreadsListParams = serde_json::from_value(json!({"limit": 5})).unwrap();
+        assert_eq!(old.show, None);
+        let send: ThreadSendParams =
+            serde_json::from_value(json!({"thread_id": "a", "text": "x", "origin": {"kind": "launcher"}}))
+                .unwrap();
+        assert_eq!(send.key, None);
+        assert_eq!(serde_json::to_value(ThreadSendResult::default()).unwrap(), json!({}));
+        assert_eq!(
+            serde_json::to_value(ThreadStartResult { thread: thread(), duplicate: false }).unwrap(),
+            serde_json::to_value(ThreadResult { thread: thread() }).unwrap()
+        );
+        // The launcher's old call still says `mcp`.
+        let set: FoldersSetParams =
+            serde_json::from_value(json!({"id": "f0123456789ab", "mcp": false})).unwrap();
+        assert_eq!((set.mcp, set.checkpoints), (Some(false), None));
+    }
+
+    #[test]
+    fn later_history_words_read_as_absent_or_safe() {
+        let info: ThreadInfo = serde_json::from_value(json!({
+            "id": "0123456789abcdef0123456789abcdef", "agent": "claude", "folder_id": "f0123456789ab",
+            "folder_label": "w", "title": "t", "state": "done", "mode": "supervised",
+            "origin": {"kind": "launcher"}, "created_ms": 1, "updated_ms": 2, "last_seq": 3, "pending": 0,
+            "readonly": "moon_base"
+        }))
+        .unwrap();
+        assert_eq!(info.readonly, None);
+        let turn: TurnInfo = serde_json::from_value(json!({
+            "turn": 1, "prompt_seq": 1, "started_ms": 1, "checkpoint": "quantum", "why": "cosmic",
+            "ended": "paused"
+        }))
+        .unwrap();
+        assert_eq!((turn.checkpoint, turn.why, turn.ended), (Checkpoint::Missing, None, None));
+        let file: TurnFile = serde_json::from_value(json!({"path": "a", "status": "teleported"})).unwrap();
+        assert_eq!(file.status, FileStatus::Modified);
+        let plan: RewindPlan = serde_json::from_value(json!({
+            "token": "a", "expires_ms": 1, "thread_id": "b", "turn": 1, "blocked": "eclipse"
+        }))
+        .unwrap();
+        assert_eq!(plan.blocked, None);
+        let item: Item = serde_json::from_value(json!({
+            "seq": 3, "id": "n", "kind": "notice", "ts_ms": 1, "rev": 0, "notice": "time_warp"
+        }))
+        .unwrap();
+        assert_eq!(item.notice, None);
+        let list: ThreadsListParams = serde_json::from_value(json!({"show": "trash"})).unwrap();
+        assert_eq!(list.show, None);
+        let info: AgentInfo = serde_json::from_value(json!({
+            "id": "codex", "name": "Codex", "installed": true, "signed_in": true,
+            "login_hint": "codex login", "can": ["fork", "fork_at", "time_travel"]
+        }))
+        .unwrap();
+        assert_eq!(info.can, [Can::Fork, Can::ForkAt]);
+    }
+
+    #[test]
+    fn turn_ranges_take_one_turn_or_an_ordered_span() {
+        assert_eq!(TurnRange::of(Some(3), None, None), Some(TurnRange::One(3)));
+        assert_eq!(TurnRange::of(None, Some(1), Some(4)), Some(TurnRange::Span { from: 1, to: 4 }));
+        assert_eq!(TurnRange::of(None, Some(2), Some(2)), Some(TurnRange::Span { from: 2, to: 2 }));
+        for (turn, from, to) in [
+            (None, None, None),
+            (Some(0), None, None),
+            (Some(1), Some(1), Some(2)),
+            (None, Some(3), Some(2)),
+            (None, Some(0), Some(2)),
+            (None, Some(1), None),
+            (None, None, Some(1)),
+        ] {
+            assert_eq!(TurnRange::of(turn, from, to), None, "{turn:?} {from:?} {to:?}");
+        }
+        let span = TurnRange::Span { from: 2, to: 5 };
+        assert_eq!((span.first(), span.last()), (2, 5));
+        assert_eq!(TurnFilesParams::new("a".into(), span).range(), Some(span));
+        let one = TurnPatchParams::new("a".into(), TurnRange::One(7), "p".into(), None);
+        assert_eq!(
+            (one.turn, one.from_turn, one.to_turn, one.range()),
+            (Some(7), None, None, Some(TurnRange::One(7)))
+        );
+    }
+
+    #[test]
+    fn send_keys_and_job_ids_are_checked() {
+        assert!(is_valid_send_key("0123456789abcdef"));
+        assert!(!is_valid_send_key("0123456789abcde"));
+        assert!(!is_valid_send_key("0123456789ABCDEF"));
+        assert!(!is_valid_send_key("../456789abcdef0"));
+        assert!(is_valid_job_id("fedcba9876543210"));
+        assert!(!is_valid_job_id(&"a".repeat(32)));
     }
 
     #[test]

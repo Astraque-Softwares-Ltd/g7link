@@ -1,33 +1,30 @@
 // SPDX-License-Identifier: MPL-2.0
-//! The thread store (§3): `folders.json`, and per thread `meta.json` and an
-//! append-only `items.jsonl`, under `$XDG_DATA_HOME/g7-agents/`.
+//! The host's files under `$XDG_DATA_HOME/g7-agents/`: `folders.json`,
+//! `settings.json`, `drafts.json` and `history.jsonl`; and the store thread
+//! ([`StoreHandle`]) that owns the thread database ([`Db`], `agents.db`).
 //!
 //! JSON files are replaced atomically (a unique temporary file created
 //! exclusively, written in full, synced, renamed). A file that can't be read
 //! is kept aside as `<name>.unreadable-<ms>`, never overwritten. All writes
-//! run on one thread ([`StoreHandle`]) so they keep their order and never
-//! block the async runtime.
+//! run on one thread so they keep their order and never block the async
+//! runtime; the database batches item writes and commits at least every
+//! [`db::BATCH_WINDOW`].
 
-use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use crate::api::{
-    self, ApprovalOutcome, Draft, Folder, HostSettings, Item, ItemKind, Origin, PlanState, ThreadInfo,
-};
+use crate::api::{self, ApprovalOutcome, Draft, Folder, HostSettings, Origin};
+use crate::host::db::{self, Db};
 
 /// Store format version.
 const VERSION: u32 = 1;
-/// `items.jsonl` is compacted past this many lines.
-const COMPACT_LINES: usize = 4000;
-/// A stored item line longer than this is skipped when reading.
-const MAX_ITEM_LINE: usize = 1 << 20;
 
 #[derive(Serialize, Deserialize)]
 struct FoldersFile {
@@ -46,6 +43,8 @@ struct StoredFolder {
     mcp: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_seen: Vec<api::FolderMcp>,
+    #[serde(default = "yes")]
+    checkpoints: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,13 +60,6 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Serialize, Deserialize)]
-struct MetaFile {
-    version: u32,
-    thread: ThreadInfo,
-    next_seq: u64,
-}
-
 /// An answered approval, kept beside the thread's items so an export can say
 /// who allowed or denied each step. Never the token or the request itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,34 +73,11 @@ pub struct ApprovalRecord {
     pub ts_ms: u64,
 }
 
-/// `approvals.jsonl` is read up to this, from its end.
-const MAX_APPROVALS_READ: u64 = 1 << 20;
-
-/// A thread read back at start.
-#[derive(Debug, Clone)]
-pub struct StoredThread {
-    pub info: ThreadInfo,
-    pub next_seq: u64,
-    /// The largest `turn` among its items: 0 for a thread stored before turns.
-    pub max_turn: u32,
-    /// Its `user` items that start a turn (not denials, not steered).
-    pub users: u32,
-    /// Its newest plan, when that one is still proposed.
-    pub plan: Option<Item>,
-}
-
 #[derive(Serialize, Deserialize)]
 struct DraftsFile {
     version: u32,
     /// Oldest first.
     drafts: Vec<Draft>,
-}
-
-/// What compaction needs of a stored line.
-#[derive(Deserialize)]
-struct SeqRev {
-    seq: u64,
-    rev: u32,
 }
 
 pub fn now_ms() -> u64 {
@@ -180,25 +149,16 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 #[derive(Debug)]
 pub struct Store {
     root: PathBuf,
-    /// Lines in each thread's `items.jsonl`, counted on first append.
-    lines: HashMap<String, usize>,
 }
 
 impl Store {
     pub fn open(root: PathBuf) -> io::Result<Store> {
-        create_private_dir(&root.join("threads"))?;
-        Ok(Store { root, lines: HashMap::new() })
+        create_private_dir(&root)?;
+        Ok(Store { root })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    fn thread_dir(&self, thread_id: &str) -> io::Result<PathBuf> {
-        if !api::is_valid_id(thread_id) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad thread id"));
-        }
-        Ok(self.root.join("threads").join(thread_id))
     }
 
     pub fn load_folders(&self) -> Vec<Folder> {
@@ -215,6 +175,7 @@ impl Store {
                 added_ms: f.added_ms,
                 mcp: f.mcp,
                 mcp_seen: f.mcp_seen,
+                checkpoints: f.checkpoints,
             })
             .collect()
     }
@@ -231,6 +192,7 @@ impl Store {
                     added_ms: f.added_ms,
                     mcp: f.mcp,
                     mcp_seen: f.mcp_seen.clone(),
+                    checkpoints: f.checkpoints,
                 })
                 .collect(),
         };
@@ -310,197 +272,17 @@ impl Store {
         }
         atomic_write(&self.root.join("history.jsonl"), &bytes)
     }
-
-    /// Every stored thread whose directory name and meta are valid.
-    pub fn load_threads(&self) -> Vec<StoredThread> {
-        let Ok(entries) = fs::read_dir(self.root.join("threads")) else { return Vec::new() };
-        let mut out = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(id) = name.to_str() else { continue };
-            if !api::is_valid_id(id) || !entry.file_type().is_ok_and(|t| t.is_dir()) {
-                continue;
-            }
-            let Some(meta) = read_json::<MetaFile>(&entry.path().join("meta.json")) else { continue };
-            if meta.thread.id != id {
-                continue;
-            }
-            let items = self.read_items(id).unwrap_or_default();
-            // The items may be ahead of the meta after a crash.
-            let max_seq = items.keys().next_back().copied().unwrap_or(0);
-            let next_seq = meta.next_seq.max(max_seq + 1).max(1);
-            let max_turn = items.values().filter_map(|i| i.turn).max().unwrap_or(0);
-            let users = items
-                .values()
-                .filter(|i| i.kind == ItemKind::User && i.deny_of.is_none() && i.via != Some(api::Via::Steer))
-                .count();
-            let users = u32::try_from(users).unwrap_or(u32::MAX);
-            let plan = items
-                .values()
-                .rev()
-                .find(|i| i.kind == ItemKind::Plan)
-                .filter(|i| i.plan_state == Some(PlanState::Proposed))
-                .cloned();
-            out.push(StoredThread { info: meta.thread, next_seq, max_turn, users, plan });
-        }
-        out
-    }
-
-    pub fn save_meta(&self, info: &ThreadInfo, next_seq: u64) -> io::Result<()> {
-        let dir = self.thread_dir(&info.id)?;
-        create_private_dir(&dir)?;
-        let bytes = serde_json::to_vec(&MetaFile { version: VERSION, thread: info.clone(), next_seq })
-            .map_err(io::Error::other)?;
-        atomic_write(&dir.join("meta.json"), &bytes)
-    }
-
-    pub fn append_item(&mut self, thread_id: &str, item: &Item) -> io::Result<()> {
-        let dir = self.thread_dir(thread_id)?;
-        create_private_dir(&dir)?;
-        let path = dir.join("items.jsonl");
-        let count = match self.lines.get(thread_id) {
-            Some(&n) => n,
-            None => count_lines(&path),
-        };
-        let mut line = serde_json::to_vec(item).map_err(io::Error::other)?;
-        line.push(b'\n');
-        let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(&path)?;
-        file.write_all(&line)?;
-        let count = count + 1;
-        self.lines.insert(thread_id.to_owned(), count);
-        if count > COMPACT_LINES {
-            self.compact(thread_id)?;
-        }
-        Ok(())
-    }
-
-    /// Rewrites `items.jsonl` with the newest [`api::MAX_ITEMS_KEPT`] items
-    /// at their highest rev. Lines are kept as they are, so an item of a kind
-    /// or with fields this version doesn't know (a newer host wrote it) stays
-    /// whole.
-    pub fn compact(&mut self, thread_id: &str) -> io::Result<()> {
-        let mut lines: BTreeMap<u64, (u32, Vec<u8>)> = BTreeMap::new();
-        self.each_line(thread_id, |buf| {
-            let Ok(key) = serde_json::from_slice::<SeqRev>(buf) else { return };
-            match lines.get(&key.seq) {
-                Some((rev, _)) if *rev > key.rev => {}
-                _ => {
-                    lines.insert(key.seq, (key.rev, buf.to_vec()));
-                }
-            }
-        })?;
-        let keep: Vec<&Vec<u8>> = lines.values().rev().take(api::MAX_ITEMS_KEPT).map(|(_, l)| l).collect();
-        let mut bytes = Vec::new();
-        for line in keep.iter().rev() {
-            bytes.extend_from_slice(line);
-            bytes.push(b'\n');
-        }
-        atomic_write(&self.thread_dir(thread_id)?.join("items.jsonl"), &bytes)?;
-        self.lines.insert(thread_id.to_owned(), keep.len());
-        Ok(())
-    }
-
-    /// Calls `f` with each line of the thread's `items.jsonl` within
-    /// `MAX_ITEM_LINE`; longer lines are skipped.
-    fn each_line(&self, thread_id: &str, mut f: impl FnMut(&[u8])) -> io::Result<()> {
-        let path = self.thread_dir(thread_id)?.join("items.jsonl");
-        let file = match File::open(&path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        let mut reader = BufReader::new(file);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match crate::lines::read_line_blocking(&mut reader, &mut buf, MAX_ITEM_LINE)? {
-                crate::lines::LineRead::Eof => return Ok(()),
-                crate::lines::LineRead::TooLong => {
-                    // Skip the rest of the oversized line.
-                    let mut rest = Vec::new();
-                    reader.read_until(b'\n', &mut rest)?;
-                }
-                crate::lines::LineRead::Line => f(&buf),
-            }
-        }
-    }
-
-    /// The thread's items by `seq`, each at its highest rev. A line that
-    /// isn't an item is skipped; an item of a kind this version doesn't know
-    /// is read as [`ItemKind::Unknown`] (and never sent to a client).
-    pub fn read_items(&self, thread_id: &str) -> io::Result<BTreeMap<u64, Item>> {
-        let mut items: BTreeMap<u64, Item> = BTreeMap::new();
-        self.each_line(thread_id, |buf| {
-            let Ok(item) = serde_json::from_slice::<Item>(buf) else { return };
-            match items.get(&item.seq) {
-                Some(old) if old.rev > item.rev => {}
-                _ => {
-                    items.insert(item.seq, item);
-                }
-            }
-        })?;
-        Ok(items)
-    }
-
-    pub fn append_approval(&mut self, thread_id: &str, record: &ApprovalRecord) -> io::Result<()> {
-        let dir = self.thread_dir(thread_id)?;
-        create_private_dir(&dir)?;
-        let mut line = serde_json::to_vec(record).map_err(io::Error::other)?;
-        line.push(b'\n');
-        let mut file =
-            OpenOptions::new().create(true).append(true).mode(0o600).open(dir.join("approvals.jsonl"))?;
-        file.write_all(&line)
-    }
-
-    /// The thread's answered approvals, oldest first (the newest 1 MiB of them).
-    pub fn read_approvals(&self, thread_id: &str) -> io::Result<Vec<ApprovalRecord>> {
-        use std::io::{Read, Seek, SeekFrom};
-        let path = self.thread_dir(thread_id)?.join("approvals.jsonl");
-        let mut file = match File::open(&path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
-        let size = file.metadata()?.len();
-        let from = size.saturating_sub(MAX_APPROVALS_READ);
-        file.seek(SeekFrom::Start(from))?;
-        let mut bytes = Vec::new();
-        file.take(MAX_APPROVALS_READ).read_to_end(&mut bytes)?;
-        let mut lines = bytes.split(|&b| b == b'\n');
-        if from > 0 {
-            lines.next();
-        }
-        Ok(lines.filter_map(|l| serde_json::from_slice(l).ok()).collect())
-    }
-
-    pub fn delete_thread(&mut self, thread_id: &str) -> io::Result<()> {
-        let dir = self.thread_dir(thread_id)?;
-        self.lines.remove(thread_id);
-        match fs::remove_dir_all(dir) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            other => other,
-        }
-    }
-}
-
-fn count_lines(path: &Path) -> usize {
-    match File::open(path) {
-        Ok(file) => BufReader::new(file).split(b'\n').count(),
-        Err(_) => 0,
-    }
 }
 
 // ---- The store thread ----
 
+/// Work for the thread database, run on the store thread.
+type DbWork = Box<dyn FnOnce(Option<&mut Db>) + Send>;
+
 enum Op {
     SaveFolders(Vec<Folder>, oneshot::Sender<io::Result<()>>),
     SaveSettings(HostSettings, oneshot::Sender<io::Result<()>>),
-    SaveMeta(Box<ThreadInfo>, u64),
-    AppendItem(String, Box<Item>),
-    AppendApproval(String, ApprovalRecord),
-    ReadApprovals(String, oneshot::Sender<io::Result<Vec<ApprovalRecord>>>),
-    ReadItems(String, oneshot::Sender<io::Result<BTreeMap<u64, Item>>>),
-    Delete(String),
+    Db(DbWork),
     Flush(oneshot::Sender<()>),
     SaveDrafts(Vec<Draft>),
     AppendHistory(String),
@@ -511,6 +293,8 @@ enum Op {
 #[derive(Clone)]
 pub struct StoreHandle {
     tx: mpsc::Sender<Op>,
+    /// The database's read-only connection: `None` when it couldn't be opened.
+    reader: Option<std::sync::Arc<db::Reader>>,
 }
 
 impl std::fmt::Debug for StoreHandle {
@@ -519,72 +303,80 @@ impl std::fmt::Debug for StoreHandle {
     }
 }
 
+/// What a thread method answers when the database couldn't be opened.
+pub fn no_store() -> io::Error {
+    io::Error::other("G7 couldn't open its thread store")
+}
+
 impl StoreHandle {
-    pub fn spawn(mut store: Store) -> io::Result<StoreHandle> {
-        let (tx, rx) = mpsc::channel::<Op>();
-        std::thread::Builder::new().name("g7-agents-store".into()).spawn(move || {
-            for op in rx {
-                match op {
-                    Op::SaveFolders(folders, reply) => {
-                        let _ = reply.send(store.save_folders(&folders));
-                    }
-                    Op::SaveSettings(settings, reply) => {
-                        let _ = reply.send(store.save_settings(&settings));
-                    }
-                    Op::SaveMeta(info, next_seq) => {
-                        if let Err(e) = store.save_meta(&info, next_seq) {
-                            tracing::warn!("couldn't save a thread: {e}");
-                        }
-                    }
-                    Op::AppendItem(thread_id, item) => {
-                        if let Err(e) = store.append_item(&thread_id, &item) {
-                            tracing::warn!("couldn't save a thread item: {e}");
-                        }
-                    }
-                    Op::ReadItems(thread_id, reply) => {
-                        let _ = reply.send(store.read_items(&thread_id));
-                    }
-                    Op::AppendApproval(thread_id, record) => {
-                        if let Err(e) = store.append_approval(&thread_id, &record) {
-                            tracing::warn!("couldn't save an answered approval: {e}");
-                        }
-                    }
-                    Op::ReadApprovals(thread_id, reply) => {
-                        let _ = reply.send(store.read_approvals(&thread_id));
-                    }
-                    Op::Delete(thread_id) => {
-                        if let Err(e) = store.delete_thread(&thread_id) {
-                            tracing::warn!("couldn't delete a thread: {e}");
-                        }
-                    }
-                    Op::Flush(reply) => {
-                        let _ = reply.send(());
-                    }
-                    Op::SaveDrafts(drafts) => {
-                        if let Err(e) = store.save_drafts(&drafts) {
-                            tracing::warn!("couldn't save the drafts: {e}");
-                        }
-                    }
-                    Op::AppendHistory(text) => {
-                        if let Err(e) = store.append_history(&text) {
-                            tracing::warn!("couldn't save a prompt to the history: {e}");
-                        }
-                    }
-                    Op::RewriteHistory(lines) => {
-                        if let Err(e) = store.rewrite_history(&lines) {
-                            tracing::warn!("couldn't rewrite the history: {e}");
-                        }
-                    }
-                }
+    /// Runs `store` and `db` (`None`: the database couldn't be opened, and
+    /// every thread write fails) on a thread of their own.
+    pub fn spawn(store: Store, db: Option<Db>) -> io::Result<StoreHandle> {
+        let reader = match db.as_ref().map(Db::reader) {
+            Some(Ok(reader)) => Some(std::sync::Arc::new(reader)),
+            Some(Err(e)) => {
+                tracing::warn!("couldn't open a reader on the thread store: {e}");
+                None
             }
-        })?;
-        Ok(StoreHandle { tx })
+            None => None,
+        };
+        let (tx, rx) = mpsc::channel::<Op>();
+        std::thread::Builder::new().name("g7-agents-store".into()).spawn(move || run(store, db, &rx))?;
+        Ok(StoreHandle { tx, reader })
     }
 
     fn send(&self, op: Op) {
         if self.tx.send(op).is_err() {
             tracing::warn!("the store thread is gone");
         }
+    }
+
+    /// The database is open.
+    pub fn has_db(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// The read-only connection, for searches and sizes off the store thread.
+    pub fn reader(&self) -> Option<std::sync::Arc<db::Reader>> {
+        self.reader.clone()
+    }
+
+    /// Runs `work` on the database, after every earlier write, and waits
+    /// for its answer. Reads made here see writes not yet committed.
+    pub async fn db<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Db) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let (tx, rx) = oneshot::channel();
+        self.send(Op::Db(Box::new(move |db| {
+            let _ = tx.send(db.ok_or_else(no_store).and_then(work));
+        })));
+        rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
+    }
+
+    /// [`StoreHandle::db`] for a blocking thread (never the async runtime's).
+    pub fn db_blocking<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Db) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send(Op::Db(Box::new(move |db| {
+            let _ = tx.send(db.ok_or_else(no_store).and_then(work));
+        })));
+        rx.recv().unwrap_or_else(|_| Err(io::Error::other("store stopped")))
+    }
+
+    /// Runs `work` on the database later, in order; a failure is logged as `what`.
+    pub fn db_later(
+        &self,
+        what: &'static str,
+        work: impl FnOnce(&mut Db) -> io::Result<()> + Send + 'static,
+    ) {
+        self.send(Op::Db(Box::new(move |db| {
+            if let Err(e) = db.ok_or_else(no_store).and_then(work) {
+                tracing::warn!("couldn't {what}: {e}");
+            }
+        })));
     }
 
     pub async fn save_folders(&self, folders: Vec<Folder>) -> io::Result<()> {
@@ -599,32 +391,35 @@ impl StoreHandle {
         rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
     }
 
-    pub fn save_meta(&self, info: &ThreadInfo, next_seq: u64) {
-        self.send(Op::SaveMeta(Box::new(info.clone()), next_seq));
+    pub fn save_thread(&self, info: &api::ThreadInfo, cols: db::ThreadCols) {
+        let info = info.clone();
+        self.db_later("save a thread", move |db| db.save_thread(&info, &cols));
     }
 
-    pub fn append_item(&self, thread_id: &str, item: &Item) {
-        self.send(Op::AppendItem(thread_id.to_owned(), Box::new(item.clone())));
+    pub fn append_item(&self, thread_id: &str, item: &api::Item) {
+        let (thread, item) = (thread_id.to_owned(), item.clone());
+        self.db_later("save a thread item", move |db| db.append_item(&thread, &item));
     }
 
-    pub async fn read_items(&self, thread_id: &str) -> io::Result<BTreeMap<u64, Item>> {
-        let (tx, rx) = oneshot::channel();
-        self.send(Op::ReadItems(thread_id.to_owned(), tx));
-        rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
+    /// Every item of a thread that wasn't rewound away, by `seq`.
+    pub async fn all_items(&self, thread_id: &str) -> io::Result<std::collections::BTreeMap<u64, api::Item>> {
+        let thread = thread_id.to_owned();
+        self.db(move |db| db.all_items(&thread)).await
     }
 
     pub fn append_approval(&self, thread_id: &str, record: ApprovalRecord) {
-        self.send(Op::AppendApproval(thread_id.to_owned(), record));
+        let thread = thread_id.to_owned();
+        self.db_later("save an answered approval", move |db| db.append_approval(&thread, &record));
     }
 
     pub async fn read_approvals(&self, thread_id: &str) -> io::Result<Vec<ApprovalRecord>> {
-        let (tx, rx) = oneshot::channel();
-        self.send(Op::ReadApprovals(thread_id.to_owned(), tx));
-        rx.await.unwrap_or_else(|_| Err(io::Error::other("store stopped")))
+        let thread = thread_id.to_owned();
+        self.db(move |db| db.read_approvals(&thread)).await
     }
 
     pub fn delete(&self, thread_id: &str) {
-        self.send(Op::Delete(thread_id.to_owned()));
+        let thread = thread_id.to_owned();
+        self.db_later("delete a thread", move |db| db.delete_thread(&thread));
     }
 
     pub fn save_drafts(&self, drafts: Vec<Draft>) {
@@ -639,11 +434,67 @@ impl StoreHandle {
         self.send(Op::RewriteHistory(lines));
     }
 
-    /// Waits until every earlier operation is done.
+    /// Waits until every earlier operation is done and committed.
     pub async fn flush(&self) {
         let (tx, rx) = oneshot::channel();
         self.send(Op::Flush(tx));
         let _ = rx.await;
+    }
+}
+
+/// The store thread: each operation in order; the database's batch is
+/// committed when its window ends, on a flush, and when the host stops.
+fn run(store: Store, mut db: Option<Db>, rx: &mpsc::Receiver<Op>) {
+    loop {
+        let deadline = db.as_ref().and_then(Db::flush_deadline);
+        let op = match deadline {
+            Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                Ok(op) => Some(op),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(op) => Some(op),
+                Err(_) => break,
+            },
+        };
+        match op {
+            Some(Op::SaveFolders(folders, reply)) => {
+                let _ = reply.send(store.save_folders(&folders));
+            }
+            Some(Op::SaveSettings(settings, reply)) => {
+                let _ = reply.send(store.save_settings(&settings));
+            }
+            Some(Op::Db(work)) => work(db.as_mut()),
+            Some(Op::Flush(reply)) => {
+                if let Some(Err(e)) = db.as_mut().map(Db::flush) {
+                    tracing::warn!("couldn't commit the thread store: {e}");
+                }
+                let _ = reply.send(());
+            }
+            Some(Op::SaveDrafts(drafts)) => {
+                if let Err(e) = store.save_drafts(&drafts) {
+                    tracing::warn!("couldn't save the drafts: {e}");
+                }
+            }
+            Some(Op::AppendHistory(text)) => {
+                if let Err(e) = store.append_history(&text) {
+                    tracing::warn!("couldn't save a prompt to the history: {e}");
+                }
+            }
+            Some(Op::RewriteHistory(lines)) => {
+                if let Err(e) = store.rewrite_history(&lines) {
+                    tracing::warn!("couldn't rewrite the history: {e}");
+                }
+            }
+            None => {}
+        }
+        if let Some(Err(e)) = db.as_mut().map(Db::tick) {
+            tracing::warn!("couldn't commit the thread store: {e}");
+        }
+    }
+    if let Some(Err(e)) = db.as_mut().map(Db::flush) {
+        tracing::warn!("couldn't commit the thread store: {e}");
     }
 }
 
@@ -652,43 +503,6 @@ mod tests {
     use super::*;
     use crate::api::*;
     use std::os::unix::fs::PermissionsExt;
-
-    pub(crate) fn info(id: &str, state: State) -> ThreadInfo {
-        ThreadInfo {
-            id: id.into(),
-            agent: AgentId::Claude,
-            folder_id: "f000000000001".into(),
-            folder_label: "w".into(),
-            title: "t".into(),
-            state,
-            mode: Mode::Supervised,
-            origin: Origin::launcher(),
-            created_ms: 1,
-            updated_ms: 1,
-            last_seq: 0,
-            pending: 0,
-            summary: None,
-            error: None,
-            native_id: None,
-            step: None,
-            plan: None,
-            state_since_ms: 0,
-            subdir: None,
-            continued: false,
-            model: None,
-            effort: None,
-            answered_model: None,
-            queued: Vec::new(),
-            queue_held: false,
-            context: None,
-            mcp: None,
-            asking: 0,
-        }
-    }
-
-    fn item(seq: u64, rev: u32, text: &str) -> Item {
-        Item { rev, text: Some(text.into()), ..Item::new(seq, format!("i{seq}"), ItemKind::Assistant, 1) }
-    }
 
     #[test]
     fn atomic_write_replaces_and_leaves_no_temporary() {
@@ -718,9 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn folders_and_threads_round_trip() {
+    fn folders_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path().to_owned()).unwrap();
+        let store = Store::open(dir.path().to_owned()).unwrap();
         let folder = Folder {
             id: "f0123456789ab".into(),
             label: "w".into(),
@@ -729,49 +543,13 @@ mod tests {
             added_ms: 3,
             mcp: false,
             mcp_seen: vec![FolderMcp { agent: AgentId::Claude, names: vec!["github".into()] }],
+            checkpoints: false,
         };
         store.save_folders(std::slice::from_ref(&folder)).unwrap();
         let loaded = store.load_folders();
         assert_eq!(loaded[0].id, folder.id);
         assert!(!loaded[0].exists);
-
-        let id = "ab".repeat(16);
-        store.save_meta(&info(&id, State::Done), 2).unwrap();
-        store.append_item(&id, &item(1, 0, "a")).unwrap();
-        store.append_item(&id, &item(2, 0, "b")).unwrap();
-        store.append_item(&id, &item(2, 1, "b2")).unwrap();
-        let items = store.read_items(&id).unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[&2].text.as_deref(), Some("b2"));
-        let threads = store.load_threads();
-        assert_eq!(threads.len(), 1);
-        assert_eq!(threads[0].next_seq, 3, "next_seq follows the items when they're ahead");
-        store.delete_thread(&id).unwrap();
-        assert!(store.load_threads().is_empty());
-    }
-
-    #[test]
-    fn answered_approvals_are_kept_and_go_with_the_thread() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path().to_owned()).unwrap();
-        let id = "ef".repeat(16);
-        assert!(store.read_approvals(&id).unwrap().is_empty());
-        let record = ApprovalRecord {
-            tool_seq: Some(3),
-            outcome: ApprovalOutcome::Allowed,
-            by: Some(Origin::phone("p", "Pixel")),
-            ts_ms: 9,
-        };
-        store.append_approval(&id, &record).unwrap();
-        store
-            .append_approval(&id, &ApprovalRecord { outcome: ApprovalOutcome::Denied, ..record.clone() })
-            .unwrap();
-        let read = store.read_approvals(&id).unwrap();
-        assert_eq!(read.len(), 2);
-        assert_eq!(read[0], record);
-        assert!(store.append_approval("../x", &record).is_err());
-        store.delete_thread(&id).unwrap();
-        assert!(store.read_approvals(&id).unwrap().is_empty());
+        assert!(!loaded[0].checkpoints, "the restore points switch is kept");
     }
 
     #[test]
@@ -783,82 +561,5 @@ mod tests {
         assert!(!store.load_settings().follow_sessions);
         fs::write(dir.path().join("settings.json"), br#"{"version":1}"#).unwrap();
         assert!(store.load_settings().follow_sessions);
-    }
-
-    #[test]
-    fn items_are_compacted_to_the_newest() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path().to_owned()).unwrap();
-        let id = "cd".repeat(16);
-        for seq in 1..=(COMPACT_LINES as u64 + 1) {
-            store.append_item(&id, &item(seq, 0, "x")).unwrap();
-        }
-        let items = store.read_items(&id).unwrap();
-        assert_eq!(items.len(), api::MAX_ITEMS_KEPT);
-        assert_eq!(*items.keys().next().unwrap(), COMPACT_LINES as u64 + 2 - api::MAX_ITEMS_KEPT as u64);
-        assert_eq!(
-            count_lines(&dir.path().join("threads").join(&id).join("items.jsonl")),
-            api::MAX_ITEMS_KEPT
-        );
-    }
-
-    #[test]
-    fn an_item_of_a_later_kind_is_read_and_kept_as_it_is() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path().to_owned()).unwrap();
-        let id = "ba".repeat(16);
-        store.save_meta(&info(&id, State::Done), 2).unwrap();
-        store.append_item(&id, &item(1, 0, "a")).unwrap();
-        let path = dir.path().join("threads").join(&id).join("items.jsonl");
-        let later = r#"{"seq":2,"id":"x","kind":"hologram","ts_ms":1,"rev":0,"turn":4,"shape":[1]}"#;
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "{later}").unwrap();
-        writeln!(file, "not json").unwrap();
-        store.append_item(&id, &Item { turn: Some(5), ..item(3, 0, "c") }).unwrap();
-        let items = store.read_items(&id).unwrap();
-        assert_eq!(items.len(), 3, "the read doesn't fail");
-        assert_eq!(items[&2].kind, ItemKind::Unknown);
-        let threads = store.load_threads();
-        assert_eq!((threads[0].next_seq, threads[0].max_turn, threads[0].users), (4, 5, 0));
-        store.compact(&id).unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.lines().any(|l| l == later), "compaction keeps the line whole: {text}");
-        assert!(!text.contains("not json"));
-        assert_eq!(store.read_items(&id).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn turns_are_restored_from_the_items() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path().to_owned()).unwrap();
-        let id = "ac".repeat(16);
-        store.save_meta(&info(&id, State::Done), 1).unwrap();
-        let user = |seq: u64| Item {
-            text: Some("q".into()),
-            ..Item::new(seq, format!("user-{seq}"), ItemKind::User, 1)
-        };
-        store.append_item(&id, &user(1)).unwrap();
-        store.append_item(&id, &item(2, 0, "a")).unwrap();
-        store.append_item(&id, &user(3)).unwrap();
-        let threads = store.load_threads();
-        assert_eq!((threads[0].max_turn, threads[0].users), (0, 2), "stored before turns");
-        store.append_item(&id, &Item { turn: Some(3), ..user(4) }).unwrap();
-        store.append_item(&id, &Item { turn: Some(3), deny_of: Some("t".into()), ..user(5) }).unwrap();
-        let threads = store.load_threads();
-        assert_eq!((threads[0].max_turn, threads[0].users), (3, 3), "a denial doesn't start a turn");
-    }
-
-    #[test]
-    fn ids_that_arent_hex_never_reach_a_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path().to_owned()).unwrap();
-        for bad in ["../x", "", "A1", "a/b", ".."] {
-            assert!(store.read_items(bad).is_err());
-            assert!(store.append_item(bad, &item(1, 0, "x")).is_err());
-            assert!(store.delete_thread(bad).is_err());
-            assert!(store.save_meta(&info(bad, State::Done), 1).is_err());
-        }
-        fs::create_dir_all(dir.path().join("threads/NOT-HEX")).unwrap();
-        assert!(store.load_threads().is_empty());
     }
 }

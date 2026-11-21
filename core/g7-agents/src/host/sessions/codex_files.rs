@@ -18,12 +18,31 @@ use crate::host::sessions::tail::Line;
 use crate::host::sessions::{MAX_OPEN_TOOLS, block_seq, first_line, is_wrapper, text_item};
 use crate::host::threads::tool_item;
 
-/// What the first line (`session_meta`) says, reduced to what is kept. The
-/// creator ids and the base instructions in it are never kept.
+/// What the first line (`session_meta`) says, reduced to what is kept: `id`,
+/// `cwd`, `originator`, `forked_from_id` and `history_base` (reconcile §6).
+/// The creator ids and the base instructions in it are never kept.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodexMeta {
     pub cwd: Option<String>,
     pub originator: Option<String>,
+    /// The thread's UUID.
+    pub id: Option<String>,
+    /// The thread this one was forked from.
+    pub forked_from: Option<String>,
+    /// Where this file's earlier history is.
+    pub history_base: Option<HistoryBase>,
+}
+
+/// A rollout's earlier history: the first `end_byte` bytes (decompressed) of
+/// the file another rollout's id names. That file is an earlier part of the
+/// same thread, or the thread a fork was made from; this file's own lines
+/// go on from `end_ordinal`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryBase {
+    /// A rollout part's UUID: a thread's, or a later part's.
+    pub segment: String,
+    pub end_ordinal: Option<u64>,
+    pub end_byte: u64,
 }
 
 impl CodexMeta {
@@ -42,15 +61,36 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 /// The facts of a `session_meta` line; `None` for any other line.
 pub fn parse_meta(bytes: &[u8]) -> Option<CodexMeta> {
-    let v: Value = serde_json::from_slice(bytes).ok()?;
-    if str_of(&v, "type") != Some("session_meta") {
+    meta_of(&serde_json::from_slice(bytes).ok()?)
+}
+
+/// [`parse_meta`] of a line already parsed.
+pub fn meta_of(v: &Value) -> Option<CodexMeta> {
+    if str_of(v, "type") != Some("session_meta") {
         return None;
     }
     let payload = v.get("payload")?;
+    let uuid = |key: &str| str_of(payload, key).filter(|u| is_uuid(u)).map(str::to_owned);
+    let history_base = payload.get("history_base").and_then(|b| {
+        Some(HistoryBase {
+            segment: str_of(b, "thread_id").filter(|u| is_uuid(u))?.to_owned(),
+            end_ordinal: b.get("end_ordinal_exclusive").and_then(Value::as_u64),
+            end_byte: b.get("end_byte_offset").and_then(Value::as_u64)?,
+        })
+    });
     Some(CodexMeta {
         cwd: str_of(payload, "cwd").filter(|c| c.starts_with('/')).map(str::to_owned),
         originator: str_of(payload, "originator").map(str::to_owned),
+        id: uuid("id"),
+        forked_from: uuid("forked_from_id"),
+        history_base,
     })
+}
+
+/// A rollout line's `ordinal`: every line of a current rollout has one, and
+/// they go up through a thread's parts.
+pub fn ordinal_of(v: &Value) -> Option<u64> {
+    v.get("ordinal").and_then(Value::as_u64)
 }
 
 /// Thread names by UUID from the tail of `session_index.jsonl`; a later line wins.
@@ -176,12 +216,17 @@ impl CodexTail {
     /// Feeds one line; returns the items it made.
     pub fn feed(&mut self, line: &Line, mtime_ms: u64) -> Vec<Item> {
         let Ok(v) = serde_json::from_slice::<Value>(&line.bytes) else { return Vec::new() };
+        self.feed_value(&v, line.offset, mtime_ms)
+    }
+
+    /// [`CodexTail::feed`] of a line already parsed, which starts at `offset`.
+    pub fn feed_value(&mut self, v: &Value, offset: u64, mtime_ms: u64) -> Vec<Item> {
         let payload = v.get("payload").unwrap_or(&Value::Null);
-        let ts = str_of(&v, "timestamp").and_then(parse_rfc3339_ms).unwrap_or(mtime_ms);
-        let seq = block_seq(line.offset, 0);
-        match (str_of(&v, "type").unwrap_or_default(), str_of(payload, "type").unwrap_or_default()) {
+        let ts = str_of(v, "timestamp").and_then(parse_rfc3339_ms).unwrap_or(mtime_ms);
+        let seq = block_seq(offset, 0);
+        match (str_of(v, "type").unwrap_or_default(), str_of(payload, "type").unwrap_or_default()) {
             ("session_meta", _) => {
-                if let Some(meta) = parse_meta(&line.bytes) {
+                if let Some(meta) = meta_of(v) {
                     if self.cwd.as_os_str().is_empty()
                         && let Some(cwd) = &meta.cwd
                     {
@@ -418,11 +463,32 @@ partial line"#;
 
     #[test]
     fn meta_keeps_only_what_is_used() {
-        let line = br#"{"timestamp":"2026-11-19T09:00:00Z","type":"session_meta","payload":{"id":"x","cwd":"/w","originator":"G7 Linux","creator_user_id":"secret","base_instructions":{"text":"long"}}}"#;
+        let line = br#"{"timestamp":"2026-11-19T09:00:00Z","type":"session_meta","payload":{"id":"x","cwd":"/w","originator":"G7 Linux","creator_user_id":"secret","creator_account_id":"secret too","base_instructions":{"text":"long"}}}"#;
         let meta = parse_meta(line).unwrap();
-        assert_eq!(meta, CodexMeta { cwd: Some("/w".into()), originator: Some("G7 Linux".into()) });
+        assert_eq!(
+            meta,
+            CodexMeta { cwd: Some("/w".into()), originator: Some("G7 Linux".into()), ..CodexMeta::default() },
+            "an id that isn't a UUID isn't kept"
+        );
         assert_eq!(meta.source(), SessionSource::Other);
         assert!(!format!("{meta:?}").contains("secret"));
+        let id = "11111111-2222-4333-8444-555555555555";
+        let base = "019a0000-1111-7222-8333-444444444444";
+        let line = format!(
+            r#"{{"ordinal":12,"type":"session_meta","payload":{{"id":"{id}","cwd":"/w","forked_from_id":"{base}","creator_account_id":"secret","history_base":{{"thread_id":"{base}","end_ordinal_exclusive":12,"end_byte_offset":4096}}}}}}"#
+        );
+        let v: Value = serde_json::from_str(&line).unwrap();
+        let meta = meta_of(&v).unwrap();
+        assert_eq!(meta.id.as_deref(), Some(id));
+        assert_eq!(meta.forked_from.as_deref(), Some(base));
+        assert_eq!(
+            meta.history_base,
+            Some(HistoryBase { segment: base.into(), end_ordinal: Some(12), end_byte: 4096 })
+        );
+        assert_eq!(ordinal_of(&v), Some(12));
+        assert!(!format!("{meta:?}").contains("secret"));
+        let no_offset = r#"{"type":"session_meta","payload":{"history_base":{"thread_id":"11111111-2222-4333-8444-555555555555"}}}"#;
+        assert_eq!(parse_meta(no_offset.as_bytes()).unwrap().history_base, None);
         assert_eq!(parse_meta(br#"{"type":"event_msg","payload":{}}"#), None);
         let relative = br#"{"type":"session_meta","payload":{"cwd":"w"}}"#;
         assert_eq!(parse_meta(relative).unwrap().cwd, None);

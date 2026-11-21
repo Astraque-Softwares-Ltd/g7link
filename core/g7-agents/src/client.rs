@@ -34,6 +34,9 @@ pub const SOCKET_ENV: &str = "G7_AGENTS_SOCKET";
 pub const BIN_ENV: &str = "G7_AGENTS_BIN";
 /// How long a request waits for its reply, unless it says otherwise.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a request that runs git or forks an agent's session waits
+/// (`rewind.*`, `turn.files`, `turn.patch`).
+pub const SLOW_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// After spawning the host, how long connecting is retried, and how often.
 pub const SPAWN_WAIT: Duration = Duration::from_secs(3);
 pub const SPAWN_RETRY: Duration = Duration::from_millis(50);
@@ -403,6 +406,8 @@ pub enum When {
 pub struct Call<T> {
     pub method: &'static str,
     pub params: Value,
+    /// How long it waits for its reply.
+    pub timeout: Duration,
     parse: fn(Value) -> Result<T, serde_json::Error>,
 }
 
@@ -418,7 +423,17 @@ impl<T> Call<T> {
         params: &P,
         parse: fn(Value) -> Result<T, serde_json::Error>,
     ) -> Self {
-        Self { method, params: serde_json::to_value(params).unwrap_or(Value::Null), parse }
+        Self {
+            method,
+            params: serde_json::to_value(params).unwrap_or(Value::Null),
+            timeout: REQUEST_TIMEOUT,
+            parse,
+        }
+    }
+
+    /// Waits [`SLOW_REQUEST_TIMEOUT`] for its reply.
+    fn slow(self) -> Self {
+        Self { timeout: SLOW_REQUEST_TIMEOUT, ..self }
     }
 
     pub fn parse(&self, value: Value) -> Result<T, ClientError> {
@@ -459,9 +474,12 @@ pub mod calls {
     }
 
     pub fn threads_list(limit: Option<u32>, before_ms: Option<u64>) -> Call<Vec<ThreadInfo>> {
-        Call::new(method::THREADS_LIST, &ThreadsListParams { limit, before_ms }, |v| {
-            parse_as::<ThreadsListResult>(v).map(|r| r.threads)
-        })
+        threads_list_with(ThreadsListParams { limit, before_ms, show: None })
+    }
+
+    /// `threads.list` with every field; `show` only to a host that offers `cap::HISTORY`.
+    pub fn threads_list_with(params: ThreadsListParams) -> Call<Vec<ThreadInfo>> {
+        Call::new(method::THREADS_LIST, &params, |v| parse_as::<ThreadsListResult>(v).map(|r| r.threads))
     }
 
     pub fn thread_start(params: ThreadStartParams) -> Call<ThreadInfo> {
@@ -649,14 +667,105 @@ pub mod calls {
 
     /// A folder's MCP switch (PC clients only).
     pub fn folders_set(id: String, mcp: bool) -> Call<Folder> {
-        Call::new(method::FOLDERS_SET, &FoldersSetParams { id, mcp }, |v| {
-            parse_as::<FolderResult>(v).map(|r| r.folder)
-        })
+        folders_set_with(FoldersSetParams { id, mcp: Some(mcp), checkpoints: None })
+    }
+
+    /// `folders.set` with every field (PC clients only); `checkpoints` only
+    /// to a host that offers `cap::UNDO`.
+    pub fn folders_set_with(params: FoldersSetParams) -> Call<Folder> {
+        Call::new(method::FOLDERS_SET, &params, |v| parse_as::<FolderResult>(v).map(|r| r.folder))
     }
 
     /// Changes host settings (PC clients only); the new settings.
     pub fn settings_set(params: SettingsSetParams) -> Call<HostSettings> {
         Call::new(method::SETTINGS_SET, &params, parse_as)
+    }
+
+    // ---- History (phase 3): only to a host that offers `cap::HISTORY` ----
+
+    /// `thread.start` with its whole result: whether its `key` was taken already.
+    pub fn thread_start_with(params: ThreadStartParams) -> Call<ThreadStartResult> {
+        Call::new(method::THREAD_START, &params, parse_as)
+    }
+
+    /// The threads as they are now, and those left unarchived because they run.
+    pub fn thread_mark(params: ThreadMarkParams) -> Call<ThreadMarkResult> {
+        Call::new(method::THREAD_MARK, &params, parse_as)
+    }
+
+    pub fn thread_rename(params: ThreadRenameParams) -> Call<ThreadInfo> {
+        Call::new(method::THREAD_RENAME, &params, |v| parse_as::<ThreadResult>(v).map(|r| r.thread))
+    }
+
+    pub fn threads_search(params: ThreadsSearchParams) -> Call<ThreadsSearchResult> {
+        Call::new(method::THREADS_SEARCH, &params, parse_as)
+    }
+
+    /// Starts or continues the scan; answers at once with what was found so far.
+    pub fn sessions_scan(params: SessionsScanParams) -> Call<SessionsScanResult> {
+        Call::new(method::SESSIONS_SCAN, &params, parse_as)
+    }
+
+    pub fn sessions_import(ids: Vec<String>, by: By) -> Call<SessionsImportResult> {
+        Call::new(method::SESSIONS_IMPORT, &SessionsImportParams { ids, by }, parse_as)
+    }
+
+    pub fn import_cancel(job: String) -> Call<()> {
+        Call::new(method::IMPORT_CANCEL, &ImportCancelParams { job }, unit)
+    }
+
+    /// A session's newest messages, before bringing it in.
+    pub fn session_preview(id: String, limit: Option<u32>) -> Call<Vec<Item>> {
+        Call::new(method::SESSION_PREVIEW, &SessionPreviewParams { id, limit }, |v| {
+            parse_as::<SessionPreviewResult>(v).map(|r| r.items)
+        })
+    }
+
+    /// Asks G7 Link to show a thread; `UNAVAILABLE` when G7 Link isn't connected.
+    pub fn ui_open(thread_id: String) -> Call<()> {
+        Call::new(method::UI_OPEN, &ThreadIdParams { thread_id }, unit)
+    }
+
+    /// The size of what the host keeps (PC clients only).
+    pub fn store_info() -> Call<StoreInfo> {
+        Call::new(method::STORE_INFO, &Empty {}, parse_as)
+    }
+
+    // ---- Undo (phase 3): only to a host that offers `cap::UNDO` ----
+
+    /// Newest first.
+    pub fn thread_turns(params: ThreadTurnsParams) -> Call<Vec<TurnInfo>> {
+        Call::new(method::THREAD_TURNS, &params, |v| parse_as::<ThreadTurnsResult>(v).map(|r| r.turns))
+    }
+
+    pub fn turn_files(params: TurnFilesParams) -> Call<TurnFilesResult> {
+        Call::new(method::TURN_FILES, &params, parse_as).slow()
+    }
+
+    pub fn turn_patch(params: TurnPatchParams) -> Call<TurnPatchResult> {
+        Call::new(method::TURN_PATCH, &params, parse_as).slow()
+    }
+
+    /// What a rewind would do; nothing changes yet.
+    pub fn rewind_preview(params: RewindPreviewParams) -> Call<RewindPlan> {
+        Call::new(method::REWIND_PREVIEW, &params, |v| parse_as::<RewindPreviewResult>(v).map(|r| r.plan))
+            .slow()
+    }
+
+    pub fn rewind_apply(params: RewindApplyParams) -> Call<RewindApplyResult> {
+        Call::new(method::REWIND_APPLY, &params, parse_as).slow()
+    }
+
+    pub fn rewind_undo(thread_id: String, by: By) -> Call<ThreadInfo> {
+        Call::new(method::REWIND_UNDO, &RewindUndoParams { thread_id, by }, |v| {
+            parse_as::<ThreadResult>(v).map(|r| r.thread)
+        })
+        .slow()
+    }
+
+    /// The new thread.
+    pub fn thread_fork(params: ThreadForkParams) -> Call<ThreadInfo> {
+        Call::new(method::THREAD_FORK, &params, |v| parse_as::<ThreadResult>(v).map(|r| r.thread))
     }
 }
 
@@ -710,6 +819,25 @@ macro_rules! with_calls {
             history_list(limit: Option<u32>) -> Vec<String>;
             folders_set(id: String, mcp: bool) -> Folder;
             settings_set(params: SettingsSetParams) -> HostSettings;
+            threads_list_with(params: ThreadsListParams) -> Vec<ThreadInfo>;
+            folders_set_with(params: FoldersSetParams) -> Folder;
+            thread_start_with(params: ThreadStartParams) -> ThreadStartResult;
+            thread_mark(params: ThreadMarkParams) -> ThreadMarkResult;
+            thread_rename(params: ThreadRenameParams) -> ThreadInfo;
+            threads_search(params: ThreadsSearchParams) -> ThreadsSearchResult;
+            sessions_scan(params: SessionsScanParams) -> SessionsScanResult;
+            sessions_import(ids: Vec<String>, by: By) -> SessionsImportResult;
+            import_cancel(job: String) -> ();
+            session_preview(id: String, limit: Option<u32>) -> Vec<Item>;
+            store_info() -> StoreInfo;
+            ui_open(thread_id: String) -> ();
+            thread_turns(params: ThreadTurnsParams) -> Vec<TurnInfo>;
+            turn_files(params: TurnFilesParams) -> TurnFilesResult;
+            turn_patch(params: TurnPatchParams) -> TurnPatchResult;
+            rewind_preview(params: RewindPreviewParams) -> RewindPlan;
+            rewind_apply(params: RewindApplyParams) -> RewindApplyResult;
+            rewind_undo(thread_id: String, by: By) -> ThreadInfo;
+            thread_fork(params: ThreadForkParams) -> ThreadInfo;
         }
     };
 }
@@ -1018,9 +1146,9 @@ impl Client {
         reply.unwrap_or(Err(ClientError::Closed))
     }
 
-    /// Runs a typed call with [`REQUEST_TIMEOUT`].
+    /// Runs a typed call, waiting its [`Call::timeout`].
     pub async fn run<T>(&self, call: Call<T>) -> Result<T, ClientError> {
-        let value = self.call_value(call.method, call.params.clone(), Some(REQUEST_TIMEOUT)).await?;
+        let value = self.call_value(call.method, call.params.clone(), Some(call.timeout)).await?;
         call.parse(value)
     }
 
@@ -1183,11 +1311,15 @@ impl BlockingClient {
 
     /// Sends a request and waits for its result.
     pub fn call_value(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
+        self.call_within(method, params, self.timeout)
+    }
+
+    fn call_within(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, ClientError> {
         let id = self.next_id;
         self.next_id += 1;
         let line = encode_request(id, method, params)?;
         self.writer.write_all(line.as_bytes())?;
-        let deadline = Instant::now() + self.timeout;
+        let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -1204,9 +1336,10 @@ impl BlockingClient {
         }
     }
 
-    /// Runs a typed call.
+    /// Runs a typed call, waiting the longer of [`BlockingClient::set_timeout`]'s
+    /// time and its [`Call::timeout`].
     pub fn run<T>(&mut self, call: Call<T>) -> Result<T, ClientError> {
-        let value = self.call_value(call.method, call.params.clone())?;
+        let value = self.call_within(call.method, call.params.clone(), self.timeout.max(call.timeout))?;
         call.parse(value)
     }
 

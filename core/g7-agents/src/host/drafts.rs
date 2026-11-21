@@ -141,6 +141,26 @@ impl Host {
         self.store.save_drafts(self.lock_drafts().list());
     }
 
+    /// Puts `text` and `images` in a thread's draft whatever was there
+    /// (Edit from here): every client is told, the asker too.
+    pub(crate) fn draft_refill(
+        self: &Arc<Self>,
+        key: &str,
+        text: String,
+        images: Vec<ImageRef>,
+        by: Option<Origin>,
+    ) {
+        let set = {
+            let mut drafts = self.lock_drafts();
+            let rev = drafts.get(key).map_or(0, |d| d.rev);
+            drafts.set(key, text, images, rev, by.clone())
+        };
+        if let Ok(rev) = set {
+            self.save_drafts_later();
+            self.hub.broadcast(&Event::DraftChanged(DraftChangedEvent { key: key.to_owned(), rev, by }));
+        }
+    }
+
     /// `draft.set`. `client`: the connection that set it, which isn't told.
     pub fn draft_set(
         self: &Arc<Self>,

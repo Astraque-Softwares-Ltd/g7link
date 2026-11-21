@@ -19,6 +19,8 @@ host = [
     "dep:ignore",
     "dep:image",
     "dep:data-encoding",
+    "dep:rusqlite",
+    "dep:ruzstd",
     "tokio/process",
     "tokio/net",
     "tokio/signal",
@@ -58,6 +60,10 @@ zbus = { workspace = true, optional = true }
 ignore = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 data-encoding = { workspace = true, optional = true }
+# The thread store (`host/db`): bundled SQLite with FTS5's trigram tokenizer.
+rusqlite = { workspace = true, optional = true }
+# Compressed Codex rollouts (`host/sessions/zst.rs`): a pure-Rust zstd decoder, MIT.
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

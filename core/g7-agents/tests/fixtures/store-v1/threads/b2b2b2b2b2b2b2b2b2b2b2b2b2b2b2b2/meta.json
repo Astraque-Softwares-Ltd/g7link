@@ -1,0 +1,1 @@
+{"version":1,"thread":{"id":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2","agent":"codex","folder_id":"f0123456789ab","folder_label":"g7linux","title":"Explain the store","state":"failed","mode":"plan","origin":{"kind":"launcher"},"created_ms":1794000000000,"updated_ms":1794000600000,"last_seq":4,"pending":0,"error":{"code":"exit","message":"The agent stopped."}},"next_seq":3}

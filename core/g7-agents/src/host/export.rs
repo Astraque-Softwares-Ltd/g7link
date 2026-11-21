@@ -297,7 +297,7 @@ impl Host {
                     .ok_or_else(|| RpcError::new(ErrorCode::NotFound, "No such thread."))?;
                 let items = self
                     .store
-                    .read_items(&id)
+                    .all_items(&id)
                     .await
                     .map_err(|_| RpcError::new(ErrorCode::Internal, "Couldn't read the thread."))?;
                 let approvals = self.store.read_approvals(&id).await.unwrap_or_default();

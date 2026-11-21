@@ -55,7 +55,12 @@ pub struct ClaudeTail {
     pub line_cwd: Option<String>,
     pub last_assistant_text: Option<String>,
     pub last_seq: u64,
+    /// Where the first prompt was typed (`entrypoint`: `cli`, `claude-desktop`, …).
+    pub entrypoint: Option<String>,
 }
+
+/// An `entrypoint` is kept up to this many bytes.
+const MAX_ENTRYPOINT: usize = 32;
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
@@ -69,9 +74,14 @@ impl ClaudeTail {
     /// Feeds one line; returns the items it made or changed.
     pub fn feed(&mut self, line: &Line, mtime_ms: u64) -> Vec<Item> {
         let Ok(v) = serde_json::from_slice::<Value>(&line.bytes) else { return Vec::new() };
-        let kind = str_of(&v, "type").unwrap_or_default();
+        self.feed_value(&v, line.offset, mtime_ms)
+    }
+
+    /// [`ClaudeTail::feed`] of a line already parsed, which starts at `offset`.
+    pub fn feed_value(&mut self, v: &Value, offset: u64, mtime_ms: u64) -> Vec<Item> {
+        let kind = str_of(v, "type").unwrap_or_default();
         if kind == "custom-title" {
-            if let Some(title) = str_of(&v, "customTitle").map(str::trim).filter(|t| !t.is_empty()) {
+            if let Some(title) = str_of(v, "customTitle").map(str::trim).filter(|t| !t.is_empty()) {
                 self.custom_title = Some(api::clean_cut(title, api::MAX_TITLE).0);
             }
             return Vec::new();
@@ -84,18 +94,18 @@ impl ClaudeTail {
         {
             return Vec::new();
         }
-        let ts = str_of(&v, "timestamp").and_then(parse_rfc3339_ms).unwrap_or(mtime_ms);
-        if let Some(cwd) = str_of(&v, "cwd").filter(|c| c.starts_with('/')) {
+        let ts = str_of(v, "timestamp").and_then(parse_rfc3339_ms).unwrap_or(mtime_ms);
+        if let Some(cwd) = str_of(v, "cwd").filter(|c| c.starts_with('/')) {
             self.line_cwd = Some(cwd.to_owned());
             if self.cwd.as_os_str().is_empty() {
                 self.cwd = PathBuf::from(cwd);
             }
         }
         let items = match kind {
-            "user" => self.user(&v, line.offset, ts),
-            "assistant" => self.assistant(&v, line.offset, ts),
+            "user" => self.user(v, offset, ts),
+            "assistant" => self.assistant(v, offset, ts),
             _ => {
-                self.system(&v);
+                self.system(v);
                 Vec::new()
             }
         };
@@ -123,6 +133,7 @@ impl ClaudeTail {
         if let Some(text) = text.filter(|t| !t.trim().is_empty() && !is_wrapper(t)) {
             if self.first_user_text.is_none() {
                 self.first_user_text = Some(text.clone());
+                self.entrypoint = str_of(v, "entrypoint").map(|e| api::cut(e, MAX_ENTRYPOINT).to_owned());
             }
             let uuid = str_of(v, "uuid").unwrap_or("line");
             out.push(text_item(block_seq(offset, 0), &format!("u-{uuid}"), ItemKind::User, &text, ts));

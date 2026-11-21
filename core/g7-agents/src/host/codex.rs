@@ -61,16 +61,19 @@ pub const PLAN_UNAVAILABLE_CODE: &str = "plan_unavailable";
 pub const PLAN_UNAVAILABLE: &str = "Plan isn't available with this version of Codex.";
 /// The notice when Codex compacted the conversation.
 pub const COMPACTED: &str = "Compacted the conversation.";
+/// A copy through a turn Codex no longer has (`thread/fork`).
+pub const FORK_TURN_GONE: &str = "Codex no longer has the message this continues from.";
 /// The one Codex command G7 sends as a request of its own (§Q4.7).
 const COMPACT_COMMAND: &str = "/compact";
 
 /// Every method the adapter sends Codex (§Q4.2): each is in the stable
 /// schema; the one experimental field it uses is `turn/start.collaborationMode`.
-pub const METHODS: [&str; 11] = [
+pub const METHODS: [&str; 12] = [
     "initialize",
     "account/read",
     "thread/start",
     "thread/resume",
+    "thread/fork",
     "turn/start",
     "turn/steer",
     "turn/interrupt",
@@ -79,6 +82,43 @@ pub const METHODS: [&str; 11] = [
     "model/list",
     "account/rateLimits/read",
 ];
+
+/// `thread/fork`'s params (§U6.2; spike S-5): a copy of `from` through the
+/// turn `last_turn` (inclusive; absent: the whole thread), without its
+/// turns in the reply, with what `thread/resume` sends.
+pub fn fork_params(from: &str, last_turn: Option<&str>, cwd: &str, mode: Mode) -> Value {
+    let mut params = json!({"threadId": from, "cwd": cwd, "approvalPolicy": approval_policy(mode),
+        "sandbox": SANDBOX, "excludeTurns": true});
+    if let Some(turn) = last_turn {
+        params["lastTurnId"] = json!(turn);
+    }
+    params
+}
+
+/// The `thread/fork` request.
+pub fn fork_request(id: u64, params: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "thread/fork", "params": params})
+}
+
+/// The `initialized` notification that follows `initialize`'s answer.
+pub fn initialized() -> Value {
+    json!({"jsonrpc": "2.0", "method": "initialized"})
+}
+
+/// Codex's answer to a `thread/fork` whose turn it doesn't have [spike S-5.3].
+pub fn is_turn_not_found(error: &Value) -> bool {
+    error.get("code").and_then(Value::as_i64) == Some(-32600)
+        && s(error, "message").is_some_and(|m| m.starts_with("turn not found"))
+}
+
+/// How the next process of a thread starts from a copy of a thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkStart {
+    /// The thread the copy is made from.
+    pub from: String,
+    /// The last turn the copy keeps; absent: all of them.
+    pub last_turn: Option<String>,
+}
 
 /// Codex's `phase` of an agent message.
 fn phase_of(item: &Value) -> Option<Phase> {
@@ -207,6 +247,8 @@ pub struct CodexMapper {
     plans: Vec<String>,
     /// This turn's compaction was reported.
     compacted: bool,
+    /// This turn's id was reported as its mark ([`Step::TurnMark`]).
+    marked: bool,
 }
 
 impl CodexMapper {
@@ -226,6 +268,19 @@ impl CodexMapper {
             mcp_sent: None,
             plans: Vec::new(),
             compacted: false,
+            marked: false,
+        }
+    }
+
+    /// The running turn's id, once, as its mark: a copy through this turn
+    /// keeps it (`thread/fork { lastTurnId }`, §U6.2).
+    fn mark(&mut self, steps: &mut Vec<Step>) {
+        if self.turn_running
+            && !self.marked
+            && let Some(id) = self.turn_id.as_deref().filter(|id| crate::host::fork::is_mark(id))
+        {
+            self.marked = true;
+            steps.push(Step::TurnMark(id.to_owned()));
         }
     }
 
@@ -263,11 +318,15 @@ impl CodexMapper {
         self.last_final = None;
         self.last_text = None;
         self.compacted = false;
+        self.marked = false;
     }
 
-    pub fn set_turn_id(&mut self, id: Option<String>) {
+    /// The running turn's id, from `turn/start`'s reply; its mark when it
+    /// is the first word of it.
+    pub fn set_turn_id(&mut self, id: Option<String>, steps: &mut Vec<Step>) {
         if self.turn_running {
             self.turn_id = id;
+            self.mark(steps);
         }
     }
 
@@ -323,6 +382,7 @@ impl CodexMapper {
                 let id = params.get("turn").and_then(|t| s(t, "id")).map(str::to_owned);
                 if id.is_some() {
                     self.turn_id = id;
+                    self.mark(&mut steps);
                 }
             }
             "item/started" => {
@@ -670,6 +730,8 @@ pub struct CodexDriver {
     /// Codex accepted the experimental API: turns carry `collaborationMode`.
     plan_ok: bool,
     resume: Option<String>,
+    /// The process starts from a copy of this thread (`thread/fork`).
+    fork: Option<ForkStart>,
     native_id: Option<String>,
     /// The model Codex reported for the thread.
     thread_model: Option<String>,
@@ -711,6 +773,7 @@ impl CodexDriver {
             settings,
             plan_ok: false,
             resume,
+            fork: None,
             native_id: None,
             thread_model: None,
             texts: VecDeque::from([Waiting { input: first, steer: false }]),
@@ -725,6 +788,13 @@ impl CodexDriver {
             interrupt_sent: false,
             failed: false,
         }
+    }
+
+    /// A driver whose process continues a copy of a thread (§U6.2): it
+    /// sends `thread/fork` where it would resume, and the copy's id is the
+    /// thread's from then on ([`Step::NativeId`]).
+    pub fn forking(cwd: PathBuf, settings: LaunchSettings, fork: ForkStart, first: UserInput) -> Self {
+        Self { fork: Some(fork), ..Self::with_settings(cwd, settings, None, first) }
     }
 
     fn request(&mut self, kind: Pending, method: &str, params: Value, out: &mut Output) -> u64 {
@@ -872,7 +942,7 @@ impl CodexDriver {
                     return self.fail(TurnEnd::failed(code::AGENT_ERROR, message), out);
                 }
                 self.plan_ok = experimental;
-                out.stdin.push(json!({"jsonrpc": "2.0", "method": "initialized"}).to_string());
+                out.stdin.push(initialized().to_string());
                 self.request(Pending::AccountRead, "account/read", json!({"refreshToken": false}), out);
             }
             Pending::AccountRead => {
@@ -880,6 +950,12 @@ impl CodexDriver {
                     return self.fail(TurnEnd::failed(code::LOGIN, "Codex is not signed in."), out);
                 }
                 let policy = approval_policy(self.settings.mode);
+                if let Some(fork) = self.fork.take() {
+                    let params =
+                        fork_params(&fork.from, fork.last_turn.as_deref(), &self.cwd, self.settings.mode);
+                    self.request(Pending::Thread, "thread/fork", params, out);
+                    return;
+                }
                 match self.resume.clone() {
                     Some(native) => self.request(
                         Pending::Thread,
@@ -897,6 +973,11 @@ impl CodexDriver {
             }
             Pending::Thread => {
                 if let Some(message) = error_message {
+                    let message = if error.is_some_and(is_turn_not_found) {
+                        FORK_TURN_GONE.to_owned()
+                    } else {
+                        message
+                    };
                     return self.fail(TurnEnd::failed(code::AGENT_ERROR, message), out);
                 }
                 let Some(native) = result.get("thread").and_then(|t| s(t, "id")).map(str::to_owned) else {
@@ -954,7 +1035,7 @@ impl CodexDriver {
                     return;
                 }
                 let turn = result.get("turn").and_then(|t| s(t, "id")).map(str::to_owned);
-                self.mapper.set_turn_id(turn);
+                self.mapper.set_turn_id(turn, &mut out.steps);
                 if let Some(flight) = in_flight
                     && flight.waiting.steer
                     && !flight.waiting.input.id.is_empty()
@@ -1834,6 +1915,44 @@ mod tests {
         assert_eq!(out.steps.last(), Some(&Step::Delivered { id: "u3".into() }));
     }
 
+    fn turn_marks(steps: &[Step]) -> Vec<&str> {
+        steps.iter().filter_map(|s| if let Step::TurnMark(m) = s { Some(m.as_str()) } else { None }).collect()
+    }
+
+    #[test]
+    fn each_turn_is_marked_by_its_id_once() {
+        let (steps, _) = play("codex-11-plan-question.jsonl", plan_settings(), || QuestionReply::Dismissed);
+        assert_eq!(turn_marks(&steps), ["019a0000-0000-7000-8000-0000000000f1"]);
+        // The notice may come before the reply; a steer keeps the turn's mark.
+        let (mut driver, mut out) =
+            started(LaunchSettings::new(Mode::Supervised), json!({"thread": {"id": "th"}}));
+        let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
+        driver.on_line(
+            json!({"method": "turn/started", "params": {"threadId": "th", "turn": {"id": "tu_1"}}}),
+            &mut out,
+        );
+        driver.on_line(json!({"id": turn["id"], "result": {"turn": {"id": "tu_1"}}}), &mut out);
+        driver.on_cmd(
+            SessionCmd::Steer(UserInput { id: "u2".into(), text: "And".into(), images: Vec::new() }),
+            &mut out,
+        );
+        let steer = sent(&out).pop().unwrap();
+        driver.on_line(json!({"id": steer["id"], "result": {"turnId": "tu_1"}}), &mut out);
+        assert_eq!(turn_marks(&out.steps), ["tu_1"]);
+        let at = |step: &Step| out.steps.iter().position(|s| s == step).unwrap();
+        assert!(at(&Step::TurnMark("tu_1".into())) < at(&Step::Delivered { id: "u2".into() }));
+        // An id that can't be a mark is none.
+        driver.on_line(
+            json!({"method": "turn/completed", "params": {"turn": {"status": "completed"}}}),
+            &mut out,
+        );
+        let mut out = Output::default();
+        driver.on_cmd(SessionCmd::Send(UserInput::text("Next")), &mut out);
+        let turn = sent(&out).pop().unwrap();
+        driver.on_line(json!({"id": turn["id"], "result": {"turn": {"id": "a/b"}}}), &mut out);
+        assert!(turn_marks(&out.steps).is_empty());
+    }
+
     #[test]
     fn compact_and_skills() {
         let (mut driver, mut out) =
@@ -1901,21 +2020,27 @@ mod tests {
         for method in METHODS {
             assert!(stable.contains(&method), "{method}");
         }
+        // Never: what rewrites or hides a thread (§U6.2), the usage methods.
         for never in [
             "account/rateLimitResetCredit/consume",
             "account/usage/read",
             "thread/queue/add",
             "collaborationMode/list",
+            "thread/revert",
+            "thread/archive",
+            "thread/rollback",
+            "thread/delete",
+            "thread/inject_items",
         ] {
             assert!(!METHODS.contains(&never), "{never}");
-            for file in [include_str!("codex.rs"), include_str!("catalog.rs")] {
-                let code = &file[..file.find("#[cfg(test)]").unwrap()];
+            for file in [include_str!("codex.rs"), include_str!("catalog.rs"), include_str!("fork.rs")] {
+                let code = &file[..file.find("#[cfg(test)]").unwrap_or(file.len())];
                 assert!(!code.contains(never), "{never}");
             }
         }
         // Every method the code names in a request is on the list.
-        for file in [include_str!("codex.rs"), include_str!("catalog.rs")] {
-            let code = &file[..file.find("#[cfg(test)]").unwrap()];
+        for file in [include_str!("codex.rs"), include_str!("catalog.rs"), include_str!("fork.rs")] {
+            let code = &file[..file.find("#[cfg(test)]").unwrap_or(file.len())];
             for (i, _) in code.match_indices("\"method\": ") {
                 let rest = &code[i + 10..];
                 if let Some(name) = rest.strip_prefix('"').and_then(|r| r.split('"').next())
@@ -1937,6 +2062,10 @@ mod tests {
             ("ModelListParams", &["cursor"][..]),
             ("SkillsListParams", &["cwds"][..]),
             ("ThreadCompactStartParams", &["threadId"][..]),
+            (
+                "ThreadForkParams",
+                &["threadId", "lastTurnId", "cwd", "approvalPolicy", "sandbox", "excludeTurns"][..],
+            ),
             ("ToolRequestUserInputResponse", &["answers"][..]),
             ("McpServerElicitationRequestResponse", &["action"][..]),
             ("InitializeCapabilities", &["experimentalApi"][..]),
@@ -1952,5 +2081,94 @@ mod tests {
             assert!(input.contains(kind), "{kind}");
         }
         assert!(v2["definitions"]["McpServerElicitationAction"].to_string().contains("\"decline\""));
+    }
+
+    #[test]
+    fn a_fork_through_a_turn_or_of_the_whole_thread() {
+        let params = fork_params("th", Some("tu_2"), "/w", Mode::AutoEdit);
+        assert_eq!(
+            params,
+            json!({"threadId": "th", "lastTurnId": "tu_2", "cwd": "/w", "approvalPolicy": "on-request",
+                "sandbox": SANDBOX, "excludeTurns": true})
+        );
+        let whole = fork_params("th", None, "/w", Mode::Plan);
+        assert!(whole.get("lastTurnId").is_none());
+        assert_eq!(whole["approvalPolicy"], "untrusted");
+        // The fields are `thread/resume`'s, as the spike sent them, and the schema's.
+        let v2: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex-schema/v2-subset.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let have = v2["definitions"]["ThreadForkParams"]["properties"].as_object().unwrap();
+        for key in params.as_object().unwrap().keys() {
+            assert!(have.contains_key(key), "{key}");
+        }
+        assert_eq!(fork_request(7, whole.clone())["method"], "thread/fork");
+        assert!(is_turn_not_found(&json!({"code": -32600, "message": "turn not found: tu_9"})));
+        assert!(!is_turn_not_found(
+            &json!({"code": -32600, "message": "collaborationMode needs experimentalApi"})
+        ));
+        assert!(!is_turn_not_found(&json!({"code": -32601, "message": "turn not found: x"})));
+    }
+
+    fn forking(fork: ForkStart) -> (CodexDriver, Output) {
+        let mut driver = CodexDriver::forking(
+            PathBuf::from("/w"),
+            LaunchSettings::new(Mode::Supervised),
+            fork,
+            UserInput::text("Go on"),
+        );
+        let mut out = Output::default();
+        driver.start(&mut out);
+        driver.on_line(json!({"id": 1, "result": {}}), &mut out);
+        driver.on_line(
+            json!({"id": 2, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": true}}),
+            &mut out,
+        );
+        (driver, out)
+    }
+
+    #[test]
+    fn a_forking_process_copies_the_thread_then_runs_on_the_copy() {
+        let (mut driver, mut out) =
+            forking(ForkStart { from: "th_src".into(), last_turn: Some("tu_1".into()) });
+        let lines = sent(&out);
+        let fork = lines.last().unwrap();
+        assert_eq!(fork["method"], "thread/fork");
+        assert_eq!(fork["params"], fork_params("th_src", Some("tu_1"), "/w", Mode::Supervised));
+        assert!(!lines.iter().any(|l| l["method"] == "thread/resume" || l["method"] == "thread/start"));
+        // The copy's own `thread/started` is not a thread of ours [spike S-5.1].
+        driver
+            .on_line(json!({"method": "thread/started", "params": {"thread": {"id": "th_copy"}}}), &mut out);
+        assert!(!out.steps.iter().any(|s| matches!(s, Step::NativeId(_))));
+        driver.on_line(
+            json!({"id": 3, "result": {"thread": {"id": "th_copy"}, "model": "gpt-5.5-codex"}}),
+            &mut out,
+        );
+        assert!(out.steps.contains(&Step::NativeId("th_copy".into())));
+        let turn = sent(&out).into_iter().find(|l| l["method"] == "turn/start").unwrap();
+        assert_eq!(turn["params"]["threadId"], "th_copy", "the turn runs on the copy");
+        // The whole thread: no `lastTurnId`.
+        let (_, out) = forking(ForkStart { from: "th_src".into(), last_turn: None });
+        assert!(sent(&out).last().unwrap()["params"].get("lastTurnId").is_none());
+    }
+
+    #[test]
+    fn a_fork_through_a_turn_codex_lacks_fails_the_turn() {
+        let (mut driver, mut out) =
+            forking(ForkStart { from: "th_src".into(), last_turn: Some("tu_gone".into()) });
+        driver.on_line(
+            json!({"id": 3, "error": {"code": -32600, "message": "turn not found: tu_gone"}}),
+            &mut out,
+        );
+        let end =
+            out.steps.iter().find_map(|s| if let Step::TurnEnded(e) = s { Some(e) } else { None }).unwrap();
+        assert_eq!(end.outcome, Outcome::Failed);
+        assert_eq!(end.error.as_ref().unwrap().message, FORK_TURN_GONE);
+        assert!(out.close);
+        assert!(!out.steps.iter().any(|s| matches!(s, Step::NativeId(_))));
     }
 }

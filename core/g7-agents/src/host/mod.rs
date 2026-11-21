@@ -11,17 +11,22 @@ pub mod catalog;
 pub mod claude;
 pub mod codex;
 pub mod commands;
+pub mod db;
 pub mod dispatch;
 pub mod drafts;
 pub mod env;
 pub mod export;
 pub mod files;
+pub mod fork;
+pub mod git;
+pub mod marks;
 pub mod notify;
 pub mod plan;
 pub mod questions;
 pub mod sessions;
 pub mod store;
 pub mod threads;
+pub mod undo;
 pub mod usage;
 
 use std::collections::{HashMap, VecDeque};
@@ -278,6 +283,8 @@ struct ClientSlot {
     viewing_session: Option<String>,
     /// The one session whose items this connection gets.
     watching: Option<String>,
+    /// It called `sessions.scan`: it gets `sessions.scanned`.
+    scans: bool,
 }
 
 impl ClientSlot {
@@ -291,6 +298,7 @@ impl ClientSlot {
             viewing: None,
             viewing_session: None,
             watching: None,
+            scans: false,
         }
     }
 
@@ -334,6 +342,12 @@ impl Hub {
 
     fn send(&self, event: &Event, items2_only: bool) {
         let line = event.to_line();
+        if matches!(event, Event::SessionsScanned(_)) {
+            for slot in self.lock().values().filter(|s| s.scans) {
+                slot.outbox.push(line.clone(), false);
+            }
+            return;
+        }
         if let Some(session) = event.session_id() {
             let item = matches!(event, Event::SessionItem(_));
             for slot in self.lock().values() {
@@ -396,10 +410,26 @@ impl Hub {
         sent
     }
 
+    /// Sends `ui.open` to G7 Link's connections but `except`; how many got it.
+    pub fn ui_open_in_link(&self, thread_id: &str, except: u64) -> usize {
+        let line = Event::UiOpen(ThreadIdParams { thread_id: thread_id.to_owned() }).to_line();
+        let mut sent = 0;
+        for (_, slot) in self.lock().iter().filter(|(id, s)| **id != except && s.kind == ClientKind::Link) {
+            slot.outbox.push(line.clone(), false);
+            sent += 1;
+        }
+        sent
+    }
+
     /// A launcher or G7 Link says its window shows this thread to the user
     /// right now (`ui.viewing`).
     pub fn viewed(&self, thread_id: &str) -> bool {
         self.lock().values().any(|s| s.shows_threads() && s.viewing.as_deref() == Some(thread_id))
+    }
+
+    /// `client` is a launcher or G7 Link: what it views counts as read.
+    fn viewed_by(&self, client: u64) -> bool {
+        self.lock().get(&client).is_some_and(ClientSlot::shows_threads)
     }
 
     /// A connection of `kind` that views `thread_id`; its id.
@@ -539,6 +569,12 @@ pub struct Host {
     pub images: Option<attachments::ImageStore>,
     /// Each connection's image upload (one at a time).
     pub uploads: Mutex<HashMap<u64, attachments::Upload>>,
+    /// Rewind plans handed out and not yet applied.
+    pub rewinds: Mutex<undo::RewindTokens>,
+    /// Each connection's running search, stopped when it asks again.
+    pub searches: Mutex<HashMap<u64, db::Interrupt>>,
+    /// The user's `git`, for restore points; `None` when there is none.
+    pub git: Option<Arc<git::Git>>,
     clients: AtomicUsize,
     next_client: AtomicU64,
     idle_since: Mutex<Instant>,
@@ -606,16 +642,27 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
             Err(std::fs::TryLockError::Error(e)) => return Err(e),
         }
     }
+    // Cut copies a previous host left (§U6.2 step 4); only once the lock is
+    // ours, so a second host never removes a running one's.
+    fork::sweep(&config.runtime_dir);
     let _ = std::fs::remove_file(&config.socket);
     let listener = UnixListener::bind(&config.socket)?;
     std::fs::set_permissions(&config.socket, std::fs::Permissions::from_mode(0o600))?;
 
-    let mut store = Store::open(config.data_dir.clone())?;
-    let registry = Registry::load(&mut store, config.approval_lifetime_ms);
+    // The thread database first: it brings in a file store left by an earlier release.
+    let mut db = match db::Db::open(&config.data_dir) {
+        Ok(db) => Some(db),
+        Err(e) => {
+            tracing::warn!("couldn't open the thread store: {e}");
+            None
+        }
+    };
+    let store = Store::open(config.data_dir.clone())?;
+    let registry = Registry::load(&store, db.as_mut(), config.approval_lifetime_ms);
     let settings = store.load_settings();
     let drafts = drafts::Drafts::load(store.load_drafts());
     let history = drafts::History::load(store.load_history());
-    let store = StoreHandle::spawn(store)?;
+    let store = StoreHandle::spawn(store, db)?;
     let images = open_images(&config);
     let awake_source = if config.keep_awake_bus { awake::Source::System } else { awake::Source::Off };
     let (events_tx, mut events_rx) = mpsc::unbounded_channel::<(String, u64, AgentEvent)>();
@@ -641,6 +688,9 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         commands: Mutex::new(commands::Commands::default()),
         images,
         uploads: Mutex::new(HashMap::new()),
+        rewinds: Mutex::new(undo::RewindTokens::default()),
+        searches: Mutex::new(HashMap::new()),
+        git: git::Git::new(&config.env),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
@@ -648,6 +698,13 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         config,
     });
     host.sessions.set_following_loaded(settings.follow_sessions);
+    if host.store.has_db() {
+        host.sessions.attach_store(Arc::new(FoundStoreOf { host: Arc::downgrade(&host) }));
+    }
+    // Turns cut short by the last stop, and refs of threads that are gone.
+    let recovered = std::mem::take(&mut host.lock_reg().recovered);
+    host.recover_turns(recovered);
+    host.sweep_orphan_refs();
     tracing::info!(pid = std::process::id(), "agent host serving");
 
     // Agent events, in order, one at a time.
@@ -693,6 +750,8 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
             loop {
                 tokio::time::sleep(Duration::from_secs(5).min(host.config.idle_exit)).await;
                 host.check_folders();
+                host.wake_snoozed();
+                host.expire_undos();
                 host.files.sweep();
                 host.drop_stale_uploads();
                 ticks += 1;
@@ -750,6 +809,17 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {
 fn to_value<T: serde::Serialize>(value: &T) -> Result<Value, RpcError> {
     serde_json::to_value(value).map_err(|e| RpcError::new(ErrorCode::Internal, e.to_string()))
 }
+
+/// Methods that make or read threads beyond what is in memory: refused
+/// when the thread database couldn't be opened.
+const NEEDS_STORE: [&str; 6] = [
+    method::THREAD_START,
+    method::SESSION_CONTINUE,
+    method::THREADS_SEARCH,
+    method::STORE_INFO,
+    method::THREAD_FORK,
+    method::SESSIONS_IMPORT,
+];
 
 /// What a connection is after `hello`.
 #[derive(Debug, Clone)]
@@ -819,6 +889,10 @@ impl Host {
             let Some(current) = role.clone() else {
                 match self.hello(client_id, &outbox, request) {
                     Some(r) => {
+                        // A person's client: sessions on this PC are looked for, at most hourly.
+                        if matches!(r, Role::Client(ClientKind::Launcher | ClientKind::Link, _)) {
+                            sessions::scan::hourly(&self);
+                        }
                         role = Some(r);
                         continue;
                     }
@@ -859,10 +933,14 @@ impl Host {
                 }
                 (Role::Client(..), method::UI_VIEWING) => {
                     let result = parse::<UiViewingParams>(request.params).map(|p| {
+                        let shown = p.thread_id.clone();
                         self.hub.set(client_id, |slot| {
                             slot.viewing = p.thread_id;
                             slot.viewing_session = p.session_id.filter(|id| is_valid_session_id(id));
                         });
+                        if let Some(thread_id) = shown.filter(|_| self.hub.viewed_by(client_id)) {
+                            self.thread_viewed(&thread_id);
+                        }
                         json!({})
                     });
                     Self::reply(&outbox, request.id, result);
@@ -883,6 +961,10 @@ impl Host {
         outbox.close();
         self.hub.lock().remove(&client_id);
         self.lock_uploads().remove(&client_id);
+        self.rewinds.lock().unwrap_or_else(|e| e.into_inner()).forget_client(client_id);
+        if let Some(search) = self.searches.lock().unwrap_or_else(|e| e.into_inner()).remove(&client_id) {
+            search.stop();
+        }
         if let Some(Role::Bridge { thread_id, generation }) = role {
             self.bridge_closed(&thread_id, generation);
         }
@@ -986,6 +1068,9 @@ impl Host {
         };
         // Whose pending images a request may use.
         let owner = client_owner(kind);
+        if !self.store.has_db() && NEEDS_STORE.contains(&method_name) {
+            return Err(RpcError::new(ErrorCode::Unavailable, "G7 couldn't open its thread store."));
+        }
         match method_name {
             method::AGENTS_LIST => {
                 let p: AgentsListParams = parse(params)?;
@@ -1010,8 +1095,8 @@ impl Host {
             }
             method::THREAD_START => {
                 let p: ThreadStartParams = parse(params)?;
-                let thread = self.thread_start(p, owner).await?;
-                to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
+                let (thread, duplicate) = self.thread_start_keyed(p, owner).await?;
+                to_value(&ThreadStartResult { thread: thread.for_client(caps.items3), duplicate })
             }
             method::THREAD_SEND => {
                 let p: ThreadSendParams = parse(params)?;
@@ -1095,7 +1180,9 @@ impl Host {
             }
             method::PLAN_IMPLEMENT => {
                 let p: PlanImplementParams = parse(params)?;
+                let thread_id = p.thread_id.clone();
                 self.plan_implement(p).await?;
+                self.sent_to(&thread_id);
                 Ok(json!({}))
             }
             method::FILES_SEARCH => {
@@ -1181,11 +1268,93 @@ impl Host {
             }
             method::FOLDERS_SET => {
                 let p: FoldersSetParams = parse(params)?;
-                to_value(&FolderResult { folder: self.folders_set(&p.id, p.mcp).await? })
+                to_value(&FolderResult { folder: self.folders_set(&p.id, p.mcp, p.checkpoints).await? })
             }
             method::SETTINGS_SET => {
                 let p: SettingsSetParams = parse(params)?;
                 to_value(&self.settings_set(p).await?)
+            }
+            // History (phase 3).
+            method::THREAD_MARK => {
+                let p: ThreadMarkParams = parse(params)?;
+                let mut result = self.thread_mark(p).await?;
+                for thread in &mut result.threads {
+                    *thread = thread.for_client(caps.items3);
+                }
+                to_value(&result)
+            }
+            method::THREAD_RENAME => {
+                let p: ThreadRenameParams = parse(params)?;
+                let thread = self.thread_rename(p).await?;
+                to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
+            }
+            method::THREADS_SEARCH => {
+                let p: ThreadsSearchParams = parse(params)?;
+                to_value(&self.threads_search(p, client_id).await?)
+            }
+            method::SESSIONS_SCAN => {
+                let p: SessionsScanParams = parse(params)?;
+                self.hub.set(client_id, |slot| slot.scans = true);
+                to_value(&self.sessions_scan(p).await?)
+            }
+            method::SESSIONS_IMPORT => {
+                let p: SessionsImportParams = parse(params)?;
+                to_value(&self.sessions_import(p).await?)
+            }
+            method::IMPORT_CANCEL => {
+                let p: ImportCancelParams = parse(params)?;
+                self.import_cancel(&p.job).await?;
+                Ok(json!({}))
+            }
+            method::SESSION_PREVIEW => {
+                let p: SessionPreviewParams = parse(params)?;
+                let items = self.session_preview(p).await?;
+                let items = items.iter().filter_map(|i| i.for_caps(caps.items2, caps.items3)).collect();
+                to_value(&SessionPreviewResult { items })
+            }
+            method::STORE_INFO => to_value(&self.store_info().await?),
+            method::UI_OPEN => {
+                let p: ThreadIdParams = parse(params)?;
+                if !self.lock_reg().threads.contains_key(&p.thread_id) {
+                    return Err(RpcError::new(ErrorCode::NotFound, "No such thread."));
+                }
+                if self.hub.ui_open_in_link(&p.thread_id, client_id) == 0 {
+                    return Err(RpcError::new(ErrorCode::Unavailable, "G7 Link isn't open."));
+                }
+                Ok(json!({}))
+            }
+            // Undo (phase 3).
+            method::THREAD_TURNS => {
+                let p: ThreadTurnsParams = parse(params)?;
+                to_value(&ThreadTurnsResult { turns: self.thread_turns(p, kind).await? })
+            }
+            method::TURN_FILES => {
+                let p: TurnFilesParams = parse(params)?;
+                to_value(&self.turn_files(p).await?)
+            }
+            method::TURN_PATCH => {
+                let p: TurnPatchParams = parse(params)?;
+                to_value(&self.turn_patch(p).await?)
+            }
+            method::REWIND_PREVIEW => {
+                let p: RewindPreviewParams = parse(params)?;
+                to_value(&RewindPreviewResult { plan: self.rewind_preview(p, client_id, kind).await? })
+            }
+            method::REWIND_APPLY => {
+                let p: RewindApplyParams = parse(params)?;
+                let mut result = self.rewind_apply(p, client_id, kind).await?;
+                result.thread = result.thread.for_client(caps.items3);
+                to_value(&result)
+            }
+            method::REWIND_UNDO => {
+                let p: RewindUndoParams = parse(params)?;
+                let thread = self.rewind_undo(p, kind).await?;
+                to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
+            }
+            method::THREAD_FORK => {
+                let p: ThreadForkParams = parse(params)?;
+                let thread = self.thread_fork(p).await?;
+                to_value(&ThreadResult { thread: thread.for_client(caps.items3) })
             }
             method::HELLO => Err(RpcError::new(ErrorCode::BadRequest, "already said hello")),
             _ => Err(RpcError::new(ErrorCode::BadRequest, UNKNOWN_METHOD)),
@@ -1374,6 +1543,175 @@ impl Host {
         self.hub.broadcast(&Event::SettingsChanged(settings));
         Ok(settings)
     }
+
+    // ---- Sessions found on this PC (§U4), served by `sessions` ----
+
+    /// `sessions.scan`: starts or continues the scan, answers at once.
+    async fn sessions_scan(self: &Arc<Self>, p: SessionsScanParams) -> Result<SessionsScanResult, RpcError> {
+        sessions::scan::answer(self, p).await
+    }
+
+    /// `sessions.import`: one job at a time.
+    async fn sessions_import(
+        self: &Arc<Self>,
+        p: SessionsImportParams,
+    ) -> Result<SessionsImportResult, RpcError> {
+        let job = sessions::import::import(self, p.ids, p.by).await?;
+        Ok(SessionsImportResult { job: job.job, total: job.total })
+    }
+
+    async fn import_cancel(&self, job: &str) -> Result<(), RpcError> {
+        sessions::import::cancel(self, job)
+    }
+
+    /// `session.preview`: read on demand, nothing stored.
+    async fn session_preview(&self, p: SessionPreviewParams) -> Result<Vec<Item>, RpcError> {
+        let limit = p.limit.unwrap_or(DEFAULT_PREVIEW_LIMIT).clamp(1, MAX_PREVIEW_LIMIT);
+        sessions::import::preview(self, &p.id, limit).await
+    }
+
+    /// A session brought in becomes a thread (`sessions::FoundStore::bring_in`):
+    /// saved with its items and turns and linked to its session in one go,
+    /// then listed. It is not unread and raises no notification.
+    fn bring_in(&self, b: sessions::import::BroughtIn) -> Result<String, RpcError> {
+        let failed = |_| RpcError::new(ErrorCode::Internal, "Couldn't save the thread.");
+        let id = {
+            let reg = self.lock_reg();
+            let mut id = threads::random_hex(16);
+            while reg.threads.contains_key(&id) {
+                id = threads::random_hex(16);
+            }
+            id
+        };
+        let info = brought_in_info(&id, &b);
+        let cols = db::ThreadCols {
+            next_seq: b.next_seq(),
+            next_turn: b.next_turn(),
+            cwd: if b.folder.is_none() { b.cwd.clone() } else { None },
+            read_seq: b.last_seq(),
+            found_id: Some(b.found_id.clone()),
+            ..db::ThreadCols::default()
+        };
+        let thread = id.clone();
+        let loaded = self
+            .store
+            .db_blocking(move |db| {
+                db.save_thread(&info, &cols)?;
+                for item in &b.items {
+                    db.append_item(&thread, item)?;
+                }
+                for turn in &b.turns {
+                    db.save_turn(&thread, turn, None)?;
+                }
+                db.flush()?;
+                db.set_found_thread(&b.found_id, Some(&thread))?;
+                db.load_thread(&thread)
+            })
+            .map_err(failed)?
+            .ok_or_else(|| RpcError::new(ErrorCode::Internal, "Couldn't save the thread."))?;
+        let mut reg = self.lock_reg();
+        let folders = reg.folders.clone();
+        let mut entry = threads::Registry::entry_from(loaded, &folders);
+        threads::emit_state(self, &mut entry);
+        reg.threads.insert(id.clone(), entry);
+        Ok(id)
+    }
+}
+
+/// The thread a session brought in becomes: done, read, `found`, and
+/// read-only while no agent folder holds its working directory.
+fn brought_in_info(id: &str, b: &sessions::import::BroughtIn) -> ThreadInfo {
+    ThreadInfo {
+        id: id.to_owned(),
+        agent: b.agent,
+        folder_id: b.folder.as_ref().map(|f| f.0.clone()).unwrap_or_default(),
+        folder_label: b.folder_label.clone(),
+        title: b.title.clone(),
+        state: State::Done,
+        mode: Mode::Supervised,
+        origin: b.origin.clone(),
+        created_ms: b.created_ms,
+        updated_ms: b.updated_ms,
+        last_seq: b.last_seq(),
+        pending: 0,
+        summary: None,
+        error: None,
+        native_id: Some(b.native_id.clone()),
+        step: None,
+        plan: None,
+        state_since_ms: b.updated_ms,
+        subdir: b.folder.as_ref().and_then(|f| f.1.clone()),
+        continued: false,
+        model: None,
+        effort: None,
+        answered_model: None,
+        queued: Vec::new(),
+        queue_held: false,
+        context: None,
+        mcp: None,
+        asking: 0,
+        pinned: false,
+        archived: false,
+        unread: false,
+        snoozed_until_ms: None,
+        turns: b.turns.last().map_or(0, |t| t.turn),
+        forked_from: None,
+        found: true,
+        readonly: b.folder.is_none().then_some(Readonly::OutsideFolders),
+        undo: None,
+    }
+}
+
+/// The thread database as the session reader uses it (`sessions::FoundStore`),
+/// from its blocking worker.
+struct FoundStoreOf {
+    host: std::sync::Weak<Host>,
+}
+
+impl std::fmt::Debug for FoundStoreOf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FoundStoreOf")
+    }
+}
+
+impl FoundStoreOf {
+    fn store(&self) -> io::Result<(Arc<Host>, StoreHandle)> {
+        let host = self.host.upgrade().ok_or_else(|| io::Error::other("the host stopped"))?;
+        let store = host.store.clone();
+        Ok((host, store))
+    }
+}
+
+impl sessions::FoundStore for FoundStoreOf {
+    fn found_files(&self) -> io::Result<Vec<(String, db::FoundFile)>> {
+        self.store()?.1.db_blocking(|db| db.found_files())
+    }
+
+    fn found(&self, q: &db::FoundQuery) -> io::Result<db::FoundPage> {
+        let q = q.clone();
+        self.store()?.1.db_blocking(move |db| db.found(&q))
+    }
+
+    fn found_row(&self, id: &str) -> io::Result<Option<db::FoundRow>> {
+        let id = id.to_owned();
+        self.store()?.1.db_blocking(move |db| db.found_row(&id))
+    }
+
+    fn upsert_found(&self, rows: &[db::FoundRow]) -> io::Result<()> {
+        let rows = rows.to_vec();
+        self.store()?.1.db_blocking(move |db| db.upsert_found(&rows))
+    }
+
+    fn forget_found_files(&self, files: &[(String, String)]) -> io::Result<()> {
+        let files = files.to_vec();
+        self.store()?.1.db_blocking(move |db| db.forget_found_files(&files))
+    }
+
+    fn bring_in(&self, thread: sessions::import::BroughtIn) -> Result<String, RpcError> {
+        let (host, _) =
+            self.store().map_err(|_| RpcError::new(ErrorCode::Unavailable, "The host stopped."))?;
+        host.bring_in(thread)
+    }
 }
 
 /// Keeps the newest answered tokens so a late answer gets `ALREADY_ANSWERED`.
@@ -1436,13 +1774,14 @@ fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Op
         sessions: true,
         keep_awake_bus: false,
     };
-    let mut store = Store::open(config.data_dir.clone()).unwrap();
-    let registry = Registry::load(&mut store, approval_lifetime_ms);
+    let mut db = db::Db::open(&config.data_dir).unwrap();
+    let store = Store::open(config.data_dir.clone()).unwrap();
+    let registry = Registry::load(&store, Some(&mut db), approval_lifetime_ms);
     let (events, _) = mpsc::unbounded_channel();
     let images = open_images(&config);
     Arc::new(Host {
         hub: Hub::default(),
-        store: StoreHandle::spawn(store).unwrap(),
+        store: StoreHandle::spawn(store, Some(db)).unwrap(),
         reg: Mutex::new(registry),
         probes: tokio::sync::Mutex::new(ProbeCache::default()),
         folders_lock: tokio::sync::Mutex::new(()),
@@ -1460,6 +1799,9 @@ fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Op
         commands: Mutex::new(commands::Commands::default()),
         images,
         uploads: Mutex::new(HashMap::new()),
+        rewinds: Mutex::new(undo::RewindTokens::default()),
+        searches: Mutex::new(HashMap::new()),
+        git: git::Git::new(&config.env),
         clients: AtomicUsize::new(0),
         next_client: AtomicU64::new(1),
         idle_since: Mutex::new(Instant::now()),
@@ -1527,5 +1869,33 @@ mod tests {
             outbox.push(format!("x{i}"), false);
         }
         assert!(outbox.is_closed(), "full of items: closed");
+    }
+
+    #[test]
+    fn scan_progress_reaches_only_the_connections_that_scan() {
+        let hub = Hub::default();
+        let subscribed = hub.test_subscriber(Caps::default());
+        let scanning = hub.test_viewer(ClientKind::Link, None);
+        hub.set(scanning, |slot| slot.scans = true);
+        let scanned =
+            Event::SessionsScanned(SessionsScannedEvent { total: 12, scanning: true, partial: false });
+        hub.broadcast(&scanned);
+        let progress = Event::ImportProgress(ImportProgressEvent {
+            job: "0123456789abcdef".into(),
+            done: 1,
+            failed: 0,
+            total: 2,
+            thread_id: None,
+        });
+        hub.broadcast(&progress);
+        let cut = Event::ThreadCut(ThreadCutEvent {
+            thread_id: "t".into(),
+            from_seq: 3,
+            to_seq: 9,
+            restored: false,
+        });
+        hub.broadcast(&cut);
+        assert_eq!(hub.test_lines(scanning), [scanned.to_line()], "unsubscribed, but it asked to scan");
+        assert_eq!(hub.test_lines(subscribed), [progress.to_line(), cut.to_line()]);
     }
 }
