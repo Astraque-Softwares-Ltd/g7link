@@ -115,14 +115,15 @@ Item {
             }
             TouchpadGlide { view: pagedRows }
         }
-        G7ScrollBar {
-            flickable: sideways
-            parent: sideways
-            orientation: Qt.Horizontal
-            anchors.left: sideways.left
-            anchors.right: sideways.right
-            anchors.bottom: sideways.bottom
-        }
+    }
+    // Beside the view, not in its moving content.
+    G7ScrollBar {
+        visible: diffView.paged
+        flickable: sideways
+        orientation: Qt.Horizontal
+        anchors.left: sideways.left
+        anchors.right: sideways.right
+        anchors.bottom: sideways.bottom
     }
     G7ScrollBar {
         visible: diffView.paged
