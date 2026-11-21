@@ -53,6 +53,7 @@ fn a_thread(id: &str) -> ThreadInfo {
         worktree: None,
         changed: None,
         wrote: None,
+        ports: Vec::new(),
     }
 }
 

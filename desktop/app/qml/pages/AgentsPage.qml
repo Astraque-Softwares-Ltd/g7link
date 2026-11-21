@@ -205,6 +205,11 @@ Item {
     readonly property string listIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 4v16"
     // Tabler's layout-sidebar-right (MIT, as Icons.qml credits): the details panel's toggle.
     readonly property string detailsIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4v16"
+    // Lucide's columns-2, list-checks and server (ISC, as AgentGitGlyphs.qml
+    // credits): the phone beside the PC, its Plan pane, and a dev server.
+    readonly property string besideIcon: "M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM12 3v18"
+    readonly property string listChecksIcon: "M3 17l2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8"
+    readonly property string serverIcon: "M5 2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM5 14h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2zM6 6h.01M6 18h.01"
 
     readonly property string phase: info.state || ""
     readonly property bool running: isThread && (phase === "working" || phase === "waiting")
@@ -319,6 +324,20 @@ Item {
     }
     // A phone shows this thread now, so this PC doesn't notify about it.
     readonly property string openOnText: (info.open_on || "").length > 0 ? qsTr("open on %1").arg(info.open_on) : ""
+    // The phone that shows this thread's Changes, Plan or Requests beside
+    // the PC (§V9.1): { device, name, pane }.
+    readonly property var beside: isThread ? (info.beside || ({})) : ({})
+    readonly property bool besideShown: (beside.name || "").length > 0 && (beside.device || "").length > 0
+    readonly property var besidePanes: ["changes", "plan", "requests"]
+    function paneName(word) {
+        return word === "plan" ? qsTr("Plan") : word === "requests" ? qsTr("Requests") : qsTr("Changes")
+    }
+    function paneIcon(word) {
+        return word === "plan" ? page.listChecksIcon : word === "requests" ? Icons.bell : Icons.edit
+    }
+    // A dev server the thread started (§V9.2): { port, lan, phones: [{ id, name }] }.
+    readonly property var server: isThread ? (info.server || ({})) : ({})
+    readonly property int serverPort: server.port || 0
     // Where it was started, for the details.
     readonly property string originLine: {
         if (isSession) {
@@ -1352,6 +1371,68 @@ Item {
                     open: page.gitShown
                     onClicked: page.toggleGit()
                 }
+                // The phone beside this PC and the pane it shows: the menu switches it (§V9.1).
+                Rectangle {
+                    id: besidePill
+                    function openMenu() {
+                        const p = page.mapFromItem(besidePill, besidePill.width, besidePill.height)
+                        besideMenu.openAt(p.x, p.y, false, true)
+                    }
+                    visible: page.besideShown && !page.diffShown
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: besideRow.implicitWidth + 20
+                    height: 28
+                    radius: Theme.radiusSm
+                    color: besideMenu.opened ? Theme.activeFill : besideHover.hovered ? Theme.selection : Theme.raised
+                    border.width: besidePill.activeFocus ? 1 : 0
+                    border.color: Theme.focusRing
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.ButtonMenu
+                    Accessible.name: besideText.text
+                    Accessible.onPressAction: besidePill.openMenu()
+                    Keys.onPressed: (event) => {
+                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                            besidePill.openMenu()
+                            event.accepted = true
+                        }
+                    }
+                    Row {
+                        id: besideRow
+                        x: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+                        Icon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 14
+                            height: 14
+                            path: page.besideIcon
+                            color: Theme.surfaceContentVariant
+                        }
+                        Txt {
+                            id: besideText
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.min(implicitWidth, page.narrow ? 140 : 240)
+                            text: qsTr("%1 shows %2").arg(page.beside.name || "").arg(page.paneName(page.beside.pane || ""))
+                            role: "bodySmall"
+                            weight: 500
+                            maximumLineCount: 1
+                        }
+                        Icon {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 12
+                            height: 12
+                            path: Icons.chevronDown
+                            color: Theme.surfaceContentVariant
+                        }
+                    }
+                    HoverHandler {
+                        id: besideHover
+                        cursorShape: Qt.PointingHandCursor
+                    }
+                    TapHandler {
+                        onTapped: besidePill.openMenu()
+                    }
+                }
                 // The thread's menu: continue it on a phone, and its marks.
                 IconButton {
                     id: headMore
@@ -1721,6 +1802,81 @@ Item {
                         role: "bodySmall"
                         color: AgentPalette.needsYou
                         maximumLineCount: 1
+                    }
+                }
+
+                // A dev server the thread started: open it here, or on a phone
+                // when it answers on the network (§V9.2).
+                Rectangle {
+                    id: serverLine
+                    visible: page.serverPort > 0
+                    width: parent.width
+                    height: visible ? serverColumn.implicitHeight + 16 : 0
+                    radius: Theme.radiusMd
+                    color: Theme.raised
+                    Column {
+                        id: serverColumn
+                        x: 12
+                        y: 8
+                        width: parent.width - 24
+                        spacing: 2
+                        Item {
+                            width: parent.width
+                            height: Math.max(serverText.implicitHeight, serverActions.implicitHeight)
+                            Icon {
+                                id: serverGlyph
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 15
+                                height: 15
+                                path: page.serverIcon
+                                color: Theme.surfaceContentVariant
+                            }
+                            Txt {
+                                id: serverText
+                                anchors.left: serverGlyph.right
+                                anchors.leftMargin: 8
+                                anchors.right: serverActions.left
+                                anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: qsTr("A server is listening on port %1").arg(page.serverPort)
+                                role: "bodySmall"
+                                maximumLineCount: 1
+                            }
+                            Row {
+                                id: serverActions
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 2
+                                Button {
+                                    variant: "text"
+                                    size: "sm"
+                                    text: qsTr("Open in browser")
+                                    onClicked: Agents.openServer(page.serverPort)
+                                }
+                                Repeater {
+                                    model: page.server.lan === true ? (page.server.phones || []) : []
+                                    delegate: Button {
+                                        required property var modelData
+                                        variant: "text"
+                                        size: "sm"
+                                        text: qsTr("Open on %1").arg(modelData.name || "")
+                                        onClicked: Agents.openServerOn(page.serverPort, modelData.id || "")
+                                    }
+                                }
+                            }
+                        }
+                        // Bound to this PC's loopback: said, not tunnelled.
+                        Txt {
+                            visible: page.server.lan === false
+                            x: 23
+                            width: parent.width - x
+                            text: qsTr("It only answers on this PC. Start it with --host to open it on a phone.")
+                            role: "bodySmall"
+                            muted: true
+                            wrapMode: Text.WordWrap
+                            elide: Text.ElideNone
+                        }
                     }
                 }
 
@@ -3128,6 +3284,17 @@ Item {
               run: () => page.markThreads([Agents.openId], headMenu.row.archived === true ? "unarchive" : "archive") }
         ] : [])
         panelWidth: 260
+        z: 20
+    }
+
+    // What the phone beside this PC shows of the open thread (§V9.1).
+    PopupMenu {
+        id: besideMenu
+        actions: page.besidePanes.map((word) => ({
+            label: page.paneName(word), icon: page.paneIcon(word), checked: page.beside.pane === word,
+            run: () => Agents.beside(page.beside.device || "", word)
+        }))
+        panelWidth: 240
         z: 20
     }
 

@@ -692,6 +692,8 @@ impl AppState {
             | NodeEvent::AgentViewing { .. }
             // Phones only: a PC hands them threads, it never gets one this way.
             | NodeEvent::AgentHandoff { .. }
+            // Phones only: a PC switches what they show beside it.
+            | NodeEvent::AgentBeside { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,

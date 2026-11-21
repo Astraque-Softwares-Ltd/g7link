@@ -4,7 +4,7 @@
 // in Rust is translated like the rest (see desktop/app/src/i18n.rs).
 
 static const char *const g7link_rust_strings[] = {
-    QT_TRANSLATE_NOOP("Agents", "%1 isn't reachable."), // desktop/app/src/agents.rs
+    QT_TRANSLATE_NOOP("Agents", "%1 isn't reachable."), // desktop/app/src/agents/beside.rs
     QT_TRANSLATE_NOOP("Agents", "A branch with that name exists."), // desktop/app/src/agents/source.rs
     QT_TRANSLATE_NOOP("Agents", "A newer plan took its place."), // desktop/app/src/agents.rs
     QT_TRANSLATE_NOOP("Agents", "Add its folder to your agent folders first."), // desktop/app/src/agents.rs

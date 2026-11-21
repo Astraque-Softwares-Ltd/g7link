@@ -42,7 +42,8 @@ use g7link_core::{
     QueueAction, agent,
 };
 use g7link_core::{
-    AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPresence, history as wire_history,
+    AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPort, AgentPresence,
+    history as wire_history,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -50,6 +51,7 @@ use tokio::sync::{Notify, watch};
 
 use crate::{core_host, i18n::tr, state::Changes};
 
+mod beside;
 mod control;
 mod handoff;
 mod history;
@@ -57,6 +59,7 @@ mod history_page;
 #[cfg(test)]
 mod history_tests;
 mod photo;
+mod ports;
 mod presence;
 pub(crate) mod reply;
 mod rows;
@@ -64,6 +67,7 @@ pub(crate) mod source;
 mod source_relay;
 #[cfg(test)]
 mod source_tests;
+pub(crate) use beside::switch as switch_beside;
 pub(crate) use history_page::{
     diff_close, diff_open, diff_scope, diff_select, diff_step, diff_uncommitted, edit_from_here, fork_turn,
     import_agent, import_cancel, import_clear, import_close, import_more, import_open, import_pick,
@@ -72,6 +76,7 @@ pub(crate) use history_page::{
     set_folder_checkpoints, show_shelf, store_info, undo_rewind,
 };
 pub(crate) use photo::{cancel as cancel_photo, take as take_photo};
+pub(crate) use ports::{open_in_browser as open_server, open_on as open_server_on};
 pub(crate) use rows::{CodePalette, LinkRef, ModelRow, Role, RoleValue, RowOp};
 #[cfg(test)]
 pub(crate) use rows::{Extra, model_row};
@@ -1723,6 +1728,8 @@ pub(crate) fn thread(info: &ThreadInfo, phone: Option<&DeviceId>) -> AgentThread
             need_login: m.need_login,
         }),
         asking: info.asking,
+        // Dev servers: a phone opens one that answers on the network.
+        ports: info.ports.iter().map(|p| AgentPort::new(p.port, p.reach == api::Reach::Lan)).collect(),
         ..Default::default()
     };
     history::wire_thread_extras(info, &mut wire);
@@ -2189,10 +2196,14 @@ impl Relay for NodeRelay {
 
 /// What G7 Link says to the host: it understands reasoning items, plans and
 /// questions, and the fields added with them (phones that don't get them as
-/// the core makes them), it sets and hears presence, and it takes the
-/// launcher's hand-offs and photo requests.
+/// the core makes them), it sets and hears presence, it takes the
+/// launcher's hand-offs and photo requests, and it sends the pane a phone
+/// beside the PC shows.
 fn hello() -> HelloParams {
-    HelloParams::new(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3, cap::PRESENCE, cap::HANDOFF, cap::PHOTO])
+    HelloParams::new(
+        ClientKind::Link,
+        &[cap::ITEMS2, cap::ITEMS3, cap::PRESENCE, cap::HANDOFF, cap::PHOTO, cap::BESIDE],
+    )
 }
 
 /// A connection that follows a session for a phone: as [`hello`], but it
@@ -2707,6 +2718,12 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             }
         }
         Event::UiPhotoCancel(e) => photo::launcher_cancel(&e.request),
+        // The header's pick, through the host: the phone beside the PC shows that pane.
+        Event::UiBeside(e) => {
+            if core_host::try_host().is_some() {
+                beside::from_host(e);
+            }
+        }
     }
 }
 
@@ -3326,9 +3343,11 @@ pub(crate) fn view() -> View {
     // nor presence's.
     let palette = bridge().render().palette.clone();
     let phones = presence::shown();
-    // Phones that can take a photo, and that a thread can be handed to.
+    // Phones that can take a photo, that a thread can be handed to, and
+    // that can open a dev server.
     let cameras = photo::cameras();
     let handoff_phones = handoff::shown_phones();
+    let server_phones = ports::phones(&handoff_phones);
     let s = lock();
     let now = now_ms();
     let threads = listed_threads(&s.threads, now);
@@ -3349,6 +3368,10 @@ pub(crate) fn view() -> View {
                     .map(|(id, name)| json!({ "id": id.to_string(), "name": name }))
                     .collect::<Vec<_>>()
             );
+            // "Pixel shows Changes", with a menu to switch it.
+            row["beside"] = beside::header(&phones, &o.id);
+            // "A server is listening on port 5173".
+            row["server"] = ports::line(&ports::of(t), &server_phones);
             row
         }),
         Some(o) if o.kind == OpenKind::Preview => s
@@ -5924,6 +5947,7 @@ mod tests {
             worktree: None,
             changed: None,
             wrote: None,
+            ports: Vec::new(),
         }
     }
 
@@ -6031,6 +6055,19 @@ mod tests {
         let mut old = info(Origin::launcher());
         old.state_since_ms = 0;
         assert_eq!(thread(&old, None).since, None, "a thread from 0.1.13 has no start time");
+    }
+
+    #[test]
+    fn phones_get_a_threads_dev_servers_and_where_they_answer() {
+        let mut serving = info(Origin::launcher());
+        serving.ports = vec![
+            api::Port { port: 5173, reach: api::Reach::Lan, since_ms: 10 },
+            api::Port { port: 8080, reach: api::Reach::Pc, since_ms: 20 },
+        ];
+        let wire = thread(&serving, None);
+        assert_eq!(wire.ports, vec![AgentPort::new(5173, true), AgentPort::new(8080, false)]);
+        assert!(wire.is_valid());
+        assert!(thread(&info(Origin::launcher()), None).ports.is_empty(), "none listens: none on the wire");
     }
 
     #[test]

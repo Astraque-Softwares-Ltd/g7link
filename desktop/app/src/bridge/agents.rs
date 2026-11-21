@@ -222,6 +222,16 @@ pub mod qobject {
         /// "Continue on <phone>" (`device`: its id, as `handoff` lists it).
         #[qinvokable]
         fn handoff(self: &Agents, device: &QString);
+        /// The phone beside the PC (`device`: its id, as `beside` names it)
+        /// shows `pane` of the open thread: "changes", "plan" or "requests".
+        #[qinvokable]
+        fn beside(self: &Agents, device: &QString, pane: &QString);
+        /// "Open in browser": the open thread's dev server on `port`.
+        #[qinvokable]
+        fn open_server(self: &Agents, port: i32);
+        /// "Open on <phone>" (`device`: its id, as `server` lists it).
+        #[qinvokable]
+        fn open_server_on(self: &Agents, port: i32, device: &QString);
         /// The first message on screen ("" while the newest are shown).
         #[qinvokable]
         fn reading_at(self: &Agents, item_id: &QString);
@@ -956,6 +966,18 @@ impl qobject::Agents {
 
     pub fn handoff(&self, device: &QString) {
         agents::handoff_to(String::from(device));
+    }
+
+    pub fn beside(&self, device: &QString, pane: &QString) {
+        agents::switch_beside(String::from(device), String::from(pane));
+    }
+
+    pub fn open_server(&self, port: i32) {
+        agents::open_server(port);
+    }
+
+    pub fn open_server_on(&self, port: i32, device: &QString) {
+        agents::open_server_on(port, String::from(device));
     }
 
     pub fn reading_at(&self, item_id: &QString) {
