@@ -98,10 +98,14 @@ Item {
         default: return w
         }
     }
+    // This PC will say when the reached limit resets (its alarm is on): a bell.
+    readonly property bool limitTold: composerState.limitTold === true && limit.state === "reached"
     readonly property string limitText: {
         if (!limit.window)
             return ""
         const resets = limit.resetsMs > 0 ? clock(limit.resetsMs) : ""
+        if (limitTold && resets.length > 0)
+            return qsTr("Paused until %1 · you'll be told").arg(dayClock(limit.resetsMs))
         if (limit.state === "reached")
             return resets.length > 0 ? qsTr("Usage limit reached · resets %1").arg(resets) : qsTr("Usage limit reached")
         const name = windowName(limit.window)
@@ -246,12 +250,22 @@ Item {
     function clock(ms) {
         return ms > 0 ? new Date(ms).toLocaleTimeString(Qt.locale(), Locale.ShortFormat) : ""
     }
+    // "18:00" today, else the day and the time.
+    function dayClock(ms) {
+        const when = new Date(ms)
+        return new Date(page.now).toDateString() === when.toDateString()
+            ? clock(ms) : when.toLocaleDateString(Qt.locale(), "ddd") + " " + clock(ms)
+    }
     readonly property string stateWord: {
         if (isSession) {
             switch (phase) {
             case "needs_you": return info.guess ? qsTr("May need you") : qsTr("Needs you")
             case "working": return qsTr("Working")
             case "idle": return qsTr("Idle")
+            // It stopped at its agent's usage limit.
+            case "limited":
+                return (info.resets_ms || 0) > 0 ? qsTr("Limit reached · resets %1").arg(dayClock(info.resets_ms))
+                                                 : qsTr("Limit reached")
             default: return qsTr("Ended")
             }
         }
@@ -279,6 +293,8 @@ Item {
             return qsTr("started in a terminal")
         return info.continued ? qsTr("continued from a session") : ""
     }
+    // A phone shows this thread now, so this PC doesn't notify about it.
+    readonly property string openOnText: (info.open_on || "").length > 0 ? qsTr("open on %1").arg(info.open_on) : ""
     // Where it was started, for the details.
     readonly property string originLine: {
         if (isSession) {
@@ -1224,7 +1240,7 @@ Item {
                         width: Math.min(implicitWidth, parent.width - 18 - (forkLink.visible ? forkLink.width + 6 : 0))
                         anchors.verticalCenter: parent.verticalCenter
                         text: [page.stateWord, page.agentName, page.isSession ? page.info.shown_cwd : page.info.folder,
-                               page.info.found === true ? qsTr("Brought in") : page.originText]
+                               page.info.found === true ? qsTr("Brought in") : page.originText, page.openOnText]
                             .filter((s) => (s || "").length > 0).join(" · ")
                         role: "bodySmall"
                         muted: true
@@ -1622,7 +1638,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 14
                         height: 14
-                        path: Icons.history
+                        path: page.limitTold ? Icons.bell : Icons.history
                         color: AgentPalette.needsYou
                     }
                     Txt {

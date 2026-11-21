@@ -38,9 +38,12 @@ use g7link_core::{
     AgentDraft, AgentDraftSaved, AgentEvent, AgentExport, AgentFailure, AgentFileHit, AgentFiles, AgentImage,
     AgentItem, AgentItemQuestion, AgentItems, AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion,
     AgentQuestionAsk, AgentQuestionOption, AgentQuestioned, AgentQueued, AgentReply, AgentRequest,
-    AgentSession, AgentSessionItems, AgentThread, AgentTool, AgentTurn, DeviceId, Node, QueueAction, agent,
+    AgentSession, AgentSessionItems, AgentSessionLimit, AgentThread, AgentTool, AgentTurn, DeviceId, Node,
+    QueueAction, agent,
 };
-use g7link_core::{AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, history as wire_history};
+use g7link_core::{
+    AgentCut, AgentImportJob, AgentImportProgress, AgentPatchPage, AgentPresence, history as wire_history,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, watch};
@@ -52,6 +55,7 @@ mod history;
 mod history_page;
 #[cfg(test)]
 mod history_tests;
+mod presence;
 mod rows;
 pub(crate) use history_page::{
     diff_close, diff_open, diff_scope, diff_select, diff_step, edit_from_here, fork_turn, import_agent,
@@ -1210,6 +1214,9 @@ struct BridgeState {
     control: bool,
     /// Keep this PC awake while an agent works (`None`: not known).
     keep_awake: Option<bool>,
+    /// Tell me when a limit resets (`None`: not known, or the host has no
+    /// such alarm).
+    limit_alarm: Option<bool>,
     /// Questions waiting, by thread, as the host announced them.
     questions: HashMap<String, Vec<Question>>,
     /// The page's own settings (the follow-up key, sticky choices).
@@ -1429,6 +1436,7 @@ pub fn host_installed() -> bool {
 /// host when the page, the user or a phone needs it.
 pub fn start() {
     core_host::spawn(run());
+    presence::start();
     core_host::spawn(async {
         let read = tokio::task::spawn_blocking(|| {
             core_host::try_data_dir()
@@ -1505,10 +1513,13 @@ pub fn wake() {
     bridge().wake.notify_one();
 }
 
-/// A phone was unpaired: it may have been the one that wanted the host.
+/// A phone was unpaired: it may have been the one that wanted the host. A
+/// phone said what it shows: presence reads it now.
 pub fn on_event(event: &g7link_core::NodeEvent) {
-    if matches!(event, g7link_core::NodeEvent::DeviceRemoved(_)) {
-        wake();
+    match event {
+        g7link_core::NodeEvent::DeviceRemoved(_) => wake(),
+        g7link_core::NodeEvent::AgentViewing { .. } => presence::wake(),
+        _ => {}
     }
 }
 
@@ -1741,6 +1752,8 @@ pub(crate) fn session(s: &Session) -> AgentSession {
         can_continue: s.can_continue,
         blocked: s.blocked.as_ref().map(word),
         since: (s.state_since_ms > 0).then_some(s.state_since_ms),
+        // Stopped at its usage limit: its state stays `idle`.
+        limit: s.limit.map(|l| AgentSessionLimit { resets_ms: l.resets_ms }),
     }
 }
 
@@ -1887,8 +1900,17 @@ fn session_row(s: &Session, home: Option<&std::path::Path>) -> Value {
         "folder": s.folder_label,
         "shown_cwd": shown_path(&s.cwd, home),
         "title": s.title,
-        // The page shows a guess as "needs you" with `guess`: "May need you".
-        "state": if guessed_needs_you(s) { "needs_you".to_owned() } else { word(&s.state) },
+        // The page shows a guess as "needs you" with `guess`: "May need you",
+        // and a session stopped at its usage limit as "limited" (paused, never
+        // working): "Limit reached · resets 18:00".
+        "state": if s.limit.is_some() {
+            "limited".to_owned()
+        } else if guessed_needs_you(s) {
+            "needs_you".to_owned()
+        } else {
+            word(&s.state)
+        },
+        "resets_ms": s.limit.and_then(|l| l.resets_ms).unwrap_or(0),
         "guess": s.state_guess || s.state == SessionState::NeedsYouGuess,
         "since_ms": s.state_since_ms,
         "waiting_for": s.waiting_for.clone().unwrap_or_default(),
@@ -2017,6 +2039,9 @@ trait Relay {
     async fn cut(&self, cut: AgentCut);
     /// How bringing in sessions goes.
     async fn import(&self, progress: AgentImportProgress);
+    /// Who is at this PC and what it shows, for phones (never another
+    /// phone's view).
+    async fn presence(&self, told: AgentPresence);
 }
 
 /// The node: phones get the host's news through the core.
@@ -2097,12 +2122,22 @@ impl Relay for NodeRelay {
             tracing::debug!(error = %e, "an import's progress wasn't passed on");
         }
     }
+
+    async fn presence(&self, told: AgentPresence) {
+        presence::tell_phones(&self.0, told);
+    }
 }
 
 /// What G7 Link says to the host: it understands reasoning items, plans and
 /// questions, and the fields added with them (phones that don't get them as
-/// the core makes them).
+/// the core makes them), and it sets and hears presence.
 fn hello() -> HelloParams {
+    HelloParams::new(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3, cap::PRESENCE])
+}
+
+/// A connection that follows a session for a phone: as [`hello`], but it
+/// doesn't hear presence (the page's connection relays it).
+fn watch_hello() -> HelloParams {
     HelloParams::new(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3])
 }
 
@@ -2223,13 +2258,14 @@ async fn serve<R: Relay>(
     let control = client.host().has(cap::CONTROL);
     let history = client.host().has(cap::HISTORY);
     let undo = client.host().has(cap::UNDO);
+    let presence = client.host().has(cap::PRESENCE);
     if outdated {
         tracing::info!(
             host = %client.host().host_version,
             "the agent host is out of date; it's replaced once no thread runs on it"
         );
     }
-    let reopen = {
+    let (reopen, conn) = {
         let mut s = bridge.lock();
         s.client = Some(client.clone());
         s.conn += 1;
@@ -2245,11 +2281,13 @@ async fn serve<R: Relay>(
         s.sessions = sessions.unwrap_or_default();
         s.following = settings.map(|x| x.follow_sessions);
         s.keep_awake = settings.filter(|_| control).map(|x| x.keep_awake);
+        s.limit_alarm = settings.filter(|_| presence).map(|x| x.limit_alarm);
         s.control = control;
         s.history = history;
         s.undo = undo;
-        s.open.as_ref().map(|o| (o.generation, o.kind, o.id.clone()))
+        (s.open.as_ref().map(|o| (o.generation, o.kind, o.id.clone())), s.conn)
     };
+    presence::connected(conn, presence);
     bridge.connected.send_replace(true);
     changed();
     core_host::refresh_capabilities();
@@ -2302,6 +2340,7 @@ async fn serve<R: Relay>(
         s.sessions.clear();
         s.following = None;
         s.keep_awake = None;
+        s.limit_alarm = None;
         s.history = false;
         s.undo = false;
         s.shelf = None;
@@ -2327,6 +2366,7 @@ async fn serve<R: Relay>(
             open.generation
         })
     };
+    presence::disconnected(conn);
     if let Some(generation) = generation {
         reset_rows(bridge, generation);
     }
@@ -2483,8 +2523,18 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             if s.control {
                 s.keep_awake = Some(e.keep_awake);
             }
+            if s.limit_alarm.is_some() {
+                s.limit_alarm = Some(e.limit_alarm);
+            }
             drop(s);
             changed();
+        }
+        // Who is at this PC and what it shows (launchers' views included):
+        // phones hear it without the phones' views.
+        Event::UiPresence(e) => {
+            if let Some(told) = presence::heard(&e) {
+                relay.presence(told).await;
+            }
         }
         Event::QuestionRequested(e) => {
             let info = bridge.known(&e.question.thread_id);
@@ -3058,7 +3108,7 @@ async fn phone_watch(from: DeviceId, session_id: String) -> Result<(), AgentFail
         WatchPlan::Open => {}
     }
     let fail = |e: ClientError| failure(&e);
-    let (client, mut events) = Client::connect(&client::socket_path(), hello()).await.map_err(fail)?;
+    let (client, mut events) = Client::connect(&client::socket_path(), watch_hello()).await.map_err(fail)?;
     client.session_watch(Some(session_id.clone())).await.map_err(fail)?;
     let Some(node) = core_host::node() else { return Err(AgentFailure::Unsupported) };
     let generation = lock().next_gen();
@@ -3150,15 +3200,25 @@ pub(crate) struct View {
 
 pub(crate) fn view() -> View {
     let home = dirs::home_dir();
-    // Taken first: the rows' lock is never taken while the state's is held.
+    // Taken first: the rows' lock is never taken while the state's is held,
+    // nor presence's.
     let palette = bridge().render().palette.clone();
+    let phones = presence::shown();
     let s = lock();
     let now = now_ms();
     let threads = listed_threads(&s.threads, now);
     let row_of = |t: &ThreadInfo| full_thread_row(t, &s.agents, now);
     let open = s.open.as_ref();
+    // The phone that shows the open thread or session: "open on Pixel".
+    let open_on = |thread: Option<&str>, session: Option<&str>| {
+        json!(presence::open_on(&phones, thread, session).unwrap_or_default())
+    };
     let open_info = match open {
-        Some(o) if o.kind == OpenKind::Thread => s.threads.get(&o.id).map(row_of),
+        Some(o) if o.kind == OpenKind::Thread => s.threads.get(&o.id).map(|t| {
+            let mut row = row_of(t);
+            row["open_on"] = open_on(Some(&o.id), None);
+            row
+        }),
         Some(o) if o.kind == OpenKind::Preview => s
             .import
             .as_ref()
@@ -3168,6 +3228,7 @@ pub(crate) fn view() -> View {
             let mut row = session_row(x, home.as_deref());
             // The page may add the folder the session runs in; this stays on the PC.
             row["cwd"] = json!(x.cwd);
+            row["open_on"] = open_on(None, Some(&o.id));
             row
         }),
         None => None,
@@ -3318,6 +3379,7 @@ fn composer_json(s: &BridgeState, open: &OpenView) -> Value {
         "commands": s.control && agent.is_some_and(|a| a.can(Can::Commands)),
         "queue": control::queue_json(info),
         "limit": control::limit_line(agent),
+        "limitTold": limit_told(s.limit_alarm, agent, now_ms()),
         "followUp": word(&s.prefs.follow_up),
         "pending": images,
         "adding": c.adding,
@@ -3329,6 +3391,17 @@ fn composer_json(s: &BridgeState, open: &OpenView) -> Value {
         // or the rewind is undone ("Editing your message · Cancel").
         "editing": editing(open, info),
     })
+}
+
+/// This PC will say when the agent's reached limit (the one the composer's
+/// line shows) resets: its alarm is on, and the CLI gave a time the host
+/// arms, within 8 days (§V5). Nothing resumes then; the user sends.
+fn limit_told(alarm: Option<bool>, agent: Option<&AgentInfo>, now_ms: u64) -> bool {
+    let reached = agent.and_then(|a| a.limits.iter().find(|l| l.state == api::LimitState::Reached));
+    alarm == Some(true)
+        && reached
+            .and_then(|l| l.resets_ms)
+            .is_some_and(|at| at > now_ms && at - now_ms <= api::LIMIT_ALARM_AHEAD_MS)
 }
 
 /// The thread was rewound with Edit from here and can still be undone.
@@ -3423,6 +3496,7 @@ fn setup_json(s: &BridgeState, home: Option<&std::path::Path>) -> String {
         "folders": folders,
         "control": s.control,
         "keepAwake": s.keep_awake,
+        "limitAlarm": s.limit_alarm,
         "followUp": word(&s.prefs.follow_up),
         "history": s.history,
         "undo": s.undo,
@@ -3565,6 +3639,9 @@ pub fn refresh() {
                 s.following = Some(settings.follow_sessions);
                 if s.control {
                     s.keep_awake = Some(settings.keep_awake);
+                }
+                if s.limit_alarm.is_some() {
+                    s.limit_alarm = Some(settings.limit_alarm);
                 }
             }
         }
@@ -5230,9 +5307,26 @@ pub fn set_folder_mcp(id: String, on: bool) {
 pub fn set_keep_awake(on: bool) {
     page_request(
         Request::Setting,
-        move |client| async move { client.settings_set(SettingsSetParams { keep_awake: Some(on) }).await },
+        move |client| async move {
+            client.settings_set(SettingsSetParams { keep_awake: Some(on), ..Default::default() }).await
+        },
         |settings: api::HostSettings| {
             lock().keep_awake = Some(settings.keep_awake);
+            changed();
+        },
+    );
+}
+
+/// Tells the user on this PC when an agent's usage limit resets, or stops.
+/// Nothing resumes on its own: the notification only opens the thread.
+pub fn set_limit_alarm(on: bool) {
+    page_request(
+        Request::Setting,
+        move |client| async move {
+            client.settings_set(SettingsSetParams { limit_alarm: Some(on), ..Default::default() }).await
+        },
+        |settings: api::HostSettings| {
+            lock().limit_alarm = Some(settings.limit_alarm);
             changed();
         },
     );
@@ -5592,6 +5686,7 @@ mod tests {
             summary: None,
             can_continue: false,
             blocked: Some(api::ContinueBlock::Open),
+            limit: None,
         }
     }
 
@@ -5695,6 +5790,45 @@ mod tests {
         assert!(guessed.is_valid());
         assert_eq!(exact.since, Some(7));
         assert_eq!(session(&a_session(SessionState::Ended, false)).state, "ended");
+    }
+
+    #[test]
+    fn a_session_stopped_at_its_limit_reads_paused_never_working() {
+        let home = std::path::Path::new("/home/me");
+        // The host may still guess it works (a live "busy"); the limit wins.
+        for state in [SessionState::Idle, SessionState::Working, SessionState::NeedsYouGuess] {
+            let limited = Session {
+                limit: Some(api::SessionLimit { resets_ms: Some(1_000) }),
+                ..a_session(state, true)
+            };
+            let row = session_row(&limited, Some(home));
+            assert_eq!((row["state"].as_str(), row["resets_ms"].as_u64()), (Some("limited"), Some(1_000)));
+            assert_eq!(needs_you([], std::slice::from_ref(&limited)), 0, "never counted as needing you");
+        }
+        let unknown = Session {
+            limit: Some(api::SessionLimit { resets_ms: None }),
+            ..a_session(SessionState::Idle, false)
+        };
+        let row = session_row(&unknown, Some(home));
+        assert_eq!(
+            (row["state"].as_str(), row["resets_ms"].as_u64()),
+            (Some("limited"), Some(0)),
+            "no time: \"Limit reached\""
+        );
+        assert_eq!(session_row(&a_session(SessionState::Idle, false), Some(home))["state"], "idle");
+
+        // Phones get the limit beside the host's own state.
+        let limited = Session {
+            limit: Some(api::SessionLimit { resets_ms: Some(1_000) }),
+            ..a_session(SessionState::Idle, false)
+        };
+        let wire = session(&limited);
+        assert_eq!(
+            (wire.state.as_str(), wire.limit),
+            ("idle", Some(AgentSessionLimit { resets_ms: Some(1_000) }))
+        );
+        assert!(wire.is_valid(), "{wire:?}");
+        assert_eq!(session(&a_session(SessionState::Idle, false)).limit, None);
     }
 
     #[test]
@@ -6045,6 +6179,38 @@ mod tests {
         assert!(wire.secret && wire.asks.is_empty());
         let shown = format!("{wire:?}");
         assert!(!shown.contains("cargo"), "{shown}");
+    }
+
+    #[test]
+    fn the_page_says_youll_be_told_only_when_the_host_will_tell_you() {
+        const HOUR: u64 = 3_600_000;
+        let now = 1_000 * HOUR;
+        let with = |state, resets_ms| {
+            let mut claude = AgentInfo::missing(AgentId::Claude);
+            claude.limits = vec![
+                api::Limit {
+                    window: "seven_day".into(),
+                    used_pct: Some(40),
+                    resets_ms: None,
+                    state: api::LimitState::Ok,
+                },
+                api::Limit { window: "five_hour".into(), used_pct: Some(100), resets_ms, state },
+            ];
+            claude
+        };
+        let reached = with(api::LimitState::Reached, Some(now + HOUR));
+        assert!(limit_told(Some(true), Some(&reached), now));
+        // The alarm off, or a host without it.
+        assert!(!limit_told(Some(false), Some(&reached), now));
+        assert!(!limit_told(None, Some(&reached), now));
+        // Nothing the host arms: no reset time, one past, one over 8 days ahead.
+        assert!(!limit_told(Some(true), Some(&with(api::LimitState::Reached, None)), now));
+        assert!(!limit_told(Some(true), Some(&with(api::LimitState::Reached, Some(now - 1))), now));
+        let far = now + api::LIMIT_ALARM_AHEAD_MS + 1;
+        assert!(!limit_told(Some(true), Some(&with(api::LimitState::Reached, Some(far))), now));
+        // Almost used is no stop: nothing to be told.
+        assert!(!limit_told(Some(true), Some(&with(api::LimitState::Warn, Some(now + HOUR))), now));
+        assert!(!limit_told(Some(true), None, now));
     }
 
     #[test]
@@ -6571,6 +6737,9 @@ mod tests {
         }
         async fn import(&self, progress: AgentImportProgress) {
             self.log.lock().unwrap().push(format!("import {}", progress.done));
+        }
+        async fn presence(&self, told: AgentPresence) {
+            self.log.lock().unwrap().push(format!("presence {}", told.at_pc));
         }
     }
 

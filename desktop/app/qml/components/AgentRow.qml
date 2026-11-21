@@ -81,6 +81,10 @@ FocusScope {
                 return qsTr("waiting in another app")
             case "working": return ""
             case "idle": return qsTr("idle")
+            // It stopped at its agent's usage limit.
+            case "limited":
+                return (item.resets_ms || 0) > 0 ? qsTr("Limit reached · resets %1").arg(snoozeTime(item.resets_ms))
+                                                 : qsTr("Limit reached")
             default: return qsTr("ended")
             }
         }

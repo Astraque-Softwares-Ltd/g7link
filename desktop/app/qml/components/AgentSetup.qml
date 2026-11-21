@@ -274,6 +274,18 @@ Column {
                 onToggled: (on) => Agents.setKeepAwake(on)
             }
         }
+        // The host posts it at the reset time; it opens the thread, nothing resumes.
+        // An older host has no such alarm.
+        Line {
+            visible: area.setup.limitAlarm === true || area.setup.limitAlarm === false
+            iconPath: Icons.bell
+            title: qsTr("Tell me when a limit resets")
+            Toggle {
+                label: qsTr("Tell me when a limit resets")
+                checked: area.setup.limitAlarm !== false
+                onToggled: (on) => Agents.setLimitAlarm(on)
+            }
+        }
         Line {
             iconPath: Icons.send
             title: qsTr("While it works, a new message")

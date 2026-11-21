@@ -237,6 +237,9 @@ pub mod qobject {
         /// "Keep this PC awake while an agent works".
         #[qinvokable]
         fn set_keep_awake(self: &Agents, on: bool);
+        /// "Tell me when a limit resets".
+        #[qinvokable]
+        fn set_limit_alarm(self: &Agents, on: bool);
         /// The composer gained or lost the keyboard.
         #[qinvokable]
         fn composer_focus(self: &Agents, focused: bool);
@@ -819,6 +822,10 @@ impl qobject::Agents {
 
     pub fn set_keep_awake(&self, on: bool) {
         agents::set_keep_awake(on);
+    }
+
+    pub fn set_limit_alarm(&self, on: bool) {
+        agents::set_limit_alarm(on);
     }
 
     pub fn composer_focus(&self, focused: bool) {

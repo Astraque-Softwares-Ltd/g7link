@@ -671,6 +671,9 @@ impl AppState {
             | NodeEvent::AgentCut { .. }
             | NodeEvent::AgentImport { .. }
             | NodeEvent::AgentOutbox { .. }
+            | NodeEvent::AgentPresence { .. }
+            // What a phone shows; the agents' presence reads it (Node::agent_views).
+            | NodeEvent::AgentViewing { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,

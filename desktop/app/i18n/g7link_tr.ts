@@ -2,12 +2,54 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="tr_TR" sourcelanguage="en_US">
 <context>
+    <name>AgentRow</name>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="86"/>
+        <source>Limit reached · resets %1</source>
+        <translation>Limite ulaşıldı · sıfırlanma: %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="87"/>
+        <source>Limit reached</source>
+        <translation>Limite ulaşıldı</translation>
+    </message>
+</context>
+<context>
+    <name>AgentSetup</name>
+    <message>
+        <location filename="../qml/components/AgentSetup.qml" line="282"/>
+        <location filename="../qml/components/AgentSetup.qml" line="284"/>
+        <source>Tell me when a limit resets</source>
+        <translation>Bir limit sıfırlandığında bana haber ver</translation>
+    </message>
+</context>
+<context>
     <name>AgentsPage</name>
     <message>
         <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
         <location filename="../qml/pages/AgentsPage.qml" line="2966"/>
         <source>Unsnooze</source>
         <translation>Ertelemeyi kaldır</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="108"/>
+        <source>Paused until %1 · you&apos;ll be told</source>
+        <translation>Şu zamana kadar duraklatıldı: %1 · size haber verilecek</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="297"/>
+        <source>open on %1</source>
+        <translation>%1 cihazında açık</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="267"/>
+        <source>Limit reached · resets %1</source>
+        <translation>Limite ulaşıldı · sıfırlanma: %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="268"/>
+        <source>Limit reached</source>
+        <translation>Limite ulaşıldı</translation>
     </message>
 </context>
 <context>

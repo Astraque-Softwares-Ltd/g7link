@@ -9,7 +9,8 @@ import app.g7link
 // hollow amber ring.
 Item {
     id: mark
-    // "working", "waiting", "needs_you", "done", "idle", "failed", "interrupted", "ended".
+    // "working", "waiting", "needs_you", "done", "idle", "failed", "interrupted", "ended",
+    // "limited" (a session stopped at its usage limit: paused, a hollow ring).
     property string phase
     // A guess: the agent didn't say it waits.
     property bool guess: false

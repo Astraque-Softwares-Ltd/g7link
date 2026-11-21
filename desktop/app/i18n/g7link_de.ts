@@ -2,12 +2,54 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="de_DE" sourcelanguage="en_US">
 <context>
+    <name>AgentRow</name>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="86"/>
+        <source>Limit reached · resets %1</source>
+        <translation>Limit erreicht · wird %1 zurückgesetzt</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="87"/>
+        <source>Limit reached</source>
+        <translation>Limit erreicht</translation>
+    </message>
+</context>
+<context>
+    <name>AgentSetup</name>
+    <message>
+        <location filename="../qml/components/AgentSetup.qml" line="282"/>
+        <location filename="../qml/components/AgentSetup.qml" line="284"/>
+        <source>Tell me when a limit resets</source>
+        <translation>Benachrichtigen, wenn ein Limit zurückgesetzt wird</translation>
+    </message>
+</context>
+<context>
     <name>AgentsPage</name>
     <message>
         <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
         <location filename="../qml/pages/AgentsPage.qml" line="2966"/>
         <source>Unsnooze</source>
         <translation>Zurückstellung aufheben</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="108"/>
+        <source>Paused until %1 · you&apos;ll be told</source>
+        <translation>Pausiert bis %1 · du wirst benachrichtigt</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="297"/>
+        <source>open on %1</source>
+        <translation>geöffnet auf %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="267"/>
+        <source>Limit reached · resets %1</source>
+        <translation>Limit erreicht · wird %1 zurückgesetzt</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="268"/>
+        <source>Limit reached</source>
+        <translation>Limit erreicht</translation>
     </message>
 </context>
 <context>

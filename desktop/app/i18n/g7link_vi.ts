@@ -2,12 +2,54 @@
 <!DOCTYPE TS>
 <TS version="2.1">
 <context>
+    <name>AgentRow</name>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="86"/>
+        <source>Limit reached · resets %1</source>
+        <translation>Đã đạt hạn mức · đặt lại lúc %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="87"/>
+        <source>Limit reached</source>
+        <translation>Đã đạt hạn mức</translation>
+    </message>
+</context>
+<context>
+    <name>AgentSetup</name>
+    <message>
+        <location filename="../qml/components/AgentSetup.qml" line="282"/>
+        <location filename="../qml/components/AgentSetup.qml" line="284"/>
+        <source>Tell me when a limit resets</source>
+        <translation>Báo cho tôi khi hạn mức được đặt lại</translation>
+    </message>
+</context>
+<context>
     <name>AgentsPage</name>
     <message>
         <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
         <location filename="../qml/pages/AgentsPage.qml" line="2966"/>
         <source>Unsnooze</source>
         <translation>Hủy tạm ẩn</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="108"/>
+        <source>Paused until %1 · you&apos;ll be told</source>
+        <translation>Tạm dừng đến %1 · bạn sẽ được báo</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="297"/>
+        <source>open on %1</source>
+        <translation>đang mở trên %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="267"/>
+        <source>Limit reached · resets %1</source>
+        <translation>Đã đạt hạn mức · đặt lại lúc %1</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="268"/>
+        <source>Limit reached</source>
+        <translation>Đã đạt hạn mức</translation>
     </message>
 </context>
 <context>

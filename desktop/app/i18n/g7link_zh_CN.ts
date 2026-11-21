@@ -2,12 +2,54 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="zh_CN" sourcelanguage="en">
 <context>
+    <name>AgentRow</name>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="86"/>
+        <source>Limit reached · resets %1</source>
+        <translation>已达额度上限 · %1 重置</translation>
+    </message>
+    <message>
+        <location filename="../qml/components/AgentRow.qml" line="87"/>
+        <source>Limit reached</source>
+        <translation>已达额度上限</translation>
+    </message>
+</context>
+<context>
+    <name>AgentSetup</name>
+    <message>
+        <location filename="../qml/components/AgentSetup.qml" line="282"/>
+        <location filename="../qml/components/AgentSetup.qml" line="284"/>
+        <source>Tell me when a limit resets</source>
+        <translation>额度重置时通知我</translation>
+    </message>
+</context>
+<context>
     <name>AgentsPage</name>
     <message>
         <location filename="../qml/pages/AgentsPage.qml" line="2939"/>
         <location filename="../qml/pages/AgentsPage.qml" line="2966"/>
         <source>Unsnooze</source>
         <translation>取消延后</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="108"/>
+        <source>Paused until %1 · you&apos;ll be told</source>
+        <translation>暂停至 %1 · 届时会通知你</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="297"/>
+        <source>open on %1</source>
+        <translation>已在 %1 上打开</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="267"/>
+        <source>Limit reached · resets %1</source>
+        <translation>已达额度上限 · %1 重置</translation>
+    </message>
+    <message>
+        <location filename="../qml/pages/AgentsPage.qml" line="268"/>
+        <source>Limit reached</source>
+        <translation>已达额度上限</translation>
     </message>
 </context>
 <context>
