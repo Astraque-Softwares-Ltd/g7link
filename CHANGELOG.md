@@ -4,7 +4,7 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
-## 0.1.20 (unreleased)
+## 0.1.20 (2026-11-21)
 
 Source control comes to the agents: see what a thread changed, commit,
 push and open a pull request from the PC, the launcher or the phone,
