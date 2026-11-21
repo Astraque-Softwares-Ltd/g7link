@@ -250,6 +250,9 @@ pub mod types {
     pub const AGENT_GIT_PROGRESS: &str = "agent.git.progress";
     // ---- agent: reply on the PC (docs/protocol/agents.md §9) ----
     pub const AGENT_SESSION_REPLY: &str = "agent.session.reply";
+    // ---- agent: hand-off (docs/protocol/agents.md §10) ----
+    pub const AGENT_HANDOFF: &str = "agent.handoff";
+    pub const AGENT_HANDOFF_OPEN: &str = "agent.handoff.open";
 }
 
 /// What kind of device this is.
@@ -7627,6 +7630,8 @@ mod agent_git;
 pub use agent_git::*;
 mod agent_reply;
 pub use agent_reply::*;
+mod agent_handoff;
+pub use agent_handoff::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).

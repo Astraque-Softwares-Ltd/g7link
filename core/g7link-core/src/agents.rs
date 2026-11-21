@@ -25,7 +25,7 @@
 //!
 //! Presence (§7) is [`crate::agent_presence`]'s; its state lives here, in
 //! `Agents`, so it ends with the session and the toggle. Reply on the PC
-//! (§9) is [`crate::agent_reply`]'s.
+//! (§9) is [`crate::agent_reply`]'s, hand-off (§10) [`crate::agent_handoff`]'s.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -320,6 +320,13 @@ pub enum AgentRequest {
     /// session's window and press Enter. `confirm`: the nonce of an earlier
     /// `confirm` answer, only with `text`. Answered with `Replied`.
     SessionReply { session: String, text: Option<String>, confirm: Option<String> },
+    // ---- Hand-off (`docs/protocol/agents.md` §10) ----
+    /// `agent.handoff.open`, after the core checked the toggle and the
+    /// limits: open `thread` on this PC's screen at item `seq` (the Agents
+    /// page, as the host's `ui.open` does) and say it came from the phone.
+    /// While the PC is locked, remember it (one, for 10 minutes) and open it
+    /// at unlock. Never unlock, type or send. Answered with `HandedOff`.
+    Handoff { thread: String, seq: Option<u64> },
 }
 
 /// Never prints a prompt, text or token (protocol v0 §11).
@@ -530,6 +537,9 @@ impl std::fmt::Debug for AgentRequest {
                 .field("bytes", &text.as_ref().map(String::len))
                 .field("confirm", &confirm.is_some())
                 .finish(),
+            Self::Handoff { thread, seq } => {
+                f.debug_struct("Handoff").field("thread", thread).field("seq", seq).finish()
+            }
         }
     }
 }
@@ -539,8 +549,8 @@ impl std::fmt::Debug for AgentRequest {
 /// `Read`, `Sessions` for `Sessions`, `SessionItems` for `SessionRead`,
 /// `Export` for `Export`, `Files` for `Files`, `Commands` for `Commands`,
 /// `Draft` for `DraftGet`, `DraftSaved` for `DraftSet`, `Image` for
-/// `ImageAdd`, `Thumb` for `ImageThumb`, `Replied` for `SessionReply`, `Ok`
-/// for the rest. Threads carry
+/// `ImageAdd`, `Thumb` for `ImageThumb`, `Replied` for `SessionReply`,
+/// `HandedOff` for `Handoff`, `Ok` for the rest. Threads carry
 /// `from_phone` for the phone that asked; the core makes everything fit the
 /// phone that asked (legacy forms, no secret asks, relative paths only).
 #[derive(Clone, PartialEq, Eq)]
@@ -602,6 +612,10 @@ pub enum AgentReply {
     /// ([`crate::agent_reply::AgentSessionReplied::answers`]); anything else
     /// is `Internal`.
     Replied(crate::agent_reply::AgentSessionReplied),
+    /// `Handoff`: `opened`, `locked` or `away` (§10,
+    /// [`crate::agent_handoff::AgentHandedOff`]'s constructors); any other
+    /// word is `Internal`.
+    HandedOff(crate::agent_handoff::AgentHandedOff),
 }
 
 /// Never prints a thumbnail's bytes.
@@ -640,6 +654,7 @@ impl std::fmt::Debug for AgentReply {
             Self::PrRows(rows) => f.debug_tuple("PrRows").field(&rows.prs.len()).finish(),
             Self::Refused(error) => f.debug_tuple("Refused").field(error).finish(),
             Self::Replied(replied) => f.debug_tuple("Replied").field(replied).finish(),
+            Self::HandedOff(done) => f.debug_tuple("HandedOff").field(&done.result).finish(),
         }
     }
 }
@@ -2200,6 +2215,9 @@ pub(crate) async fn handle(
         t if crate::agent_git::is_event(t) => crate::agent_git::handle_event(shared, peer, env).await,
         t if crate::agent_reply::is_request(t) => {
             crate::agent_reply::handle_request(shared, peer, env, rsp).await?;
+        }
+        t if crate::agent_handoff::is_message(t) => {
+            crate::agent_handoff::handle(shared, peer, env, rsp).await?;
         }
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };

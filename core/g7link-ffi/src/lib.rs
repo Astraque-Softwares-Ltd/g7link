@@ -20,6 +20,7 @@ uniffi::setup_scaffolding!();
 
 mod agent_control;
 mod agent_git;
+mod agent_handoff;
 mod agent_history;
 mod agent_presence;
 mod agent_reply;
@@ -27,6 +28,7 @@ pub mod agent_rows;
 
 pub use agent_control::*;
 pub use agent_git::*;
+pub use agent_handoff::*;
 pub use agent_history::*;
 pub use agent_presence::*;
 pub use agent_reply::*;
@@ -1386,6 +1388,19 @@ pub enum Event {
     AgentGitJob {
         id: String,
         job: AgentJob,
+    },
+    /// A PC hands this phone `thread`: open it at item `seq` (load its draft
+    /// with `agent_draft_get`) when the app is in front, else post "Continue
+    /// on this phone". `offer`: the PC locked with it on screen; post it on
+    /// the quiet channel, and take it away when the PC's presence says
+    /// someone is at it again. It holds until `expires_ms` (this phone's
+    /// clock, Unix ms); nothing says when it lapses.
+    AgentHandoff {
+        id: String,
+        thread: String,
+        seq: Option<u64>,
+        offer: bool,
+        expires_ms: i64,
     },
 }
 
@@ -4389,6 +4404,13 @@ impl Event {
             NodeEvent::AgentGitJob { device, job } => {
                 Event::AgentGitJob { id: device.to_string(), job: AgentJob::from_core(job)? }
             }
+            NodeEvent::AgentHandoff { device, handoff } => Event::AgentHandoff {
+                id: device.to_string(),
+                thread: handoff.thread,
+                seq: handoff.seq,
+                offer: handoff.offer,
+                expires_ms: handoff.expires_ms,
+            },
             // Shown on PCs only.
             NodeEvent::AgentsRequested { .. }
             | NodeEvent::AgentSessionsRequested { .. }
@@ -7379,6 +7401,22 @@ mod tests {
         ));
         assert_eq!(Event::from_node(NodeEvent::AgentSessionsRequested { device: pc }), None);
         assert_eq!(Event::from_node(NodeEvent::AgentReplyRequested { device: pc }), None);
+        let handoff = core::AgentPcHandoff {
+            thread: "0123456789abcdef0123456789abcdef".into(),
+            seq: Some(42),
+            offer: true,
+            expires_ms: 1_795_000_600_000,
+        };
+        assert_eq!(
+            Event::from_node(NodeEvent::AgentHandoff { device: pc, handoff }),
+            Some(Event::AgentHandoff {
+                id: pc.to_string(),
+                thread: "0123456789abcdef0123456789abcdef".into(),
+                seq: Some(42),
+                offer: true,
+                expires_ms: 1_795_000_600_000,
+            })
+        );
     }
 
     #[test]

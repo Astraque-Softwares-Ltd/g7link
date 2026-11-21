@@ -534,4 +534,11 @@ pub enum NodeEvent {
         device: DeviceId,
         job: crate::AgentJob,
     },
+    /// Phone: a PC hands this phone a thread (`agent.handoff`): open it at
+    /// `seq`, or offer it (`offer`: the PC locked with it on screen). It
+    /// holds until `expires_ms`; nothing says when it lapses.
+    AgentHandoff {
+        device: DeviceId,
+        handoff: crate::AgentPcHandoff,
+    },
 }

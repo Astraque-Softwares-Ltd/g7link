@@ -2,6 +2,11 @@
 //! Continuity Camera: a paired PC asks a phone to take a photo or scan a
 //! document (`camera.capture.request`), and the phone streams the captured
 //! image back on a dedicated `camera` / `result` stream.
+//!
+//! A capture the PC's user asked for is saved in the downloads folder and
+//! listed in the timeline. One taken for an agent ([`CaptureFor::Agent`])
+//! only reaches the platform in its event: it is never written to disk,
+//! listed, or queued for a phone that's offline.
 
 use std::{sync::Arc, time::Duration};
 
@@ -15,7 +20,9 @@ use g7link_protocol::{
 };
 use iroh::endpoint::{RecvStream, SendStream};
 
-use crate::{Error, NodeEvent, Result, dispatch::Responder, error::net, node::Shared, session::Session};
+use crate::{
+    Error, Node, NodeEvent, Result, dispatch::Responder, error::net, node::Shared, session::Session,
+};
 
 /// Per-device toggle that gates Continuity Camera along with photo sharing.
 pub const TOGGLE: &str = "photos";
@@ -27,23 +34,44 @@ const CHUNK_BYTES: usize = 64 * 1024;
 /// takes the photo or scan.
 const CAPTURE_WAIT: Duration = Duration::from_secs(10 * 60);
 
-/// Captures this device asked for and hasn't received: a result is saved
-/// only for one of these, never for a picture a phone sends unasked.
-static ASKED: std::sync::Mutex<Vec<(DeviceId, String, std::time::Instant)>> =
-    std::sync::Mutex::new(Vec::new());
+/// Whom a capture this PC asks for is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureFor {
+    /// The PC's user: saved in the downloads folder (`saved_path`) and
+    /// listed in the timeline.
+    #[default]
+    User,
+    /// An agent: handed over in [`NodeEvent::CameraCaptureReceived`] only,
+    /// with no `saved_path`; never written to disk, listed in the timeline,
+    /// or queued for a phone that's offline.
+    Agent,
+}
 
-fn asked() -> std::sync::MutexGuard<'static, Vec<(DeviceId, String, std::time::Instant)>> {
+/// A capture this device asked for and hasn't received.
+#[derive(Debug)]
+struct Asked {
+    peer: DeviceId,
+    request_id: String,
+    at: std::time::Instant,
+    purpose: CaptureFor,
+}
+
+/// Captures this device asked for and hasn't received: a result is taken
+/// only for one of these, never for a picture a phone sends unasked.
+static ASKED: std::sync::Mutex<Vec<Asked>> = std::sync::Mutex::new(Vec::new());
+
+fn asked() -> std::sync::MutexGuard<'static, Vec<Asked>> {
     let mut asked = ASKED.lock().unwrap_or_else(|e| e.into_inner());
-    asked.retain(|(_, _, at)| at.elapsed() < CAPTURE_WAIT);
+    asked.retain(|a| a.at.elapsed() < CAPTURE_WAIT);
     asked
 }
 
-/// Takes the outstanding request `request_id` to `peer`, if there is one.
-fn take_asked(peer: &DeviceId, request_id: &str) -> bool {
+/// Takes the outstanding request `request_id` to `peer`, if there is one:
+/// whom it was for.
+fn take_asked(peer: &DeviceId, request_id: &str) -> Option<CaptureFor> {
     let mut asked = asked();
-    let before = asked.len();
-    asked.retain(|(p, id, _)| !(p == peer && id == request_id));
-    asked.len() < before
+    let at = asked.iter().position(|a| a.peer == *peer && a.request_id == request_id)?;
+    Some(asked.remove(at).purpose)
 }
 
 /// Whether a Continuity Camera `request_id` meets the protocol bounds.
@@ -64,6 +92,16 @@ pub(crate) async fn request_on_session(
     request_id: String,
     mode: CameraCaptureMode,
 ) -> Result<()> {
+    request_on_session_for(shared, session, request_id, mode, CaptureFor::User).await
+}
+
+async fn request_on_session_for(
+    shared: &Shared,
+    session: &Session,
+    request_id: String,
+    mode: CameraCaptureMode,
+    purpose: CaptureFor,
+) -> Result<()> {
     if !valid_request_id(&request_id) {
         return Err(Error::Protocol("invalid continuity camera request_id".into()));
     }
@@ -75,7 +113,12 @@ pub(crate) async fn request_on_session(
         &CameraCaptureRequest { request_id: request_id.clone(), mode },
     )?;
     // Noted first: the phone's result or cancel may come before its answer.
-    asked().push((session.peer, request_id.clone(), std::time::Instant::now()));
+    asked().push(Asked {
+        peer: session.peer,
+        request_id: request_id.clone(),
+        at: std::time::Instant::now(),
+        purpose,
+    });
     let answered = session
         .request(env, crate::session::REQUEST_TIMEOUT)
         .await
@@ -325,9 +368,9 @@ async fn take_result(
     if !shared.toggle_on(&peer, TOGGLE) {
         return Err((ErrorCode::Denied, "photos sharing is turned off"));
     }
-    if !take_asked(&peer, &meta.request_id) {
+    let Some(purpose) = take_asked(&peer, &meta.request_id) else {
         return Err((ErrorCode::Denied, "no capture was asked for"));
-    }
+    };
 
     let size = usize::try_from(meta.size).map_err(|_| (ErrorCode::BadMessage, "image too large"))?;
     let mut data = Vec::with_capacity(size.min(CHUNK_BYTES));
@@ -349,28 +392,34 @@ async fn take_result(
     // Safe to save on any filesystem, removable drives included.
     let safe_name = crate::transfer::storable_name(&crate::transfer::safe_file_name(raw_name));
 
-    let saved_path = match save_capture(&shared.downloads_dir, &safe_name, &data).await {
-        Ok(dest) => Some(dest),
-        Err(e) => {
-            tracing::warn!(error = %e, "can't save continuity camera capture");
-            None
-        }
+    // A picture for an agent goes to it alone: no copy on disk, no timeline row.
+    let saved_path = match purpose {
+        CaptureFor::Agent => None,
+        CaptureFor::User => match save_capture(&shared.downloads_dir, &safe_name, &data).await {
+            Ok(dest) => Some(dest),
+            Err(e) => {
+                tracing::warn!(error = %e, "can't save continuity camera capture");
+                None
+            }
+        },
     };
 
-    let target = saved_path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    let _ = shared.record_timeline(crate::timeline::NewTimelineEntry {
-        kind: crate::TimelineKind::Photo,
-        device_id: peer,
-        device_name: shared.peer_name(&peer),
-        incoming: true,
-        timestamp: crate::now_unix(),
-        title: safe_name.clone(),
-        detail: detail_for_mode(meta.mode).into(),
-        target,
-        size_bytes: meta.size,
-        duration_secs: 0,
-        ref_id: None,
-    });
+    if purpose == CaptureFor::User {
+        let target = saved_path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let _ = shared.record_timeline(crate::timeline::NewTimelineEntry {
+            kind: crate::TimelineKind::Photo,
+            device_id: peer,
+            device_name: shared.peer_name(&peer),
+            incoming: true,
+            timestamp: crate::now_unix(),
+            title: safe_name.clone(),
+            detail: detail_for_mode(meta.mode).into(),
+            target,
+            size_bytes: meta.size,
+            duration_secs: 0,
+            ref_id: None,
+        });
+    }
 
     shared.emit(NodeEvent::CameraCaptureReceived {
         device: peer,
@@ -406,6 +455,37 @@ async fn save_capture(dir: &std::path::Path, name: &str, data: &[u8]) -> std::io
     Ok(dest)
 }
 
+impl Node {
+    /// Asks a paired phone to capture a photo or scan a document for
+    /// `purpose`. [`CaptureFor::User`] is [`Node::request_camera_capture`].
+    /// [`CaptureFor::Agent`] goes only to a phone that's connected now
+    /// (`Offline` otherwise, nothing queued), and its picture is handed over
+    /// in its event alone: not saved, not in the timeline.
+    pub async fn request_camera_capture_for(
+        &self,
+        peer: DeviceId,
+        request_id: String,
+        mode: CameraCaptureMode,
+        purpose: CaptureFor,
+    ) -> Result<()> {
+        let shared = self.shared();
+        if purpose == CaptureFor::User {
+            return request(shared, peer, request_id, mode).await;
+        }
+        if !valid_request_id(&request_id) {
+            return Err(Error::Protocol("invalid continuity camera request_id".into()));
+        }
+        if !shared.store.is_paired(&peer)? {
+            return Err(Error::NotPaired);
+        }
+        if !shared.toggle_on(&peer, TOGGLE) {
+            return Err(Error::Denied);
+        }
+        let session = shared.session(&peer).ok_or(Error::Offline)?;
+        request_on_session_for(shared, &session, request_id, mode, purpose).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +496,17 @@ mod tests {
         assert!(!valid_request_id(""));
         assert!(!valid_request_id("bad\nid"));
         assert!(!valid_request_id(&"x".repeat(continuity_camera::MAX_ID_BYTES + 1)));
+    }
+
+    #[test]
+    fn an_asked_capture_is_taken_once_with_whom_it_was_for() {
+        let peer = DeviceId([5; 32]);
+        for (id, purpose) in [("for-user-1", CaptureFor::User), ("for-agent-1", CaptureFor::Agent)] {
+            asked().push(Asked { peer, request_id: id.into(), at: std::time::Instant::now(), purpose });
+        }
+        assert_eq!(take_asked(&peer, "for-agent-1"), Some(CaptureFor::Agent));
+        assert_eq!(take_asked(&peer, "for-agent-1"), None, "once");
+        assert_eq!(take_asked(&DeviceId([6; 32]), "for-user-1"), None, "another peer's");
+        assert_eq!(take_asked(&peer, "for-user-1"), Some(CaptureFor::User));
     }
 }

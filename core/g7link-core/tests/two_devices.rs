@@ -6760,6 +6760,116 @@ async fn continuity_camera_photo_and_scan_flow() {
     phone.node.shutdown().await;
 }
 
+/// Asks `phone` for a photo for `purpose`, has it send `bytes`, and returns
+/// the PC's event for that request: its data and where it was saved.
+async fn capture_for(
+    pc: &mut TestDevice,
+    phone: &mut TestDevice,
+    request_id: &str,
+    purpose: g7link_core::continuity_camera::CaptureFor,
+    bytes: &[u8],
+) -> (Vec<u8>, Option<std::path::PathBuf>) {
+    use g7link_core::{CameraCaptureMode, CameraCaptureResultMeta};
+    let (pc_id, phone_id) = (pc.node.device_id(), phone.node.device_id());
+    with_timeout(
+        "request a capture",
+        pc.node.request_camera_capture_for(phone_id, request_id.into(), CameraCaptureMode::Photo, purpose),
+    )
+    .await
+    .unwrap();
+    wait_for(phone, "capture requested", |e| match e {
+        NodeEvent::CameraCaptureRequested { device, request_id: id, .. }
+            if *device == pc_id && id == request_id =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    let meta = CameraCaptureResultMeta {
+        request_id: request_id.into(),
+        mode: CameraCaptureMode::Photo,
+        file_name: format!("{request_id}.jpg"),
+        mime: "image/jpeg".into(),
+        size: bytes.len() as u64,
+        width: 640,
+        height: 480,
+    };
+    with_timeout("send the capture", phone.node.send_camera_capture_result(pc_id, meta, bytes.to_vec()))
+        .await
+        .unwrap();
+    wait_for(pc, "capture received", |e| match e {
+        NodeEvent::CameraCaptureReceived { device, request_id: id, data, saved_path, .. }
+            if *device == phone_id && id == request_id =>
+        {
+            Some((data.clone(), saved_path.clone()))
+        }
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuity_camera_for_an_agent_keeps_no_copy_and_no_timeline_row() {
+    use g7link_core::{TimelineKind, TimelineQuery, continuity_camera::CaptureFor};
+
+    let mut pc = device_with("pc", DeviceKind::Desktop, &["camera.continuity"]).await;
+    let mut phone = device_with("phone", DeviceKind::Phone, &["camera.capture"]).await;
+    pair_qr(&mut pc, &mut phone).await;
+    let phone_id = phone.node.device_id();
+    let downloads = pc.dir.path().join("received");
+    let files = |dir: &std::path::Path| std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0);
+    let photo_rows = |pc: &TestDevice| {
+        let query =
+            TimelineQuery { kind: Some(TimelineKind::Photo), device: Some(phone_id), ..Default::default() };
+        pc.node.timeline_page(&query).unwrap().entries.iter().filter(|e| e.incoming).count()
+    };
+
+    // For an agent: the picture reaches the PC's event and nowhere else.
+    let for_agent = vec![0xFF, 0xD8, 0xFF, 0xE0, 7, 7, 7, 0xFF, 0xD9];
+    let (data, saved) = capture_for(&mut pc, &mut phone, "req-agent-1", CaptureFor::Agent, &for_agent).await;
+    assert_eq!(data, for_agent);
+    assert_eq!(saved, None, "not saved");
+    assert_eq!(files(&downloads), 0, "nothing in the downloads folder");
+    assert_eq!(photo_rows(&pc), 0, "no timeline row");
+
+    // For the user, as always: saved, and in the timeline.
+    let for_user = vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 0xFF, 0xD9];
+    let (data, saved) = capture_for(&mut pc, &mut phone, "req-user-1", CaptureFor::User, &for_user).await;
+    assert_eq!(data, for_user);
+    let saved = saved.expect("saved to downloads_dir");
+    assert_eq!(saved.parent(), Some(downloads.as_path()));
+    assert_eq!(std::fs::read(&saved).unwrap(), for_user);
+    assert_eq!(files(&downloads), 1);
+    assert_eq!(photo_rows(&pc), 1);
+
+    // An agent capture goes only to a phone that's connected: never queued.
+    phone.node.set_reconnect(pc.node.device_id(), false).unwrap();
+    wait_for(&mut pc, "phone offline", |e| match e {
+        NodeEvent::LinkChanged { device, link }
+            if *device == phone_id && !matches!(link, LinkState::Online { .. }) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
+    .await;
+    let later = pc
+        .node
+        .request_camera_capture_for(
+            phone_id,
+            "req-agent-2".into(),
+            g7link_core::CameraCaptureMode::Photo,
+            CaptureFor::Agent,
+        )
+        .await;
+    assert!(matches!(later, Err(Error::Offline)), "{later:?}");
+    assert!(pc.node.send_queue(Some(phone_id)).unwrap().is_empty(), "nothing queued for later");
+
+    pc.node.shutdown().await;
+    phone.node.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn continuity_camera_cancel_propagates() {
     use g7link_core::CameraCaptureMode;

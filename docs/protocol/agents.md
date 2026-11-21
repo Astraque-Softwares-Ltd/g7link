@@ -1181,7 +1181,57 @@ Errors as §2.3: `UNSUPPORTED` while the PC doesn't offer `agent.reply`;
 being entered on the PC; `INTERNAL` when the PC's answer didn't come in time
 (a phone treats it as not known whether it was typed).
 
-## 10. Implementation notes
+## 10. Hand-off
+
+Added in G7 Link 0.1.22. A PC hands a thread to a phone ("Continue on
+<phone>"), or offers it when the PC locks with the thread on screen; a phone
+hands a thread to its PC ("Continue on <PC>"). Either side only **opens** the
+thread where it was handed, at the item that was first on the sender's screen:
+nothing is sent, typed, answered or unlocked. The sender saves its draft first
+(`agent.draft.set`, §5), and the receiver reads it as always. A question's
+typed answer is not a draft and doesn't travel. It's plain protocol v1: no
+capability, governed by the `agents` toggle (§1). Nothing here travels on
+Bluetooth, and nothing is retried or queued while offline.
+
+```
+t = "agent.handoff"         b = { thread, seq?: uint, offer: bool, ttl_ms: uint }   PC → phone, agent lane
+
+RPC agent/handoff.open      t = "agent.handoff.open"   b = { thread, seq?: uint }
+    → ok { result: text }                                  // "opened" | "locked" | "away"
+```
+
+- **`agent.handoff`.** Open `thread` here, at item `seq` when it's given. A
+  phone with G7 Link in front opens it; otherwise it posts "Continue on this
+  phone", which does the same when tapped. With `offer` the PC was locked
+  (not merely idle) while the thread was on its screen in the last 60 s and
+  working, waiting or with a draft: the phone shows it quietly, and takes it
+  away when `agent.presence` says someone is at the PC again or it lapses.
+  A PC sends an explicit one to the phone named, an offer to each phone with
+  the toggle on; it holds for `ttl_ms` (600000, 10 minutes) from when it
+  arrives. A phone drops one out of its limits.
+- **`agent/handoff.open`.** The PC opens the thread on its screen at `seq`,
+  as its own "open this thread" does, and says it came from the phone.
+  `opened`: it's on screen, and someone is at the PC. `locked`: the PC is
+  locked; it keeps this one hand-off (the newest) for 10 minutes and opens it
+  when it's unlocked, once. `away`: it's open there, but nobody has used the
+  PC in the last 30 s. A phone reads a `result` it doesn't know as `away`.
+- Neither message carries a draft, a path or anything typed.
+
+Limits:
+
+| Field | Limit |
+|---|---|
+| `thread` | an id (1 to 40, `[a-z0-9]`) |
+| `seq` | any `uint` |
+| `ttl_ms` | 1000 to 600000 |
+| `result` | 1 to 32, `[a-z0-9_]` |
+
+Errors as §2.3: `UNSUPPORTED` without the agent host; `DENIED` with `agents`
+off (the first time, the PC asks its user, as for any request of this
+service); `NOT_FOUND` for a thread the PC doesn't have; `BAD_MESSAGE` for a
+request out of its limits.
+
+## 11. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -1209,6 +1259,13 @@ being entered on the PC; `INTERNAL` when the PC's answer didn't come in time
   `agent.presence` (`Node::agent_presence`). On the phone the FFI's
   `agent_presence` is null once a presence lapses or the link drops; no event
   says so.
+- On a PC the platform hands a thread over with `Node::agent_handoff` (one
+  phone, or every phone that gets agent pushes for an offer); the core
+  answers `agent/handoff.open` after checking the toggle and the limits, and
+  asks the platform (`AgentRequest::Handoff`), which opens G7 Link's Agents
+  page and remembers one hand-off while the PC is locked. On the phone the
+  core turns `agent.handoff` into an event with its expiry on the phone's
+  clock (`expires_ms`); the PC's clock never matters.
 - The core answers §5's requests after checking `agent.control` on both
   sides, the toggle, the limits, the mode and secret questions (it remembers
   the last 64 secret tokens it relayed), and makes every thread, item, page

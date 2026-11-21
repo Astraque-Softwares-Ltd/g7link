@@ -10,6 +10,7 @@ mod actions;
 mod adb_wifi;
 mod agent_cache;
 pub mod agent_git;
+pub mod agent_handoff;
 pub mod agent_history;
 pub mod agent_presence;
 pub mod agent_reply;
@@ -71,6 +72,7 @@ pub use agent_git::{
     AgentJobError, AgentJobResult, AgentPrBrief, AgentPrCreateRequest, AgentPrInfo, AgentPrListRequest,
     AgentPrRow, AgentPrRows, AgentPrView, AgentWrote, git, pr,
 };
+pub use agent_handoff::{AgentHandedOff, AgentHandoff, AgentHandoffOpen, AgentPcHandoff};
 pub use agent_history::{
     AgentCut, AgentForkedFrom, AgentFound, AgentFoundList, AgentFoundRequest, AgentHeld, AgentHit, AgentHits,
     AgentImportJob, AgentImportProgress, AgentMark, AgentPatch, AgentPatchPage, AgentRewindPlan,

@@ -853,6 +853,16 @@ pub fn agent_diff(text: String) -> AgentDiffDoc {
     render::diff(&text).into()
 }
 
+/// An answer's Markdown as words to read aloud: at most `max_chars`
+/// UTF-16 units (Kotlin `Char`s; at most 4,000), cut after the last
+/// sentence that fits, or else after the last word that fits, with "…".
+/// Code blocks, tables and struck-out text say nothing; a link says its
+/// text. Empty when nothing in it is words.
+#[uniffi::export]
+pub fn agent_speakable(text: String, max_chars: u32) -> String {
+    render::speakable(&text, max_chars)
+}
+
 // ---- The typing guard ----
 
 /// Holds the requests that arrive while you type, so a keystroke never
@@ -2210,5 +2220,14 @@ mod tests {
 
         let shown = format!("{label:?} {command:?} {output:?} {block:?}");
         assert!(!shown.contains("secret") && !shown.contains("warning"), "{shown}");
+    }
+
+    #[test]
+    fn a_summary_is_read_aloud_without_its_code() {
+        let summary =
+            "## Done\n\nFixed [the retry](https://example.com) in `queue.rs`.\n\n```rust\nfn main() {}\n```";
+        assert_eq!(agent_speakable(summary.into(), 200), "Done. Fixed the retry in queue.rs.");
+        assert_eq!(agent_speakable("One. Two three.".into(), 10), "One.");
+        assert_eq!(agent_speakable(String::new(), 200), "");
     }
 }
