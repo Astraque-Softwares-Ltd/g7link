@@ -27,8 +27,10 @@ private ranges (`192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`,
   stored, dialed and allowed, with away mode off.
 - No new firewall rule. A rule for `100.64.0.0/10` would also open the port
   to carrier and hotspot networks that use that range. When a firewall is on,
-  allow G7 Link's port (UDP `7718` by default) on the Tailscale interface yourself, for
-  example `sudo ufw allow in on tailscale0 to any port 7718 proto udp`.
+  allow G7 Link's port on the Tailscale interface yourself. The desktop doesn't
+  listen on `7718` (the port `install.sh` opens): it takes a free port on first
+  start and keeps it in `~/.local/share/G7Link/port`. For example:
+  `sudo ufw allow in on tailscale0 to any port "$(cat ~/.local/share/G7Link/port)" proto udp`.
 
 Unchanged: pairing, device keys, QUIC end-to-end encryption, relays (still off
 unless away mode is on), mDNS.
