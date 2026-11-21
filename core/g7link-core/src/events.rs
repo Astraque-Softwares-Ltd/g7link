@@ -501,4 +501,18 @@ pub enum NodeEvent {
         device: DeviceId,
         held: Vec<crate::AgentHeld>,
     },
+    /// Phone: what a PC says about itself (`agent.presence`), until
+    /// `until_ms`. Nothing says when it lapses or the link drops:
+    /// [`Node::agent_presence_of`](crate::Node::agent_presence_of) is `None` then.
+    AgentPresence {
+        device: DeviceId,
+        presence: crate::AgentPcPresence,
+    },
+    /// PC: what a phone shows (`agent.viewing`), each time it says so;
+    /// `None`: nothing now. Not sent when the phone goes offline:
+    /// [`Node::agent_views`](crate::Node::agent_views) has every fresh view.
+    AgentViewing {
+        device: DeviceId,
+        view: Option<crate::AgentView>,
+    },
 }

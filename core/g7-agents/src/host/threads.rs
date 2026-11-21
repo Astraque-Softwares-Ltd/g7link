@@ -492,9 +492,10 @@ pub(crate) fn notify(host: &Host, note: Note) {
 }
 
 /// Posts a "needs you" or "finished" notification, unless a launcher or G7
-/// Link shows that thread to the user right now: then the thread's
-/// notification, if one is up, is taken down instead. Clients still get
-/// every event, so lists, badges and phones change as usual.
+/// Link shows that thread to the user right now, or a phone does (G7 Link's
+/// `ui.presence`): then the thread's notification, if one is up, is taken
+/// down instead. Clients still get every event, so lists, badges and phones
+/// change as usual.
 pub(crate) fn notify_unless_viewed(host: &Host, thread_id: &str, note: Note) {
     if host.hub.viewed(thread_id) {
         notify(host, Note::Removed { thread_id: thread_id.to_owned() });
@@ -2043,6 +2044,9 @@ impl Host {
             Outcome::Failed => {
                 let message = entry.info.error.as_ref().map(|e| e.message.clone()).unwrap_or_default();
                 notify(self, Note::Failed { thread: entry.info.clone(), message });
+                if let Some(error) = &entry.info.error {
+                    self.limit_failed(entry.info.agent, error);
+                }
             }
             Outcome::Interrupted => notify(self, Note::Removed { thread_id: thread_id.to_owned() }),
         }
@@ -3467,6 +3471,9 @@ mod tests {
                 Note::Removed { .. } => "removed".to_owned(),
                 Note::Question { .. } => "question".to_owned(),
                 Note::PlanReady { .. } => "plan".to_owned(),
+                Note::LimitReset { agent, thread } => {
+                    format!("limit {} {}", agent.as_str(), thread.map(|t| t.id).unwrap_or_default())
+                }
             });
         }
         seen
@@ -3513,6 +3520,58 @@ mod tests {
         host.hub.test_viewer(ClientKind::Launcher, Some(&id));
         host.test_finish(&id, TurnEnd::done(Some("Listed.".into())));
         assert_eq!(notes(&mut rx), ["gone", "removed"], "the launcher shows it");
+    }
+
+    fn shown_on(device: &str, thread_id: &str) -> UiPresenceParams {
+        UiPresenceParams {
+            at_pc: false,
+            locked: true,
+            dnd: false,
+            remote: vec![RemoteView {
+                device_id: device.into(),
+                device_name: "Pixel".into(),
+                thread_id: Some(thread_id.to_owned()),
+                session_id: None,
+                pane: Some(Pane::Thread),
+                dnd: false,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn a_thread_open_on_a_phone_gets_no_pc_notification_and_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, mut rx) = crate::host::test_host_noting(dir.path(), APPROVAL_LIFETIME_MS);
+        let (id, generation, _cmds) = host.test_thread(AgentId::Codex);
+        let (other, _, _other_cmds) = host.test_thread(AgentId::Codex);
+        let link = host.hub.test_viewer(ClientKind::Link, None);
+        host.ui_presence(true, link, serde_json::to_value(shown_on("p", &id)).unwrap()).unwrap();
+        let _ask = host.test_ask(&id, generation, command("ls"));
+        assert_eq!(notes(&mut rx), ["removed"], "the phone shows it");
+        let token = host.test_pending(&id)[0].token.clone();
+        host.approval_answer(&token, Decision::Allow, Origin::phone("p", "Pixel"), None).unwrap();
+        host.test_finish(&id, TurnEnd::done(Some("Listed.".into())));
+        assert_eq!(notes(&mut rx), ["gone", "removed"], "no Done while the phone shows it");
+        assert!(!host.test_state(&id).unread, "read on the phone");
+        host.test_step(&other, Step::Notice("Checked.".into()));
+        host.test_finish(&other, TurnEnd::done(Some("Elsewhere.".into())));
+        assert_eq!(notes(&mut rx), ["done Elsewhere."], "a thread no phone shows");
+        assert!(host.test_state(&other).unread);
+
+        // The phone opens the other thread: it is read at once.
+        host.ui_presence(true, link, serde_json::to_value(shown_on("p", &other)).unwrap()).unwrap();
+        assert!(!host.test_state(&other).unread);
+        // G7 Link's connection goes: the phone's view goes with it.
+        let (third, generation, _cmds) = host.test_thread(AgentId::Codex);
+        host.ui_presence(true, link, serde_json::to_value(shown_on("p", &third)).unwrap()).unwrap();
+        let _ask = host.test_ask(&third, generation, command("ls"));
+        assert_eq!(notes(&mut rx), ["removed"]);
+        host.hub.lock().remove(&link);
+        host.hub.lock_presence().closed(link);
+        let _ask = host.test_ask(&third, generation, command("rg --files"));
+        let token = host.test_pending(&third)[0].token.clone();
+        host.approval_answer(&token, Decision::Allow, Origin::launcher(), None).unwrap();
+        assert_eq!(notes(&mut rx), ["ask rg --files"], "no phone shows it now");
     }
 
     fn deny_saying(host: &Arc<Host>, token: &str, words: &str) -> Result<(), RpcError> {

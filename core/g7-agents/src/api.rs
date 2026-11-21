@@ -288,6 +288,23 @@ pub const IMPORT_EVENT_MS: u64 = 250;
 pub const MAX_PREVIEW_LIMIT: u32 = 50;
 pub const DEFAULT_PREVIEW_LIMIT: u32 = 20;
 
+// ---- Presence and the limit alarm (phase 5) ----
+
+/// `ui.presence`: phones' views, one per paired device.
+pub const MAX_REMOTE_VIEWS: usize = 8;
+/// The `ui.presence` event: threads, and sessions, shown on this PC.
+pub const MAX_PRESENCE_VIEWING: usize = 4;
+/// A `ui.presence` not refreshed this long is dropped: nobody at the PC, no phone views.
+pub const PRESENCE_LIFE_MS: u64 = 60_000;
+/// The `ui.presence` event at most this often (two a second).
+pub const PRESENCE_EVENT_MS: u64 = 500;
+/// The limit alarm rings this long after the CLI's reset time.
+pub const LIMIT_ALARM_DELAY_MS: u64 = 30_000;
+/// A reset time further ahead than this (8 days) arms no alarm.
+pub const LIMIT_ALARM_AHEAD_MS: u64 = 691_200_000;
+/// A followed session's limit reset time is kept only this far ahead (31 days).
+pub const SESSION_LIMIT_AHEAD_MS: u64 = 2_678_400_000;
+
 // ---- Method and event names ----
 
 pub mod method {
@@ -356,6 +373,9 @@ pub mod method {
     /// Asks G7 Link to show a thread (the launcher's "Rewind in G7 Link"):
     /// the host sends the `ui.open` event to G7 Link's connections.
     pub const UI_OPEN: &str = "ui.open";
+    /// G7 Link says who is at this PC and what its phones show (phase 5);
+    /// only to a host that offers `cap::PRESENCE`.
+    pub const UI_PRESENCE: &str = "ui.presence";
 }
 
 /// What a client says it understands (`HelloParams.caps`) and what a host
@@ -380,8 +400,11 @@ pub mod cap {
     /// The host keeps restore points and offers `thread.turns`, `turn.files`,
     /// `turn.patch`, `rewind.*` and `thread.fork`.
     pub const UNDO: &str = "undo";
+    /// Host: it takes `ui.presence` from G7 Link and keeps `HostSettings.limit_alarm`.
+    /// Client: it gets the `ui.presence` event (a launcher or G7 Link only).
+    pub const PRESENCE: &str = "presence";
     /// What this host offers.
-    pub const HOST: [&str; 5] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO];
+    pub const HOST: [&str; 6] = [ITEMS2, DENY_MESSAGE, CONTROL, HISTORY, UNDO, PRESENCE];
 }
 
 pub mod event {
@@ -406,6 +429,7 @@ pub mod event {
     pub const THREAD_CUT: &str = "thread.cut";
     pub const IMPORT_PROGRESS: &str = "import.progress";
     pub const SESSIONS_SCANNED: &str = "sessions.scanned";
+    pub const UI_PRESENCE: &str = "ui.presence";
 }
 
 // ---- Error codes ----
@@ -1597,6 +1621,19 @@ pub struct Session {
     pub can_continue: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<ContinueBlock>,
+    /// The session's last turn stopped on the agent's usage limit, and
+    /// nothing came after it. Its `state` is then `idle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<SessionLimit>,
+}
+
+/// A session stopped by its usage limit (`Session.limit`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionLimit {
+    /// When the agent said the limit resets (Unix ms); absent when it didn't
+    /// say, or said a time past or more than [`SESSION_LIMIT_AHEAD_MS`] ahead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_ms: Option<u64>,
 }
 
 impl Session {
@@ -2515,6 +2552,9 @@ pub struct FoldersSetParams {
 pub struct SettingsSetParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_awake: Option<bool>,
+    /// Only to a host that offers `cap::PRESENCE`; an older one ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_alarm: Option<bool>,
 }
 
 /// `thread.interrupt`, `thread.delete`, `thread.terminal_command`.
@@ -2619,6 +2659,66 @@ pub struct UiViewingParams {
     pub session_id: Option<String>,
 }
 
+/// The part of a thread a phone shows (`RemoteView.pane`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pane {
+    Thread,
+    Changes,
+    Plan,
+    Requests,
+}
+
+/// What one paired phone shows, as G7 Link last heard it (`agent/viewing`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteView {
+    /// At most [`MAX_DEVICE_ID`] bytes; one view per device.
+    pub device_id: String,
+    /// At most [`MAX_DEVICE_NAME`] bytes.
+    pub device_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// A word this version doesn't know reads as absent.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub pane: Option<Pane>,
+    /// The phone is in Do Not Disturb.
+    #[serde(default)]
+    pub dnd: bool,
+}
+
+/// `ui.presence` (G7 Link only): who is at this PC and what its phones
+/// show. Kept for [`PRESENCE_LIFE_MS`]; G7 Link refreshes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiPresenceParams {
+    /// Input in the last 30 s and not locked.
+    pub at_pc: bool,
+    pub locked: bool,
+    /// This PC is in Do Not Disturb.
+    pub dnd: bool,
+    /// At most [`MAX_REMOTE_VIEWS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote: Vec<RemoteView>,
+}
+
+/// The `ui.presence` event, to a launcher or G7 Link that said `cap::PRESENCE`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PresenceEvent {
+    pub at_pc: bool,
+    pub locked: bool,
+    pub dnd: bool,
+    /// Threads a launcher or G7 Link shows now, newest first, at most [`MAX_PRESENCE_VIEWING`].
+    #[serde(default)]
+    pub viewing: Vec<String>,
+    /// Sessions they show, likewise.
+    #[serde(default)]
+    pub viewing_sessions: Vec<String>,
+    /// The phones' views, while fresh; at most [`MAX_REMOTE_VIEWS`].
+    #[serde(default)]
+    pub remote: Vec<RemoteView>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionsListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2688,11 +2788,15 @@ pub struct HostSettings {
     /// Keep this PC from sleeping while an agent works (on by default).
     #[serde(default = "yes")]
     pub keep_awake: bool,
+    /// Tell me when a limit resets: a PC notification at the CLI's reset
+    /// time (on by default; only from a host that offers `cap::PRESENCE`).
+    #[serde(default = "yes")]
+    pub limit_alarm: bool,
 }
 
 impl Default for HostSettings {
     fn default() -> Self {
-        Self { follow_sessions: true, keep_awake: true }
+        Self { follow_sessions: true, keep_awake: true, limit_alarm: true }
     }
 }
 
@@ -3245,6 +3349,8 @@ pub enum Event {
     ImportProgress(ImportProgressEvent),
     #[serde(rename = "sessions.scanned")]
     SessionsScanned(SessionsScannedEvent),
+    #[serde(rename = "ui.presence")]
+    UiPresence(PresenceEvent),
 }
 
 impl Event {
@@ -3279,6 +3385,7 @@ impl Event {
             Self::ThreadCut(_) => event::THREAD_CUT,
             Self::ImportProgress(_) => event::IMPORT_PROGRESS,
             Self::SessionsScanned(_) => event::SESSIONS_SCANNED,
+            Self::UiPresence(_) => event::UI_PRESENCE,
         }
     }
 
@@ -3305,7 +3412,8 @@ impl Event {
             | Self::SessionItem(_)
             | Self::SettingsChanged(_)
             | Self::ImportProgress(_)
-            | Self::SessionsScanned(_) => None,
+            | Self::SessionsScanned(_)
+            | Self::UiPresence(_) => None,
         }
     }
 
@@ -3574,6 +3682,7 @@ mod tests {
             summary: None,
             can_continue: false,
             blocked: Some(ContinueBlock::Open),
+            limit: None,
         }
     }
 
@@ -3757,7 +3866,11 @@ mod tests {
             Event::UiOpen(ThreadIdParams { thread_id: "a".into() }),
             Event::SessionState(SessionResult { session: session() }),
             Event::SessionRemoved(SessionRemovedEvent { session_id: session().id }),
-            Event::SettingsChanged(HostSettings { follow_sessions: false, keep_awake: true }),
+            Event::SettingsChanged(HostSettings {
+                follow_sessions: false,
+                keep_awake: true,
+                limit_alarm: false,
+            }),
             Event::SessionItem(SessionItemEvent {
                 session_id: session().id,
                 item: Item { text: Some("hi".into()), ..Item::new(65, "u-1", ItemKind::User, 1) },
@@ -4402,6 +4515,73 @@ mod tests {
             serde_json::from_value(json!({"token": "a", "decision": "deny", "by": {"kind": "launcher"}}))
                 .unwrap();
         assert_eq!(answer.message, None);
+    }
+
+    #[test]
+    fn presence_wire_names_and_later_words() {
+        let view = RemoteView {
+            device_id: "dev1".into(),
+            device_name: "Pixel".into(),
+            thread_id: Some("a".repeat(32)),
+            session_id: None,
+            pane: Some(Pane::Changes),
+            dnd: true,
+        };
+        let params = UiPresenceParams { at_pc: true, locked: false, dnd: false, remote: vec![view.clone()] };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"at_pc": true, "locked": false, "dnd": false, "remote": [{
+                "device_id": "dev1", "device_name": "Pixel", "thread_id": "a".repeat(32),
+                "pane": "changes", "dnd": true}]})
+        );
+        round_trip(&params);
+        let ev = Event::UiPresence(PresenceEvent {
+            at_pc: true,
+            locked: false,
+            dnd: true,
+            viewing: vec!["b".repeat(32)],
+            viewing_sessions: Vec::new(),
+            remote: vec![view],
+        });
+        let line = ev.to_line();
+        let ServerLine::Event(parsed) = ServerLine::parse(&line).unwrap() else { panic!("not an event") };
+        assert_eq!(parsed.event, "ui.presence");
+        assert_eq!(parsed.params["viewing_sessions"], json!([]), "empty lists are sent");
+        assert_eq!(Event::from_line(&parsed), Some(ev));
+        assert_eq!(method::UI_PRESENCE, "ui.presence");
+        assert!(cap::HOST.contains(&cap::PRESENCE));
+
+        let later: RemoteView = serde_json::from_value(
+            json!({"device_id": "d", "device_name": "P", "pane": "beside", "extra": 1}),
+        )
+        .unwrap();
+        assert_eq!((later.pane, later.dnd), (None, false), "an unknown pane is absent");
+        assert!(serde_json::from_value::<UiPresenceParams>(json!({"at_pc": true})).is_err());
+
+        let old: HostSettings =
+            serde_json::from_value(json!({"follow_sessions": true, "keep_awake": false})).unwrap();
+        assert!(old.limit_alarm, "on unless turned off");
+        assert_eq!(
+            serde_json::to_value(SettingsSetParams { keep_awake: Some(true), ..Default::default() }).unwrap(),
+            json!({"keep_awake": true}),
+            "the line an older host has always read"
+        );
+    }
+
+    #[test]
+    fn a_session_limit_is_additive() {
+        let mut limited = session();
+        limited.state = SessionState::Idle;
+        limited.limit = Some(SessionLimit { resets_ms: Some(1_795_020_000_000) });
+        round_trip(&limited);
+        let value = serde_json::to_value(&limited).unwrap();
+        assert_eq!(value["limit"], json!({"resets_ms": 1_795_020_000_000u64}));
+        let unknown = Session { limit: Some(SessionLimit::default()), ..session() };
+        assert_eq!(serde_json::to_value(&unknown).unwrap()["limit"], json!({}), "no time: an empty record");
+        let plain = serde_json::to_value(session()).unwrap();
+        assert!(plain.get("limit").is_none(), "absent unless set: the line older clients read");
+        let older: Session = serde_json::from_value(plain).unwrap();
+        assert_eq!(older.limit, None);
     }
 
     #[test]

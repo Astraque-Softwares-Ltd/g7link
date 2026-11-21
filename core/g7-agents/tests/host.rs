@@ -761,7 +761,10 @@ async fn read_all(client: &Client, thread_id: &str) -> Vec<Item> {
 async fn hello_says_what_the_host_offers() {
     let host = TestHost::start(Options::default()).await;
     let (client, _events) = host.client(ClientKind::Test).await;
-    assert_eq!(client.host().caps, [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL, cap::HISTORY, cap::UNDO]);
+    assert_eq!(
+        client.host().caps,
+        [cap::ITEMS2, cap::DENY_MESSAGE, cap::CONTROL, cap::HISTORY, cap::UNDO, cap::PRESENCE]
+    );
     let too_many = HelloParams::new(ClientKind::Test, &["x"; MAX_CAPS + 1]);
     let err = Client::connect(&host.socket, too_many).await.unwrap_err();
     assert_eq!(err.code(), Some(ErrorCode::BadRequest));
@@ -1317,9 +1320,18 @@ async fn the_lists_come_from_the_clis_and_the_control_methods_answer() {
     assert_eq!(error.conflict_draft().map(|d| d.text), Some("Fix the".into()));
     assert!(!client.folders_set(folder.id.clone(), false).await.unwrap().mcp);
     assert!(!client.folders_list().await.unwrap()[0].mcp, "stored");
-    let settings = client.settings_set(SettingsSetParams { keep_awake: Some(false) }).await.unwrap();
-    assert!(!settings.keep_awake && settings.follow_sessions);
+    let settings = client
+        .settings_set(SettingsSetParams { keep_awake: Some(false), ..Default::default() })
+        .await
+        .unwrap();
+    assert!(!settings.keep_awake && settings.follow_sessions && settings.limit_alarm);
     assert!(!client.settings_get().await.unwrap().keep_awake);
+    let settings = client
+        .settings_set(SettingsSetParams { limit_alarm: Some(false), ..Default::default() })
+        .await
+        .unwrap();
+    assert!(!settings.limit_alarm && !settings.keep_awake, "what is absent is unchanged");
+    assert!(!client.settings_get().await.unwrap().limit_alarm);
     client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
     assert_eq!(client.history_list(None).await.unwrap(), ["List the files here."]);
     assert_eq!(client.draft_get(key.clone()).await.unwrap().map(|d| d.text), Some(String::new()), "sent");
@@ -1740,5 +1752,96 @@ async fn the_launcher_asks_g7_link_to_show_a_thread() {
     launcher.ui_open(thread.id.clone()).await.unwrap();
     let shown = next(&mut link_events, "ui.open", |e| matches!(e, Event::UiOpen(_))).await;
     assert_eq!(shown, Event::UiOpen(ThreadIdParams { thread_id: thread.id }));
+    host.stop().await;
+}
+
+fn presence_of(event: Event) -> PresenceEvent {
+    match event {
+        Event::UiPresence(p) => p,
+        other => panic!("not ui.presence: {other:?}"),
+    }
+}
+
+async fn heard(events: &mut Events, what: &str, pred: impl Fn(&PresenceEvent) -> bool) -> PresenceEvent {
+    presence_of(next(events, what, |e| matches!(e, Event::UiPresence(p) if pred(p))).await)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presence_is_g7_links_to_say_and_reaches_those_that_asked() {
+    let host = TestHost::start(Options::default()).await;
+    let (client, mut events) = host.subscribed().await;
+    let folder = host.folder(&client).await;
+    let thread = client.thread_start(start(AgentId::Claude, &folder, "List the files here.")).await.unwrap();
+    until_done(&mut events, &thread.id).await;
+    let listed = client.threads_list(None, None).await.unwrap();
+    assert!(listed.iter().any(|t| t.id == thread.id && t.unread), "nobody has looked");
+
+    let connect =
+        |kind: ClientKind, caps: &[&str]| Client::connect(&host.socket, HelloParams::new(kind, caps));
+    let (launcher, mut launcher_events) = connect(ClientKind::Launcher, &[cap::PRESENCE]).await.unwrap();
+    let now = heard(&mut launcher_events, "the state at hello", |_| true).await;
+    assert_eq!(now, PresenceEvent::default(), "nobody there");
+    let (quiet, mut quiet_events) = connect(ClientKind::Launcher, &[]).await.unwrap();
+    let (test, mut test_events) = connect(ClientKind::Test, &[cap::PRESENCE]).await.unwrap();
+    let (link, mut link_events) = connect(ClientKind::Link, &[cap::PRESENCE]).await.unwrap();
+    heard(&mut link_events, "the state at hello", |_| true).await;
+
+    let view = |device: &str, thread_id: Option<String>| RemoteView {
+        device_id: device.into(),
+        device_name: "Pixel".into(),
+        thread_id,
+        session_id: None,
+        pane: Some(Pane::Thread),
+        dnd: false,
+    };
+    let shown = UiPresenceParams {
+        at_pc: false,
+        locked: true,
+        dnd: false,
+        remote: vec![view("7", Some(thread.id.clone()))],
+    };
+    for (who, kind) in [(&launcher, "launcher"), (&quiet, "launcher"), (&test, "test"), (&client, "test")] {
+        let err = who.ui_presence(shown.clone()).await.unwrap_err();
+        assert_eq!(err.code(), Some(ErrorCode::Denied), "{kind}");
+    }
+    let nine = (0..9).map(|n| view(&n.to_string(), None)).collect();
+    let err = link.ui_presence(UiPresenceParams { remote: nine, ..shown.clone() }).await.unwrap_err();
+    assert_eq!(err.code(), Some(ErrorCode::BadRequest), "more than 8 phones");
+
+    link.ui_presence(shown.clone()).await.unwrap();
+    let now = heard(&mut launcher_events, "the phone's view", |p| !p.remote.is_empty()).await;
+    assert!(now.locked && !now.at_pc && now.viewing.is_empty());
+    assert_eq!(now.remote, shown.remote);
+    heard(&mut link_events, "the phone's view", |p| !p.remote.is_empty()).await;
+    let read = next(
+        &mut events,
+        "read on the phone",
+        |e| matches!(e, Event::ThreadState(s) if s.thread.id == thread.id && !s.thread.unread),
+    )
+    .await;
+    assert!(matches!(read, Event::ThreadState(_)));
+
+    launcher.ui_viewing(Some(thread.id.clone())).await.unwrap();
+    let now = heard(&mut launcher_events, "the launcher's view", |p| !p.viewing.is_empty()).await;
+    assert_eq!(now.viewing, std::slice::from_ref(&thread.id));
+
+    // The ones that didn't ask heard nothing: a reply comes after any event sent before it.
+    quiet.folders_list().await.unwrap();
+    test.folders_list().await.unwrap();
+    client.folders_list().await.unwrap();
+    for (events, who) in
+        [(&mut quiet_events, "quiet"), (&mut test_events, "test"), (&mut events, "subscribed")]
+    {
+        while let Some(event) = events.try_recv() {
+            assert!(!matches!(event, Event::UiPresence(_)), "{who} heard {event:?}");
+        }
+    }
+
+    // G7 Link goes: what it said goes with it.
+    drop(link);
+    let now = heard(&mut launcher_events, "G7 Link gone", |p| p.remote.is_empty()).await;
+    assert!(!now.locked && !now.at_pc);
+    assert_eq!(now.viewing, [thread.id], "the launcher still shows it");
+    drop(link_events);
     host.stop().await;
 }

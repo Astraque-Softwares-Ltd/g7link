@@ -15,7 +15,7 @@ use crate::api::{self, ApprovalKind, Item, ItemKind, SessionSource, SessionState
 use crate::host::agents::{ToolSpec, display_path, file_diff};
 use crate::host::sessions::paths::{is_uuid, parse_rfc3339_ms};
 use crate::host::sessions::tail::Line;
-use crate::host::sessions::{MAX_OPEN_TOOLS, block_seq, first_line, is_wrapper, text_item};
+use crate::host::sessions::{MAX_OPEN_TOOLS, block_seq, epoch_ms, first_line, is_wrapper, text_item};
 use crate::host::threads::tool_item;
 
 /// What the first line (`session_meta`) says, reduced to what is kept: `id`,
@@ -129,6 +129,34 @@ pub struct CodexTail {
     /// From the last `task_complete`.
     pub last_agent_message: Option<String>,
     pub last_seq: u64,
+    /// The last `token_count` said a usage limit was reached and nothing came
+    /// after it: when it resets (Unix ms, unchecked) and the line's time.
+    limit: Option<(Option<u64>, u64)>,
+}
+
+/// A `token_count`'s `rate_limits`: `None` when no limit is reached, else
+/// when it resets: the latest `resets_at` of the windows at 100 %, else of
+/// every window (Codex named a reached limit without a full window).
+fn reached(rate_limits: &Value) -> Option<Option<u64>> {
+    let windows: Vec<&Value> = ["primary", "secondary"]
+        .iter()
+        .filter_map(|w| rate_limits.get(*w))
+        .filter(|w| w.is_object())
+        .collect();
+    let full = |w: &Value| w.get("used_percent").and_then(Value::as_f64).is_some_and(|p| p >= 100.0);
+    let named =
+        rate_limits.get("rate_limit_reached_type").is_some_and(|t| !t.is_null() && *t != Value::Bool(false));
+    if !named && !windows.iter().any(|w| full(w)) {
+        return None;
+    }
+    let latest = |only_full: bool| {
+        windows
+            .iter()
+            .filter(|w| !only_full || full(w))
+            .filter_map(|w| w.get("resets_at").and_then(epoch_ms))
+            .max()
+    };
+    Some(latest(true).or_else(|| latest(false)))
 }
 
 fn texts(content: Option<&Value>) -> String {
@@ -239,6 +267,12 @@ impl CodexTail {
                 self.turn = Turn::Started;
                 self.open_calls.clear();
                 self.last_was_assistant = false;
+                self.limit = None;
+            }
+            ("event_msg", "token_count") => {
+                if let Some(rate_limits) = payload.get("rate_limits").filter(|r| r.is_object()) {
+                    self.limit = reached(rate_limits).map(|resets| (resets, ts));
+                }
             }
             ("event_msg", "task_complete") => {
                 self.turn = Turn::Ended;
@@ -276,6 +310,9 @@ impl CodexTail {
     }
 
     fn item(&mut self, item: &Value, seq: u64, ts: u64) -> Option<Item> {
+        if matches!(str_of(item, "type"), Some("UserMessage" | "AgentMessage")) {
+            self.limit = None;
+        }
         let id = str_of(item, "id").unwrap_or("item");
         let status = str_of(item, "status").unwrap_or_default();
         let made = match str_of(item, "type")? {
@@ -341,7 +378,7 @@ impl CodexTail {
 
     /// The state as far as the rollout shows it, for an open session.
     pub fn guess(&self, quiet_ms: u64) -> SessionState {
-        if self.turn != Turn::Started {
+        if self.turn != Turn::Started || self.limit.is_some() {
             return SessionState::Idle;
         }
         if self.open_calls.iter().any(|(_, name)| name.starts_with("request_user_input")) {
@@ -351,6 +388,12 @@ impl CodexTail {
             return SessionState::NeedsYou;
         }
         SessionState::Working
+    }
+
+    /// The usage limit stopped the last turn: when it resets as the rollout
+    /// says (unchecked), and when that was written.
+    pub fn limit(&self) -> Option<(Option<u64>, u64)> {
+        self.limit
     }
 
     /// `Run command` while an `exec` call is open, else the open call's
@@ -429,6 +472,40 @@ mod tests {
         assert_eq!(tail.guess(u64::MAX), SessionState::Working);
         tail.feed(&line(300, r#"{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t","reason":"interrupted"}}"#), 0);
         assert_eq!(tail.guess(0), SessionState::Idle);
+    }
+
+    #[test]
+    fn a_reached_limit_in_the_rate_limits_stops_the_turn() {
+        let mut tail = CodexTail::new(None);
+        let line = |offset: u64, text: &str| Line { offset, bytes: text.as_bytes().to_vec() };
+        let counted = |used: u32, named: &str| {
+            format!(
+                r#"{{"timestamp":"2026-11-18T12:00:05.000Z","type":"event_msg","payload":{{"type":"token_count","info":null,"rate_limits":{{"limit_id":"x","primary":{{"used_percent":{used},"window_minutes":300,"resets_at":1795020000}},"secondary":{{"used_percent":40,"window_minutes":10080,"resets_at":1795500000}},"rate_limit_reached_type":{named}}}}}}}"#
+            )
+        };
+        tail.feed(&line(0, r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t"}}"#), 0);
+        tail.feed(&line(100, &counted(41, "null")), 0);
+        assert_eq!((tail.limit(), tail.guess(0)), (None, SessionState::Working));
+        tail.feed(&line(200, &counted(100, "null")), 0);
+        assert_eq!(
+            tail.limit(),
+            Some((Some(1_795_020_000_000), 1_795_003_205_000)),
+            "the full window's reset"
+        );
+        assert_eq!((tail.guess(0), tail.step()), (SessionState::Idle, None));
+        tail.feed(&line(300, &counted(99, r#""primary""#)), 0);
+        assert_eq!(
+            tail.limit().map(|l| l.0),
+            Some(Some(1_795_500_000_000)),
+            "named without a full window: the latest reset"
+        );
+        tail.feed(&line(400, r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#), 0);
+        assert!(tail.limit().is_some(), "no rate limits: nothing new");
+        tail.feed(&line(500, &counted(12, "null")), 0);
+        assert_eq!(tail.limit(), None, "under the limit again");
+        tail.feed(&line(600, &counted(100, "null")), 0);
+        tail.feed(&line(700, r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t2"}}"#), 0);
+        assert_eq!((tail.limit(), tail.guess(0)), (None, SessionState::Working), "a new turn");
     }
 
     #[test]

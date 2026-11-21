@@ -22,6 +22,9 @@
 //! questions, plan mode as supervised, a plan as an answer and a question
 //! as a tool step. Images travel on streams of their own, one upload at a
 //! time per phone, refused when more bytes come than were announced.
+//!
+//! Presence (§7) is [`crate::agent_presence`]'s; its state lives here, in
+//! `Agents`, so it ends with the session and the toggle.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -38,8 +41,9 @@ pub use g7link_protocol::messages::{
     AgentItems, AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion, AgentQuestionAnswer,
     AgentQuestionAsk, AgentQuestionOption, AgentQuestionReply, AgentQuestioned, AgentQueueChange,
     AgentQueued, AgentRead, AgentSend, AgentSession, AgentSessionContinue, AgentSessionEvent,
-    AgentSessionItem, AgentSessionItems, AgentSessionRead, AgentSessionWatch, AgentSessions, AgentStart,
-    AgentThread, AgentThreads, AgentTool, AgentWatch, agent, clean_deny_message, is_valid_agent_id,
+    AgentSessionItem, AgentSessionItems, AgentSessionLimit, AgentSessionRead, AgentSessionWatch,
+    AgentSessions, AgentStart, AgentThread, AgentThreads, AgentTool, AgentWatch, agent, clean_deny_message,
+    is_valid_agent_id,
 };
 use g7link_protocol::{
     DeviceId, Envelope, ErrorCode, ProtocolError,
@@ -689,6 +693,8 @@ impl std::fmt::Debug for CacheSlot {
 pub(crate) struct Agents {
     inner: Mutex<Inner>,
     cache: Mutex<CacheSlot>,
+    /// §7: the PC's presence, phones' views.
+    pub(crate) presence: crate::agent_presence::Presence,
 }
 
 impl Agents {
@@ -696,12 +702,14 @@ impl Agents {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// A session with `peer` ended: its watches and pending text go, and on a
-    /// phone the PC's catalog (it may come back different). True when it
+    /// A session with `peer` ended: its watches and pending text go, its
+    /// presence and view (§7), and on a phone the PC's catalog (it may come
+    /// back different). True when it
     /// watched a session the platform should stop sending
     /// ([`unwatch_on_platform`]).
     #[must_use]
     pub fn session_ended(&self, peer: &DeviceId) -> bool {
+        self.presence.session_ended(peer);
         let mut inner = self.lock();
         inner.watching.remove(peer);
         inner.gates.remove(peer);
@@ -715,6 +723,7 @@ impl Agents {
     #[must_use]
     pub fn remove_peer(&self, peer: &DeviceId) -> bool {
         let watched = self.session_ended(peer);
+        self.presence.remove_peer(peer);
         {
             let mut inner = self.lock();
             inner.prompted.remove(peer);
@@ -943,6 +952,7 @@ pub(crate) async fn send_catalog(shared: &Arc<Shared>, session: &Arc<Session>) {
     if let Some(env) = env {
         let _ = session.send(env).await;
     }
+    crate::agent_presence::send_last(shared, session).await;
 }
 
 /// PC: sends the catalog again to the phones (all, or `only`) whose form of
@@ -966,6 +976,9 @@ pub(crate) async fn refresh_catalogs(shared: &Arc<Shared>, only: Option<DeviceId
 
 /// PC: the `agents` toggle for `peer` was turned on or off.
 pub(crate) fn toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
+    if !on && shared.agents.presence.forget_view(&peer) {
+        shared.emit(NodeEvent::AgentViewing { device: peer, view: None });
+    }
     let Some(session) = shared.session(&peer) else {
         if !on && shared.agents.session_ended(&peer) {
             unwatch_on_platform(shared, peer);
@@ -1001,6 +1014,9 @@ pub(crate) fn toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
 pub(crate) fn sessions_toggled(shared: &Arc<Shared>, peer: DeviceId, on: bool) {
     if !on && shared.agents.unwatch_session(&peer) {
         unwatch_on_platform(shared, peer);
+    }
+    if !on && shared.agents.presence.forget_session_view(&peer) {
+        shared.emit(NodeEvent::AgentViewing { device: peer, view: None });
     }
 }
 
@@ -2015,6 +2031,9 @@ pub(crate) async fn handle(
             crate::agent_history::handle_request(shared, peer, env, rsp).await?;
         }
         t if crate::agent_history::is_event(t) => crate::agent_history::handle_event(shared, peer, env).await,
+        t if crate::agent_presence::is_message(t) => {
+            crate::agent_presence::handle(shared, peer, env, rsp).await?;
+        }
         types::AGENT_CATALOG if shared.we_offer(agent::REMOTE) => {
             let Ok(catalog) = env.body::<AgentCatalog>() else { return Ok(true) };
             if !catalog.is_valid() {
@@ -2023,6 +2042,9 @@ pub(crate) async fn handle(
             let catalog = catalog.sanitized();
             let catalog = (!catalog.agents.is_empty()).then_some(catalog);
             crate::agent_history::catalog_arrived(shared, peer, catalog.is_some());
+            if catalog.is_none() {
+                shared.agents.presence.forget_pc(&peer);
+            }
             let offers = peer_offers_now(shared, &peer);
             {
                 let mut inner = shared.agents.lock();

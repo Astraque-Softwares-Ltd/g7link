@@ -295,6 +295,7 @@ AgentSession = {
   since?: uint,                              // Unix ms: when `state` began
   step?: text, summary?: text, waiting_for?: text,
   can_continue: bool, blocked?: text,        // "open" | "folder" | "agent"
+  limit?: { resets_ms?: uint },              // stopped at the agent's usage limit (0.1.20)
 }
 ```
 
@@ -306,6 +307,11 @@ AgentSession = {
   sends `needs_you` with `guess`, and a receiver reads one as `may_need_you`.
   `ended`: no process has the session open any more. A receiver reads a
   `source` it doesn't know as `other` and ignores a `blocked` it doesn't know.
+- `limit` says the session stopped at its agent's usage limit; its `state`
+  is then `idle`, never `working`. `resets_ms` (Unix ms) is when the limit
+  resets, when the agent said. Show "Limit reached · resets …", or "Limit
+  reached" without a time, with the stopped mark. A receiver that doesn't know
+  the field shows the state alone. It goes once the session moves on.
 - `agent.session` says a session appeared or changed (`session`), or left the
   list (`removed`, its id): it left the PC's window, its file went away, or it
   became a thread. Exactly one of the two. It goes to every connected phone
@@ -835,7 +841,65 @@ the past or beyond 30 days; `NOT_FOUND` for an unknown or used token, or
 nothing to undo; `BUSY` while the thread works or waits (rewind, fork,
 archive), and for a second import job.
 
-## 7. Implementation notes
+## 7. Presence
+
+Added in G7 Link 0.1.20. A PC tells its phones three facts about itself and
+which of their threads are on its screen; a phone tells its PC which thread or
+session it shows. A phone uses it for one thing: holding a notification for a
+thread you're reading on the PC, and showing it the moment you stop. A PC uses
+a phone's view not to notify about a thread you're reading on the phone, and to
+mark it read. It's plain protocol v1: no capability. Everything follows the
+`agents` toggle (§1); sessions also `agent_sessions` (§3). Nothing here travels
+on Bluetooth, and nothing is retried or queued while offline.
+
+```
+t = "agent.presence"   b = { at_pc, locked, dnd, viewing?: [id], sessions?: [id], ttl_ms }   PC → phone, agent lane
+
+RPC agent/viewing      t = "agent.viewing"    b = { thread?, session?, visible, pane? }       → ok
+```
+
+- **`agent.presence`.** `at_pc`: someone used the PC in the last 30 s and it
+  isn't locked (an idle time the PC can't read counts as away). `locked`: its
+  session is locked. `dnd`: it shows no notifications. `viewing` and
+  `sessions` are the threads and sessions on the PC's screen, in G7 Link or the
+  launcher, newest first; `sessions` is empty for a phone without
+  `agent_sessions`. The PC sends it to each phone with the toggle on, on every
+  change and at least every 20 s, with `ttl_ms` 60000; and once to a phone that
+  connects or is let in, with what's left of that time. A phone trusts it for
+  `ttl_ms` from when it arrives. Older, or with the link down, it says nothing:
+  nobody is there, and the phone notifies. `at_pc` with `locked` reads as not
+  at the PC.
+- **`agent.viewing`.** A phone sends it when a thread or session screen comes
+  to the front or leaves, when its screen turns on or off, and every 30 s while
+  it shows. A visible view names exactly one thread or session; `pane` is
+  `"thread"`, `"changes"`, `"plan"` or `"requests"`. `visible: false` ends the
+  view it names, or with neither a thread nor a session, whatever the phone
+  showed; one that names another than the view the PC has changes nothing. A phone
+  sends them in order, one at a time, at most one every 2 s: a repeat inside
+  that is dropped, a change waits for its turn and the newest wins,
+  `visible: false` doesn't wait. The PC trusts a view for 60 s, drops it when
+  the phone's session ends or a toggle goes off, and never asks its user about
+  one.
+- **Never to a phone**: an idle time, a window title, an app name, another
+  device's view. A PC learns no more of a phone than the thread or session it
+  shows and the pane.
+- A receiver reads a `pane` it doesn't know as absent.
+
+Limits:
+
+| Field | Limit |
+|---|---|
+| `viewing`, `sessions` | 4 each, distinct ids |
+| `ttl_ms` | 1000 to 120000 |
+| `thread`, `session` | an id (1 to 40, `[a-z0-9]`); never both |
+| `pane` | 1 to 32 |
+
+Errors as §2.3: `DENIED` with `agents` off, and for a session's view with
+`agent_sessions` off (neither prompts the PC's user); `BAD_MESSAGE` for a
+visible view of nothing, a view of both, or one out of its limits. A phone
+drops an `agent.presence` out of its limits.
+
+## 8. Implementation notes
 
 - G7 Link desktop talks to the agent host (`g7-agents`) on a local socket and
   relays its threads; the folder's path never leaves the PC. The PC's
@@ -857,6 +921,12 @@ archive), and for a second import job.
 - The core answers the `agent/export` stream itself, checking the toggles,
   and asks the platform for the text (`AgentRequest::Export`); G7 Link
   desktop gets it from the host's `thread.export`.
+- The core answers `agent/viewing` itself and keeps each phone's view
+  (`Node::agent_views`); G7 Link desktop puts them in the host's `ui.presence`
+  as `remote`, and passes the host's `ui.presence` event on to the phones as
+  `agent.presence` (`Node::agent_presence`). On the phone the FFI's
+  `agent_presence` is null once a presence lapses or the link drops; no event
+  says so.
 - The core answers §5's requests after checking `agent.control` on both
   sides, the toggle, the limits, the mode and secret questions (it remembers
   the last 64 secret tokens it relayed), and makes every thread, item, page

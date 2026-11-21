@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use zbus::export::futures_core::Stream;
 use zbus::zvariant::Value as DbusValue;
 
-use crate::api::{Approval, ApprovalKind, OriginKind, ThreadInfo};
+use crate::api::{AgentId, Approval, ApprovalKind, OriginKind, ThreadInfo};
 
 const SERVICE: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
@@ -58,6 +58,37 @@ pub enum Note {
     PlanReady {
         thread: ThreadInfo,
     },
+    /// The agent's usage limit has reset (phase 5, §V5): one per agent,
+    /// opening the newest thread it stopped. Nothing resumes by itself.
+    LimitReset {
+        agent: AgentId,
+        thread: Option<ThreadInfo>,
+    },
+}
+
+impl Note {
+    /// The notification it posts or takes down: a thread's, or an agent's
+    /// limit alarm.
+    fn key(&self) -> String {
+        match self {
+            Note::Approval { thread, .. }
+            | Note::Done { thread, .. }
+            | Note::Failed { thread, .. }
+            | Note::PhoneStarted { thread, .. }
+            | Note::Question { thread, .. }
+            | Note::PlanReady { thread } => thread.id.clone(),
+            Note::ApprovalGone { thread_id, .. } | Note::Removed { thread_id } => thread_id.clone(),
+            Note::LimitReset { agent, .. } => format!("limit:{}", agent.as_str()),
+        }
+    }
+
+    /// The thread its Open shows.
+    fn opens(&self) -> Option<String> {
+        match self {
+            Note::LimitReset { thread, .. } => thread.as_ref().map(|t| t.id.clone()),
+            _ => Some(self.key()),
+        }
+    }
 }
 
 /// What the user did on a notification.
@@ -184,6 +215,16 @@ pub fn render(note: &Note) -> Option<Rendered> {
             critical: false,
             token: None,
         }),
+        Note::LimitReset { agent, thread } => Some(Rendered {
+            summary: format!("{}'s limit has reset", agent.display_name()),
+            body: thread
+                .as_ref()
+                .map(|t| format!("You can continue {}.", first_line(&t.title, MAX_BODY_LINE)))
+                .unwrap_or_default(),
+            actions: if thread.is_some() { vec![("default", "Open")] } else { Vec::new() },
+            critical: false,
+            token: None,
+        }),
         Note::ApprovalGone { .. } | Note::Removed { .. } => None,
     }
 }
@@ -218,6 +259,8 @@ impl Notifier {
 struct Shown {
     id: u32,
     token: Option<String>,
+    /// The thread Open shows.
+    opens: Option<String>,
 }
 
 async fn drain(mut rx: mpsc::UnboundedReceiver<Note>) {
@@ -288,15 +331,8 @@ async fn handle_note(
     by_thread: &mut HashMap<String, Shown>,
     by_id: &mut HashMap<u32, String>,
 ) {
-    let thread_id = match &note {
-        Note::Approval { thread, .. }
-        | Note::Done { thread, .. }
-        | Note::Failed { thread, .. }
-        | Note::PhoneStarted { thread, .. }
-        | Note::Question { thread, .. }
-        | Note::PlanReady { thread } => thread.id.clone(),
-        Note::ApprovalGone { thread_id, .. } | Note::Removed { thread_id } => thread_id.clone(),
-    };
+    let thread_id = note.key();
+    let opens = note.opens();
     let Some(rendered) = render(&note) else {
         let matches = match &note {
             Note::ApprovalGone { token, .. } => {
@@ -347,7 +383,7 @@ async fn handle_note(
         by_id.remove(&replaces);
     }
     by_id.insert(id, thread_id.clone());
-    by_thread.insert(thread_id, Shown { id, token: rendered.token });
+    by_thread.insert(thread_id, Shown { id, token: rendered.token, opens });
 }
 
 fn signal_action(
@@ -359,13 +395,14 @@ fn signal_action(
     match header.member()?.as_str() {
         "ActionInvoked" => {
             let (id, key) = msg.body().deserialize::<(u32, String)>().ok()?;
-            let thread_id = by_id.get(&id)?.clone();
-            let token = by_thread.get(&thread_id).and_then(|s| s.token.clone());
+            let shown = by_thread.get(by_id.get(&id)?)?;
+            let token = shown.token.clone();
+            let thread_id = shown.opens.clone();
             match key.as_str() {
                 "allow" => Some(NoteAction::Answer { token: token?, allow: true }),
                 "deny" => Some(NoteAction::Answer { token: token?, allow: false }),
-                "stop" => Some(NoteAction::Stop { thread_id }),
-                "default" | "open" => Some(NoteAction::Open { thread_id }),
+                "stop" => Some(NoteAction::Stop { thread_id: thread_id? }),
+                "default" | "open" => Some(NoteAction::Open { thread_id: thread_id? }),
                 _ => None,
             }
         }
@@ -499,5 +536,24 @@ mod tests {
         let r = render(&Note::PhoneStarted { thread: thread(Origin::phone("p", "Pixel")), continued: true })
             .unwrap();
         assert_eq!(r.body, "continued a session in g7linux\nFix the build");
+    }
+
+    #[test]
+    fn a_limit_reset_opens_the_thread_it_stopped_and_replaces_itself_per_agent() {
+        let note = Note::LimitReset { agent: AgentId::Claude, thread: Some(thread(Origin::launcher())) };
+        let r = render(&note).unwrap();
+        assert_eq!(r.summary, "Claude's limit has reset");
+        assert_eq!(r.body, "You can continue Fix the build.");
+        assert_eq!(r.actions, [("default", "Open")]);
+        assert!(!r.critical && r.token.is_none());
+        assert_eq!(note.key(), "limit:claude");
+        assert_eq!(note.opens(), Some("a".repeat(32)));
+        let bare = Note::LimitReset { agent: AgentId::Codex, thread: None };
+        let r = render(&bare).unwrap();
+        assert_eq!((r.summary.as_str(), r.body.as_str()), ("Codex's limit has reset", ""));
+        assert!(r.actions.is_empty(), "nothing to open");
+        assert_eq!((bare.key(), bare.opens()), ("limit:codex".to_owned(), None));
+        let done = Note::Done { thread: thread(Origin::launcher()), summary: String::new() };
+        assert_eq!((done.key(), done.opens()), ("a".repeat(32), Some("a".repeat(32))));
     }
 }

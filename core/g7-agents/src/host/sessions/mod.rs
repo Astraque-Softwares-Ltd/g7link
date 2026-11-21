@@ -72,6 +72,13 @@ pub(crate) fn is_wrapper(text: &str) -> bool {
     t.starts_with('<') && t.as_bytes().iter().take(64).any(|&b| b == b'>')
 }
 
+/// A Unix time a transcript gives in seconds (or already in ms), in ms.
+pub(crate) fn epoch_ms(value: &serde_json::Value) -> Option<u64> {
+    let t =
+        value.as_u64().or_else(|| value.as_f64().filter(|f| *f >= 0.0 && f.is_finite()).map(|f| f as u64))?;
+    Some(if t < 100_000_000_000 { t.saturating_mul(1000) } else { t })
+}
+
 /// The first non-empty line, trimmed.
 pub(crate) fn first_line(text: &str) -> Option<String> {
     text.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_owned)
@@ -209,6 +216,15 @@ impl Tail {
             Tail::Codex(_) => None,
         }
     }
+
+    /// The usage limit stopped the last turn: when it resets as the file
+    /// says (unchecked), and when that was written.
+    fn limit(&self) -> Option<(Option<u64>, u64)> {
+        match self {
+            Tail::Claude(t) => t.limit(),
+            Tail::Codex(t) => t.limit(),
+        }
+    }
 }
 
 /// Reads a window and feeds it to a new reader.
@@ -321,11 +337,23 @@ struct Watch {
 }
 
 /// The session's state and its time, from the scan's facts and the tail.
+///
+/// A turn the usage limit stopped (the tail's last entry) reads as idle with
+/// `limit`, over a live status written no later than that entry; a newer
+/// "busy" or "waiting" means the session went on.
 fn build(id: &str, ctx: &Ctx, reader: &Tail, mtime_ms: u64, now: u64) -> (Session, u64) {
     let quiet = now.saturating_sub(mtime_ms);
     let guessed = || (reader.guess(quiet), true, None, mtime_ms);
+    let stopped = reader.limit().filter(|_| ctx.open);
+    let live_after = |limit_at: u64| ctx.live.as_ref().filter(|(_, _, at)| *at > limit_at);
     let (state, state_guess, waiting_for, since_hint) = if !ctx.open {
         (SessionState::Ended, false, None, mtime_ms)
+    } else if let Some((_, limit_at)) = stopped
+        && live_after(limit_at)
+            .is_none_or(|(status, _, _)| !matches!(status.as_deref(), Some("busy" | "waiting")))
+    {
+        // The transcript records the limit: not a guess.
+        (SessionState::Idle, false, None, limit_at)
     } else {
         match &ctx.live {
             Some((status, waiting, at)) => match status.as_deref() {
@@ -342,6 +370,9 @@ fn build(id: &str, ctx: &Ctx, reader: &Tail, mtime_ms: u64, now: u64) -> (Sessio
             None => guessed(),
         }
     };
+    let limit = stopped.filter(|_| state == SessionState::Idle).map(|(resets_ms, _)| SessionLimit {
+        resets_ms: resets_ms.filter(|t| *t > now && *t <= now.saturating_add(SESSION_LIMIT_AHEAD_MS)),
+    });
     let active =
         matches!(state, SessionState::Working | SessionState::NeedsYou | SessionState::NeedsYouGuess);
     let finished = matches!(state, SessionState::Idle | SessionState::Ended);
@@ -378,6 +409,7 @@ fn build(id: &str, ctx: &Ctx, reader: &Tail, mtime_ms: u64, now: u64) -> (Sessio
         },
         can_continue: ctx.blocked.is_none(),
         blocked: ctx.blocked,
+        limit,
     };
     (session, since_hint)
 }
@@ -1272,7 +1304,11 @@ impl Host {
 
     /// `settings.get`.
     pub fn settings(&self) -> HostSettings {
-        HostSettings { follow_sessions: self.sessions.following(), keep_awake: self.keep_awake_on() }
+        HostSettings {
+            follow_sessions: self.sessions.following(),
+            keep_awake: self.keep_awake_on(),
+            limit_alarm: self.limit_alarm_on(),
+        }
     }
 
     /// `sessions.set_following`: stored, announced, and the scanner stops or starts.
@@ -1502,6 +1538,43 @@ pub(crate) mod tests {
         assert!(s.summary.unwrap().starts_with("There are two"));
         assert_eq!(s.title, "Tidy the readme");
         assert!(!s.can_continue);
+    }
+
+    #[test]
+    fn a_session_the_usage_limit_stopped_reads_idle_with_its_reset() {
+        let limited = tail_of("claude-limit.jsonl", AgentId::Claude);
+        let entry = 1_795_003_205_000;
+        let resets = 1_795_020_000_000;
+        let now = entry + 60_000;
+        let with_live = |status: &str, at: u64| Ctx {
+            live: Some((Some(status.to_owned()), None, at)),
+            ..ctx(AgentId::Claude, true, None)
+        };
+        let of = |c: &Ctx, now: u64| {
+            let (s, since) = build("sc1", c, &limited, entry, now);
+            (s.state, s.state_guess, s.limit.map(|l| l.resets_ms), since)
+        };
+        let stopped = (SessionState::Idle, false, Some(Some(resets)), entry);
+        assert_eq!(of(&ctx(AgentId::Claude, true, None), now), stopped);
+        assert_eq!(of(&with_live("busy", entry), now), stopped, "a live busy no newer than the limit");
+        assert_eq!(of(&with_live("waiting", entry - 1), now), stopped);
+        assert_eq!(
+            of(&with_live("busy", entry + 1), now),
+            (SessionState::Working, false, None, entry + 1),
+            "it went on"
+        );
+        assert_eq!(of(&with_live("waiting", entry + 1), now).2, None);
+        assert_eq!(
+            of(&with_live("idle", entry + 1), now),
+            (SessionState::Idle, false, Some(Some(resets)), entry)
+        );
+        assert_eq!(of(&ctx(AgentId::Claude, false, None), now), (SessionState::Ended, false, None, entry));
+        assert_eq!(of(&ctx(AgentId::Claude, true, None), resets).2, Some(None), "the reset time has passed");
+        let far = resets - SESSION_LIMIT_AHEAD_MS - 1;
+        assert_eq!(of(&ctx(AgentId::Claude, true, None), far).2, Some(None), "more than 31 days ahead");
+        let (s, _) = build("sc1", &ctx(AgentId::Claude, true, None), &limited, entry, now);
+        assert_eq!(s.summary.as_deref(), Some("I'll start with the lexer."));
+        assert_eq!(s.step, None);
     }
 
     #[test]

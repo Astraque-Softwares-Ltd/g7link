@@ -10,6 +10,7 @@ mod actions;
 mod adb_wifi;
 mod agent_cache;
 pub mod agent_history;
+pub mod agent_presence;
 pub mod agents;
 mod ble_link;
 mod calls;
@@ -67,14 +68,16 @@ pub use agent_history::{
     AgentSearchRequest, AgentThreadsRequest, AgentTurn, AgentTurnFile, AgentTurnFiles, AgentUndo,
     Cached as AgentCached, CachedItems as AgentCachedItems, HeldState, HeldWhy, TurnRange, history,
 };
+pub use agent_presence::{AgentPcPresence, AgentPresence, AgentView, AgentViewing, presence};
 pub use agents::{
     AgentAsk, AgentAsked, AgentCatalog, AgentCatalogAgent, AgentCatalogFolder, AgentCommand, AgentConfigure,
     AgentContext, AgentDraft, AgentDraftSaved, AgentDraftSet, AgentEvent, AgentExport, AgentFailure,
     AgentFileHit, AgentFiles, AgentFilesRequest, AgentImage, AgentItem, AgentItemQuestion, AgentItems,
     AgentLimit, AgentMcp, AgentModel, AgentPlanStep, AgentQuestion, AgentQuestionAnswer, AgentQuestionAsk,
     AgentQuestionOption, AgentQuestionReply, AgentQuestioned, AgentQueueChange, AgentQueued, AgentReply,
-    AgentRequest, AgentSend, AgentSession, AgentSessionItems, AgentStart, AgentThread, AgentTool,
-    QueueAction, SESSIONS_TOGGLE as AGENT_SESSIONS_TOGGLE, TOGGLE as AGENTS_TOGGLE, agent, is_valid_agent_id,
+    AgentRequest, AgentSend, AgentSession, AgentSessionItems, AgentSessionLimit, AgentStart, AgentThread,
+    AgentTool, QueueAction, SESSIONS_TOGGLE as AGENT_SESSIONS_TOGGLE, TOGGLE as AGENTS_TOGGLE, agent,
+    is_valid_agent_id,
 };
 pub use ble_link::{
     BLE_LINK_CAPABILITY, BLE_LINK_TOGGLE, BLE_REMOTE_CAPABILITY, BleEndpoint,

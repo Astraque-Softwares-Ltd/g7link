@@ -16,7 +16,9 @@ use crate::api::{self, Item, ItemKind, SessionState, ToolStatus};
 use crate::host::claude;
 use crate::host::sessions::paths::parse_rfc3339_ms;
 use crate::host::sessions::tail::Line;
-use crate::host::sessions::{MAX_BLOCKS, MAX_OPEN_TOOLS, block_seq, first_line, is_wrapper, text_item};
+use crate::host::sessions::{
+    MAX_BLOCKS, MAX_OPEN_TOOLS, block_seq, epoch_ms, first_line, is_wrapper, text_item,
+};
 use crate::host::threads::tool_item;
 
 /// Tools whose call, left open and quiet, is most likely a permission prompt.
@@ -39,6 +41,39 @@ enum Last {
         after_end_turn: bool,
     },
     ApiError,
+    /// The usage limit stopped the turn (an assistant entry marked as an API
+    /// error with `error: "rate_limit"`): when the entry says it resets
+    /// (Unix ms, unchecked) and the entry's time. Only a later user or
+    /// assistant entry ends it.
+    Limited {
+        resets_ms: Option<u64>,
+        at: u64,
+    },
+}
+
+/// What an assistant entry Claude marks as an API error (`isApiErrorMessage`) is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApiError {
+    /// The usage limit, and when it resets as the entry says.
+    Limit(Option<u64>),
+    Other,
+}
+
+fn api_error(v: &Value) -> Option<ApiError> {
+    if v.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    if str_of(v, "error") != Some("rate_limit") && str_of(v, "apiError") != Some("usage_limit_reached") {
+        return Some(ApiError::Other);
+    }
+    let resets = [
+        "/apiErrorParams/rate_limit_info/resetsAt",
+        "/apiErrorParams/quotaLimits/resetsAt",
+        "/quotaLimits/resetsAt",
+    ]
+    .iter()
+    .find_map(|at| v.pointer(at).and_then(epoch_ms));
+    Some(ApiError::Limit(resets))
 }
 
 /// Reads one Claude transcript, line by line.
@@ -178,7 +213,13 @@ impl ClaudeTail {
 
     fn assistant(&mut self, v: &Value, offset: u64, ts: u64) -> Vec<Item> {
         let mut out = Vec::new();
-        let Some(message) = v.get("message") else { return out };
+        let error = api_error(v);
+        let Some(message) = v.get("message") else {
+            if let Some(ApiError::Limit(resets_ms)) = error {
+                self.last = Last::Limited { resets_ms, at: ts };
+            }
+            return out;
+        };
         let message_id = str_of(message, "id").unwrap_or("message");
         let block_index = v.get("apiBlockIndex").and_then(Value::as_u64);
         let end_turn = str_of(message, "stop_reason") == Some("end_turn");
@@ -195,7 +236,10 @@ impl ClaudeTail {
                     }
                     let id = format!("{message_id}:{}", block_index.unwrap_or(i as u64));
                     out.push(text_item(seq, &id, ItemKind::Assistant, body, ts));
-                    self.last_assistant_text = Some(body.to_owned());
+                    // The summary stays the last answer, not the limit's notice.
+                    if !matches!(error, Some(ApiError::Limit(_))) {
+                        self.last_assistant_text = Some(body.to_owned());
+                    }
                     text = true;
                 }
                 Some("tool_use") => {
@@ -217,11 +261,18 @@ impl ClaudeTail {
                 _ => {}
             }
         }
-        self.last = Last::Assistant { end_turn, tool, text };
+        self.last = match error {
+            Some(ApiError::Limit(resets_ms)) => Last::Limited { resets_ms, at: ts },
+            Some(ApiError::Other) => Last::ApiError,
+            None => Last::Assistant { end_turn, tool, text },
+        };
         out
     }
 
     fn system(&mut self, v: &Value) {
+        if matches!(self.last, Last::Limited { .. }) {
+            return;
+        }
         match str_of(v, "subtype") {
             Some("stop_hook_summary") => {
                 let after_end_turn = matches!(
@@ -246,10 +297,19 @@ impl ClaudeTail {
             {
                 SessionState::NeedsYou
             }
-            Last::Assistant { end_turn: true, .. } | Last::StopHook { after_end_turn: true } => {
-                SessionState::Idle
-            }
+            Last::Assistant { end_turn: true, .. }
+            | Last::StopHook { after_end_turn: true }
+            | Last::Limited { .. } => SessionState::Idle,
             _ => SessionState::Working,
+        }
+    }
+
+    /// The usage limit stopped the last turn and nothing came after it:
+    /// when it resets as the entry said (unchecked), and the entry's time.
+    pub fn limit(&self) -> Option<(Option<u64>, u64)> {
+        match self.last {
+            Last::Limited { resets_ms, at } => Some((resets_ms, at)),
+            _ => None,
         }
     }
 
@@ -333,6 +393,54 @@ mod tests {
         let error = items.iter().filter_map(|i| i.tool.as_ref()).find(|t| t.status == ToolStatus::Error);
         assert!(error.is_some(), "an error result without a rejection is an error");
         assert_eq!(tail.guess(0), SessionState::Working, "a result came back: Claude goes on");
+    }
+
+    #[test]
+    fn a_turn_the_usage_limit_stopped_is_not_working() {
+        let (mut tail, items) = run("claude-limit.jsonl");
+        let texts: Vec<_> = items.iter().filter_map(|i| i.text.as_deref()).collect();
+        assert_eq!(texts, ["Tidy the parser.", "I'll start with the lexer.", "You've hit your limit."]);
+        assert_eq!(tail.guess(u64::MAX), SessionState::Idle);
+        assert_eq!(tail.limit(), Some((Some(1_795_020_000_000), 1_795_003_205_000)));
+        assert_eq!(tail.step(), None);
+        assert_eq!(
+            tail.last_assistant_text.as_deref(),
+            Some("I'll start with the lexer."),
+            "the summary stays the last answer"
+        );
+        // The next prompt ends it.
+        let line = |offset: u64, text: &str| Line { offset, bytes: text.as_bytes().to_vec() };
+        tail.feed(
+            &line(9000, r#"{"type":"user","uuid":"u9","message":{"role":"user","content":"Go on."}}"#),
+            1,
+        );
+        assert_eq!((tail.limit(), tail.guess(0)), (None, SessionState::Working));
+    }
+
+    #[test]
+    fn other_api_errors_and_the_quota_reset_time() {
+        let line = |text: &str| Line { offset: 0, bytes: text.as_bytes().to_vec() };
+        let mut tail = ClaudeTail::new(None);
+        tail.feed(
+            &line(r#"{"type":"assistant","isApiErrorMessage":true,"error":"server_error","message":{"id":"m","content":[{"type":"text","text":"Overloaded."}]}}"#),
+            1,
+        );
+        assert_eq!((tail.limit(), tail.guess(0)), (None, SessionState::Working), "as before");
+        tail.feed(
+            &line(r#"{"type":"assistant","timestamp":"2026-11-18T12:00:05.000Z","isApiErrorMessage":true,"apiError":"usage_limit_reached","quotaLimits":{"resetsAt":1795020000},"message":{"id":"m2","content":[]}}"#),
+            1,
+        );
+        assert_eq!(tail.limit(), Some((Some(1_795_020_000_000), 1_795_003_205_000)));
+        let mut tail = ClaudeTail::new(None);
+        tail.feed(&line(r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","message":{"id":"m3","content":[]}}"#), 7);
+        assert_eq!(tail.limit(), Some((None, 7)), "no reset time said");
+        tail.feed(&line(r#"{"type":"system","subtype":"api_error"}"#), 8);
+        assert_eq!(tail.limit(), Some((None, 7)), "a system line doesn't end it");
+        tail.feed(
+            &line(r#"{"type":"assistant","message":{"id":"m4","content":[{"type":"text","text":"Back."}]}}"#),
+            9,
+        );
+        assert_eq!(tail.limit(), None);
     }
 
     #[test]

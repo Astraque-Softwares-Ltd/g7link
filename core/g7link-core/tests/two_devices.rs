@@ -10405,6 +10405,7 @@ fn agent_session(id: &str, title: &str) -> g7link_core::AgentSession {
         can_continue: false,
         blocked: Some("open".into()),
         since: Some(1_795_000_000_000),
+        limit: None,
     }
 }
 
@@ -10782,6 +10783,37 @@ async fn a_session_never_carries_a_path() {
     })
     .await;
     assert_eq!(state, "may_need_you");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_at_its_usage_limit_says_so_on_the_phone() {
+    let mut phone = follow_phone("Pixel").await;
+    let pc = sessions_pc_with(&mut phone).await;
+    let pc_id = pc.node.device_id();
+    allow_sessions(&pc, &mut phone).await;
+
+    let limit = g7link_core::AgentSessionLimit { resets_ms: Some(1_795_010_000_000) };
+    let limited = g7link_core::AgentSession {
+        state: "idle".into(),
+        limit: Some(limit),
+        ..agent_session(FOLLOWED_SESSION, "Fix it")
+    };
+    *pc.platform.agent_sessions.lock().unwrap() =
+        vec![limited.clone(), agent_session(OTHER_SESSION, "Still going")];
+    let listed = with_timeout("sessions", phone.node.agent_sessions(pc_id)).await.unwrap();
+    assert_eq!(listed[0].limit, Some(limit));
+    assert_eq!(listed[1].limit, None);
+    let page = with_timeout("read", phone.node.agent_session_read(pc_id, FOLLOWED_SESSION.into(), None, 10))
+        .await
+        .unwrap();
+    assert_eq!(page.session.limit, Some(limit));
+    pc.node.agent_session(Some(limited), None).await.unwrap();
+    let pushed = wait_for(&mut phone, "limited session", |e| match e {
+        NodeEvent::AgentSession { session: Some(s), .. } if s.id == FOLLOWED_SESSION => Some(s.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!((pushed.state.as_str(), pushed.limit), ("idle", Some(limit)));
 }
 
 // ---- Media: large artwork, icons, rate and age (docs/protocol/media.md §2.1-2.3) ----

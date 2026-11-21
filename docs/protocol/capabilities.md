@@ -81,7 +81,7 @@ capability is missing.
 | `media.watch` | Shows a PC's playback streamed to it (Play on phone, [media](media.md) §4) | app update |
 | `camera.capture` | Captures a photo or document scan on request ([Continuity Camera](v1.md#14-continuity-camera-cameracapture)) | camera permission |
 | `ble.beacon2` | Recognises a PC's rotating Bluetooth beacon; while a paired phone lacks it, the PC also broadcasts the old one ([Bluetooth](bluetooth.md) §3) | Nearby devices permission |
-| `agent.remote` | Shows a PC's coding-agent threads, starts them and answers their requests ([agents](agents.md)) | app update |
+| `agent.remote` | Shows a PC's coding-agent threads, starts them and answers their requests, and says which one it shows ([agents](agents.md) §7) | app update |
 | `agent.follow` | Shows a PC's Claude and Codex sessions started outside G7 Link, read-only, and continues one as a thread ([agents](agents.md) §3) | app update |
 
 ## Desktop
@@ -113,7 +113,7 @@ capability is missing.
 | `media.sound` | Sends its sound to a phone that plays it, in `0x02` datagrams or on a `media/sound` stream ([media](media.md) §6) | app update |
 | `webcam.addon` | The virtual camera add-on is installed ([webcam](webcam.md)) | installing the add-on |
 | `camera.continuity` | Requests and receives Continuity Camera photos and document scans ([Continuity Camera](v1.md#14-continuity-camera-cameracapture)) | app update |
-| `agent.host` | The agent host is installed: paired phones with the `agents` toggle can follow, start and answer coding-agent threads on this PC ([agents](agents.md)) | installing G7 Link with its agent host |
+| `agent.host` | The agent host is installed: paired phones with the `agents` toggle can follow, start and answer coding-agent threads on this PC, and hear whether someone is at it ([agents](agents.md) §7) | installing G7 Link with its agent host |
 | `agent.sessions` | Lists Claude and Codex sessions started on this PC outside G7 Link to paired phones with the `agents` and `agent_sessions` toggles ([agents](agents.md) §3) | installing G7 Link with its agent host |
 | `agent.say_why` | Takes a denial with the user's words for the agent (`agent.answer`'s `message`, [agents](agents.md) §2.4) | an agent host that can pass the words on |
 

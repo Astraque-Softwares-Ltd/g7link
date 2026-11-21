@@ -20,10 +20,12 @@ uniffi::setup_scaffolding!();
 
 mod agent_control;
 mod agent_history;
+mod agent_presence;
 pub mod agent_rows;
 
 pub use agent_control::*;
 pub use agent_history::*;
+pub use agent_presence::*;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -1351,6 +1353,14 @@ pub enum Event {
         id: String,
         held: Vec<AgentHeld>,
     },
+    /// What a PC says about itself, sent on every change and at least every
+    /// 20 s while it's online. Nothing says when it lapses: it holds until
+    /// `presence.until_ms`, and `agent_presence` is null after that or while
+    /// the link is down.
+    AgentPresence {
+        id: String,
+        presence: AgentPresence,
+    },
 }
 
 /// Play on phone: a video file a PC offers for the phone to play itself
@@ -2333,6 +2343,24 @@ pub struct AgentSession {
     /// When `state` began, Unix milliseconds.
     #[uniffi(default = None)]
     pub since_ms: Option<i64>,
+    /// It stopped at its agent's usage limit (`state` is `Idle`): "Limit
+    /// reached · resets %1", or "Limit reached" without a time.
+    #[uniffi(default = None)]
+    pub limit: Option<AgentSessionLimit>,
+}
+
+/// A session's stop at its agent's usage limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct AgentSessionLimit {
+    /// When the limit resets, Unix milliseconds, when the agent said.
+    #[uniffi(default = None)]
+    pub resets_ms: Option<i64>,
+}
+
+impl From<core::AgentSessionLimit> for AgentSessionLimit {
+    fn from(l: core::AgentSessionLimit) -> Self {
+        Self { resets_ms: l.resets_ms.map(ms) }
+    }
 }
 
 impl std::fmt::Debug for AgentSession {
@@ -2342,6 +2370,7 @@ impl std::fmt::Debug for AgentSession {
             .field("agent", &self.agent)
             .field("state", &self.state)
             .field("can_continue", &self.can_continue)
+            .field("limit", &self.limit)
             .finish_non_exhaustive()
     }
 }
@@ -2363,6 +2392,7 @@ impl AgentSession {
             waiting_for: s.waiting_for,
             can_continue: s.can_continue,
             since_ms: s.since.map(ms),
+            limit: s.limit.map(Into::into),
         })
     }
 }
@@ -4282,8 +4312,13 @@ impl Event {
             NodeEvent::AgentOutbox { device, held } => {
                 Event::AgentOutbox { id: device.to_string(), held: held.into_iter().map(Into::into).collect() }
             }
+            NodeEvent::AgentPresence { device, presence } => {
+                Event::AgentPresence { id: device.to_string(), presence: presence.into() }
+            }
             // Shown on PCs only.
-            NodeEvent::AgentsRequested { .. } | NodeEvent::AgentSessionsRequested { .. } => return None,
+            NodeEvent::AgentsRequested { .. }
+            | NodeEvent::AgentSessionsRequested { .. }
+            | NodeEvent::AgentViewing { .. } => return None,
             // Asked for by PCs only, and codes go to PCs.
             NodeEvent::BleWanted { .. }
             | NodeEvent::OneTimeCode { .. }
@@ -7167,7 +7202,32 @@ mod tests {
             can_continue: false,
             blocked: Some("open".into()),
             since: Some(1_795_000_000_000),
+            limit: None,
         }
+    }
+
+    #[test]
+    fn a_session_at_its_usage_limit_reaches_kotlin_with_its_reset() {
+        let pc = core::DeviceId([3; 32]);
+        let limited = core::AgentSession {
+            limit: Some(core::AgentSessionLimit { resets_ms: Some(1_795_010_000_000) }),
+            ..core_session("idle", false)
+        };
+        match Event::from_node(NodeEvent::AgentSession { device: pc, session: Some(limited), removed: None })
+        {
+            Some(Event::AgentSessionChanged { session, .. }) => {
+                assert_eq!(session.state, AgentSessionState::Idle);
+                assert_eq!(session.limit, Some(AgentSessionLimit { resets_ms: Some(1_795_010_000_000) }));
+            }
+            other => panic!("{other:?}"),
+        }
+        let unknown = core::AgentSession {
+            limit: Some(core::AgentSessionLimit::default()),
+            ..core_session("idle", false)
+        };
+        let unknown = AgentSession::from_core(unknown).unwrap();
+        assert_eq!(unknown.limit, Some(AgentSessionLimit { resets_ms: None }), "no time: \"Limit reached\"");
+        assert_eq!(AgentSession::from_core(core_session("idle", false)).unwrap().limit, None);
     }
 
     #[test]

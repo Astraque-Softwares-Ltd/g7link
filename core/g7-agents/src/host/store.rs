@@ -54,6 +54,8 @@ struct SettingsFile {
     follow_sessions: bool,
     #[serde(default = "yes")]
     keep_awake: bool,
+    #[serde(default = "yes")]
+    limit_alarm: bool,
 }
 
 fn yes() -> bool {
@@ -203,7 +205,11 @@ impl Store {
     /// The host's own settings (`settings.json`); the defaults when there are none.
     pub fn load_settings(&self) -> HostSettings {
         read_json::<SettingsFile>(&self.root.join("settings.json")).map_or_else(HostSettings::default, |f| {
-            HostSettings { follow_sessions: f.follow_sessions, keep_awake: f.keep_awake }
+            HostSettings {
+                follow_sessions: f.follow_sessions,
+                keep_awake: f.keep_awake,
+                limit_alarm: f.limit_alarm,
+            }
         })
     }
 
@@ -212,6 +218,7 @@ impl Store {
             version: VERSION,
             follow_sessions: settings.follow_sessions,
             keep_awake: settings.keep_awake,
+            limit_alarm: settings.limit_alarm,
         };
         let bytes = serde_json::to_vec(&file).map_err(io::Error::other)?;
         atomic_write(&self.root.join("settings.json"), &bytes)
@@ -557,7 +564,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().to_owned()).unwrap();
         assert!(store.load_settings().follow_sessions, "on by default");
-        store.save_settings(&HostSettings { follow_sessions: false, keep_awake: true }).unwrap();
+        store.save_settings(&HostSettings { follow_sessions: false, ..HostSettings::default() }).unwrap();
         assert!(!store.load_settings().follow_sessions);
         fs::write(dir.path().join("settings.json"), br#"{"version":1}"#).unwrap();
         assert!(store.load_settings().follow_sessions);

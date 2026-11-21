@@ -22,7 +22,9 @@ pub mod git;
 pub mod marks;
 pub mod notify;
 pub mod plan;
+pub mod presence;
 pub mod questions;
+pub mod scm;
 pub mod sessions;
 pub mod store;
 pub mod threads;
@@ -281,6 +283,11 @@ struct ClientSlot {
     subscription: Option<Subscription>,
     viewing: Option<String>,
     viewing_session: Option<String>,
+    /// When `viewing` and `viewing_session` last changed ([`Hub::next_seq`]).
+    viewing_since: u64,
+    session_since: u64,
+    /// It said `presence`: it gets the `ui.presence` event (a launcher or G7 Link).
+    presence: bool,
     /// The one session whose items this connection gets.
     watching: Option<String>,
     /// It called `sessions.scan`: it gets `sessions.scanned`.
@@ -297,6 +304,9 @@ impl ClientSlot {
             subscription: None,
             viewing: None,
             viewing_session: None,
+            viewing_since: 0,
+            session_since: 0,
+            presence: false,
             watching: None,
             scans: false,
         }
@@ -308,10 +318,14 @@ impl ClientSlot {
     }
 }
 
-/// Connected clients and what each wants to hear.
+/// Connected clients and what each wants to hear, and what G7 Link said of
+/// presence. The presence lock is never taken while the clients' is held.
 #[derive(Default)]
 pub struct Hub {
     clients: Mutex<HashMap<u64, ClientSlot>>,
+    presence: Mutex<presence::Presence>,
+    /// Orders what connections view, newest first.
+    seq: AtomicU64,
 }
 
 impl std::fmt::Debug for Hub {
@@ -422,9 +436,49 @@ impl Hub {
     }
 
     /// A launcher or G7 Link says its window shows this thread to the user
-    /// right now (`ui.viewing`).
+    /// right now (`ui.viewing`), or a phone does (a fresh `ui.presence`).
     pub fn viewed(&self, thread_id: &str) -> bool {
-        self.lock().values().any(|s| s.shows_threads() && s.viewing.as_deref() == Some(thread_id))
+        self.viewed_at(thread_id, Instant::now())
+    }
+
+    pub(crate) fn viewed_at(&self, thread_id: &str, now: Instant) -> bool {
+        let on_pc =
+            self.lock().values().any(|s| s.shows_threads() && s.viewing.as_deref() == Some(thread_id));
+        on_pc || self.lock_presence().views(thread_id, now)
+    }
+
+    pub(crate) fn lock_presence(&self) -> std::sync::MutexGuard<'_, presence::Presence> {
+        self.presence.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn next_seq(&self) -> u64 {
+        self.seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The `ui.presence` event as things are at `now`.
+    pub(crate) fn presence_event(&self, now: Instant) -> PresenceEvent {
+        let (viewing, sessions) = {
+            let clients = self.lock();
+            let shown = || clients.values().filter(|s| s.shows_threads());
+            let threads = shown().filter_map(|s| Some((s.viewing_since, s.viewing.clone()?)));
+            let sessions = shown().filter_map(|s| Some((s.session_since, s.viewing_session.clone()?)));
+            (
+                newest(threads.filter(|(_, id)| is_valid_thread_id(id))),
+                newest(sessions.filter(|(_, id)| is_valid_session_id(id))),
+            )
+        };
+        self.lock_presence().event(viewing, sessions, now)
+    }
+
+    /// Sends the `ui.presence` event to the launchers and G7 Links that said
+    /// `presence`, or to connection `only`.
+    pub(crate) fn send_presence(&self, event: &PresenceEvent, only: Option<u64>) {
+        let line = Event::UiPresence(event.clone()).to_line();
+        for (id, slot) in self.lock().iter() {
+            if slot.presence && slot.shows_threads() && only.is_none_or(|o| o == *id) {
+                slot.outbox.push(line.clone(), false);
+            }
+        }
     }
 
     /// `client` is a launcher or G7 Link: what it views counts as read.
@@ -514,6 +568,23 @@ impl Hub {
     }
 }
 
+/// Ids by when they were last chosen, newest first, each once, at most
+/// [`MAX_PRESENCE_VIEWING`].
+fn newest(views: impl Iterator<Item = (u64, String)>) -> Vec<String> {
+    let mut views: Vec<(u64, String)> = views.collect();
+    views.sort_by_key(|(since, _)| std::cmp::Reverse(*since));
+    let mut out: Vec<String> = Vec::with_capacity(MAX_PRESENCE_VIEWING);
+    for (_, id) in views {
+        if !out.contains(&id) {
+            out.push(id);
+            if out.len() == MAX_PRESENCE_VIEWING {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// `event` as a client with `caps` gets it, when that differs from the
 /// event itself; `None` when it doesn't.
 fn event_for(event: &Event, caps: Caps) -> Option<Event> {
@@ -557,6 +628,8 @@ pub struct Host {
     pub sessions: sessions::Sessions,
     /// `settings.keep_awake`.
     keep_awake: std::sync::atomic::AtomicBool,
+    /// `settings.limit_alarm`.
+    limit_alarm: std::sync::atomic::AtomicBool,
     pub awake: awake::Awake,
     pub usage: Mutex<usage::Usage>,
     pub drafts: Mutex<drafts::Drafts>,
@@ -609,6 +682,11 @@ impl Host {
     /// The keep-awake setting.
     pub fn keep_awake_on(&self) -> bool {
         self.keep_awake.load(Ordering::SeqCst)
+    }
+
+    /// The limit alarm setting.
+    pub fn limit_alarm_on(&self) -> bool {
+        self.limit_alarm.load(Ordering::SeqCst)
     }
 }
 
@@ -679,6 +757,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
         hostname: hostname(),
         sessions: sessions::Sessions::new(&config),
         keep_awake: std::sync::atomic::AtomicBool::new(settings.keep_awake),
+        limit_alarm: std::sync::atomic::AtomicBool::new(settings.limit_alarm),
         awake: awake::Awake::spawn(awake_source, settings.keep_awake, awake::release_delay()),
         usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
         drafts: Mutex::new(drafts),
@@ -705,6 +784,7 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
     let recovered = std::mem::take(&mut host.lock_reg().recovered);
     host.recover_turns(recovered);
     host.sweep_orphan_refs();
+    host.arm_limit_alarms();
     tracing::info!(pid = std::process::id(), "agent host serving");
 
     // Agent events, in order, one at a time.
@@ -751,6 +831,8 @@ pub async fn serve(config: Config, stop: impl std::future::Future<Output = ()>) 
                 tokio::time::sleep(Duration::from_secs(5).min(host.config.idle_exit)).await;
                 host.check_folders();
                 host.wake_snoozed();
+                host.expire_presence();
+                host.ring_limit_alarms(store::now_ms());
                 host.expire_undos();
                 host.files.sweep();
                 host.drop_stale_uploads();
@@ -830,6 +912,13 @@ enum Role {
         thread_id: String,
         generation: u64,
     },
+}
+
+impl Role {
+    /// It may say who is at this PC (`ui.presence`): G7 Link only.
+    fn sets_presence(&self) -> bool {
+        matches!(self, Role::Client(ClientKind::Link, _))
+    }
 }
 
 impl Host {
@@ -934,15 +1023,28 @@ impl Host {
                 (Role::Client(..), method::UI_VIEWING) => {
                     let result = parse::<UiViewingParams>(request.params).map(|p| {
                         let shown = p.thread_id.clone();
+                        let seq = self.hub.next_seq();
                         self.hub.set(client_id, |slot| {
+                            let session = p.session_id.filter(|id| is_valid_session_id(id));
+                            if slot.viewing != p.thread_id {
+                                slot.viewing_since = seq;
+                            }
+                            if slot.viewing_session != session {
+                                slot.session_since = seq;
+                            }
                             slot.viewing = p.thread_id;
-                            slot.viewing_session = p.session_id.filter(|id| is_valid_session_id(id));
+                            slot.viewing_session = session;
                         });
                         if let Some(thread_id) = shown.filter(|_| self.hub.viewed_by(client_id)) {
                             self.thread_viewed(&thread_id);
                         }
                         json!({})
                     });
+                    Self::reply(&outbox, request.id, result);
+                    self.presence_changed();
+                }
+                (_, method::UI_PRESENCE) => {
+                    let result = self.ui_presence(current.sets_presence(), client_id, request.params);
                     Self::reply(&outbox, request.id, result);
                 }
                 _ => {
@@ -960,6 +1062,9 @@ impl Host {
         }
         outbox.close();
         self.hub.lock().remove(&client_id);
+        // What it said of presence goes with it, and what it viewed.
+        self.hub.lock_presence().closed(client_id);
+        self.presence_changed();
         self.lock_uploads().remove(&client_id);
         self.rewinds.lock().unwrap_or_else(|e| e.into_inner()).forget_client(client_id);
         if let Some(search) = self.searches.lock().unwrap_or_else(|e| e.into_inner()).remove(&client_id) {
@@ -1024,7 +1129,10 @@ impl Host {
             Role::Client(kind, caps) => (*kind, *caps),
             Role::Bridge { .. } => (ClientKind::Bridge, Caps::default()),
         };
-        self.hub.lock().insert(client_id, ClientSlot::new(kind, caps, outbox.clone()));
+        let mut slot = ClientSlot::new(kind, caps, outbox.clone());
+        slot.presence = matches!(role, Role::Client(..)) && params.has(cap::PRESENCE);
+        let presence = slot.presence && slot.shows_threads();
+        self.hub.lock().insert(client_id, slot);
         let result = HelloResult {
             version: API_VERSION,
             host_version: env!("CARGO_PKG_VERSION").into(),
@@ -1032,6 +1140,11 @@ impl Host {
             caps: cap::HOST.map(str::to_owned).to_vec(),
         };
         Self::reply(outbox, request.id, to_value(&result));
+        // The state now, so it needn't wait for a change.
+        if presence {
+            let event = self.hub.presence_event(Instant::now());
+            self.hub.send_presence(&event, Some(client_id));
+        }
         Some(role)
     }
 
@@ -1529,17 +1642,24 @@ impl Host {
     /// `settings.set`: stored, announced, and keep-awake follows at once.
     async fn settings_set(&self, p: SettingsSetParams) -> Result<HostSettings, RpcError> {
         let _serial = self.folders_lock.lock().await;
-        let Some(keep_awake) = p.keep_awake else { return Ok(self.settings()) };
-        if keep_awake == self.keep_awake_on() {
-            return Ok(self.settings());
+        let now = self.settings();
+        let settings = HostSettings {
+            keep_awake: p.keep_awake.unwrap_or(now.keep_awake),
+            limit_alarm: p.limit_alarm.unwrap_or(now.limit_alarm),
+            ..now
+        };
+        if settings == now {
+            return Ok(now);
         }
-        let settings = HostSettings { keep_awake, ..self.settings() };
         self.store
             .save_settings(settings)
             .await
             .map_err(|_| RpcError::new(ErrorCode::Internal, "Couldn't save the setting."))?;
-        self.keep_awake.store(keep_awake, Ordering::SeqCst);
-        self.awake.set_enabled(keep_awake);
+        if settings.keep_awake != now.keep_awake {
+            self.keep_awake.store(settings.keep_awake, Ordering::SeqCst);
+            self.awake.set_enabled(settings.keep_awake);
+        }
+        self.limit_alarm.store(settings.limit_alarm, Ordering::SeqCst);
         self.hub.broadcast(&Event::SettingsChanged(settings));
         Ok(settings)
     }
@@ -1790,6 +1910,7 @@ fn test_host_with(dir: &std::path::Path, approval_lifetime_ms: u64, notifier: Op
         hostname: "test-pc".into(),
         sessions: sessions::Sessions::new(&config),
         keep_awake: std::sync::atomic::AtomicBool::new(true),
+        limit_alarm: std::sync::atomic::AtomicBool::new(true),
         awake: awake::Awake::spawn(awake::Source::Off, true, awake::release_delay()),
         usage: Mutex::new(usage::Usage::new(Duration::from_millis(LIMITS_EVENT_MS))),
         drafts: Mutex::new(drafts::Drafts::default()),
@@ -1869,6 +1990,102 @@ mod tests {
             outbox.push(format!("x{i}"), false);
         }
         assert!(outbox.is_closed(), "full of items: closed");
+    }
+
+    fn phone(device: &str, thread: Option<&str>) -> RemoteView {
+        RemoteView {
+            device_id: device.into(),
+            device_name: "Pixel".into(),
+            thread_id: thread.map(str::to_owned),
+            session_id: None,
+            pane: None,
+            dnd: false,
+        }
+    }
+
+    #[test]
+    fn only_g7_link_says_who_is_at_the_pc() {
+        assert!(Role::Client(ClientKind::Link, Caps::default()).sets_presence());
+        for kind in [ClientKind::Launcher, ClientKind::Bridge, ClientKind::Cli, ClientKind::Test] {
+            assert!(!Role::Client(kind, Caps::default()).sets_presence(), "{kind:?}");
+        }
+        assert!(!Role::Bridge { thread_id: "a".repeat(32), generation: 1 }.sets_presence());
+    }
+
+    #[tokio::test]
+    async fn presence_from_anyone_but_g7_link_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host(dir.path(), APPROVAL_LIFETIME_MS);
+        let params = serde_json::to_value(UiPresenceParams { at_pc: true, ..Default::default() }).unwrap();
+        let err = host.ui_presence(false, 1, params.clone()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Denied);
+        assert_eq!(host.hub.presence_event(Instant::now()), PresenceEvent::default(), "nothing kept");
+        host.ui_presence(true, 1, params).unwrap();
+        assert!(host.hub.presence_event(Instant::now()).at_pc);
+        let nine = (0..9).map(|n| phone(&n.to_string(), None)).collect();
+        let nine = serde_json::to_value(UiPresenceParams { remote: nine, ..Default::default() }).unwrap();
+        assert_eq!(host.ui_presence(true, 1, nine).unwrap_err().code, ErrorCode::BadRequest);
+        assert!(host.hub.presence_event(Instant::now()).at_pc, "a refused one changes nothing");
+    }
+
+    #[test]
+    fn a_thread_a_phone_shows_is_viewed_while_fresh_and_its_connection_is_open() {
+        let hub = Hub::default();
+        let t = "a".repeat(32);
+        let t0 = Instant::now();
+        assert!(!hub.viewed_at(&t, t0));
+        let link = hub.test_viewer(ClientKind::Link, None);
+        let presence = UiPresenceParams { remote: vec![phone("p", Some(&t))], ..Default::default() };
+        hub.lock_presence().set(link, presence.clone(), t0);
+        assert!(hub.viewed_at(&t, t0 + Duration::from_secs(59)));
+        assert!(!hub.viewed_at(&"b".repeat(32), t0));
+        assert!(!hub.viewed_at(&t, t0 + Duration::from_secs(61)), "stale");
+        hub.lock_presence().set(link, presence, t0);
+        hub.lock().remove(&link);
+        assert!(hub.lock_presence().closed(link));
+        assert!(!hub.viewed_at(&t, t0), "its connection closed");
+    }
+
+    #[test]
+    fn the_presence_event_lists_views_newest_first_to_those_that_asked() {
+        let hub = Hub::default();
+        let ids: Vec<String> = (1..=6).map(|n| format!("{n:032x}")).collect();
+        let launcher = hub.test_viewer(ClientKind::Launcher, None);
+        let link = hub.test_viewer(ClientKind::Link, None);
+        let quiet = hub.test_viewer(ClientKind::Launcher, None);
+        let test = hub.test_viewer(ClientKind::Test, Some(&ids[5]));
+        let view = |client: u64, id: &str| {
+            let seq = hub.next_seq();
+            hub.set(client, |s| {
+                s.viewing = Some(id.to_owned());
+                s.viewing_since = seq;
+            });
+        };
+        view(launcher, &ids[0]);
+        view(link, &ids[1]);
+        view(quiet, &ids[1]);
+        view(launcher, &ids[2]);
+        let extra: Vec<u64> = (0..3).map(|_| hub.test_viewer(ClientKind::Link, None)).collect();
+        for (client, id) in extra.iter().zip(&ids[3..5]) {
+            view(*client, id);
+        }
+        view(extra[2], "not a thread id");
+        let event = hub.presence_event(Instant::now());
+        let newest = [&ids[4], &ids[3], &ids[2], &ids[1]].map(String::clone);
+        assert_eq!(event.viewing, newest, "newest first, each once, at most 4");
+        assert!(!event.viewing.contains(&ids[5]), "a test connection shows nobody anything");
+        for client in [launcher, link, test] {
+            hub.set(client, |s| s.presence = true);
+        }
+        hub.send_presence(&event, None);
+        let line = Event::UiPresence(event.clone()).to_line();
+        assert_eq!(hub.test_lines(launcher), std::slice::from_ref(&line));
+        assert_eq!(hub.test_lines(link), [line]);
+        assert!(hub.test_lines(quiet).is_empty(), "it didn't say presence");
+        assert!(hub.test_lines(test).is_empty(), "not a launcher or G7 Link");
+        hub.send_presence(&event, Some(link));
+        assert!(hub.test_lines(launcher).is_empty());
+        assert_eq!(hub.test_lines(link).len(), 1);
     }
 
     #[test]

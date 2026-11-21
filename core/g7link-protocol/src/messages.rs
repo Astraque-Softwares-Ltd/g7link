@@ -229,6 +229,9 @@ pub mod types {
     pub const AGENT_TURN: &str = "agent.turn";
     pub const AGENT_CUT: &str = "agent.cut";
     pub const AGENT_IMPORT_PROGRESS: &str = "agent.import.progress";
+    // ---- agent: presence (docs/protocol/agents.md §7) ----
+    pub const AGENT_PRESENCE: &str = "agent.presence";
+    pub const AGENT_VIEWING: &str = "agent.viewing";
 }
 
 /// What kind of device this is.
@@ -7321,6 +7324,18 @@ pub struct AgentSession {
     /// When `state` began, Unix milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>,
+    /// It stopped at its agent's usage limit (and reads as `idle`). A
+    /// receiver that doesn't know it shows the state alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<AgentSessionLimit>,
+}
+
+/// A session's stop at its agent's usage limit (`AgentSession.limit`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentSessionLimit {
+    /// When the limit resets, Unix milliseconds, when the agent said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_ms: Option<u64>,
 }
 
 /// Never prints the title, folder, step or summary (protocol v1 §11).
@@ -7334,6 +7349,7 @@ impl std::fmt::Debug for AgentSession {
             .field("source", &self.source)
             .field("can_continue", &self.can_continue)
             .field("blocked", &self.blocked)
+            .field("limit", &self.limit)
             .finish_non_exhaustive()
     }
 }
@@ -7563,6 +7579,8 @@ mod agent_control;
 pub use agent_control::*;
 mod agent_history;
 pub use agent_history::*;
+mod agent_presence;
+pub use agent_presence::*;
 
 /// The `agent/export` stream: one thread or session as Markdown per stream
 /// (`docs/protocol/agents.md` §4).
@@ -10507,6 +10525,7 @@ mod tests {
             can_continue: false,
             blocked: Some(super::agent::session_blocked::OPEN.into()),
             since: Some(1_795_000_000_000),
+            limit: None,
         }
     }
 
@@ -10546,6 +10565,30 @@ mod tests {
         round_trip(types::AGENT_SESSION_CONTINUE, &AgentSessionContinue { session: session.id });
         // A thread's items are 1-based, as before.
         assert!(!agent_item(0, "x").is_valid() && agent_item(0, "x").sanitized().is_none());
+    }
+
+    #[test]
+    fn a_session_at_its_usage_limit_says_so_and_an_older_body_reads_as_not() {
+        use super::{AgentSessionEvent, AgentSessionLimit, agent, types};
+        let limited = super::AgentSession {
+            state: agent::session_state::IDLE.into(),
+            limit: Some(AgentSessionLimit { resets_ms: Some(1_795_010_000_000) }),
+            ..agent_session("sc0123456789abcdef0123456789abcdef")
+        };
+        assert!(limited.is_valid());
+        let event = AgentSessionEvent { session: Some(limited.clone()), removed: None };
+        round_trip(types::AGENT_SESSION, &event);
+        assert_eq!(limited.clone().sanitized().unwrap().limit, limited.limit, "kept on the way");
+        let unknown = super::AgentSession { limit: Some(AgentSessionLimit::default()), ..limited.clone() };
+        round_trip(types::AGENT_SESSION, &AgentSessionEvent { session: Some(unknown), removed: None });
+        // Absent when there's none, and a body without it (an older PC) reads as none.
+        let plain = agent_session("sc0123456789abcdef0123456789abcdef");
+        let env = crate::Envelope::new(types::AGENT_SESSION, &plain).unwrap();
+        let value: ciborium::Value = ciborium::from_reader(env.to_cbor().as_slice()).unwrap();
+        assert!(!format!("{value:?}").contains("limit"), "{value:?}");
+        let back: super::AgentSession = crate::Envelope::from_cbor(&env.to_cbor()).unwrap().body().unwrap();
+        assert_eq!(back.limit, None);
+        assert!(format!("{limited:?}").contains("1795010000000"));
     }
 
     #[test]

@@ -726,6 +726,12 @@ pub mod calls {
         Call::new(method::UI_OPEN, &ThreadIdParams { thread_id }, unit)
     }
 
+    /// G7 Link says who is at this PC and what its phones show (G7 Link
+    /// only; `DENIED` to anyone else). Only to a host that offers `cap::PRESENCE`.
+    pub fn ui_presence(params: UiPresenceParams) -> Call<()> {
+        Call::new(method::UI_PRESENCE, &params, unit)
+    }
+
     /// The size of what the host keeps (PC clients only).
     pub fn store_info() -> Call<StoreInfo> {
         Call::new(method::STORE_INFO, &Empty {}, parse_as)
@@ -831,6 +837,7 @@ macro_rules! with_calls {
             session_preview(id: String, limit: Option<u32>) -> Vec<Item>;
             store_info() -> StoreInfo;
             ui_open(thread_id: String) -> ();
+            ui_presence(params: UiPresenceParams) -> ();
             thread_turns(params: ThreadTurnsParams) -> Vec<TurnInfo>;
             turn_files(params: TurnFilesParams) -> TurnFilesResult;
             turn_patch(params: TurnPatchParams) -> TurnPatchResult;

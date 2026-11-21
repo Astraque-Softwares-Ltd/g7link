@@ -1307,6 +1307,7 @@ mod tests {
             summary: None,
             can_continue: false,
             blocked: None,
+            limit: None,
         };
         let folder = Path::new("/home/me/app");
         assert!(shared_by_sessions(&[session("/home/me/app/sub", true, 0)], folder, 100));
