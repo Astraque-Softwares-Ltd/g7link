@@ -11,7 +11,7 @@ Column {
     property var images: []
     // Images still being added.
     property int adding: 0
-    // "type", "size", "model", "count", "failed" or "".
+    // "type", "size", "model", "count", "failed", "nophoto" or "".
     property string error
     property string agentName
     signal removed(string id)
@@ -23,6 +23,7 @@ Column {
         case "model": return qsTr("%1 can't take images with this model.").arg(agentName)
         case "count": return qsTr("Up to 4 images a message.")
         case "failed": return qsTr("Couldn't add that image.")
+        case "nophoto": return qsTr("No photo arrived.")
         default: return ""
         }
     }

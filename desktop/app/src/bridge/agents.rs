@@ -210,6 +210,21 @@ pub mod qobject {
         fn paste_image(self: &Agents) -> bool;
         #[qinvokable]
         fn remove_image(self: &Agents, id: &QString);
+        /// Add image's Paste: the clipboard's image, or a line saying why not.
+        #[qinvokable]
+        fn paste_from_menu(self: &Agents);
+        /// "Take a photo with <phone>" (`device`: its id, as `cameras` lists it).
+        #[qinvokable]
+        fn take_photo(self: &Agents, device: &QString);
+        /// The strip's Cancel while a photo is awaited.
+        #[qinvokable]
+        fn cancel_photo(self: &Agents);
+        /// "Continue on <phone>" (`device`: its id, as `handoff` lists it).
+        #[qinvokable]
+        fn handoff(self: &Agents, device: &QString);
+        /// The first message on screen ("" while the newest are shown).
+        #[qinvokable]
+        fn reading_at(self: &Agents, item_id: &QString);
         /// The new-thread form shows this agent and folder.
         #[qinvokable]
         fn new_form(self: &Agents, agent: &QString, folder: &QString);
@@ -577,6 +592,11 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "rowOfItem"]
         fn row_of_item(self: &AgentTimeline, item_id: &QString) -> i32;
+        /// The item of the row at `row` or the first one after it that has
+        /// one ("" for none).
+        #[qinvokable]
+        #[cxx_name = "itemIdAt"]
+        fn item_id_at(self: &AgentTimeline, row: i32) -> QString;
     }
 
     impl cxx_qt::Threading for AgentTimeline {}
@@ -920,6 +940,26 @@ impl qobject::Agents {
 
     pub fn remove_image(&self, id: &QString) {
         agents::remove_image(String::from(id));
+    }
+
+    pub fn paste_from_menu(&self) {
+        agents::paste_from_menu();
+    }
+
+    pub fn take_photo(&self, device: &QString) {
+        agents::take_photo(String::from(device));
+    }
+
+    pub fn cancel_photo(&self) {
+        agents::cancel_photo();
+    }
+
+    pub fn handoff(&self, device: &QString) {
+        agents::handoff_to(String::from(device));
+    }
+
+    pub fn reading_at(&self, item_id: &QString) {
+        agents::reading_at(String::from(item_id));
     }
 
     pub fn new_form(&self, agent: &QString, folder: &QString) {
@@ -1364,6 +1404,12 @@ pub struct AgentTimelineRust {
 
 const USER_ROLE: i32 = 0x0100;
 
+/// The item of row `row`, or of the first row after it that has one (a
+/// fold line or a group belongs to none).
+fn first_item(rows: &[Arc<ModelRow>], row: usize) -> Option<&str> {
+    rows.iter().skip(row).map(|r| r.text(Role::ItemId)).find(|id| !id.is_empty())
+}
+
 fn role_id(role: Role) -> i32 {
     USER_ROLE + role.index() as i32
 }
@@ -1484,6 +1530,11 @@ impl qobject::AgentTimeline {
         let item_id = String::from(item_id);
         self.rows.iter().position(|r| r.text(Role::ItemId) == item_id).map_or(-1, |i| i as i32)
     }
+
+    pub fn item_id_at(&self, row: i32) -> QString {
+        let Ok(row) = usize::try_from(row) else { return QString::default() };
+        first_item(&self.rows, row).map(QString::from).unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -1534,6 +1585,33 @@ mod tests {
         let names: std::collections::HashSet<_> = Role::ALL.iter().map(|r| r.name()).collect();
         assert_eq!(names.len(), Role::ALL.len(), "every role has its own name");
         assert!(Role::ALL.iter().enumerate().all(|(i, r)| r.index() == i));
+    }
+
+    #[test]
+    fn a_hand_off_opens_at_the_first_message_on_screen() {
+        let user = |item_id: &str| Row {
+            key: format!("i:{item_id}"),
+            kind: RowKind::User {
+                text: "hi".into(),
+                from: String::new(),
+                deny_of: false,
+                via: Default::default(),
+            },
+            turn: 1,
+            depth: 0,
+            item_id: item_id.into(),
+            seq: 1,
+            acts: Default::default(),
+        };
+        let rows: Vec<Arc<ModelRow>> = [user(""), user("u1"), user("u2")]
+            .iter()
+            .map(|r| {
+                Arc::new(agents::model_row(r, agents::Extra::default(), "", &agents::CodePalette::default()))
+            })
+            .collect();
+        assert_eq!(first_item(&rows, 0), Some("u1"), "a row of no item gives the next one's");
+        assert_eq!(first_item(&rows, 2), Some("u2"));
+        assert_eq!(first_item(&rows, 3), None);
     }
 
     #[test]

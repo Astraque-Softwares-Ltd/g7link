@@ -816,13 +816,19 @@ impl PastedImage {
     /// Writes `bytes` to a new file in `dir` (made `0700` if it isn't
     /// there), readable by this user only.
     pub(crate) fn write(dir: &Path, bytes: &[u8]) -> io::Result<Self> {
+        Self::write_as(dir, "agent-paste", "png", bytes)
+    }
+
+    /// As [`Self::write`], named `<stem>-<random>.<ext>` (a phone's photo
+    /// keeps its type).
+    pub(crate) fn write_as(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> io::Result<Self> {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
         let meta = std::fs::symlink_metadata(dir)?;
         if !meta.is_dir() || meta.uid() != g7_agents::client::euid() || meta.mode() & 0o077 != 0 {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the folder isn't private"));
         }
-        let path = dir.join(format!("agent-paste-{:016x}.png", rand::random::<u64>()));
+        let path = dir.join(format!("{stem}-{:016x}.{ext}", rand::random::<u64>()));
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -1359,5 +1365,19 @@ mod tests {
         // A folder others can read isn't used.
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(PastedImage::write(&folder, b"x").is_err());
+    }
+
+    #[test]
+    fn a_phones_photo_passes_through_a_private_file_of_its_own_type() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("g7link");
+        let photo = PastedImage::write_as(&folder, "agent-photo", "jpg", b"\xff\xd8 jpeg").unwrap();
+        let path = photo.path().to_owned();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("agent-photo-") && name.ends_with(".jpg"), "{name}");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        drop(photo);
+        assert!(!path.exists());
     }
 }

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Shapes
 import app.g7link
 
 // The reply box under a thread: one container with the queued messages on
 // top, the images to send, the text, and a quiet footer (add image, the
 // model and effort, the mode when it isn't the default, Stop, and one round
-// primary button). The folder sits under it.
+// primary button). The folder sits under it. Add image opens a menu: a file,
+// the clipboard, or a photo from a phone, which the box then waits for.
 //
 // Enter sends; Shift+Enter starts a new line. While the agent works, Enter
 // does your default with a new message (steer it, or wait its turn) and
@@ -44,7 +46,8 @@ Item {
     signal denySend(string token, string text)
     signal allow
     signal stop
-    signal attachRequested
+    // Add image was clicked: the page opens its menu over (x, y), in the window.
+    signal attachRequested(real x, real y)
     // The model control was clicked: open the picker over (x, y), in the window.
     signal pickerRequested(real x, real y)
 
@@ -225,7 +228,8 @@ Item {
         id: box
         y: offer.height
         width: parent.width
-        height: editing.height + queue.height + strip.height + quoteRow.height + inputArea.height + actions.height + 12
+        height: editing.height + queue.height + photoWait.height + strip.height + quoteRow.height
+                + inputArea.height + actions.height + 12
         radius: Theme.rowRadius
         color: Theme.raised
         border.width: input.activeFocus ? 1 : 0
@@ -285,10 +289,70 @@ Item {
             onEdit: (id, text) => Agents.queue("edit", id, text)
         }
 
+        // A photo from a phone is on its way.
+        Item {
+            id: photoWait
+            readonly property string phone: composer.controls.photoFrom || ""
+            x: 12
+            anchors.top: queue.bottom
+            anchors.topMargin: visible ? 8 : 0
+            width: parent.width - 24
+            height: visible ? 44 : 0
+            visible: phone.length > 0
+            Item {
+                id: photoBox
+                width: 44
+                height: 44
+                Shape {
+                    anchors.fill: parent
+                    preferredRendererType: Shape.CurveRenderer
+                    ShapePath {
+                        strokeColor: Theme.outline
+                        strokeWidth: 1
+                        strokeStyle: ShapePath.DashLine
+                        dashPattern: [4, 3]
+                        fillColor: "transparent"
+                        PathRectangle {
+                            x: 0.5
+                            y: 0.5
+                            width: photoBox.width - 1
+                            height: photoBox.height - 1
+                            radius: Theme.radiusSm
+                        }
+                    }
+                }
+                Icon {
+                    anchors.centerIn: parent
+                    width: 18
+                    height: 18
+                    path: Icons.camera
+                    color: Theme.surfaceContentVariant
+                }
+            }
+            Txt {
+                anchors.left: photoBox.right
+                anchors.leftMargin: 8
+                anchors.right: photoCancel.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Waiting for %1…").arg(photoWait.phone)
+                maximumLineCount: 1
+            }
+            Button {
+                id: photoCancel
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                variant: "text"
+                size: "sm"
+                text: qsTr("Cancel")
+                onClicked: Agents.cancelPhoto()
+            }
+        }
+
         AgentImageStrip {
             id: strip
             x: 12
-            anchors.top: queue.bottom
+            anchors.top: photoWait.bottom
             anchors.topMargin: visible ? 8 : 0
             width: parent.width - 24
             height: visible ? implicitHeight : 0
@@ -490,7 +554,10 @@ Item {
                     iconPath: Icons.photo
                     label: qsTr("Add image")
                     enabled: !composer.questionShown && !composer.busy
-                    onClicked: composer.attachRequested()
+                    onClicked: {
+                        const p = attach.mapToItem(null, 0, 0)
+                        composer.attachRequested(p.x, p.y)
+                    }
                 }
                 // The model and effort, from the agent's own list.
                 Rectangle {

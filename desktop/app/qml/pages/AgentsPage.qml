@@ -203,6 +203,8 @@ Item {
     readonly property string plugIcon: "M9.8 6l8.2 8.2-2 2.1a5.8 5.8 0 1 1-8.3-8.3zM4 20l3.5-3.5M15 4l-3.5 3.5M20 9l-3.5 3.5"
     // Tabler's layout-sidebar (MIT, as Icons.qml credits).
     readonly property string listIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 4v16"
+    // Tabler's layout-sidebar-right (MIT, as Icons.qml credits): the details panel's toggle.
+    readonly property string detailsIcon: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4v16"
 
     readonly property string phase: info.state || ""
     readonly property bool running: isThread && (phase === "working" || phase === "waiting")
@@ -566,7 +568,7 @@ Item {
           run: () => Agents.loadEarlier() },
         { label: page.listShown ? qsTr("Hide the thread list") : qsTr("Show the thread list"), icon: page.listIcon,
           keys: "Ctrl [", checked: page.listShown, enabled: !page.narrow, run: () => page.toggleList() },
-        { label: qsTr("Details"), icon: Icons.clipboardList, keys: "Ctrl ]", checked: page.detailsShown,
+        { label: qsTr("Details"), icon: page.detailsIcon, keys: "Ctrl ]", checked: page.detailsShown,
           enabled: page.isThread || page.isSession, run: () => page.toggleDetails() },
         { label: qsTr("Delete thread"), icon: Icons.trash, tint: Theme.tintRed, enabled: page.isThread && !page.running,
           run: () => deleteSheet.ask([Agents.openId]) },
@@ -622,7 +624,7 @@ Item {
     Shortcut {
         sequences: ["Ctrl+Return", "Ctrl+Enter"]
         enabled: page.active && page.canAllow && !composer.hasText && !linkSheet.opened && !dockMenu.opened
-                 && !AppController.commandPaletteOpen
+                 && !attachMenu.opened && !headMenu.opened && !AppController.commandPaletteOpen
         onActivated: page.allowShown()
     }
     // 1–9 pick a question's answers while the keyboard isn't in a text field.
@@ -632,7 +634,8 @@ Item {
             required property int index
             sequence: String(index + 1)
             enabled: page.active && page.questioning && page.question.held !== true && !composer.inputFocused
-                     && !linkSheet.opened && !dockMenu.opened && !AppController.commandPaletteOpen
+                     && !linkSheet.opened && !dockMenu.opened && !attachMenu.opened && !headMenu.opened
+                     && !AppController.commandPaletteOpen
             onActivated: Agents.questionPick(index)
         }
     }
@@ -643,7 +646,7 @@ Item {
                  && !linkSheet.opened && !dockMenu.opened && !planMenu.opened && !threadPicker.opened
                  && !newFormPicker.opened && !composer.popupOpen && !AppController.commandPaletteOpen
                  && !rewindDialog.opened && !rowMenu.opened && !snoozeMenu.opened && !bulkMenu.opened
-                 && page.renamingId.length === 0
+                 && !attachMenu.opened && !headMenu.opened && page.renamingId.length === 0
         onActivated: page.back()
     }
     // The diff's files, one after another.
@@ -1349,12 +1352,25 @@ Item {
                     open: page.gitShown
                     onClicked: page.toggleGit()
                 }
-                Button {
+                // The thread's menu: continue it on a phone, and its marks.
+                IconButton {
+                    id: headMore
+                    visible: page.isThread && !page.diffShown && headMenu.actions.length > 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconPath: Icons.more
+                    label: qsTr("More")
+                    onClicked: {
+                        const p = page.mapFromItem(headMore, headMore.width, headMore.height)
+                        headMenu.openAt(p.x, p.y, false, true)
+                    }
+                }
+                // Hides or shows the details beside the thread (Ctrl+]), mirroring the list's toggle.
+                IconButton {
                     visible: (page.isThread || page.isSession) && !page.diffShown
-                    variant: page.detailsShown ? "tonal" : "text"
-                    size: "sm"
-                    iconPath: Icons.clipboardList
-                    text: qsTr("Details")
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconPath: page.detailsIcon
+                    checked: page.detailsShown
+                    label: qsTr("Details")
                     onClicked: page.toggleDetails()
                 }
             }
@@ -1407,6 +1423,9 @@ Item {
                     planMenu.openAt(p.x, p.y - 30, true, true)
                 }
                 onChangePlan: composer.focusInput()
+                // Where a phone opens it when it's handed over: the first
+                // message on screen, or the newest while it follows them.
+                onReadingAt: (itemId) => Agents.readingAt(itemId)
                 Connections {
                     target: Agents
                     function onOpenIdChanged() { transcript.follow = true }
@@ -1852,7 +1871,10 @@ Item {
                     onDenySend: (token, text) => Agents.denyWithMessage(token, text)
                     onAllow: page.allowShown()
                     onStop: Agents.stop()
-                    onAttachRequested: imagePicker.open()
+                    onAttachRequested: (x, y) => {
+                        const p = page.mapFromItem(null, x, y)
+                        attachMenu.openAt(p.x, p.y, true, false)
+                    }
                     onPickerRequested: (x, y) => {
                         const p = page.mapFromItem(null, x, y)
                         threadPicker.openAt(p.x, p.y)
@@ -3071,6 +3093,41 @@ Item {
             : dock.overflowActions
         panelWidth: 360
         wrapLabels: true
+        z: 20
+    }
+
+    // Add image: a file, the clipboard, or a photo from a phone (§V8.4).
+    // Lucide's file (ISC, as AgentGitGlyphs.qml credits).
+    readonly property string fileIcon: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7zM14 2v4a2 2 0 0 0 2 2h4"
+    PopupMenu {
+        id: attachMenu
+        actions: [
+            { label: qsTr("Choose a file…"), icon: page.fileIcon, run: () => imagePicker.open() },
+            { label: qsTr("Paste"), icon: Icons.clipboard, keys: "Ctrl V", run: () => Agents.pasteFromMenu() }
+        ].concat((page.composerState.cameras || []).map((phone) => ({
+            label: qsTr("Take a photo with %1").arg(phone.name), icon: Icons.camera,
+            run: () => Agents.takePhoto(phone.id)
+        })))
+        panelWidth: 280
+        z: 20
+    }
+
+    // The open thread's More: continue it on a phone (§V8.5), and its marks.
+    PopupMenu {
+        id: headMenu
+        readonly property var row: page.info
+        actions: (page.isThread ? (page.info.handoff || []) : []).map((phone) => ({
+            label: qsTr("Continue on %1").arg(phone.name), icon: Icons.phone,
+            run: () => Agents.handoff(phone.id)
+        })).concat(page.isThread && page.historyOn ? [
+            { label: qsTr("Rename"), icon: Icons.edit, keys: "F2", run: () => page.renamingId = Agents.openId },
+            { label: qsTr("Snooze"), icon: Icons.moon, enabled: row.archived !== true,
+              run: () => page.snooze([Agents.openId], headMenu.anchorX, headMenu.anchorY, page.agentName,
+                                     headMenu.row.limitResets || 0) },
+            { label: row.archived === true ? qsTr("Unarchive") : qsTr("Archive"), icon: Icons.tray,
+              run: () => page.markThreads([Agents.openId], headMenu.row.archived === true ? "unarchive" : "archive") }
+        ] : [])
+        panelWidth: 260
         z: 20
     }
 

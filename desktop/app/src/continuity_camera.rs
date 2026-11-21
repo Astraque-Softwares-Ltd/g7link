@@ -5,6 +5,10 @@
 //! request started, places the captured image onto the clipboard on arrival,
 //! and either restores focus + synthesizes `Ctrl+V` into the original target
 //! window or prompts the user if that window was closed.
+//!
+//! A capture for an agent ([`CaptureDest::AgentComposer`] or
+//! [`CaptureDest::Launcher`]) never touches the clipboard or a window: its
+//! picture goes to `crate::agents`, which hands it to the agent host.
 
 use crate::i18n::tr;
 use std::{
@@ -15,11 +19,53 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use g7link_core::{CameraCaptureMode, DeviceId, Error, LinkState, NodeEvent};
+use g7link_core::{CameraCaptureMode, DeviceId, Error, LinkState, NodeEvent, continuity_camera::CaptureFor};
 
 use crate::{core_host, state::Changes};
 
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Where a captured picture goes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CaptureDest {
+    /// The clipboard, then the window that was in front when it started.
+    #[default]
+    Paste,
+    /// The Agents page's composer of thread `key`.
+    AgentComposer { key: String },
+    /// The launcher's `ui.photo` request `request`.
+    Launcher { request: String },
+}
+
+impl CaptureDest {
+    /// It goes to an agent, never to the clipboard.
+    fn is_agent(&self) -> bool {
+        !matches!(self, CaptureDest::Paste)
+    }
+}
+
+/// A capture for an agent that has started on a phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Started {
+    pub request_id: String,
+    pub device_name: String,
+}
+
+/// Why a capture for an agent didn't start, or ended without a picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ended {
+    /// No paired phone at that place, or it isn't connected.
+    NoPhone,
+    /// The phone said no (busy, no permission) or the user cancelled it
+    /// there or here.
+    Cancelled,
+    /// Another capture took its place.
+    Replaced,
+    /// The phone went away while it waited.
+    Offline,
+    /// The request couldn't be sent.
+    Failed(String),
+}
 
 #[derive(Debug, Clone)]
 struct ActiveRequest {
@@ -30,6 +76,7 @@ struct ActiveRequest {
     target_hwnd: Option<isize>,
     target_title: String,
     queued_offline: bool,
+    dest: CaptureDest,
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +166,8 @@ fn notify_continuity() {
 pub fn view() -> ContinuityView {
     let guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
     let (busy, mode, status) = match &guard.active {
-        Some(active) if !active.queued_offline => {
+        // The composer and the launcher show their own wait.
+        Some(active) if !active.queued_offline && !active.dest.is_agent() => {
             let mode_str = active.mode.as_str().to_owned();
             let status_str = match active.mode {
                 CameraCaptureMode::Photo => {
@@ -161,6 +209,11 @@ pub fn start(mode_raw: &str) {
 /// preferred offline paired phone (queueing a 2-minute expiring request).
 pub fn start_for_index(preferred_index: usize, mode_raw: &str) {
     let mode = CameraCaptureMode::parse(mode_raw).unwrap_or(CameraCaptureMode::Photo);
+    start_paste(preferred_index, mode);
+}
+
+/// [`start_for_index`]'s path: the capture that's pasted.
+fn start_paste(preferred_index: usize, mode: CameraCaptureMode) -> Option<Started> {
     let target = crate::sys::tray::snapshot_target_window();
 
     let chosen = core_host::host().hub.read(|s| {
@@ -177,7 +230,7 @@ pub fn start_for_index(preferred_index: usize, mode_raw: &str) {
             "ContinuityCamera",
             "Pair your phone first to take a photo or scan a document."
         ));
-        return;
+        return None;
     };
 
     let request_id = next_request_id();
@@ -197,9 +250,13 @@ pub fn start_for_index(preferred_index: usize, mode_raw: &str) {
             target_hwnd,
             target_title,
             queued_offline: !online,
+            dest: CaptureDest::Paste,
         })
     };
     notify_continuity();
+    if let Some(prev) = previous.as_ref().filter(|p| p.dest.is_agent()) {
+        crate::agents::photo_ended(&prev.dest, &prev.request_id, Ended::Replaced);
+    }
 
     if online {
         let open_msg = match mode {
@@ -211,7 +268,8 @@ pub fn start_for_index(preferred_index: usize, mode_raw: &str) {
         crate::bridge::app::show_message(open_msg);
     }
 
-    let Some(node) = core_host::node() else { return };
+    let started = Started { request_id: request_id.clone(), device_name: device_name.clone() };
+    let node = core_host::node()?;
     core_host::spawn(async move {
         if let Some(prev) = previous {
             let _ = node.cancel_camera_capture(prev.device, prev.request_id, Some("replaced".into())).await;
@@ -234,23 +292,117 @@ pub fn start_for_index(preferred_index: usize, mode_raw: &str) {
                 };
                 if should_report {
                     notify_continuity();
-                    let msg = match err {
-                        Error::Denied => tr!(
-                            "ContinuityCamera",
-                            "Allow Photos access for %1 in Settings first.",
-                            device_name
-                        ),
-                        Error::Unsupported => format!("{device_name} doesn’t support Continuity Camera yet."),
-                        Error::Offline => format!("{device_name} is not connected."),
-                        other => {
-                            tr!("ContinuityCamera", "Couldn’t open camera on %1: %2", device_name, other)
-                        }
-                    };
-                    crate::bridge::app::show_message(msg);
+                    crate::bridge::app::show_message(start_error(&err, &device_name));
                 }
             }
         }
     });
+    Some(started)
+}
+
+/// Why a capture couldn't start on `device_name`, in the user's words.
+fn start_error(err: &Error, device_name: &str) -> String {
+    match err {
+        Error::Denied => {
+            tr!("ContinuityCamera", "Allow Photos access for %1 in Settings first.", device_name)
+        }
+        Error::Unsupported => format!("{device_name} doesn’t support Continuity Camera yet."),
+        Error::Offline => format!("{device_name} is not connected."),
+        other => tr!("ContinuityCamera", "Couldn’t open camera on %1: %2", device_name, other),
+    }
+}
+
+/// Starts a photo capture for an agent on the paired device at `index`: that
+/// phone only, and only while it's connected (nothing is queued for later).
+/// The picture reaches `crate::agents` ([`crate::agents::photo_arrived`]),
+/// never the clipboard. A capture already running is replaced. `Paste`
+/// takes [`start_for_index`]'s path.
+pub fn start_for(index: usize, dest: CaptureDest) -> Result<Started, Ended> {
+    if !dest.is_agent() {
+        return start_paste(index, CameraCaptureMode::Photo).ok_or(Ended::NoPhone);
+    }
+    let chosen = core_host::host().hub.read(|s| {
+        s.devices
+            .get(index)
+            .filter(|d| matches!(d.link, LinkState::Online { .. }))
+            .map(|d| (d.id, d.info.name.clone()))
+    });
+    let (device, device_name) = chosen.ok_or(Ended::NoPhone)?;
+    let node = core_host::node().ok_or(Ended::NoPhone)?;
+    let request_id = next_request_id();
+    let previous = {
+        let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        guard.prompt = None;
+        guard.active.replace(ActiveRequest {
+            request_id: request_id.clone(),
+            device,
+            device_name: device_name.clone(),
+            mode: CameraCaptureMode::Photo,
+            target_hwnd: None,
+            target_title: String::new(),
+            queued_offline: false,
+            dest: dest.clone(),
+        })
+    };
+    notify_continuity();
+    if let Some(prev) = previous.as_ref().filter(|p| p.dest.is_agent()) {
+        crate::agents::photo_ended(&prev.dest, &prev.request_id, Ended::Replaced);
+    }
+    let started = Started { request_id: request_id.clone(), device_name: device_name.clone() };
+    let name = device_name;
+    core_host::spawn(async move {
+        if let Some(prev) = previous {
+            let _ = node.cancel_camera_capture(prev.device, prev.request_id, Some("replaced".into())).await;
+        }
+        if let Err(err) = node
+            .request_camera_capture_for(
+                device,
+                request_id.clone(),
+                CameraCaptureMode::Photo,
+                CaptureFor::Agent,
+            )
+            .await
+        {
+            let ended = match &err {
+                Error::Offline => Ended::Offline,
+                Error::NotPaired => Ended::NoPhone,
+                other => Ended::Failed(start_error(other, &name)),
+            };
+            if let Some(active) = take_active(&request_id) {
+                crate::agents::photo_ended(&active.dest, &active.request_id, ended);
+            }
+        }
+    });
+    Ok(started)
+}
+
+/// Takes the active request if it's `request_id`.
+fn take_active(request_id: &str) -> Option<ActiveRequest> {
+    let taken = {
+        let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.active.as_ref().is_some_and(|a| a.request_id == request_id) {
+            guard.active.take()
+        } else {
+            None
+        }
+    };
+    if taken.is_some() {
+        notify_continuity();
+    }
+    taken
+}
+
+/// Cancels the capture `request_id` started for an agent, if it still runs
+/// (`reason` goes to the phone: "cancelled" or "timeout"). Its destination
+/// hears nothing more.
+pub fn cancel_request(request_id: &str, reason: &str) {
+    let Some(active) = take_active(request_id) else { return };
+    if let Some(node) = core_host::node() {
+        let reason = reason.to_owned();
+        core_host::spawn(async move {
+            let _ = node.cancel_camera_capture(active.device, active.request_id, Some(reason)).await;
+        });
+    }
 }
 
 /// Cancels an in-flight Continuity Camera request from the PC side.
@@ -261,6 +413,9 @@ pub fn cancel() {
     };
     let Some(active) = active else { return };
     notify_continuity();
+    if active.dest.is_agent() {
+        crate::agents::photo_ended(&active.dest, &active.request_id, Ended::Cancelled);
+    }
     if let Some(node) = core_host::node() {
         core_host::spawn(async move {
             let _ =
@@ -327,6 +482,13 @@ pub fn on_event(event: &NodeEvent) {
                 core_host::host().hub.read(|s| s.name_of(device).unwrap_or_else(|| device.short()))
             });
 
+            // For an agent: to the host, never the clipboard or a window.
+            if let Some(active) = matched.as_ref().filter(|a| a.dest.is_agent()) {
+                notify_continuity();
+                crate::agents::photo_arrived(&active.dest, &active.request_id, mime, data);
+                return;
+            }
+
             if let Err(e) = crate::sys::clipboard::write_image(mime, data) {
                 tracing::warn!(error = %e, "can't copy continuity camera image to clipboard");
                 notify_continuity();
@@ -384,6 +546,9 @@ pub fn on_event(event: &NodeEvent) {
             };
             if let Some(active) = removed {
                 notify_continuity();
+                if active.dest.is_agent() {
+                    crate::agents::photo_ended(&active.dest, &active.request_id, Ended::Cancelled);
+                }
                 let msg = match reason.as_deref() {
                     Some("busy") => tr!("ContinuityCamera", "Camera is busy on %1.", active.device_name),
                     Some("permission_denied") => {
@@ -398,14 +563,16 @@ pub fn on_event(event: &NodeEvent) {
             let cleared = {
                 let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.active.as_ref().is_some_and(|a| a.device == *device && !a.queued_offline) {
-                    guard.active = None;
-                    true
+                    guard.active.take()
                 } else {
-                    false
+                    None
                 }
             };
-            if cleared {
+            if let Some(active) = cleared {
                 notify_continuity();
+                if active.dest.is_agent() {
+                    crate::agents::photo_ended(&active.dest, &active.request_id, Ended::Offline);
+                }
             }
         }
         _ => {}
@@ -450,6 +617,14 @@ mod tests {
             }
             other => panic!("expected PromptMissingTarget, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_paste_path_stays_the_default_and_an_agents_capture_never_pastes() {
+        assert_eq!(CaptureDest::default(), CaptureDest::Paste);
+        assert!(!CaptureDest::Paste.is_agent());
+        assert!(CaptureDest::AgentComposer { key: "a".repeat(32) }.is_agent());
+        assert!(CaptureDest::Launcher { request: "0123456789abcdef".into() }.is_agent());
     }
 
     #[test]

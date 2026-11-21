@@ -690,6 +690,8 @@ impl AppState {
             | NodeEvent::AgentGitJob { .. }
             // What a phone shows; the agents' presence reads it (Node::agent_views).
             | NodeEvent::AgentViewing { .. }
+            // Phones only: a PC hands them threads, it never gets one this way.
+            | NodeEvent::AgentHandoff { .. }
             // Copied and toasted (notifications).
             | NodeEvent::OneTimeCode { .. } => Changes::NONE,
             NodeEvent::CameraCaptureReceived { .. } => Changes::TIMELINE,

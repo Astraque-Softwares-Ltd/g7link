@@ -44,10 +44,22 @@ ListView {
     signal openChanges(int turn, string path)
     // Undo on the newest rewind's notice.
     signal undoRewind
+    // The first message on screen once the user stops scrolling ("" while it
+    // follows the newest): where a phone opens it when it's handed over.
+    signal readingAt(string itemId)
 
     function jumpToLatest() {
         follow = true
         positionViewAtEnd()
+    }
+    // The item of the first row at the top of the view ("" for none).
+    function topItem() {
+        for (let y = 2; y < height; y += 12) {
+            const row = indexAt(width / 2, contentY + y)
+            if (row >= 0)
+                return AgentTimeline.itemIdAt(row)
+        }
+        return ""
     }
 
     model: AgentTimeline
@@ -56,7 +68,12 @@ ListView {
     boundsBehavior: Flickable.StopAtBounds
     // Rows past the view are laid out ahead, so heights settle before they show.
     cacheBuffer: 1200
-    onMovementEnded: follow = atYEnd
+    onMovementEnded: {
+        follow = atYEnd
+        if (!follow)
+            readingAt(topItem())
+    }
+    onFollowChanged: if (follow) readingAt("")
     onAtYEndChanged: if (atYEnd) follow = true
     onContentHeightChanged: if (follow) Qt.callLater(() => timeline.positionViewAtEnd())
     onCountChanged: if (follow) Qt.callLater(() => timeline.positionViewAtEnd())
@@ -688,8 +705,11 @@ ListView {
     }
 
     TouchpadGlide { view: timeline }
+    // On the view itself: declared inside a ListView it would land in the moving content,
+    // stretch to the whole thread's height and lie over the text.
     G7ScrollBar {
         flickable: timeline
+        parent: timeline
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         anchors.right: parent.right

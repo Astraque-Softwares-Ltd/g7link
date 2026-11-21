@@ -51,10 +51,12 @@ use tokio::sync::{Notify, watch};
 use crate::{core_host, i18n::tr, state::Changes};
 
 mod control;
+mod handoff;
 mod history;
 mod history_page;
 #[cfg(test)]
 mod history_tests;
+mod photo;
 mod presence;
 pub(crate) mod reply;
 mod rows;
@@ -69,6 +71,7 @@ pub(crate) use history_page::{
     rewind_apply, rewind_choose, rewind_close, rewind_focus, rewind_later, rewind_open, search,
     set_folder_checkpoints, show_shelf, store_info, undo_rewind,
 };
+pub(crate) use photo::{cancel as cancel_photo, take as take_photo};
 pub(crate) use rows::{CodePalette, LinkRef, ModelRow, Role, RoleValue, RowOp};
 #[cfg(test)]
 pub(crate) use rows::{Extra, model_row};
@@ -457,6 +460,9 @@ struct OpenView {
     focus: Option<u64>,
     /// Counts focus requests, so the page scrolls once per hit.
     focus_n: u64,
+    /// The first message on screen while the user reads further up (`None`:
+    /// the newest are shown): where a phone opens it when it's handed over.
+    reading_at: Option<u64>,
 }
 
 /// The `@` or `/` list over the composer.
@@ -568,6 +574,7 @@ impl OpenView {
             left: Vec::new(),
             focus: None,
             focus_n: 0,
+            reading_at: None,
         }
     }
 
@@ -1251,6 +1258,8 @@ struct BridgeState {
     /// Source control: the open thread's panel, the Pull Requests list,
     /// worktrees (`cap::GIT`).
     source: source::Source,
+    /// Photos from a phone's camera on their way (§V8.4).
+    photo: photo::Photos,
 }
 
 /// What the new-thread form is set to.
@@ -1531,6 +1540,26 @@ pub fn on_event(event: &g7link_core::NodeEvent) {
         g7link_core::NodeEvent::AgentViewing { .. } => presence::wake(),
         _ => {}
     }
+}
+
+/// A phone's photo for an agent ([`crate::continuity_camera::start_for`]):
+/// to the host, never the clipboard.
+pub(crate) fn photo_arrived(
+    dest: &crate::continuity_camera::CaptureDest,
+    request_id: &str,
+    mime: &str,
+    data: &[u8],
+) {
+    photo::arrived(dest, request_id, mime, data);
+}
+
+/// A capture for an agent ended without a photo.
+pub(crate) fn photo_ended(
+    dest: &crate::continuity_camera::CaptureDest,
+    request_id: &str,
+    ended: crate::continuity_camera::Ended,
+) {
+    photo::ended(dest, request_id, ended);
 }
 
 // ---- Mapping (pure) ----
@@ -2160,9 +2189,10 @@ impl Relay for NodeRelay {
 
 /// What G7 Link says to the host: it understands reasoning items, plans and
 /// questions, and the fields added with them (phones that don't get them as
-/// the core makes them), and it sets and hears presence.
+/// the core makes them), it sets and hears presence, and it takes the
+/// launcher's hand-offs and photo requests.
 fn hello() -> HelloParams {
-    HelloParams::new(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3, cap::PRESENCE])
+    HelloParams::new(ClientKind::Link, &[cap::ITEMS2, cap::ITEMS3, cap::PRESENCE, cap::HANDOFF, cap::PHOTO])
 }
 
 /// A connection that follows a session for a phone: as [`hello`], but it
@@ -2399,6 +2429,7 @@ async fn serve<R: Relay>(
         })
     };
     presence::disconnected(conn);
+    photo::disconnected();
     if let Some(generation) = generation {
         reset_rows(bridge, generation);
     }
@@ -2663,6 +2694,19 @@ async fn relay_event<R: Relay>(bridge: &Bridge, relay: &R, client: &Client, even
             relay.git_progress(source_relay::wire_job(&e.job), source_relay::job_by(&e.job)).await;
             source::git_progress(e.job);
         }
+        // The launcher's "Continue on": it saved its draft first.
+        Event::UiHandoff(e) => {
+            if core_host::try_host().is_some() {
+                handoff::from_launcher(e.thread_id, e.device_id, e.seq);
+            }
+        }
+        // The launcher's "Take a Photo with Phone".
+        Event::UiPhoto(e) => {
+            if core_host::try_host().is_some() {
+                photo::launcher(e.request);
+            }
+        }
+        Event::UiPhotoCancel(e) => photo::launcher_cancel(&e.request),
     }
 }
 
@@ -3086,6 +3130,17 @@ async fn run_request(from: DeviceId, request: AgentRequest) -> Result<AgentReply
         | AgentRequest::PrCreate { .. }
         | AgentRequest::PrList { .. }
         | AgentRequest::Ask { .. }) => return source_relay::phone(from, &client, request).await,
+        // Hand-off (§V8.5): the page opens the thread, now or when the PC is
+        // unlocked; nothing is typed, sent or unlocked.
+        AgentRequest::Handoff { thread: thread_id, seq } => {
+            if bridge().known(&thread_id).is_none() {
+                let read =
+                    ThreadReadParams { thread_id: thread_id.clone(), limit: Some(1), ..Default::default() };
+                let page = client.thread_read(read).await.map_err(fail)?;
+                bridge().remember(&page.thread);
+            }
+            AgentReply::HandedOff(handoff::from_phone(from, thread_id, seq).await.wire())
+        }
         // Reply on the PC (§9): into the session's own window, never through the host.
         AgentRequest::SessionReply { session: session_id, text, confirm } => {
             let folder = lock().sessions.iter().find(|s| s.id == session_id).map(|s| s.folder_label.clone());
@@ -3271,6 +3326,9 @@ pub(crate) fn view() -> View {
     // nor presence's.
     let palette = bridge().render().palette.clone();
     let phones = presence::shown();
+    // Phones that can take a photo, and that a thread can be handed to.
+    let cameras = photo::cameras();
+    let handoff_phones = handoff::shown_phones();
     let s = lock();
     let now = now_ms();
     let threads = listed_threads(&s.threads, now);
@@ -3284,6 +3342,13 @@ pub(crate) fn view() -> View {
         Some(o) if o.kind == OpenKind::Thread => s.threads.get(&o.id).map(|t| {
             let mut row = row_of(t);
             row["open_on"] = open_on(Some(&o.id), None);
+            // "Continue on <phone>" in its menu.
+            row["handoff"] = json!(
+                handoff_phones
+                    .iter()
+                    .map(|(id, name)| json!({ "id": id.to_string(), "name": name }))
+                    .collect::<Vec<_>>()
+            );
             row
         }),
         Some(o) if o.kind == OpenKind::Preview => s
@@ -3305,7 +3370,7 @@ pub(crate) fn view() -> View {
         None => (json!({}), json!({}), 0),
     };
     let composer = match open.filter(|o| o.kind == OpenKind::Thread) {
-        Some(o) => composer_json(&s, o),
+        Some(o) => composer_json(&s, o, &cameras),
         None => json!({}),
     };
     View {
@@ -3429,7 +3494,8 @@ fn dock_json(open: &OpenView, s: &BridgeState, palette: &CodePalette) -> (Value,
 }
 
 /// The open thread's composer, as the page draws it around the text.
-fn composer_json(s: &BridgeState, open: &OpenView) -> Value {
+/// `cameras`: the phones Add image offers a photo from.
+fn composer_json(s: &BridgeState, open: &OpenView, cameras: &[(usize, DeviceId, String)]) -> Value {
     let Some(info) = s.threads.get(&open.id) else { return json!({}) };
     let agent = s.agents.iter().find(|a| a.id == info.agent);
     let setting = control::Setting::of_thread(info);
@@ -3441,11 +3507,20 @@ fn composer_json(s: &BridgeState, open: &OpenView) -> Value {
         .collect();
     let hint =
         c.commands.as_deref().and_then(|cmds| control::command_hint(&c.text, cmds)).unwrap_or_default();
+    let takes_images = s.control && agent.is_some_and(|a| control::takes_images(a, info.model.as_deref()));
+    let cameras: Vec<Value> = cameras
+        .iter()
+        .filter(|_| takes_images)
+        .map(|(_, id, name)| json!({ "id": id.to_string(), "name": name }))
+        .collect();
     json!({
         "control": s.control,
         "picker": agent.map_or_else(|| json!({}), |a| control::picker_json(a, &setting)),
         "canSteer": agent.is_some_and(|a| a.can(Can::Steer)),
-        "images": s.control && agent.is_some_and(|a| control::takes_images(a, info.model.as_deref())),
+        "images": takes_images,
+        // "Take a photo with <phone>", and the phone a photo is awaited from.
+        "cameras": cameras,
+        "photoFrom": photo::waiting_for(&s.photo, &open.id).unwrap_or_default(),
         "commands": s.control && agent.is_some_and(|a| a.can(Can::Commands)),
         "queue": control::queue_json(info),
         "limit": control::limit_line(agent),
@@ -3876,6 +3951,8 @@ fn open_at(kind: OpenKind, id: String, focus: Option<u64>) {
         s.diff = None;
         s.rewind = None;
         let was = s.open.replace(view);
+        // A phone's photo that came for it while it was closed.
+        photo::unpark(&mut s, generation);
         (generation, was.is_some_and(|o| o.kind == OpenKind::Session), s.client.clone())
     };
     reset_rows(bridge(), generation);
@@ -4805,6 +4882,66 @@ fn draft_due(open: &OpenView, edit: Option<u64>) -> Option<DraftSetParams> {
     })
 }
 
+/// Saves the composer's draft of `thread` now when it's open, before the
+/// thread is handed to a phone; true when the thread has a draft (here, or
+/// one another device left).
+async fn flush_draft(thread: &str) -> bool {
+    let open = {
+        let s = lock();
+        s.open.as_ref().filter(|o| o.is(OpenKind::Thread, thread)).map(|o| {
+            let c = &o.composer;
+            (o.generation, !c.text.trim().is_empty() || !c.images.is_empty())
+        })
+    };
+    if let Some((generation, here)) = open {
+        save_draft(generation, None).await;
+        if here {
+            return true;
+        }
+    }
+    let client = {
+        let s = lock();
+        s.client.clone().filter(|_| s.control)
+    };
+    let Some(client) = client else { return false };
+    matches!(client.draft_get(thread.to_owned()).await,
+        Ok(Some(d)) if !d.text.trim().is_empty() || !d.images.is_empty())
+}
+
+/// What a walk-away offer needs of `thread`: its state, and the first
+/// message on screen when it's open and read further up.
+fn walk_away_facts(thread: &str) -> (Option<State>, Option<u64>) {
+    let s = lock();
+    let seq = s.open.as_ref().filter(|o| o.is(OpenKind::Thread, thread)).and_then(|o| o.reading_at);
+    (s.threads.get(thread).map(|t| t.state), seq)
+}
+
+/// The first message on screen (its item id), or "" while the newest are
+/// shown: a phone the thread is handed to opens it there.
+pub fn reading_at(item_id: String) {
+    let mut s = lock();
+    let Some(open) = s.open.as_mut().filter(|o| o.kind == OpenKind::Thread) else { return };
+    open.reading_at = if item_id.is_empty() {
+        None
+    } else {
+        open.entries.iter().find(|e| e.item.id == item_id).map(|e| e.item.seq)
+    };
+}
+
+/// "Continue on <phone>": the draft is saved, then the phone opens the
+/// thread where this screen shows it. `device` is the phone's id.
+pub fn handoff_to(device: String) {
+    let Ok(device) = device.parse::<DeviceId>() else { return };
+    let open =
+        lock().open.as_ref().filter(|o| o.kind == OpenKind::Thread).map(|o| (o.id.clone(), o.reading_at));
+    let Some((thread, seq)) = open else { return };
+    core_host::spawn(async move {
+        if !handoff::to_phone(device, thread, seq).await {
+            crate::bridge::app::show_message(tr!("Agents", "%1 isn't reachable.", device_name(&device)));
+        }
+    });
+}
+
 /// A message can be sent from the composer: never while a question waits.
 fn may_send(open: &OpenView) -> bool {
     open.kind == OpenKind::Thread && open.questions.is_empty()
@@ -4918,6 +5055,17 @@ pub fn add_images(paths: Vec<String>) {
         core_host::spawn(async move {
             add_image(generation, path).await;
         });
+    }
+}
+
+/// Add image's Paste: the clipboard's image, or why it can't go.
+pub fn paste_from_menu() {
+    if paste_image() {
+        return;
+    }
+    let room = image_room(&lock());
+    if let Ok((generation, _)) = room {
+        image_failed(generation, "type");
     }
 }
 

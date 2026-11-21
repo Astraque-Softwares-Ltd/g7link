@@ -94,6 +94,12 @@ impl Sources for ThisPc {
     }
 }
 
+/// The three facts now, read from this PC (it may block on D-Bus: off the
+/// runtime).
+pub(crate) fn here_now() -> Here {
+    Here::read(&ThisPc)
+}
+
 // ---- What the phones show (pure) ----
 
 /// A pane's word; one this version doesn't know is absent.
@@ -423,7 +429,10 @@ async fn run() {
         let here = tokio::task::spawn_blocking(|| Here::read(&ThisPc)).await.unwrap_or_default();
         let views = phone_views(&node);
         let sends = engine().tick(Instant::now(), here, views, &page);
-        if sends.header {
+        // Hand-offs: one that waited for the unlock opens; locking offers
+        // the thread on screen to the phones.
+        let phones_changed = super::handoff::tick(here.locked, here.dnd, page.thread_id.as_deref());
+        if sends.header || phones_changed {
             super::changed();
         }
         if let Some(params) = sends.host

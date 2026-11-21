@@ -259,9 +259,9 @@ Item {
                         // On the view itself, not in its moving content.
                         parent: lines
                         orientation: Qt.Horizontal
-                        anchors.left: lines.left
-                        anchors.right: lines.right
-                        anchors.bottom: lines.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
                     }
                     Column {
                         id: rowsColumn
