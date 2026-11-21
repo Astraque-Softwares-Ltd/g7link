@@ -4,6 +4,57 @@ All notable changes to G7 Link. Versions follow
 [semantic versioning](https://semver.org); before 1.0, a minor version may
 change things that need a step from you, and its notes say so.
 
+## 0.1.20 (unreleased)
+
+Source control comes to the agents: see what a thread changed, commit,
+push and open a pull request from the PC, the launcher or the phone,
+through your own git and gh. Answer an agent from its notification, and
+the phone stays quiet while you read on the PC.
+
+**Update both together.** The phone and the PC exchange new messages for
+source control and presence; each needs the other on 0.1.20.
+
+### Added
+
+- **Source control.** A thread's header shows its branch, what changed,
+  commits to push and its pull request's checks. Review the changed
+  files, tick what to commit, write the message, or "Ask Claude to write
+  it" (a visible turn), then commit and push. Hooks, signing and
+  credentials are your own git's. Switch or create branches, start a
+  thread in its own worktree, and see the Pull Requests list. A pull
+  request can be opened, marked ready and merged from the PC, pinned to
+  the commit you saw; never auto-merged.
+- **From the phone:** review and commit. The phone may commit only files
+  whose whole diff it read; untracked folders and very large files stay on
+  the PC. **Push and open pull requests** need "Push and open pull
+  requests", a per-phone switch on the PC that is off by default. Merging,
+  removing a worktree and switching a branch with changes stay on the PC.
+- **Quote a diff line** into the reply box, on the PC and the phone.
+- **Answer from the notification.** Requests offer Deny, Say why and
+  Allow; short questions offer their answers as buttons. Only Deny works
+  while the phone is locked. "1 of 3" counts a run of requests, and a
+  short guard stops a tap landing on the next one as it slides in.
+- **Presence.** While you read a thread on the PC, the phone holds its
+  notifications and shows them when you step away or lock the PC. A thread
+  you read on the phone counts as read on the PC, and the PC shows
+  "· open on Pixel".
+- **Limit alarm.** When a usage limit resets, the PC and the phone tell
+  you and open the paused thread. Nothing is sent for you.
+- **Share to an agent** from any Android app: text and pictures land in a
+  thread's reply box, unsent.
+- **The launcher:** "Ask about this" attaches your selected text (a copied
+  picture, copied files and the browser tab are one key away); "Ask an
+  Agent About a Screenshot"; agent threads in the main search; "Answer
+  Agent Request", a command you can give a key; and source control.
+
+### Fixed
+
+- **A session stopped by its usage limit said "Working".** It now reads
+  "Limit reached · resets 18:00".
+- **"Earlier" kept the view on the Earlier button.** The message you were
+  reading now stays where it was, with the older ones above it.
+- **The plan name** is the CLI's own: "Ultra", not "Max".
+
 ## 0.1.19 (2026-11-21)
 
 Agent threads keep their whole history: search them, rewind to any turn
