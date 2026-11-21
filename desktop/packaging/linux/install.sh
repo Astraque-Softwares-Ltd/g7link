@@ -238,9 +238,11 @@ fetch() {
     if [ -n "${G7LINK_ASSETS_DIR:-}" ]; then
         cp "$G7LINK_ASSETS_DIR/${1##*/}" "$2"
     elif has curl; then
-        curl -fsSL --retry 3 -o "$2" "$1"
+        # A link that stalls (a network change mid-run) gives up instead of hanging: no
+        # connection within 15 s, or under 1 kB/s for 30 s, and curl tries again.
+        curl -fsSL --retry 3 --retry-connrefused --connect-timeout 15 --speed-limit 1024 --speed-time 30 -o "$2" "$1"
     elif has wget; then
-        wget -q -O "$2" "$1"
+        wget -q --timeout=30 --tries=3 -O "$2" "$1"
     else
         fail "this needs curl or wget to download G7 Link." "Install one of them and run this again."
     fi
@@ -257,9 +259,19 @@ find_release() {
             VERSION="${VERSION%-linux-x86_64.tar.gz}"
         done
     else
-        fetch "https://api.github.com/repos/$REPO/releases/latest" "$WORK/release.json" \
-            || fail "couldn't reach GitHub to find the latest release." "Check the internet connection and try again."
-        VERSION="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$WORK/release.json" | head -n 1)"
+        VERSION=""
+        if fetch "https://api.github.com/repos/$REPO/releases/latest" "$WORK/release.json"; then
+            VERSION="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$WORK/release.json" | head -n 1)"
+        fi
+        if [ -z "$VERSION" ] && has curl; then
+            # The API can be unreachable or rate-limited; the release page's redirect names the tag too.
+            latest="$(curl -fsSIL --connect-timeout 15 --max-time 60 -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" || true)"
+            case "$latest" in
+                */releases/tag/v*) VERSION="${latest##*/releases/tag/v}" ;;
+            esac
+        fi
+        [ -n "$VERSION" ] || fail "couldn't reach GitHub to find the latest release." \
+            "Check the internet connection and try again, or name it: --version X.Y.Z"
     fi
     [ -n "$VERSION" ] || fail "couldn't tell which version is the latest."
     BASE_URL="https://github.com/$REPO/releases/download/v$VERSION"
